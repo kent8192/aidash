@@ -250,6 +250,10 @@ export function CatalogApprovalSection({
   const [impact, setImpact] = useState<WithdrawalImpact | null>();
   const [withdrawCarried, setWithdrawCarried] = useState(false);
   const [stopCarrying, setStopCarrying] = useState(false);
+  // A Deployment-wide approval is withdrawn on every Node unless the
+  // approver keeps the other Nodes (#873).
+  const [withdrawEverywhere, setWithdrawEverywhere] = useState(true);
+  const deploymentWide = version.approval?.scope === "deployment";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const busyRetry = useBusyRetry();
@@ -432,6 +436,9 @@ export function CatalogApprovalSection({
         node: selected!.name,
         withdraw_carried: withdrawCarried,
         stop_carrying: stopCarrying,
+        ...(deploymentWide
+          ? { scope: withdrawEverywhere ? "deployment" : "node" }
+          : {}),
       });
       setImpact(undefined);
     });
@@ -703,6 +710,39 @@ export function CatalogApprovalSection({
               </>
             )}
             <span>{t("catalogWithdrawScope")}</span>
+            {deploymentWide ? (
+              <fieldset
+                className="grid gap-1"
+                aria-label={
+                  locale === "ja-JP" ? "取り下げるNode" : "Nodes to withdraw on"
+                }
+              >
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="catalog-withdraw-nodes"
+                    checked={withdrawEverywhere}
+                    disabled={busy}
+                    onChange={() => setWithdrawEverywhere(true)}
+                  />
+                  {locale === "ja-JP"
+                    ? "このDeploymentのすべてのNodeで取り下げる"
+                    : "Withdraw on every Node of this Deployment"}
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="catalog-withdraw-nodes"
+                    checked={!withdrawEverywhere}
+                    disabled={busy}
+                    onChange={() => setWithdrawEverywhere(false)}
+                  />
+                  {locale === "ja-JP"
+                    ? "このNodeだけで取り下げる"
+                    : "Withdraw on this Node only"}
+                </label>
+              </fieldset>
+            ) : null}
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"

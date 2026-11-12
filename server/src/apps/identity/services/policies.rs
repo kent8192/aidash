@@ -186,7 +186,7 @@ async fn approve_scoped(
 	let tenant = access.identity.tenant.clone();
 	let all_nodes = approvals
 		.iter()
-		.any(|item| item.enabled && item.scope == ApprovalScope::Deployment);
+		.any(|item| item.scope == ApprovalScope::Deployment);
 	let nodes = if all_nodes {
 		crate::apps::identity::repositories::nodes::lock_tenant(&mut **access.tx, &tenant).await?;
 		crate::apps::identity::repositories::nodes::list_live(&mut **access.tx, &tenant)
@@ -223,18 +223,45 @@ async fn approve_scoped(
 		let mut selected = Vec::new();
 		for item in approvals
 			.iter()
-			.filter(|item| item.enabled && item.scope == ApprovalScope::Deployment)
+			.filter(|item| item.scope == ApprovalScope::Deployment)
 		{
 			let mut item = item.clone();
-			item.expected_revision = item
-				.expected_node_revisions
-				.get(node.as_str())
-				.copied()
-				.unwrap_or(0);
+			if item.enabled {
+				if let Some(revision) = item.expected_node_revisions.get(node.as_str()) {
+					item.expected_revision = *revision;
+				} else {
+					// The approver never saw this Node's state: create the
+					// approval where there is none, and leave an existing one
+					// as it is rather than overwrite it unseen.
+					if catalog_row(&mut **access.tx, &tenant, &node, &item.entry)
+						.await?
+						.is_some()
+					{
+						continue;
+					}
+					item.expected_revision = 0;
+				}
+			} else {
+				// A withdrawal reaches every Node that still holds the same
+				// Deployment-scoped approval. Withdrawing never widens use, so
+				// it takes each Node's current revision instead of failing
+				// on a change made there since the dialog opened.
+				let Some(row) = catalog_row(&mut **access.tx, &tenant, &node, &item.entry).await?
+				else {
+					continue;
+				};
+				if !row.enabled || row.scope != "deployment" {
+					continue;
+				}
+				item.expected_revision = row.revision;
+			}
 			if let Some(restriction) = &mut item.restriction {
 				restriction.subjects = restriction.subjects.iter().map(&translate).collect();
 			}
 			selected.push(item);
+		}
+		if selected.is_empty() {
+			continue;
 		}
 		let subjects = extra_subjects.iter().map(&translate).collect();
 		access.set_node(node);
@@ -251,7 +278,37 @@ async fn approve_scoped(
 		.await?;
 	}
 	access.set_node(source.clone());
+	// "This Node only" takes a withdrawn row out of its Deployment scope, so
+	// the other Nodes keep the approval and new Nodes copy theirs.
+	for (binding, item) in source_bindings.iter().zip(approvals) {
+		if !item.enabled && item.scope == ApprovalScope::Node {
+			crate::apps::identity::repositories::catalog_mutation::set_scope(
+				&mut access.tx,
+				binding,
+				ApprovalScope::Node,
+			)
+			.await?;
+		}
+	}
 	Ok(source_bindings)
+}
+
+async fn catalog_row(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	entry: &crate::registry::EntityRef,
+) -> Result<Option<AuthorizationCatalog>> {
+	Ok(AuthorizationCatalog::objects()
+		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+		.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+		.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
+		.filter(AuthorizationCatalog::field_entry_version().eq(entry.version.clone()))
+		.all_with_executor(tx)
+		.await
+		.map_err(FrameworkError::from)?
+		.into_iter()
+		.next())
 }
 
 /// Resolve real people with active Mappings and verify their current review authority.
@@ -1571,6 +1628,7 @@ impl PolicyAdministration {
 				}
 			}
 			let mut stop_descendants = Vec::new();
+			let mut lineage = std::collections::BTreeSet::new();
 			if withdraw_carried || stop_carrying {
 				let root = approvals
 					.first()
@@ -1599,6 +1657,7 @@ impl PolicyAdministration {
 						break;
 					}
 				}
+				lineage.clone_from(&versions);
 				for row in rows.into_iter().filter(|row| {
 					row.entry_version != root.entry.version && versions.contains(&row.entry_version)
 				}) {
@@ -1626,7 +1685,7 @@ impl PolicyAdministration {
 							enabled: false,
 							expected_revision: row.revision,
 							carry_over: false,
-							scope: aidash_domain::identity::catalog::ApprovalScope::Node,
+							scope: root.scope,
 							provider_warning_acknowledged: false,
 							groups: None,
 							restriction: None,
@@ -1741,6 +1800,53 @@ impl PolicyAdministration {
 						&identity.subject,
 					)
 					.await?;
+				}
+				let root = approvals
+					.first()
+					.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
+				if root.scope == aidash_domain::identity::catalog::ApprovalScope::Deployment {
+					let others: Vec<_> = crate::apps::identity::repositories::nodes::list_live(
+						&mut **access.tx,
+						&tenant,
+					)
+					.await?
+					.into_iter()
+					.map(|other| other.name)
+					.filter(|other| other != &node)
+					.collect();
+					for other in others {
+						for version in &lineage {
+							let entry = crate::registry::EntityRef {
+								id: root.entry.id.clone(),
+								version: version.clone(),
+							};
+							let Some(row) =
+								catalog_row(&mut **access.tx, &tenant, &other, &entry).await?
+							else {
+								continue;
+							};
+							if row.scope != "deployment" || !row.carry_over {
+								continue;
+							}
+							stop_carrying_revision(
+								&mut access,
+								&f.config.deployment,
+								&other,
+								&Binding {
+									tenant: tenant.clone(),
+									node: other.clone(),
+									entry_id: row.entry_key,
+									entry_version: row.entry_version,
+									enabled: row.enabled,
+									revision: row.revision,
+									restriction: None,
+								},
+								&identity.subject,
+							)
+							.await?;
+						}
+					}
+					access.set_node(node.clone());
 				}
 			}
 			refresh_requests_on_node(

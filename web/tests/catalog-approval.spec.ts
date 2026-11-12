@@ -536,6 +536,41 @@ test("withdrawing fences on the approval revision and reports a conflict", async
   });
 });
 
+test("withdrawing a Deployment-wide approval reaches every Node unless the approver keeps the others", async ({
+  page,
+}) => {
+  const { decisions } = await dashboard(
+    page,
+    tenantSubject,
+    () => [
+      registryVersion(entry("search", "tool"), {
+        approval: { enabled: true, revision: 3, scope: "deployment" },
+      }),
+    ],
+    () => ({ status: 200, json: {} }),
+  );
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.goto("/settings?view=registry");
+  await row(page, "search").click();
+  await approval(page)
+    .getByRole("button", { name: "Withdraw approval", exact: true })
+    .click();
+  await expect(
+    approval(page).getByLabel("Withdraw on every Node of this Deployment"),
+  ).toBeChecked();
+  await approval(page).getByLabel("Withdraw on this Node only").check();
+  await approval(page)
+    .getByRole("button", { name: "Withdraw anyway", exact: true })
+    .click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body).toMatchObject({
+    entry: ref("search"),
+    enabled: false,
+    scope: "node",
+    node: defaultNode.name,
+  });
+});
+
 test("a tool version shows what a call does, and approving it covers a read-only declaration", async ({
   page,
 }) => {
