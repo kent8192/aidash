@@ -12,9 +12,9 @@ use aidash_domain::memory::*;
 use rstest::rstest;
 use serde_json::json;
 
-/// A Run of Agent `a` that read revision 1 of `unit`, and a Subject allowed
-/// everything by policy revision 1.
-async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
+/// A Run of Agent `a` bound to memory `provider` that read revision 1 of
+/// `unit`, and a Subject allowed everything by policy revision 1.
+async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid, Actor) {
 	crate::registry::Registry::new(store.pool.clone(), &store.deployment)
 		.unwrap()
 		.seed_system()
@@ -126,7 +126,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid) -> (Uuid, Actor) {
 				Expr::value(run),
 				Expr::value(bank.participant.unwrap()),
 				Expr::value(1_i64),
-				Expr::value("p"),
+				Expr::value(provider),
 				Expr::value("1.0.0"),
 				Expr::value("acme"),
 			],
@@ -211,7 +211,7 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	)
 	.await
 	.unwrap();
-	let (run, actor) = reader(&store, &bank, id).await;
+	let (run, actor) = reader(&store, &bank, id, "p").await;
 	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
 
 	// Act
@@ -306,6 +306,121 @@ async fn a_failed_read_journal_reports_its_exact_cause(
 	);
 }
 
+/// #852 decision 8: Built-in Memory evicts, corrects, deletes and reconciles its
+/// Units by itself, so a Unit a Run already read changing is not a reason to stop
+/// that Run. Losing the authority to read memory still is.
+#[rstest]
+#[case::unchanged("unchanged", None)]
+#[case::correction("correction", None)]
+#[case::reconciliation("reconciliation", None)]
+#[case::eviction("eviction", None)]
+#[case::lost_read_authority("lost_read_authority", Some(Failure::Authority))]
+#[tokio::test]
+async fn builtin_memory_read_journal_fails_only_on_lost_authority(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] change: &str,
+	#[case] expected: Option<Failure>,
+) {
+	// Arrange
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = memory::create_participant(
+		&store,
+		&administrator(&store).await,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let id = Uuid::now_v7();
+	let original = content("Rotate the signing key every quarter.");
+	memory::mutate(
+		&store,
+		&administrator(&store).await,
+		mutation(
+			&bank,
+			Change::Add {
+				id,
+				content: original.clone(),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let (run, actor) = reader(
+		&store,
+		&bank,
+		id,
+		aidash_domain::registry::bindings::memory_defaults::MEMORY_ID,
+	)
+	.await;
+	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
+
+	// Act
+	let corrected = |edit: fn(&mut Content)| {
+		let mut next = original.clone();
+		edit(&mut next);
+		mutation(
+			&bank,
+			Change::Correct {
+				id,
+				expected_revision: 1,
+				content: next,
+			},
+		)
+	};
+	let change_unit = match change {
+		"unchanged" | "lost_read_authority" => None,
+		"correction" => Some(corrected(|next| {
+			next.text = "Rotate the signing key monthly.".into()
+		})),
+		"reconciliation" => Some(corrected(|next| {
+			next.verification = Verification::Contradicted
+		})),
+		"eviction" => Some(mutation(
+			&bank,
+			Change::Delete {
+				id,
+				expected_revision: 1,
+			},
+		)),
+		_ => unreachable!(),
+	};
+	if let Some(change) = change_unit {
+		memory::mutate(&store, &administrator(&store).await, change)
+			.await
+			.unwrap();
+	}
+	if change == "lost_read_authority" {
+		Authorization {
+			pool: store.pool.clone(),
+		}
+		.replace(
+			"acme",
+			2,
+			serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+				{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+				{"id":"no-memory","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["*"]}}
+			]}))
+			.unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	}
+
+	// Assert
+	assert_eq!(
+		cause(&store, &actor, bank.workspace, run).await,
+		expected,
+		"{change} of a built-in Unit"
+	);
+}
+
 /// Issue #275: a rejected record rolls back to its savepoint, which may release
 /// the locks behind catalog admissions made inside it, so the transaction's lock
 /// epoch must move although this module does not import `TransactionExecutor`.
@@ -370,7 +485,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	)
 	.await
 	.unwrap();
-	let (producer, actor) = reader(&store, &bank, unit).await;
+	let (producer, actor) = reader(&store, &bank, unit, "p").await;
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
