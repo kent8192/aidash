@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 //! Run lists expose aggregates, while the detail endpoint retains context.
 use serde_json::{Value, json};
 use uuid::Uuid;
