@@ -140,6 +140,15 @@ pub struct ReferenceRevoked {
 	pub status: String,
 }
 
+/// What a subject holding `reference.delete` needs to revoke a Reference: the
+/// revision to send back and its state. It carries no content or name (#826).
+#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+pub struct ReferenceRevocation {
+	pub reference_id: Uuid,
+	pub revision: i64,
+	pub state: String,
+}
+
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct DeletionConfirmation {
 	pub confirmation_id: Uuid,

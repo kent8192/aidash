@@ -1,5 +1,7 @@
 # A person can decline a paused call, and the Run goes on without it
 
+Amended by ADR 0127 (2026-11-11): a decline may also cover that tool's later calls in the same Run that meet the same kind of refusal.
+
 Decided on 2026-11-07 for #763. After #754, an Authority Pause leaves a person two choices: change the authority and resume, or cancel the Run. A person who does not want to allow the call but wants the Run to go on had no third choice, and resuming repeats the call. For example, a Tenant administrator sees `task_delegate: task.delegate was denied` and decides this Agent should not delegate; the model could finish another way, but it never hears the answer.
 
 A person now **declines** the call the Run is paused on. The Run records the call as answered, resumes, and the next model request carries a fixed call error for that call. Nothing about the Run's authority changes, and a decline covers one call: if the model calls again and meets the same refusal, the Run pauses again.
@@ -15,6 +17,7 @@ A person now **declines** the call the Run is paused on. The Run records the cal
 - **A person's reason is an ordinary Run message, sent first on this Node and after the decline on another.** A paused Run accepts messages on its own Node, and a message keeps its size limit, sender and place in the Thread. A tool result would be a second way into the model's context, and a model treats a result as data rather than an instruction. If declining fails, the message stays and the Run stays paused. A receiver refuses Home messages while its Run is paused (its callback to the Home needs the Run active), so for a Run on another Node the call is declined first and the sentence follows, and the Agent may take a step before it reads it. The form says so.
 - **A decline is kept apart from the pause.** `declined_calls` survives resumes and pauses until the worker answers the call, while `paused_call` is cleared on resume. In a Tool Batch an earlier sibling can pause again before the worker reaches the declined call, and the decision must survive that. The worker reads the decision before the gate, because the gate would refuse the call again and never reach a stored result.
 - **The decision ends as an `invocations` row.** A `REFUSED` row moves to `COMPLETED` with the error result. A call with no row gets a `COMPLETED` row, written without `tool.started` because nothing started. A person's decision should show in the Run's list of calls.
+- **A pause retains the call's tool and arguments.** A catch-up response can be filtered before its cursor is used, so the original response at that position may be a different call. The journal uses the stopped call recorded at the authority check. For older pauses without that record, declining checks the stored response's tool name and refuses a mismatch.
 - **The receiver now tells the Home which call stopped, by tool and kind of refusal.** The receiver replaces `run.error` with `Remote execution requires attention.`, so the Home could not know which call stopped, nor decline it. `Activation` gains `declinable_call` (the key, the tool and the kind), and the answer to a decline carries the tool and kind so the Home can write its own event after the pause is gone. It carries no action, no subject and no sentence from the receiver: the Home words it itself. Only people on the Home decline a remote Run; the receiver's people keep pause and cancel.
 - **Events.** The Run gets `run.call_declined` with the tool, the kind, the call's key and who (`by`: the subject on this Node, `home` on a receiver, never the Home's person). The Home writes `remote.call_declined`, which names the person. `authorization_decisions` gains no rows (#758).
 
@@ -31,6 +34,7 @@ A person now **declines** the call the Run is paused on. The Run records the cal
 
 - A declined `task_delegate` leaves its Task `OPEN`. Without #772 the parent goes back to the model until `max_steps`; with it, the Unassigned Task rule applies and a second final answer abandons the Task.
 - The Run page and the Home's remote panel offer "Decline this call" beside Resume and Cancel, only when the server says the caller may decline, and not on the bulk pause bar.
-- A person with `run.decline_call` who is not the requester cannot list a Home's remote executions, so the Home's panel offers the button to the requester only. They can still decline through the route.
-- The management view needs `run.control` as well as `workspace.read`, so a holder of `run.decline_call` alone is not offered the button there, though the route accepts them.
+- A Home holder of `run.decline_call` who is not the requester sees a content-free paused call and can decline it (#820).
+- The management view offers a paused call to a holder of `run.decline_call` with `workspace.read`, even without `run.control` (#819).
+- For a pause saved before the stopped call was recorded, two calls to the same tool in a filtered response cannot be distinguished by name; the journal may record the other call’s arguments.
 - Nothing is deployed, so both Nodes update together and there is no compatibility path for the new `Activation` field.

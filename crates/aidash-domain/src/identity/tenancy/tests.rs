@@ -214,6 +214,36 @@ fn the_creator_administers_and_members_use() {
 }
 
 #[test]
+fn only_the_personal_tenant_owner_gets_bypass_by_default() {
+	let personal = with_member(
+		personal_initial_policy("personal").unwrap(),
+		"alice",
+		ADMINISTRATORS,
+	);
+	let personal = with_member(personal, "bob", MEMBERS);
+	let shared = initial_policy("shared", true).unwrap();
+	let permits = |bundle: &PolicyBundle, subject: &str| {
+		bundle
+			.evaluate(&Evaluation {
+				subject: subject.into(),
+				action: MODE_BYPASS.into(),
+				resource: Resource {
+					tenant: bundle.tenant.clone(),
+					kind: MODE_RESOURCE.into(),
+					id: "bypass".into(),
+					attributes: json!({}),
+				},
+				environment: json!({}),
+			})
+			.allowed
+	};
+	assert!(permits(&personal, OWNER));
+	assert!(!permits(&personal, "alice"));
+	assert!(!permits(&personal, "bob"));
+	assert!(!permits(&shared, OWNER));
+}
+
+#[test]
 fn members_approve_tool_calls_and_nothing_else_they_could_be_asked_for() {
 	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
 	let evaluate = |subject: &str, kind: &str, action: &str| {
