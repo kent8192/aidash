@@ -1205,8 +1205,9 @@ class Runner(AllocationJournal):
             elif prepared["digest"] != record["request"]["digest"]:
                 raise StartupIdentityMismatch("Python input identity changed")
             record = self.update(operation, hydrated=True)
-        elif record["request"]["kind"] == "journal" and not record.get("journal_refreshed"):
+        elif not cold and record["request"]["kind"] == "journal" and not record.get("journal_refreshed"):
             # Only the dedicated Journal mount may change while this heap is frozen.
+            # A cold session hydrated its export at startup, and its kernel runs.
             self.refresh_journal(record, pod_operation)
             record = self.update(operation, journal_refreshed=True)
         record = self.update(operation, executed=True, status=record.get('status') if record.get('status') == 'cancelling' else 'running',
