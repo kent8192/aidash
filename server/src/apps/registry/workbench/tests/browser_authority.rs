@@ -361,6 +361,108 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 	wb.cleanup().await;
 }
 
+/// A call that needs an approval has nobody to ask under an API token, or in a
+/// session that recorded no starter. It is denied and no request is written.
+#[rstest::rstest]
+#[case::api_token(false)]
+#[case::no_starter_recorded(true)]
+#[tokio::test]
+async fn a_call_needing_approval_without_a_starter_is_denied_unasked(
+	#[case] browser: bool,
+	#[future(awt)] browser_workbench: (Workbench, HeaderMap, DashboardSession),
+) {
+	use std::{collections::VecDeque, sync::atomic::Ordering, time::Duration};
+	let (mut wb, headers, _) = browser_workbench;
+	let tool = json!({"id":"approval-test-tool","version":"1.0.0","kind":"tool","name":{"en":"Approval fixture"},"description":{"en":"Fixture"},"config":{"registry_deployment":wb.f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"approval_tool","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{}/effect",wb.endpoint),"replay":"unsafe"}}});
+	wb.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(tool).unwrap(),
+		)
+		.await
+		.unwrap();
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":wb.f.config.deployment,"id":"approval-test-tool","version":"1.0.0"},"alias":"approval_tool","narrow":{}}]);
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"approval-test-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	*wb.responses.lock().await = VecDeque::from([
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"approval_tool","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	]);
+	let path = format!("{}/tests", wb.path());
+	let input = json!({"expected_revision":2,"message":"Use the tool","mode":"real","profile_id":"sandbox"});
+	let scenario = async |id: Uuid| -> Value {
+		sqlx::query_scalar("SELECT scenario FROM agent_test_sessions WHERE id = $1")
+			.bind(id)
+			.fetch_one(wb.f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	let id = if browser {
+		// The person starts the test; the session then loses its starter, as
+		// a session recorded before starters were would have none.
+		let (actor, _) =
+			aidash_server::dashboard_auth::actor_from_headers(&wb.f, &headers, &Method::GET)
+				.await
+				.unwrap();
+		let app = common::application_with(wb.f.clone(), |_| {
+			use aidash_server::apps::registry::workbench::views::test;
+			reinhardt::ServerRouter::new()
+				.endpoint(test::start)
+				.with_middleware(super::CapturedActor(actor.clone()))
+		})
+		.await;
+		wb.model_gate.paused.store(true, Ordering::SeqCst);
+		let (status, started) = request(&app, &wb.token, "POST", &path, input).await;
+		assert_eq!(status, 200, "{started}");
+		tokio::time::timeout(Duration::from_secs(30), wb.model_gate.arrived.notified())
+			.await
+			.unwrap();
+		let id = Uuid::parse_str(started["id"].as_str().unwrap()).unwrap();
+		assert!(scenario(id).await["starter_identity"].is_string());
+		sqlx::query("UPDATE agent_test_sessions SET scenario = scenario - 'starter_identity' - 'starter_subject' WHERE id = $1")
+			.bind(id)
+			.execute(wb.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		wb.model_gate.paused.store(false, Ordering::SeqCst);
+		wb.model_gate.release.notify_one();
+		id
+	} else {
+		let started = wb.call("POST", &path, input).await;
+		Uuid::parse_str(started["id"].as_str().unwrap()).unwrap()
+	};
+	let mut finished = Value::Null;
+	for _ in 0..400 {
+		let sessions = wb.call("GET", &path, Value::Null).await;
+		let session = sessions
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|s| s["id"] == json!(id))
+			.unwrap();
+		if session["status"] != "running" {
+			finished = session.clone();
+			break;
+		}
+		tokio::time::sleep(Duration::from_millis(25)).await;
+	}
+	assert_eq!(finished["status"], "blocked", "{finished}");
+	assert_eq!(finished["tool_calls"][0]["outcome"], "denied");
+	assert_eq!(finished["error"], "test approval was refused");
+	let stored = scenario(id).await;
+	assert!(stored.get("pending_approval").is_none(), "{stored}");
+	assert!(stored["starter_identity"].is_null());
+	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 0);
+	wb.cleanup().await;
+}
+
 async fn other_person_same_subject(
 	wb: &Workbench,
 ) -> aidash_server::authorization::identity::Actor {
