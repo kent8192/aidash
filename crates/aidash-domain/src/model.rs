@@ -40,8 +40,10 @@ pub struct ModelConfig {
 	/// values use the release default; `false` keeps the non-streamed path.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub streaming: Option<bool>,
-	/// Longest silence, in seconds, between streamed data chunks. Provider
-	/// comment lines do not count as data. Omitted values use 120 seconds.
+	/// Longest silence, in seconds, in a streamed response. Provider comments
+	/// count as liveness before the first text, reasoning or tool-call output;
+	/// afterward only data counts. The request timeout bounds both phases.
+	/// Omitted values use 120 seconds.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stream_stall_timeout_secs: Option<u32>,
 	#[serde(default)]
@@ -106,8 +108,13 @@ pub enum CacheMode {
 }
 
 /// OpenRouter model slug prefixes whose routes accept `cache_control`
-/// breakpoints. A declaration alone never sends them elsewhere (ADR 0019).
-pub const EXPLICIT_CACHE_PREFIXES: &[&str] = &["anthropic/"];
+/// breakpoints. A declaration alone never sends them elsewhere (ADR 0019,
+/// ADR 0115). Each prefix here was confirmed on a live route.
+pub const EXPLICIT_CACHE_PREFIXES: &[&str] = &["anthropic/", "openai/gpt-5.6", "openai/gpt-6"];
+
+/// The prefixes above whose provider also writes through the last message of
+/// every unmarked request, at the same premium. Their requests use explicit mode.
+const EXPLICIT_ONLY_CACHE_PREFIXES: &[&str] = &["openai/gpt-5.6", "openai/gpt-6"];
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -430,6 +437,46 @@ impl ModelConfig {
 			&& EXPLICIT_CACHE_PREFIXES
 				.iter()
 				.any(|prefix| self.model_id.starts_with(prefix))
+	}
+
+	/// Whether this route needs `prompt_cache_options: {mode: "explicit"}`. Its
+	/// implicit write would otherwise cover the volatile last message of every
+	/// request, which the next request can never read. Declaring `none` sends it
+	/// too, since only explicit mode with no markers really turns caching off on
+	/// these routes. An omitted Cache Mode keeps the bytes of stored definitions
+	/// (ADR 0115).
+	pub fn explicit_cache_only(&self) -> bool {
+		matches!(self.cache_mode, Some(CacheMode::Explicit | CacheMode::None))
+			&& EXPLICIT_ONLY_CACHE_PREFIXES
+				.iter()
+				.any(|prefix| self.model_id.starts_with(prefix))
+	}
+
+	/// Whether a new definition of this model declares `explicit` when it names
+	/// no Cache Mode: an OpenRouter Chat route on an allowlisted slug. A keyless
+	/// endpoint may be anything, so it keeps the omitted default (ADR 0115).
+	pub fn explicit_cache_by_default(&self) -> bool {
+		self.provider == "openrouter"
+			&& self.endpoint.starts_with("https://openrouter.ai/")
+			&& !self.uses_plan_connection()
+			&& self
+				.wire_api
+				.is_none_or(|wire_api| wire_api == WireApi::Chat)
+			&& EXPLICIT_CACHE_PREFIXES
+				.iter()
+				.any(|prefix| self.model_id.starts_with(prefix))
+	}
+
+	/// A bounded `family` label for the token counters. A model ID is Tenant
+	/// input, so it never becomes a metric label itself.
+	pub fn metric_family(&self) -> &'static str {
+		match self.model_id.split('/').next() {
+			Some("anthropic") => "anthropic",
+			Some("openai") => "openai",
+			Some("google") => "google",
+			Some("deepseek") => "deepseek",
+			_ => "other",
+		}
 	}
 
 	/// An `explicit` declaration is accepted only for allowlisted slugs.

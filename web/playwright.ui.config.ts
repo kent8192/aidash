@@ -8,6 +8,7 @@ export default defineConfig({
   testDir: "./tests",
   testMatch: [
     "precision-light.spec.ts",
+    "policy-busy.spec.ts",
     "notifications.spec.ts",
     "marketplace.spec.ts",
     "transaction-authority.spec.ts",

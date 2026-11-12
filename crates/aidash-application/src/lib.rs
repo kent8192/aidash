@@ -66,6 +66,13 @@ pub enum Error {
 	/// the check. Everywhere else it is a [`Error::Forbidden`].
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
+	/// A person may resume the Run, but something it read stands in the way.
+	#[error("{0}")]
+	ResumeBlocked(aidash_domain::run_state::RunReadsBlock),
+	/// A person's policy allows the Run, but something it read hides it. It says
+	/// why; everywhere else a hidden Run is a plain [`Error::Forbidden`].
+	#[error("forbidden")]
+	RunHidden(aidash_domain::run_state::RunReadsBlock),
 	#[error("{0}")]
 	RemoteExecutionRefused(aidash_domain::federation::execution::Refusal),
 	#[error("{0}")]
@@ -157,6 +164,13 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// Running work did not finish within the limit of an Authority Change,
+	/// which was not applied. Recurring work leaves it for its next pass.
+	#[error("POLICY_BUSY")]
+	PolicyBusy { retry_after: u64 },
+	/// Another transaction holds the Run row during an activation claim.
+	#[error("Run row lock contended")]
+	RunLockContended,
 	/// The Tenant Secret broker could not serve the call. A person cannot repair
 	/// this: the message names no broker reason, only the Deployment Administrator-side fault
 	/// and the correlation the broker logged.

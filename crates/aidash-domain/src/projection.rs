@@ -93,6 +93,9 @@ pub struct CacheScope {
 	pub key_version: u32,
 }
 
+/// Starts every sticky-routing id, followed by 32 lowercase hex digits (ADR 0115).
+pub const SESSION_ID_PREFIX: &str = "aidash-session-";
+
 /// Upper bound, in estimate units, for the salt line the adapter prepends:
 /// `aidash-cache-scope:v{u32}:{32 hex}\n` with JSON escaping (67 bytes at most).
 pub const CACHE_SALT_LINE_RESERVE: usize = 80;

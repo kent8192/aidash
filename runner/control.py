@@ -101,10 +101,24 @@ def termination_time(terminated, started_at, observed):
     return min(observed, finished + 1)
 
 
+def cell_termination_time(terminated, started_at, observed):
+    """Return a bound only when Kubernetes supplied a usable termination time."""
+    try:
+        finished = datetime.fromisoformat(terminated['finishedAt'].replace('Z', '+00:00')).timestamp()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    if started_at is not None and finished + 1 < started_at:
+        return None
+    # A whole-second Kubernetes timestamp is a lower bound on the stop.
+    # Only that bound can prove the cell reached its deadline.
+    return min(observed, finished)
+
+
 def cell_timed_out(record):
-    """Whether a Python cell ran into its limit. The node watchdog stops it there
-    without saying why, so a stop at or past the limit counts as one."""
-    stopped_at, running_at = record.get('stop_confirmed_at'), record.get('running_at')
+    """Use stop evidence; a late observation alone cannot establish a timeout."""
+    if isinstance(record.get('cell_deadline_expired'), bool):
+        return record['cell_deadline_expired']
+    stopped_at, running_at = record.get('cell_stopped_at'), record.get('running_at')
     return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
 
 
@@ -153,11 +167,13 @@ class Runner(AllocationJournal):
         self.active = set()
         execution_config = {'namespace': config['namespace'], 'runtime_class': config['runtime_class'],
                             'processes': config.get('processes', 128), 'host_tasks': config.get('host_tasks', 512),
-                            'output_bytes': config.get('output_bytes', 8388608)}
+                            'output_bytes': config.get('output_bytes', 8388608),
+                            'node_selector': config.get('node_selector', {}),
+                            'tolerations': config.get('tolerations', [])}
         execution_config_path = os.environ.get('AIDASH_EXECUTION_POD_CONFIG')
         if execution_config_path:
             supplied = json.loads(Path(execution_config_path).read_bytes())
-            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks'} & supplied.keys():
+            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks', 'node_selector', 'tolerations'} & supplied.keys():
                 raise ValueError('invalid Execution Pod configuration overrides')
             execution_config.update(supplied)
         self.execution_pods = ExecutionPodController(self, execution_config)
@@ -446,6 +462,7 @@ class Runner(AllocationJournal):
         error = None
         self.execution_pods.admitted = True  # startup is not serving requests yet
         try:
+            self.execution_pods.sweep_canaries()
             if config.get('allow_docker'):
                 runtime = self.kube_json(['get', 'runtimeclass', config['docker_runtime_class'], '-o', 'json'])
                 if runtime.get('handler') != 'runsc-docker':
@@ -582,7 +599,13 @@ class Runner(AllocationJournal):
         with self.lock:
             if self.path(operation).exists():
                 old = self.get(operation)
-                if old["wire_digest"] != wire_digest:
+                # A refusal (`refuse_undelivered`) was never sent a request, so it has no
+                # transport digest. A send of the same intent is answered with the refusal:
+                # a caller whose cancel reply was lost sends again, and only this record
+                # lets it settle. Nothing starts. Another intent is a conflict.
+                same = (old["digest"] == request["digest"] if old["wire_digest"] is None
+                        else old["wire_digest"] == wire_digest)
+                if not same:
                     raise Rejected(409, "IDEMPOTENCY_CONFLICT")
                 return self.public(old)
             # A Live preview is a long-lived reader that never publishes its
@@ -1051,8 +1074,11 @@ class Runner(AllocationJournal):
             self.update(operation, status="starting")
             self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
         if record.get('executed') and record.get('cancel_requested'):
-            if self.guard(record, 'terminate').get('termination_confirmed') is not True:
+            stopped = self.guard(record, 'terminate', operation_id=operation)
+            if stopped.get('termination_confirmed') is not True:
                 raise RuntimeError('Python termination not confirmed')
+            if isinstance(stopped.get('deadline_expired'), bool):
+                self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
             self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
                         stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
                         pending_status='cancelled', pending_error={'code':'CANCELLED', 'message':'Python stopped; session reset.'}, exit_code=137)
@@ -1070,8 +1096,15 @@ class Runner(AllocationJournal):
                 statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
                 execution = statuses.get('execution', {}).get('state', {})
                 if record.get('executed') and 'terminated' in execution:
+                    observed = time.time()
+                    try:
+                        stop_evidence = self.guard(record, 'cell_status', operation_id=operation)
+                    except Exception:
+                        stop_evidence = {}
                     self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
-                                stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
+                                cell_deadline_expired=stop_evidence.get('deadline_expired', record.get('cell_deadline_expired')),
+                                cell_stopped_at=cell_termination_time(execution['terminated'], record.get('running_at'), observed),
+                                stop_confirmed_at=record.get('stop_confirmed_at') or observed,
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
                     raise RuntimeError('Python stopped; collecting its output')
                 if record.get('executed') and 'running' in execution:
@@ -1136,14 +1169,26 @@ class Runner(AllocationJournal):
         while True:
             current = self.get(operation)
             if current["cancel_requested"]:
-                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                stopped = self.guard(record, "terminate", operation_id=operation)
+                if stopped.get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
+                if isinstance(stopped.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
                 memory_live = False
                 result = dict(status="cancelled", exit_code=137, stdout=current.get("stdout", ""),
                               truncated=True, error={"code":"CANCELLED", "message":"Python stopped; session reset."})
                 break
             result = self.guard(record, "cell_status", operation_id=operation)
             if result["status"] == "stopped" and result.get("termination_confirmed"):
+                if isinstance(result.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=result['deadline_expired'])
+                else:
+                    pod = self.pod(pod_operation)
+                    if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                        raise SandboxGone()
+                    execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                    if execution is not None:
+                        self.update(operation, cell_stopped_at=cell_termination_time(execution, record.get('running_at'), time.time()))
                 memory_live = False
                 result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
@@ -1156,13 +1201,20 @@ class Runner(AllocationJournal):
                 # outcome stay uncertain. Until then the Working Area stays busy, not unavailable (#709).
                 reply_lost = True
             elif 'stdout' in result:
-                self.update(operation, stdout=result['stdout'], truncated=result.get('truncated', False), output_fetched_at=time.time())
+                self.update(operation, stdout=result['stdout'], stdout_offset=result.get('stdout_offset', 0),
+                            truncated=result.get('truncated', False), output_fetched_at=time.time())
             pod = self.pod(pod_operation)
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                 raise SandboxGone()
             if any("terminated" in s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])):
-                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                if execution is not None:
+                    self.update(operation, cell_stopped_at=cell_termination_time(execution, record.get('running_at'), time.time()))
+                stopped = self.guard(record, "terminate", operation_id=operation)
+                if stopped.get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
+                if isinstance(stopped.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
                 memory_live = False
                 result = dict(status="failed", exit_code=137, stdout=result.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
@@ -1171,8 +1223,13 @@ class Runner(AllocationJournal):
                 # The cell is seen unfinished past its limit: the Runner's watchdog stops it. Nobody cancelled, so
                 # it never reads as cancelled; a cell that finished during an outage was settled above instead.
                 self.update(operation, status='cancelling', limit_stop_requested=True)
-                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                stopped = self.guard(record, "terminate", operation_id=operation)
+                if stopped.get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
+                if isinstance(stopped.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
+                elif result['status'] == 'running' and time.time() >= record['running_at'] + record['request']['seconds']:
+                    self.update(operation, cell_deadline_expired=True)
                 memory_live = False
                 if reply_lost:
                     result = dict(status="uncertain", exit_code=None, stdout=current.get("stdout", ""), truncated=True,
@@ -1751,8 +1808,9 @@ class Runner(AllocationJournal):
             # children, avoiding needless processes during the fork check.
             # Ordinary operation previews continue while execution runs.
             if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
-                captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
-                self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"], output_fetched_at=time.time())
+                captured = json.loads(self.exec_collector(operation, ["logs", "16384", "window"]).stdout)
+                self.update(operation, stdout=captured["stdout"], stdout_offset=captured["offset"],
+                            truncated=captured["truncated"], output_fetched_at=time.time())
                 preview_at = time.monotonic()
             if not hydrated and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
                 raise RuntimeError("sandbox startup not confirmed")
@@ -1762,16 +1820,46 @@ class Runner(AllocationJournal):
                 raise RuntimeError("sandbox termination not confirmed after deadline")
             time.sleep(0.25)
 
-    def cancel(self, operation):
-        record = self.get(operation)
-        if record["status"] == "awaiting_files":
-            record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
-        elif record["status"] == "uncertain" and not record["termination_confirmed"]:
-            record = self.update(operation, status="cancelling", cancel_requested=True)
-            self.start(operation)
-        elif record["status"] not in TERMINAL:
-            record = self.update(operation, cancel_requested=True)
-        return self.public(record)
+    def refuse_undelivered(self, operation, refusal):
+        """Record that an operation the caller has not seen delivered will never run.
+
+        The caller cannot tell an unsent operation from a send it gave up on: `accept`
+        may still be waiting for this lock, or listing Pods under it, long after the
+        caller's timeout. This takes the same lock, so either `accept` recorded the
+        operation first and this is an ordinary cancel, or this record stands and
+        `accept` starts nothing and answers the send with this record. Another instance
+        has another journal, whose silence proves nothing about the operation, so its
+        cancel stays absent."""
+        if (set(refusal) != {"digest", "instance"} or not isinstance(refusal["instance"], str)
+                or not isinstance(refusal["digest"], str) or not refusal["digest"]):
+            raise Rejected(400, "invalid cancel refusal")
+        with self.lock:
+            if refusal["instance"] != self.instance or self.path(operation).exists():
+                return
+            record = {"operation_id": operation, "digest": refusal["digest"], "wire_digest": None,
+                      "status": "cancelled", "request": {}, "created_at": time.time(), "cancel_requested": True,
+                      "termination_confirmed": True, "stdout": "", "truncated": False,
+                      "files": [], "error": None, "executed": False}
+            save(self.path(operation), record)
+            self.aggregate.track(operation, record)
+
+    def cancel(self, operation, refusal=None):
+        # One decision under one lock. `commit_inputs` starts the command under this
+        # lock, so a cancel that read `awaiting_files` and let go before writing
+        # `cancelled` could be overtaken by that start, and its reply would say
+        # "never ran" about a command that did.
+        with self.lock:
+            if refusal is not None:
+                self.refuse_undelivered(operation, refusal)
+            record = self.get(operation)
+            if record["status"] == "awaiting_files":
+                record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
+            elif record["status"] == "uncertain" and not record["termination_confirmed"]:
+                record = self.update(operation, status="cancelling", cancel_requested=True)
+                self.start(operation)
+            elif record["status"] not in TERMINAL:
+                record = self.update(operation, cancel_requested=True)
+            return self.public(record)
 
     def activity(self):
         """Read-only activity; an unproven writer always prevents idle stop. It reads
@@ -1864,7 +1952,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET" and len(parts) == 4:
                 return runner.public(runner.get(operation))
             if self.command == "POST" and parts[4:] == ["cancel"]:
-                return runner.cancel(operation)
+                size = int(self.headers.get("Content-Length", "0"))
+                if size > 256:
+                    raise Rejected(413, "cancel request limit")
+                return runner.cancel(operation, json.loads(self.rfile.read(size)) if size else None)
             if self.command == "POST" and parts[4:] == ["start"]:
                 return runner.commit_inputs(operation)
             if self.command == "POST" and parts[4:] == ["ack"]:

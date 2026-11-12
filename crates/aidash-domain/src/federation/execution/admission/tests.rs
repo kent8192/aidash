@@ -128,6 +128,7 @@ fn activation_carries_a_context_pause_reason_only_when_present() {
 		error: None,
 		semantic_reason: None,
 		context_reason: None,
+		declinable_call: None,
 	};
 	// Peers without the field keep their exact wire shape.
 	let legacy = serde_json::to_value(&activation).unwrap();

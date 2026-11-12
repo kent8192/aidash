@@ -40,6 +40,10 @@ pub enum InvocationStatus {
 	#[model_enum(value = "UNCERTAIN")]
 	#[serde(rename = "UNCERTAIN")]
 	Uncertain,
+	/// A replay-safe call refused by an authority check that paused the Run (#754).
+	#[model_enum(value = "REFUSED")]
+	#[serde(rename = "REFUSED")]
+	Refused,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]

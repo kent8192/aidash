@@ -93,10 +93,9 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 		}));
 	}
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -124,10 +123,9 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let task_record = f.store.task(&TEST_FIXTURE, task).await.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -161,10 +159,9 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		.await
 		.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/workspaces/{}/messages", task_record.workspace_id),
 			json!({"content":"private-message-content"})
 		)
@@ -172,12 +169,10 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		.0,
 		200
 	);
-	let (_, before) = request(
+	let (_, before) = common::get(
 		&app,
 		&token,
-		"GET",
 		&format!("/api/workspaces/{}", task_record.workspace_id),
-		Value::Null,
 	)
 	.await;
 	let message = before["messages"][0]["id"].as_str().unwrap();
@@ -189,10 +184,9 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		bundle["policies"].as_array_mut().unwrap().push(json!({"id":format!("deny-{kind}"),"effect":"deny","subjects":{"ids":["alice"]},"actions":[format!("{kind}.read")],"resources":{"kinds":[kind],"ids":[id]}}));
 	}
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -205,7 +199,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		format!("/api/workspaces/{}", task_record.workspace_id),
 		format!("/api/events?workspace_id={}", task_record.workspace_id),
 	] {
-		let (status, body) = request(&app, &token, "GET", &path, Value::Null).await;
+		let (status, body) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200, "{body}");
 		assert!(
 			!body.to_string().contains("private-artifact-content"),
@@ -222,23 +216,15 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	}
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/runs/{}", run.id),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			.await
+			.0,
 		403
 	);
-	let (_, snapshot) = request(
+	let (_, snapshot) = common::get(
 		&app,
 		&token,
-		"GET",
 		&format!("/api/workspaces/{}", task_record.workspace_id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(snapshot["tasks"], json!([]));
@@ -265,10 +251,9 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 		.workspace_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -277,10 +262,9 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -296,10 +280,9 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 			json!(task)
 		};
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				&token,
-				"POST",
 				&format!("/api/workspaces/{workspace}/tasks"),
 				input
 			)
@@ -365,10 +348,9 @@ async fn retained_snapshot_revocation(
 		.unwrap()
 		.workspace_id;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -456,10 +438,9 @@ async fn retained_snapshot_revocation(
 	};
 	bundle["policies"].as_array_mut().unwrap().push(denial);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -472,15 +453,9 @@ async fn retained_snapshot_revocation(
 		"buffered raw journals must be rechecked"
 	);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/runs/{}", run.id),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			.await
+			.0,
 		403
 	);
 	if !events_only {
@@ -489,7 +464,7 @@ async fn retained_snapshot_revocation(
 			format!("/api/workspaces/{workspace}"),
 			format!("/api/events?workspace_id={workspace}"),
 		] {
-			let (status, body) = request(&app, &token, "GET", &path, Value::Null).await;
+			let (status, body) = common::get(&app, &token, &path).await;
 			assert_eq!(status, 200, "{body}");
 			assert!(
 				!body.to_string().contains("private-artifact-content"),
@@ -605,10 +580,9 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 			.await
 			.unwrap();
 	}
-	let (status, thread) = request(
+	let (status, thread) = common::post(
 		&app,
 		&common::tenant_token(&f.store, "acme").await,
-		"POST",
 		&format!("/api/workspaces/{workspace}/threads"),
 		json!({"root_message_id":root}),
 	)
@@ -645,10 +619,9 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 	);
 
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -692,10 +665,9 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[root]}
 	}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -704,15 +676,9 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 		200
 	);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/runs/{}", run.id),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			.await
+			.0,
 		403
 	);
 	drop(server);
@@ -738,10 +704,9 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	bundle["subjects"]["bob"] = json!({"kind":"user"});
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"private-bob-message","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"bob"}}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -778,42 +743,22 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 		"forged authorship must retain the existing text rejection"
 	);
 	assert_eq!(
-		request(&app, bob, "POST", &path, json!({"content":"bob-private"}))
+		common::post(&app, bob, &path, json!({"content":"bob-private"}))
 			.await
 			.0,
 		200
 	);
 	assert_eq!(
-		request(
-			&app,
-			&alice,
-			"POST",
-			&path,
-			json!({"content":"alice-visible"})
-		)
-		.await
-		.0,
+		common::post(&app, &alice, &path, json!({"content":"alice-visible"}))
+			.await
+			.0,
 		200
 	);
-	let (_, snapshot) = request(
-		&app,
-		&alice,
-		"GET",
-		&format!("/api/workspaces/{workspace}"),
-		Value::Null,
-	)
-	.await;
+	let (_, snapshot) = common::get(&app, &alice, &format!("/api/workspaces/{workspace}")).await;
 	assert!(snapshot.to_string().contains("alice-visible"));
 	assert!(!snapshot.to_string().contains("bob-private"));
 	assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
-	let (_, snapshot) = request(
-		&app,
-		bob,
-		"GET",
-		&format!("/api/workspaces/{workspace}"),
-		Value::Null,
-	)
-	.await;
+	let (_, snapshot) = common::get(&app, bob, &format!("/api/workspaces/{workspace}")).await;
 	assert!(snapshot.to_string().contains("bob-private"));
 	cleanup(f, &url, &schema).await;
 }
@@ -836,10 +781,9 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 		.workspace_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-new-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -848,10 +792,9 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/workspaces/{workspace}/tasks"),
 			json!({"title":"Blocked new task","description":"Must roll back"})
 		)
@@ -907,20 +850,18 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		.await
 		.unwrap()
 		.workspace_id;
-	let (_, second) = request(
+	let (_, second) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/tasks"),
 		json!({"title":"Second","description":"Second journal"}),
 	)
 	.await;
 	for id in [first.to_string(), second["id"].as_str().unwrap().into()] {
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				&token,
-				"POST",
 				&format!("/api/tasks/{id}/claim"),
 				json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 			)
@@ -1014,7 +955,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		let started = std::time::Instant::now();
 		let (status, state) = tokio::time::timeout(
 			std::time::Duration::from_secs(10),
-			request(&app, &token, "GET", "/api/state", Value::Null),
+			common::get(&app, &token, "/api/state"),
 		)
 		.await
 		.expect("Tenant state polling must remain responsive with retained Run journals");
@@ -1030,13 +971,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		assert_eq!(
 			tokio::time::timeout(
 				std::time::Duration::from_secs(3),
-				request(
-					&app,
-					&token,
-					"GET",
-					&format!("/api/runs/{}", run.id),
-					Value::Null
-				)
+				common::get(&app, &token, &format!("/api/runs/{}", run.id))
 			)
 			.await
 			.unwrap()
@@ -1046,10 +981,9 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	}
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"cycle-source-revoked","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[first]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -1057,7 +991,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		.0,
 		200
 	);
-	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+	let (status, state) = common::get(&app, &token, "/api/state").await;
 	assert_eq!(status, 200, "{state}");
 	assert_eq!(state["runs"], json!([]));
 	assert!(
@@ -1069,15 +1003,9 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	);
 	for run in &runs {
 		assert_eq!(
-			request(
-				&app,
-				&token,
-				"GET",
-				&format!("/api/runs/{}", run.id),
-				Value::Null
-			)
-			.await
-			.0,
+			common::get(&app, &token, &format!("/api/runs/{}", run.id))
+				.await
+				.0,
 			403
 		);
 	}
@@ -1104,10 +1032,9 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.unwrap()
 		.workspace_id;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -1139,10 +1066,9 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.await
 		.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/workspaces/{workspace}/messages"),
 			json!({"content":"hidden-message"})
 		)
@@ -1160,10 +1086,9 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-artifact","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}}));
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-messages","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[hidden_message]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -1178,15 +1103,9 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/runs/{}", run.id),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			.await
+			.0,
 		200
 	);
 	let hidden: i64 = {
@@ -1238,10 +1157,9 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		let mut changed = bundle.clone();
 		changed["policies"].as_array_mut().unwrap().push(json!({"id":"deny-produced-output","effect":"deny","subjects":{"ids":["alice"]},"actions":[format!("{kind}.read")],"resources":{"kinds":[kind],"ids":[id]}}));
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				&f.config.api_token,
-				"POST",
 				"/api/authorization/acme",
 				json!({"expected_revision":2+index,"bundle":changed})
 			)
@@ -1250,18 +1168,12 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 			200
 		);
 		assert_eq!(
-			request(
-				&app,
-				&token,
-				"GET",
-				&format!("/api/runs/{}", run.id),
-				Value::Null
-			)
-			.await
-			.0,
+			common::get(&app, &token, &format!("/api/runs/{}", run.id))
+				.await
+				.0,
 			403
 		);
-		let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+		let (status, state) = common::get(&app, &token, "/api/state").await;
 		assert_eq!(status, 200);
 		assert!(state["runs"].as_array().unwrap().is_empty());
 	}
@@ -1285,10 +1197,9 @@ async fn artifact_state_page_is_filled_after_task_denials(
 		.await
 		.unwrap()
 		.workspace_id;
-	let (_, visible) = request(
+	let (_, visible) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/tasks"),
 		json!({"title":"Visible","description":"An older readable artifact"}),
 	)
@@ -1392,10 +1303,9 @@ async fn artifact_state_page_is_filled_after_task_denials(
 	.unwrap();
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[hidden]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":bundle})
 		)
@@ -1403,7 +1313,7 @@ async fn artifact_state_page_is_filled_after_task_denials(
 		.0,
 		200
 	);
-	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+	let (status, state) = common::get(&app, &token, "/api/state").await;
 	assert_eq!(status, 200);
 	assert_eq!(state["artifacts"].as_array().unwrap().len(), 1);
 	assert_eq!(state["artifacts"][0]["content"], "readable");
@@ -1454,19 +1364,17 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			.bundle,
 		)
 		.unwrap();
-		let (status, workspace) = request(
+		let (status, workspace) = common::post(
 			&app,
 			&token,
-			"POST",
 			"/api/workspaces",
 			json!({"node":node.node,"title":"Named Node discovery","goal":"Retain discovered metadata"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");
-		let (status, created) = request(
+		let (status, created) = common::post(
 			&app,
 			&token,
-			"POST",
 			&format!(
 				"/api/workspaces/{}/tasks",
 				workspace["id"].as_str().unwrap()
@@ -1494,36 +1402,23 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		.await
 		.unwrap();
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
-		)
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true}))
 		.await
 		.0,
 		200
 	);
 	if sibling_metadata {
 		assert_eq!(
-			request(
-				&app,
-				&token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})
-			)
+			common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true}))
 			.await
 			.0,
 			200
 		);
 	}
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -1540,7 +1435,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	let path = format!("/api/runs/{}", run.id);
-	let (status, journal) = request(&app, &token, "GET", &path, Value::Null).await;
+	let (status, journal) = common::get(&app, &token, &path).await;
 	assert_eq!(status, 200);
 	assert!(journal.to_string().contains("discovered-private-metadata"));
 	let tracked: i64 = {
@@ -1562,6 +1457,22 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	}
 	.unwrap();
 	assert_eq!(tracked, 1);
+	// People's discovery still returns the whole definition.
+	let (status, found) = common::post(
+		&app,
+		&token,
+		"/api/discover",
+		json!({"capability":"journal.discovery"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{found}");
+	let found = found["agents"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|agent| agent["entity"]["id"] == "discovered-only")
+		.unwrap_or_else(|| panic!("discovered-only is offered: {found}"));
+	assert!(found["entity"].get("config").is_some(), "{found}");
 	let remote: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(Expr::cust("COUNT(*)"))
@@ -1579,67 +1490,84 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		if sibling_metadata { 1 } else { 0 },
 		"only a sibling Node's metadata uses remote registry dependencies"
 	);
+	if sibling_metadata {
+		// The sibling is a Node of the same Tenant: its read is decided by policy alone.
+		let same_tenant: bool = sqlx::query_scalar(
+			&reinhardt::query::Query::select()
+				.expr(Expr::col(reinhardt::query::Alias::new("same_tenant")))
+				.from(reinhardt::query::Alias::new(
+					"authorization_run_remote_reads",
+				))
+				.and_where(
+					Expr::col(reinhardt::query::Alias::new("run_id")).eq(Expr::value(run.id)),
+				)
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(same_tenant);
+		// The recorded metadata is the whole definition even though the model saw only a card.
+		let recorded: Value = sqlx::query_scalar(
+			"SELECT metadata FROM authorization_run_remote_reads WHERE run_id = $1",
+		)
+		.bind(run.id)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(recorded.get("config").is_some(), "{recorded}");
+	}
 	// Act: rebuild the HTTP application over persisted reads before changing policy.
 	drop(app);
 	let app = common::application(f.clone()).await;
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})
-		)
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false}))
 		.await
 		.0,
 		200
 	);
+	// A Catalog Approval decides use, not who reads what the Run produced (#769): the Run only
+	// listed the version, so withdrawing it hides nothing.
+	assert_eq!(common::get(&app, &token, &path).await.0, 200);
 	assert_eq!(
-		request(&app, &token, "GET", &path, Value::Null).await.0,
-		403
-	);
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
-		)
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true}))
 		.await
 		.0,
 		200
 	);
-	assert_eq!(
-		request(&app, &token, "GET", &path, Value::Null).await.0,
-		200
-	);
+	assert_eq!(common::get(&app, &token, &path).await.0, 200);
 	if sibling_metadata {
-		for (revision, enabled, expected_status) in [(1, false, 403), (2, true, 200)] {
+		for (revision, enabled, expected_status) in [(1, false, 200), (2, true, 200)] {
 			assert_eq!(
-				request(
-					&app,
-					&token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":revision,"enabled":enabled})
-				)
+				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":revision,"enabled":enabled}))
 				.await
 				.0,
 				200
 			);
-			assert_eq!(
-				request(&app, &token, "GET", &path, Value::Null).await.0,
-				expected_status
-			);
+			assert_eq!(common::get(&app, &token, &path).await.0, expected_status);
 		}
+	}
+	if sibling_metadata {
+		// The sibling is a Node of the same Tenant, so deleting it hides nothing: policy decides
+		// the read, with no route to it to prove (#769).
+		for (path, body) in [
+			(
+				format!("/api/tenants/acme/nodes/{node}/default"),
+				Value::Null,
+			),
+			(
+				format!("/api/tenants/acme/nodes/{default_node}/deletion"),
+				json!({"confirmation":default_node}),
+			),
+		] {
+			let (status, body) = common::administer_node(&f, "acme", &path, body).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		assert_eq!(common::get(&app, &token, &path).await.0, 200);
 	}
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-discovered-registry","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["discovered-only"]}}));
 	common::replace_policy(&f.store, "acme", bundle.clone()).await;
-	assert_eq!(
-		request(&app, &token, "GET", &path, Value::Null).await.0,
-		403
-	);
+	assert_eq!(common::get(&app, &token, &path).await.0, 403);
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }
@@ -1840,6 +1768,25 @@ fn worker_continues_with_visible_subset_and_never_sends_denied_records_provider(
 	.boxed()
 }
 
+/// The `agent_discover` result inside a model request: the object with `agents` and `errors`,
+/// wherever the harness nests it (it travels in the context snapshot's `history`).
+fn discovery_result(value: &Value) -> Option<Value> {
+	match value {
+		Value::String(text) => serde_json::from_str::<Value>(text)
+			.ok()
+			.and_then(|parsed| discovery_result(&parsed)),
+		Value::Array(items) => items.iter().find_map(discovery_result),
+		Value::Object(fields) => {
+			if fields.contains_key("agents") && fields.contains_key("errors") {
+				Some(value.clone())
+			} else {
+				fields.values().find_map(discovery_result)
+			}
+		}
+		_ => None,
+	}
+}
+
 #[rstest::fixture]
 fn discovered_registry_entries_remain_live_journal_dependencies_provider_calls() -> Arc<AtomicUsize>
 {
@@ -1857,10 +1804,27 @@ fn discovered_registry_entries_remain_live_journal_dependencies_provider_router(
 
 
 	let server=reinhardt::test::stub::StubRouter::new()
-.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let calls=calls.clone(); let body = request.json::<Value>().unwrap(); async move {
         let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
             json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{\"capability\":\"journal.discovery\"}"}}]})
-        } else { json!({"role":"assistant","content":"Completed discovery"}) };
+        } else {
+            // The tool result hands the model a card per Agent, not the whole definition (#769).
+            let result = discovery_result(&body).expect("the discovery result");
+            let agents = result["agents"].as_array().unwrap();
+            assert!(!agents.is_empty(), "{result}");
+            for agent in agents {
+                let mut fields: Vec<_> = agent["entity"].as_object().unwrap().keys().cloned().collect();
+                fields.sort();
+                assert_eq!(
+                    fields,
+                    ["capabilities","description","id","kind","languages","model","name","skills","tags","version"],
+                    "{agent}"
+                );
+            }
+            assert!(result.to_string().contains("discovered-private-metadata"));
+            assert!(result["errors"].is_array(), "{result}");
+            json!({"role":"assistant","content":"Completed discovery"})
+        };
         let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
     }})).into_server_router();

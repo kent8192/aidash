@@ -37,6 +37,12 @@ pub enum PersistedCapability {
 	McpSentRound,
 	/// Authentication waits retain the unexecuted call and once-per-resource history.
 	ConnectionWait,
+	/// A Run can suspend on a durable operation or workspace event.
+	EventWait,
+	/// A saved completion names the Unassigned Tasks it abandons (#772).
+	UnassignedAbandonment,
+	/// Early abandonments must survive waits and worker recovery (#818).
+	EarlyUnassignedAbandonment,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
@@ -45,6 +51,9 @@ impl PersistedCapability {
 		Self::McpCallState,
 		Self::McpSentRound,
 		Self::ConnectionWait,
+		Self::EventWait,
+		Self::UnassignedAbandonment,
+		Self::EarlyUnassignedAbandonment,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -58,6 +67,9 @@ impl PersistedCapability {
 			Self::McpCallState => "mcp_call_state",
 			Self::McpSentRound => "mcp_sent_round",
 			Self::ConnectionWait => "connection_wait",
+			Self::EventWait => "event_wait",
+			Self::UnassignedAbandonment => "unassigned_abandonment",
+			Self::EarlyUnassignedAbandonment => "early_unassigned_abandonment",
 		}
 	}
 }
@@ -82,6 +94,14 @@ impl ToolCallState {
 			)
 			.chain(self.mcp.as_ref().map(|_| PersistedCapability::McpCallState))
 			.chain(
+				self.wait_result
+					.as_ref()
+					.map(|_| PersistedCapability::EventWait),
+			)
+			.chain(
+				(!self.abandoning.is_empty()).then_some(PersistedCapability::UnassignedAbandonment),
+			)
+			.chain(
 				self.mcp
 					.as_ref()
 					.and_then(|checkpoint| checkpoint.sent.as_ref())
@@ -97,6 +117,19 @@ impl RecoveryState {
 			.then_some(PersistedCapability::DegradedContext)
 			.into_iter()
 			.chain(
+				self.workspace_event_cursor
+					.map(|_| PersistedCapability::EventWait),
+			)
+			.chain(
+				self.remote_task_fingerprint
+					.as_ref()
+					.map(|_| PersistedCapability::EventWait),
+			)
+			.chain(
+				(!self.early_abandoned_tasks.is_empty())
+					.then_some(PersistedCapability::EarlyUnassignedAbandonment),
+			)
+			.chain(
 				(!self.connection_waited.is_empty()
 					|| self.connection_wait.is_some()
 					|| !self.connection_refusals.is_empty())
@@ -110,9 +143,14 @@ impl RunState {
 		match self {
 			Self::ToolCall(s) => Some(s),
 			Self::Waiting(wait) => match wait.as_ref() {
-				WaitingState::Approval { resume, .. }
+				WaitingState::Operation { resume, .. }
+				| WaitingState::Approval { resume, .. }
 				| WaitingState::Reconciliation { resume, .. } => Some(resume),
 				WaitingState::Timer {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
+				| WaitingState::Workspace {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
@@ -140,6 +178,7 @@ impl StateRequirements {
 			.into_iter()
 			.flat_map(ToolCallState::required_capabilities)
 			.chain(recovery.required_capabilities())
+			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { .. } | WaitingState::Workspace { .. })).then_some(PersistedCapability::EventWait))
 			.collect();
 		Self(needed.into_iter().map(|c| c.name().to_owned()).collect())
 	}

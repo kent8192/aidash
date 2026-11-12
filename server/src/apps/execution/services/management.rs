@@ -384,15 +384,43 @@ impl HarnessManagement {
 		actor: Actor,
 		id: Uuid,
 		input: ControlInput,
-	) -> Result<crate::domain::RunInspection> {
+	) -> Result<execution::management::RunManagement> {
+		use execution::management::{self, ManagementAction, RunManagementInput};
 		let f = self.runtime.clone();
 		// A Deployment Administrator controls a Run only through a Safety Stop
-		// (`/management`, ADR 0101): no resume, and no `RunInspection` returned.
+		// (`/management`, ADR 0101): no resume, and no content returned.
 		// The refusal comes before any mutation or serialization.
-		let Actor::Subject(identity) = actor else {
+		let Actor::Subject(identity) = &actor else {
 			return Err(Error::Forbidden);
 		};
-		execution::control(&f, &identity, id, input.action).await
+		// Stopping never depends on what the Run has read, and there is one
+		// check for it; resuming does depend on it. Resuming waits behind an
+		// Authority Change at the boundary, before the visibility lease begins;
+		// pausing and cancelling do not (ADR 0121).
+		let action = match input.action {
+			crate::domain::RunControlAction::Resume => {
+				return Ok(execution::resume(&f, identity, id).await?.into());
+			}
+			crate::domain::RunControlAction::Pause => ManagementAction::Pause,
+			crate::domain::RunControlAction::Cancel => ManagementAction::Cancel,
+		};
+		management::control(f, actor, id, RunManagementInput { action }).await
+	}
+	/// Declining answers as `/control` does. A Deployment Administrator never declines.
+	pub(crate) async fn run_decline_call(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		input: crate::apps::execution::serializers::management::DeclineCallInput,
+	) -> Result<execution::management::RunManagement> {
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		Ok(
+			execution::decline_call(&self.runtime, identity, id, &input.call)
+				.await?
+				.into(),
+		)
 	}
 	pub(crate) async fn run_message(
 		&self,

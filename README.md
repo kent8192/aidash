@@ -27,6 +27,12 @@ The `aidash` binary delegates to the same command registry and only preserves
 the existing executable name and default `serve` behavior. Existing
 `cargo run --locked -- serve`, `server`, and `worker` invocations remain valid.
 
+An operator can start or check an active Scratch Space's Execution Pod with
+`manage execution-pod ensure --space <uuid>`. It uses the Deployment's Runner
+and current Scratch Space policy, prints whether the Pod is ready, and does not
+print its proxy credential. The Runner protocol accepts whole CPU cores; Space
+limits are rounded down, and limits below one core are refused.
+
 On Unix, `server` and `serve` can receive an owned listening socket through
 `AIDASH_LISTEN_FD`, validated against `AIDASH_LISTEN`. The
 [transaction process fixture](docs/operations/transaction-acceptance.md) uses
@@ -309,7 +315,7 @@ Run-linked provider and Research calls with a recorded remote admission or remot
 
 Model registration uses an editable `modelprovider-modelname-reasoningeffort` name instead of the general entity default. For example, selecting `anthropic/claude-sonnet` with `high` suggests `anthropic-claude-sonnet-high`. Names follow model and effort changes until manually edited. The suffix uses the catalog's default effort when known, `default` when unspecified, and `none` for models without reasoning support.
 
-A model version can declare `cache_mode`: `none` (the default), `automatic` for routes that cache matching prefixes on their own, or `explicit` for routes that cache only up to `cache_control` breakpoints. `explicit` is accepted only for `anthropic/` model IDs. An Agent on the `ordered` projection and such a model can set `prompt_cache: explicit`; its requests then mark the end of the system prompt and of the Stable Prefix part. Cache writes cost more than ordinary input, so enable it for Agents whose Runs take several steps. Message catch-up and media-deferral steps carry no breakpoints, and no other route ever receives `cache_control`. Both fields are set in the Registry API's JSON config; see [Context Projection Versions](docs/features/context-projection.md#explicit-prompt-caching).
+Prompt caching is on by default for new definitions. Registration writes `cache_mode: explicit` on a new model on a supported OpenRouter route (`anthropic/`, `openai/gpt-5.6`, `openai/gpt-6`) and `prompt_cache: explicit` on a new Native Agent on such a model. Other routes, such as Gemini and DeepSeek, cache on their own and receive no markers. Every step of an Ordered or Native Run sends an opaque `session_id`, so the Run stays on one provider. Turn caching off with `prompt_cache: off` on the Agent or `cache_mode: none` on the model, for example for an Agent that makes one model call per Run. See [Context Projection Versions](docs/features/context-projection.md#prompt-caching).
 
 Self-hosted Deployments can also opt into personal [ChatGPT Plan Connections](docs/plan-connections.md) with `[plan_connections] enabled = true` and the encrypted PostgreSQL Store. A subject connects their own plan from personal settings, then registers a model with `plan_connection: "chatgpt"`. Its Runs use the Responses API and never fall back to a Tenant's OpenRouter credential. Legacy, Ordered and Native projection are supported without retaining provider reasoning. Cloud and Dedicated plan usage remains disabled pending the hosted-app approval tracked in #248.
 

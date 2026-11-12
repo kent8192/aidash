@@ -12,6 +12,7 @@ enum Reply {
 	Sample,
 	LiveThenModern,
 	InvalidInput,
+	Refused,
 }
 
 struct Remote(Reply);
@@ -61,6 +62,7 @@ impl ExecutionTool for Remote {
 		inputs: Option<Arc<dyn PluginInputs>>,
 	) -> Result<ToolRound> {
 		match self.0 {
+			Reply::Refused => Err(Error::Refused("the plugin tool refused the call".into())),
 			Reply::InvalidInput => {
 				let input = RequiredInput {
 					request_state: Some("invalid".into()),
@@ -159,6 +161,18 @@ async fn read_only_plugin_round_replays_after_a_lost_answer(mut fixture: Fixture
 			.await
 			.unwrap(),
 		Some(json!({"error":"MCP_INPUT_INVALID"}))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_refused_round_is_a_call_error_the_model_hears(mut fixture: Fixture) {
+	fixture.run.state = RunState::ToolCall(Box::default());
+	assert_eq!(
+		execute(&mut fixture, &Remote(Reply::Refused))
+			.await
+			.unwrap(),
+		Some(json!({"error":"the plugin tool refused the call"}))
 	);
 }
 

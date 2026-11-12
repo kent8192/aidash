@@ -8,9 +8,9 @@ use aidash_domain::{
 	federation::{
 		Delegation,
 		execution::{
-			PrepareInput,
+			PrepareInput, Refusal,
 			admission::{
-				Activation, Admission, Message, MessageReceipt, RemoteExecutionControl,
+				Activation, Admission, Declined, Message, MessageReceipt, RemoteExecutionControl,
 				RemoteExecutionControlState,
 			},
 			home::{FollowUpInput, Grant, Status},
@@ -109,6 +109,95 @@ pub async fn message<R: HomeRepository>(
 	}
 	Ok(receipt)
 }
+/// A person on the Home declines the call a remote Run is paused on (#763). The requester needs
+/// what `control` needs for a resume; anyone else needs `run.decline_call` and may read the Task.
+pub async fn decline_call<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+	call: &str,
+) -> Result<Activation> {
+	if call.is_empty() || call.len() > 256 {
+		return Err(Error::Invalid("call key is empty or too long".into()));
+	}
+	let identity = subject(repository)?;
+	let mut scope = repository.begin().await?;
+	let found = scope.task_grant(task, id).await;
+	let grant = finish(scope, found).await?.ok_or(Error::Forbidden)?;
+	let own = grant.tenant == identity.tenant && grant.root_subject == identity.subject;
+	if own {
+		requester(repository, task, id, true).await?;
+	}
+	let mut scope = repository.begin().await?;
+	let result = async {
+		let task = if own {
+			managed_task(&mut scope, task, true).await?
+		} else {
+			scope.task_read(task).await?
+		};
+		let resource = scope.task_resource(&task).await?;
+		let binding = scope.binding(id).await?.ok_or(Error::Forbidden)?;
+		let run = scope.resource("run", binding.admission_id, resource.attributes);
+		scope
+			.require(
+				&run,
+				if own {
+					"run.control"
+				} else {
+					"run.decline_call"
+				},
+			)
+			.await?;
+		Ok((binding.admission_id, task.workspace_id))
+	}
+	.await;
+	let (admission, workspace) = finish(scope, result).await?;
+	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
+		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
+		let result = authority
+			.resume_semantic(
+				id,
+				admission,
+				description.task.workspace_id,
+				&identity.subject,
+			)
+			.await;
+		finish(authority, result).await?;
+	}
+	let declined: Declined = repository
+		.request(
+			grant.workspace_id,
+			&grant.node_id,
+			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
+			&json!({"grant_id":id,"call":call}),
+		)
+		.await?;
+	let activation = declined.activation;
+	if activation.grant_id != id
+		|| activation.admission_id != admission
+		|| activation.run_id != admission
+	{
+		return Err(Error::Forbidden);
+	}
+	// The receiver's event does not name the person; this one does.
+	let mut scope = repository.begin().await?;
+	let result = scope
+		.call_declined(
+			workspace,
+			json!({
+				"task_id": task,
+				"grant_id": id,
+				"run_id": admission,
+				"call": call,
+				"tool": declined.tool,
+				"kind": declined.kind,
+				"by": identity.subject,
+			}),
+		)
+		.await;
+	finish(scope, result).await?;
+	Ok(activation)
+}
 pub async fn control<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
@@ -196,8 +285,9 @@ pub async fn control<R: HomeRepository>(
 fn semantic_failure(error: &Error) -> Failure {
 	match error {
 		Error::RemoteSemantic(reason) => *reason,
-		Error::Forbidden | Error::Unauthorized => Failure::Authority,
-		Error::Invalid(_) | Error::NotFound(_) => Failure::Configuration,
+		// The error comes from the peer's status reply, whose 404 used to read as `Forbidden`.
+		Error::Forbidden | Error::Unauthorized | Error::NotFound(_) => Failure::Authority,
+		Error::Invalid(_) => Failure::Configuration,
 		_ => Failure::Unavailable,
 	}
 }
@@ -205,11 +295,42 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		managed_task(&mut scope, task, false).await?;
-		scope.grants(task).await
+		let grants = scope.grants(task).await?;
+		if !grants.is_empty() {
+			managed_task(&mut scope, task, false).await?;
+		}
+		Ok(grants)
 	}
 	.await;
-	let grants = finish(scope, result).await?;
+	let (grants, requester_denied) = match finish(scope, result).await {
+		Ok(grants) => (grants, false),
+		Err(Error::Forbidden) => (vec![], true),
+		Err(error) => return Err(error),
+	};
+	let has_requester_grants = !grants.is_empty();
+	let mut task_read_denied = false;
+	let holder_result = async {
+		let mut scope = repository.begin().await?;
+		let result = async {
+			if let Err(error) = scope.task_read(task).await {
+				task_read_denied = matches!(&error, Error::Forbidden);
+				return Err(error);
+			}
+			scope.holder_grants(task).await
+		}
+		.await;
+		finish(scope, result).await
+	}
+	.await;
+	let holder_grants = match holder_result {
+		Ok(grants) => grants,
+		Err(error) if has_requester_grants => {
+			tracing::warn!(%error, "holder grant lookup failed");
+			vec![]
+		}
+		Err(Error::Forbidden) if task_read_denied => vec![],
+		Err(error) => return Err(error),
+	};
 	let results: Vec<Result<Status>> = stream::iter(grants.into_iter().map(|grant| async move {
 		// Home-owned continuations have their own bounded read, completed before
 		// peer RPC so a slow receiver cannot hide an already durable request.
@@ -301,23 +422,189 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			}
 			_ => {}
 		}
+		let mut execution = status.as_ref().ok().cloned().flatten();
+		// The paused call is shown only to a caller who may decline it; `list` already
+		// narrowed these grants to the requester, whose check is `run.control`.
+		if execution
+			.as_ref()
+			.is_some_and(|activation| activation.declinable_call.is_some())
+		{
+			let allowed = async {
+				let mut scope = repository.begin().await?;
+				let result = async {
+					let task = scope.task_read(task).await?;
+					let resource = scope.task_resource(&task).await?;
+					let binding = scope.binding(grant.id).await?.ok_or(Error::Forbidden)?;
+					let run = scope.resource("run", binding.admission_id, resource.attributes);
+					scope.may(&run, "run.control").await
+				}
+				.await;
+				finish(scope, result).await
+			}
+			.await
+			.unwrap_or(false);
+			if !allowed && let Some(activation) = execution.as_mut() {
+				activation.declinable_call = None;
+			}
+		}
 		Ok(Status {
+			requester: true,
 			human_requests,
 			semantic,
 			grant: grant.prepared()?,
 			unavailable: status.is_err(),
-			execution: status.ok().flatten(),
+			execution,
 		})
 	}))
 	.buffered(4)
 	.collect()
 	.await;
-	results.into_iter().collect()
+	let mut result: Vec<Status> = results.into_iter().collect::<Result<_>>()?;
+	let holders: Vec<Result<Option<Status>>> =
+		stream::iter(holder_grants.into_iter().map(|grant| async move {
+			if !holder_may_decline(repository, task, grant.id).await? {
+				return Ok(None);
+			}
+			let status: Result<Option<Activation>> = tokio::time::timeout(
+				std::time::Duration::from_secs(2),
+				repository.request(
+					grant.workspace_id,
+					&grant.node_id,
+					"/scoped/execution/status",
+					&json!({"grant_id":grant.id}),
+				),
+			)
+			.await
+			.unwrap_or_else(|_| Err(Error::External("remote status unavailable".into())));
+			let Ok(Some(activation)) = status else {
+				return Ok(None);
+			};
+			if activation.control != RemoteExecutionControlState::Paused
+				|| !activation.recoverable()
+			{
+				return Ok(None);
+			}
+			if activation.declinable_call.is_none() {
+				return Ok(None);
+			}
+			// Authority or the grant may have changed while the peer RPC was in flight.
+			if !holder_may_decline(repository, task, grant.id).await? {
+				return Ok(None);
+			}
+			Ok(Some(Status {
+				requester: false,
+				grant: grant.prepared()?,
+				execution: Some(activation),
+				unavailable: false,
+				human_requests: vec![],
+				semantic: aidash_domain::semantic::remote::status::Status {
+					state: "disabled".into(),
+					body_cleanup: None,
+					reason: None,
+					operation_id: None,
+					retry_count: 0,
+					retry_at: None,
+					result_count: None,
+					truncated: false,
+					retrieved_at: None,
+					recovery: None,
+				},
+			}))
+		}))
+		.buffered(4)
+		.collect()
+		.await;
+	match holders.into_iter().collect::<Result<Vec<_>>>() {
+		Ok(holders) => result.extend(holders.into_iter().flatten()),
+		Err(error) if has_requester_grants => tracing::warn!(%error, "holder grant recheck failed"),
+		Err(error) => return Err(error),
+	}
+	if (requester_denied || task_read_denied) && result.is_empty() {
+		return Err(Error::Forbidden);
+	}
+	Ok(result)
+}
+
+async fn holder_may_decline<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	grant: Uuid,
+) -> Result<bool> {
+	// A non-requester follows the same Task and Run checks as the decline route.
+	let mut scope = repository.begin().await?;
+	let result = async {
+		let Some(found) = scope.task_grant(task, grant).await? else {
+			return Ok(false);
+		};
+		if found.revoked || found.expires_at <= chrono::Utc::now() {
+			return Ok(false);
+		}
+		let identity = scope.identity();
+		if found.tenant == identity.tenant && found.root_subject == identity.subject {
+			return Ok(false);
+		}
+		let task = scope.task_read(task).await?;
+		let resource = scope.task_resource(&task).await?;
+		let Some(binding) = scope.binding(grant).await? else {
+			return Ok(false);
+		};
+		let run = scope.resource("run", binding.admission_id, resource.attributes);
+		scope.may(&run, "run.decline_call").await
+	}
+	.await;
+	match finish(scope, result).await {
+		Err(Error::Forbidden) => Ok(false),
+		result => result,
+	}
+}
+/// A check that fails after the target Node has acted. The `task_delegate` tool tells the model
+/// the delegation may have partly happened, where pausing would resume into a second admission;
+/// the management endpoint keeps `Forbidden`.
+fn after_effect(by_tool: bool, what: &str) -> Error {
+	if by_tool {
+		Error::Refused(format!(
+			"{what}, so the delegation may have partly happened. Do not repeat this call; check the task first"
+		))
+	} else {
+		Error::Forbidden
+	}
+}
+/// What the model hears when this Node, not the target, refuses a step after the target admitted.
+const UNRECORDED: &str =
+	"the target Node admitted the task, but this Node could not record the admission";
+/// The error of a step that follows the target Node's admission, as the model should hear it.
+/// The management endpoint gets every error unchanged. For the tool, a refusal or a failed
+/// request becomes [`after_effect`], since the effect has happened and pausing would resume into
+/// a second admission. An ask stays an Authority Pause, as ADR 0109 decided for another Node.
+/// Everything else keeps its meaning: a `Conflict` is an internal fault that still fails the Run,
+/// and a pending transaction or a database error has its own retry path.
+fn refused_after_effect(by_tool: bool, what: &str, error: Error) -> Error {
+	if !by_tool {
+		return error;
+	}
+	match error {
+		Error::RemoteExecutionRefused(Refusal::PolicyAsk | Refusal::NodeUseAsk) => error,
+		Error::RemoteExecutionRefused(reason) => {
+			after_effect(by_tool, &format!("{what}: {reason}"))
+		}
+		Error::Forbidden | Error::Unauthorized | Error::NotFound(_) | Error::External(_) => {
+			after_effect(by_tool, what)
+		}
+		error => error,
+	}
 }
 pub async fn activate<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
 	id: Uuid,
+) -> Result<Activation> {
+	activate_as(repository, task, id, false).await
+}
+async fn activate_as<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+	by_tool: bool,
 ) -> Result<Activation> {
 	let grant = requester(repository, task, id, true).await?;
 	// Admission performs fresh source and receiver checks after the first scope is completed.
@@ -329,13 +616,22 @@ pub async fn activate<R: HomeRepository>(
 			&json!({"grant_id":id}),
 		)
 		.await?;
-	if admission.grant_id != id
-		|| admission.source_node != repository.node_address(grant.workspace_id).await?
-		|| admission.task_id != task
-	{
-		return Err(Error::Forbidden);
+	// From here on the target Node has acted, so the tool hears a refusal of any later step as a
+	// partial effect.
+	let source = repository
+		.node_address(grant.workspace_id)
+		.await
+		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
+	if admission.grant_id != id || admission.source_node != source || admission.task_id != task {
+		return Err(after_effect(
+			by_tool,
+			"the target Node admitted the task, but its admission did not match this request",
+		));
 	}
-	let (mut scope, description) = repository.description(&grant.node_id, id).await?;
+	let (mut scope, description) = repository
+		.description(&grant.node_id, id)
+		.await
+		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
 	let result = async {
 		scope
 			.insert_binding(id, task, &admission, &description)
@@ -350,7 +646,9 @@ pub async fn activate<R: HomeRepository>(
 		Ok(())
 	}
 	.await;
-	finish(scope, result).await?;
+	finish(scope, result)
+		.await
+		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
 	let activation: Activation = repository
 		.request(
 			grant.workspace_id,
@@ -358,12 +656,38 @@ pub async fn activate<R: HomeRepository>(
 			&format!("/scoped/execution/admissions/{}/activate", admission.id),
 			&json!({"grant_id":id}),
 		)
-		.await?;
+		.await
+		.map_err(|error| {
+			refused_after_effect(
+				by_tool,
+				"the target Node admitted the task, but did not activate it",
+				error,
+			)
+		})?;
 	if activation.run_id != admission.id
 		|| activation.admission_id != admission.id
 		|| activation.grant_id != id
 	{
-		return Err(Error::Forbidden);
+		return Err(after_effect(
+			by_tool,
+			"the target Node activated the task, but its activation did not match this request",
+		));
+	}
+	// Only a matching response says the Run started. An error or an uncertain
+	// outcome above leaves the binding unmarked: if the Run did start, its
+	// claim moves the Task out of OPEN (#772).
+	//
+	// The receiver has already started the Run, so a failure to record it must
+	// not report the activation as failed: that claim moves the Task out of OPEN
+	// anyway, and only a binding without the mark could be read as unstarted.
+	let marked = async {
+		let mut scope = repository.begin().await?;
+		let result = scope.mark_activated(id).await;
+		finish(scope, result).await
+	}
+	.await;
+	if let Err(error) = marked {
+		tracing::warn!(task = %task, grant = %id, %error, "activation was not recorded on the binding");
 	}
 	Ok(activation)
 }
@@ -383,16 +707,23 @@ pub async fn activation_binding<R: HomeRepository>(
 	.await;
 	finish(scope, result).await
 }
+/// Delegate `task` to an Agent on another Node. `by_tool` says whether a Run's tool asks, whose
+/// refusals reach the model, or a person through the API, who gets the plain error.
 pub async fn delegate<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
 	node: &str,
 	agent: &EntityRef,
+	by_tool: bool,
 ) -> Result<Delegation> {
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		let task = scope.task_read(task).await?;
+		// For the model, a missing task and one the Run may not see read the same.
+		let task = scope.task_read(task).await.map_err(|error| match error {
+			Error::Forbidden if by_tool => super::worker_tasks::task_not_visible(task),
+			error => error,
+		})?;
 		let resource = scope.task_resource(&task).await?;
 		scope.require(&resource, "task.delegate").await?;
 		let grants = scope.delegation_grants(&task, node).await?;
@@ -421,7 +752,7 @@ pub async fn delegate<R: HomeRepository>(
 			)
 			.await?;
 	}
-	activate(repository, task, id).await?;
+	activate_as(repository, task, id, by_tool).await?;
 	Ok(Delegation {
 		task_id: task,
 		node_id: node.into(),

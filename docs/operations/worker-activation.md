@@ -60,7 +60,8 @@ credential issuance are deployment responsibilities.
 `run_activations` is an append-only obligation/disposition journal with independent
 requested generations. Generations are allocated by a database sequence; gaps do
 not imply settlement. Run/input, Task dependency completion, human response, approval,
-and core admission/ordering triggers append in the writer's transaction, including
+operation completion, a created or delegated Task reaching a terminal or blocked
+state, and core admission/ordering triggers append in the writer's transaction, including
 compatible old writers. Ordering release notifies only the next nonterminal Run
 after the head completes, preserving paused predecessors. Transaction visibility
 gates retain existing obligations; publication retries and consumer redelivery resume
@@ -86,6 +87,12 @@ Workers perform startup recovery and bounded broad recovery every five seconds,
 or every second during known transport loss. Connection attempts run separately,
 with a five-second deadline and exponential backoff from 500 ms to five seconds
 including jitter. A dead owner's existing 30-second lease must expire first.
+An operation wait is due on completion, newer input, or its ceiling. A workspace
+wait is due on newer input, a relevant Task event after its durable cursor, or its
+ceiling; Task events are coalesced for two seconds. A remote Home is checked every
+15 seconds without invoking the model. Its fixed-size terminal fingerprint reports a
+change without listing Tasks; the Agent uses `workspace_observe` for details. Paused
+Runs are not leased until resumed.
 Compatible schema is retained on binary rollback. Before enabling incompatible
 future Run semantics, stop incompatible old workers; a notification is not a
 compatibility upgrade mechanism.
@@ -108,6 +115,12 @@ can load (`PersistedCapability::supported()`); the state a Run persists derives
 which of them it needs, and `encode` stores that as a `requires` array in the
 `pending` envelope beside the state. The key is omitted when empty, so Runs that need
 nothing keep the legacy bytes and stay claimable by every worker.
+
+`event_wait` covers operation and workspace waits, a woken result awaiting
+delivery, and the retained workspace event cursor and remote Task snapshot.
+
+`unassigned_abandonment` covers a saved completion that names the Unassigned Tasks
+it abandons (#772). A cancel settles that completion with exactly those Tasks.
 
 - Run leasing (`candidates`, hence notification claims, recovery scans and startup
   recovery) excludes uncancelled Runs whose `requires` is a list of names not covered by
@@ -157,6 +170,10 @@ derived from `RecoveryState`, not from the state: a Run requires it once a step 
 Degraded context, and keeps it for as long as that record is kept. Only Agents whose
 `workspace_retrieval` sources opt in with `on_unavailable: degrade` write it, so roll out
 every worker before an Agent opts in.
+
+Early Unassigned Task abandonments (#818) require `early_unassigned_abandonment` while
+`RecoveryState.early_abandoned_tasks` is present. This keeps older workers from leasing a Run
+whose final answer must name Tasks abandoned before the parent finished.
 
 Agent Plugin logical MCP calls (#414) require `mcp_call_state` while a
 `ToolCallState.mcp` checkpoint exists, including through human, approval and

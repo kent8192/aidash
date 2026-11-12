@@ -201,9 +201,16 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					};
 					(json!(value), None)
 				}
+				Effect::AbandonUnassigned { ids } => {
+					let abandoned = store
+						.abandon_unassigned_for_in(&mut self.access.tx, task.id, owner, ids)
+						.await?;
+					(json!({"abandoned":abandoned}), None)
+				}
 				Effect::Artifact {
 					artifact,
 					complete_through,
+					abandon,
 				} => {
 					if let Some(through) = complete_through {
 						let value = store
@@ -215,6 +222,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 								artifact,
 								crate::store::Publication::default(),
 								Some((admission, through)),
+								abandon,
 							)
 							.await?;
 						let id: Uuid = {

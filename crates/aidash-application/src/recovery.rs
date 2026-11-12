@@ -1,7 +1,9 @@
 //! Failure classifications shared by worker ports and native adapters.
+use crate::authorization::refusal_note::Note;
 use aidash_domain::{
-	context::recovery::Failure as ContextFailure, semantic::Failure as SemanticFailure,
-	tool::AuthorityRefusal,
+	context::recovery::Failure as ContextFailure,
+	semantic::Failure as SemanticFailure,
+	tool::{AuthorityRefusal, RefusalCheck},
 };
 
 /// Why a Run's authority stopped it.
@@ -9,7 +11,9 @@ use aidash_domain::{
 pub enum AuthorityFailure {
 	/// The external identity provider's status could not be read.
 	IdentityUnavailable,
-	/// Authority was denied; the refusal names the tool and check when tool authorization refused.
+	/// Authority was denied. The refusal names the tool (or stage) and the check; `None` is a
+	/// refusal nothing has named yet, which [`AuthorityFailure::named`] fills in where the Run's
+	/// state is known.
 	Denied(Option<AuthorityRefusal>),
 }
 
@@ -19,7 +23,25 @@ impl AuthorityFailure {
 		match self {
 			Self::IdentityUnavailable => "identity status unavailable".into(),
 			Self::Denied(Some(refusal)) => refusal.to_string(),
-			Self::Denied(None) => "execution authority denied".into(),
+			Self::Denied(None) => "an authority check refused this step".into(),
+		}
+	}
+
+	/// Name an unnamed refusal after `stage` and the check recorded in `note`; without a note the
+	/// check is [`RefusalCheck::Unnamed`]. Every other failure passes through.
+	pub fn named(self, stage: &str, note: Option<Note>) -> Self {
+		match self {
+			Self::Denied(None) => {
+				let note = note.unwrap_or_else(|| Note::new(RefusalCheck::Unnamed, None));
+				Self::Denied(Some(AuthorityRefusal {
+					tool: stage.to_owned(),
+					check: note.check,
+					action: note.action,
+					subject: note.subject,
+					call: None,
+				}))
+			}
+			other => other,
 		}
 	}
 

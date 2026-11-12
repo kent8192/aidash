@@ -805,7 +805,6 @@ async fn incomplete_authorized_candidates_stop_before_provider_effects(
 #[rstest]
 #[case::missing(|| Ok(false), true)]
 #[case::provider_error(|| Err(Error::External("provider failed".into())), true)]
-#[case::transient_database(|| Err(Error::RemoteSemantic(Failure::Unavailable)), true)]
 #[case::permanent_database(
 	|| Err(Error::Port(Box::new(std::io::Error::other("undefined table")))),
 	false
@@ -840,6 +839,30 @@ async fn physical_point_check_precedes_embedding_allowance(
 	}
 	assert_eq!(scope.embedded, None);
 	assert_eq!(calls.lock().unwrap().last(), Some(&"present"));
+}
+
+#[tokio::test]
+async fn a_database_outage_does_not_degrade_optional_workspace_context() {
+	let (_, mut scope, mut vector) = fixture();
+	vector.presence = || {
+		Err(Error::TemporaryDatabase(Box::new(std::io::Error::other(
+			"database unavailable",
+		))))
+	};
+	let result = workspace_context(
+		&mut scope,
+		&vector,
+		&run(),
+		"query",
+		1024,
+		&controls(true, true),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::TemporaryDatabase(_))),
+		"{result:?}"
+	);
+	assert_eq!(scope.embedded, None);
 }
 #[rstest]
 #[tokio::test]

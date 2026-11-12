@@ -3088,6 +3088,67 @@ async fn remote_grant_reports_the_receivers_missing_catalog_approval(
 	p.close().await;
 }
 
+/// A Run executing here for another Home is checked against its Binding like any other when an
+/// operation acts for it, so a withdrawal on the executing Node stops its running commands (#769).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let blocked = async |local_only: bool| {
+		let aidash_server::authorization::identity::Actor::Subject(identity) =
+			authorization.authenticate(&p.receiver_token).await.unwrap()
+		else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		let run = p.run().await;
+		let chain: Vec<String> = sqlx::query_scalar(
+			"SELECT subject_chain FROM authorization_remote_admissions WHERE task_id = $1",
+		)
+		.bind(run.task_id)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::authorization::services::execution::use_recheck_blocks(
+			&p.b.store,
+			&identity,
+			chain,
+			&run.metadata(),
+			local_only,
+		)
+		.await
+		.unwrap()
+	};
+	assert_eq!(
+		blocked(false).await,
+		None,
+		"a healthy foreign Run is usable"
+	);
+	let reference = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&reference,
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	// An operation acting for it is stopped; a person's resume does not control such a Run.
+	assert_eq!(blocked(false).await, Some(reference));
+	assert_eq!(blocked(true).await, None);
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review_receiver_only_executor_activates_required_home(
@@ -3706,6 +3767,352 @@ async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
 			.any(|r| r.to_string().contains("Keep this accepted correction"))
 	);
 	assert_eq!(first, request(&p.aa, &p.token, "POST", &path, input).await);
+	p.close().await;
+}
+
+const DECLINE_EPOCH: i64 = 5;
+
+impl Pair {
+	fn declined_key(&self) -> String {
+		format!("{}:{DECLINE_EPOCH}:0", self.admission)
+	}
+
+	/// The receiver's Run is paused on its only call, as an Authority Pause that no row
+	/// contradicts leaves it.
+	async fn pause_receiver_on_call(&self) {
+		use aidash_domain::provider::{ModelResponse, ToolCall};
+		use aidash_domain::run_state::{
+			PausedCall, RecoveryState, RunState, ToolCallState, encode,
+		};
+		let state = RunState::ToolCall(Box::new(ToolCallState {
+			response: ModelResponse {
+				tool_calls: vec![ToolCall {
+					id: "call-0".into(),
+					name: "task_delegate".into(),
+					arguments: json!({"task_id": Uuid::nil()}),
+				}],
+				..Default::default()
+			},
+			response_epoch: DECLINE_EPOCH,
+			..Default::default()
+		}));
+		let recovery = RecoveryState {
+			paused_call: Some(PausedCall {
+				key: self.declined_key(),
+				index: 0,
+				replay_safe: true,
+				tool: "task_delegate".into(),
+				tool_call: None,
+				kind: aidash_domain::tool::RefusalKind::OtherNode,
+			}),
+			..Default::default()
+		};
+		let phase = serde_json::to_value(state.phase()).unwrap();
+		sqlx::query(
+			"UPDATE runs SET pending = $1, phase = $2, control = 'PAUSED', lease_owner = NULL, \
+			 lease_until = NULL, error = 'task_delegate: the other Node refused' WHERE id = $3",
+		)
+		.bind(encode(&state, &recovery).unwrap())
+		.bind(phase.as_str().unwrap())
+		.bind(self.admission)
+		.execute(self.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+
+	async fn events_of(store: &Federation, run: Uuid, kind: &str) -> Vec<Value> {
+		sqlx::query_scalar::<_, Value>(
+			"SELECT data FROM events WHERE kind = $1 AND data->>'run_id' = $2",
+		)
+		.bind(kind)
+		.bind(run.to_string())
+		.fetch_all(store.store.pool.fixture_driver())
+		.await
+		.unwrap()
+	}
+
+	async fn home_events(&self, kind: &str) -> Vec<Value> {
+		sqlx::query_scalar::<_, Value>("SELECT data FROM events WHERE kind = $1")
+			.bind(kind)
+			.fetch_all(self.a.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	}
+
+	fn decline_path(&self) -> String {
+		format!(
+			"/api/tasks/{}/remote-grants/{}/declined-calls",
+			self.task, self.grant
+		)
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.pause_receiver_on_call().await;
+	let key = p.declined_key();
+
+	// The Home sees which call stopped, by tool and kind, and nothing of the receiver's own
+	// words: no action, no subject.
+	let states = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(states.0, 200, "{}", states.1);
+	let execution = &states.1[0]["execution"];
+	assert_eq!(execution["control"], "PAUSED");
+	assert_eq!(
+		execution["declinable_call"],
+		json!({"call": key, "tool": "task_delegate", "kind": "other_node"})
+	);
+	for leaked in ["task.delegate", "action", "subject", "other Node refused"] {
+		assert!(
+			!execution.to_string().contains(leaked),
+			"{leaked}: {execution}"
+		);
+	}
+
+	// A person of the receiver's own Node cannot decline, whatever they hold.
+	let (status, body) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		&format!("/api/runs/{}/declined-calls", p.admission),
+		json!({"call": key}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+
+	// A sentence cannot be sent first for a Run on another Node: the receiver pauses it, and a
+	// paused Run takes no Run message from the Home (see the test of that name). Declining makes
+	// it active, after which the message goes through.
+	let message_path = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
+	let (status, declined) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&p.decline_path(),
+		json!({"call": key}),
+	)
+	.await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(declined["control"], "ACTIVE");
+	assert!(declined.get("declinable_call").is_none(), "{declined}");
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+
+	let after = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&message_path,
+		json!({"id":Uuid::new_v4(),"content":"Find another way to split the work."}),
+	)
+	.await;
+	assert_eq!(after.0, 200, "{}", after.1);
+	assert_eq!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+
+	// The receiver's row holds the sentence the model gets, and the call is not offered again.
+	let sentence = aidash_domain::tool::RefusalKind::OtherNode.declined_sentence();
+	let (status, result): (String, Option<Value>) =
+		sqlx::query_as("SELECT status, result FROM invocations WHERE idempotency_key = $1")
+			.bind(&key)
+			.fetch_one(p.b.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(status, "COMPLETED");
+	assert_eq!(result, Some(json!({"error": sentence})));
+	let (status, stale) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&p.decline_path(),
+		json!({"call": key}),
+	)
+	.await;
+	assert_eq!(status, 409, "{stale}");
+
+	// The receiver's event says the Home declined it and names no one; the Home's names the person.
+	let there = Pair::events_of(&p.b, p.admission, "run.call_declined").await;
+	assert_eq!(there.len(), 1, "{there:?}");
+	assert_eq!(there[0]["by"], "home");
+	assert_eq!(there[0]["kind"], "other_node");
+	assert!(!there[0].to_string().contains("alice"), "{}", there[0]);
+	let here = p.home_events("remote.call_declined").await;
+	assert_eq!(here.len(), 1, "{here:?}");
+	assert_eq!(here[0]["by"], "alice");
+	assert_eq!(here[0]["tool"], "task_delegate");
+	assert_eq!(here[0]["kind"], "other_node");
+	assert_eq!(here[0]["call"], key);
+	assert!(
+		!here[0].to_string().contains("task.delegate"),
+		"{}",
+		here[0]
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.pause_receiver_on_call().await;
+	let key = p.declined_key();
+	let mut bundle = p.source_policy.clone();
+	bundle["subjects"]["mia"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"mia-no-task-read","effect":"deny","subjects":{"ids":["mia"]},
+		"actions":["task.read"],"resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle.clone()).await;
+	let mia = common::subject_credential(&p.a.store, "acme", "mia").await;
+	let path = format!("/api/tasks/{}/remote-executions", p.task);
+	let (status, body) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 403, "{body}");
+	bundle["policies"]
+		.as_array_mut()
+		.unwrap()
+		.retain(|policy| policy["id"] != "mia-no-task-read");
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"mia-no-decline","effect":"deny","subjects":{"ids":["mia"]},
+		"actions":["run.decline_call"],"resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, states) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{states}");
+	assert_eq!(states, json!([]));
+
+	let (status, body) =
+		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+	assert!(p.home_events("remote.call_declined").await.is_empty());
+
+	// Without the denial the same request is allowed for someone who is not the requester.
+	let mut bundle = p.source_policy.clone();
+	bundle["subjects"]["mia"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"mia-no-control-or-delegation","effect":"deny","subjects":{"ids":["mia"]},
+		"actions":["run.control", "task.delegate"],"resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, states) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{states}");
+	assert_eq!(states.as_array().unwrap().len(), 1, "{states}");
+	assert_eq!(states[0]["view"], "holder");
+	assert_eq!(states[0]["grant"]["id"], p.grant.to_string());
+	assert_eq!(states[0]["execution"]["control"], "PAUSED");
+	assert_eq!(states[0]["execution"]["declinable_call"]["call"], key);
+	assert_eq!(states[0].as_object().unwrap().len(), 3, "{states}");
+	assert_eq!(states[0]["grant"].as_object().unwrap().len(), 3, "{states}");
+	assert_eq!(
+		states[0]["execution"].as_object().unwrap().len(),
+		2,
+		"{states}"
+	);
+	assert!(states[0].get("human_requests").is_none(), "{states}");
+	assert!(states[0].get("semantic").is_none(), "{states}");
+	// A stale Home grant must never offer a call, even while the receiver remains paused.
+	let original_expiry: chrono::DateTime<chrono::Utc> =
+		sqlx::query_scalar("SELECT expires_at FROM authorization_remote_grants WHERE id = $1")
+			.bind(p.grant)
+			.fetch_one(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	for update in [
+		"UPDATE authorization_remote_grants SET revoked = true WHERE id = $1",
+		"UPDATE authorization_remote_grants SET revoked = false, expires_at = now() - interval '1 second' WHERE id = $1",
+	] {
+		sqlx::query(update)
+			.bind(p.grant)
+			.execute(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		let (status, stale) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+		assert_eq!(status, 200, "{stale}");
+		assert_eq!(stale, json!([]));
+	}
+	sqlx::query("UPDATE authorization_remote_grants SET expires_at = $2 WHERE id = $1")
+		.bind(p.grant)
+		.bind(original_expiry)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, declined) =
+		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+	let here = p.home_events("remote.call_declined").await;
+	assert_eq!(here[0]["by"], "mia");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_message_from_the_home_cannot_reach_a_run_the_receiver_has_paused(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let path = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
+	let paused = request(&p.aa, &p.token, "POST", &control, json!({"action":"pause"})).await;
+	assert_eq!(paused.0, 200, "{}", paused.1);
+	// The receiver's callback to the Home is refused while the Run is not active, so nothing is
+	// queued for a paused Run on another Node (`home_commands::require_in`).
+	let sent = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&path,
+		json!({"id":Uuid::new_v4(),"content":"while paused"}),
+	)
+	.await;
+	assert_eq!(sent.0, 403, "{}", sent.1);
+	assert!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let resumed = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(resumed.0, 200, "{}", resumed.1);
+	let sent = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&path,
+		json!({"id":Uuid::new_v4(),"content":"after resuming"}),
+	)
+	.await;
+	assert_eq!(sent.0, 200, "{}", sent.1);
 	p.close().await;
 }
 
@@ -8253,7 +8660,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 	let mut different = artifact.clone();
 	different.content = json!("a new answer");
 	assert!(
-		home.complete(&format!("{}:complete", run.id), &different)
+		home.complete(&format!("{}:complete", run.id), &different, &[])
 			.await
 			.is_err()
 	);
@@ -9752,4 +10159,106 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 	assert_eq!(runs, 0, "inactive cancellation never invents a Run");
 	f.store.pool.close().await;
 	cleanup(f, &url, &schema).await;
+}
+
+/// A Run on another Node answers finally while the only open subtask is one
+/// it created and nobody was given (#772). The Home reports it through the
+/// guarded summary, the Run is told once, and the second final answer
+/// abandons it in the completion the Home commits. A remote Run leaves no
+/// origin row: the Home recorded the Task as that execution's output.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	// The Home marks the binding once the receiver's activation response matched.
+	let activated: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+		"SELECT activated_at FROM authorization_remote_execution WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(activated.is_some(), "activation was confirmed");
+	let parent = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	// The remote Run has not claimed the parent yet, so it has no owner; the
+	// root subject of the execution stands in for its creator.
+	let creator = "alice".to_owned();
+	let child =
+		p.a.store
+			.create_task(
+				&TEST_FIXTURE,
+				parent.workspace_id,
+				&aidash_server::domain::NewTask {
+					title: "Remote subtask".into(),
+					description: "Nobody is given this".into(),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: Some(p.task),
+				},
+				&creator,
+				None,
+			)
+			.await
+			.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_outputs (grant_id, workspace_id, resource_kind, resource_id, tenant) VALUES ($1, $2, 'task', $3, 'acme')")
+		.bind(p.grant)
+		.bind(parent.workspace_id)
+		.bind(child.id)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	for _ in 0..15 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+		let run = p.run().await;
+		if run.control == aidash_server::domain::RunControl::Paused {
+			let response = request(
+				&p.aa,
+				&p.token,
+				"POST",
+				&format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant),
+				json!({"action":"resume"}),
+			)
+			.await;
+			assert_eq!(response.0, 200, "{}", response.1);
+		}
+	}
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		p.run().await.error
+	);
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, child.id)
+			.await
+			.unwrap()
+			.status,
+		aidash_server::domain::TaskStatus::Abandoned
+	);
+	assert_eq!(
+		p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status,
+		aidash_server::domain::TaskStatus::Completed
+	);
+	// The fixture model first sends a progress message (1), answers finally and
+	// is told (2), then answers finally again (3): the notice costs exactly one
+	// extra model call, not one per held answer.
+	assert_eq!(p.requests.lock().await.len(), 3);
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, parent.workspace_id)
+			.await
+			.unwrap();
+	assert!(snapshot.artifacts.iter().any(|artifact| {
+		artifact
+			.content
+			.as_str()
+			.is_some_and(|text| text.contains("Remote subtask"))
+	}));
+	p.close().await;
 }

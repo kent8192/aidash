@@ -107,6 +107,16 @@ pub struct SubjectSelector {
 	pub kinds: BTreeSet<SubjectKind>,
 }
 
+impl SubjectSelector {
+	fn matches(&self, id: &str, subject: &Subject, roles: &BTreeSet<String>) -> bool {
+		self.any
+			|| self.ids.contains(id)
+			|| self.kinds.contains(&subject.kind)
+			|| !self.groups.is_disjoint(&subject.groups)
+			|| !self.roles.is_disjoint(roles)
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSelector {
@@ -365,6 +375,46 @@ impl PolicyBundle {
 		Ok(result)
 	}
 
+	/// Whether some policy could allow `action` for `subject` and everyone who
+	/// delegated to it, whatever the resource and conditions. `false` means
+	/// [`Self::evaluate`] denies every evaluation of that action: no policy
+	/// allows it, or one denies it for every resource and under every condition.
+	pub fn may_allow(&self, subject: &str, action: &str) -> bool {
+		if self.validate().is_err() {
+			return false;
+		}
+		let mut next = Some(subject);
+		while let Some(id) = next {
+			let Some(entry) = self.subjects.get(id) else {
+				return false;
+			};
+			let Ok(roles) = self.effective_roles(entry) else {
+				return false;
+			};
+			let applies = |policy: &Policy| {
+				policy.subjects.matches(id, entry, &roles)
+					&& matches_action(&policy.actions, action, &policy.effect)
+			};
+			let allowed = self
+				.policies
+				.iter()
+				.any(|policy| policy.effect == Effect::Allow && applies(policy));
+			// A deny that holds whatever the resource and conditions.
+			let denied = self.policies.iter().any(|policy| {
+				policy.effect == Effect::Deny
+					&& policy.condition.is_none()
+					&& policy.resources.kinds.contains("*")
+					&& (policy.resources.ids.is_empty() || policy.resources.ids.contains("*"))
+					&& applies(policy)
+			});
+			if !entry.enabled || !allowed || denied {
+				return false;
+			}
+			next = entry.delegated_by.as_deref();
+		}
+		true
+	}
+
 	pub fn evaluate(&self, input: &Evaluation) -> Decision {
 		if self.validate().is_err() {
 			return Decision::denied("invalid_policy");
@@ -415,13 +465,7 @@ impl PolicyBundle {
 		decision.effective_roles = roles.clone();
 		let mut deny = false;
 		for policy in &self.policies {
-			let selectors = &policy.subjects;
-			let subject_matches = selectors.any
-				|| selectors.ids.contains(id)
-				|| selectors.kinds.contains(&subject.kind)
-				|| !selectors.groups.is_disjoint(&subject.groups)
-				|| !selectors.roles.is_disjoint(&roles);
-			if !subject_matches
+			if !policy.subjects.matches(id, subject, &roles)
 				|| !matches_action(&policy.actions, &input.action, &policy.effect)
 				|| !matches_name(&policy.resources.kinds, &input.resource.kind)
 				|| (!policy.resources.ids.is_empty()

@@ -98,11 +98,20 @@ impl Authorization {
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder)
 		};
-		let row: Option<(i64, Value)> = crate::database::native::query_as(&query)
+		let waiting = if exclusive {
+			Some(crate::database::authority_change::raise(&mut **tx, tenant).await?)
+		} else {
+			None
+		};
+		let row = crate::database::native::query_as::<(i64, Value)>(&query)
 			.columns(&["revision", "document"])
 			.bind(tenant)
 			.fetch_optional(&mut **tx)
-			.await?;
+			.await;
+		let row = match waiting {
+			Some(waiting) => waiting.settle(&mut **tx, row).await?,
+			None => row?,
+		};
 		let (revision, document) =
 			row.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
 		// Checked once the policy is held, as `AuthorizationBundle::lock_snapshot` does.
@@ -168,6 +177,15 @@ impl Authorization {
 		records: &[(Evaluation, Decision)],
 	) -> Result<()> {
 		AuthorizationDecision::append_many(&mut **tx, tenant, records).await
+	}
+
+	/// Write the new rows of one Access's audit in its own transaction.
+	pub(super) async fn record_rows(
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		rows: Vec<crate::apps::identity::models::DecisionRow>,
+	) -> Result<()> {
+		AuthorizationDecision::append_unrecorded(&mut **tx, tenant, rows).await
 	}
 
 	pub async fn evaluate(&self, tenant: &str, input: &Evaluation) -> Result<Decision> {

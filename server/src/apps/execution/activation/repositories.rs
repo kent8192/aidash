@@ -34,6 +34,21 @@ pub(super) fn error(error: Error) -> aidash_application::Error {
 	}
 }
 
+impl Repository {
+	/// Every worker slot keeps scanning and every publisher keeps publishing
+	/// while the database is gone, so these paths see an outage even in a
+	/// process that runs no step (#786).
+	fn noted(&self, error: Error) -> aidash_application::Error {
+		self.harness
+			.federation
+			.store
+			.recovery_cursors
+			.outage
+			.note(&error);
+		self::error(error)
+	}
+}
+
 #[async_trait]
 impl ActivationRepository for Repository {
 	fn node_id(&self) -> &str {
@@ -47,12 +62,17 @@ impl ActivationRepository for Repository {
 			harness: self.harness.clone(),
 			visibility: ReadLease::begin(&self.harness.federation.store)
 				.await
-				.map_err(error)?,
+				.map_err(|e| self.noted(e))?,
 		}))
 	}
 	async fn claim_scope(&self) -> aidash_application::Result<Box<dyn ClaimScope>> {
+		let store = &self.harness.federation.store;
 		Ok(Box::new(scheduling::Scope {
 			capabilities: aidash_domain::run_state::PersistedCapability::supported(),
+			holds_recoveries: store
+				.recovery_cursors
+				.outage
+				.holds_recoveries(self.lease_seconds()),
 			tx: self
 				.harness
 				.federation
@@ -62,31 +82,31 @@ impl ActivationRepository for Repository {
 					DeploymentScopeReason::ActivationClaim,
 				))
 				.await
-				.map_err(error)?
+				.map_err(|e| self.noted(e))?
 				.into_executor()
 				.await
-				.map_err(error)?,
+				.map_err(|e| self.noted(e))?,
 		}))
 	}
 	async fn recover(&self) -> aidash_application::Result<Option<(Run, Uuid)>> {
 		durable::recover(&self.harness.federation.store, self.lease_seconds())
 			.await
-			.map_err(error)
+			.map_err(|e| self.noted(e))
 	}
 	async fn reconcile(&self) -> aidash_application::Result<u64> {
 		let visibility = ReadLease::begin(&self.harness.federation.store)
 			.await
-			.map_err(error)?;
+			.map_err(|e| self.noted(e))?;
 		let count = durable::reconcile(&self.harness.federation.store)
 			.await
-			.map_err(error)?;
+			.map_err(|e| self.noted(e))?;
 		drop(visibility);
 		Ok(count)
 	}
 	async fn publish_batch(&self, token: Uuid) -> aidash_application::Result<Vec<Obligation>> {
 		durable::publish_batch(&self.harness.federation.store, token)
 			.await
-			.map_err(error)
+			.map_err(|e| self.noted(e))
 	}
 	async fn published(&self, row: &Obligation, token: Uuid) -> aidash_application::Result<()> {
 		durable::published(&self.harness.federation.store, row, token)
@@ -168,7 +188,7 @@ impl ClaimScope for scheduling::Scope<Box<dyn TransactionExecutor>> {
 				if e.database_error()
 					.is_some_and(|d| d.code() == Some("55P03"))
 				{
-					aidash_application::Error::TransactionPending
+					aidash_application::Error::RunLockContended
 				} else {
 					error(e.into())
 				}

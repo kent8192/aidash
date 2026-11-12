@@ -13,7 +13,7 @@ use aidash_server::{
 	harness::Harness,
 };
 
-use common::{bootstrap, cleanup, request};
+use common::{bootstrap, cleanup};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -32,13 +32,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Worker rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Worker rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -288,13 +282,7 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Control rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Control rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -366,13 +354,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Invocation rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Invocation rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -536,13 +518,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Reclaim a legacy lease","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Reclaim a legacy lease","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -618,13 +594,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Finalization race","goal":"Give a short answer","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Finalization race","goal":"Give a short answer","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -641,10 +611,9 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		.expect("provider did not receive first inference");
 	let first_key = Uuid::new_v4();
 	let path = format!("/api/runs/{}/message", run.id);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&path,
 		json!({"content":"first correction","idempotency_key":first_key}),
 	)
@@ -673,10 +642,9 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		"TOOL_CALL"
 	);
 	let second_key = Uuid::new_v4();
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&path,
 		json!({"content":"second correction","idempotency_key":second_key}),
 	)
@@ -702,10 +670,9 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 			.await
 			.unwrap()
 	);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&path,
 		json!({"content":"during final commit","idempotency_key":Uuid::new_v4()}),
 	)
@@ -781,10 +748,9 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 			.iter()
 			.any(|message| message.content == "during final commit")
 	);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&path,
 		json!({"content":"too late","idempotency_key":Uuid::new_v4()}),
 	)
@@ -792,12 +758,11 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert_eq!(status, 409, "{body}");
 	assert!(body["error"].as_str().unwrap().contains("not accepted"));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&path,
-			json!({"content":"first correction","idempotency_key":first_key}),
+			json!({"content":"first correction","idempotency_key":first_key})
 		)
 		.await
 		.0,
@@ -817,13 +782,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Read reference","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Read reference","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -892,13 +851,7 @@ async fn the_commit_fence_persists_the_completion_basis(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Verified answer","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Verified answer","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1043,6 +996,167 @@ async fn the_commit_fence_persists_the_completion_basis(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A completion that is already durable has chosen its outcome, including the
+/// Unassigned Tasks it abandons. A node cancellation settles exactly that
+/// (#772): without the saved list the completion would fail on the unresolved
+/// child and the cancel would retry forever.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Unassigned child","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	// A subtask one of the parent's Runs created and nobody was given.
+	let child = f
+		.store
+		.create_task(
+			&TEST_FIXTURE,
+			run.workspace_id,
+			&aidash_server::domain::NewTask {
+				title: "Nobody's".into(),
+				description: "Never delegated".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(run.task_id),
+			},
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO authorization_task_origins (task_id, tenant, source_run_id, root_subject, subject_chain) VALUES ($1, 'acme', $2, 'alice', ARRAY['alice','fixture-agent'])")
+		.bind(child.id)
+		.bind(run.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let abandoning = vec![aidash_domain::unassigned::UnassignedTask {
+		id: child.id,
+		title: child.title.clone(),
+		abandonable: true,
+		handed_over: false,
+	}];
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
+		"included_input_seq":0,
+		"response":{"text":"Done.","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0
+	}))));
+	f.store
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
+		.await
+		.unwrap();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.state.tool_mut().unwrap().abandoning = abandoning.clone();
+	assert!(
+		f.store
+			.begin_final_completion(&TEST_FIXTURE, &leased, worker)
+			.await
+			.unwrap()
+	);
+	let saved = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(saved.state.tool().unwrap().abandoning, abandoning);
+
+	// The Node is deleted and restored: its Runs are cancelled and the saved
+	// completion is settled.
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	let node = common::default_node(&f.store, "acme").await;
+	let sibling = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+			json!({"confirmation":node.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", node.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = common::administer_node(&f, "acme", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_cancellation_jobs"))
+			.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+			.and_where(Expr::col("node").eq(node.node.as_str()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for _ in 0..3 {
+		aidash_server::generation::provision::reconcile(&f)
+			.await
+			.unwrap();
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, child.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"ABANDONED"
+	);
+	let sentence = aidash_domain::unassigned::answer_with_abandoned("Done.", &abandoning);
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
+	assert_eq!(
+		snapshot
+			.artifacts
+			.iter()
+			.filter(|artifact| artifact.content == json!(sentence))
+			.count(),
+		1
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(
@@ -1053,7 +1167,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
 		"title":"Stale tool response","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
@@ -1108,10 +1222,9 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 		)
 		.await
 		.unwrap();
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/runs/{}/message", run.id),
 		json!({"content":"new correction"}),
 	)
@@ -1194,13 +1307,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Summary retry","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Summary retry","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1300,13 +1407,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Media observation retry", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media observation retry", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1380,13 +1481,7 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Referenced correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Referenced correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1490,13 +1585,7 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Effect fence","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Effect fence","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1622,13 +1711,7 @@ async fn channel_messages_a_local_run_publishes_record_that_run(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Channel provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Channel provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
@@ -1668,22 +1751,10 @@ async fn a_message_key_replayed_for_another_run_is_rejected(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Replay provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Replay provenance","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (status, second) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/conversations",
-		json!({"title":"Other Run","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-	)
+	let (status, second) = common::post(&app, &token, "/api/conversations", json!({"title":"Other Run","goal":"Publish","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}))
 	.await;
 	assert_eq!(status, 200, "{second}");
 	let mut runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
@@ -1731,17 +1802,16 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
 		"title":"Run message budget","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let path = format!("/api/runs/{}/message", run.id);
 	let large = "x".repeat(32_768);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&path,
 		json!({"content":large,"idempotency_key":Uuid::new_v4()}),
 	)
@@ -1764,15 +1834,9 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 			.any(|message| message.content == large)
 	);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&path,
-			json!({"content":"short correction"})
-		)
-		.await
-		.0,
+		common::post(&app, &token, &path, json!({"content":"short correction"}))
+			.await
+			.0,
 		200
 	);
 	cleanup(f, &url, &schema).await;
@@ -1788,7 +1852,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
 		"title":"Private correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");
@@ -1799,15 +1863,9 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 	assert!(worker.worker_once().await.unwrap());
 	let path = format!("/api/runs/{}/message", run.id);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&path,
-			json!({"content":"private correction"})
-		)
-		.await
-		.0,
+		common::post(&app, &token, &path, json!({"content":"private correction"}))
+			.await
+			.0,
 		200
 	);
 	let message = f
@@ -1825,10 +1883,9 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[message.id]}
 	}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -1854,7 +1911,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	for (index, terminal) in ["cancel", "failure_pending"].iter().enumerate() {
-		let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+		let (status, created) = common::post(&app, &token, "/api/conversations", json!({
 			"title":format!("Terminal {index}"),"goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 		})).await;
 		assert_eq!(status, 200, "{created}");
@@ -1907,10 +1964,9 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 			}
 			.unwrap();
 		}
-		let (status, body) = request(
+		let (status, body) = common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({
 				"content":format!("late {index}"),"idempotency_key":Uuid::new_v4()
@@ -1948,7 +2004,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({
 		"title":"Expired lease", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	})).await;
 	assert_eq!(status, 200, "{created}");

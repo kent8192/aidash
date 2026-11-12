@@ -107,6 +107,9 @@ pub async fn claim(store: &Store) -> Result<Vec<NodeDeletion>> {
 		match result {
 			Ok(Some(row)) => claimed.push(row),
 			Ok(None) | Err(Error::TenantDeleted) => {}
+			// A Tenant that stays busy leaves its Node to the next pass. It does
+			// not hold up the other Tenants' candidates (ADR 0121).
+			Err(Error::PolicyBusy { .. }) => {}
 			Err(error) => return Err(error),
 		}
 	}
@@ -325,7 +328,7 @@ pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
 		})
 		.await?;
 	for deletion in due {
-		store
+		let erased = store
 			.pool
 			.atomic(&TenancyScope::tenant(&deletion.tenant)?, async |tx| {
 				// Keep management response snapshots and expiry serialized. Never
@@ -369,7 +372,14 @@ pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
 				}
 				Ok(())
 			})
-			.await?;
+			.await;
+		match erased {
+			Ok(()) => {}
+			// A Tenant that stays busy leaves its audit to the next pass. It does
+			// not hold up the other Tenants' (ADR 0121).
+			Err(Error::PolicyBusy { .. }) => {}
+			Err(error) => return Err(error),
+		}
 	}
 	Ok(())
 }

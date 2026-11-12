@@ -609,3 +609,35 @@ for (const selected of [
       version: "2.1.0",
     });
   });
+
+for (const [choice, expected] of [
+  ["", undefined],
+  ["off", "off"],
+] as const) {
+  test(`an Agent's prompt caching choice "${choice}" reaches registration`, async ({
+    page,
+  }) => {
+    await setup(page);
+    await page.goto("/registry");
+    await page
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("エンティティの種類").selectOption("agent");
+    await dialog.getByLabel("名前").fill("Cached agent");
+    await dialog.getByLabel("説明").fill("Reads its prompt from the cache");
+    await dialog.locator('[name="model"]').selectOption("model@1.0.0");
+    await dialog.locator('[name="instructions"]').fill("Do the task.");
+    await dialog.getByLabel("プロンプトキャッシュ").selectOption(choice);
+    const posted = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === "/api/registry" &&
+        request.method() === "POST",
+    );
+    await dialog
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    // Omitted lets registration turn caching on where the model supports it.
+    expect((await posted).postDataJSON().config.prompt_cache).toBe(expected);
+  });
+}

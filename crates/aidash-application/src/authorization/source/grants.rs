@@ -68,7 +68,9 @@ async fn inspect<R: GrantRepository>(
 		&input.requirements,
 	)?;
 	if inspection.decider != input.decider {
-		return Err(Error::Forbidden);
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::DeciderMismatch,
+		));
 	}
 	Ok(inspection)
 }

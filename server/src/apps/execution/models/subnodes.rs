@@ -46,6 +46,53 @@ pub struct SubnodeRecord {
 	pub creation_fingerprint: String,
 }
 
+impl SubnodeRecord {
+	/// The Workspaces of the Subnodes `run` created or works in, ended ones included.
+	pub(crate) async fn workspaces_of_run(
+		tx: impl crate::database::native::Executor,
+		tenant: &str,
+		run: Uuid,
+	) -> crate::Result<Vec<Uuid>> {
+		let own = Query::select()
+			.column(Alias::new("workspace_id"))
+			.from(Alias::new("authorization_execution"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.to_owned();
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("subnodes"))
+				.and_where(Expr::col("tenant").eq(tenant))
+				.and_where(
+					Expr::col("creator_run_id")
+						.eq(Expr::value(run))
+						.or(Expr::col("workspace_id").in_subquery(own)),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(tx)
+		.await
+	}
+
+	/// The Run that created the Subnode owning `workspace`, if a Subnode owns it.
+	pub(crate) async fn creator_of_workspace(
+		tx: impl crate::database::native::Executor,
+		tenant: &str,
+		workspace: Uuid,
+	) -> crate::Result<Option<Uuid>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("creator_run_id"))
+				.from(Alias::new("subnodes"))
+				.and_where(Expr::col("tenant").eq(tenant))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(tx)
+		.await
+	}
+}
+
 #[model(app_label = "execution", table_name = "subnode_members")]
 #[derive(Serialize, Deserialize)]
 pub struct SubnodeMemberRecord {

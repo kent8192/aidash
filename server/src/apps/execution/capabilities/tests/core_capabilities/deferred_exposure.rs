@@ -38,14 +38,14 @@ const LONG_FILE: &str = "αβγδεζηθικλμνξοπρστυφχψω";
 const INDEX_HEADER: &str = "Discoverable capabilities that are not loaded";
 const CATCH_UP: &str = "Run-message catch-up";
 
-enum Reply {
+pub(super) enum Reply {
 	Call(&'static str, Value),
 	Text(&'static str),
 }
 type Script = Box<dyn FnMut(&Value, &Value) -> Reply + Send>;
 
-struct Deferred {
-	c: CoreFixture,
+pub(super) struct Deferred {
+	pub(super) c: CoreFixture,
 	_provider: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	requests: Arc<Mutex<Vec<Value>>>,
 	script: Arc<Mutex<Script>>,
@@ -126,8 +126,10 @@ fn deferred_router(
 	Arc::new(provider)
 }
 
+/// The scripted provider and a Core fixture whose Agents call it, with no Agent
+/// version registered yet.
 #[rstest::fixture]
-async fn deferred_fixture(
+pub(super) async fn scripted_core(
 	#[from(deferred_requests)] requests: Arc<Mutex<Vec<Value>>>,
 	#[from(deferred_script)] script: Arc<Mutex<Script>>,
 	#[from(deferred_unavailable)] unavailable: Arc<Mutex<BTreeSet<usize>>>,
@@ -144,7 +146,24 @@ async fn deferred_fixture(
 	#[with("aidash://deferred",_endpoint.clone())]
 	core: CoreFuture,
 ) -> Deferred {
-	let mut c = core.await;
+	Deferred {
+		c: core.await,
+		_provider: provider.await,
+		requests,
+		script,
+		unavailable,
+	}
+}
+
+#[rstest::fixture]
+async fn deferred_fixture(#[future] scripted_core: Deferred) -> Deferred {
+	let Deferred {
+		mut c,
+		_provider,
+		requests,
+		script,
+		unavailable,
+	} = scripted_core.await;
 	let atlas = format!(
 		"{ATLAS_BODY} {}",
 		"Map every dependency before the release. ".repeat(36)
@@ -188,7 +207,7 @@ async fn deferred_fixture(
 	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
 	Deferred {
 		c,
-		_provider: provider.await,
+		_provider,
 		requests,
 		script,
 		unavailable,
@@ -253,7 +272,7 @@ async fn register_agent(c: &CoreFixture, version: &str, deferred: bool, memory: 
 
 impl Deferred {
 	/// Scripts are set before delegation, while no provider request is in flight.
-	fn script(&self, script: impl FnMut(&Value, &Value) -> Reply + Send + 'static) {
+	pub(super) fn script(&self, script: impl FnMut(&Value, &Value) -> Reply + Send + 'static) {
 		*self
 			.script
 			.try_lock()
@@ -262,7 +281,7 @@ impl Deferred {
 	async fn requests(&self) -> Vec<Value> {
 		self.requests.lock().await.clone()
 	}
-	async fn delegate(&self, task: Uuid, version: &str) -> Run {
+	pub(super) async fn delegate(&self, task: Uuid, version: &str) -> Run {
 		let (status, result) = request(
 			&self.c.app,
 			&self.c.token,
@@ -295,7 +314,7 @@ impl Deferred {
 		serde_json::from_value(task["id"].clone()).unwrap()
 	}
 	/// One durable step on a fresh Harness: nothing survives in memory between steps.
-	async fn step(&self) {
+	pub(super) async fn step(&self) {
 		Harness {
 			federation: self.c.f.clone(),
 		}
@@ -303,7 +322,7 @@ impl Deferred {
 		.await
 		.unwrap();
 	}
-	async fn run(&self, id: Uuid) -> Run {
+	pub(super) async fn run(&self, id: Uuid) -> Run {
 		self.c.f.store.run(&TEST_FIXTURE, id).await.unwrap()
 	}
 	/// Step until the Run completes, fails, is cancelled or is paused.
@@ -325,13 +344,13 @@ impl Deferred {
 			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 		}
 	}
-	async fn close(self) {
+	pub(super) async fn close(self) {
 		drop(self._provider);
 		self.c.close().await;
 	}
 }
 
-fn settled(run: &Run) -> bool {
+pub(super) fn settled(run: &Run) -> bool {
 	matches!(
 		run.phase(),
 		RunPhase::Completed | RunPhase::Failed | RunPhase::Cancelled
@@ -368,7 +387,7 @@ fn expected_initial() -> BTreeSet<String> {
 		.collect()
 }
 /// `(call, result)` of every tool event in a model-visible or durable context.
-fn events(context: &Value) -> Vec<(&Value, &Value)> {
+pub(super) fn events(context: &Value) -> Vec<(&Value, &Value)> {
 	context["history"]
 		.as_array()
 		.into_iter()
@@ -385,7 +404,7 @@ fn results<'a>(context: &'a Value, name: &str) -> Vec<&'a Value> {
 		.map(|(_, result)| result)
 		.collect()
 }
-fn durable(run: &Run) -> Value {
+pub(super) fn durable(run: &Run) -> Value {
 	serde_json::to_value(&run.context).unwrap()
 }
 /// Search results of every page so far, in order.

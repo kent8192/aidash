@@ -29,8 +29,126 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// How many of a Run's newest Workspace task changes one wake reports.
+const WORKSPACE_EVENT_WINDOW: u64 = 32;
+
 #[async_trait]
 impl ExecutionStore for RunStore {
+	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64> {
+		use crate::apps::workspaces::models::child_flags::unstarted_open;
+		use reinhardt::db::orm::execution::convert_values;
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, Func, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let created = Query::select()
+			.expr(Expr::value(1_i64))
+			.from(Alias::new("authorization_task_origins"))
+			.and_where(Expr::col("source_run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("task_id").equals((Alias::new("tasks"), Alias::new("id"))))
+			.to_owned();
+		let delegated = Query::select()
+			.expr(Expr::value(1_i64))
+			.from(Alias::new("authorization_run_outputs"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("resource_kind").eq("delegated_task"))
+			.and_where(Expr::col("resource_id").equals((Alias::new("tasks"), Alias::new("id"))))
+			.to_owned();
+		let (sql, values) = Query::select()
+			.expr_as(Func::count(Expr::col("id").into()), Alias::new("pending"))
+			.from(Alias::new("tasks"))
+			.and_where(Expr::col("status").is_not_in(["COMPLETED", "ABANDONED"]))
+			.and_where(Expr::exists(created).or(Expr::exists(delegated)))
+			// An Unassigned Task is not unfinished work: nobody is on it.
+			.and_where(unstarted_open().not())
+			.build(PostgresQueryBuilder);
+		let mut tx = self.store.pool.begin(&self.scope).await?;
+		let row = tx
+			.fetch_one(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		let pending: i64 = row
+			.get("pending")
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		tx.commit().await?;
+		Ok(u64::try_from(pending).unwrap_or_default())
+	}
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents> {
+		use reinhardt::db::orm::execution::convert_values;
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, Func, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let (sql, values) = Query::select()
+			.columns([Alias::new("generation"), Alias::new("reason")])
+			.from(Alias::new("run_activations"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("generation").gt(Expr::value(after)))
+			.and_where(Expr::col("reason").like("workspace_task:%"))
+			.order_by(Alias::new("generation"), Order::Desc)
+			.limit(WORKSPACE_EVENT_WINDOW)
+			.build(PostgresQueryBuilder);
+		let mut tx = self.store.pool.begin(&self.scope).await?;
+		let rows = tx
+			.fetch_all(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		let mut events = Vec::with_capacity(rows.len());
+		for row in rows {
+			let generation: i64 = row
+				.get("generation")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			let reason: String = row
+				.get("reason")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			let (id, status) = reason
+				.strip_prefix("workspace_task:")
+				.and_then(|value| value.split_once(':'))
+				.ok_or_else(|| {
+					aidash_application::Error::Invalid("invalid workspace activation".into())
+				})?;
+			let task_id = Uuid::parse_str(id)
+				.map_err(|_| aidash_application::Error::Invalid("invalid workspace task".into()))?;
+			events.push(WorkspaceEvent {
+				generation,
+				task_id,
+				status: status.to_owned(),
+			});
+		}
+		events.reverse();
+		// The window holds the newest events, and the caller moves its cursor to
+		// the newest one it got. Whatever lies between the cursor and the oldest
+		// event returned is never delivered, so count exactly that: an event
+		// committed since the first query is newer and comes with the next wake.
+		let mut dropped = 0;
+		if events.len() as u64 == WORKSPACE_EVENT_WINDOW
+			&& let Some(oldest) = events.first()
+		{
+			let (sql, values) = Query::select()
+				.expr_as(
+					Func::count(Expr::col("generation").into()),
+					Alias::new("dropped"),
+				)
+				.from(Alias::new("run_activations"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+				.and_where(Expr::col("generation").gt(Expr::value(after)))
+				.and_where(Expr::col("generation").lt(Expr::value(oldest.generation)))
+				.and_where(Expr::col("reason").like("workspace_task:%"))
+				.build(PostgresQueryBuilder);
+			let row = tx
+				.fetch_one(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from)?;
+			let count: i64 = row
+				.get("dropped")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			dropped = u64::try_from(count).unwrap_or_default();
+		}
+		tx.commit().await?;
+		Ok(WorkspaceEvents { events, dropped })
+	}
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
 		let mut tx = self
 			.store
@@ -269,6 +387,18 @@ impl ExecutionStore for RunStore {
 	) -> Result<u32> {
 		self.store
 			.invocation_not_delivered(&self.scope, run, token, key, failure)
+			.await
+			.map_err(Into::into)
+	}
+	async fn invocation_refused(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		self.store
+			.invocation_refused(&self.scope, run, token, key, refusal)
 			.await
 			.map_err(Into::into)
 	}
@@ -596,8 +726,18 @@ impl ExecutionHome for NativeHome {
 			.await
 			.map_err(Into::into)
 	}
-	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
-		Home::complete(&self.0, key, artifact)
+	async fn complete(
+		&self,
+		key: &str,
+		artifact: &ArtifactInput,
+		abandon: &[Uuid],
+	) -> Result<Task> {
+		Home::complete(&self.0, key, artifact, abandon)
+			.await
+			.map_err(Into::into)
+	}
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>> {
+		Home::abandon_unassigned(&self.0, parent, ids)
 			.await
 			.map_err(Into::into)
 	}
@@ -640,13 +780,20 @@ impl InferenceReservation for Reservation {
 pub(crate) struct Visibility<'a> {
 	pub visibility: &'a mut crate::transactions::gate::ReadLease,
 	pub store: &'a Store,
+	pub tenant: Option<&'a str>,
 }
 #[async_trait]
 impl ExecutionVisibility for Visibility<'_> {
 	async fn suspend(&mut self) -> Result<()> {
 		self.visibility.suspend().await.map_err(Into::into)
 	}
+	/// The harness takes this lease back before the authority it gave up for a
+	/// model or plugin wait. So a Run waits behind an Authority Change here, while
+	/// it holds neither (ADR 0121).
 	async fn resume(&mut self) -> Result<()> {
+		if let Some(tenant) = self.tenant {
+			crate::database::authority_change::enter(&self.store.pool, tenant).await;
+		}
 		self.visibility.resume(self.store).await.map_err(Into::into)
 	}
 }
@@ -1179,6 +1326,20 @@ impl ExecutionEnvironment for Environment<'_> {
 			None,
 		)
 		.map_err(Into::into)
+	}
+	async fn poll_operation(&self, run: &Run, operation: &str, input: Value) -> Result<Value> {
+		if run.id != self.step_run.id || !matches!(operation, "shell_poll" | "python_poll") {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let home = self.native_home();
+		let authority = home
+			.authority
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.core_tool(&self.federation.store, run, operation, input, "", false)
+			.await
+			.map_err(Into::into)
 	}
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self

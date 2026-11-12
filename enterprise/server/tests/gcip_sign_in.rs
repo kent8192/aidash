@@ -2917,10 +2917,10 @@ async fn tenant_administrators_disabling_each_other_are_serialized(
 		mapped_browser(&app, &f, ("acme", "pool-a", "first"), "root").await;
 	let (second, second_mapping) =
 		mapped_browser(&app, &f, ("acme", "pool-a", "second"), "deputy").await;
-	// Each disable's authorization decision waits on the decision log's
-	// serialization lock, holding every lock it took before the decision.
+	// Each disable's authorization decision waits on the Tenant's decision log
+	// lock, holding every lock it took before the decision.
 	let mut barrier = f.store.pool.fixture_driver().begin().await.unwrap();
-	sqlx::query("SELECT pg_advisory_xact_lock(71003202)")
+	sqlx::query("SELECT pg_advisory_xact_lock(71003202, hashtext('acme'))")
 		.execute(&mut *barrier)
 		.await
 		.unwrap();

@@ -292,9 +292,19 @@ impl AuthorizationRunRemoteRead {
 	pub(crate) async fn for_run(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
-	) -> Result<Vec<(String, String, String, String, Value)>> {
+	) -> Result<Vec<(String, String, String, String, Value, bool)>> {
 		let (sql, values) = Query::select()
-			.columns(["node_id", "entry_id", "entry_version", "digest", "metadata"].map(Alias::new))
+			.columns(
+				[
+					"node_id",
+					"entry_id",
+					"entry_version",
+					"digest",
+					"metadata",
+					"same_tenant",
+				]
+				.map(Alias::new),
+			)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.order_by(Alias::new("node_id"), Order::Asc)
@@ -310,12 +320,14 @@ impl AuthorizationRunRemoteRead {
 				let id = row.get("entry_id").map_err(FrameworkError::from)?;
 				let version = row.get("entry_version").map_err(FrameworkError::from)?;
 				let hash = row.get("digest").map_err(FrameworkError::from)?;
+				let same_tenant = row.get("same_tenant").map_err(FrameworkError::from)?;
 				Ok((
 					node,
 					id,
 					version,
 					hash,
 					QueryRow::from_backend_row(row).data["metadata"].clone(),
+					same_tenant,
 				))
 			})
 			.collect()

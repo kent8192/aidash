@@ -2,7 +2,7 @@
 //! provider prompt caches from being shared across Tenants. The salt exists
 //! only inside the outgoing request body; it is never logged or returned.
 use crate::{Error, Result};
-use aidash_domain::projection::{CacheScope, cache_salt_line};
+use aidash_domain::projection::{CacheScope, SESSION_ID_PREFIX, cache_salt_line};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -73,24 +73,41 @@ impl CacheSaltKeys {
 	/// The salt line that starts `system` for `scope`: HMAC-SHA256 of the
 	/// Tenant id keyed by the scope's key version, truncated to 128 bits.
 	pub fn line(&self, scope: &CacheScope) -> Result<String> {
-		let mut mac = self
-			.keys
-			.get(&scope.key_version)
-			.ok_or_else(|| {
-				Error::Invalid(format!(
-					"Cache Salt Key v{} is not configured on this node",
-					scope.key_version
-				))
-			})?
-			.clone();
+		let mut mac = self.mac(scope)?;
 		mac.update(scope.tenant.as_bytes());
-		let digest = mac.finalize().into_bytes();
-		let mut hex = String::with_capacity(32);
-		for byte in &digest[..16] {
-			let _ = write!(hex, "{byte:02x}");
-		}
-		Ok(cache_salt_line(scope.key_version, &hex))
+		Ok(cache_salt_line(scope.key_version, &hex(mac)))
 	}
+
+	/// The sticky-routing id of a Run (ADR 0115). It reaches OpenRouter and its
+	/// Broadcast destinations, so it is opaque. The label keeps it from ever
+	/// equalling the salt of a Tenant whose id looks like a Run.
+	pub fn session_id(&self, scope: &CacheScope, run: uuid::Uuid) -> Result<String> {
+		let mut mac = self.mac(scope)?;
+		mac.update(b"aidash-session\0");
+		mac.update(scope.tenant.as_bytes());
+		mac.update(b"\0");
+		mac.update(run.as_bytes());
+		Ok(format!("{SESSION_ID_PREFIX}{}", hex(mac)))
+	}
+
+	fn mac(&self, scope: &CacheScope) -> Result<Hmac<Sha256>> {
+		self.keys.get(&scope.key_version).cloned().ok_or_else(|| {
+			Error::Invalid(format!(
+				"Cache Salt Key v{} is not configured on this node",
+				scope.key_version
+			))
+		})
+	}
+}
+
+/// The MAC truncated to 128 bits, as lowercase hex.
+fn hex(mac: Hmac<Sha256>) -> String {
+	let digest = mac.finalize().into_bytes();
+	let mut hex = String::with_capacity(32);
+	for byte in &digest[..16] {
+		let _ = write!(hex, "{byte:02x}");
+	}
+	hex
 }
 
 impl fmt::Debug for CacheSaltKeys {

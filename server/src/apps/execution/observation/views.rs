@@ -98,8 +98,25 @@ async fn administrative(
 		runtime: runtime.clone(),
 	};
 	let admin = admins.administrator(actor, origin, tenant).await?;
+	let exclusive = write
+		&& admin
+			.may_change(
+				&runtime.store.pool,
+				aidash_domain::identity::tenancy::TENANT_UPDATE,
+			)
+			.await?;
 	let mut tx = runtime.store.pool.begin(&admin.scope()?).await?;
-	let snapshot = admin.lock(&mut *tx, write).await?;
+	let snapshot = if write {
+		admin
+			.lock_change(
+				&mut *tx,
+				exclusive,
+				aidash_domain::identity::tenancy::TENANT_UPDATE,
+			)
+			.await?
+	} else {
+		admin.lock(&mut *tx, false).await?
+	};
 	let allowed = admin
 		.require(
 			&mut *tx,

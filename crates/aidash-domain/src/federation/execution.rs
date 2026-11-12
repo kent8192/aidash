@@ -19,6 +19,10 @@ pub enum Refusal {
 	NodeUseAsk,
 	NodeUnreachable,
 	InvalidExecutor,
+	InstallationInactive,
+	ExecutorMismatch,
+	DefinitionChanged,
+	DeciderMismatch,
 }
 
 impl std::fmt::Display for Refusal {
@@ -35,6 +39,14 @@ impl std::fmt::Display for Refusal {
 			Self::NodeUseAsk => "the target Node requires authority approval for node.use",
 			Self::NodeUnreachable => "the target Node is unreachable",
 			Self::InvalidExecutor => "the target Agent subject has an incompatible type",
+			Self::InstallationInactive => "the target Node has no active installation of the agent",
+			Self::ExecutorMismatch => {
+				"the target Node's agent does not match the one the task asked for"
+			}
+			Self::DefinitionChanged => {
+				"a dependency of the agent changed on the target Node since it was inspected"
+			}
+			Self::DeciderMismatch => "the target Node's decider differs from the one requested",
 		})
 	}
 }

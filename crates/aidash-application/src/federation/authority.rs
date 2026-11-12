@@ -100,9 +100,15 @@ fn classify(reply: Reply) -> Result<Vec<u8>> {
 		200..=299 => reply
 			.body
 			.map_err(|_| Error::External("invalid remote authority response".into())),
-		401 | 403 | 404 => Err(Error::Forbidden),
+		401 | 403 => Err(Error::Forbidden),
+		// The receiver did not find it. That is no denial: the model hears it as a Rejected
+		// Call, and an authority refresh maps it back to `Forbidden` itself.
+		404 => Err(Error::NotFound("the target Node did not find it".into())),
 		409 => Err(Error::Conflict("remote execution authority changed".into())),
 		503 if reply.transaction_pending => Err(Error::TransactionPending),
+		503 if reply.policy_busy.is_some() => Err(Error::PolicyBusy {
+			retry_after: reply.policy_busy.unwrap_or(1),
+		}),
 		_ => Err(Error::External(
 			"remote execution authority unavailable".into(),
 		)),

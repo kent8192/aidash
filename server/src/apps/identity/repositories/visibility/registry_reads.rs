@@ -4,7 +4,7 @@ use crate::{Result as NativeResult, apps::identity::services::access::Access};
 use aidash_application::{
 	Result,
 	ports::federation::registry_reads::{
-		RegistryJournalRow, RegistryReadScope, RegistryVerificationScope,
+		RegistryJournalRow, RegistryReadScope, RegistryVerificationScope, RemoteReads,
 	},
 };
 use aidash_domain::{
@@ -21,16 +21,16 @@ impl RegistryReadScope for Reads<'_> {
 	fn identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
-	fn cached(&self, run: Uuid) -> Option<bool> {
+	fn cached(&self, run: Uuid) -> Option<RemoteReads> {
 		self.access
 			.dependency_frontier
 			.is_none()
 			.then(|| self.access.cached_remote_read(run))
 			.flatten()
 	}
-	fn remember(&mut self, run: Uuid, visible: bool) {
+	fn remember(&mut self, run: Uuid, reads: RemoteReads) {
 		if self.access.dependency_frontier.is_none() {
-			self.access.remember_remote_read(run, visible);
+			self.access.remember_remote_read(run, reads);
 		}
 	}
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>> {
@@ -62,7 +62,7 @@ impl RegistryReadScope for Reads<'_> {
 	}
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<RegistryJournalRow>> {
 		let result: NativeResult<Vec<RegistryJournalRow>> = async {
-			let rows: Vec<(String, String, String, String, Value)> = {
+			let rows: Vec<RegistryJournalRow> = {
 				let query_bind_1 = run;
 				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
@@ -82,6 +82,11 @@ impl RegistryReadScope for Reads<'_> {
 						))
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("metadata")),
+						))
+						.expr(reinhardt::query::SimpleExpr::from(
+							reinhardt::query::Expr::col(reinhardt::query::Alias::new(
+								"same_tenant",
+							)),
 						))
 						.from(reinhardt::query::Alias::new(
 							"authorization_run_remote_reads",
@@ -116,7 +121,14 @@ impl RegistryReadScope for Reads<'_> {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.columns(&["node_id", "entry_id", "entry_version", "digest", "metadata"])
+				.columns(&[
+					"node_id",
+					"entry_id",
+					"entry_version",
+					"digest",
+					"metadata",
+					"same_tenant",
+				])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};
@@ -138,11 +150,11 @@ impl RegistryReadScope for NativeReads<'_> {
 	fn identity(&self) -> (&str, &str) {
 		self.access.remote_identity()
 	}
-	fn cached(&self, run: Uuid) -> Option<bool> {
+	fn cached(&self, run: Uuid) -> Option<RemoteReads> {
 		self.access.cached_remote_read(run)
 	}
-	fn remember(&mut self, run: Uuid, visible: bool) {
-		self.access.remember_remote_read(run, visible);
+	fn remember(&mut self, run: Uuid, reads: RemoteReads) {
+		self.access.remember_remote_read(run, reads);
 	}
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>> {
 		None
@@ -218,7 +230,7 @@ impl RegistryVerificationScope for VerificationScope<'_> {
 			.map_err(Into::into)
 	}
 	async fn entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		crate::authorization::catalog::entry(self.access, reference, "registry.read")
+		crate::authorization::catalog::readable(self.access, reference)
 			.await
 			.map_err(Into::into)
 	}

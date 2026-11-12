@@ -5,6 +5,7 @@ use super::{
 };
 use crate::apps::identity::serializers::contracts::Snapshot;
 use crate::apps::identity::serializers::identity::Credential;
+use crate::database::authority_change;
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -121,15 +122,38 @@ impl AuthorizationBundle {
 		tenant: &str,
 		exclusive: bool,
 	) -> Result<Snapshot> {
+		if exclusive {
+			let waiting = authority_change::raise(tx, tenant).await?;
+			let held = Self::read_locked(tx, tenant, LockType::Update).await;
+			waiting.settle(tx, held).await
+		} else {
+			Self::read_locked(tx, tenant, LockType::Share).await
+		}
+	}
+
+	/// Locks the Tenant's policy for a one-shot maintenance command, which has
+	/// nobody to answer and nothing to retry, so it waits with no limit.
+	pub(crate) async fn lock_for_maintenance(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+	) -> Result<Snapshot> {
+		let snapshot = Self::read_locked(tx, tenant, LockType::Update).await?;
+		if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await? {
+			return Err(Error::TenantDeleted);
+		}
+		Ok(snapshot)
+	}
+
+	async fn read_locked(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		lock: LockType,
+	) -> Result<Snapshot> {
 		let (sql, values) = Query::select()
 			.columns(["revision", "document"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
-			.lock(if exclusive {
-				LockType::Update
-			} else {
-				LockType::Share
-			})
+			.lock(lock)
 			.build(PostgresQueryBuilder);
 		let row = tx
 			.fetch_optional(&sql, convert_values(values))

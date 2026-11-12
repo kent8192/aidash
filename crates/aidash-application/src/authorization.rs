@@ -92,6 +92,7 @@ pub fn validate_replacement(
 }
 
 pub mod catalog;
+pub mod refusal_note;
 
 pub fn require_deployment_administrator(
 	principal: &aidash_domain::identity::Principal,

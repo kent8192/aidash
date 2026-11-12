@@ -493,3 +493,15 @@ fn subnode_create_requires_a_named_agent_grant() {
 	assert!(allows(&bundle, "worker", SUBNODE_CREATE));
 	assert!(!allows(&bundle, OWNER, SUBNODE_CREATE));
 }
+
+#[test]
+fn declining_a_paused_call_is_the_administrators_unless_the_tenant_names_it() {
+	let bundle = with_member(initial_policy("t", true).unwrap(), "alice", MEMBERS);
+	// Every member may control a Run, so control alone must not let a colleague push on
+	// someone else's Run.
+	assert!(allows(&bundle, "alice", "run.control"));
+	assert!(!allows(&bundle, "alice", "run.decline_call"));
+	assert!(allows(&bundle, OWNER, "run.decline_call"));
+	assert!(!MEMBER_ACTIONS.contains(&"run.decline_call"));
+	assert!(!crate::policy::EXPLICIT_ACTIONS.contains(&"run.decline_call"));
+}

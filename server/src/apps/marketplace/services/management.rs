@@ -338,7 +338,7 @@ impl MarketplaceManagement {
 	) -> Result<Installation> {
 		let f = self.runtime.clone();
 		let identity = approving_subject(&actor, &input.tenant)?;
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin_change(&f.store, &identity, &["catalog.approve"]).await?;
 		let result = async {
 			let revision = crate::apps::marketplace::repositories::installations::revision(
 				&mut access.tx,
@@ -387,7 +387,7 @@ impl MarketplaceManagement {
 	) -> Result<Vec<Installation>> {
 		let f = self.runtime.clone();
 		let identity = approving_subject(&actor, &input.tenant)?;
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin_change(&f.store, &identity, &["catalog.approve"]).await?;
 		let result = async {
 			// An absent Node keeps the existing default-Node behaviour.
 			let node = match &input.node {

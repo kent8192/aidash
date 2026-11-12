@@ -165,6 +165,16 @@ impl HomeScope for SourceSession {
 			Ok(())
 		}
 	}
+	async fn task_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
+		self.repository.call("grant.by_task");
+		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
+	}
+	async fn may(&mut self, _: &Resource, _: &str) -> Result<bool> {
+		Ok(true)
+	}
+	async fn call_declined(&mut self, _: Uuid, _: Value) -> Result<()> {
+		Ok(())
+	}
 	async fn requester_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
 		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
 	}
@@ -187,6 +197,9 @@ impl HomeScope for SourceSession {
 				g
 			})
 			.collect())
+	}
+	async fn holder_grants(&mut self, _: Uuid) -> Result<Vec<Grant>> {
+		Ok(vec![])
 	}
 	async fn delegation_grants(&mut self, _: &Task, _: &str) -> Result<Vec<Grant>> {
 		Ok(vec![grant(false)])
@@ -227,6 +240,10 @@ impl HomeScope for SourceSession {
 	}
 	async fn binding_revision(&mut self, _: Uuid, revision: i64) -> Result<()> {
 		self.repository.state.lock().unwrap().revision = Some(revision);
+		Ok(())
+	}
+	async fn mark_activated(&mut self, _: Uuid) -> Result<()> {
+		self.repository.call("mark_activated");
 		Ok(())
 	}
 	async fn resume_semantic(&mut self, _: Uuid, _: Uuid, _: Uuid, _: &str) -> Result<()> {

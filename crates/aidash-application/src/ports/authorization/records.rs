@@ -34,9 +34,17 @@ pub trait WorkspaceRecordScope: Send {
 	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()>;
 }
 pub struct ChildTaskRecord {
+	pub revision: i64,
 	pub id: Uuid,
+	pub title: String,
 	pub created_by: String,
 	pub status: TaskStatus,
+	pub dependencies: Vec<Uuid>,
+	/// Somebody has the Task. Read for open and claimed children only.
+	pub started: bool,
+	/// A Run of the parent created the Task and nothing open sits beneath it.
+	/// Read for open and claimed children only.
+	pub abandonable: bool,
 }
 #[async_trait]
 pub trait ChildSummaryScope: Send + super::visibility::RowOutcome {

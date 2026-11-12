@@ -79,6 +79,7 @@ export function Notice({
 export function Alert({
   retry,
   retryLabel,
+  retryDisabled,
   className,
   children,
   ...props
@@ -86,6 +87,7 @@ export function Alert({
   retry?: () => void;
   /** Defaults to the shared "retry" copy. */
   retryLabel?: string;
+  retryDisabled?: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -108,6 +110,7 @@ export function Alert({
           variant="outline"
           size="sm"
           className="-my-1 shrink-0"
+          disabled={retryDisabled}
           onClick={retry}
         >
           {retryLabel ?? t("retry")}

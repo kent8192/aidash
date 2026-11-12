@@ -28,7 +28,8 @@ fn subnode_read_only(context: &serde_json::Value, id: &serde_json::Value) -> boo
 		.is_some_and(|workspaces| workspaces.contains(id))
 }
 pub async fn resource(scope: &mut dyn WorkspaceResourceScope, id: Uuid) -> Result<Resource> {
-	if scope.inherited() && !workspace_reachable(scope.context(), id) {
+	if scope.inherited() && !workspace_reachable(scope.context(), id) && !scope.recheck_reaches(id)
+	{
 		return Err(Error::Forbidden);
 	}
 	let lock = !scope.inherited();

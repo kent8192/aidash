@@ -1250,6 +1250,13 @@ fn secure_headers(response: &mut Response, auth_domain: Option<&str>) {
 	response.headers.insert(header::CONTENT_SECURITY_POLICY, format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com https://*.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com{auth_frame}; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'").parse().expect("validated CSP"));
 }
 fn failure(error: Error) -> Response {
+	let temporary_database = matches!(
+		&error,
+		Error::Application(aidash_application::Error::TemporaryDatabase(_))
+			| Error::Accounts(aidash_application::accounts::Error::Store(
+				aidash_application::Error::TemporaryDatabase(_)
+			))
+	);
 	let (status, code) = match error {
 		Error::Accounts(aidash_application::accounts::Error::Rule(
 			aidash_domain::accounts::AccountError::LastLoginMethod,
@@ -1275,6 +1282,12 @@ fn failure(error: Error) -> Response {
 		_ => (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
 	};
 	let mut response = json_response(status, json!({"error":code}));
+	if temporary_database {
+		response.headers.insert(
+			header::RETRY_AFTER,
+			"1".parse().expect("static retry interval"),
+		);
+	}
 	if status == StatusCode::UNAUTHORIZED {
 		response.headers.insert(
 			header::WWW_AUTHENTICATE,
@@ -1288,4 +1301,45 @@ fn failure(error: Error) -> Response {
 		);
 	}
 	response
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+
+	#[test]
+	fn temporary_database_failure_returns_retry_after() {
+		use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
+		let timeout = crate::store::database_failure(DatabaseError::new(
+			DatabaseErrorKind::Timeout,
+			"pool timed out",
+		));
+		assert!(matches!(
+			timeout,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let response = failure(Error::Application(timeout));
+		assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+		assert_eq!(response.headers[header::RETRY_AFTER], "1");
+		let nested = aidash_application::Error::TemporaryDatabase(Box::new(std::io::Error::other(
+			"database unavailable",
+		)));
+		let response = failure(Error::Accounts(aidash_application::accounts::Error::Store(
+			nested,
+		)));
+		assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+		assert_eq!(response.headers[header::RETRY_AFTER], "1");
+	}
+
+	#[test]
+	fn a_permanent_database_failure_stays_redacted() {
+		use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
+		let error = crate::store::database_failure(DatabaseError::new(
+			DatabaseErrorKind::Query,
+			"relation does not exist",
+		));
+		assert!(
+			matches!(error, aidash_application::Error::External(message) if message == "authentication persistence unavailable")
+		);
+	}
 }

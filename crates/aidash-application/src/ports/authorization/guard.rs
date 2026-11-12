@@ -7,12 +7,12 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use uuid::Uuid;
+/// What the Use Recheck needs: the current Catalog Approval and policy over the
+/// definitions a Run uses, and the Binding it was admitted with. Nothing
+/// federated, so a caller that only holds an `Access` can implement it.
 #[async_trait]
-pub trait RunGuardScope: Send {
+pub trait UseRecheckScope: Send {
 	fn node_id(&self) -> &str;
-	fn bundle(&self) -> &PolicyBundle;
-	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
-	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>>;
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
 	/// Existence and current Catalog Approval, independent of subject policy.
 	async fn reference_embedding_available(&mut self, _reference: &EntityRef) -> Result<bool> {
@@ -28,12 +28,6 @@ pub trait RunGuardScope: Send {
 	) -> Result<Entry>;
 	/// Read exact metadata under current `registry.read`, independently of invocation approval.
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry>;
-	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
-	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
-	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn require_live(&mut self, task: Uuid, agent: &EntityRef) -> Result<()>;
-	async fn check_pinned(&mut self, entry: &Entry) -> Result<()>;
-	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()>;
 	async fn binding_snapshot(
 		&mut self,
 		_: &RunMetadata,
@@ -42,4 +36,16 @@ pub trait RunGuardScope: Send {
 			"Run has no admitted Binding snapshot".into(),
 		))
 	}
+}
+#[async_trait]
+pub trait RunGuardScope: UseRecheckScope {
+	fn bundle(&self) -> &PolicyBundle;
+	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
+	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>>;
+	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
+	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
+	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	async fn require_live(&mut self, task: Uuid, agent: &EntityRef) -> Result<()>;
+	async fn check_pinned(&mut self, entry: &Entry) -> Result<()>;
+	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()>;
 }

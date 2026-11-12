@@ -157,12 +157,14 @@ pub(crate) fn request_body(
 
 /// OpenRouter's Responses body. It uses flat function tools and no namespace
 /// on calls, keeps the same provider preferences as the chat body, and never
-/// sends conversation state or a previous response ID. Streaming
+/// sends conversation state or a previous response ID. A Run's opaque
+/// `session_id` keeps it on one provider, as on chat. Streaming
 /// is added by the caller only when the model streams.
 fn openrouter_request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
 	salt: Option<&str>,
+	session: Option<&str>,
 	media_routes: Vec<String>,
 	requirement: aidash_domain::data_protection::Requirement,
 ) -> Result<Value> {
@@ -180,6 +182,9 @@ fn openrouter_request_body(
 	body["provider"] = super::provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
+	}
+	if let Some(session) = session {
+		body["session_id"] = json!(session);
 	}
 	Ok(body)
 }
@@ -410,6 +415,7 @@ impl ResponsesProvider {
 			.provider_tools = prepared.provider_tools.clone();
 		let request = &prepared;
 		let salt = salt_line(self, request)?;
+		let session = super::routing_session(self.cache_salt.as_ref(), request)?;
 		let media_routes = super::verified_routes(
 			&self.clients,
 			&self.config,
@@ -422,6 +428,7 @@ impl ResponsesProvider {
 			&self.config,
 			request,
 			salt.as_deref(),
+			session.as_deref(),
 			media_routes,
 			context.data_protection.requirement(),
 		)?;
@@ -471,7 +478,7 @@ impl ResponsesProvider {
 		} else {
 			parse_response(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?)
 		};
-		record_token_metrics(&result);
+		record_token_metrics(&result, self.config.metric_family());
 		result
 	}
 }
@@ -514,7 +521,7 @@ fn parse_response(body: &[u8]) -> Result<ModelResponse> {
 
 /// Token metrics match the Chat Completions path: a billed response counts,
 /// a failure with no reported usage does not.
-fn record_token_metrics(result: &Result<ModelResponse>) {
+fn record_token_metrics(result: &Result<ModelResponse>, family: &'static str) {
 	if let Some(usage) = super::billed_usage(result) {
 		for (direction, tokens) in [
 			("input", usage.reported.input_tokens),
@@ -523,8 +530,12 @@ fn record_token_metrics(result: &Result<ModelResponse>) {
 			("input_cached_write", usage.reported.cache_write_tokens),
 		] {
 			if let Some(tokens) = tokens {
-				metrics::counter!("aidash_model_tokens_total", "direction" => direction)
-					.increment(tokens);
+				metrics::counter!(
+					"aidash_model_tokens_total",
+					"direction" => direction,
+					"family" => family
+				)
+				.increment(tokens);
 			}
 		}
 	}
@@ -619,6 +630,7 @@ pub(crate) struct Assembler<'a> {
 	streamed: usize,
 	calls: BTreeMap<u64, (Option<String>, Option<String>, u64)>,
 	finished: Option<Result<ModelResponse>>,
+	output_started: bool,
 }
 
 impl<'a> Assembler<'a> {
@@ -643,6 +655,7 @@ impl<'a> Assembler<'a> {
 			streamed: 0,
 			calls: BTreeMap::new(),
 			finished: None,
+			output_started: false,
 		}
 	}
 
@@ -652,8 +665,8 @@ impl<'a> Assembler<'a> {
 		self.finished.is_some()
 	}
 
-	/// Consumes one network chunk; returns whether it carried event data.
-	/// Comments and empty `data:` fields never count as liveness.
+	/// Consumes one network chunk; data is live in both phases, while
+	/// comments are live only before the first output.
 	pub(crate) fn push(&mut self, mut chunk: &[u8]) -> Result<bool> {
 		let stream_limit = self.limit.saturating_mul(STREAM_ENVELOPE_FACTOR);
 		if chunk.len() > stream_limit.saturating_sub(self.received) {
@@ -713,7 +726,7 @@ impl<'a> Assembler<'a> {
 			return Ok(false);
 		}
 		if line[0] == b':' {
-			return Ok(false);
+			return Ok(!self.output_started);
 		}
 		let (name, value) = match line.iter().position(|byte| *byte == b':') {
 			Some(colon) => {
@@ -744,6 +757,22 @@ impl<'a> Assembler<'a> {
 		}
 		let event: Value = serde_json::from_slice(data)
 			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
+		let kind = event["type"].as_str().unwrap_or_default();
+		let output_delta = kind == "response.output_text.delta"
+			|| (self.openrouter && kind == "response.content_part.delta")
+			|| kind == "response.function_call_arguments.delta"
+			|| (kind.starts_with("response.reasoning") && kind.ends_with(".delta"));
+		self.output_started |= (output_delta
+			&& event["delta"]
+				.as_str()
+				.is_some_and(|delta| !delta.is_empty()))
+			|| (kind == "response.output_item.added"
+				&& event["item"]["type"] == "function_call"
+				&& ["call_id", "name", "arguments"].into_iter().any(|key| {
+					event["item"][key]
+						.as_str()
+						.is_some_and(|value| !value.is_empty())
+				}));
 		match event["type"].as_str() {
 			// OpenRouter also emits `response.content_part.delta` for text.
 			Some("response.output_text.delta") => {

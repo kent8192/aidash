@@ -11,7 +11,7 @@ use crate::{
 		serializers::contracts::FileEntry,
 		services::retention,
 	},
-	authorization::access::Access,
+	authorization::{access::Access, identity::SubjectIdentity},
 	domain::Run,
 	store::Store,
 };
@@ -92,7 +92,8 @@ impl Scope<'_> {
 			.filter(Row::field_id().eq(id))
 			.all_with_executor(&mut **self.access.tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?
 			.pop();
 		row.map(domain).transpose()
 	}
@@ -112,7 +113,7 @@ impl application::Scope for Scope<'_> {
 			.all_with_executor(&mut **self.access.tx)
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(|error| NativeError::External(error.to_string()))?
+			.map_err(NativeError::from)?
 			.pop();
 		Ok(row.map(|row| Limits {
 			idle_seconds: row.idle_seconds,
@@ -125,7 +126,15 @@ impl application::Scope for Scope<'_> {
 			&self.run.metadata(),
 		)
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(|error| {
+			let message = error.to_string();
+			let native = NativeError::from(error);
+			if native.is_database() {
+				native
+			} else {
+				NativeError::External(message)
+			}
+		})?;
 		Ok(RunFacts {
 			id: self.run.id,
 			tenant: self.access.identity.tenant.clone(),
@@ -146,7 +155,8 @@ impl application::Scope for Scope<'_> {
 			.filter(Row::field_run_id().eq(run))
 			.all_with_executor(&mut **self.access.tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		let row = rows.into_iter().max_by_key(|row| row.started_at);
 		row.map(domain).transpose().map_err(Into::into)
 	}
@@ -157,14 +167,16 @@ impl application::Scope for Scope<'_> {
 		Row::objects()
 			.insert_with_executor(&mut **self.access.tx, &to_row(preview))
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		Ok(())
 	}
 	async fn save(&mut self, preview: &LivePreview) -> aidash_application::Result<()> {
 		Row::objects()
 			.save_with_executor(&mut **self.access.tx, &to_row(preview))
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		Ok(())
 	}
 	async fn retain_revision(
@@ -190,7 +202,8 @@ impl application::Scope for Scope<'_> {
 			.filter(Row::field_id().ne(Uuid::nil()))
 			.all_with_executor(&mut **self.access.tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		rows.into_iter()
 			.map(domain)
 			.filter(|row| {
@@ -212,8 +225,7 @@ impl application::Scope for Scope<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **self.access.tx)
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.await?;
 		Ok(revision)
 	}
 	async fn mint_egress(&mut self, preview: &mut LivePreview) -> aidash_application::Result<()> {
@@ -242,7 +254,8 @@ impl application::Scope for Scope<'_> {
 					.finish(),
 			)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		preview.egress_expires_at = Some(expires_at);
 		Ok(())
 	}
@@ -617,7 +630,7 @@ pub(crate) async fn mark_stopped(
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, reinhardt::db::orm::execution::convert_values(values))
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(NativeError::from)?;
 	Ok(())
 }
 
@@ -629,6 +642,142 @@ pub(crate) fn egress_token(store: &Store, preview: &LivePreview) -> NativeResult
 	Ok(Some(
 		crate::apps::execution::repositories::egress::session_token(preview.id, expires_at, store)?,
 	))
+}
+
+/// The Live previews a Read Recheck covers.
+pub(crate) async fn serving(store: &Store) -> NativeResult<Vec<Uuid>> {
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::CapabilityMaintenance,
+		))
+		.await?;
+	let mut ids = vec![];
+	for state in [State::Running, State::Stale] {
+		let rows = Row::objects()
+			.filter(Row::field_state().eq(state.as_str()))
+			.all_with_executor(&mut *tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+		ids.extend(rows.into_iter().map(|row| row.id));
+	}
+	tx.commit().await?;
+	Ok(ids)
+}
+
+async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<LivePreview>> {
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::CapabilityMaintenance,
+		))
+		.await?;
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop();
+	tx.commit().await?;
+	row.map(domain).transpose()
+}
+
+/// The Read Recheck of a serving Live preview, for everyone on its Run's chain
+/// (ADR 0070, ADR 0116). A Run that has finished stays covered: its grant remains.
+pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> {
+	use aidash_application::ports::authorization::ExecutionGrantRepository as _;
+	let Some(preview) = load_for_maintenance(store, id).await? else {
+		return Ok(true);
+	};
+	let grant = crate::bootstrap::execution_grants(store)
+		.grant(preview.run_id)
+		.await?;
+	let (identity, subjects) = match grant {
+		Some(grant) => (
+			SubjectIdentity {
+				http_session: None,
+				credential_id: grant.credential_id,
+				tenant: grant.tenant,
+				subject: grant.root_subject,
+			},
+			Some(grant.subject_chain),
+		),
+		// A Run started through a Remote Grant has no local grant. Its session
+		// names the subject that holds the preview.
+		None => {
+			let mut tx = store
+				.pool
+				.begin(&TenancyScope::tenant(&preview.tenant)?)
+				.await?;
+			let session = EgressSession::objects()
+				.filter(EgressSession::field_id().eq(preview.id))
+				.filter(EgressSession::field_run_id().eq(preview.run_id))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(NativeError::from)?
+				.pop();
+			let subjects = crate::apps::federation::peer::repositories::admissions::subject_chain(
+				&mut *tx,
+				preview.run_id,
+			)
+			.await?;
+			tx.commit().await?;
+			let (Some(session), Some(mut subjects)) = (session, subjects) else {
+				return Ok(false);
+			};
+			if subjects.is_empty() {
+				return Ok(false);
+			}
+			if !subjects.contains(&session.principal) {
+				subjects.push(session.principal.clone());
+			}
+			(
+				SubjectIdentity {
+					http_session: None,
+					credential_id: session.credential_id,
+					tenant: session.tenant,
+					subject: session.principal,
+				},
+				Some(subjects),
+			)
+		}
+	};
+	let mut access = Access::begin(store, &identity).await?;
+	if let Some(subjects) = subjects {
+		access.subjects = subjects;
+	}
+	let result = access.recheck_run_reads(preview.run_id).await.map(|_| ());
+	access.finish(result).await.map(|()| true)
+}
+
+/// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the
+/// row settles when the Runner proves the Pod is gone, here or on a later pass.
+pub(crate) async fn stop_serving(store: &Store, id: Uuid, reason: StopReason) -> NativeResult<()> {
+	let Some(mut preview) = load_for_maintenance(store, id).await? else {
+		return Ok(());
+	};
+	if !matches!(preview.state, State::Running | State::Stale) {
+		return Ok(());
+	}
+	let tenant = preview.tenant.clone();
+	preview.stopping(reason);
+	{
+		let mut tx = store.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
+		Row::objects()
+			.save_with_executor(&mut *tx, &to_row(&preview))
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+		tx.commit().await?;
+	}
+	if terminate(store, &preview).await.unwrap_or(false) {
+		preview.termination_confirmed = true;
+		settle_row(store, &tenant, &mut preview).await?;
+	}
+	Ok(())
 }
 
 /// One sweep pass: stale marking and stops at the idle, absolute and start
@@ -646,7 +795,8 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 			.filter(Row::field_id().ne(Uuid::nil()))
 			.all_with_executor(&mut *tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		tx.commit().await?;
 		rows
 	};
@@ -670,7 +820,8 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 					Row::objects()
 						.save_with_executor(&mut *tx, &to_row(&preview))
 						.await
-						.map_err(|error| NativeError::External(error.to_string()))?;
+						.map_err(reinhardt::core::exception::Error::from)
+						.map_err(NativeError::from)?;
 				}
 				tx.commit().await?;
 			}
@@ -682,7 +833,8 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 			Row::objects()
 				.save_with_executor(&mut *tx, &to_row(&preview))
 				.await
-				.map_err(|error| NativeError::External(error.to_string()))?;
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(NativeError::from)?;
 			tx.commit().await?;
 		}
 		if terminate(store, &preview).await.unwrap_or(false) {
@@ -706,7 +858,8 @@ async fn sweep_stopping(store: &Store) -> NativeResult<()> {
 			.filter(Row::field_termination_confirmed().eq(false))
 			.all_with_executor(&mut *tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		tx.commit().await?;
 		rows
 	};
@@ -729,7 +882,8 @@ async fn settle_row(store: &Store, tenant: &str, preview: &mut LivePreview) -> N
 	Row::objects()
 		.save_with_executor(&mut *tx, &to_row(preview))
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?;
 	release_hold(&mut tx, tenant, preview.id).await?;
 	tx.commit().await?;
 	Ok(())
@@ -751,7 +905,6 @@ async fn area_revision(
 	)
 	.scalar_optional(&mut **tx)
 	.await
-	.map_err(|error| NativeError::External(error.to_string()))
 }
 
 async fn release_hold(
@@ -782,4 +935,85 @@ async fn release_hold(
 	.execute(&mut **tx)
 	.await?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn live_preview_repository_preserves_real_pool_timeout(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.acquire_timeout(std::time::Duration::from_secs(2))
+			.connect(&database.url)
+			.await
+			.unwrap();
+		let store = Store::from_pool(
+			driver.clone(),
+			aidash_domain::nodes::DeploymentId::parse("aidash://preview-test").unwrap(),
+		)
+		.await
+		.unwrap();
+		let mut connections = Vec::new();
+		for _ in 0..8 {
+			connections.push(driver.acquire().await.unwrap());
+		}
+		assert!(matches!(
+			driver.acquire().await.err(),
+			Some(sqlx::Error::PoolTimedOut)
+		));
+		let error = serving(&store).await.unwrap_err();
+		assert!(matches!(
+			crate::apps::execution::repositories::worker::classify_failure(&error),
+			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+		));
+		let application = aidash_application::Error::from(error);
+		assert!(matches!(
+			application,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let response = NativeError::from(application).http_response();
+		assert_eq!(response.status.as_u16(), 503);
+		assert_eq!(response.headers[http::header::RETRY_AFTER], "1");
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn live_preview_repository_preserves_orm_statement_timeout(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let options: sqlx::postgres::PgConnectOptions = database.url.parse().unwrap();
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.connect_with(options.options([("statement_timeout", "2s")]))
+			.await
+			.unwrap();
+		let store = Store::from_pool(
+			driver,
+			aidash_domain::nodes::DeploymentId::parse("aidash://preview-test").unwrap(),
+		)
+		.await
+		.unwrap();
+		let owner = sqlx::PgPool::connect(&database.owner_url).await.unwrap();
+		let mut lock = owner.begin().await.unwrap();
+		sqlx::query("LOCK TABLE core_live_previews IN ACCESS EXCLUSIVE MODE")
+			.execute(&mut *lock)
+			.await
+			.unwrap();
+		let error = serving(&store).await.unwrap_err();
+		assert!(error.has_database_code("57014"), "{error:?}");
+		assert!(error.is_transient_database(), "{error:?}");
+		assert!(matches!(
+			aidash_application::Error::from(error),
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		lock.rollback().await.unwrap();
+	}
 }

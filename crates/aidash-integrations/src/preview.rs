@@ -25,9 +25,20 @@ use tokio::{
 	sync::watch,
 };
 
+mod slots;
+use slots::{Connection, Refusal, Slots};
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Body = UnsyncBoxBody<Bytes, BoxError>;
-const HEADER_READ: Duration = Duration::from_secs(30);
+/// How long a client may take to send a request head, also while a kept-alive
+/// connection waits for its next request. Browsers and an edge send at once.
+const HEADER_READ: Duration = Duration::from_secs(10);
+/// Refused connections answered at once, and for how long each. Anyone can
+/// open connections, so answering them is bounded too; beyond this a connection
+/// is dropped unanswered.
+const REFUSAL_SLOTS: usize = 8;
+const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
+const RETRY_AFTER_SECONDS: &str = "5";
 /// A page reaches a Run's External services through its own origin at this
 /// path; the Preview gateway forwards it to the Egress gateway (ADR 0069).
 pub const EGRESS_PREFIX: &str = "/__aidash/egress/";
@@ -107,6 +118,35 @@ fn plain(status: StatusCode, message: &'static str) -> Response<Body> {
 		.header("x-content-type-options", "nosniff")
 		.body(body(Bytes::from_static(message.as_bytes())))
 		.unwrap()
+}
+
+/// The answer to a connection or request turned away for want of a slot. The
+/// connection closes after it, so the client starts over on a fresh one.
+fn refused(refusal: Refusal) -> Response<Body> {
+	let status = match refusal {
+		Refusal::OtherPreview => StatusCode::MISDIRECTED_REQUEST,
+		Refusal::Busy | Refusal::PreviewFull => StatusCode::SERVICE_UNAVAILABLE,
+	};
+	let mut response = plain(status, refusal.code());
+	let headers = response.headers_mut();
+	headers.insert(
+		header::CONNECTION,
+		header::HeaderValue::from_static("close"),
+	);
+	if status == StatusCode::SERVICE_UNAVAILABLE {
+		headers.insert(
+			header::RETRY_AFTER,
+			header::HeaderValue::from_static(RETRY_AFTER_SECONDS),
+		);
+	}
+	response
+}
+
+/// Moves the connection to the slot of the preview a request was admitted to.
+fn admit(slots: &Slots, connection: &Connection, host: &str) -> Result<(), Refusal> {
+	slots
+		.admit(connection, host)
+		.inspect_err(|refusal| slots.note(*refusal, "answered"))
 }
 
 /// Applies the confinement headers every Preview response carries.
@@ -362,6 +402,7 @@ fn websocket_request(request: &Request<hyper::body::Incoming>) -> bool {
 /// this for hot reload; the gateway is the only path into the Pod (ADR 0068).
 async fn live_websocket(
 	authority: &Arc<dyn Authority>,
+	connection: &Connection,
 	host: &str,
 	cookie: &str,
 	proxy: &Proxy,
@@ -450,7 +491,10 @@ async fn live_websocket(
 			let authority = authority.clone();
 			let host = host.to_owned();
 			let cookie = cookie.to_owned();
+			// The tunnel outlives the HTTP connection and keeps its slot.
+			let slot = connection.tunnel();
 			tokio::spawn(async move {
+				let _slot = slot;
 				let Ok(upgraded) = upgrade.await else {
 					return;
 				};
@@ -492,13 +536,14 @@ async fn live_websocket(
 async fn live(
 	client: &reqwest::Client,
 	authority: &Arc<dyn Authority>,
+	connection: &Connection,
 	host: &str,
 	cookie: &str,
 	proxy: Proxy,
 	request: Request<hyper::body::Incoming>,
 ) -> Response<Body> {
 	if websocket_request(&request) {
-		return live_websocket(authority, host, cookie, &proxy, request).await;
+		return live_websocket(authority, connection, host, cookie, &proxy, request).await;
 	}
 	if request.uri().path().starts_with(EGRESS_PREFIX) {
 		return egress_forward(client, &proxy, request).await;
@@ -507,12 +552,14 @@ async fn live(
 }
 
 /// A File preview: only GET and HEAD, only the paths its manifest names.
+/// `admit` runs once the viewer is confirmed and may still turn the page away.
 async fn file_view(
 	authority: &dyn Authority,
 	host: &str,
 	cookie: &str,
 	method: &hyper::Method,
 	path: &str,
+	admit: impl FnOnce() -> Result<(), Refusal>,
 ) -> Response<Body> {
 	let head = method == hyper::Method::HEAD;
 	if method != hyper::Method::GET && !head {
@@ -520,6 +567,9 @@ async fn file_view(
 	}
 	match authority.view(host, cookie, path).await {
 		Ok(page) => {
+			if let Err(refusal) = admit() {
+				return refused(refusal);
+			}
 			let Ok(policy) = content_security_policy(&page.frame_ancestor) else {
 				return plain(StatusCode::INTERNAL_SERVER_ERROR, "preview unavailable");
 			};
@@ -558,6 +608,8 @@ async fn file_view(
 async fn respond(
 	client: reqwest::Client,
 	authority: Arc<dyn Authority>,
+	slots: &Slots,
+	connection: &Connection,
 	request: Request<hyper::body::Incoming>,
 ) -> Response<Body> {
 	let host = request
@@ -586,10 +638,37 @@ async fn respond(
 		return plain(StatusCode::FORBIDDEN, "preview forbidden");
 	};
 	match authority.live(&host, cookie, true).await {
-		Ok(Some(proxy)) => live(&client, &authority, &host, cookie, proxy, request).await,
-		Ok(None) => file_view(authority.as_ref(), &host, cookie, &method, &path).await,
+		Ok(Some(proxy)) => {
+			if let Err(refusal) = admit(slots, connection, &host) {
+				return refused(refusal);
+			}
+			live(
+				&client, &authority, connection, &host, cookie, proxy, request,
+			)
+			.await
+		}
+		Ok(None) => {
+			file_view(authority.as_ref(), &host, cookie, &method, &path, || {
+				admit(slots, connection, &host)
+			})
+			.await
+		}
 		Err(error) => error_response(error),
 	}
+}
+
+/// Answers a connection that found no free slot, within `REFUSAL_WINDOW`.
+/// The answer goes out once the request head is read, so a request with a body
+/// may see a reset instead; Preview requests rarely have one.
+async fn refuse_connection(socket: TcpStream) {
+	let service = service_fn(|_request| async { Ok::<_, Infallible>(refused(Refusal::Busy)) });
+	let serving = hyper::server::conn::http1::Builder::new()
+		.timer(TokioTimer::new())
+		.keep_alive(false)
+		.header_read_timeout(REFUSAL_WINDOW)
+		.max_headers(64)
+		.serve_connection(TokioIo::new(socket), service);
+	let _ = tokio::time::timeout(REFUSAL_WINDOW, serving).await;
 }
 
 /// Serve until the supervisor stops. Requests are only ever the gateway's own
@@ -597,12 +676,23 @@ async fn respond(
 pub async fn serve(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
+	stopping: watch::Receiver<bool>,
+) -> crate::Result<()> {
+	serve_with_slots(listener, authority, Arc::new(Slots::default()), stopping).await
+}
+
+async fn serve_with_slots(
+	listener: TcpListener,
+	authority: Arc<dyn Authority>,
+	slots: Arc<Slots>,
 	mut stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
 	let client = upstream_client()?;
+	let refusals = Arc::new(tokio::sync::Semaphore::new(REFUSAL_SLOTS));
 	let mut connections = tokio::task::JoinSet::new();
+	let mut failures = crate::accept::AcceptFailures::new("preview gateway");
 	loop {
-		if *stopping.borrow() {
+		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
 			return Ok(());
 		}
@@ -610,16 +700,28 @@ pub async fn serve(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = accepted.map_err(|_| aidash_application::Error::External(
-					"Preview listener unavailable".into(),
-				))?;
+				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
+				let Some(connection) = slots.arrive() else {
+					let answering = refusals.clone().try_acquire_owned();
+					slots.note(Refusal::Busy, if answering.is_ok() { "answered" } else { "dropped" });
+					if let Ok(permit) = answering {
+						connections.spawn(async move { let _permit = permit; refuse_connection(socket).await; });
+					}
+					continue;
+				};
+				let connection = Arc::new(connection);
 				let authority = authority.clone();
 				let client = client.clone();
+				let slots = slots.clone();
 				connections.spawn(async move {
 					let service = service_fn(move |request| {
 						let authority = authority.clone();
 						let client = client.clone();
-						async move { Ok::<_, Infallible>(respond(client, authority, request).await) }
+						let slots = slots.clone();
+						let connection = connection.clone();
+						async move {
+							Ok::<_, Infallible>(respond(client, authority, &slots, &connection, request).await)
+						}
 					});
 					let _ = hyper::server::conn::http1::Builder::new()
 						.timer(TokioTimer::new())
@@ -658,7 +760,7 @@ async fn dispatch(
 	};
 	match authority.live(host, cookie, true).await {
 		Ok(Some(_)) => plain(StatusCode::INTERNAL_SERVER_ERROR, "live proxy under test"),
-		Ok(None) => file_view(authority, host, cookie, method, path).await,
+		Ok(None) => file_view(authority, host, cookie, method, path, || Ok(())).await,
 		Err(error) => error_response(error),
 	}
 }

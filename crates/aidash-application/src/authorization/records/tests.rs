@@ -257,9 +257,14 @@ impl ChildSummaryScope for Scope {
 			.filter(|row| after.is_none_or(|after| row.0 > after))
 			.take(100)
 			.map(|row| ChildTaskRecord {
+				revision: 0,
 				id: row.0,
+				title: format!("task {}", row.0),
 				created_by: row.1.clone(),
 				status: row.2,
+				dependencies: Vec::new(),
+				started: false,
+				abandonable: true,
 			})
 			.collect())
 	}
@@ -482,13 +487,7 @@ async fn visible_child_summary_preserves_each_domain_status(
 	let summary = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
 		.await
 		.unwrap();
-	assert_eq!(
-		summary,
-		ChildTaskSummary {
-			has_pending: pending,
-			has_failed: failed
-		}
-	);
+	assert_eq!((summary.has_pending, summary.has_failed), (pending, failed));
 	assert_eq!(scope.task_reads, vec![vec![Uuid::from_u128(2)]]);
 }
 #[rstest]
@@ -501,14 +500,38 @@ async fn hidden_child_status_does_not_contribute_to_summary_or_membership(mut sc
 	let summary = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
 		.await
 		.unwrap();
-	assert_eq!(
-		summary,
-		ChildTaskSummary {
-			has_pending: false,
-			has_failed: false
-		}
-	);
+	assert!(!summary.has_pending && !summary.has_failed);
 	assert_eq!(scope.task_reads, vec![vec![Uuid::from_u128(3)]]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn child_summary_detects_each_terminal_change_but_ignores_starting(mut scope: Scope) {
+	let id = Uuid::from_u128(2);
+	scope.children = vec![(id, "visible".into(), TaskStatus::Open)];
+	let before = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
+		.await
+		.unwrap();
+	scope.children[0].2 = TaskStatus::Running;
+	let running = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
+		.await
+		.unwrap();
+	// Starting is not a terminal change. The open child was an Unassigned
+	// Task and the running one is not, so compare what the fingerprint covers.
+	assert_eq!(before.terminal_fingerprint, running.terminal_fingerprint);
+	assert_eq!(before.unassigned.len(), 1);
+	assert!(running.unassigned.is_empty());
+	scope.children[0].2 = TaskStatus::Completed;
+	let one_done = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
+		.await
+		.unwrap();
+	scope
+		.children
+		.push((Uuid::from_u128(3), "visible".into(), TaskStatus::Completed));
+	let two_done = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
+		.await
+		.unwrap();
+	assert_ne!(one_done, two_done);
 }
 #[rstest]
 #[tokio::test]

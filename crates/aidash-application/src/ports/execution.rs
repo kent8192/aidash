@@ -16,6 +16,23 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct WorkspaceEvent {
+	pub generation: i64,
+	pub task_id: Uuid,
+	pub status: String,
+}
+
+/// The Workspace task changes a waiting Run is told about.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceEvents {
+	/// The newest changes, oldest first. The store bounds how many it returns.
+	pub events: Vec<WorkspaceEvent>,
+	/// How many older changes the bound left out. The Run's cursor moves past
+	/// them, so only this count tells the Agent that it was not told of them.
+	pub dropped: u64,
+}
+
 /// Validated projection of the registered agent configuration used by execution.
 pub struct ExecutionAgent {
 	pub model: EntityRef,
@@ -103,6 +120,10 @@ pub enum InferenceInterruption {
 
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+	/// Workspace task changes after the Run's durable cursor, in generation order.
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents>;
+	/// Number of locally created or delegated Tasks that remain unfinished.
+	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64>;
 	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
 	/// accepted, in the same transaction. When the stale-input check rejects the
 	/// save, the pending attempt is closed as discarded instead.
@@ -265,6 +286,17 @@ pub trait ExecutionStore: Send + Sync {
 		Err(crate::Error::Invalid(
 			"tool delivery journal unavailable".into(),
 		))
+	}
+	/// Record that an authority check refused a replay-safe call and paused the Run, under the
+	/// worker lease. Only a `STARTED` row changes. Starting the key again reopens it.
+	async fn invocation_refused(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_key: &str,
+		_refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		Ok(())
 	}
 	/// Record an answer lost after sending, before releasing the worker lease.
 	async fn invocation_answer_lost(&self, _run: &Run, _token: Uuid, _key: &str) -> Result<()> {
@@ -435,7 +467,14 @@ pub trait ExecutionHome: Send + Sync {
 		fits: &ObservationFit<'_>,
 	) -> Result<Option<(usize, Value)>>;
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary>;
-	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task>;
+	/// Complete the Task, abandoning `abandon` in the same transaction: the
+	/// Unassigned children the Run created that nobody has been given.
+	async fn complete(&self, key: &str, artifact: &ArtifactInput, abandon: &[Uuid])
+	-> Result<Task>;
+	/// Abandon those of `ids` that are still Unassigned Tasks of `parent`
+	/// created by a Run of it, without completing the parent. Returns only
+	/// the Task IDs changed by this operation.
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>>;
 	async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()>;
 	async fn response_message(
 		&self,
@@ -697,6 +736,12 @@ pub trait ExecutionEnvironment: Send + Sync {
 		_token: Uuid,
 	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
 		Ok(None)
+	}
+	/// Recheck an accepted operation even when its poll tool is not model-visible.
+	async fn poll_operation(&self, _run: &Run, _operation: &str, _input: Value) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"operation polling is unavailable".into(),
+		))
 	}
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
 	/// Lists the remote servers of the Run's Agent Plugins and decides which tools the Run pins.

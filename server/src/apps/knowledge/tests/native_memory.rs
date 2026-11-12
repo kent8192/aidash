@@ -1,4 +1,6 @@
 //! Real PostgreSQL tests: unit concurrency, provenance fences and native vector scopes.
+#[path = "../../execution/tests/support/late_subnode.rs"]
+mod late_subnode;
 #[path = "../../execution/tests/support/upstream.rs"]
 mod upstream;
 use crate::native_database::{DatabaseFixture, database};
@@ -2910,7 +2912,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		);
 		if delivery == "shared_read_revoked" {
 			assert_eq!(stored.control, aidash_domain::RunControl::Paused);
-			assert_eq!(stored.error.as_deref(), Some("execution authority denied"));
+			assert_eq!(
+				stored.error.as_deref(),
+				Some("model call: memory.read was denied")
+			);
 		}
 		if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 			let error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
@@ -3234,7 +3239,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	}
 	let resumed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(resumed.control.as_str(), "PAUSED", "{:?}", resumed.error);
-	assert_eq!(resumed.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		resumed.error.as_deref(),
+		Some("memory_mutate: an authority check refused this step")
+	);
 	assert_eq!(captured.lock().unwrap().len(), 2);
 	drop(provider);
 }
@@ -5029,4 +5037,187 @@ fn runtime_controls(
 		client,
 		notify: runtime_notification,
 	}
+}
+
+/// A Memory change whose call passed the entrance just before the Run's Subnode
+/// ended is refused at the write: no Unit is added and the Run ends as
+/// cancelled (#759).
+#[rstest]
+#[tokio::test]
+async fn memory_mutate_after_the_subnode_ended_is_refused(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	runtime_controls: RuntimeControls,
+) {
+	use aidash_domain::{NewTask, qualified_agent};
+	use aidash_server::{authorization::Authorization, config::Config, federation::Federation};
+
+	// Arrange: a Run of an Agent that has a Memory provider, claimed through the
+	// real admission.
+	let database = database.await;
+	let (store, registry, workspace) = setup_endpoint_flags_with_window(
+		&database,
+		bounds,
+		"http://127.0.0.1:1/v1",
+		(false, false, false),
+		65_536,
+	)
+	.await;
+	let agent_ref = reference("a");
+	let authorization = Authorization {
+		pool: store.pool.clone(),
+	};
+	let owner = qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme"),
+		&agent_ref.id,
+		&agent_ref.version,
+	);
+	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
+	authorization
+		.replace(
+			"acme",
+			1,
+			serde_json::from_value(policy).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	for id in ["m", "e", "r", "t", "p", "a"] {
+		authorization
+			.set_catalog(
+				"acme",
+				&aidash_domain::nodes::NodeName::derived("acme"),
+				&reference(id),
+				0,
+				true,
+				"deployment_administrator",
+			)
+			.await
+			// The fixture Subject may have approved it already.
+			.ok();
+	}
+	let issued = authorization
+		.issue_credential("acme", "alice", 3600, "deployment_administrator")
+		.await
+		.unwrap();
+	let actor = authorization.authenticate(&issued.token).await.unwrap();
+	let Actor::Subject(identity) = &actor else {
+		panic!("subject fixture");
+	};
+	let participant = memory::create_participant(
+		&store,
+		&actor,
+		workspace,
+		memory::CreateParticipant {
+			agent: agent_ref.clone(),
+		},
+	)
+	.await
+	.unwrap();
+	let task = store
+		.create_task(
+			&TEST_FIXTURE,
+			workspace,
+			&NewTask {
+				title: "Remember".into(),
+				description: "Remember something".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	memory::assign_participant(
+		&store,
+		&actor,
+		workspace,
+		task.id,
+		memory::AssignmentChange {
+			task_revision: task.revision,
+			expected: None,
+			target: Some(memory::AssignedParticipant {
+				participant_id: participant.id,
+				participant_revision: participant.revision,
+			}),
+		},
+	)
+	.await
+	.unwrap();
+	let f = Federation {
+		sandbox: Default::default(),
+		registry,
+		config: Config {
+			scratch_policy: Default::default(),
+			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+				aidash_domain::offering::Offering::SelfHosted,
+			),
+			deployment: store.deployment.clone(),
+			endpoint: "http://127.0.0.1:1".into(),
+			database_url: database.url.clone(),
+			nats_url: "nats://127.0.0.1:1".into(),
+			api_token: "fixture-deployment-administrator".into(),
+			web_dir: "web/dist".into(),
+			lease_seconds: 30,
+			demo_data: false,
+			oidc: None,
+			federation: true,
+			deployment_key: None,
+			sign_in: None,
+			marketplace: aidash_server::config::marketplace::MarketplaceSettings {
+				endpoint: None,
+				connections: Vec::new(),
+				poll_seconds: 60,
+			},
+			common_auth: None,
+			common_issuers: None,
+			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			preview: None,
+			dashboard_origin: "http://localhost:3000".into(),
+		},
+		store,
+		client: runtime_controls.client,
+		notify: runtime_controls.notify,
+	};
+	aidash_server::authorization::execution::claim(
+		&f,
+		identity,
+		task.id,
+		task.revision,
+		&agent_ref,
+	)
+	.await
+	.unwrap();
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let unit = Uuid::now_v7();
+	let units = async || -> i64 {
+		sqlx::query_scalar("SELECT count(*) FROM memory_units WHERE id = $1")
+			.bind(unit)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	let subnode = late_subnode::seed_subnode(&f, run.id, &["memory_mutate".to_owned()]).await;
+	let end = late_subnode::EndFirst::begin(&f, subnode, run.id).await;
+	late_subnode::stage(
+		&f,
+		run.id,
+		"memory_mutate",
+		json!({"changes":[Change::Add { id: unit, content: content("Remembered after the end") }]}),
+		"late-call",
+	)
+	.await;
+
+	// Act: the call is under way when the end commits.
+	let worker = late_subnode::start_worker(&f);
+	let waiting = end.until_a_call_waits(&f, &worker).await;
+	end.commit().await;
+	worker.await.unwrap();
+
+	// Assert
+	assert_eq!(units().await, 0, "no Memory may be written after the end");
+	late_subnode::assert_waited_at_the_subnode_check(waiting);
+	late_subnode::assert_cancelled(&late_subnode::run_to_its_end(&f, run.id).await);
 }

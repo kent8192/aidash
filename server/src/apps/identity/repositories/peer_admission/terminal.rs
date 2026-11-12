@@ -212,36 +212,39 @@ async fn project(
 	)
 	.fetch_optional(tx)
 	.await?;
-	let (phase, control, semantic_reason, context_reason, error) = if let Some(raw) = raw {
-		let state: State = Record {
-			cancelled: record.cancelled,
-			id: record.id,
-			node: record.node.clone(),
-			source_node: record.source_node.clone(),
-			grant_id: record.grant_id,
-			task_id: record.task_id,
-			tenant: record.tenant.clone(),
-			credential_id: record.credential_id,
-			subject_chain: record.subject_chain.clone(),
-			description: record.description.clone(),
-		}
-		.into();
-		if raw.metadata.node != receiver.node || !state.matches_run(&raw.metadata, &description) {
+	let (phase, control, semantic_reason, context_reason, error, declinable_call) =
+		if let Some(raw) = raw {
+			let state: State = Record {
+				cancelled: record.cancelled,
+				id: record.id,
+				node: record.node.clone(),
+				source_node: record.source_node.clone(),
+				grant_id: record.grant_id,
+				task_id: record.task_id,
+				tenant: record.tenant.clone(),
+				credential_id: record.credential_id,
+				subject_chain: record.subject_chain.clone(),
+				description: record.description.clone(),
+			}
+			.into();
+			if raw.metadata.node != receiver.node || !state.matches_run(&raw.metadata, &description)
+			{
+				return Err(blocked());
+			}
+			let run = raw.inspect();
+			(
+				run.phase().into(),
+				run.control.into(),
+				run.recovery.as_ref().and_then(|r| r.semantic_reason),
+				run.recovery.as_ref().and_then(|r| r.context_reason),
+				run.error.as_ref().map(|_| SANITIZED_ERROR.to_owned()),
+				run.declinable_call.clone(),
+			)
+		} else if record.cancelled {
+			(Phase::Admitted, Control::Cancelled, None, None, None, None)
+		} else {
 			return Err(blocked());
-		}
-		let run = raw.inspect();
-		(
-			run.phase().into(),
-			run.control.into(),
-			run.recovery.as_ref().and_then(|r| r.semantic_reason),
-			run.recovery.as_ref().and_then(|r| r.context_reason),
-			run.error.as_ref().map(|_| SANITIZED_ERROR.to_owned()),
-		)
-	} else if record.cancelled {
-		(Phase::Admitted, Control::Cancelled, None, None, None)
-	} else {
-		return Err(blocked());
-	};
+		};
 	Ok(Activation {
 		grant_id: record.grant_id,
 		admission_id: record.id,
@@ -251,6 +254,7 @@ async fn project(
 		semantic_reason,
 		context_reason,
 		error,
+		declinable_call,
 	})
 }
 /// The response owner calls this before committing; purge uses the same projection.

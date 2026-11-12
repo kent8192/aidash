@@ -18,6 +18,7 @@ impl SavepointProbe {
 			Default::default(),
 			0,
 			None,
+			Default::default(),
 		)
 	}
 	pub(crate) fn statements(&self) -> Vec<&'static str> {

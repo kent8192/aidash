@@ -567,6 +567,7 @@ impl ModelProvider for OpenRouterProvider {
 						.line(scope)
 				})
 				.transpose()?;
+			let session = routing_session(self.cache_salt.as_ref(), &request)?;
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),
@@ -612,6 +613,7 @@ impl ModelProvider for OpenRouterProvider {
 				&request,
 				media_routes,
 				salt.as_deref(),
+				session.as_deref(),
 				context.data_protection.requirement(),
 			);
 			validate_provider_tools(&body, &request)?;
@@ -677,8 +679,12 @@ impl ModelProvider for OpenRouterProvider {
 					("input_cached_write", usage.reported.cache_write_tokens),
 				] {
 					if let Some(tokens) = tokens {
-						metrics::counter!("aidash_model_tokens_total", "direction" => direction)
-							.increment(tokens);
+						metrics::counter!(
+							"aidash_model_tokens_total",
+							"direction" => direction,
+							"family" => self.config.metric_family()
+						)
+						.increment(tokens);
 					}
 				}
 			}
@@ -698,6 +704,19 @@ fn billed_usage(result: &Result<ModelResponse>) -> Option<&ModelResponse> {
 	}
 }
 
+/// The sticky-routing id every step of a salted Run sends (ADR 0115), on the
+/// Chat and the Responses transport alike. Absent without a Cache Scope, a Run
+/// or the node's Cache Salt Keys, so Legacy and auxiliary requests send none.
+pub(crate) fn routing_session(
+	keys: Option<&CacheSaltKeys>,
+	request: &ModelRequest,
+) -> Result<Option<String>> {
+	match (&request.cache_scope, request.routing_run, keys) {
+		(Some(scope), Some(run), Some(keys)) => keys.session_id(scope, run).map(Some),
+		_ => Ok(None),
+	}
+}
+
 /// The OpenRouter chat body. A request from an Agent with a Context Policy
 /// sends `transforms: []`, disabling OpenRouter's middle-out compression so
 /// only that policy reduces context; prune-only requests keep their body.
@@ -708,6 +727,7 @@ fn request_body(
 	request: &ModelRequest,
 	media_routes: Vec<String>,
 	salt: Option<&str>,
+	session: Option<&str>,
 	requirement: aidash_domain::data_protection::Requirement,
 ) -> Value {
 	let mut body = request.input_body();
@@ -730,7 +750,53 @@ fn request_body(
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
+	if let Some(session) = session {
+		body["session_id"] = json!(session);
+	}
+	if config.explicit_cache_only() {
+		body["prompt_cache_options"] = json!({"mode": "explicit"});
+		// Only Native put a history breakpoint on the previous step. An Ordered
+		// request splices provider activity after `system`, where no
+		// breakpoint ever sat, so marking there would pay a write nothing reads.
+		if request.cache_breakpoints
+			&& matches!(
+				request.context,
+				aidash_domain::provider::ModelContext::Native(_)
+			) && let Some(messages) = body["messages"].as_array_mut()
+		{
+			mark_previous_step(messages);
+		}
+	}
 	body
+}
+
+/// Explicit mode looks up only the breakpoints in the request itself, so the
+/// entry the previous step wrote is read only if its position is marked again:
+/// the last message with content before the last Model Turn, which is where
+/// Native put the history breakpoint on that step (ADR 0115). Native layout
+/// only: the caller must not apply it to an Ordered request.
+fn mark_previous_step(messages: &mut [Value]) {
+	let Some(assistant) = messages
+		.iter()
+		.rposition(|message| message["role"] == "assistant")
+	else {
+		return;
+	};
+	// `system` at index 0 already has its own marker.
+	let Some(previous) = messages[1..assistant]
+		.iter_mut()
+		.rev()
+		.find(|message| !message["content"].is_null())
+	else {
+		return;
+	};
+	let content = &mut previous["content"];
+	if content.is_string() {
+		*content = json!([{"type": "text", "text": content.take()}]);
+	}
+	if let Some(part) = content.as_array_mut().and_then(|parts| parts.last_mut()) {
+		part["cache_control"] = aidash_domain::provider::cache_control();
+	}
 }
 
 /// Classifies a non-2xx chat reply. The upstream body is never exposed.
@@ -765,8 +831,9 @@ fn context_overflow(body: &Value) -> bool {
 /// Largest accepted completion, whether received whole or assembled from a stream.
 const MAX_RESPONSE_BYTES: usize = 1_048_576;
 
-/// Read a streamed completion until `[DONE]`. Only data events reset the stall
-/// timer; provider keepalive comments do not. Endpoints that ignore `stream`
+/// Read a streamed completion until `[DONE]`. Data events reset the stall timer;
+/// provider keepalive comments reset it only until the first output arrives
+/// (see `StreamAssembler::push`). Endpoints that ignore `stream`
 /// and answer with a whole JSON completion are parsed as a non-streamed
 /// response, without progress.
 async fn read_stream(

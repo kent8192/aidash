@@ -1,7 +1,9 @@
-use super::{generate, show};
+use super::{Command, generate, show};
 use crate::apps::operations::serializers::deployment::DeploymentKeySettings;
 use crate::bootstrap::configure_deployment_key;
 use crate::{Error, Result};
+use aidash_domain::nodes::DeploymentKeyId;
+use reinhardt::commands::CapabilityCommand;
 use std::path::Path;
 
 fn file(name: &str) -> DeploymentKeySettings {
@@ -37,6 +39,25 @@ async fn generate_then_show_report_the_same_key_and_startup_loads_it() {
 		.unwrap()
 		.unwrap();
 	assert_eq!(loaded.key_id().as_str(), key_id(&shown));
+}
+
+#[test]
+fn rollover_accepts_a_current_key_id_that_starts_with_a_hyphen() {
+	let id = format!("-{}", "A".repeat(DeploymentKeyId::LEN - 1));
+	let matches = Command
+		.cli()
+		.try_get_matches_from([
+			"deployment-key",
+			"rollover",
+			"--expected-current",
+			&id,
+			"--file",
+			"next.pem",
+		])
+		.unwrap();
+	let (_, rollover) = matches.subcommand().unwrap();
+	assert_eq!(rollover.get_one::<String>("expected-current"), Some(&id));
+	assert!(DeploymentKeyId::parse(&id).is_ok());
 }
 
 #[test]

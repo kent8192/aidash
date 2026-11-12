@@ -16,6 +16,7 @@ struct Scope {
 	invalid_runs: BTreeMap<Uuid, Failure>,
 	semantic_entry: Option<(Uuid, aidash_domain::semantic::mutations::Entry)>,
 	entries: Vec<EntityRef>,
+	opening: Vec<Uuid>,
 	calls: Vec<String>,
 	decisions: Vec<Resource>,
 	missing: bool,
@@ -30,6 +31,7 @@ fn scope() -> Scope {
 		invalid_runs: BTreeMap::new(),
 		semantic_entry: None,
 		entries: vec![],
+		opening: vec![],
 		calls: vec![],
 		decisions: vec![],
 		missing: false,
@@ -112,6 +114,16 @@ impl ResourceVisibilityScope for Scope {
 }
 #[async_trait]
 impl ReadProvenanceScope for Scope {
+	async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		let opened = self.opening.contains(&run);
+		if opened {
+			self.calls.push(format!("open:{run}"));
+		}
+		Ok(opened)
+	}
+	fn close_run_reads(&mut self) {
+		self.calls.push("close".into());
+	}
 	async fn output_producers(
 		&mut self,
 		workspace: Uuid,
@@ -140,9 +152,16 @@ impl ReadProvenanceScope for Scope {
 		}
 		Ok(())
 	}
-	async fn remote_reads(&mut self, _: Uuid) -> Result<bool> {
+	async fn remote_reads(&mut self, _: Uuid) -> Result<RemoteReads> {
 		self.touch("remote")?;
-		Ok(self.denied != Some("remote"))
+		Ok(match self.denied {
+			Some("remote") => RemoteReads::Unconfirmed,
+			Some("tenant_agent") => RemoteReads::Definition(EntityRef {
+				id: "sibling-agent".into(),
+				version: "1.0.0".into(),
+			}),
+			_ => RemoteReads::Visible,
+		})
 	}
 	async fn semantic_reads(&mut self, _: Uuid) -> Result<bool> {
 		self.touch("semantic")?;
@@ -529,6 +548,17 @@ async fn opaque_remote_denials_keep_the_existing_invalidated_verdict(
 }
 #[rstest]
 #[tokio::test]
+async fn a_denied_agent_of_the_tenant_on_another_node_is_lost_authority(mut scope: Scope) {
+	scope.denied = Some("tenant_agent");
+	assert_eq!(
+		run_reads_invalidity(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		Some(Failure::Authority),
+	);
+}
+#[rstest]
+#[tokio::test]
 async fn cycles_and_duplicate_run_references_terminate_after_checking_each_journal(
 	mut scope: Scope,
 ) {
@@ -560,6 +590,56 @@ async fn cycles_and_duplicate_run_references_terminate_after_checking_each_journ
 			.filter(|c| c.as_str() == "sources")
 			.count(),
 		2
+	);
+}
+/// What a Run opens stays open only for that Run's own reads, however they end.
+#[rstest]
+#[tokio::test]
+async fn a_run_opens_its_subnode_workspaces_only_while_its_own_reads_are_checked(
+	mut scope: Scope,
+	#[values(None, Some("sources"))] fail: Option<&'static str>,
+) {
+	let creator = Uuid::from_u128(1);
+	let other = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	scope.opening = vec![creator];
+	scope
+		.graph
+		.insert(creator, vec![(workspace, "run".into(), other)]);
+	scope
+		.graph
+		.insert(other, vec![(workspace, "task".into(), Uuid::from_u128(4))]);
+	scope.fail = fail;
+	let result = run_reads_visible(&mut scope, creator).await;
+	assert_eq!(result.is_err(), fail.is_some());
+	let position = |call: &str| scope.calls.iter().position(|c| c == call);
+	let open = position(&format!("open:{creator}")).expect("the creator opens");
+	let close = position("close").expect("and closes, however the check ended");
+	assert!(open < close);
+	assert_eq!(
+		scope.calls.iter().filter(|c| c.as_str() == "close").count(),
+		1
+	);
+	if fail.is_none() {
+		// The other Run waits on the worklist until the creator's reads are done.
+		assert!(close < position(&format!("visited:{other}")).unwrap());
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn the_recovery_walk_opens_a_runs_subnode_workspaces_the_same_way(mut scope: Scope) {
+	let creator = Uuid::from_u128(1);
+	scope.opening = vec![creator];
+	scope.graph.insert(creator, vec![]);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, creator).await.unwrap(),
+		None
+	);
+	let open = format!("open:{creator}");
+	assert!(scope.calls.contains(&open));
+	assert_eq!(
+		scope.calls.iter().filter(|c| c.as_str() == "close").count(),
+		1
 	);
 }
 #[rstest]
@@ -609,6 +689,45 @@ async fn hidden_dependency_journals_stop_before_loading_any_source_records(
 			.unwrap()
 	);
 	assert!(!scope.calls.contains(&"sources".into()));
+}
+#[rstest]
+#[case("catalog", ReadBlock::Definition(EntityRef { id: "entry".into(), version: "1".into() }))]
+#[case("remote", ReadBlock::RemoteRead)]
+#[case("tenant_agent", ReadBlock::Definition(EntityRef { id: "sibling-agent".into(), version: "1.0.0".into() }))]
+#[case("semantic", ReadBlock::SemanticRead)]
+#[case("received", ReadBlock::SemanticRead)]
+#[case("base", ReadBlock::Source("run".into()))]
+#[tokio::test]
+async fn a_walk_reports_the_read_that_stopped_it(
+	mut scope: Scope,
+	#[case] gate: &'static str,
+	#[case] block: ReadBlock,
+) {
+	let root = Uuid::from_u128(1);
+	scope.denied = Some(gate);
+	scope.entries = vec![EntityRef {
+		id: "entry".into(),
+		version: "1".into(),
+	}];
+	scope.graph.insert(
+		root,
+		vec![(Uuid::from_u128(3), "run".into(), Uuid::from_u128(2))],
+	);
+	assert_eq!(
+		run_reads_block(&mut scope, root).await.unwrap(),
+		Some(block)
+	);
+	assert!(!run_reads_visible(&mut scope, root).await.unwrap());
+}
+#[rstest]
+#[tokio::test]
+async fn a_walk_that_passes_reports_no_block(mut scope: Scope) {
+	assert_eq!(
+		run_reads_block(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		None
+	);
 }
 #[rstest]
 #[tokio::test]

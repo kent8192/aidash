@@ -34,6 +34,7 @@ pub enum Continuation {
 	Ordinary,
 	Human,
 	Wait,
+	Operation,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResultFitting {
@@ -619,10 +620,16 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		}
 		"shell" | "shell_poll" | "shell_cancel" => {
 			auth.core = Some(CorePermission::Shell);
+			if name != "shell_cancel" {
+				behavior.continuation = Continuation::Operation;
+			}
 			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"code_interpreter" | "python_poll" | "python_cancel" => {
 			auth.core = Some(CorePermission::Python);
+			if name != "python_cancel" {
+				behavior.continuation = Continuation::Operation;
+			}
 			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"apply_patch" => {
@@ -651,6 +658,16 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn command_calls_declare_an_operation_continuation() {
+		for name in ["shell", "shell_poll", "code_interpreter", "python_poll"] {
+			let contract = super::builtin_contract(name).unwrap();
+			assert_eq!(
+				serde_json::to_value(contract.behavior.continuation).unwrap(),
+				"Operation"
+			);
+		}
+	}
 	use super::*;
 	#[test]
 	fn native_memory_contracts_require_explicit_policy_and_stay_at_home() {

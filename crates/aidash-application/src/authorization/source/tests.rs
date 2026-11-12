@@ -214,7 +214,9 @@ async fn executor_must_be_the_last_subject_in_the_grant_chain() {
 			&inspection("model")
 		)
 		.await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InvalidExecutor
+		))
 	));
 	assert!(scope.calls.is_empty());
 	assert!(!scope.generation_checked);

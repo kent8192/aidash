@@ -221,7 +221,9 @@ async fn inactive_installation_stops_before_model_or_pinned_dependency_use() {
 	scope.active = false;
 	assert!(matches!(
 		inspect(&mut scope, "aidash://home", &input()).await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InstallationInactive
+		))
 	));
 	assert_eq!(scope.calls.last().unwrap().0, "active");
 	assert!(

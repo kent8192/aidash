@@ -231,3 +231,99 @@ async fn finite_pulls_expire_before_the_same_slot_returns_to_recovery(repository
 	assert_eq!(repository.0.pulls.load(Ordering::Acquire), 0);
 	assert_eq!(repository.0.visibility.load(Ordering::Acquire), 0);
 }
+
+/// The instants at which a worker meets the lock, every `every` for `total`.
+fn contended_every(start: Instant, every: Duration, total: Duration) -> Vec<Instant> {
+	let mut at = vec![];
+	let mut elapsed = Duration::ZERO;
+	while elapsed <= total {
+		at.push(start + elapsed);
+		elapsed += every;
+	}
+	at
+}
+
+#[test]
+fn contention_that_keeps_returning_warns_once_after_thirty_seconds() {
+	// Arrange: a deferred delivery returns after 250 ms and the worker sleeps
+	// 100 ms, so a contended pass comes about every 350 ms with idle passes
+	// (which record nothing) between them.
+	let start = Instant::now();
+	let mut contention = Contention::default();
+
+	// Act
+	let warned = contended_every(start, Duration::from_millis(350), Duration::from_secs(60))
+		.into_iter()
+		.filter(|at| contention.contended(*at))
+		.map(|at| at - start)
+		.collect::<Vec<_>>();
+
+	// Assert
+	assert_eq!(warned.len(), 1, "{warned:?}");
+	assert!(
+		(Duration::from_secs(30)..Duration::from_secs(31)).contains(&warned[0]),
+		"{warned:?}"
+	);
+}
+
+#[test]
+fn two_isolated_contentions_do_not_add_up_to_a_long_one() {
+	// Arrange
+	let start = Instant::now();
+	let mut contention = Contention::default();
+
+	// Act: one contention, then silence, then another 30 seconds later.
+	let first = contention.contended(start);
+	let second = contention.contended(start + Duration::from_secs(30));
+	let still_second =
+		contention.contended(start + Duration::from_secs(30) + Duration::from_millis(350));
+
+	// Assert
+	assert!(!first && !second && !still_second);
+}
+
+#[test]
+fn a_new_contention_after_a_silence_warns_again() {
+	// Arrange: the first contention warns.
+	let start = Instant::now();
+	let mut contention = Contention::default();
+	let first = contended_every(start, Duration::from_secs(1), Duration::from_secs(31));
+	assert_eq!(
+		first
+			.into_iter()
+			.filter(|at| contention.contended(*at))
+			.count(),
+		1
+	);
+
+	// Act: a second one begins after a silence.
+	let later = start + Duration::from_secs(120);
+	let second = contended_every(later, Duration::from_secs(1), Duration::from_secs(31))
+		.into_iter()
+		.filter(|at| contention.contended(*at))
+		.count();
+
+	// Assert
+	assert_eq!(second, 1);
+}
+
+#[test]
+fn a_delivery_that_went_through_ends_the_contention() {
+	// Arrange: 20 seconds of contention.
+	let start = Instant::now();
+	let mut contention = Contention::default();
+	for at in contended_every(start, Duration::from_secs(1), Duration::from_secs(20)) {
+		assert!(!contention.contended(at));
+	}
+
+	// Act: a claim succeeds, then the lock is contended again for 20 seconds.
+	contention.clear();
+	let resumed = start + Duration::from_secs(21);
+	let warned = contended_every(resumed, Duration::from_secs(1), Duration::from_secs(20))
+		.into_iter()
+		.filter(|at| contention.contended(*at))
+		.count();
+
+	// Assert: neither stretch alone reached 30 seconds.
+	assert_eq!(warned, 0);
+}

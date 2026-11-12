@@ -183,3 +183,10 @@ fn a_startup_log_tail_is_bounded_and_valid_utf8() {
 	assert!(tail.chars().all(|character| character == 'é'));
 	assert_eq!(startup_tail("short"), "short");
 }
+
+#[rstest::rstest]
+fn an_unanswered_node_is_its_own_stop_reason() {
+	let reason = StopReason::NodeUnreachable;
+	assert_eq!(StopReason::parse(reason.as_str()).unwrap(), reason);
+	assert_ne!(reason, StopReason::RunAuthorityRevoked);
+}

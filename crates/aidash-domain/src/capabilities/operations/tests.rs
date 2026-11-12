@@ -83,6 +83,21 @@ fn cancellation_never_marks_a_dispatched_or_unknown_writer_as_safely_terminated(
 		);
 	}
 }
+#[rstest]
+#[case::pending(json!({"dispatch_pending":true}), Some("runner"), true)]
+#[case::runner_answered(json!({"preview":""}), Some("runner"), false)]
+#[case::not_pending(json!({"dispatch_pending":false}), Some("runner"), false)]
+#[case::no_recorded_runner(json!({"dispatch_pending":true}), None, false)]
+fn only_a_send_the_recorded_runner_may_not_have_is_refused(
+	#[case] result: Value,
+	#[case] instance: Option<&str>,
+	#[case] refused: bool,
+) {
+	assert_eq!(
+		undelivered_refusal(&result, "digest", instance),
+		refused.then(|| json!({"digest":"digest","instance":"runner"}))
+	);
+}
 #[fixture]
 fn input() -> ShellRequest {
 	ShellRequest {

@@ -30,6 +30,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::schema::ApiContract,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::execution::services::execution_pod_command::Command,
+	));
 	for command in crate::apps::execution::services::node_commands::commands() {
 		registry.register_capability(command);
 	}
@@ -102,7 +105,7 @@ pub async fn initialize_as(
 		&settings.research_providers,
 		&crate::config::settings::profile(),
 	)?;
-	let cache_salt = settings.cache_salt.keys()?;
+	let cache_salt = settings.cache_salt.node_keys(&settings.core.secret_key)?;
 	// Only availability and the current key version; never key material.
 	match &cache_salt {
 		Some(keys) => tracing::info!(
@@ -207,12 +210,12 @@ pub async fn initialize_as(
 	>::new(crate::sse::Service::new(
 		crate::sse::Settings::from_env()?,
 	)));
+	let http_settings = crate::http::Settings::from_env()?;
+	crate::database::authority_change::validate(http_settings.timeout)?;
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
 		reinhardt::di::SelfKey<crate::http::Protection>,
 		crate::http::Protection,
-	>::new(crate::http::Protection::new(
-		crate::http::Settings::from_env()?,
-	)));
+	>::new(crate::http::Protection::new(http_settings)));
 	Ok(federation)
 }
 
@@ -412,11 +415,11 @@ impl RuntimeTasks {
 				)),
 			);
 		}
-		for service in build::current()
+		for (name, service) in build::current()
 			.extension
 			.services(&federation, receiver.clone())
 		{
-			tasks.spawn_service("extension", runtime_task(service));
+			tasks.spawn_service(name, runtime_task(service));
 		}
 		if let Some(tenant_secrets) = federation.store.tenant_secrets.clone() {
 			let mut stopping = receiver.clone();
@@ -458,13 +461,37 @@ impl RuntimeTasks {
 		);
 		if std::env::var_os("AIDASH_CAPABILITY_PROFILE").is_some() {
 			let operations = federation.for_runtime_workers().await?;
-			let stopping = receiver.clone();
-			tasks.spawn_service(
-				"capability operations",
-				runtime_task(async move {
-					crate::capabilities::operations::run(operations.store, stopping).await
-				}),
-			);
+			// Each loop is its own service, so a panic names the loop that ended (#787).
+			use aidash_application::ports::capabilities::processing::CapabilityBackgroundJobs as _;
+			let store = operations.store;
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.execution", async move {
+				let repository = operation_processing_repository(&jobs);
+				aidash_runtime::capabilities::execution_loop(&repository, stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.read_recheck", async move {
+				let repository = operation_processing_repository(&jobs);
+				aidash_runtime::capabilities::read_recheck_loop(&repository, stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.network", async move {
+				capability_background_jobs(&jobs).network(stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.references", async move {
+				capability_background_jobs(&jobs).references(stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.cleanup", async move {
+				capability_background_jobs(&jobs).cleanup(stopping).await
+			});
+			let (jobs, stopping) = (store, receiver.clone());
+			tasks.spawn_service("capabilities.reclamation", async move {
+				capability_background_jobs(&jobs)
+					.reclamation(stopping)
+					.await
+			});
 			let transfers = federation.for_runtime_workers().await?;
 			let stopping = receiver.clone();
 			tasks.spawn_service(
@@ -665,8 +692,31 @@ impl Drop for RuntimeTasks {
 async fn runtime_task(
 	work: impl std::future::Future<Output = Result<()>>,
 ) -> aidash_application::Result<()> {
-	work.await
-		.map_err(|error| aidash_application::Error::External(error.to_string()))
+	work.await.map_err(|error| {
+		if error.is_database() {
+			error.into()
+		} else {
+			aidash_application::Error::External(error.to_string())
+		}
+	})
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn runtime_service_preserves_database_outages() {
+		let result = runtime_task(async { Err(Error::Database(sqlx::Error::PoolTimedOut)) }).await;
+		assert!(matches!(
+			result,
+			Err(aidash_application::Error::TemporaryDatabase(_))
+		));
+		let result = runtime_task(async { Err(Error::Invalid("bad input".into())) }).await;
+		assert!(
+			matches!(result, Err(aidash_application::Error::External(message)) if message == "bad input")
+		);
+	}
 }
 
 /// Bind the policy use case to the same PostgreSQL pool used by HTTP and workers.
@@ -1084,7 +1134,7 @@ pub(crate) fn dependency_scope(
 pub(crate) fn dependency_transport(
 	access: &crate::authorization::access::Access,
 ) -> crate::apps::federation::remote::services::wire::Reach {
-	crate::apps::federation::remote::services::wire::Reach(access.wire.clone())
+	access.reach()
 }
 
 pub(crate) fn foreign_run_read_scope(
@@ -1542,7 +1592,7 @@ pub(crate) fn semantic_disclosure_scope<'a, 'scope>(
 pub(crate) fn native_registry_transport(
 	access: &crate::authorization::access::NativeAccess,
 ) -> crate::apps::federation::remote::services::wire::Reach {
-	crate::apps::federation::remote::services::wire::Reach(access.remote_transport())
+	access.reach()
 }
 pub(crate) fn registry_verification_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
@@ -2505,12 +2555,14 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 /// Notification and database recovery borrow the caller's same native transaction.
 pub(crate) fn activation_scheduling_scope(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	holds_recoveries: bool,
 ) -> crate::apps::execution::activation::repositories::scheduling::Scope<
 	&mut dyn reinhardt::db::backends::TransactionExecutor,
 > {
 	crate::apps::execution::activation::repositories::scheduling::Scope {
 		tx,
 		capabilities: aidash_domain::run_state::PersistedCapability::supported(),
+		holds_recoveries,
 	}
 }
 
@@ -2587,6 +2639,7 @@ pub(crate) fn worker_step(
 		recovery: recovery_store(&federation.store),
 		_active: crate::http::ActiveExecution::begin(),
 		visibility,
+		tenant: None,
 	})
 }
 

@@ -24,6 +24,10 @@ After a Run paused with `run.node_unreachable`, Resume starts with a fresh set o
 
 The check runs in process while the caller's transaction is open, as the patched paths already did. It stops at 10 seconds, so a full connection pool ends in "cannot confirm" and not in a hang. Within one authority, a Node that did not answer is not asked again.
 
+An authority that holds the Deployment's distribution lock, which every Catalog admission takes shared, asks the Node inside that lock, and the Node takes none of its own. A shared request of its own would queue behind a writer that waits for the caller, while the caller waits for the Node until the limit, and a healthy Node would be blamed. The caller's transaction is open for the whole check, so its lock covers what the Node reads. This holds on every path an in-process Node can be reached from, including an authority that runs under another's lease. A savepoint rollback may have released the lock, so none is claimed until it is taken again.
+
+One authority can serve several calls, as a Tool Batch does. A refusal reads as a Node's silence only if that call's own checks met the Node and no `require` of that call denied. A Node an earlier call found silent says nothing about a later call's refusal, which reaches the model as the refusal it is.
+
 Delegating to a Node of the same Tenant, once the read worked, met two more refusals that no test had reached, and both are fixed here. A Run admitted without a credential could not find its Scratch Space, because the lookup went through the admission's credential and a Node of the same Tenant acting for one of its subjects holds none. The person who started the work is the root of the subject chain the admission recorded. And the Home asked the receiver to verify a usage reservation as the receiver itself, because in one database the receiver's Run row is also visible to the Home. A row that names the peer is the other end of the exchange, not the sender.
 
 A third stop is left as it is. A Run admitted by a Remote Grant is judged at the strictest Data Protection Level, because the receipt does not publish the source Tenant's current policy. Inside one Deployment that policy is in the same database, so the assumption is stricter than it needs to be. With only Keyless model endpoints the receiver's Run stops with `Data Protection Level ZeroDataRetention: Tenant Keyless endpoints cannot meet this level`, a named reason. Reading the policy directly for a Node of the same Deployment is a separate decision.
@@ -38,6 +42,6 @@ A third stop is left as it is. A Run admitted by a Remote Grant is judged at the
 
 ## Consequences
 
-- A list can be shorter than it should be with no sign of it until #770. ADR 0118 makes a list, search and Agent tool result count such items for each Node; the event stream stays silent.
+- A list can be shorter than it should be with no sign of it until #770. ADR 0125 makes a list, search and Agent tool result count such items for each Node; the event stream stays silent.
 - Until #758 lands, a read whose local and peer checks together pass 30 seconds answers `504`.
 - A Run that discovered an Agent on a Node later deleted stays hidden, because there is no route to that Node. Whether a listing counts as a read at all is #769.

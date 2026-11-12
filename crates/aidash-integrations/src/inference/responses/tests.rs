@@ -541,13 +541,13 @@ fn anonymous_function_calls_count_against_the_output_limit() {
 	assert!(refused);
 }
 
-/// Bytes of a data line still arriving keep the stream alive; comments and
-/// other fields do not.
+/// Bytes of a data line still arriving keep the stream alive; comments do so
+/// before output, while other fields do not.
 #[test]
 fn partial_data_lines_are_liveness() {
 	let recorder = Recorder::default();
 	let mut assembler = Assembler::new(&recorder, MAX_RESPONSE_BYTES);
-	assert!(!assembler.push(b": keep-alive\n").unwrap());
+	assert!(assembler.push(b": keep-alive\n").unwrap());
 	assert!(!assembler.push(b"event: response.completed\n").unwrap());
 	assert!(assembler.push(b"data: {\"type\":\"response.").unwrap());
 	assert!(assembler.push(b"completed\"").unwrap());
@@ -1374,12 +1374,105 @@ mod openrouter {
 		);
 	}
 
+	/// Serves one whole Responses reply per call and returns every body it saw.
+	async fn recording_provider(seen: Arc<Mutex<Vec<Value>>>) -> (Arc<dyn ModelProvider>, Server) {
+		let app = Router::new().route(
+			"/v1/responses",
+			post(move |Json(body): Json<Value>| {
+				let seen = seen.clone();
+				async move {
+					seen.lock().unwrap().push(body);
+					Json(responses_body(json!([
+						{"type":"message","content":[{"type":"output_text","text":"done"}]}
+					])))
+				}
+			}),
+		);
+		let mut config = config("http://unused", false);
+		config.projection_versions = vec![aidash_domain::projection::ProjectionVersion::Native];
+		openrouter_provider(app, config, Arc::new(AtomicUsize::new(0))).await
+	}
+
+	fn run_request(run: Option<uuid::Uuid>) -> ModelRequest {
+		let mut request = super::native_request();
+		request.input_format = aidash_domain::provider::InputFormat::Responses;
+		request.max_output_tokens = 512;
+		request.cache_scope = Some(aidash_domain::projection::CacheScope {
+			tenant: "tenant-a".into(),
+			key_version: 1,
+		});
+		request.routing_run = run;
+		request
+	}
+
+	/// Decision 3 of #776: every step of an Ordered or Native Run sends the
+	/// sticky-routing id, on the Responses transport as on Chat (ADR 0115).
+	#[tokio::test]
+	async fn every_step_of_a_run_sends_one_opaque_session_id() {
+		// Arrange
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let (provider, _server) = recording_provider(seen.clone()).await;
+		let run = uuid::Uuid::from_u128(7);
+		let keys = CacheSaltKeys::new(
+			&[crate::inference::CacheSaltKey {
+				version: 1,
+				secret: "fixture-key".into(),
+			}],
+			1,
+		)
+		.unwrap();
+		let scope = aidash_domain::projection::CacheScope {
+			tenant: "tenant-a".into(),
+			key_version: 1,
+		};
+		// Act
+		for run in [run, run, uuid::Uuid::from_u128(8)] {
+			provider
+				.infer(run_request(Some(run)), &Recorder::default())
+				.await
+				.unwrap();
+		}
+		// Assert
+		let seen = seen.lock().unwrap();
+		let ids: Vec<&str> = seen
+			.iter()
+			.map(|body| body["session_id"].as_str().unwrap())
+			.collect();
+		assert_eq!(ids[0], keys.session_id(&scope, run).unwrap());
+		assert_eq!(ids[0], ids[1], "the same Run stays on one key");
+		assert_ne!(ids[0], ids[2], "another Run has its own key");
+		assert!(ids[0].starts_with(aidash_domain::projection::SESSION_ID_PREFIX));
+		assert!(!ids[0].contains("tenant-a") && !ids[0].contains(&run.simple().to_string()));
+	}
+
+	#[rstest::rstest]
+	#[case::outside_a_run(true, None)]
+	#[case::without_a_cache_scope(false, Some(uuid::Uuid::from_u128(7)))]
+	#[tokio::test]
+	async fn requests_without_a_scope_or_a_run_send_no_session_id(
+		#[case] scoped: bool,
+		#[case] run: Option<uuid::Uuid>,
+	) {
+		// Arrange
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let (provider, _server) = recording_provider(seen.clone()).await;
+		let mut request = run_request(run);
+		if !scoped {
+			request.cache_scope = None;
+		}
+		// Act
+		provider.infer(request, &Recorder::default()).await.unwrap();
+		// Assert
+		assert!(seen.lock().unwrap()[0].get("session_id").is_none());
+	}
+
 	#[tokio::test]
 	async fn keepalive_comments_do_not_keep_a_stalled_stream_alive() {
 		let app = Router::new().route(
 			"/v1/responses",
 			post(|| async {
 				let stream = async_stream::stream! {
+					yield Ok::<_, std::io::Error>("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n");
 					loop {
 						yield Ok::<_, std::io::Error>(": keepalive\n\n");
 						tokio::time::sleep(std::time::Duration::from_millis(10)).await;

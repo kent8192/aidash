@@ -135,13 +135,7 @@ mod controlled_context_composition {
 			model.config["projection_versions"] = json!(["legacy", "ordered"]);
 			f.registry.register(&acme, model).await.unwrap();
 			assert_eq!(
-				request(
-					&app,
-					&token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true})
-				)
+				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"ordered-model","version":version},"expected_revision":0,"enabled":true}))
 				.await
 				.0,
 				200
@@ -180,13 +174,7 @@ mod controlled_context_composition {
 				.await
 				.unwrap();
 			assert_eq!(
-				request(
-					&app,
-					&token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
-				)
+				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}))
 				.await
 				.0,
 				200
@@ -206,10 +194,9 @@ mod controlled_context_composition {
 		policy["subjects"][&owner] =
 			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				&f.config.api_token,
-				"POST",
 				"/api/authorization/acme",
 				json!({"expected_revision":1,"bundle":policy})
 			)
@@ -218,13 +205,7 @@ mod controlled_context_composition {
 			200
 		);
 		assert_eq!(
-			request(
-				&app,
-				&token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
-			)
+			common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}))
 			.await
 			.0,
 			200
@@ -244,10 +225,9 @@ mod controlled_context_composition {
 		let embedding_server = embeddings;
 		configure(&app, &token, workspace, &spec(&embedding_endpoint), 0).await;
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				&token,
-				"POST",
 				&format!("/api/tasks/{task}/claim"),
 				json!({"revision":0,"agent":{"id":"research","version":"1.0.1"}})
 			)
@@ -293,10 +273,9 @@ mod controlled_context_composition {
 			("artifact", json!({"kind":"artifact","id":artifact.id})),
 			("message", json!({"kind":"message","id":message.id})),
 		] {
-			let (status, entry) = request(
+			let (status, entry) = common::post(
 				&app,
 				&token,
-				"POST",
 				&format!("/api/workspaces/{workspace}/semantic/entries"),
 				json!({"key":key,"expected_revision":0,"source":source,"metadata":{}}),
 			)
@@ -643,10 +622,7 @@ async fn add_pending_workspace_entry(fixture: &ControlledContext) {
 		)
 		.await
 		.unwrap();
-	let (status, entry) = request(&fixture._fixture.application, &fixture.token, "POST",
-		&format!("/api/workspaces/{}/semantic/entries", run.workspace_id),
-		json!({"key":"pending-entry","expected_revision":0,"source":{"kind":"message","id":message.id},"metadata":{}}),
-	).await;
+	let (status, entry) = common::post(&fixture._fixture.application, &fixture.token, &format!("/api/workspaces/{}/semantic/entries", run.workspace_id), json!({"key":"pending-entry","expected_revision":0,"source":{"kind":"message","id":message.id},"metadata":{}})).await;
 	assert_eq!(status, 200, "{entry}");
 	assert_eq!(entry["state"], "PENDING", "{entry}");
 }
@@ -767,10 +743,9 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 	if pending_entry {
 		add_pending_workspace_entry(&fixture).await;
 	} else {
-		let (status, body) = request(
+		let (status, body) = common::post(
 			&fixture._fixture.application,
 			&fixture.token,
-			"POST",
 			&format!("/api/runs/{}/message", run().await.id),
 			json!({"content":"Also cover vehicle maintenance."}),
 		)
@@ -1138,10 +1113,9 @@ async fn configure(
 	spec: &IndexSpec,
 	revision: i64,
 ) -> Value {
-	let (status, index) = request(
+	let (status, index) = common::post(
 		app,
 		token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/index"),
 		serde_json::to_value(ConfigureIndex {
 			expected_revision: revision,
@@ -1161,15 +1135,14 @@ async fn put(
 	text: &str,
 	revision: i64,
 ) -> Value {
-	let (status,entry)=request(app,token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":key,"source":{"kind":"memory","text":text},"expected_revision":revision,"metadata":{"topic":"public"}})).await;
+	let (status,entry)=common::post(app, token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":key,"source":{"kind":"memory","text":text},"expected_revision":revision,"metadata":{"topic":"public"}})).await;
 	assert_eq!(status, 200, "{entry}");
 	entry
 }
 async fn search(app: &common::TestApplication, token: &str, workspace: Uuid) -> (u16, Value) {
-	request(
+	common::post(
 		app,
 		token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/search"),
 		json!({"query":"vehicle","limit":1,"max_tokens":2048}),
 	)
@@ -1438,10 +1411,9 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	.await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"revoke-semantic","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
-	let (status, response) = request(
+	let (status, response) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy}),
 	)
@@ -1452,15 +1424,9 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 		cars["id"].as_str().unwrap()
 	);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&reindex_path,
-			json!({"expected_revision":1})
-		)
-		.await
-		.0,
+		common::post(&app, &token, &reindex_path, json!({"expected_revision":1}))
+			.await
+			.0,
 		403,
 		"write-only permission cannot disclose a stored source in mutation responses"
 	);
@@ -1579,36 +1545,23 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 		"/api/workspaces/{workspace}/semantic/entries/{}/reindex",
 		cars["id"].as_str().unwrap()
 	);
-	let first_reindex = request(
-		&app,
-		&token,
-		"POST",
-		&reindex_path,
-		json!({"expected_revision":1}),
-	)
-	.await;
-	let replay_reindex = request(
-		&app,
-		&token,
-		"POST",
-		&reindex_path,
-		json!({"expected_revision":1}),
-	)
-	.await;
+	let first_reindex =
+		common::post(&app, &token, &reindex_path, json!({"expected_revision":1})).await;
+	let replay_reindex =
+		common::post(&app, &token, &reindex_path, json!({"expected_revision":1})).await;
 	assert_eq!(first_reindex.0, 200);
 	assert_eq!(replay_reindex.0, 200);
 	assert_eq!(first_reindex.1["point_id"], replay_reindex.1["point_id"]);
 	semantic::worker::sweep(&f.store).await.unwrap();
-	let (status, _) = request(
+	let (status, _) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/search"),
 		json!({"query":"vehicle","limit":999,"max_tokens":2048}),
 	)
 	.await;
 	assert_eq!(status, 400);
-	let (status,_)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"cars","expected_revision":99,"source":{"kind":"memory","text":"changed"},"metadata":{}})).await;
+	let (status,_)=common::post(&app, &token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":"cars","expected_revision":99,"source":{"kind":"memory","text":"changed"},"metadata":{}})).await;
 	assert_eq!(status, 409);
 	drop(server);
 	let response = search(&app, &token, workspace).await;
@@ -1665,10 +1618,9 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	.await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -1711,10 +1663,9 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(count, 1);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-inline-semantic-memory","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -1738,10 +1689,9 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	);
 	policy["policies"].as_array_mut().unwrap().pop();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":2,"bundle":policy})
 		)
@@ -1818,10 +1768,9 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.workspace_id;
 	configure(&app, &token, workspace, &spec(&endpoint), 0).await;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -1876,7 +1825,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		("artifact", artifact.id, None),
 		("message", message, Some("aidash://private/agent@1.0.0")),
 	] {
-		let (status,entry)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":kind,"expected_revision":0,"source":{"kind":kind,"id":id},"agent":agent,"metadata":{"topic":"transport"}})).await;
+		let (status,entry)=common::post(&app, &token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":kind,"expected_revision":0,"source":{"kind":kind,"id":id},"agent":agent,"metadata":{"topic":"transport"}})).await;
 		assert_eq!(status, 200, "{entry}");
 		ids.push(entry);
 	}
@@ -1888,12 +1837,11 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		"agent-scoped data is not implicitly included"
 	);
 	let path = format!("/api/workspaces/{workspace}/semantic/search");
-	let (_,found)=request(&app,&token,"POST",&path,json!({"query":"vehicle","agent":"aidash://private/agent@1.0.0","metadata":{"topic":"transport"},"limit":10,"max_tokens":4096})).await;
+	let (_,found)=common::post(&app, &token, &path, json!({"query":"vehicle","agent":"aidash://private/agent@1.0.0","metadata":{"topic":"transport"},"limit":10,"max_tokens":4096})).await;
 	assert_eq!(found["matches"].as_array().unwrap().len(), 2);
-	let (_, filtered) = request(
+	let (_, filtered) = common::post(
 		&app,
 		&token,
-		"POST",
 		&path,
 		json!({"query":"vehicle","metadata":{"topic":"cooking"},"limit":10,"max_tokens":4096}),
 	)
@@ -1947,10 +1895,9 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-original-artifact","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id.to_string()]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -1979,10 +1926,9 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.await
 		.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/workspaces/{}/semantic/index", other.id),
 			serde_json::to_value(ConfigureIndex {
 				expected_revision: 0,
@@ -1994,7 +1940,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.0,
 		403
 	);
-	assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{}/semantic/entries",other.id),json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
+	assert_eq!(common::post(&app, &token, &format!("/api/workspaces/{}/semantic/entries",other.id), json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
 	drop(server);
 	dispose(f, &url, &schema).await;
@@ -2295,7 +2241,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	let browser = common::BrowserAdministrator::new(&f).await;
 	common::tenant_root(&f, "other").await;
 	assert_eq!(
-		request(&app, &f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0,
+		common::post(&app, &f.config.api_token, "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0,
 		200
 	);
 	let bob = common::subject_credential(&f.store, "other", "bob").await;
@@ -2359,11 +2305,11 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 		);
 	}
 	// The Tenant's own Subject still reads, and nothing changed.
-	let (status, current) = request(&app, &token, "GET", &index, Value::Null).await;
+	let (status, current) = common::get(&app, &token, &index).await;
 	assert_eq!(status, 200, "{current}");
 	assert_eq!(current["revision"], 1);
 	assert_eq!(current["spec"]["max_results"], 10);
-	let (status, stored) = request(&app, &token, "GET", &entries, Value::Null).await;
+	let (status, stored) = common::get(&app, &token, &entries).await;
 	assert_eq!(status, 200, "{stored}");
 	assert_eq!(stored.as_array().unwrap().len(), 1);
 	assert_eq!(stored[0]["id"], entry["id"]);

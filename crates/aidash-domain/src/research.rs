@@ -114,6 +114,9 @@ pub enum Failure {
 	EvidenceRevoked,
 	/// The Research account terms no longer keep this result (ADR 0058).
 	ResultExpired,
+	/// The call was stopped before anything was sent, and no cause is given: the
+	/// Run's Subnode ended, which cancels the Run with it (ADR 0110).
+	Refused,
 }
 
 impl Failure {
@@ -155,6 +158,7 @@ impl Failure {
 			Self::SnapshotPurged => "snapshot_purged",
 			Self::EvidenceRevoked => "evidence_revoked",
 			Self::ResultExpired => "result_expired",
+			Self::Refused => "refused",
 		}
 	}
 	fn explanation(self) -> &'static str {
@@ -217,6 +221,7 @@ impl Failure {
 			Self::ResultExpired => {
 				"The research service's account terms no longer let this result be kept; search or read again to continue."
 			}
+			Self::Refused => "The call was not carried out and nothing was sent.",
 		}
 	}
 	pub fn retryable(self) -> bool {

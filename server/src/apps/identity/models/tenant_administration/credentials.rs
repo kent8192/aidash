@@ -187,9 +187,33 @@ impl TenantAdministrator {
 	/// Revokes a credential this member issued through its Mapping, or any of
 	/// the Tenant's under `credential.revoke`.
 	pub(crate) async fn revoke_credential(&self, db: &Pool, id: Uuid) -> Result<Credential> {
+		let may_revoke = self.may_change(db, rules::CREDENTIAL_REVOKE).await?;
 		db.atomic(&self.scope()?, async |tx| {
-			let snapshot = self.lock(tx, false).await?;
-			let found = AuthorizationCredential::exportable(tx, self.tenant(), id).await?;
+			// Revoking waits for the work holding the credential, so it is an
+			// Authority Change, except for someone this is about to refuse.
+			if !may_revoke
+				&& !AuthorizationCredential::issued_through(tx, self.tenant(), id, self.mapping_id)
+					.await?
+			{
+				let snapshot = self.lock(tx, false).await?;
+				self.require(
+					tx,
+					&snapshot,
+					rules::CREDENTIAL_REVOKE,
+					&id.to_string(),
+					json!({}),
+				)
+				.await?;
+				return Err(Error::Forbidden);
+			}
+			let waiting = crate::database::authority_change::raise(tx, self.tenant()).await?;
+			let held = match self.lock(tx, false).await {
+				Ok(snapshot) => AuthorizationCredential::exportable(tx, self.tenant(), id)
+					.await
+					.map(|found| (snapshot, found)),
+				Err(error) => Err(error),
+			};
+			let (snapshot, found) = waiting.settle(tx, held).await?;
 			if found
 				.as_ref()
 				.is_none_or(|credential| credential.mapping_id != Some(self.mapping_id))

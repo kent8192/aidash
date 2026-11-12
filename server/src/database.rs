@@ -1,4 +1,5 @@
 //! Database-boundary compatibility for the pinned Reinhardt revision.
+pub mod authority_change;
 pub mod classification;
 pub mod limits;
 pub mod native;

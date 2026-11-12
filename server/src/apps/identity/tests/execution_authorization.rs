@@ -6,9 +6,15 @@ use http::Method;
 use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "../../execution/tests/support/late_subnode.rs"]
+mod late_subnode;
+#[path = "execution_authorization/subnode_read_boundary.rs"]
+mod subnode_read_boundary;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]
 mod tenant_openrouter;
-use aidash_server::{domain::qualified_agent, harness::Harness};
+use aidash_server::{
+	authorization::services::execution::StepAuthority, domain::qualified_agent, harness::Harness,
+};
 
 use common::*;
 use serde_json::{Value, json};
@@ -969,18 +975,21 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert!(text.contains("permitted message after rejected events"));
 	assert!(!text.contains("unreadable-run-journal"));
 	drop(stream);
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/runs/{}/control", run.id),
-			json!({"action":"pause"})
-		)
-		.await
-		.0,
-		403,
-		"control responses must not expose a denied run journal"
+	// A reader denied the Run can still stop it, without seeing its journal.
+	let (status, paused) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/control", run.id),
+		json!({"action":"pause"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{paused}");
+	assert_eq!(paused["control"], "PAUSED");
+	assert!(paused.get("context").is_none(), "{paused}");
+	assert!(
+		!paused.to_string().contains("unreadable-run-journal"),
+		"{paused}"
 	);
 	assert_eq!(
 		f.store
@@ -989,16 +998,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			.unwrap()
 			.control
 			.as_str(),
-		"ACTIVE"
+		"PAUSED"
 	);
-	f.store
-		.control(
-			&TEST_FIXTURE,
-			run.id,
-			aidash_server::domain::RunControlAction::Pause,
-		)
-		.await
-		.unwrap();
 	let (_, second) = request(
 		&app,
 		&token,
@@ -1717,6 +1718,8 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	)]["enabled"] = json!(false);
 	let mut replacements = tokio::task::JoinSet::new();
 	// Native ORM mutations acquire SELECT FOR UPDATE locks before writing.
+	// One change waits on the policy row and the rest on its Tenant's flag
+	// (ADR 0121), so a session waiting on an advisory lock counts too.
 	// Fill every API connection with a waiting revocation. The worker must
 	// still persist its result and release the lease using its separate pool.
 	for _ in 0..11 {
@@ -1743,7 +1746,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	});
 	tokio::time::timeout(Duration::from_secs(5),async {
         loop {
-            let waiting:i64={ let query_bind_1 = &schema; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("pg_stat_activity")).and_where(SimpleExpr::CustomWithExpr("(application_name = ? AND wait_event_type = 'Lock' AND (query LIKE '%authorization_bundles%' OR query LIKE '%authorization_credentials%'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(worker_federation.store.pool.fixture_driver()).await }.unwrap();
+            let waiting:i64={ let query_bind_1 = &schema; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("pg_stat_activity")).and_where(SimpleExpr::CustomWithExpr("(application_name = ? AND wait_event_type = 'Lock' AND (wait_event = 'advisory' OR query LIKE '%authorization_bundles%' OR query LIKE '%authorization_credentials%'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(worker_federation.store.pool.fixture_driver()).await }.unwrap();
             if waiting==12 {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -2147,7 +2150,7 @@ async fn run_with_pending_call(
 			)
 			.value_expr(
 				reinhardt::query::Alias::new("error"),
-				reinhardt::query::Expr::cust("'execution authority denied'"),
+				reinhardt::query::Expr::cust("'task_delegate: task.delegate was denied'"),
 			);
 	}
 	sqlx::query(&update.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2358,6 +2361,63 @@ async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check
 			"action": "task.delegate",
 		})
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_tenant_deletion_during_a_tool_call_still_pauses_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the Tenant is deleted after the model asked for a call.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "deleted".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	sqlx::query(
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES (gen_random_uuid(), 'acme', now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// Act
+	harness.worker_once().await.unwrap();
+	// Assert: a pause, never a Rejected Call for the model.
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(
+		paused.control.as_str(),
+		"PAUSED",
+		"error={:?}",
+		paused.error
+	);
+	assert!(
+		paused
+			.error
+			.as_deref()
+			.is_some_and(|error| error.ends_with(": the Tenant is being deleted")),
+		"{:?}",
+		paused.error
+	);
+	assert_eq!(json!(paused.state)["data"]["cursor"], 0);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -7032,6 +7092,7 @@ struct SubnodeRig {
 	token: String,
 	node: aidash_domain::nodes::NodeAddress,
 	creator_run: Uuid,
+	policy: Value,
 	/// Each injected response needs its own epoch: the invocation key is
 	/// `run:epoch:cursor`, and reusing it with different input is a Conflict.
 	epoch: std::cell::Cell<u64>,
@@ -7047,7 +7108,63 @@ impl SubnodeRig {
 		members: &[&str],
 		grant: bool,
 	) -> Self {
-		let (mut policy, token, task_id) = bootstrap(f, app, "http://127.0.0.1:9").await;
+		Self::build(f, app, members, grant, false).await
+	}
+
+	/// Like [`SubnodeRig::new`], but members keep the file tools and
+	/// `attachment_copy`, so every member Run has a Working Area.
+	async fn with_working_areas(
+		f: &aidash_server::federation::Federation,
+		app: &common::TestApplication,
+		members: &[&str],
+		grant: bool,
+	) -> Self {
+		Self::build(f, app, members, grant, true).await
+	}
+
+	async fn build(
+		f: &aidash_server::federation::Federation,
+		app: &common::TestApplication,
+		members: &[&str],
+		grant: bool,
+		files: bool,
+	) -> Self {
+		let (policy, token, node, task_id) = Self::register(f, app, members, grant, files).await;
+		let (status, body) = request(
+			app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task_id}/claim"),
+			json!({"revision":0,"agent":{"id":"subnode-creator","version":"1.0.0"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "claim: {body}");
+		let creator_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
+		Self {
+			f: f.clone(),
+			app: app.clone(),
+			token,
+			node,
+			creator_run,
+			policy,
+			epoch: std::cell::Cell::new(0),
+		}
+	}
+
+	/// Register the same agents, and return the policy, the owner's token, the
+	/// Node and the bootstrap Task. With `files`, members keep the file tools.
+	async fn register(
+		f: &aidash_server::federation::Federation,
+		app: &common::TestApplication,
+		members: &[&str],
+		grant: bool,
+		files: bool,
+	) -> (Value, String, aidash_domain::nodes::NodeAddress, Uuid) {
+		let (mut policy, token, task_id) = if files {
+			bootstrap_with_area(f, app, "http://127.0.0.1:9").await
+		} else {
+			bootstrap(f, app, "http://127.0.0.1:9").await
+		};
 		let node = aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme");
 		let creator = qualified_agent(&node, "subnode-creator", "1.0.0");
 		policy["subjects"][&creator] = json!({"kind":"agent", "node":node.node.as_str()});
@@ -7086,6 +7203,7 @@ impl SubnodeRig {
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_dissolve","version":"1.0.0"},"alias":"subnode_dissolve","narrow":{}}),
 				]);
 			} else {
 				entry["config"]["bindings"] = json!([]);
@@ -7097,13 +7215,18 @@ impl SubnodeRig {
 					.as_array_mut()
 					.unwrap();
 				// Keep member defaults within the deliberately narrow test allowance.
-				for name in [
-					"skill_list",
-					"skill_load",
-					"skill_read",
-					"attachment_copy",
-					"workspace_search",
-				] {
+				let narrow: &[&str] = if files {
+					&["skill_list", "skill_load", "skill_read", "workspace_search"]
+				} else {
+					&[
+						"skill_list",
+						"skill_load",
+						"skill_read",
+						"attachment_copy",
+						"workspace_search",
+					]
+				};
+				for name in narrow {
 					if !defaults.contains(&json!(name)) {
 						defaults.push(json!(name));
 					}
@@ -7122,28 +7245,23 @@ impl SubnodeRig {
 			let (status, body) = request(app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":node.node.as_str(),"entry":{"id":name,"version":"1.0.0"},"expected_revision":0,"enabled":true})).await;
 			assert_eq!(status, 200, "approve {name}: {body}");
 		}
-		let (status, body) = request(
-			app,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task_id}/claim"),
-			json!({"revision":0,"agent":{"id":"subnode-creator","version":"1.0.0"}}),
-		)
-		.await;
-		assert_eq!(status, 200, "claim: {body}");
-		let creator_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
-		Self {
-			f: f.clone(),
-			app: app.clone(),
-			token,
-			node,
-			creator_run,
-			epoch: std::cell::Cell::new(0),
-		}
+		(policy, token, node, task_id)
 	}
 
 	/// Script one model tool call on `run` and let the worker take one step.
 	async fn script(&self, run: Uuid, name: &str, arguments: Value, call_id: &str) -> bool {
+		self.stage(run, name, arguments, call_id).await;
+		// The recovery cursor may already have passed an older Run; the second
+		// pass wraps around to it.
+		let harness = Harness {
+			federation: self.f.clone(),
+		};
+		harness.worker_once().await.unwrap() || harness.worker_once().await.unwrap()
+	}
+
+	/// Record one model tool call on `run` for the worker to run, without
+	/// letting the worker step yet.
+	async fn stage(&self, run: Uuid, name: &str, arguments: Value, call_id: &str) {
 		let response = json!({"text":"","tool_calls":[{"id":call_id,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
 		self.epoch.set(self.epoch.get() + 1);
 		// A response written before the Run's latest input is discarded as stale.
@@ -7174,12 +7292,6 @@ impl SubnodeRig {
 			.execute(self.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
-		// The recovery cursor may already have passed an older Run; the second
-		// pass wraps around to it.
-		let harness = Harness {
-			federation: self.f.clone(),
-		};
-		harness.worker_once().await.unwrap() || harness.worker_once().await.unwrap()
 	}
 
 	/// The recorded result of tool call `call_id` in `run`, when there is one.
@@ -7215,7 +7327,224 @@ impl SubnodeRig {
 	}
 }
 
-/// Exercise the real worker, storage, admission and human cancellation boundaries.
+/// #754 decision 6 for a local delegation: the Subnode's task is in another Workspace, so the
+/// creator hears "not found or is not visible" and its Run goes on. A delegation of the creator's
+/// own task after `subnode_task` is no longer refused (#755, see `subnode_read_boundary`).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the creating Run made a Subnode and a task in the Subnode's Workspace.
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let subnode = created["subnode_id"].as_str().unwrap().to_owned();
+	let task = rig
+		.inject(
+			"subnode_task",
+			json!({"subnode_id":subnode,"title":"Investigate","request":"Find evidence"}),
+			"subnode-task",
+		)
+		.await;
+	let child_task = task["task_id"].as_str().unwrap().to_owned();
+	// Fence the leader's Run so the worker selects the creator.
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
+	// Act: the creator delegates a task that is not in its own Workspace.
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"task_delegate",
+			json!({"task_id":child_task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+			"delegate-subnode-task",
+		)
+		.await
+	);
+	// Assert: the model hears it, and the Run goes on instead of pausing.
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let Some(delegated) = rig
+		.result_of(rig.creator_run, "delegate-subnode-task")
+		.await
+	else {
+		panic!(
+			"a Rejected Call records a result; phase={:?} state={} error={:?}",
+			run.phase(),
+			json!(run.state),
+			run.error
+		);
+	};
+	assert!(
+		delegated["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("was not found or is not visible to this Run")),
+		"{delegated}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// #754 decision 6 for a delegation to another Node: a task in another Workspace reads "not found
+/// or is not visible", and the Run goes on. The check fails before any peer is called. (A task
+/// that does not exist at all is refused earlier, at the tool gate.)
+#[rstest::rstest]
+#[tokio::test]
+async fn a_cross_node_task_delegate_of_a_task_the_run_cannot_see_reaches_the_model_as_not_visible(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the creating Run made a Subnode and a task in the Subnode's Workspace.
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let elsewhere =
+		aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "elsewhere");
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let task = rig
+		.inject(
+			"subnode_task",
+			json!({"subnode_id":created["subnode_id"],"title":"Investigate","request":"Find evidence"}),
+			"subnode-task",
+		)
+		.await;
+	let child_task = task["task_id"].as_str().unwrap().to_owned();
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
+	// Act: the creator delegates a task in another Workspace to another Node.
+	let call = "delegate-other-workspace";
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"task_delegate",
+			json!({"task_id":child_task,"node_id":elsewhere.to_string(),"agent":{"id":"research","version":"1.0.0"}}),
+			call,
+		)
+		.await
+	);
+	// Assert
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig
+		.result_of(rig.creator_run, call)
+		.await
+		.unwrap_or_else(|| panic!("a Rejected Call records a result; error {:?}", run.error));
+	assert!(
+		result["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("was not found or is not visible to this Run")),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// #754 decision 7: a `subnode_task` whose earlier attempt left a task under another authority is
+/// the call's own doing, so the model hears it instead of the Run failing.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_subnode_task_retried_under_a_changed_authority_reaches_the_model_as_a_rejected_call(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the first attempt committed its task and delegation but lost its receipt, and the
+	// Run's authority chain has since changed.
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let arguments =
+		json!({"subnode_id":created["subnode_id"],"title":"Investigate","request":"Find evidence"});
+	let task = rig
+		.inject("subnode_task", arguments.clone(), "subnode-task")
+		.await;
+	let child_task = Uuid::parse_str(task["task_id"].as_str().unwrap()).unwrap();
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
+	let call_key = format!("{}:{}:0", rig.creator_run, rig.epoch.get());
+	let pool = f.store.pool.fixture_driver();
+	sqlx::query("DELETE FROM subnode_operation_receipts WHERE run_id = $1 AND call_key = $2")
+		.bind(rig.creator_run)
+		.bind(&call_key)
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM invocations WHERE idempotency_key = $1")
+		.bind(&call_key)
+		.execute(pool)
+		.await
+		.unwrap();
+	let changed = sqlx::query(
+		"UPDATE authorization_execution SET subject_chain = array_append(subject_chain, 'someone-else') WHERE task_id = $1",
+	)
+	.bind(child_task)
+	.execute(pool)
+	.await
+	.unwrap();
+	assert_eq!(changed.rows_affected(), 1, "the delegation left its grant");
+	// Act: the same call runs again under the same key.
+	rig.epoch.set(rig.epoch.get() - 1);
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_task",
+			arguments,
+			"subnode-task-again"
+		)
+		.await
+	);
+	// Assert
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig
+		.result_of(rig.creator_run, "subnode-task-again")
+		.await
+		.unwrap_or_else(|| panic!("a Rejected Call records a result; error {:?}", run.error));
+	assert!(
+		result["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("already delegated under a different authority")),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority_chain(
@@ -7589,7 +7918,10 @@ async fn subnode_creation_is_refused_without_an_explicit_grant(
 	);
 	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
 	assert_eq!(run.control, aidash_domain::RunControl::Paused);
-	assert_eq!(run.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		run.error.as_deref(),
+		Some("subnode_create: subnode.create was denied")
+	);
 	assert_eq!(subnode_rows(&f).await, 0, "no Subnode may be created");
 	cleanup(f, &url, &schema).await;
 }
@@ -7723,7 +8055,10 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 		);
 		let run = f.store.run(&TEST_FIXTURE, member).await.unwrap();
 		assert_eq!(run.control, aidash_domain::RunControl::Paused, "{call_id}");
-		assert_eq!(run.error.as_deref(), Some("execution authority denied"));
+		assert_eq!(
+			run.error.as_deref(),
+			Some("workspace_read: an authority check refused this step")
+		);
 		rig.set_run_control(member, "ACTIVE").await;
 	};
 	denied(
@@ -7736,5 +8071,772 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 		"member-names-creator-workspace",
 	)
 	.await;
+	cleanup(f, &url, &schema).await;
+}
+
+/// A pixel a person posts in the Subnode's Workspace for a member to copy.
+const LATE_PIXEL: &[u8] = include_bytes!("../../execution/tests/support/media/pixel.png");
+
+/// The member's tools: the coordination tools need no entry, and the file tools
+/// give each member Run a Working Area.
+const SUBNODE_FILE_TOOLS: [&str; 9] = [
+	"workspace_read",
+	"workspace_observe",
+	"workspace_wait",
+	"artifact_publish",
+	"human_request",
+	"connection_request",
+	"file_read",
+	"file_search",
+	"attachment_copy",
+];
+
+/// A Subnode with one member Run, as the worker loaded the Run before the
+/// Subnode ended.
+struct LateSubnode {
+	subnode: Uuid,
+	workspace: Uuid,
+	member: aidash_server::domain::Run,
+}
+
+/// Create a Subnode with `allowance`, give its leader a Task, and keep the
+/// creating Run out of the worker's way so that it takes the member's Run.
+async fn late_subnode(rig: &SubnodeRig, allowance: &[&str]) -> LateSubnode {
+	let created = rig
+		.inject(
+			"subnode_create",
+			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":allowance,"secrets":[]},"title":"Late writes"}),
+			"create-subnode",
+		)
+		.await;
+	let subnode = Uuid::parse_str(
+		created["subnode_id"]
+			.as_str()
+			.unwrap_or_else(|| panic!("creation: {created}")),
+	)
+	.unwrap();
+	let workspace = Uuid::parse_str(created["workspace_id"].as_str().unwrap()).unwrap();
+	let task = rig
+		.inject(
+			"subnode_task",
+			json!({"subnode_id":subnode,"title":"Send a file","request":"Send a file"}),
+			"subnode-task",
+		)
+		.await;
+	let task = Uuid::parse_str(
+		task["task_id"]
+			.as_str()
+			.unwrap_or_else(|| panic!("task: {task}")),
+	)
+	.unwrap();
+	let member = rig
+		.f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == task)
+		.expect("leader Run admitted");
+	rig.set_run_control(rig.creator_run, "PAUSED").await;
+	LateSubnode {
+		subnode,
+		workspace,
+		member,
+	}
+}
+
+/// End the Subnode by cancelling its creating Run, the real path.
+async fn end_subnode(rig: &SubnodeRig) -> (u16, Value) {
+	request(
+		&rig.app,
+		&rig.token,
+		"POST",
+		&format!("/api/runs/{}/control", rig.creator_run),
+		json!({"action":"cancel"}),
+	)
+	.await
+}
+
+/// A member Run that holds a copy of a Thread Attachment in its Working Area.
+struct LateFiles {
+	late: LateSubnode,
+	area: Uuid,
+	attachment: Uuid,
+}
+
+impl LateFiles {
+	async fn new(rig: &SubnodeRig) -> Self {
+		let late = late_subnode(rig, &SUBNODE_FILE_TOOLS).await;
+		let (status, area) = request(
+			&rig.app,
+			&rig.token,
+			"GET",
+			&format!("/api/runs/{}/working-area", late.member.id),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "working area: {area}");
+		let area = Uuid::parse_str(area["id"].as_str().unwrap()).unwrap();
+		let path = format!(
+			"/api/workspaces/{}/attachments?filename=pixel.png&media_type=image%2Fpng&idempotency_key={}",
+			late.workspace,
+			Uuid::new_v4()
+		);
+		let response = rig
+			.app
+			.api_http
+			.request(Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(LATE_PIXEL))
+			.header(http::header::CONTENT_TYPE, "application/octet-stream")
+			.header("authorization", format!("Bearer {}", rig.token))
+			.send()
+			.await
+			.unwrap();
+		let attachment = response.json_value().unwrap();
+		assert_eq!(response.status_code(), 200, "upload: {attachment}");
+		let attachment_id = attachment["id"].clone();
+		let (status, posted) = request(
+			&rig.app,
+			&rig.token,
+			"POST",
+			&format!("/api/workspaces/{}/thread-messages", late.workspace),
+			json!({"content":"A pixel","idempotency_key":Uuid::new_v4(),"attachment_ids":[attachment_id]}),
+		)
+		.await;
+		assert_eq!(status, 200, "post: {posted}");
+		Self {
+			late,
+			area,
+			attachment: Uuid::parse_str(attachment_id.as_str().unwrap()).unwrap(),
+		}
+	}
+
+	async fn area_revision(&self, rig: &SubnodeRig) -> i64 {
+		sqlx::query_scalar("SELECT revision FROM core_areas WHERE id = $1")
+			.bind(self.area)
+			.fetch_one(rig.f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	}
+
+	/// Copy the attachment to `sent.png` while the Subnode is active, so that
+	/// the Working Area holds a file to send.
+	async fn copy_before_the_end(&self, rig: &SubnodeRig) {
+		let revision = self.area_revision(rig).await;
+		assert!(
+			rig.script(
+				self.late.member.id,
+				"attachment_copy",
+				json!({"id":self.attachment,"path":"sent.png","expected_revision":revision,"idempotency_key":Uuid::new_v4()}),
+				"copy-before-the-end",
+			)
+			.await
+		);
+		let copied = rig
+			.result_of(self.late.member.id, "copy-before-the-end")
+			.await
+			.expect("the copy ran");
+		assert_eq!(copied["file"]["path"], "sent.png", "copy: {copied}");
+	}
+
+	/// Record the member's late call, as the model would have chosen it before
+	/// the Subnode ended.
+	async fn stage(&self, rig: &SubnodeRig, call: LateCall) {
+		let (name, arguments) = match call {
+			LateCall::Message => (
+				"workspace_message",
+				json!({"content":"Late file","files":["sent.png"]}),
+			),
+			LateCall::Copy => (
+				"attachment_copy",
+				json!({"id":self.attachment,"path":"late.png","expected_revision":self.area_revision(rig).await,"idempotency_key":Uuid::new_v4()}),
+			),
+		};
+		rig.stage(self.late.member.id, name, arguments, "late-call")
+			.await;
+	}
+
+	/// What the call left behind: a message from the member, an attachment that
+	/// it posted, or a new Working Area revision.
+	async fn written(&self, rig: &SubnodeRig, call: LateCall, revision: i64) -> bool {
+		let driver = rig.f.store.pool.fixture_driver();
+		match call {
+			LateCall::Message => {
+				let messages: i64 = sqlx::query_scalar(
+					"SELECT count(*) FROM messages WHERE workspace_id = $1 AND run_id = $2",
+				)
+				.bind(self.late.workspace)
+				.bind(self.late.member.id)
+				.fetch_one(driver)
+				.await
+				.unwrap();
+				let attachments: i64 = sqlx::query_scalar(
+					"SELECT count(*) FROM channel_attachments WHERE workspace_id = $1",
+				)
+				.bind(self.late.workspace)
+				.fetch_one(driver)
+				.await
+				.unwrap();
+				// The person's attachment is the only one before a send.
+				messages > 0 || attachments > 1
+			}
+			LateCall::Copy => self.area_revision(rig).await != revision,
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LateCall {
+	/// `workspace_message` with `files`.
+	Message,
+	/// `attachment_copy`.
+	Copy,
+}
+
+/// Hold `Working Area` row `area` in a test transaction, as a send or copy that
+/// has passed the tool's entrance and not yet written would wait on it.
+async fn hold_area(
+	rig: &SubnodeRig,
+	area: Uuid,
+) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
+	let mut tx = rig.f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT id FROM core_areas WHERE id = $1 FOR UPDATE")
+		.bind(area)
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+	let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+	(tx, pid)
+}
+
+/// How many sessions wait directly on the session `holder`, and how many wait
+/// behind those.
+async fn waiting_on(rig: &SubnodeRig, holder: i32) -> (i64, i64) {
+	sqlx::query_as(
+		"WITH direct AS (SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) \
+		 SELECT (SELECT count(*) FROM direct), \
+		        (SELECT count(*) FROM pg_stat_activity a \
+		          WHERE EXISTS (SELECT 1 FROM direct d WHERE d.pid = ANY(pg_blocking_pids(a.pid))))",
+	)
+	.bind(holder)
+	.fetch_one(rig.f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// Poll `waiting_on` until `ready` accepts it, for at most 30 seconds.
+async fn until_waiting(rig: &SubnodeRig, holder: i32, what: &str, ready: fn((i64, i64)) -> bool) {
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+	loop {
+		if ready(waiting_on(rig, holder).await) {
+			return;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"timed out waiting for {what}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+}
+
+fn start_worker(rig: &SubnodeRig) -> tokio::task::JoinHandle<bool> {
+	let harness = Harness {
+		federation: rig.f.clone(),
+	};
+	tokio::spawn(async move { harness.worker_once().await.unwrap() })
+}
+
+/// How a test ends the Subnode.
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+	/// Cancelling the creating Run.
+	Cancel,
+	/// The creator's person dissolving the Subnode.
+	Dissolve,
+}
+
+fn start_end(
+	rig: &SubnodeRig,
+	ending: Ending,
+	subnode: Uuid,
+) -> tokio::task::JoinHandle<(u16, Value)> {
+	let (app, token, creator) = (rig.app.clone(), rig.token.clone(), rig.creator_run);
+	tokio::spawn(async move {
+		match ending {
+			Ending::Cancel => {
+				request(
+					&app,
+					&token,
+					"POST",
+					&format!("/api/runs/{creator}/control"),
+					json!({"action":"cancel"}),
+				)
+				.await
+			}
+			Ending::Dissolve => {
+				request(
+					&app,
+					&token,
+					"POST",
+					&format!("/api/subnodes/{subnode}/dissolve"),
+					Value::Null,
+				)
+				.await
+			}
+		}
+	})
+}
+
+async fn subnode_state(rig: &SubnodeRig, subnode: Uuid) -> String {
+	sqlx::query_scalar("SELECT state FROM subnodes WHERE id = $1")
+		.bind(subnode)
+		.fetch_one(rig.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+/// Step the worker until the member Run ends, and return how it ended.
+async fn run_to_its_end(rig: &SubnodeRig, run: Uuid) -> aidash_server::domain::Run {
+	let harness = Harness {
+		federation: rig.f.clone(),
+	};
+	for _ in 0..8 {
+		let current = rig.f.store.run(&TEST_FIXTURE, run).await.unwrap();
+		if matches!(
+			current.state.phase(),
+			aidash_domain::RunPhase::Completed
+				| aidash_domain::RunPhase::Failed
+				| aidash_domain::RunPhase::Cancelled
+		) {
+			return current;
+		}
+		harness.worker_once().await.unwrap();
+	}
+	rig.f.store.run(&TEST_FIXTURE, run).await.unwrap()
+}
+
+fn assert_cancelled(run: &aidash_server::domain::Run) {
+	assert_eq!(
+		run.state.phase(),
+		aidash_domain::RunPhase::Cancelled,
+		"the Run must end as cancelled, not failed or paused: control {:?}, error {:?}",
+		run.control,
+		run.error
+	);
+	assert_eq!(run.control, aidash_domain::RunControl::Cancelled);
+}
+
+/// The send holds the shared Subnode lock while it waits, so the end waits for
+/// it (decision 2); the write commits first, then the end.
+async fn the_end_waits_for_a_call_in_progress(
+	fixture: common::ApplicationFixture,
+	call: LateCall,
+	ending: Ending,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig =
+		SubnodeRig::with_working_areas(&f, &fixture.application, &["subnode-leader"], true).await;
+	let files = LateFiles::new(&rig).await;
+	if matches!(call, LateCall::Message) {
+		files.copy_before_the_end(&rig).await;
+	}
+	let revision = files.area_revision(&rig).await;
+	let (hold, holder) = hold_area(&rig, files.area).await;
+	files.stage(&rig, call).await;
+	let worker = start_worker(&rig);
+	until_waiting(
+		&rig,
+		holder,
+		"the call to wait on the Working Area",
+		|(direct, _)| direct >= 1,
+	)
+	.await;
+	let end = start_end(&rig, ending, files.late.subnode);
+	// Wait until the end queues behind the call, or finishes without waiting.
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+	while !end.is_finished() && waiting_on(&rig, holder).await.1 < 1 {
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"timed out waiting for the end to queue behind the call"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+	assert!(
+		!end.is_finished(),
+		"the end must wait for the call in progress"
+	);
+	assert!(!files.written(&rig, call, revision).await);
+	hold.rollback().await.unwrap();
+	worker.await.unwrap();
+	let (status, body) = end.await.unwrap();
+	assert_eq!(status, 200, "end: {body}");
+	assert!(
+		files.written(&rig, call, revision).await,
+		"the call committed before the end"
+	);
+	assert_eq!(subnode_state(&rig, files.late.subnode).await, "dissolved");
+	cleanup(f, &url, &schema).await;
+}
+
+/// The end commits first: the call is refused at the write, nothing is written,
+/// and the Run ends as cancelled.
+async fn a_call_after_the_end_is_refused(fixture: common::ApplicationFixture, call: LateCall) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig =
+		SubnodeRig::with_working_areas(&f, &fixture.application, &["subnode-leader"], true).await;
+	let files = LateFiles::new(&rig).await;
+	if matches!(call, LateCall::Message) {
+		files.copy_before_the_end(&rig).await;
+	}
+	let revision = files.area_revision(&rig).await;
+	let attachments_before: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM channel_attachments WHERE workspace_id = $1")
+			.bind(files.late.workspace)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	// The end is written in a transaction of its own and committed after the
+	// call has passed the entrance and reached the write.
+	let mut ending = f.store.pool.fixture_driver().begin().await.unwrap();
+	let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *ending)
+		.await
+		.unwrap();
+	sqlx::query("SELECT id FROM subnodes WHERE id = $1 FOR UPDATE")
+		.bind(files.late.subnode)
+		.fetch_one(&mut *ending)
+		.await
+		.unwrap();
+	sqlx::query(
+		"UPDATE subnodes SET state = 'dissolved', ended_at = now(), ended_reason = 'dissolved' WHERE id = $1",
+	)
+	.bind(files.late.subnode)
+	.execute(&mut *ending)
+	.await
+	.unwrap();
+	files.stage(&rig, call).await;
+	let worker = start_worker(&rig);
+	until_waiting(
+		&rig,
+		holder,
+		"the call to wait for the end",
+		|(direct, _)| direct >= 1,
+	)
+	.await;
+	let waiting: Vec<String> = sqlx::query_scalar(
+		"SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+	)
+	.bind(holder)
+	.fetch_all(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		waiting
+			.iter()
+			.all(|query| query.contains("subnodes") && query.contains("FOR SHARE")),
+		"the call must wait at the Subnode check: {waiting:?}"
+	);
+	sqlx::query("UPDATE runs SET control = 'CANCELLED' WHERE id = $1")
+		.bind(files.late.member.id)
+		.execute(&mut *ending)
+		.await
+		.unwrap();
+	ending.commit().await.unwrap();
+	worker.await.unwrap();
+	assert!(
+		!files.written(&rig, call, revision).await,
+		"a call after the end must write nothing"
+	);
+	let attachments_after: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM channel_attachments WHERE workspace_id = $1")
+			.bind(files.late.workspace)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(attachments_after, attachments_before);
+	assert_cancelled(&run_to_its_end(&rig, files.late.member.id).await);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case::attachment_copy_then_cancel(LateCall::Copy, Ending::Cancel)]
+#[case::message_with_files_then_cancel(LateCall::Message, Ending::Cancel)]
+#[case::attachment_copy_then_dissolve(LateCall::Copy, Ending::Dissolve)]
+#[case::message_with_files_then_dissolve(LateCall::Message, Ending::Dissolve)]
+#[tokio::test]
+async fn subnode_end_waits_for_a_call_in_progress(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] call: LateCall,
+	#[case] ending: Ending,
+) {
+	the_end_waits_for_a_call_in_progress(fixture, call, ending).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_waits_for_a_subnode_write_before_publishing_run_controls(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let subnode = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling = sibling["name"].as_str().unwrap();
+	assert_eq!(
+		common::administer_node(
+			&f,
+			"acme",
+			&format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	let node = rig.node.node.to_string();
+	let browser = common::BrowserMapping::new(&f, "acme", "alice").await;
+	// Put the creating Run after its member in the physical scan of pending Runs.
+	sqlx::query("UPDATE runs SET revision = revision WHERE id = $1")
+		.bind(rig.creator_run)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// A member's write keeps this shared lock until its event is published.
+	let mut write = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT id FROM subnodes WHERE id = $1 FOR SHARE")
+		.bind(subnode.subnode)
+		.fetch_one(&mut *write)
+		.await
+		.unwrap();
+	let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *write)
+		.await
+		.unwrap();
+	let path = format!("/api/tenants/acme/nodes/{node}/deletion");
+	let end = tokio::spawn(async move {
+		browser
+			.send("POST", &path, json!({"confirmation":node}))
+			.await
+	});
+	until_waiting(
+		&rig,
+		holder,
+		"Node deletion behind the member write",
+		|(direct, _)| direct >= 1,
+	)
+	.await;
+	assert!(!end.is_finished(), "deletion must wait for the write");
+	let published = sqlx::query("SELECT pg_advisory_xact_lock(71003201)")
+		.execute(&mut *write)
+		.await;
+	assert!(
+		published.is_ok(),
+		"the write must not deadlock: {published:?}"
+	);
+	sqlx::query("INSERT INTO events (id, tenant, node, workspace_id, kind, data) VALUES ($1, 'acme', $2, $3, 'message.created', '{}')")
+		.bind(Uuid::new_v4())
+		.bind(rig.node.node.as_str())
+		.bind(subnode.workspace)
+		.execute(&mut *write)
+		.await
+		.unwrap();
+	write.commit().await.unwrap();
+	let (status, body) = end.await.unwrap();
+	assert_eq!(
+		status, 200,
+		"Node deletion must finish without deadlock: {body}"
+	);
+	assert_eq!(subnode_state(&rig, subnode.subnode).await, "dissolved");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case::attachment_copy(LateCall::Copy)]
+#[case::message_with_files(LateCall::Message)]
+#[tokio::test]
+async fn call_after_the_subnode_ended_is_refused(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] call: LateCall,
+) {
+	a_call_after_the_end_is_refused(fixture, call).await;
+}
+
+/// A member Run asks a person after its Subnode ended: the request is refused
+/// and nothing is recorded.
+#[rstest::rstest]
+#[tokio::test]
+async fn human_request_after_the_subnode_ended_is_refused(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let late = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let (status, body) = end_subnode(&rig).await;
+	assert_eq!(status, 200, "end: {body}");
+	assert_eq!(subnode_state(&rig, late.subnode).await, "dissolved");
+	let asked = f
+		.store
+		.human_request(
+			&TEST_FIXTURE,
+			&late.member,
+			"QUESTION",
+			"Late question",
+			"late-question",
+		)
+		.await;
+	let requests: i64 = sqlx::query_scalar("SELECT count(*) FROM human_requests WHERE run_id = $1")
+		.bind(late.member.id)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let outcome = asked.as_ref().map(|request| request.id);
+	assert!(
+		matches!(asked, Err(aidash_server::Error::Forbidden)),
+		"a request after the end must be refused: {outcome:?}, rows {requests}"
+	);
+	assert_eq!(requests, 0, "no request may be recorded");
+	assert_cancelled(&run_to_its_end(&rig, late.member.id).await);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A member Run's sampling approval is not opened once its Subnode ended: the
+/// approval is refused, no record is written and the Run ends as cancelled. The
+/// authority is begun while the Subnode is active, as a step does, so the call
+/// stands in for one that passed the tool's entrance before the end (#759).
+#[rstest::rstest]
+#[tokio::test]
+async fn sampling_approval_after_the_subnode_ended_is_refused(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let late = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let authority = StepAuthority::begin(&f, &late.member).await.unwrap();
+	let (status, body) = end_subnode(&rig).await;
+	assert_eq!(status, 200, "end: {body}");
+	assert_eq!(subnode_state(&rig, late.subnode).await, "dissolved");
+	let request = aidash_application::capabilities::approvals::SamplingApprovalRequest {
+		key: "late-sampling".into(),
+		target: serde_json::from_value(json!({
+			"agent": late.member.agent_id,
+			"plugin": "late-plugin",
+			"server": "late-server",
+			"digest": format!("sha256:{}", "0".repeat(64)),
+			"origin": "https://example.com",
+		}))
+		.unwrap(),
+		request: serde_json::from_value(json!({
+			"messages": [{"role": "user", "text": "Late question"}],
+			"system_prompt": "",
+			"max_tokens": 16,
+		}))
+		.unwrap(),
+		expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+		area: None,
+	};
+	let asked = authority
+		.sampling_approval(&f.store, &late.member, request)
+		.await;
+	let records: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM core_records WHERE kind = 'sampling'")
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(
+		matches!(asked, Err(aidash_server::Error::Forbidden)),
+		"a sampling approval after the end must be refused: {asked:?}, rows {records}"
+	);
+	assert_eq!(records, 0, "no approval may be recorded");
+	assert_cancelled(&run_to_its_end(&rig, late.member.id).await);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A member Run's Live preview is not started once its Subnode ended: the start
+/// is refused, no row is recorded and the Run ends as cancelled. The authority is
+/// begun while the Subnode is active and the request has passed admission, so
+/// the call stands in for one that passed the tool's entrance before the end
+/// (#759). The refusal after the row is recorded needs the end to commit between
+/// the row and the dispatch, which a test cannot place without a hook.
+#[rstest::rstest]
+#[tokio::test]
+async fn live_preview_start_after_the_subnode_ended_is_refused(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let late = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let authority = StepAuthority::begin(&f, &late.member).await.unwrap();
+	let (status, body) = end_subnode(&rig).await;
+	assert_eq!(status, 200, "end: {body}");
+	assert_eq!(subnode_state(&rig, late.subnode).await, "dissolved");
+	let started = authority
+		.live_preview_start(&f.store, &late.member, "python3 -m http.server 8000", 8000)
+		.await;
+	let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM core_live_previews WHERE run_id = $1")
+		.bind(late.member.id)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		matches!(started, Err(aidash_server::Error::Forbidden)),
+		"a start after the end must be refused: {started:?}, rows {rows}"
+	);
+	assert_eq!(rows, 0, "no Live preview row may be recorded");
+	assert_cancelled(&run_to_its_end(&rig, late.member.id).await);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A member Run's Tool call approval is not opened once its Subnode ended: the
+/// approval is refused, no card exists, the tool never runs and the Run ends as
+/// cancelled. The call passed the entrance while the Subnode was active.
+#[rstest::rstest]
+#[tokio::test]
+async fn tool_call_approval_after_the_subnode_ended_is_refused(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let app = &t.application.application;
+	let tool = format!("{}/tools/http@1.0.0", f.config.deployment);
+	let subnode = late_subnode::seed_subnode(&f, run.id, &[tool]).await;
+	let end = late_subnode::EndFirst::begin(&f, subnode, run.id).await;
+	late_subnode::stage(&f, run.id, "plugin_0", json!({"call":1}), "late-call").await;
+	let worker = late_subnode::start_worker(&f);
+	let waiting = end.until_a_call_waits(&f, &worker).await;
+	end.commit().await;
+	worker.await.unwrap();
+	let cards = approval_cards(app, &token, "").await;
+	assert!(
+		cards.is_empty(),
+		"a call after the end must open no approval: {cards:?}"
+	);
+	assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+	late_subnode::assert_waited_at_the_subnode_check(waiting);
+	late_subnode::assert_cancelled(&late_subnode::run_to_its_end(&f, run.id).await);
+	drop(t.server);
 	cleanup(f, &url, &schema).await;
 }

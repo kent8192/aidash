@@ -2,6 +2,7 @@
 //! Deployment, or over HTTP with a Federation token to another Deployment
 //! (ADR 0064). Every transport port is served by the same two paths.
 use super::local;
+use crate::database::native::distribution::{self, Hold};
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
@@ -129,6 +130,7 @@ impl Transport for Wire {
 					aidash_application::ports::federation::authority::Unreachable::of(&outcome.body)
 				})
 				.flatten(),
+			policy_busy: outcome.policy_busy,
 			body: if (200..300).contains(&outcome.status) {
 				serde_json::to_vec(&outcome.body).map_err(Into::into)
 			} else {
@@ -252,14 +254,17 @@ impl Wire {
 
 /// The transport of an authority that may hold none: a transaction lent to a
 /// disclosure check reaches no other Node, so it asks nobody and reports that
-/// it did not ask.
-pub(crate) struct Reach(pub Option<Wire>);
+/// it did not ask. Agents found on a Node of the reader's own Tenant need no
+/// proof: policy decides them (#769). The second field is the distribution lock
+/// the authority's transaction holds: a Node of this Deployment it asks in
+/// process runs inside that transaction's lock and requests none of its own (#751).
+pub(crate) struct Reach(pub Option<Wire>, pub Hold);
 
 #[async_trait]
 impl RegistryTransport for Reach {
 	async fn verify(&self, route: &Route, references: &[Reference]) -> Verification {
 		match &self.0 {
-			Some(wire) => wire.verify(route, references).await,
+			Some(wire) => distribution::serving(&self.1, wire.verify(route, references)).await,
 			None => {
 				tracing::debug!(node = %route.target, "no transport; the Node was not asked");
 				Verification::NotAsked
@@ -272,7 +277,7 @@ impl RegistryTransport for Reach {
 impl DependencyTransport for Reach {
 	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Check {
 		match &self.0 {
-			Some(wire) => wire.check(route, input, remaining).await,
+			Some(wire) => distribution::serving(&self.1, wire.check(route, input, remaining)).await,
 			None => {
 				tracing::debug!(node = %route.target, "no transport; the Node was not asked");
 				Check::NotAsked

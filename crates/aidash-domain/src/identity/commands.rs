@@ -22,6 +22,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 				| "transition"
 				| "run_message_terminal_transition"
 				| "run_message_complete"
+				| "run_abandon_unassigned"
 				| "artifact" | "create_task"
 				| "delegate" | "message"
 				| "run_message_output"

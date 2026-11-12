@@ -19,7 +19,7 @@ from pathlib import Path
 import uuid
 
 from remote_memory_cluster_acceptance import RemoteMemory, ref
-from transaction_cluster_acceptance import ROOT, now
+from transaction_cluster_acceptance import ADMINISTRATOR, PEER_SUBJECT, ROOT, now
 
 
 class NativeMemory(RemoteMemory):
@@ -50,11 +50,12 @@ class NativeMemory(RemoteMemory):
                         "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}}})
                     self.claims.add(claim)
                 spec["securityContext"] = {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001}
-                spec["volumes"] = [{"name": "memory", "persistentVolumeClaim": {"claimName": claim}}]
+                # Keep the Deployment Key and settings volumes the Node already mounts.
+                spec.setdefault("volumes", []).append({"name": "memory", "persistentVolumeClaim": {"claimName": claim}})
                 container = spec["containers"][0]
                 # The fsGroup grants creation under the volume root. The child
                 # directory is created and secured by the application UID.
-                container["volumeMounts"] = [{"name": "memory", "mountPath": "/var/lib/aidash"}]
+                container.setdefault("volumeMounts", []).append({"name": "memory", "mountPath": "/var/lib/aidash"})
                 container["env"].append({"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": "/var/lib/aidash/memory-recovery"})
         super().apply(value)
 
@@ -107,17 +108,21 @@ class NativeMemory(RemoteMemory):
             def binding(kind, target, origin=node):
                 return {"kind": kind, "target": {"registry_deployment": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
             # Remote Agent names still belong to the policy's local receiving/Home Node.
-            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
+            # The administrator who registered the Nodes keeps its subject.
+            subjects = {"alice": {"kind": "user"}, ADMINISTRATOR: {"kind": "user"},
+                        PEER_SUBJECT: {"kind": "service", "node": self.nodes[node]["node"]}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
             subjects[f"{self.nodes[node]['address']}/agents/learning@1.0.0"] = {"kind": "agent", "node": self.nodes[node]["node"]}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
+            # Approving the administrator already revised the Tenant's initial policy.
+            revision = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}"))["revision"]
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": revision, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            # TODO(#578): a Peer Mapping needs a Tenant Administrator, a browser Mapping
-            # session through a test OIDC issuer the Pods can reach (oidc_fixture.py);
-            # the shared api_token below is a Deployment Administrator and is refused,
-            # so this acceptance cannot pass until that issuer runs in the cluster.
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            self.approve_decider(node)
+            # The other Node's alice acts here as a service subject. The Tenant's
+            # administrator writes the Peer Mapping, through a browser Mapping (#484).
+            peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)
+            self.ok(self.administer(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": peer["credential"]["id"], "enabled": True, "expected_revision": 0}))
             for kind, name, config in [
                 ("model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
                 ("embedding", "home-embedding", self.embedding), ("reranker", "native-reranker", {"provider": "rrf"}),
@@ -128,6 +133,9 @@ class NativeMemory(RemoteMemory):
                 self.register(node, kind, name, config)
             learning = copy.deepcopy(policy)
             learning["policy"]["learn_from_runs"] = True
+            # Learning reads the whole Run row, whose binding snapshot alone is
+            # about 60 KB, and counts every input byte as a model token (#832).
+            learning["policy"]["bounds"].update({"max_input_bytes": 262144, "max_model_tokens": 524288})
             self.register(node, "memory", "native-learning-memory", learning)
             self.register(node, "agent", "learning", {"model": reference("model"), "instructions": "Report fixture failures with their actual verification status / 検証状態を保持する",
                 "schema_version": 1, "bindings": [binding("memory", self.learning_memory)], "remove_default": ["file_search", "file_read", "memory_mutate"]}, ["native-learning-ordinary"])
@@ -266,7 +274,8 @@ class NativeMemory(RemoteMemory):
             spec = {"enabled": True, "template": template, "approval_required": False, "permissions": {"roles": [], "groups": [], "attributes": {}},
                 "limits": {"max_agents": 4, "max_concurrent": 4, "max_depth": 4, "token_budget": 4000000, "tokens_per_agent": 800000, "lifetime_seconds": 3600},
                 "embedding": {"provider": ref(self.entries[0]["home-embedding"]), "calls_per_agent": 10, "call_budget": 40}}
-            self.ok(super().api(0, f"/api/generation/{self.tenants[0]}/policies/{name}", {"expected_revision": 0, "spec": spec}))
+            # Agent Generation is Tenant content (#484). The base `user` sends the spec unchanged.
+            self.ok(super().user(0, f"/api/generation/{self.tenants[0]}/policies/{name}", {"expected_revision": 0, "spec": spec}))
             assigned = self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/tasks/{task['id']}/assign", {"policy_id": name, "reason": "Bounded post-Run learning acceptance"}))
             assert assigned["kind"] == "generated", assigned
             record["generation"] = assigned["generation"]

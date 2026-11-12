@@ -33,6 +33,7 @@ fn request() -> ModelRequest {
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		routing_run: None,
 		disable_provider_transforms: false,
 		input_format: Default::default(),
 		estimate: Default::default(),

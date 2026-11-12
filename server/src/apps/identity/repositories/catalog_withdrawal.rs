@@ -23,6 +23,13 @@ fn orm(error: reinhardt::core::exception::Error) -> aidash_application::Error {
 	crate::Error::from(error).into()
 }
 
+const NON_TERMINAL: [RunPhase; 4] = [
+	RunPhase::Ready,
+	RunPhase::Thinking,
+	RunPhase::ToolCall,
+	RunPhase::Waiting,
+];
+
 #[async_trait]
 impl WithdrawalImpactScope for WithdrawalScope<'_> {
 	fn node(&self) -> &NodeAddress {
@@ -88,12 +95,7 @@ impl WithdrawalImpactScope for WithdrawalScope<'_> {
 				.filter(Run::field_node().eq(self.node.node.as_str().to_owned()))
 				.filter(Run::field_agent_id().eq(agent.id.clone()))
 				.filter(Run::field_agent_version().eq(agent.version.clone()))
-				.filter(Run::field_phase().is_in([
-					RunPhase::Ready,
-					RunPhase::Thinking,
-					RunPhase::ToolCall,
-					RunPhase::Waiting,
-				]))
+				.filter(Run::field_phase().is_in(NON_TERMINAL))
 				.count_with_executor(self.access.tx.native_mut())
 				.await
 				.map_err(|error| orm(error.into()))? as u64;

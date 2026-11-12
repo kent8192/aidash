@@ -12,6 +12,9 @@ pub struct RunDetails {
 	#[serde(default)]
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
 	pub run: crate::domain::RunInspection,
+	/// The tool call a paused Run stopped on, present only when the caller may decline it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub declinable_call: Option<aidash_domain::run_state::DeclinableCall>,
 	pub invocations: Vec<Invocation>,
 	pub memory: Option<aidash_domain::memory::Binding>,
 	/// Each current route lists MIME types accepted together by the run model.

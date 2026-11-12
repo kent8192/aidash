@@ -141,6 +141,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		&self.access.subjects
 	}
 	fn set_subjects(&mut self, subjects: Vec<String>) {
+		self.access.delegated_subject = None;
 		self.access.subjects = subjects;
 	}
 	fn select_worker(&mut self, run: Uuid, durable_audit: Option<bool>) {

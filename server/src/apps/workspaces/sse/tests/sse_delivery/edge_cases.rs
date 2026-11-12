@@ -17,7 +17,9 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 	let mut barrier = fixture.f.store.pool.fixture_driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
-			.expr(Expr::cust("pg_advisory_xact_lock(71003202)"))
+			.expr(Expr::cust(
+				"pg_advisory_xact_lock(71003202, hashtext('acme'))",
+			))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(&mut *barrier)
@@ -53,7 +55,7 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 					)
 					.and_where(Expr::col(Alias::new("application_name")).eq(fixture.schema.clone()))
 					.and_where(Expr::col(Alias::new("locktype")).eq("advisory"))
-					.and_where(Expr::col(Alias::new("objid")).eq(71003202))
+					.and_where(Expr::col(Alias::new("classid")).eq(71003202))
 					.and_where(
 						Expr::col(Alias::new("granted")).eq(reinhardt::query::Expr::value(false)),
 					)

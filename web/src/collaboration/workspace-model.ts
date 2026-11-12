@@ -11,6 +11,17 @@ export const resumableRun = (run: Run) =>
     (run.phase === "WAITING" &&
       run.state?.phase === "WAITING" &&
       run.state.data.reason === "failure_delivery"));
+/**
+ * Whether a person can abandon the task: a failed, blocked or cancelled one,
+ * or an open one nobody has started. The server judges "started" under the
+ * task's lock, so a Run or handover the page cannot see yet is still refused.
+ */
+export const abandonable = (
+  task: { status: string },
+  taskRuns: readonly unknown[],
+) =>
+  ["FAILED", "BLOCKED", "CANCELLED"].includes(task.status) ||
+  (task.status === "OPEN" && taskRuns.length === 0);
 export function channelAgents(runs: LocatedRun[]) {
   const agents = new Map<string, LocatedRun>();
   for (const item of [...runs].sort((a, b) =>

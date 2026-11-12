@@ -173,7 +173,11 @@ impl ToolOperations for Operations {
 		crate::registry::skill_files(&entry.definition).map_err(Into::into)
 	}
 	async fn discover(&self, input: &Search) -> Result<Value> {
-		Ok(json!(self.0.home.discover(input).await?))
+		// A model chooses an Agent by its card; the whole definition stays with people.
+		let discovery = self.0.home.discover(input).await?;
+		Ok(json!(aidash_domain::federation::DiscoveryCards::from(
+			&discovery
+		)))
 	}
 	async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
 		self.0

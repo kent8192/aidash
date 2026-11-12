@@ -36,6 +36,26 @@ pub(crate) async fn require_writable(
 	Ok(())
 }
 
+/// Everything an end locks before it appends its first event: the creating
+/// Run's row, its active Subnodes and their active Runs. A caller that appends
+/// an event before it reaches `control_for_creator` calls this ahead of that
+/// event; one that has not may rely on `control_for_creator`.
+pub(crate) async fn lock_for_end(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	creator: Uuid,
+) -> NativeResult<()> {
+	use reinhardt::db::orm::execution::convert_values;
+	let (sql, values) = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("runs"))
+		.and_where(Expr::col("id").eq(Expr::value(creator)))
+		.lock(LockType::NoKeyUpdate)
+		.build(PostgresQueryBuilder);
+	tx.fetch_optional(&sql, convert_values(values)).await?;
+	aidash_application::subnodes::lock_end(&mut NativeCascade { tx }, creator).await?;
+	Ok(())
+}
+
 pub(crate) struct Cascade<'a> {
 	pub store: &'a Store,
 	pub tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,

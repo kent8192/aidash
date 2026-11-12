@@ -608,6 +608,109 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	cleanup(store, &url, &schema).await;
 }
 
+async fn invocation_status(store: &Store, key: &str) -> (String, Option<serde_json::Value>) {
+	let status = sqlx::query_scalar::<_, String>(
+		&Query::select()
+			.column(Alias::new("status"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let result = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+		&Query::select()
+			.column(Alias::new("result"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	(status, result)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_refused_invocation_is_accepted_and_resume_starts_it_again(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, url, schema) = _store_fixture.parts();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
+	let agent = seed(&registry).await;
+	let w = store
+		.create_workspace(&ACME, "alice", "Refusals", "Resume refused calls")
+		.await
+		.unwrap();
+	let task = store
+		.create_task(&ACME, w.id, &new_task(), "human", None)
+		.await
+		.unwrap();
+	common::local_run(&store, &ACME, &task, &agent).await;
+	let token = Uuid::new_v4();
+	let mut leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	leased.state = aidash_domain::run_state::RunState::Thinking(Default::default());
+	let refusal = aidash_domain::tool::AuthorityRefusal {
+		tool: "task_delegate".into(),
+		check: aidash_domain::tool::RefusalCheck::Policy,
+		action: Some("task.delegate".into()),
+		subject: None,
+		call: None,
+	};
+	for (key, replay_safe) in [("replay-safe", true), ("unsafe", false)] {
+		store
+			.invocation_start(&ACME, &leased, token, key, "tool", &json!({}), replay_safe)
+			.await
+			.unwrap();
+		// Act: the call is refused, which the CHECK constraint must accept.
+		store
+			.invocation_refused(&ACME, &leased, token, key, &refusal)
+			.await
+			.unwrap();
+		let (status, result) = invocation_status(&store, key).await;
+		// Assert
+		assert_eq!(status, "REFUSED");
+		assert_eq!(
+			result.unwrap()["error"]["message"],
+			"task_delegate: task.delegate was denied"
+		);
+		// Act: resuming starts the same key again.
+		let resumed = store
+			.invocation_start(&ACME, &leased, token, key, "tool", &json!({}), replay_safe)
+			.await
+			.unwrap();
+		// Assert: reopened, never made uncertain for a person to reconcile.
+		assert_eq!(resumed.status, "STARTED", "{key}");
+		assert_eq!(
+			invocation_status(&store, key).await,
+			("STARTED".into(), None)
+		);
+	}
+	// A finished call is never refused afterwards.
+	store
+		.invocation_start(&ACME, &leased, token, "done", "tool", &json!({}), true)
+		.await
+		.unwrap();
+	store
+		.invocation_finish(&ACME, &leased, token, "done", &json!({"ok":true}))
+		.await
+		.unwrap();
+	store
+		.invocation_refused(&ACME, &leased, token, "done", &refusal)
+		.await
+		.unwrap();
+	assert_eq!(
+		invocation_status(&store, "done").await,
+		("COMPLETED".into(), Some(json!({"ok":true})))
+	);
+	cleanup(store, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn registry_versions_and_authenticated_api(
@@ -1721,6 +1824,16 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		.create_task(&ACME, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
+	// A child somebody is running holds the parent. (An open child nobody has
+	// started is an Unassigned Task: the model is told about it instead.)
+	sqlx::query(
+		"UPDATE tasks SET status = 'RUNNING', owner = 'human', revision = revision + 1 WHERE id = $1",
+	)
+	.bind(child.id)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let child = store.task(&ACME, child.id).await.unwrap();
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
 	let waiting = store.run(&ACME, run.id).await.unwrap();
@@ -2307,6 +2420,8 @@ fn request_id(run: &Run) -> Uuid {
 
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
+#[path = "postgres/unassigned.rs"]
+mod unassigned;
 
 #[rstest::fixture]
 fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Router> {

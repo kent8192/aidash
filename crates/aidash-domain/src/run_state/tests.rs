@@ -43,17 +43,25 @@ fn current_storage_covers_every_phase_and_wait_continuation() {
 			RunPhase::Waiting,
 			json!({"reason":"timer","wake_at":date,"resume":resume}),
 		));
+		cases.push((
+			RunPhase::Waiting,
+			json!({"reason":"workspace","wake_at":date,"cursor":42,"resume":resume}),
+		));
 	}
 	cases.extend([
 		(RunPhase::Waiting,json!({"reason":"dependencies","wake_at":date,"resume":{}})),
-		(RunPhase::Waiting,json!({"reason":"children","wake_at":date,"resume":thinking_data()})),
+		(RunPhase::Waiting,json!({"reason":"operation","operation_id":id,"wake_at":date,"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"approval","approval":{"source":"capability","approval_id":id},"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"approval","approval":{"source":"home","request_id":id,"key":"run:9:0","call":{"id":"call-1","name":"echo","arguments":{}},"expires_at":date},"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"reconciliation","request_id":id,"key":"run:9:0","resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"failure_delivery","target":"FAILED","wake_at":date,"last_delivery_error":null}))
 	]);
 	for (phase, data) in cases {
-		let input = envelope(data);
+		let event_wait = matches!(data["reason"].as_str(), Some("workspace" | "operation"));
+		let mut input = envelope(data);
+		if event_wait {
+			input["requires"] = json!(["event_wait"]);
+		}
 		let (state, recovery) = decode(phase, input.clone()).unwrap();
 		assert_eq!(state.phase(), phase);
 		assert_eq!(encode(&state, &recovery).unwrap(), input);
@@ -263,6 +271,20 @@ fn a_tool_batch_end_requires_the_tool_batch_capability() {
 	let (plain, recovery) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
 	assert!(StateRequirements::of(&plain, &recovery).is_empty());
 }
+#[test]
+fn an_operation_wait_requires_a_worker_that_understands_event_waits() {
+	let data = json!({"reason":"operation","operation_id":"0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf","wake_at":"2030-01-01T00:00:00Z","resume":tool_data()});
+	let (state, recovery) =
+		decode(RunPhase::Waiting, requiring(&["event_wait"], data.clone())).unwrap();
+	assert_eq!(
+		StateRequirements::of(&state, &recovery).names(),
+		["event_wait"]
+	);
+	assert_eq!(
+		encode(&state, &recovery).unwrap(),
+		requiring(&["event_wait"], data)
+	);
+}
 #[rstest::rstest]
 fn degraded_context_requires_the_degraded_context_capability() {
 	// Arrange: a step ran with Degraded context (ADR 0059).
@@ -285,6 +307,26 @@ fn degraded_context_requires_the_degraded_context_capability() {
 	assert_eq!(encode(&state, &recovery).unwrap(), reserved);
 	assert!(matches!(&short, Error::Invalid(message) if message.contains("does not cover")));
 }
+#[test]
+fn early_abandoned_tasks_require_a_worker_that_can_preserve_them() {
+	let state = RunState::Thinking(ThinkingState::default());
+	let mut recovery = RecoveryState::default();
+	recovery
+		.early_abandoned_tasks
+		.push(crate::unassigned::UnassignedTask {
+			id: Uuid::from_u128(1),
+			title: "Abandoned".into(),
+			abandonable: true,
+			handed_over: false,
+		});
+	let pending = encode(&state, &recovery).unwrap();
+	let requires = StateRequirements::from_pending(&pending).unwrap();
+	assert_eq!(requires.names(), ["early_unassigned_abandonment"]);
+	assert_eq!(requires.unmet(&[]), ["early_unassigned_abandonment"]);
+	assert!(requires.unmet(PersistedCapability::supported()).is_empty());
+	assert!(decode(RunPhase::Thinking, pending).is_ok());
+}
+
 #[rstest::rstest]
 fn a_requirement_that_falls_short_is_invalid() {
 	// Arrange: a Tool Batch whose envelope does not declare `tool_batch_state`,
@@ -522,5 +564,67 @@ fn legacy_lease_flags_are_read_and_saved_as_counters() {
 		assert_eq!(recovery.lease_recoveries, count);
 		let saved = encode(&state, &recovery).unwrap();
 		assert!(saved["recovery"].get("lease_recovered").is_none());
+	}
+}
+
+#[test]
+fn a_reads_block_names_a_definition_only_when_it_carries_one() {
+	let named = RunReadsBlock::DefinitionNotApproved {
+		definition: Some(crate::registry::EntityRef {
+			id: "qa".into(),
+			version: "2.1.0".into(),
+		}),
+	};
+	assert_eq!(
+		serde_json::to_value(&named).unwrap(),
+		json!({"kind":"definition_not_approved","definition":{"id":"qa","version":"2.1.0"}})
+	);
+	assert_eq!(
+		named.to_string(),
+		"qa@2.1.0, which this Run uses, is no longer approved on this Node"
+	);
+	let unnamed = RunReadsBlock::DefinitionNotApproved { definition: None };
+	assert_eq!(
+		serde_json::to_value(&unnamed).unwrap(),
+		json!({"kind":"definition_not_approved"})
+	);
+	assert_eq!(
+		unnamed.to_string(),
+		"a definition this Run uses is no longer approved on this Node"
+	);
+	assert_eq!(
+		serde_json::to_value(RunReadsBlock::DefinitionNotUsable).unwrap(),
+		json!({"kind":"definition_not_usable"})
+	);
+	assert_eq!(
+		serde_json::to_value(RunReadsBlock::Source {
+			source: "artifact".into()
+		})
+		.unwrap(),
+		json!({"kind":"source","source":"artifact"})
+	);
+}
+
+#[rstest::rstest]
+fn child_task_summary_has_a_bounded_round_trip_and_validates_its_fingerprint() {
+	let mut summary = crate::ChildTaskSummary::default();
+	for id in 0..1_000 {
+		summary.include_task(Uuid::from_u128(id), crate::TaskStatus::Completed, 1);
+	}
+	let encoded = serde_json::to_value(&summary).unwrap();
+	assert!(serde_json::to_vec(&encoded).unwrap().len() < 128);
+	assert_eq!(encoded["terminal_fingerprint"].as_str().unwrap().len(), 32);
+	assert_eq!(
+		serde_json::from_value::<crate::ChildTaskSummary>(encoded.clone()).unwrap(),
+		summary
+	);
+	for invalid in [
+		"abc",
+		"G0000000000000000000000000000000",
+		"００００００００００００００００",
+	] {
+		let mut value = encoded.clone();
+		value["terminal_fingerprint"] = json!(invalid);
+		assert!(serde_json::from_value::<crate::ChildTaskSummary>(value).is_err());
 	}
 }

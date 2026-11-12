@@ -29,6 +29,17 @@ The Sandboxed tools (shell, code, package installs, outbound requests, patches a
 | `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`              |
 | `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view` |
 
+`shell` and `code_interpreter` wait for completion by default without another
+model call. Their poll companions do the same: `wait_seconds` defaults to 300,
+is capped at 3600, and zero returns immediately. The wait ends when the command
+completes or after `wait_seconds`, whichever comes first. The command's own
+deadline does not cut it short, because saving the command's files comes after
+the stop. A running command exposes the latest bounded window of
+stored output. Poll replies provide an absolute byte `next_offset` for subsequent
+output; if the window has advanced past an older offset, the reply starts at the
+available window. When nothing has changed they omit `output` and set
+`output_unchanged`.
+
 Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
 
 A Tenant subject with `catalog.approve` approves a group by approving its bundle and every member in one `POST /api/authorization/{tenant}/catalog/approvals` request; a bundle's approval is refused while a member is unapproved. `task_assign` only starts a generation inside Aidash, so it is an ordinary built-in.

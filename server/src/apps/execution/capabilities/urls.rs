@@ -38,7 +38,11 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::management::shell_poll)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::shell_cancel)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.with_route_middleware(
+				AccessBoundary::authenticated()
+					.with_visibility()
+					.stops_work(),
+			)
 			.endpoint(super::views::management::materialize)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::session)
@@ -77,7 +81,11 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::management::python_poll)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::python_cancel)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.with_route_middleware(
+				AccessBoundary::authenticated()
+					.with_visibility()
+					.stops_work(),
+			)
 			.endpoint(super::views::management::reference_upload)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_batch)
@@ -89,6 +97,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::management::reference_inspect)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_revoke)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::management::reference_revocation)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_download)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
@@ -105,7 +115,11 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::live_previews::live_preview)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::live_previews::live_preview_stop)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.with_route_middleware(
+				AccessBoundary::authenticated()
+					.with_visibility()
+					.stops_work(),
+			)
 			.endpoint(super::views::live_previews::live_ticket)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::live_previews::preview_limits)

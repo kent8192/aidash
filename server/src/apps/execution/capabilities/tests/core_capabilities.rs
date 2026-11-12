@@ -1,6 +1,8 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../tests/support/legacy.rs"]
 mod common;
+#[path = "../../tests/support/late_subnode.rs"]
+mod late_subnode;
 use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use common::{bootstrap, cleanup, request};
@@ -1217,6 +1219,95 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 }
 #[rstest::rstest]
 #[tokio::test]
+async fn withdrawing_the_agents_approval_stops_an_approved_request_before_it_is_sent(
+	#[future] approval_fixture: (CoreFixture, aidash_server::domain::Run),
+	worker_control: WorkerControl,
+) {
+	let (c, run) = Box::pin(approval_fixture).await;
+	// The person approves the fetch, and no worker has started it yet.
+	let (status, pending) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/outbound", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/a"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	let approval = pending["approval_id"].as_str().unwrap();
+	let (status, allowed) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{allowed}");
+	// The record is read from the database: once the Agent is withdrawn the Run's own routes
+	// answer `403`, so they cannot report it.
+	let record = async || -> (String, Value) {
+		sqlx::query_as("SELECT state, data FROM core_records WHERE id = $1 AND kind = 'outbound'")
+			.bind(approval.parse::<Uuid>().unwrap())
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	assert_eq!(record().await.0, "approved");
+	// The Agent's Catalog Approval goes while the approval to fetch stays: only a Run that may
+	// still use its Agent acts (the Use Recheck, #769).
+	let authorization = aidash_server::authorization::Authorization {
+		pool: c.f.store.pool.clone(),
+	};
+	let revision = authorization
+		.catalog("acme", &run.node)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|binding| {
+			binding.entry_id == run.agent_id && binding.entry_version == run.agent_version
+		})
+		.unwrap()
+		.revision;
+	authorization
+		.set_catalog(
+			"acme",
+			&run.node,
+			&aidash_server::registry::EntityRef {
+				id: run.agent_id.clone(),
+				version: run.agent_version.clone(),
+			},
+			revision,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let WorkerControl { stop, receiver } = worker_control;
+	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
+		c.f.store.clone(),
+		receiver,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+	let (state, data) = loop {
+		let (state, data) = record().await;
+		if state != "approved" {
+			break (state, data);
+		}
+		assert!(tokio::time::Instant::now() < deadline, "never picked up");
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	};
+	// It was refused at the start, not sent: nothing was attempted and nothing was stored.
+	assert_eq!(state, "uncertain", "{data}");
+	assert_eq!(data["error"]["code"], "AUTHORITY_WITHDRAWN", "{data}");
+	assert!(data.get("final_url").is_none(), "{data}");
+	assert!(data.get("output_file").is_none(), "{data}");
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}
+#[rstest::rstest]
+#[tokio::test]
 async fn reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse(
 	#[future] approval_fixture: (CoreFixture, aidash_server::domain::Run),
 ) {
@@ -1883,3 +1974,6 @@ mod web_research_tests;
 
 #[path = "core_capabilities/reference_set.rs"]
 mod reference_set_tests;
+
+#[path = "core_capabilities/reference_locks.rs"]
+mod reference_lock_tests;

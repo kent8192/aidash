@@ -99,10 +99,11 @@ impl PreparedSearch {
 }
 /// An unreachable or failing vector backend is a transient outage that a Run
 /// retries (#233); a rejected query or invariant violation is not. A `Port`
-/// error is untyped, so only the adapter can tell a transient database failure
-/// from a permanent one and must type the former `Unavailable` itself.
+/// error is untyped, so only the adapter can identify a temporary database
+/// failure and preserve it for the Run's database recovery path.
 fn vector_outage(error: Error) -> Error {
 	match error {
+		Error::TemporaryDatabase(_) => error,
 		Error::RemoteSemantic(Failure::Unavailable) | Error::External(_) => {
 			Error::RemoteSemantic(Failure::Unavailable)
 		}

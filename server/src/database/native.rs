@@ -105,6 +105,7 @@ impl Pool {
 			Default::default(),
 			0,
 			Some(Box::new(scope.clone())),
+			Default::default(),
 		))
 	}
 	/// Like [`Self::begin`], at the serializable isolation level.
@@ -121,6 +122,7 @@ impl Pool {
 			Default::default(),
 			0,
 			Some(Box::new(scope.clone())),
+			Default::default(),
 		))
 	}
 	/// Run `work` in a transaction opened in `scope`, committing when it
@@ -196,6 +198,9 @@ pub struct Transaction(
 	/// The tenancy scope the transaction was opened in, boxed so the scope
 	/// does not grow every value that holds a transaction.
 	Option<Box<TenancyScope>>,
+	/// Whether the transaction holds the Deployment's distribution lock, which an
+	/// in-process peer that serves it then does not request again (#751).
+	distribution::Hold,
 );
 // A savepoint rollback issued on the deref'd executor bypasses the lock epoch.
 impl std::ops::Deref for Transaction {
@@ -223,6 +228,7 @@ impl Transaction {
 			std::mem::take(&mut self.2),
 			self.3,
 			self.4.clone(),
+			self.5.clone(),
 		)
 	}
 	/// The tenancy scope the transaction was opened in, if it was opened with one.
@@ -239,6 +245,16 @@ impl Transaction {
 	/// Changes whenever a savepoint rollback may have released locks held so far.
 	pub(crate) fn lock_epoch(&self) -> u64 {
 		self.3
+	}
+	/// Whether this transaction holds the distribution lock, shared with every
+	/// holder of the returned value so that it stays current as the lock is taken.
+	pub(crate) fn distribution(&self) -> &distribution::Hold {
+		&self.5
+	}
+	/// Count the lock that `parent` holds as this transaction's own, for as long as
+	/// `parent`'s authority outlives it.
+	pub(crate) fn inherit_distribution(&mut self, parent: distribution::Hold) {
+		self.5.inherit(parent);
 	}
 	// Savepoint statements are inherent so that method calls bind here before `Deref`
 	// reaches the executor, whether or not the caller imports `TransactionExecutor`.
@@ -264,6 +280,8 @@ impl Transaction {
 		name: &str,
 	) -> reinhardt::db::backends::error::Result<()> {
 		self.3 += 1;
+		// The rollback may have released the lock, so none is claimed until it is taken again.
+		self.5.release();
 		self.0
 			.as_mut()
 			.expect("active transaction")
@@ -331,7 +349,7 @@ impl Transaction {
 impl Transaction {
 	/// A connectionless transaction shell for adapter state tests.
 	pub(crate) fn detached(pool: Pool) -> Self {
-		Self(None, pool, Default::default(), 0, None)
+		Self(None, pool, Default::default(), 0, None, Default::default())
 	}
 }
 impl AsMut<dyn TransactionExecutor> for Transaction {
@@ -746,6 +764,7 @@ impl TransactionExecutor for Transaction {
 	}
 }
 
+pub(crate) mod distribution;
 #[cfg(test)]
 pub(crate) mod probe;
 #[cfg(test)]

@@ -10,10 +10,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 mod capability;
+mod reads;
 mod row;
 #[cfg(test)]
 mod tests;
 pub use capability::{LeaseWait, PersistedCapability, StateRequirements};
+pub use reads::RunReadsBlock;
 pub use row::RawRun;
 pub use row::{RunInspection, RunMetadata};
 
@@ -109,6 +111,9 @@ pub struct HomeApproval {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallState {
+	/// A woken wait's result, awaiting delivery at this cursor.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub wait_result: Option<Value>,
 	/// Authentication refusals are known not to have executed. A new attempt gets a new journal key.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub connection: Option<ConnectionCallState>,
@@ -119,6 +124,10 @@ pub struct ToolCallState {
 	pub request_window: usize,
 	pub request_tokens: usize,
 	pub finalizing: bool,
+	/// The Unassigned Tasks this completion abandons. Saved with `finalizing`
+	/// because the outcome is chosen by then: a cancel settles exactly it (#772).
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub abandoning: Vec<crate::unassigned::UnassignedTask>,
 	pub media_inferred_seq_before_response: i64,
 	pub observed_input_seq_before_response: i64,
 	pub inferred_selected_media: Vec<ModelMedia>,
@@ -152,6 +161,7 @@ pub struct ToolCallState {
 impl ToolCallState {
 	/// Move to the call at `cursor`, leaving the approvals of earlier calls behind.
 	pub fn advance(&mut self, cursor: usize) {
+		self.wait_result = None;
 		self.cursor = cursor;
 		self.home_approval = None;
 		self.approval = None;
@@ -252,13 +262,21 @@ pub enum ApprovalRef {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WaitingState {
+	/// A Run waits for relevant workspace changes, input, or a ceiling.
+	Workspace {
+		wake_at: DateTime<Utc>,
+		cursor: i64,
+		resume: ResumeState,
+	},
+	/// An accepted command is rechecked when it settles or its ceiling arrives.
+	Operation {
+		operation_id: Uuid,
+		wake_at: DateTime<Utc>,
+		resume: Box<ToolCallState>,
+	},
 	Dependencies {
 		wake_at: DateTime<Utc>,
 		resume: ReadyState,
-	},
-	Children {
-		wake_at: DateTime<Utc>,
-		resume: ThinkingState,
 	},
 	Timer {
 		wake_at: DateTime<Utc>,
@@ -292,8 +310,9 @@ pub enum WaitingState {
 impl WaitingState {
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
-			Self::Dependencies { wake_at, .. }
-			| Self::Children { wake_at, .. }
+			Self::Workspace { wake_at, .. }
+			| Self::Operation { wake_at, .. }
+			| Self::Dependencies { wake_at, .. }
 			| Self::Timer { wake_at, .. }
 			| Self::FailureDelivery { wake_at, .. } => Some(*wake_at),
 			Self::Human { answer_by, .. } => *answer_by,
@@ -411,6 +430,12 @@ pub const LEASE_RECOVERY_LIMIT: u32 = 3;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	/// Last workspace event delivered to this Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub workspace_event_cursor: Option<i64>,
+	/// Fingerprint of remote terminal child Tasks observed before inference.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub remote_task_fingerprint: Option<String>,
 	/// Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub connection_refusals: Vec<ConnectionRefusal>,
@@ -424,6 +449,17 @@ pub struct RecoveryState {
 	/// Typed context-recovery reason for a paused Run; cleared on resume.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
+	/// The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on
+	/// resume; people never read it, only whether they may decline.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub paused_call: Option<PausedCall>,
+	/// Unassigned Tasks this Run abandoned before it could finish.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub early_abandoned_tasks: Vec<crate::unassigned::UnassignedTask>,
+	/// Calls a person declined, kept until the worker has answered them. Separate from
+	/// `paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub declined_calls: Vec<DeclinedCall>,
 	pub retry: Option<RetryState>,
 	// A claim after a lost lease sets it to at least 1, which isolates the
 	// step; each Isolated Step adds one when it acquires the gate, so a claim
@@ -453,10 +489,55 @@ pub struct RecoveryState {
 	)]
 	pub degraded: crate::semantic::degraded::DegradedContext,
 }
+/// The call an Authority Pause stopped, recorded only when it certainly did not run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PausedCall {
+	pub key: String,
+	pub index: usize,
+	pub replay_safe: bool,
+	pub tool: String,
+	pub kind: crate::tool::RefusalKind,
+	/// Exact input at the authority check; absent on pauses saved by older workers.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_call: Option<crate::tool::RefusedToolCall>,
+}
+/// What a person is offered to decline: the call by its key, the tool, and the kind of refusal.
+/// Never the action, the subject or the receiver's own sentence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclinableCall {
+	pub call: String,
+	pub tool: String,
+	pub kind: crate::tool::RefusalKind,
+}
+impl PausedCall {
+	pub fn declinable(&self) -> DeclinableCall {
+		DeclinableCall {
+			call: self.key.clone(),
+			tool: self.tool.clone(),
+			kind: self.kind,
+		}
+	}
+}
+/// A call a person declined; the worker answers it with the kind's fixed sentence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclinedCall {
+	pub key: String,
+	pub kind: crate::tool::RefusalKind,
+}
 fn is_zero(value: &u32) -> bool {
 	*value == 0
 }
 impl RecoveryState {
+	/// What people read of a Run's recovery: the call it paused on and the calls declined are
+	/// offered separately, only to someone who may use them.
+	pub fn hide_declines(mut self) -> Self {
+		self.paused_call = None;
+		self.declined_calls.clear();
+		self
+	}
 	/// Whether this attempt may degrade an unavailable workspace slot: it is
 	/// the last one of the bounded outage retry, or an earlier step of the Run
 	/// already degraded and no retrieval has succeeded since (ADR 0059).

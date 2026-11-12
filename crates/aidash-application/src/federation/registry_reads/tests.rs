@@ -19,11 +19,17 @@ fn row(node: &str, id: &str) -> RegistryJournalRow {
 		"1.0.0".into(),
 		digest(&metadata),
 		metadata,
+		false,
 	)
+}
+fn tenant_row(node: &str, id: &str) -> RegistryJournalRow {
+	let mut row = row(node, id);
+	row.5 = true;
+	row
 }
 struct Scope {
 	rows: Vec<RegistryJournalRow>,
-	cache: BTreeMap<(Uuid, u8), bool>,
+	cache: BTreeMap<(Uuid, u8), RemoteReads>,
 	authority: u8,
 	frontier: Option<Vec<Dependency>>,
 	unavailable: BTreeSet<String>,
@@ -82,16 +88,17 @@ impl RegistryReadScope for Scope {
 	fn identity(&self) -> (&str, &str) {
 		("tenant", "reader")
 	}
-	fn cached(&self, run: Uuid) -> Option<bool> {
+	fn cached(&self, run: Uuid) -> Option<RemoteReads> {
 		self.frontier
 			.is_none()
-			.then(|| self.cache.get(&(run, self.authority)).copied())
+			.then(|| self.cache.get(&(run, self.authority)).cloned())
 			.flatten()
 	}
-	fn remember(&mut self, run: Uuid, visible: bool) {
+	fn remember(&mut self, run: Uuid, reads: RemoteReads) {
 		if self.frontier.is_none() {
+			let visible = reads == RemoteReads::Visible;
 			self.calls.push(format!("remember:{visible}"));
-			self.cache.insert((run, self.authority), visible);
+			self.cache.insert((run, self.authority), reads);
 		}
 	}
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>> {
@@ -214,7 +221,6 @@ async fn qualified_metadata_policies_and_peer_proof_precede_the_cached_decision(
 		vec![
 			"dependencies",
 			"registry.read",
-			"agent.execute",
 			"federation.discover",
 			"peer",
 			"aidash://leaf",
@@ -281,8 +287,7 @@ async fn malformed_saved_metadata_is_an_error_and_is_not_cached(mut scope: Scope
 }
 #[rstest]
 #[case::registry("registry.read",vec!["dependencies","registry.read","remember:false"])]
-#[case::execute("agent.execute",vec!["dependencies","registry.read","agent.execute","remember:false"])]
-#[case::discover("federation.discover",vec!["dependencies","registry.read","agent.execute","federation.discover","remember:false"])]
+#[case::discover("federation.discover",vec!["dependencies","registry.read","federation.discover","remember:false"])]
 #[tokio::test]
 async fn every_local_policy_must_pass_before_peer_io(
 	mut scope: Scope,
@@ -332,10 +337,7 @@ async fn frontier_appends_each_edge_without_peer_io_or_a_final_cache(
 			digest: scope.rows[0].3.clone()
 		})
 	);
-	assert_eq!(
-		scope.calls,
-		vec!["dependencies", "registry.read", "agent.execute"]
-	);
+	assert_eq!(scope.calls, vec!["dependencies", "registry.read"]);
 	assert!(scope.cache.is_empty());
 	assert!(transport.calls.lock().unwrap().is_empty());
 }
@@ -434,8 +436,8 @@ async fn unavailable_peer_still_requires_saved_metadata_policy(mut scope: Scope)
 		vec![
 			"dependencies",
 			"registry.read",
-			"agent.execute",
 			"federation.discover",
+			"unavailable:aidash://leaf",
 			"remember:false"
 		]
 	);
@@ -473,8 +475,8 @@ async fn changed_authority_does_not_reuse_the_prior_true_cache(mut scope: Scope)
 		scope.calls,
 		vec!["dependencies", "registry.read", "remember:false"]
 	);
-	assert!(scope.cache[&(run, 0)]);
-	assert!(!scope.cache[&(run, 1)]);
+	assert_eq!(scope.cache[&(run, 0)], RemoteReads::Visible);
+	assert_eq!(scope.cache[&(run, 1)], RemoteReads::Unconfirmed);
 }
 #[rstest]
 #[case::all(Verification::Verified, true)]
@@ -533,7 +535,6 @@ async fn node_order_is_deterministic_and_the_first_denial_stops_later_rpc(mut sc
 #[rstest]
 #[case::journal("dependencies")]
 #[case::registry("registry.read")]
-#[case::execute("agent.execute")]
 #[case::discover("federation.discover")]
 #[case::peer("peer")]
 #[tokio::test]
@@ -556,7 +557,7 @@ fn references(scope: &Scope) -> Vec<Reference> {
 	scope
 		.rows
 		.iter()
-		.map(|(_, id, version, hash, _)| Reference {
+		.map(|(_, id, version, hash, _, _)| Reference {
 			entry: EntityRef {
 				id: id.clone(),
 				version: version.clone(),
@@ -567,12 +568,12 @@ fn references(scope: &Scope) -> Vec<Reference> {
 }
 #[rstest]
 #[tokio::test]
-async fn inbound_proof_requires_discovery_then_exact_current_definition_and_execution(
+async fn inbound_proof_requires_discovery_then_exact_current_definition_without_execution(
 	mut scope: Scope,
 ) {
 	let references = references(&scope);
 	assert!(verify(&mut scope, &references).await.unwrap());
-	assert_eq!(scope.calls, vec!["require", "entry", "agent.execute"]);
+	assert_eq!(scope.calls, vec!["require", "entry"]);
 	assert_eq!(scope.decisions[0].0.id, "brave-otter-k3m9q2xa");
 	assert_eq!(scope.decisions[0].1, "federation.discover");
 }
@@ -580,10 +581,7 @@ async fn inbound_proof_requires_discovery_then_exact_current_definition_and_exec
 #[case::forbidden("forbidden")]
 #[case::missing("missing")]
 #[tokio::test]
-async fn inbound_catalog_denials_return_false_before_execution(
-	mut scope: Scope,
-	#[case] error: &'static str,
-) {
+async fn inbound_catalog_denials_return_false(mut scope: Scope, #[case] error: &'static str) {
 	scope.entry_error = Some(error);
 	let references = references(&scope);
 	assert!(!verify(&mut scope, &references).await.unwrap());
@@ -593,10 +591,7 @@ async fn inbound_catalog_denials_return_false_before_execution(
 #[case::kind(true)]
 #[case::digest(false)]
 #[tokio::test]
-async fn inbound_definition_mismatch_does_not_evaluate_execution(
-	mut scope: Scope,
-	#[case] kind: bool,
-) {
+async fn inbound_definition_mismatch_is_not_proof(mut scope: Scope, #[case] kind: bool) {
 	let references = references(&scope);
 	if kind {
 		scope.entries.get_mut("agent").unwrap().kind = "skill".into();
@@ -607,24 +602,28 @@ async fn inbound_definition_mismatch_does_not_evaluate_execution(
 	assert_eq!(scope.calls, vec!["require", "entry"]);
 }
 #[rstest]
-#[case::discover("federation.discover", true)]
-#[case::execute("agent.execute", false)]
 #[tokio::test]
-async fn inbound_denial_retains_its_outer_error_or_boolean_contract(
-	mut scope: Scope,
-	#[case] action: &'static str,
-	#[case] outer: bool,
-) {
-	scope.denied = Some(action);
+async fn inbound_discovery_denial_is_an_outer_error_and_execution_is_not_asked(mut scope: Scope) {
+	scope.denied = Some("federation.discover");
 	let references = references(&scope);
-	let result = verify(&mut scope, &references).await;
-	if outer {
-		assert!(matches!(result, Err(Error::Forbidden)));
-		assert_eq!(scope.calls, vec!["require"]);
-	} else {
-		assert!(!result.unwrap());
-		assert_eq!(scope.calls, vec!["require", "entry", "agent.execute"]);
-	}
+	assert!(matches!(
+		verify(&mut scope, &references).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(scope.calls, vec!["require"]);
+}
+#[rstest]
+#[tokio::test]
+async fn inbound_proof_does_not_depend_on_agent_execute(mut scope: Scope) {
+	scope.denied = Some("agent.execute");
+	let references = references(&scope);
+	assert!(verify(&mut scope, &references).await.unwrap());
+	assert!(
+		!scope
+			.decisions
+			.iter()
+			.any(|(_, action)| action == "agent.execute")
+	);
 }
 #[rstest]
 #[tokio::test]
@@ -652,4 +651,174 @@ async fn inbound_use_case_rejects_invalid_reference_counts_before_authority_io(
 		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
 	assert!(scope.calls.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_same_tenant_node_is_decided_by_policy_alone_and_nobody_is_asked(mut scope: Scope) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	let transport = Transport::default();
+	assert!(
+		reads_visible(&mut scope, &transport, Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls,
+		vec![
+			"dependencies",
+			"registry.read",
+			"federation.discover",
+			"remember:true"
+		]
+	);
+	assert!(transport.calls.lock().unwrap().is_empty());
+	let node = &scope.decisions[1];
+	assert_eq!(
+		(node.0.kind.as_str(), node.0.id.as_str()),
+		("node", "aidash://sibling")
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_same_tenant_node_that_has_no_route_or_does_not_answer_hides_nothing(mut scope: Scope) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	scope.missing_peer = true;
+	scope.unavailable.insert("aidash://sibling".into());
+	let transport = Transport {
+		replies: vec![Verification::Unavailable],
+		..Default::default()
+	};
+	assert!(
+		reads_visible(&mut scope, &transport, Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	assert!(!scope.calls.contains(&"peer".into()));
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+#[rstest]
+#[case::registry("registry.read", vec!["dependencies", "registry.read", "remember:false"])]
+#[case::discover("federation.discover", vec!["dependencies", "registry.read", "federation.discover", "remember:false"])]
+#[tokio::test]
+async fn a_same_tenant_node_still_needs_both_policies(
+	mut scope: Scope,
+	#[case] denied: &'static str,
+	#[case] calls: Vec<&str>,
+) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	scope.denied = Some(denied);
+	assert!(
+		!reads_visible(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	assert_eq!(scope.calls, calls);
+}
+#[rstest]
+#[tokio::test]
+async fn a_same_tenant_agent_is_named_as_the_tenant_names_it(mut scope: Scope) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	assert!(
+		reads_visible(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	let (resource, action) = &scope.decisions[0];
+	assert_eq!(action, "registry.read");
+	assert_eq!(
+		(resource.kind.as_str(), resource.id.as_str()),
+		("agent", "agent")
+	);
+	assert_eq!(resource.attributes["remote_node"], "aidash://sibling");
+	assert_eq!(resource.attributes["version"], "1.0.0");
+}
+#[rstest]
+#[tokio::test]
+async fn a_denied_same_tenant_agent_is_a_definition_not_an_unconfirmed_read(mut scope: Scope) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	scope.denied = Some("registry.read");
+	assert_eq!(
+		reads(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		RemoteReads::Definition(EntityRef {
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		})
+	);
+	assert_eq!(
+		scope.cache.values().next(),
+		Some(&RemoteReads::Definition(EntityRef {
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		}))
+	);
+}
+#[rstest]
+#[case::registry("registry.read")]
+#[case::discover("federation.discover")]
+#[tokio::test]
+async fn another_tenant_refusal_and_a_same_tenant_node_refusal_stay_unconfirmed(
+	mut scope: Scope,
+	#[case] denied: &'static str,
+) {
+	scope.denied = Some(denied);
+	assert_eq!(
+		reads(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		RemoteReads::Unconfirmed
+	);
+	if denied == "federation.discover" {
+		scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+		scope.cache.clear();
+		assert_eq!(
+			reads(&mut scope, &Transport::default(), Uuid::from_u128(1))
+				.await
+				.unwrap(),
+			RemoteReads::Unconfirmed
+		);
+	}
+}
+#[test]
+fn only_another_tenant_agent_is_named_by_its_node() {
+	let local = Scope::resource_for("agent", "agent", json!({"version":"1.0.0"}));
+	let own = remote_agent_resource(local.clone(), "aidash://sibling", "1.0.0", true);
+	let foreign = remote_agent_resource(local, "aidash://leaf", "1.0.0", false);
+	assert_eq!(own.id, "agent");
+	assert_eq!(foreign.id, "aidash://leaf/agents/agent@1.0.0");
+	assert_eq!(own.attributes["remote_node"], "aidash://sibling");
+	assert_eq!(foreign.attributes["remote_node"], "aidash://leaf");
+}
+#[rstest]
+#[tokio::test]
+async fn a_same_tenant_node_adds_nothing_to_the_frontier(mut scope: Scope) {
+	scope.rows = vec![
+		tenant_row("aidash://sibling", "agent"),
+		row("aidash://leaf", "other"),
+	];
+	scope.frontier = Some(vec![]);
+	let _ = scope.entries.insert("other".into(), definition("other"));
+	assert!(
+		reads_visible(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	let frontier = scope.frontier.as_ref().unwrap();
+	assert_eq!(frontier.len(), 1);
+	assert!(
+		matches!(&frontier[0], Dependency::Registry { node_id, .. } if node_id == "aidash://leaf")
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_withdrawn_approval_is_invisible_to_the_remote_read_check(mut scope: Scope) {
+	// Nothing in the check asks for a Catalog Approval or for `agent.execute`.
+	scope.denied = Some("agent.execute");
+	assert!(
+		reads_visible(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
 }

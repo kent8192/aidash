@@ -215,6 +215,21 @@ fn tool_retry_survives_native_worker_error_conversion() {
 	);
 }
 
+#[test]
+fn a_refused_authority_change_says_so_and_when_to_try_again() {
+	let response = Error::PolicyBusy { retry_after: 30 }.http_response();
+	assert_eq!(response.status.as_u16(), 503);
+	assert_eq!(response.headers["retry-after"], "30");
+	assert_eq!(response.headers["x-aidash-policy-busy"], "30");
+	assert!(
+		!response
+			.headers
+			.contains_key("x-aidash-transaction-pending")
+	);
+	let body: Value = serde_json::from_slice(&response.body).unwrap();
+	assert_eq!(body["error"], "POLICY_BUSY");
+}
+
 /// #728: a temporary failure used to end the Run for good.
 #[rstest]
 #[case("40001")]
@@ -279,4 +294,34 @@ async fn a_real_pool_timeout_is_a_temporary_database_error() {
 		Error::from(application).http_response().status.as_u16(),
 		503
 	);
+}
+
+/// Only a database that cannot be reached starts the post-outage hold on lease
+/// recoveries; a lock wait, deadlock or statement timeout means it is up (#786).
+#[rstest]
+#[case::connection_lost(DatabaseErrorKind::Query, Some("08006"), true)]
+#[case::shutting_down(DatabaseErrorKind::Query, Some("57P01"), true)]
+#[case::client_deadline(DatabaseErrorKind::Timeout, None, true)]
+#[case::refused(DatabaseErrorKind::Connection, None, true)]
+#[case::deadlock(DatabaseErrorKind::Query, Some("40P01"), false)]
+#[case::lock_wait(DatabaseErrorKind::Query, Some("55P03"), false)]
+#[case::statement_timeout(DatabaseErrorKind::Query, Some("57014"), false)]
+fn only_an_unreachable_database_holds_lease_recoveries(
+	#[case] kind: DatabaseErrorKind,
+	#[case] code: Option<&str>,
+	#[case] unreachable: bool,
+) {
+	// Arrange
+	let mut error = DatabaseError::new(kind, "private database diagnostic");
+	if let Some(code) = code {
+		error = error.with_code(code);
+	}
+	let error = Error::Framework(error.into());
+	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+	// Act
+	outage.note(&error);
+	// Assert
+	assert_eq!(error.is_database_unreachable(), unreachable);
+	assert_eq!(outage.holds_recoveries(30), unreachable);
+	assert!(!outage.holds_recoveries(0));
 }

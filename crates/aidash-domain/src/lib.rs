@@ -30,6 +30,7 @@ pub mod run_state;
 pub mod safety_stop;
 pub mod scratch;
 pub mod subnodes;
+pub mod unassigned;
 
 pub mod semantic;
 pub mod tenancy;

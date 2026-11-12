@@ -179,7 +179,10 @@ test("searches and selects a model without credential input", async ({
   await dialog
     .getByRole("button", { name: "エンティティを登録", exact: true })
     .click();
-  expect((await submitted).postDataJSON().config).toMatchObject({
+  const config = (await submitted).postDataJSON().config;
+  // Omitted, so registration chooses by route.
+  expect(config).not.toHaveProperty("cache_mode");
+  expect(config).toMatchObject({
     provider: "openrouter",
     model_id: "vendor/fixture-model",
     endpoint: "https://openrouter.ai/api/v1",
@@ -191,6 +194,27 @@ test("searches and selects a model without credential input", async ({
     cost: { input_per_million: 1, output_per_million: 3, currency: "USD" },
   });
   await expect(dialog).not.toBeVisible();
+});
+
+test("prompt caching can be turned off for a model", async ({ page }) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("名前").fill("OpenRouter test model");
+  await dialog.getByLabel("説明").fill("A model for agent execution");
+  await dialog
+    .getByRole("combobox", { name: "プロバイダーのモデルID" })
+    .fill("FIXTURE");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await dialog.getByLabel("プロンプトキャッシュ").selectOption("none");
+  const submitted = page.waitForRequest(
+    (r) =>
+      new URL(r.url()).pathname === "/api/registry" && r.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  expect((await submitted).postDataJSON().config).toMatchObject({
+    cache_mode: "none",
+  });
 });
 
 test("requires a catalog selection and supports keyboard selection", async ({

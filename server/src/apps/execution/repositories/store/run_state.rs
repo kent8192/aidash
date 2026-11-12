@@ -11,6 +11,36 @@ pub(crate) type RecoveryCursor = Option<(DateTime<Utc>, Uuid)>;
 pub(crate) struct RecoveryCursors {
 	pub execution: tokio::sync::Mutex<RecoveryCursor>,
 	pub delivery: tokio::sync::Mutex<RecoveryCursor>,
+	pub outage: Outage,
+}
+
+/// When this process last failed to reach the database (#786).
+///
+/// Every process meets an outage at the same time, and every lease held across
+/// it expires. For one lease period after the last such failure, recovery claims
+/// leave Runs that still name a previous owner alone, so a worker that kept
+/// running gets its own lease back instead of having its Run taken over.
+#[derive(Default)]
+pub(crate) struct Outage(std::sync::Mutex<Option<std::time::Instant>>);
+impl Outage {
+	/// Remembers the failure if the database could not be reached.
+	pub fn note(&self, error: &crate::Error) {
+		if error.is_database_unreachable() {
+			*self
+				.0
+				.lock()
+				.unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+		}
+	}
+	/// Whether the last failure to reach the database is within one lease period.
+	pub fn holds_recoveries(&self, lease_seconds: i32) -> bool {
+		self.0
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.is_some_and(|last| {
+				last.elapsed() < std::time::Duration::from_secs(lease_seconds.max(0) as u64)
+			})
+	}
 }
 
 pub(crate) struct FailureDelivery {
@@ -256,6 +286,10 @@ impl Store {
 			return Err(Error::Conflict(
 				"failure delivery lease or revision lost".into(),
 			));
+		}
+		if state.phase().is_terminal() {
+			// Before the first event; see `lock_end`.
+			crate::apps::execution::repositories::subnodes::lock_for_end(&mut tx, m.id).await?;
 		}
 		self.run_event(
 			&mut tx,

@@ -86,7 +86,9 @@ async function dashboard(
       });
     // Withdrawal first shows what it stops (#540).
     if (path.endsWith("/catalog/impact"))
-      return route.fulfill({ json: { agents: [], running_runs: 0 } });
+      return route.fulfill({
+        json: { agents: [], running_runs: 0 },
+      });
     if (
       path.startsWith("/api/authorization/") &&
       route.request().method() === "POST"
@@ -359,6 +361,66 @@ test("without subject.group.update an agent approval keeps the default group", a
     expected_revision: 0,
     node: defaultNode.name,
   });
+});
+
+const SCOPE =
+  "Only Runs using this version stop. Results produced so far stay readable. To hide them too, deny registry.read on this version in Access policies.";
+
+test("withdrawing says that only Runs using the version stop, with or without impact", async ({
+  page,
+}) => {
+  await dashboard(
+    page,
+    tenantSubject,
+    () => [
+      registryVersion(entry("search", "tool"), {
+        approval: { enabled: true, revision: 3 },
+      }),
+    ],
+    () => ({ status: 200, json: {} }),
+  );
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.route("**/catalog/impact**", (route) =>
+    route.fulfill({
+      json: { agents: [ref("helper")], running_runs: 2 },
+    }),
+  );
+  await page.goto("/settings?view=registry");
+  await row(page, "search").click();
+  await approval(page)
+    .getByRole("button", { name: "Withdraw approval", exact: true })
+    .click();
+  await expect(approval(page)).toContainText("helper@1.0.0");
+  await expect(approval(page)).toContainText(SCOPE);
+  await expect(approval(page)).not.toContainText("read this version");
+  await expect(approval(page)).not.toContainText(
+    "No approved agent on this Node uses it.",
+  );
+});
+
+test("a withdrawal with no impact still says what stays readable", async ({
+  page,
+}) => {
+  await dashboard(
+    page,
+    tenantSubject,
+    () => [
+      registryVersion(entry("search", "tool"), {
+        approval: { enabled: true, revision: 3 },
+      }),
+    ],
+    () => ({ status: 200, json: {} }),
+  );
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.goto("/settings?view=registry");
+  await row(page, "search").click();
+  await approval(page)
+    .getByRole("button", { name: "Withdraw approval", exact: true })
+    .click();
+  await expect(approval(page)).toContainText(
+    "No approved agent on this Node uses it.",
+  );
+  await expect(approval(page)).toContainText(SCOPE);
 });
 
 test("withdrawing fences on the approval revision and reports a conflict", async ({

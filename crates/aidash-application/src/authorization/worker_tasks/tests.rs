@@ -229,6 +229,7 @@ impl WorkerTaskScope for Scope {
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, value: Uuid) -> Result<()> {
 		self.touch(match kind {
 			"task" => "output.task",
+			"delegated_task" => "output.delegated_task",
 			"generation" => "output.generation",
 			_ => panic!("unknown output"),
 		})?;
@@ -357,12 +358,12 @@ async fn worker_effects_cannot_target_tasks_outside_the_source_workspace(
 	let denied = if delegation {
 		matches!(
 			delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await,
-			Err(Error::Forbidden)
+			Err(Error::Refused(message)) if message.contains("not found or is not visible")
 		)
 	} else {
 		matches!(
 			assign(&mut scope, &run, id(4), "policy", "reason").await,
-			Err(Error::Forbidden)
+			Err(Error::Refused(message)) if message.contains("not found or is not visible")
 		)
 	};
 	assert!(denied);
@@ -468,14 +469,17 @@ async fn retries_cannot_rebind_an_existing_child_task_origin(
 		"chain" => scope.origin.authority.subject_chain.push("other".into()),
 		_ => panic!("unknown fence"),
 	};
-	let Error::Conflict(message) = create_task(&mut scope, &run, "key", &input())
+	let Error::Refused(message) = create_task(&mut scope, &run, "key", &input())
 		.await
 		.err()
 		.unwrap()
 	else {
 		panic!("expected origin conflict")
 	};
-	assert_eq!(message, "task already has a different origin");
+	assert_eq!(
+		message,
+		"a task from an earlier attempt of this call has a different origin, so it cannot be reused; calling task_create again creates a new task"
+	);
 	assert_eq!(scope.calls.last(), Some(&"origin"));
 	assert_eq!(scope.origin_writes, vec![(id(4), id(1))]);
 }
@@ -558,13 +562,18 @@ async fn a_matching_existing_grant_returns_the_original_delivered_reply_without_
 	assert!(result.delivered);
 	assert!(!scope.calls.contains(&"delegate"));
 	assert_eq!(
+		scope.outputs,
+		vec![(id(1), id(3), "delegated_task".into(), id(4))]
+	);
+	assert_eq!(
 		scope.calls,
 		vec![
 			"task_workspace",
 			"task_read",
 			"task_resource",
 			"task.delegate",
-			"grant"
+			"grant",
+			"output.delegated_task"
 		]
 	);
 }
@@ -584,14 +593,17 @@ async fn an_existing_grant_cannot_hide_changed_delegation_authority(
 		grant.credential_id = id(99);
 	}
 	scope.grant = Some(grant);
-	let Error::Conflict(message) = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
+	let Error::Refused(message) = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.err()
 		.unwrap()
 	else {
 		panic!("expected authority conflict")
 	};
-	assert_eq!(message, "task already has a different authority");
+	assert_eq!(
+		message,
+		"the task was already delegated under a different authority"
+	);
 	assert_eq!(scope.calls.last(), Some(&"grant"));
 	assert!(!scope.calls.contains(&"delegate"));
 }
@@ -606,6 +618,10 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 		.unwrap();
 	assert!(!result.delivered);
 	assert_eq!(
+		scope.outputs,
+		vec![(id(1), id(3), "delegated_task".into(), id(4))]
+	);
+	assert_eq!(
 		scope.calls,
 		vec![
 			"task_workspace",
@@ -613,7 +629,8 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 			"task_resource",
 			"task.delegate",
 			"grant",
-			"delegate"
+			"delegate",
+			"output.delegated_task"
 		]
 	);
 	assert_eq!(scope.decisions[0].0.attributes["created_by"], "producer");

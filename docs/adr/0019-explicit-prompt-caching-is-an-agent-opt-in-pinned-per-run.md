@@ -22,3 +22,5 @@ Only then does the adapter send `cache_control`, at two points: the end of `syst
 - No breakpoint ends before `system` ends, so every cache entry includes the Tenant salt (ADR 0016).
 - A step whose `system` or tools differ from the Run's ordinary turns, such as a message catch-up turn or a media deferral turn, carries no `cache_control`. Its prefix would not be reused, so a cache write would only add the 1.25× write surcharge. The ordinary prefix remains cached within the TTL.
 - A provider reads an earlier entry only within 20 content blocks of the new breakpoint. A step that appends more than about 19 history events misses the history entry once; the `system` entry still hits.
+
+Superseded in part by ADR 0115 (2026-11-07): caching is on by default for new definitions, the allowlist also holds GPT-5.6 and later, and those routes use explicit mode with one more marker. The marker positions, the pinning per Run and the Cache Mode stand.

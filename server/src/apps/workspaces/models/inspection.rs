@@ -28,9 +28,46 @@ impl Task {
 			.pop()
 			.map(Into::into))
 	}
+
+	/// A walk over recorded reads loads them together rather than one at a time.
+	pub(crate) async fn read_many_in(
+		tx: &mut dyn TransactionExecutor,
+		ids: &[Uuid],
+	) -> Result<Vec<domain::Task>> {
+		Ok(rows_by_id::<Self>(tx, Self::table_name(), ids)
+			.await?
+			.into_iter()
+			.map(Into::into)
+			.collect())
+	}
+}
+
+async fn rows_by_id<T: serde::de::DeserializeOwned>(
+	tx: &mut dyn TransactionExecutor,
+	table: &str,
+	ids: &[Uuid],
+) -> Result<Vec<T>> {
+	let (sql, values) = Query::select()
+		.column(ColumnRef::Asterisk)
+		.from(Alias::new(table))
+		.and_where(Expr::col("id").is_in(ids.iter().copied().map(Expr::value)))
+		.build(PostgresQueryBuilder);
+	tx.fetch_all(&sql, convert_values(values))
+		.await?
+		.into_iter()
+		.map(|row| serde_json::from_value(QueryRow::from_backend_row(row).data).map_err(Into::into))
+		.collect()
 }
 
 impl Artifact {
+	/// See [`Task::read_many_in`].
+	pub(crate) async fn read_many_in(
+		tx: &mut dyn TransactionExecutor,
+		ids: &[Uuid],
+	) -> Result<Vec<domain::Artifact>> {
+		rows_by_id(tx, Self::table_name(), ids).await
+	}
+
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
@@ -56,6 +93,14 @@ impl Artifact {
 }
 
 impl Message {
+	/// See [`Task::read_many_in`].
+	pub(crate) async fn read_many_in(
+		tx: &mut dyn TransactionExecutor,
+		ids: &[Uuid],
+	) -> Result<Vec<domain::Message>> {
+		rows_by_id(tx, Self::table_name(), ids).await
+	}
+
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
@@ -81,6 +126,14 @@ impl Message {
 }
 
 impl Conversation {
+	/// See [`Task::read_many_in`].
+	pub(crate) async fn read_many_in(
+		tx: &mut dyn TransactionExecutor,
+		ids: &[Uuid],
+	) -> Result<Vec<domain::Conversation>> {
+		rows_by_id(tx, Self::table_name(), ids).await
+	}
+
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,

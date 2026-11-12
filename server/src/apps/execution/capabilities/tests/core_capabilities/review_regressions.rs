@@ -824,6 +824,8 @@ async fn cleanup_runner_with_discard(
 			}
 			let response = if path == "/v1/health" {
 				json!({"instance":*health_instance.lock().unwrap()})
+			} else if path.ends_with("/cancel") && body["instance"] == "cleanup-runner" {
+				json!({"operation_id":operation,"digest":body["digest"],"status":"cancelled","termination_confirmed":true,"executed":false})
 			} else if path.ends_with("/cancel") || path.ends_with("/stop") {
 				json!({"operation_id":operation,"digest":"immutable-intent","termination_confirmed":stopped.load(Ordering::SeqCst)})
 			} else if path == format!("/v1/operations/{operation}") && uncertain {
@@ -965,6 +967,78 @@ async fn withdrawn_dispatched_receipt_is_durably_acknowledged_after_retry(
 			"never-dispatched cleanup must only perform housekeeping: {requests:?}"
 		);
 	}
+	c.close().await;
+}
+
+/// An operation that may not have reached the Runner is refused rather than
+/// fenced for good: it ends without effects, the Area reopens, and the Runner's
+/// record of the refusal is acknowledged like any other outcome.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_withdrawn_undelivered_operation_has_no_effects_and_is_acknowledged(
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	let (mut c, area, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, _, requests, _) = cleanup_runner(&mut c, id, false).await;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(Alias::new("state"), "submitted")
+			.value(Alias::new("runner_instance"), Some("cleanup-runner"))
+			.value(Alias::new("result"), json!({"dispatch_pending":true}))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+	let result = loop {
+		let (state, result) = cleanup_operation(&c, id).await;
+		if state == "withdrawn" && result["runner_acknowledged"] == true {
+			break result;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"undelivered operation stranded: {state} {result}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	};
+	worker.stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	assert_eq!(result["termination_confirmed"], true);
+	assert_eq!(result["effects_may_have_occurred"], false);
+	assert_eq!(result["error"], "AUTHORITY_WITHDRAWN");
+	let area_state: String = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(area_state, "active");
+	let refusal = requests
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|request| request["path"] == format!("/v1/operations/{id}/cancel"))
+		.unwrap()["body"]
+		.clone();
+	assert_eq!(
+		refusal,
+		json!({"digest":"immutable-intent","instance":"cleanup-runner"})
+	);
 	c.close().await;
 }
 

@@ -26,7 +26,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status,created)=common::request(&app,&token,"POST","/api/conversations",json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status,created)=common::post(&app, &token, "/api/conversations", json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let run = f.store.runs(&scope).await.unwrap().pop().unwrap();
@@ -109,10 +109,9 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await.unwrap();
 	tx.commit().await.unwrap();
-	let (status, _) = common::request(
+	let (status, _) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/human-requests/{}/answer", ids[0]),
 		json!({"connected":true}),
 	)
@@ -487,24 +486,20 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		.unwrap();
 	let app = common::application(f.clone()).await;
 	let base = "/api/tenants/acme/connections";
-	let (status, _) = common::request(
+	let (status, _) = common::get(
 		&app,
 		&charlie,
-		"GET",
 		&format!("{base}/probe?resource=https%3A%2F%2Fmcp.example%2Fmcp"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(
 		status, 403,
 		"a member without registry.create or secret.use cannot probe"
 	);
-	let (status, probe) = common::request(
+	let (status, probe) = common::get(
 		&app,
 		&alice,
-		"GET",
 		&format!("{base}/probe?resource=https%3A%2F%2Fmcp.example%2Fmcp"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(
@@ -512,12 +507,10 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 		"registry.create alone permits probing: {probe}"
 	);
 	// The picker needs Tenant bounds even when its person cannot edit them.
-	let (status, probe) = common::request(
+	let (status, probe) = common::get(
 		&app,
 		&bob,
-		"GET",
 		&format!("{base}/probe?resource=https%3A%2F%2FMCP.example%2Fmcp%2F"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{probe}");
@@ -528,26 +521,22 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 	use base64::Engine as _;
 	let encoded =
 		base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("https://mcp.example/mcp");
-	let (status, _) = common::request(
+	let (status, _) = common::get(
 		&app,
 		&bob,
-		"GET",
 		&format!("/api/tenants/acme/connection-scope-ceilings/{encoded}"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 403);
-	let (status, probe) = common::request(
+	let (status, probe) = common::get(
 		&app,
 		&bob,
-		"GET",
 		&format!("{base}/probe?resource=https%3A%2F%2Fother.example%2Fmcp"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{probe}");
 	assert!(probe.get("scope_ceiling").is_none());
-	let (status, listed) = common::request(&app, &alice, "GET", base, Value::Null).await;
+	let (status, listed) = common::get(&app, &alice, base).await;
 	assert_eq!(status, 200, "{listed}");
 	assert_eq!(listed.as_array().unwrap().len(), 1);
 	assert_eq!(listed[0]["id"], json!(ids[0]));
@@ -560,10 +549,9 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 	)
 	.await;
 	assert_eq!(status, 404);
-	let (status, _) = common::request(
+	let (status, _) = common::post(
 		&app,
 		&alice,
-		"POST",
 		&format!("{base}/authorizations"),
 		json!({"resource":"https://mcp.example/mcp"}),
 	)
@@ -578,13 +566,13 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 	)
 	.await;
 	assert_eq!(status, 200, "{deleted}");
-	let (status, remaining) = common::request(&app, &alice, "GET", base, Value::Null).await;
+	let (status, remaining) = common::get(&app, &alice, base).await;
 	assert_eq!(status, 200);
 	assert_eq!(remaining, json!([]));
-	let (status, listed) = common::request(&app, &bob, "GET", base, Value::Null).await;
+	let (status, listed) = common::get(&app, &bob, base).await;
 	assert_eq!(status, 200, "{listed}");
 	assert_eq!(listed[0]["id"], json!(ids[1]));
-	let (status, _) = common::request(&app, &bot, "GET", base, Value::Null).await;
+	let (status, _) = common::get(&app, &bot, base).await;
 	assert_eq!(status, 403);
 	common::cleanup(f, &url, &schema).await;
 }
@@ -601,7 +589,7 @@ async fn oauth_connections_refusal_checkpoint_is_lease_fenced_and_preserves_othe
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status,created)=common::request(&app,&token,"POST","/api/conversations",json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status,created)=common::post(&app, &token, "/api/conversations", json!({"title":"Connect MCP","goal":"Use the connected server","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
 	let worker = Uuid::now_v7();

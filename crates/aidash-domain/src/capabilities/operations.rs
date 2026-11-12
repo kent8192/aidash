@@ -165,7 +165,11 @@ pub fn export_quota_refusal(quota: ExportQuota, path: &str, limit: u64) -> Value
 pub const VERIFICATION: &str = "verification";
 /// The bound operation whose authority an operation kind runs under.
 pub fn capability_of(kind: &str) -> &str {
-	if kind == VERIFICATION { "shell" } else { kind }
+	match kind {
+		VERIFICATION => "shell",
+		"python_install" => "code_interpreter",
+		_ => kind,
+	}
 }
 /// A lost outcome leaves the last saved Area intact. It remains fenced while
 /// the original writer may still run, and reopens once its stop is proven.
@@ -229,6 +233,19 @@ impl OperationState {
 			never_dispatched,
 		})
 	}
+}
+
+/// What a cancel asks the Runner to refuse, if the operation may not have
+/// reached it. `dispatch_pending` records the intent to send, not whether the
+/// send arrived: the Runner may hold the operation already, or receive it later
+/// from a send its caller gave up on. Only the Runner can settle that, and only
+/// the one this intent was recorded against, so it compares itself to `instance`
+/// and refuses any later send under the lock that accepts one.
+pub fn undelivered_refusal(result: &Value, digest: &str, instance: Option<&str>) -> Option<Value> {
+	if result["dispatch_pending"] != true {
+		return None;
+	}
+	instance.map(|instance| json!({"digest":digest,"instance":instance}))
 }
 
 pub mod withdrawal;

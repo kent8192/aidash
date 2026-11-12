@@ -175,6 +175,13 @@ export function OpenRouterModelPicker({
         </NativeSelect>
       </Field>
       <Hint>{t("modelWireApiHelp")}</Hint>
+      <Field label={t("modelPromptCache")}>
+        <NativeSelect name="cache_mode" defaultValue="">
+          <option value="">{t("promptCacheDefault")}</option>
+          <option value="none">{t("promptCacheOff")}</option>
+        </NativeSelect>
+      </Field>
+      <Hint>{t("modelPromptCacheHelp")}</Hint>
       <Field label="Reasoning Effort">
         <NativeSelect
           name="reasoning_effort"

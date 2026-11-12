@@ -12,9 +12,10 @@ use aidash_application::{
 	ports::authorization::runs::{RunControlRepository, RunControlScope},
 };
 use aidash_domain::{
-	RawRun, RunControlAction, RunInspection,
+	RawRun, RunControlAction, RunInspection, RunMetadata,
 	identity::execution::{ExecutionGrant, ExecutionPrincipal},
 	policy::Resource,
+	run_state::RunReadsBlock,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -46,6 +47,9 @@ impl RunControlRepository for Controls<'_> {
 }
 #[async_trait]
 impl RunControlScope for Scope<'_> {
+	fn node_id(&self) -> &str {
+		self.federation.config.deployment.as_str()
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
 			tenant: self.access.identity.tenant.clone(),
@@ -95,6 +99,48 @@ impl RunControlScope for Scope<'_> {
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.run_visible(run).await.map_err(Into::into)
+	}
+	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		self.access.run_reads_block(run).await.map_err(Into::into)
+	}
+	async fn run_reads_stop(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		self.access.run_reads_stop(run).await.map_err(Into::into)
+	}
+	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		let metadata = RunMetadata::from(run);
+		// The Run uses its definitions as its own subject chain, not as the person who resumes
+		// it: a dependency restricted to the Agent that uses it, or an Agent version restricted to
+		// its delegating parent, would otherwise refuse the person (ADR 0095). The grant is
+		// already locked by the resume's ownership check.
+		let grant = self
+			.lock_execution_grant(run.id)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let person = std::mem::replace(&mut self.access.subjects, grant.subject_chain);
+		let blocked = super::guard::use_block(&mut self.access, &metadata, true).await;
+		// Who may be told its name is decided as the person, so restore their subjects first.
+		self.access.subjects = person;
+		let Some(reference) = blocked? else {
+			return Ok(None);
+		};
+		let entry = match crate::apps::registry::models::Definition::read_in(
+			&mut **self.access.tx,
+			&reference.id,
+			&reference.version,
+		)
+		.await
+		{
+			Ok(entry) => Some(entry),
+			Err(crate::Error::NotFound(_)) => None,
+			Err(error) => return Err(error.into()),
+		};
+		aidash_application::authorization::catalog::use_block(
+			&mut crate::bootstrap::catalog_scope(&mut self.access),
+			&reference,
+			entry.as_ref(),
+		)
+		.await
+		.map(Some)
 	}
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>> {
 		let result: NativeResult<Option<Grant>> = async {
@@ -163,11 +209,20 @@ impl RunControlScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn control_run(&mut self, id: Uuid, action: RunControlAction) -> Result<RunInspection> {
+	async fn resume_run(&mut self, id: Uuid) -> Result<RunInspection> {
 		self.federation
 			.store
-			.control_in(&mut self.access.tx, id, action)
+			.control_in(&mut self.access.tx, id, RunControlAction::Resume)
 			.await
+			.map_err(Into::into)
+	}
+	async fn decline_call(&mut self, id: Uuid, call: &str) -> Result<RunInspection> {
+		let by = self.access.identity.subject.clone();
+		self.federation
+			.store
+			.decline_call_in(&mut self.access.tx, id, call, &by)
+			.await
+			.map(|declined| declined.run)
 			.map_err(Into::into)
 	}
 	async fn finish(self: Box<Self>, result: Result<RunInspection>) -> Result<RunInspection> {

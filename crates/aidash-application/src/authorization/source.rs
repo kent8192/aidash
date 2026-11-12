@@ -19,7 +19,9 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 			.get(&executor)
 			.is_some_and(|subject| subject.kind != SubjectKind::Agent)
 	{
-		return Err(Error::Forbidden);
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InvalidExecutor,
+		));
 	}
 	// An executor known to the source remains subject to its policy, including denies.
 	// An unknown receiver-only executor is authorized by the receiving Node.

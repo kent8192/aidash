@@ -11,6 +11,8 @@ pub struct Reply {
 	/// The peer answered `503 node_unreachable`: another Node could not be
 	/// reached, with whether the call had already taken effect (#770).
 	pub unreachable: Option<Unreachable>,
+	/// A refused Authority Change, with the seconds until it can be sent again.
+	pub policy_busy: Option<u64>,
 	pub body: Result<Vec<u8>>,
 }
 /// What a peer's `node_unreachable` answer says: only the Node and whether the

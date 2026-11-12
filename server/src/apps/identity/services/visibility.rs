@@ -1,7 +1,7 @@
 //! Read authorization over native records, retaining the complete dependency graph.
 use super::NativeAccess;
+use crate::apps::identity::models::DecisionOwner;
 use crate::authorization::policy::Resource;
-use crate::registry::{EntityRef, Entry};
 use crate::{Result, domain};
 use uuid::Uuid;
 
@@ -20,13 +20,14 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<domain::Run> {
+		let mark = self.access.call_mark();
 		let result = aidash_application::authorization::workspaces::run_for_interaction(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			id,
 		)
 		.await
 		.map_err(Into::into);
-		result.map_err(|error| self.access.named(error))
+		result.map_err(|error| self.access.named_since(mark, error))
 	}
 
 	pub(crate) async fn human_resource(
@@ -125,15 +126,6 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn catalog_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		aidash_application::authorization::catalog::retained::entry(
-			&mut crate::bootstrap::native_run_visibility_scope(self),
-			reference,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
 	pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		let key = (
 			self.access.node_id.clone(),
@@ -150,6 +142,9 @@ impl NativeAccess {
 		let Some(_visit) = self.access.checking_reads.enter(key) else {
 			return Ok(true);
 		};
+		let walk = self
+			.access
+			.begin_read_walk(DecisionOwner::Run(run), outermost);
 		let result = self.run_reads_visible_in(run).await;
 		// A `false` reached while a Node did not answer is not a verdict (#751).
 		let unconfirmed = matches!(result, Ok(false)) && self.access.row_silence.is_some();
@@ -163,7 +158,7 @@ impl NativeAccess {
 			Err(_) if outermost => self.access.read_verdicts.abandon(),
 			Err(_) => {}
 		}
-		result
+		self.access.end_read_walk(walk, result).await
 	}
 
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
@@ -175,9 +170,12 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn remote_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+	pub(crate) async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
 		let transport = crate::bootstrap::native_registry_transport(self);
-		aidash_application::federation::registry_reads::reads_visible(
+		aidash_application::federation::registry_reads::reads(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			&transport,
 			run,

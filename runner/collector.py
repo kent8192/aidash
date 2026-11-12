@@ -185,20 +185,51 @@ def append_output(data, connections=0):
         return state
 
 
+def output_boundary(data, position):
+    if position == 0 or position == len(data) or data[position] & 0xC0 != 0x80:
+        return True
+    first = position
+    while first > 0 and data[first] & 0xC0 == 0x80:
+        first -= 1
+    lead = data[first]
+    width = 2 if 0xC2 <= lead <= 0xDF else 3 if 0xE0 <= lead <= 0xEF else 4 if 0xF0 <= lead <= 0xF4 else 0
+    end = first + width
+    if not width or end > len(data) or position >= end:
+        return True
+    try:
+        data[first:end].decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
 def logs(limit):
     deadline = time.monotonic() + 5
     state = append_output(b"")
     while "final" in sys.argv and state["connections"] and time.monotonic() < deadline:
         time.sleep(0.01)
         state = append_output(b"")
+    offset = 0
     if "tail" in sys.argv:
         data = OUTPUT_TAIL.read_bytes()[-min(limit, TAIL_LIMIT):] if OUTPUT_TAIL.exists() else b""
         cut = state["total"] > len(data)
     else:
         with OUTPUT.open("rb") as output:
-            data = output.read(min(limit, OUTPUT_LIMIT))
+            if "window" in sys.argv:
+                offset = max(0, state["stored"] - min(limit, OUTPUT_LIMIT))
+                before = max(0, offset - 3)
+                output.seek(before)
+                data = output.read(min(limit, OUTPUT_LIMIT) + offset - before)
+                position = offset - before
+                while not output_boundary(data, position):
+                    position += 1
+                    offset += 1
+                data = data[position:]
+            else:
+                data = output.read(min(limit, OUTPUT_LIMIT))
         cut = state["total"] > OUTPUT_LIMIT
     print(json.dumps({"stdout": base64.b64encode(data).decode(), "bytes": state["stored"],
+                      "offset": offset,
                       "truncated": cut or ("final" in sys.argv and state["connections"] > 0),
                       "deadline_expired": EXPIRED.exists()}))
 

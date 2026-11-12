@@ -1,7 +1,7 @@
 use super::*;
 use aidash_domain::{
 	federation::execution::{
-		Description, Inspection, Prepared,
+		Description, Inspection, Prepared, Refusal,
 		admission::{RemoteExecutionControlState, RemoteExecutionPhase},
 		home::HomeBinding,
 	},
@@ -17,6 +17,10 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State {
+	mark_activated_fails: bool,
+	task_read_unreachable: bool,
+	grant_revoked: bool,
+	grant_expired: bool,
 	calls: Vec<String>,
 	scopes: usize,
 	rpcs: usize,
@@ -24,6 +28,10 @@ struct State {
 	denied: Option<&'static str>,
 	replies: Vec<Value>,
 	rpc_fails: bool,
+	/// The next request whose path ends with the suffix answers this error.
+	rpc_error: Option<(&'static str, Error)>,
+	/// The Home refuses to read the admitted description.
+	description_denied: bool,
 	binding_changed: bool,
 	grants: usize,
 	semantic: bool,
@@ -36,6 +44,10 @@ struct State {
 	revision: Option<i64>,
 	output_hidden: bool,
 	human_requests: Vec<aidash_domain::HumanRequest>,
+	/// Who the grant acts for, when not the caller.
+	grant_root: Option<&'static str>,
+	/// The Home events written for a declined call.
+	declined: Vec<Value>,
 }
 #[derive(Clone, Default)]
 struct Repository {
@@ -157,6 +169,9 @@ impl HomeRepository for Repository {
 	}
 	async fn description(&self, _: &str, _: Uuid) -> Result<(Scope, Description)> {
 		self.call("description");
+		if self.state.lock().unwrap().description_denied {
+			return Err(Error::Forbidden);
+		}
 		Ok((self.scope(), description()))
 	}
 	async fn request<T: DeserializeOwned + Send>(
@@ -185,6 +200,13 @@ impl HomeRepository for Repository {
 			let mut state = self.state.lock().unwrap();
 			if state.rpc_fails {
 				return Err(Error::External("receiver unavailable".into()));
+			}
+			if state
+				.rpc_error
+				.as_ref()
+				.is_some_and(|(suffix, _)| path.ends_with(suffix))
+			{
+				return Err(state.rpc_error.take().expect("an error was just matched").1);
 			}
 			if !state.replies.is_empty() {
 				state.replies.remove(0)
@@ -251,6 +273,15 @@ impl HomeScope for Scope {
 	}
 	async fn task_read(&mut self, _: Uuid) -> Result<Task> {
 		self.repository.call("task.read");
+		if self.repository.state.lock().unwrap().task_read_unreachable {
+			return Err(Error::NodeUnreachable {
+				node: "aidash://other".into(),
+				after_effect: false,
+			});
+		}
+		if self.repository.state.lock().unwrap().denied == Some("task.read") {
+			return Err(Error::Forbidden);
+		}
 		Ok(task())
 	}
 	async fn control_task(&mut self, _: Uuid) -> Result<Option<Task>> {
@@ -270,6 +301,30 @@ impl HomeScope for Scope {
 		} else {
 			Ok(())
 		}
+	}
+	async fn task_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
+		self.repository.call("grant.by_task");
+		let state = self.repository.state.lock().unwrap();
+		let mut found = grant(state.semantic);
+		found.revoked = state.grant_revoked;
+		found.expires_at = if state.grant_expired {
+			Utc::now() - chrono::Duration::hours(1)
+		} else {
+			Utc::now() + chrono::Duration::hours(1)
+		};
+		if let Some(root) = state.grant_root {
+			found.root_subject = root.into();
+		}
+		Ok(Some(found))
+	}
+	async fn may(&mut self, _: &Resource, action: &str) -> Result<bool> {
+		self.repository.call(&format!("may:{action}"));
+		Ok(self.repository.state.lock().unwrap().denied != Some(action))
+	}
+	async fn call_declined(&mut self, _: Uuid, event: Value) -> Result<()> {
+		self.repository.call("call_declined");
+		self.repository.state.lock().unwrap().declined.push(event);
+		Ok(())
 	}
 	async fn requester_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
 		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
@@ -293,6 +348,9 @@ impl HomeScope for Scope {
 				g
 			})
 			.collect())
+	}
+	async fn holder_grants(&mut self, _: Uuid) -> Result<Vec<Grant>> {
+		Ok(vec![])
 	}
 	async fn delegation_grants(&mut self, _: &Task, _: &str) -> Result<Vec<Grant>> {
 		Ok(vec![grant(false)])
@@ -333,6 +391,13 @@ impl HomeScope for Scope {
 	}
 	async fn binding_revision(&mut self, _: Uuid, revision: i64) -> Result<()> {
 		self.repository.state.lock().unwrap().revision = Some(revision);
+		Ok(())
+	}
+	async fn mark_activated(&mut self, _: Uuid) -> Result<()> {
+		self.repository.call("mark_activated");
+		if self.repository.state.lock().unwrap().mark_activated_fails {
+			return Err(Error::External("binding unavailable".into()));
+		}
 		Ok(())
 	}
 	async fn resume_semantic(&mut self, _: Uuid, _: Uuid, _: Uuid, _: &str) -> Result<()> {
@@ -505,6 +570,200 @@ async fn changed_initial_task_binding_blocks_receiver_activation() {
 		repository.calls().last().unwrap(),
 		"rollback_with_denial_audit"
 	);
+}
+/// The path of the receiver's activation of the admission built by `Repository::request`.
+const ACTIVATE: &str = "/activate";
+
+#[rstest]
+#[case::not_found(Error::NotFound("the target Node did not find it".into()))]
+#[case::denied(Error::Forbidden)]
+#[case::unauthorized(Error::Unauthorized)]
+#[case::refused(Error::RemoteExecutionRefused(
+	aidash_domain::federation::execution::Refusal::Policy
+))]
+#[case::unreachable(Error::External("remote execution authority unavailable".into()))]
+#[tokio::test]
+async fn a_refused_activation_after_admission_tells_the_tool_the_delegation_may_have_partly_happened(
+	#[case] error: Error,
+) {
+	// Arrange: the target Node admitted the task and Home bound it, then activation is refused.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error = Some((ACTIVATE, error));
+	// Act
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Refused(message))
+			if message.contains("may have partly happened") && message.contains("Do not repeat")),
+		"{result:?}"
+	);
+	assert!(repository.calls().contains(&"insert_binding".into()));
+}
+
+#[rstest]
+#[case::policy(Refusal::PolicyAsk)]
+#[case::node_use(Refusal::NodeUseAsk)]
+#[tokio::test]
+async fn an_ask_after_admission_stays_an_authority_pause_for_the_tool(#[case] ask: Refusal) {
+	// Arrange: a person on the target Node can lift an ask, so ADR 0109 keeps it a pause.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error =
+		Some((ACTIVATE, Error::RemoteExecutionRefused(ask)));
+	// Act
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::RemoteExecutionRefused(reason)) if *reason == ask),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_denial_after_admission_names_the_targets_reason_to_the_tool() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error = Some((
+		ACTIVATE,
+		Error::RemoteExecutionRefused(Refusal::CatalogApproval),
+	));
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	assert!(
+		matches!(&result, Err(Error::Refused(message))
+			if message.contains("no Catalog Approval") && message.contains("may have partly happened")),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_pending_transaction_after_admission_keeps_its_retry_path() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error = Some((ACTIVATE, Error::TransactionPending));
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	assert!(
+		matches!(result, Err(Error::TransactionPending)),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_denied_description_after_admission_tells_the_tool_the_delegation_may_have_partly_happened()
+ {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().description_denied = true;
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	assert!(
+		matches!(&result, Err(Error::Refused(message)) if message.contains("may have partly happened")),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_conflict_after_admission_still_fails_the_tools_run() {
+	// Arrange: Home's own record of the admission changed, which is an internal fault.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().binding_changed = true;
+	// Act
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Conflict(text)) if text == "remote execution identity changed"),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[case::not_found(Error::NotFound("the target Node did not find it".into()))]
+#[case::denied(Error::Forbidden)]
+#[tokio::test]
+async fn the_management_endpoint_keeps_the_error_of_a_refused_activation(#[case] error: Error) {
+	// Arrange
+	let repository = Repository::default();
+	let expected = format!("{error:?}");
+	repository.state.lock().unwrap().rpc_error = Some((ACTIVATE, error));
+	// Act
+	let result = activate(&repository, task().id, Uuid::from_u128(4)).await;
+	// Assert: a person is told what the target Node said, with no claim about a partial effect.
+	assert_eq!(format!("{:?}", result.unwrap_err()), expected);
+}
+
+#[rstest]
+#[tokio::test]
+async fn delegating_a_task_the_caller_cannot_read_says_it_is_not_found_or_not_visible() {
+	// Arrange
+	let repository = Repository::default();
+	repository.state.lock().unwrap().denied = Some("task.read");
+	let agent = EntityRef {
+		id: "agent".into(),
+		version: "1".into(),
+	};
+	// Act
+	let result = delegate(&repository, task().id, "aidash://receiver", &agent, true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Refused(message)) if message.contains("was not found or is not visible")),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_person_delegating_a_task_they_cannot_read_gets_the_plain_refusal() {
+	// Arrange
+	let repository = Repository::default();
+	repository.state.lock().unwrap().denied = Some("task.read");
+	let agent = EntityRef {
+		id: "agent".into(),
+		version: "1".into(),
+	};
+	// Act
+	let result = delegate(&repository, task().id, "aidash://receiver", &agent, false).await;
+	// Assert: the API answers as it does for any read it refuses, in no Run's words.
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_confirmed_activation_is_marked_after_the_receiver_answers() {
+	let repository = Repository::default();
+	activate(&repository, task().id, Uuid::from_u128(4))
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	let started = calls
+		.iter()
+		.position(|call| call.ends_with("/activate"))
+		.unwrap();
+	let marked = calls
+		.iter()
+		.position(|call| call == "mark_activated")
+		.unwrap();
+	assert!(started < marked);
+}
+#[rstest]
+#[tokio::test]
+async fn a_started_run_is_not_reported_failed_when_the_mark_cannot_be_recorded() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().mark_activated_fails = true;
+	let activation = activate(&repository, task().id, Uuid::from_u128(4)).await;
+	assert!(activation.is_ok(), "{activation:?}");
+	assert!(repository.calls().contains(&"mark_activated".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_activation_is_never_marked_as_started() {
+	// The binding is committed before the receiver is asked to start; only a
+	// matching activation response may say the Run started (#772).
+	let repository = Repository::default();
+	repository.state.lock().unwrap().binding_changed = true;
+	assert!(
+		activate(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.is_err()
+	);
+	assert!(!repository.calls().contains(&"mark_activated".into()));
 }
 #[rstest]
 #[case("grant_id")]
@@ -739,3 +998,135 @@ async fn deployment_administrator_cannot_create_subject_remote_work() {
 }
 
 mod source_grants;
+
+fn declined_reply() -> Value {
+	json!({"activation":activation(),"tool":"task_delegate","kind":"policy"})
+}
+#[rstest]
+#[tokio::test]
+async fn the_requester_declines_under_what_resuming_needs_and_the_home_names_them() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().semantic = true;
+	repository.state.lock().unwrap().replies = vec![declined_reply()];
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	// The same checks as resuming: the requester's `task.delegate`, then `run.control`.
+	assert!(calls.contains(&"task.delegate".into()));
+	assert!(calls.contains(&"run.control".into()));
+	assert!(!calls.contains(&"run.decline_call".into()));
+	let reset = calls.iter().position(|c| c == "resume_semantic").unwrap();
+	let rpc = calls
+		.iter()
+		.position(|c| c.ends_with("/declined-calls"))
+		.unwrap();
+	assert!(reset < rpc);
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|c| c.as_str() == "call_declined")
+			.count(),
+		1
+	);
+	let state = repository.state.lock().unwrap();
+	let event = &state.declined[0];
+	assert_eq!(event["by"], "requester");
+	assert_eq!(event["tool"], "task_delegate");
+	assert_eq!(event["kind"], "policy");
+	assert_eq!(event["call"], "run:7:0");
+	assert!(event.get("action").is_none());
+}
+#[rstest]
+#[tokio::test]
+async fn someone_else_declines_under_run_decline_call_alone() {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.grant_root = Some("other");
+		state.replies = vec![declined_reply()];
+	}
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	assert!(calls.contains(&"run.decline_call".into()));
+	// Neither the requester's task authority nor `run.control` stands in for it.
+	assert!(!calls.contains(&"task.delegate".into()));
+	assert!(!calls.contains(&"run.control".into()));
+	assert!(calls.contains(&"task.read".into()));
+}
+#[rstest]
+#[case::requester_without_run_control(None, "run.control")]
+#[case::requester_without_task_authority(None, "task.delegate")]
+#[case::holder_without_the_action(Some("other"), "run.decline_call")]
+#[tokio::test]
+async fn nobody_declines_without_the_right_for_their_relation(
+	#[case] root: Option<&'static str>,
+	#[case] denied: &'static str,
+) {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.grant_root = root;
+		state.denied = Some(denied);
+	}
+	let result = decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0").await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!repository.calls().iter().any(|c| c.starts_with("rpc:")));
+}
+#[rstest]
+#[tokio::test]
+async fn a_list_shows_the_paused_call_only_to_someone_who_may_decline_it() {
+	let mut paused = activation();
+	paused["control"] = json!(RemoteExecutionControlState::Paused);
+	paused["declinable_call"] = json!({"call":"run:7:0","tool":"task_delegate","kind":"policy"});
+	for (denied, shown) in [(None, true), (Some("run.control"), false)] {
+		let repository = Repository::default();
+		{
+			let mut state = repository.state.lock().unwrap();
+			state.grants = 1;
+			state.replies = vec![paused.clone()];
+			state.denied = denied;
+		}
+		let statuses = list(&repository, task().id).await.unwrap();
+		let call = statuses[0]
+			.execution
+			.as_ref()
+			.and_then(|e| e.declinable_call.as_ref());
+		assert_eq!(call.is_some(), shown, "{denied:?}");
+	}
+}
+
+#[tokio::test]
+async fn requester_list_survives_unreachable_holder_task_read() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().task_read_unreachable = true;
+	let statuses = list(&repository, task().id).await.unwrap();
+	assert_eq!(statuses.len(), 1);
+	assert!(statuses[0].requester);
+}
+
+#[tokio::test]
+async fn holder_authority_rechecks_grant_liveness() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().grant_root = Some("other");
+	assert!(
+		holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+	repository.state.lock().unwrap().grant_revoked = true;
+	assert!(
+		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+	repository.state.lock().unwrap().grant_revoked = false;
+	repository.state.lock().unwrap().grant_expired = true;
+	assert!(
+		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+}

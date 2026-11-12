@@ -283,6 +283,49 @@ impl HomeScope for Scope {
 		.await;
 		result.map(|r| r.map(Into::into)).map_err(Into::into)
 	}
+	async fn task_grant(&mut self, task: Uuid, id: Uuid) -> Result<Option<Grant>> {
+		let result: NativeResult<Option<GrantRow>> = async {
+			let tenant = self.access.identity.tenant.clone();
+			let access = &mut *self.access;
+			crate::database::native::query_as(
+				&Query::select()
+					.column(Asterisk)
+					.from(Alias::new("authorization_remote_grants"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=? AND task_id=? AND tenant=?)".to_owned(),
+						vec![
+							Expr::value(id).into(),
+							Expr::value(task).into(),
+							Expr::value(tenant).into(),
+						],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **access.tx)
+			.await
+		}
+		.await;
+		result.map(|r| r.map(Into::into)).map_err(Into::into)
+	}
+	async fn may(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		self.access
+			.decide(resource, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()> {
+		let result: NativeResult<()> = async {
+			crate::apps::execution::models::event_records::append(
+				&mut **self.access.tx,
+				Some(workspace),
+				"remote.call_declined",
+				event,
+			)
+			.await
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn grants(&mut self, task: Uuid) -> Result<Vec<Grant>> {
 		let result: NativeResult<Vec<GrantRow>> = async {
 			let identity = self.access.identity.clone();
@@ -303,6 +346,38 @@ impl HomeScope for Scope {
 								Expr::value(query_bind_3.to_owned()).into(),
 							],
 						))
+						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
+						.limit(100)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **access.tx)
+				.await?
+			})
+		}
+		.await;
+		result
+			.map(|r| r.into_iter().map(Into::into).collect())
+			.map_err(Into::into)
+	}
+	async fn holder_grants(&mut self, task: Uuid) -> Result<Vec<Grant>> {
+		let result: NativeResult<Vec<GrantRow>> = async {
+			let identity = self.access.identity.clone();
+			let access = &mut *self.access;
+			Ok({
+				let query_bind_1 = task;
+				let query_bind_2 = &identity.tenant;
+				let query_bind_3 = &identity.subject;
+				crate::database::native::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(Expr::col("task_id").eq(Expr::value(query_bind_1)))
+						.and_where(Expr::col("tenant").eq(Expr::value(query_bind_2.to_owned())))
+						.and_where(
+							Expr::col("root_subject").ne(Expr::value(query_bind_3.to_owned())),
+						)
+						.and_where(Expr::col("revoked").eq(false))
+						.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
 						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
@@ -495,6 +570,32 @@ impl HomeScope for Scope {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn mark_activated(&mut self, id: Uuid) -> Result<()> {
+		let result: NativeResult<()> = async {
+			let access = &mut *self.access;
+			{
+				let query_bind_1 = id;
+				crate::database::native::query(
+					&Query::update()
+						.table(Alias::new("authorization_remote_execution"))
+						.value_expr(
+							Alias::new("activated_at"),
+							Expr::cust("COALESCE(activated_at, CURRENT_TIMESTAMP)"),
+						)
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(grant_id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut **access.tx)
+				.await?
+			};
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn receipt(&mut self, id: Uuid) -> Result<Option<Value>> {
 		let result: NativeResult<Option<Value>> = async {
 			let access = &mut *self.access;
@@ -665,7 +766,7 @@ impl HomeRepository for Repository {
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
 		};
-		crate::authorization::peer::authority_request(
+		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.runtime,
 			&aidash_domain::federation::route::Sender {
 				node: Some(self.workspace_node(workspace).await?),

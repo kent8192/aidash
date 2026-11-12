@@ -105,7 +105,12 @@ pub async fn reconcile(
 			return;
 		}
 		tracing::warn!(%id,%error,"outbound operation stopped");
-		let _ = repository.fail(id, "AUTHORITY_WITHDRAWN").await;
+		let _ = repository
+			.fail(
+				id,
+				aidash_domain::capabilities::operations::withdrawal::AUTHORITY_WITHDRAWN,
+			)
+			.await;
 	}
 }
 #[cfg(test)]

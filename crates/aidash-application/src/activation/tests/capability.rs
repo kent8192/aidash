@@ -47,6 +47,8 @@ fn wrote_nothing(repository: &Repository) -> bool {
 #[rstest]
 #[case::tool_batch_state(PersistedCapability::ToolBatchState)]
 #[case::degraded_context(PersistedCapability::DegradedContext)]
+#[case::event_wait(PersistedCapability::EventWait)]
+#[case::unassigned_abandonment(PersistedCapability::UnassignedAbandonment)]
 #[tokio::test]
 async fn an_old_worker_leaves_a_gated_run_untouched_until_a_capable_one_claims_it(
 	repository: Repository,

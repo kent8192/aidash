@@ -458,6 +458,14 @@ async fn read(
 			reasons.add(Reasons::FALLBACK);
 		}
 		context.service.gate_check();
+		// The next page is new work: it waits behind an Authority Change, holding
+		// nothing, and the stream stays open (ADR 0121). The periodic authority
+		// checks do not wait, since their time limit closes the stream.
+		crate::database::authority_change::enter(
+			&context.f.store.pool,
+			&context.scope.identity.tenant,
+		)
+		.await;
 		let visibility = match ReadLease::begin(&context.f.store).await {
 			Ok(lease) => lease,
 			Err(Error::TransactionPending) => {

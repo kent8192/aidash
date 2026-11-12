@@ -35,6 +35,11 @@ pub trait MutationScope: Send {
 	/// Return undecoded state and the database-clock lease result under the row lock.
 	async fn lock_run(&mut self, id: Uuid) -> Result<(RawRun, bool)>;
 	async fn complete_run(&mut self, id: Uuid) -> Result<()>;
+	/// Lock what finishing `run` ends (see `subnodes::lock_end`) before any
+	/// event of this transaction is appended. Locks nothing by default.
+	async fn lock_subnode_end(&mut self, _run: Uuid) -> Result<()> {
+		Ok(())
+	}
 	async fn append_event(
 		&mut self,
 		workspace: Option<Uuid>,

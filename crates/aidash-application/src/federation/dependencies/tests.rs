@@ -56,6 +56,8 @@ struct Scope {
 	skipped: Vec<String>,
 	/// Nodes that answered, one entry per answer.
 	answered: Vec<String>,
+	/// Every Node a walk reported meeting as unavailable, in order, repeats included.
+	met: Vec<String>,
 }
 #[async_trait]
 impl DependencyScope for Scope {
@@ -128,10 +130,9 @@ impl DependencyScope for Scope {
 			None => Ok(true),
 		}
 	}
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
 		assert_eq!(reference.id, "agent");
 		assert_eq!(reference.version, "1.0.0");
-		assert_eq!(action, "registry.read");
 		self.calls.push("catalog".into());
 		match self.fault {
 			Some(fault) => Err(fault.error()),
@@ -148,10 +149,12 @@ impl DependencyScope for Scope {
 	}
 	fn mark_unavailable(&mut self, node: &str) {
 		self.marked.insert(node.into());
+		self.met.push(node.into());
 	}
 	fn skipped(&mut self, node: &str) {
 		self.marked.insert(node.into());
 		self.skipped.push(node.into());
+		self.met.push(node.into());
 	}
 	fn answered(&mut self, node: &str) {
 		self.answered.push(node.into());
@@ -188,7 +191,7 @@ fn grant(node: &str, id: u128) -> Reference {
 fn scope() -> Scope {
 	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,latency_on_peer:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),skipped:vec![],answered:vec![],
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),skipped:vec![],answered:vec![],met:Vec::new(),
     }
 }
 #[fixture]
@@ -417,6 +420,9 @@ async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
 	assert!(!first && !second);
 	assert!(scope.marked.contains("aidash://foreign"));
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+	// Each walk met the Node, the second without asking it, so the call that made
+	// the second walk can tell that its refusal is that Node's silence.
+	assert_eq!(scope.met, ["aidash://foreign", "aidash://foreign"]);
 	assert_eq!(
 		scope.calls[calls_after_first..],
 		["decide:federation.discover:aidash://foreign"]
@@ -625,11 +631,11 @@ async fn another_nodes_local_reference_never_reads_this_database(mut scope: Scop
 }
 
 #[rstest]
-#[case("agent", true, true, 3)]
+#[case("agent", true, true, 2)]
 #[case("model", true, false, 2)]
 #[case("agent", false, false, 2)]
 #[tokio::test]
-async fn registry_dependency_keeps_kind_digest_and_execution_authority_gates(
+async fn registry_dependency_keeps_kind_and_digest_gates_without_asking_for_execution(
 	mut scope: Scope,
 	#[case] kind: &str,
 	#[case] digest_matches: bool,
@@ -651,9 +657,12 @@ async fn registry_dependency_keeps_kind_digest_and_execution_authority_gates(
 	assert_eq!(check_local(&mut scope, &reference).await.unwrap(), visible);
 	assert_eq!(scope.calls.len(), calls);
 	assert_eq!(scope.calls[0], "decide:federation.discover:aidash://local");
-	if visible {
-		assert_eq!(scope.calls[2], "decide:agent.execute:agent");
-	}
+	assert!(
+		!scope
+			.calls
+			.iter()
+			.any(|call| call.contains("agent.execute"))
+	);
 }
 
 #[rstest]

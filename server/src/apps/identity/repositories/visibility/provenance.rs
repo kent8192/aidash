@@ -19,59 +19,6 @@ use reinhardt::query::{
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use uuid::Uuid;
-impl Reads<'_> {
-	/// Whether `run` pins `reference` only for the delegated agents of its
-	/// Binding closure and the restriction admits those agents (ADR 0095).
-	///
-	/// Such a definition is a recorded read of the Run as immutable metadata,
-	/// but its Catalog Approval restriction names the agents that use it
-	/// directly, not the executing agent that ends the subject chain.
-	///
-	/// Only the Run's own worker authority may substitute those agents: any
-	/// other reader of the Run's outputs is still checked as the direct user.
-	async fn closure_read(&mut self, run: Uuid, reference: &EntityRef) -> NativeResult<bool> {
-		if self.access.read_run != Some(run) {
-			return Ok(false);
-		}
-		let snapshot: Option<serde_json::Value> = crate::database::native::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("context -> 'binding_snapshot'"))
-				.from(Alias::new("runs"))
-				.and_where(Expr::col("id").eq(Expr::value(run)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut **self.access.tx)
-		.await?;
-		let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.is_null()) else {
-			return Ok(false);
-		};
-		let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
-			serde_json::from_value(snapshot)?;
-		let delegated = snapshot.delegated_users()?;
-		let Some(users) = delegated.iter().find_map(|(identity, users)| {
-			(identity.registry_deployment == self.access.node_id
-				&& identity.id == reference.id
-				&& identity.version == reference.version)
-				.then_some(users)
-		}) else {
-			return Ok(false);
-		};
-		let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
-		match crate::apps::identity::services::catalog::closure_entry(
-			self.access,
-			reference,
-			"registry.read",
-			&users,
-		)
-		.await
-		{
-			Ok(_) => Ok(true),
-			Err(crate::Error::Forbidden) => Ok(false),
-			Err(error) => Err(error),
-		}
-	}
-}
-
 #[async_trait]
 impl ReadProvenanceScope for Reads<'_> {
 	async fn output_producers(
@@ -87,44 +34,36 @@ impl ReadProvenanceScope for Reads<'_> {
 		}
 		Ok(Some(self.producers(workspace, kind, id).await?))
 	}
-	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()> {
-		match crate::apps::identity::services::catalog::entry(
-			self.access,
-			reference,
-			"registry.read",
-		)
-		.await
-		{
-			Ok(_) => Ok(()),
-			Err(crate::Error::Forbidden)
-				if self
-					.closure_read(run, reference)
-					.await
-					.map_err(aidash_application::Error::from)? =>
-			{
-				Ok(())
-			}
-			Err(error @ (crate::Error::Forbidden | crate::Error::NotFound(_))) => {
-				if crate::apps::identity::repositories::foreign_reads::retired_run_catalog_read(
-					self.access,
-					run,
-					reference,
-				)
-				.await?
-				{
-					Ok(())
-				} else {
-					Err(error.into())
-				}
-			}
-			Err(error) => Err(error.into()),
-		}
+	async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		self.access.open_run_reads(run).await.map_err(Into::into)
 	}
-	async fn remote_reads(&mut self, run: Uuid) -> Result<bool> {
-		self.access
-			.remote_reads_visible(run)
+	fn close_run_reads(&mut self) {
+		self.access.close_run_reads();
+	}
+	/// A recorded definition read is checked by `registry.read` alone: a Catalog Approval
+	/// decides use, not who reads what a Run produced (#769).
+	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
+		let node = self.access.node.clone();
+		if self
+			.access
+			.read_lookups
+			.catalog_read_passed(&node, reference, false)
+		{
+			return Ok(());
+		}
+		crate::apps::identity::services::catalog::read_recorded(self.access, reference)
 			.await
-			.map_err(Into::into)
+			.map_err(aidash_application::Error::from)?;
+		self.access
+			.read_lookups
+			.remember_catalog_read(&node, reference, false);
+		Ok(())
+	}
+	async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
+		self.access.remote_reads(run).await.map_err(Into::into)
 	}
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access
@@ -149,26 +88,46 @@ impl ReadProvenanceScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+		if let Some(artifact) = self.access.read_lookups.artifact(id, workspace) {
+			return Ok(artifact);
+		}
 		self.artifact(id, Some(workspace)).await
+	}
+	fn first_visit(&mut self, run: Uuid) -> bool {
+		self.access.read_lookups.first_visit(run, false)
+	}
+	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
+		self.access
+			.prepare_read_sources(sources)
+			.await
+			.map_err(Into::into)
 	}
 	async fn run_base_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_base_visible(run).await.map_err(Into::into)
 	}
 	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
-		if !run.is_local(&self.access.node_id)
+		if self.access.read_lookups.dependency_passed(run.id, false) {
+			return Ok(true);
+		}
+		let visible = if !run.is_local(&self.access.node_id)
 			|| crate::apps::knowledge::repositories::memory_reads::has_reads(
 				&mut **self.access.tx,
 				run.id,
 			)
 			.await?
 		{
-			return self.run_base_visible(run).await;
+			self.run_base_visible(run).await?
+		} else {
+			aidash_application::authorization::visibility::local_dependency_without_memory_visible(
+				&mut crate::bootstrap::run_visibility_scope(self.access),
+				run,
+			)
+			.await?
+		};
+		if visible {
+			self.access.read_lookups.remember_dependency(run.id, false);
 		}
-		aidash_application::authorization::visibility::local_dependency_without_memory_visible(
-			&mut crate::bootstrap::run_visibility_scope(self.access),
-			run,
-		)
-		.await
+		Ok(visible)
 	}
 	async fn classified_run_dependency_visible(
 		&mut self,
@@ -302,6 +261,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
+		if let Some(task) = self.access.read_lookups.task(id, workspace) {
+			return Ok(task);
+		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let source: Option<Task> = {
@@ -341,6 +303,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace) {
+			return Ok(message);
+		}
 		let result: NativeResult<Option<Message>> = async {
 			let this = &mut *self.access;
 			let source: Option<Message> = {
@@ -384,6 +349,12 @@ impl ReadProvenanceScope for Reads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.attachment(id, workspace) {
+			return match message {
+				Some(id) => self.source_message(id, workspace).await,
+				None => Ok(None),
+			};
+		}
 		let message_id: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("message_id"))
@@ -446,6 +417,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Conversation>> {
+		if let Some(conversation) = self.access.read_lookups.conversation(id, workspace) {
+			return Ok(conversation);
+		}
 		let result: NativeResult<Option<Conversation>> = async {
 			let this = &mut *self.access;
 			let source: Option<crate::domain::Conversation> = {
@@ -542,18 +516,34 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
-		self.access
-			.catalog_entry(reference)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+	async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		self.access.open_run_reads(run).await.map_err(Into::into)
 	}
-	async fn remote_reads(&mut self, run: Uuid) -> Result<bool> {
-		self.access
-			.remote_reads_visible(run)
+	fn close_run_reads(&mut self) {
+		self.access.close_run_reads();
+	}
+	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
+		let node = self.access.node.clone();
+		if self
+			.access
+			.read_lookups
+			.catalog_read_passed(&node, reference, true)
+		{
+			return Ok(());
+		}
+		crate::apps::identity::services::catalog::read_recorded(self.access, reference)
 			.await
-			.map_err(Into::into)
+			.map_err(aidash_application::Error::from)?;
+		self.access
+			.read_lookups
+			.remember_catalog_read(&node, reference, true);
+		Ok(())
+	}
+	async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
+		self.access.remote_reads(run).await.map_err(Into::into)
 	}
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access
@@ -576,12 +566,27 @@ impl ReadProvenanceScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	fn first_visit(&mut self, run: Uuid) -> bool {
+		self.access.read_lookups.first_visit(run, true)
+	}
+	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
+		self.access
+			.prepare_read_sources(sources)
+			.await
+			.map_err(Into::into)
+	}
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
+		if let Some(task) = self.access.read_lookups.task(id, workspace) {
+			return Ok(task);
+		}
 		crate::apps::workspaces::models::Task::read_in(self.access.tx.as_mut(), id, workspace)
 			.await
 			.map_err(Into::into)
 	}
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+		if let Some(artifact) = self.access.read_lookups.artifact(id, workspace) {
+			return Ok(artifact);
+		}
 		crate::apps::workspaces::models::Artifact::read_in(
 			self.access.tx.as_mut(),
 			id,
@@ -592,6 +597,9 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace) {
+			return Ok(message);
+		}
 		crate::apps::workspaces::models::Message::read_in(
 			self.access.tx.as_mut(),
 			id,
@@ -606,6 +614,12 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.attachment(id, workspace) {
+			return match message {
+				Some(id) => self.source_message(id, workspace).await,
+				None => Ok(None),
+			};
+		}
 		let message_id: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("message_id"))
@@ -633,6 +647,9 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Conversation>> {
+		if let Some(conversation) = self.access.read_lookups.conversation(id, workspace) {
+			return Ok(conversation);
+		}
 		crate::apps::workspaces::models::Conversation::read_in(
 			self.access.tx.as_mut(),
 			id,
@@ -654,20 +671,28 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		self.access.run_base_visible(run).await.map_err(Into::into)
 	}
 	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
-		if !run.is_local(&self.access.node_id)
+		if self.access.read_lookups.dependency_passed(run.id, true) {
+			return Ok(true);
+		}
+		let visible = if !run.is_local(&self.access.node_id)
 			|| crate::apps::knowledge::repositories::memory_reads::has_reads(
 				&mut **self.access.tx,
 				run.id,
 			)
 			.await?
 		{
-			return self.run_base_visible(run).await;
+			self.run_base_visible(run).await?
+		} else {
+			aidash_application::authorization::visibility::local_dependency_without_memory_visible(
+				&mut crate::bootstrap::native_run_visibility_scope(self.access),
+				run,
+			)
+			.await?
+		};
+		if visible {
+			self.access.read_lookups.remember_dependency(run.id, true);
 		}
-		aidash_application::authorization::visibility::local_dependency_without_memory_visible(
-			&mut crate::bootstrap::native_run_visibility_scope(self.access),
-			run,
-		)
-		.await
+		Ok(visible)
 	}
 	async fn classified_run_dependency_visible(
 		&mut self,

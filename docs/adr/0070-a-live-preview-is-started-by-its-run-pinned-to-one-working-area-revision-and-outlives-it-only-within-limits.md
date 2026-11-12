@@ -19,3 +19,7 @@ Decided on 2026-10-19 while grilling Live previews. An operation's Execution Pod
 ## Amendment (2026-10-26)
 
 - A running Live preview refers to every File version of its revision, which stays retained until it stops (ADR 0095). A start that would exceed the Tenant's quota is refused with the reason.
+
+## Amendment (2026-11-07, #758)
+
+A Live preview now does stop when its Run's authority is revoked. Until this change nothing checked it after the start. A loop runs the Read Recheck every 30 seconds for everyone on the Run's chain, including after the Run has finished, and stops it as `run_authority_revoked`. A Node that does not answer five checks in a row is meant to stop it as `node_unreachable` (ADR 0116), but until #751 lands a Node that does not answer counts as a refusal and stops it as `run_authority_revoked`.

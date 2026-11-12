@@ -47,7 +47,10 @@ impl WorkerLeases for Leases {
 		self.store
 			.renew_lease(&claimed(), run, token, seconds)
 			.await
-			.map_err(Into::into)
+			.map_err(|error| {
+				self.store.recovery_cursors.outage.note(&error);
+				error.into()
+			})
 	}
 	fn transient(&self, error: &Error) -> bool {
 		matches!(
@@ -74,6 +77,8 @@ pub(crate) struct Step {
 	pub(crate) recovery: RecoveryRepository,
 	pub(crate) _active: crate::http::ActiveExecution,
 	pub(crate) visibility: ReadLease,
+	/// The Run's Tenant, known once the step is admitted.
+	pub(crate) tenant: Option<String>,
 }
 #[async_trait]
 impl WorkerStep for Step {
@@ -118,6 +123,18 @@ impl WorkerStep for Step {
 			.map_err(Into::into)
 	}
 	async fn admit(&mut self) -> Result<()> {
+		// A new step is new work: it waits behind an Authority Change, giving up
+		// its visibility lease while it does (ADR 0121). A Run whose Tenant cannot
+		// be read goes on to `Guard::begin`, which meets the same failure itself.
+		if let Ok(tenant) = self.federation.store.run_tenant(self.run.id).await {
+			crate::database::authority_change::enter_releasing(
+				&self.federation.store,
+				tenant.as_str(),
+				&mut self.visibility,
+			)
+			.await?;
+			self.tenant = Some(tenant.as_str().to_owned());
+		}
 		self.guard = Some(Guard::begin(&self.federation, &self.run).await?);
 		Ok(())
 	}
@@ -130,6 +147,7 @@ impl WorkerStep for Step {
 		let mut visibility = super::agent::Visibility {
 			visibility: &mut self.visibility,
 			store: &self.federation.store,
+			tenant: self.tenant.as_deref(),
 		};
 		aidash_harness::agent::Executor::new(&environment)
 			.advance(&mut self.run, token, &mut visibility)
@@ -318,7 +336,10 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::MediaRouteUnavailable { .. } => {
 			ExecutionFailure::MediaRoute(error.to_string())
 		}
-		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,
+		// No step makes an Authority Change today; if one ever does, it tries again.
+		NativeError::TransactionPending
+		| NativeError::StaleInference
+		| NativeError::PolicyBusy { .. } => ExecutionFailure::Deferred,
 		NativeError::ToolRetry {
 			message,
 			count,

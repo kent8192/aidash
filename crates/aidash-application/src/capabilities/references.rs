@@ -22,9 +22,27 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
+/// Loads a Reference record. Only a write needs the row exclusively. A read
+/// stays shared so a person opening a file never waits for a step that holds a
+/// copy of it, and a step never waits on its own outer transaction.
+async fn load(scope: &mut dyn ReferenceScope, id: Uuid, shared: bool) -> Result<Record> {
+	if shared {
+		scope
+			.load_many(&[id])
+			.await?
+			.into_iter()
+			.next()
+			.ok_or_else(|| Error::NotFound("resource unavailable".into()))
+	} else {
+		scope.load(id).await
+	}
+}
+fn unusable(record: &Record) -> bool {
+	matches!(record.state.as_str(), "revoked" | "expired")
+}
 pub async fn get(scope: &mut dyn ReferenceScope, id: Uuid, action: &str) -> Result<Record> {
-	let record = scope.load(id).await?;
-	if record.owner != scope.principal() || matches!(record.state.as_str(), "revoked" | "expired") {
+	let record = load(scope, id, action == "reference.read").await?;
+	if record.owner != scope.principal() || unusable(&record) {
 		return Err(Error::NotFound("reference unavailable".into()));
 	}
 	scope
@@ -32,6 +50,28 @@ pub async fn get(scope: &mut dyn ReferenceScope, id: Uuid, action: &str) -> Resu
 		.await
 		.map_err(|_| Error::NotFound("reference unavailable".into()))?;
 	Ok(record)
+}
+/// The record of a Reference its caller may revoke. Unlike `get`, this does not
+/// require the caller to be the uploader: the Tenant's policy decides who holds
+/// `reference.delete` on it (#826), so a file stays stoppable after its uploader
+/// leaves. Anyone the policy refuses gets the same `NotFound` as for a missing
+/// file, so they cannot learn that it exists. Reading stays with the uploader.
+async fn revocable(scope: &mut dyn ReferenceScope, id: Uuid, shared: bool) -> Result<Record> {
+	let record = load(scope, id, shared).await?;
+	if unusable(&record) {
+		return Err(Error::NotFound("reference unavailable".into()));
+	}
+	scope
+		.require(id, &record.owner, "reference.delete")
+		.await
+		.map_err(|_| Error::NotFound("reference unavailable".into()))?;
+	Ok(record)
+}
+/// What a person about to revoke needs to know: the revision to send back and
+/// the state. It is the record, so the caller must pick those fields; it never
+/// carries content, and it needs `reference.delete`, not `reference.read`.
+pub async fn revocation(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Record> {
+	revocable(scope, id, true).await
 }
 pub async fn inspect(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Reference> {
 	Ok(lifecycle::view(&get(scope, id, "reference.read").await?)?)
@@ -281,7 +321,7 @@ async fn store_batch_file(
 	Ok(record)
 }
 pub async fn revoke(scope: &mut dyn ReferenceScope, id: Uuid, revision: i64) -> Result<()> {
-	let mut record = get(scope, id, "reference.delete").await?;
+	let mut record = revocable(scope, id, false).await?;
 	if record.revision != revision {
 		return Err(Error::Conflict("REFERENCE_CHANGED".into()));
 	}

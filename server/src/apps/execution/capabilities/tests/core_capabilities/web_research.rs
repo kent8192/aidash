@@ -5,6 +5,7 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::run_state::ApprovalRef;
 use aidash_server::{
+	authorization::services::execution::StepAuthority,
 	domain::{Run, RunPhase, RunState, WaitingState},
 	harness::Harness,
 };
@@ -128,10 +129,9 @@ async fn research_fixture(
 		)
 		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0}))
 		.collect();
-	let (status, approved) = request(
+	let (status, approved) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		"/api/authorization/acme/catalog/approvals",
 		json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals": approvals }),
 	)
@@ -234,15 +234,14 @@ impl Research {
 				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
 			),
 		] {
-			let (status, value) = request(&self.c.app, &self.c.token, "POST", path, body).await;
+			let (status, value) = common::post(&self.c.app, &self.c.token, path, body).await;
 			assert_eq!(status, 200, "{path}: {value}");
 		}
 	}
 	async fn delegate(&self) -> Run {
-		let (status, value) = request(
+		let (status, value) = common::post(
 			&self.c.app,
 			&self.c.token,
-			"POST",
 			&format!("/api/tasks/{}/delegate", self.c.task),
 			json!({"node_id":self.c.f.config.deployment,"agent":{"id":"research","version":VERSION}}),
 		)
@@ -357,10 +356,9 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 		"the approver sees the exact query"
 	);
 	assert_eq!(card["targets"], json!(["research-fixture.invalid"]));
-	let (status, decided) = request(
+	let (status, decided) = common::post(
 		&r.c.app,
 		&r.c.token,
-		"POST",
 		&format!("/api/capabilities/approvals/{first}/decide"),
 		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"]}),
 	)
@@ -424,6 +422,141 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	r.close().await;
 }
 
+/// A search whose call passed the entrance just before the Run's Subnode ended
+/// opens no Web disclosure approval: it is refused at the write, nothing is
+/// sent or reserved, and the Run ends as cancelled (#759).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_web_disclosure_is_not_opened_once_the_subnode_ended(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the Run's own Workspace is a Subnode that permits the search tool.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let tool = format!(
+		"{}/tools/{}@{}",
+		r.c.f.config.deployment,
+		r.search_tool["id"].as_str().unwrap(),
+		r.search_tool["version"].as_str().unwrap()
+	);
+	let subnode = crate::late_subnode::seed_subnode(&r.c.f, run.id, &[tool]).await;
+	let end = crate::late_subnode::EndFirst::begin(&r.c.f, subnode, run.id).await;
+	crate::late_subnode::stage(
+		&r.c.f,
+		run.id,
+		"research_search",
+		json!({"query":QUERY}),
+		"late-call",
+	)
+	.await;
+
+	// Act: the call is under way when the end commits.
+	let worker = crate::late_subnode::start_worker(&r.c.f);
+	let waiting = end.until_a_call_waits(&r.c.f, &worker).await;
+	end.commit().await;
+	worker.await.unwrap();
+
+	// Assert
+	let (status, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{approvals}");
+	let disclosures = approvals["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|item| item["kind"] == "disclosure")
+		.count();
+	assert_eq!(disclosures, 0, "no approval may be opened: {approvals}");
+	assert_eq!(r.attempts(run.id).await, 0, "nothing is reserved or sent");
+	crate::late_subnode::assert_waited_at_the_subnode_check(waiting);
+	crate::late_subnode::assert_cancelled(
+		&crate::late_subnode::run_to_its_end(&r.c.f, run.id).await,
+	);
+	r.close().await;
+}
+
+/// An approved Web disclosure is not consumed once the Run's Subnode ended: the
+/// consume is refused, the approval stays approved and nothing is sent, and the
+/// Run ends as cancelled. The authority is begun while the Subnode is active, as
+/// a step does, so the consume stands in for one that was reserved before the
+/// end (#759).
+#[rstest::rstest]
+#[tokio::test]
+async fn an_approved_web_disclosure_is_not_consumed_once_the_subnode_ended(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the search waits for approval and a person approves it, but the
+	// worker has not yet resumed the call.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let approval = r.until_waiting(run.id).await;
+	let (status, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{approvals}");
+	let card = approvals["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap_or_else(|| panic!("{approvals}"));
+	let (status, decided) = common::post(
+		&r.c.app,
+		&r.c.token,
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{decided}");
+	assert_eq!(decided["state"], "approved");
+	let tool = format!(
+		"{}/tools/{}@{}",
+		r.c.f.config.deployment,
+		r.search_tool["id"].as_str().unwrap(),
+		r.search_tool["version"].as_str().unwrap()
+	);
+	let subnode = crate::late_subnode::seed_subnode(&r.c.f, run.id, &[tool]).await;
+	let step = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	let authority = StepAuthority::begin(&r.c.f, &step).await.unwrap();
+	let end = crate::late_subnode::EndFirst::begin(&r.c.f, subnode, run.id).await;
+	end.commit().await;
+
+	// Act: the reserved attempt consumes the approval after the end.
+	let consumed = authority
+		.consume_web_disclosure(&r.c.f.store, &step, approval)
+		.await;
+
+	// Assert
+	let state: String = sqlx::query_scalar("SELECT state FROM core_records WHERE id = $1")
+		.bind(approval)
+		.fetch_one(r.c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		matches!(consumed, Err(aidash_server::Error::Forbidden)),
+		"a consume after the end must be refused: {consumed:?}, approval {state}"
+	);
+	assert_eq!(state, "approved", "the approval must not be consumed");
+	assert_eq!(r.attempts(run.id).await, 0, "nothing is reserved or sent");
+	crate::late_subnode::assert_cancelled(
+		&crate::late_subnode::run_to_its_end(&r.c.f, run.id).await,
+	);
+	r.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_approval(
@@ -440,10 +573,9 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 			.unwrap()
 			.workspace_id;
 	let root = source(&r.c, workspace, "Read the release notes").await;
-	let (status, thread) = request(
+	let (status, thread) = common::post(
 		&r.c.app,
 		&r.c.token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/threads"),
 		json!({"root_message_id":root}),
 	)
@@ -456,13 +588,7 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 	let page = "https://example.com/notes";
 
 	// Act: an address the host could not read is refused before any work.
-	let (status, refused) = request(
-		&r.c.app,
-		&r.c.token,
-		"POST",
-		&path,
-		json!({"idempotency_key":Uuid::new_v4(),"agent_version":VERSION,"title":"Notes","description":"Summarize them.","read_pages":["https://user:secret@example.com/"]}),
-	)
+	let (status, refused) = common::post(&r.c.app, &r.c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"agent_version":VERSION,"title":"Notes","description":"Summarize them.","read_pages":["https://user:secret@example.com/"]}))
 	.await;
 	assert_eq!(status, 400, "{refused}");
 	assert!(
@@ -472,13 +598,7 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 	// An Agent version that binds Web search but no Page reading cannot act
 	// on one, and nothing is created.
 	r.register_search_only_agent().await;
-	let (status, refused) = request(
-		&r.c.app,
-		&r.c.token,
-		"POST",
-		&path,
-		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"3.1.0","title":"Notes","description":"Summarize them.","read_pages":[page]}),
-	)
+	let (status, refused) = common::post(&r.c.app, &r.c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"agent_version":"3.1.0","title":"Notes","description":"Summarize them.","read_pages":[page]}))
 	.await;
 	assert_eq!(status, 400, "{refused}");
 	assert!(
@@ -487,24 +607,16 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 			.contains("binds no page reading operation"),
 		"{refused}"
 	);
-	let (status, area) = request(
-		&r.c.app,
-		&r.c.token,
-		"POST",
-		&path,
-		json!({"idempotency_key":Uuid::new_v4(),"agent_version":VERSION,"title":"Notes","description":"Summarize them.","read_pages":[page]}),
-	)
+	let (status, area) = common::post(&r.c.app, &r.c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"agent_version":VERSION,"title":"Notes","description":"Summarize them.","read_pages":[page]}))
 	.await;
 	assert_eq!(status, 200, "{area}");
-	let (_, session) = request(
+	let (_, session) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		&format!(
 			"/api/working-areas/{}/session",
 			area["id"].as_str().unwrap()
 		),
-		Value::Null,
 	)
 	.await;
 	let run: Uuid = serde_json::from_value(session["queue"][0]["run_id"].clone())
@@ -526,36 +638,18 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 		task.description, "Summarize them.",
 		"the person's text is stored as written"
 	);
-	let (status, research) = request(
-		&r.c.app,
-		&r.c.token,
-		"GET",
-		&format!("/api/runs/{run}/research"),
-		Value::Null,
-	)
-	.await;
+	let (status, research) =
+		common::get(&r.c.app, &r.c.token, &format!("/api/runs/{run}/research")).await;
 	assert_eq!(status, 200, "{research}");
 	assert_eq!(research["url_intents"][0]["input"], "task");
 	assert_eq!(research["url_intents"][0]["pages"], json!([page]));
 	// Steering records its own URL intent beside the message text.
 	let steered_page = "https://example.org/rollback";
-	let (status, steered) = request(
-		&r.c.app,
-		&r.c.token,
-		"POST",
-		&format!("/api/working-areas/{}/steer", area["id"].as_str().unwrap()),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run,"content":"Also cover the rollback.","read_pages":[steered_page]}),
-	)
+	let (status, steered) = common::post(&r.c.app, &r.c.token, &format!("/api/working-areas/{}/steer", area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run,"content":"Also cover the rollback.","read_pages":[steered_page]}))
 	.await;
 	assert_eq!(status, 200, "{steered}");
-	let (_, research) = request(
-		&r.c.app,
-		&r.c.token,
-		"GET",
-		&format!("/api/runs/{run}/research"),
-		Value::Null,
-	)
-	.await;
+	let (_, research) =
+		common::get(&r.c.app, &r.c.token, &format!("/api/runs/{run}/research")).await;
 	assert_eq!(research["url_intents"][1]["input"], "run_message");
 	assert_eq!(research["url_intents"][1]["pages"], json!([steered_page]));
 	let inputs = r.c.f.store.run_inputs(&TEST_FIXTURE, run).await.unwrap();
@@ -565,12 +659,10 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 		"the steering text is stored as written"
 	);
 	assert_eq!(r.attempts(run).await, 0, "nothing is sent before approval");
-	let (status, inbox) = request(
+	let (status, inbox) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		"/api/capabilities/approvals?state=pending&role=approver",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{inbox}");
@@ -602,12 +694,10 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 	let run = r.delegate().await;
 	r.require_disclosure_approval().await;
 	let first = r.until_waiting(run.id).await;
-	let (_, inbox) = request(
+	let (_, inbox) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		"/api/capabilities/approvals?state=pending&role=approver",
-		Value::Null,
 	)
 	.await;
 	let card = inbox["items"]
@@ -621,25 +711,13 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 	assert_eq!(card["query"]["query"], QUERY);
 	assert_eq!(card["agent_id"], "research");
 	assert_eq!(card["agent_version"], VERSION);
-	let (status, too_short) = request(
-		&r.c.app,
-		&r.c.token,
-		"POST",
-		&format!("/api/capabilities/approvals/{first}/decide"),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now() + chrono::Duration::seconds(30)}),
-	)
+	let (status, too_short) = common::post(&r.c.app, &r.c.token, &format!("/api/capabilities/approvals/{first}/decide"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now() + chrono::Duration::seconds(30)}))
 	.await;
 	assert_eq!(
 		status, 400,
 		"a Run grant lasts at least a minute: {too_short}"
 	);
-	let (status, decided) = request(
-		&r.c.app,
-		&r.c.token,
-		"POST",
-		&format!("/api/capabilities/approvals/{first}/decide"),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now() + chrono::Duration::minutes(10)}),
-	)
+	let (status, decided) = common::post(&r.c.app, &r.c.token, &format!("/api/capabilities/approvals/{first}/decide"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"],"choice":"allow_run","targets":card["targets"],"expires_at":chrono::Utc::now() + chrono::Duration::minutes(10)}))
 	.await;
 	assert_eq!(status, 200, "{decided}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -658,28 +736,22 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 	}
 
 	// Act
-	let (status, research) = request(
+	let (status, research) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		&format!("/api/runs/{}/research", run.id),
-		Value::Null,
 	)
 	.await;
-	let (pending_status, pending) = request(
+	let (pending_status, pending) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		"/api/capabilities/approvals?state=pending&role=approver",
-		Value::Null,
 	)
 	.await;
-	let (grants_status, grants) = request(
+	let (grants_status, grants) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		"/api/capabilities/approvals?state=active&role=approver",
-		Value::Null,
 	)
 	.await;
 	let (_, bob) = async {
@@ -690,22 +762,9 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 	}
 	.await;
 	let bob = bob["token"].as_str().unwrap();
-	let (bob_run, _) = request(
-		&r.c.app,
-		bob,
-		"GET",
-		&format!("/api/runs/{}", run.id),
-		Value::Null,
-	)
-	.await;
-	let (bob_research, _) = request(
-		&r.c.app,
-		bob,
-		"GET",
-		&format!("/api/runs/{}/research", run.id),
-		Value::Null,
-	)
-	.await;
+	let (bob_run, _) = common::get(&r.c.app, bob, &format!("/api/runs/{}", run.id)).await;
+	let (bob_research, _) =
+		common::get(&r.c.app, bob, &format!("/api/runs/{}/research", run.id)).await;
 
 	// Assert
 	assert_eq!(status, 200, "{research}");
@@ -763,20 +822,11 @@ async fn the_run_research_api_reports_usage_with_run_get_authority_and_the_inbox
 			.await
 			.unwrap();
 	}
-	let (all_status, all) = request(
+	let (all_status, all) = common::get(&r.c.app, &r.c.token, "/api/capabilities/approvals").await;
+	let (_, active) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
-		"/api/capabilities/approvals",
-		Value::Null,
-	)
-	.await;
-	let (_, active) = request(
-		&r.c.app,
-		&r.c.token,
-		"GET",
 		"/api/capabilities/approvals?state=active&role=approver",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(all_status, 200, "{all}");
@@ -822,20 +872,11 @@ async fn a_disclosure_whose_run_ended_is_closed_in_every_view(
 	}
 
 	// Act: the Thread reads the unfiltered list; the approver its inbox.
-	let (status, all) = request(
+	let (status, all) = common::get(&r.c.app, &r.c.token, "/api/capabilities/approvals").await;
+	let (inbox_status, inbox) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
-		"/api/capabilities/approvals",
-		Value::Null,
-	)
-	.await;
-	let (inbox_status, inbox) = request(
-		&r.c.app,
-		&r.c.token,
-		"GET",
 		"/api/capabilities/approvals?state=pending&role=approver",
-		Value::Null,
 	)
 	.await;
 
@@ -1080,22 +1121,9 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 	let r = research_fixture.await;
 
 	// Act
-	let (status, providers) = request(
-		&r.c.app,
-		&r.c.token,
-		"GET",
-		"/api/research/providers",
-		Value::Null,
-	)
-	.await;
-	let (deployment_administrator_status, _) = request(
-		&r.c.app,
-		&r.c.f.config.api_token,
-		"GET",
-		"/api/research/providers",
-		Value::Null,
-	)
-	.await;
+	let (status, providers) = common::get(&r.c.app, &r.c.token, "/api/research/providers").await;
+	let (deployment_administrator_status, _) =
+		common::get(&r.c.app, &r.c.f.config.api_token, "/api/research/providers").await;
 
 	// Assert
 	assert_eq!(status, 200, "{providers}");
@@ -1151,7 +1179,7 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 	assert_eq!(status, 201, "{second}");
 	let name = second["name"].as_str().unwrap();
 	let path = format!("/api/research/providers?node={name}");
-	let (status, empty) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	let (status, empty) = common::get(&r.c.app, &r.c.token, &path).await;
 	assert_eq!(status, 200, "{empty}");
 	assert!(
 		empty["providers"]
@@ -1165,16 +1193,15 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 				.all(|operation| operation["approved_definitions"] == json!([]))),
 		"another Node's approvals must not appear: {empty}"
 	);
-	let (status, approved) = request(
+	let (status, approved) = common::post(
 		&r.c.app,
 		&r.c.token,
-		"POST",
 		"/api/authorization/acme/catalog/approvals",
 		json!({"node":name,"approvals":[{"entry":r.search_tool,"enabled":true,"expected_revision":0}]}),
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
-	let (status, selected) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	let (status, selected) = common::get(&r.c.app, &r.c.token, &path).await;
 	assert_eq!(status, 200, "{selected}");
 	let selected = selected["providers"]
 		.as_array()
@@ -1192,14 +1219,12 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 	let mut denied = r.c.policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-research-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[name]}}));
 	common::replace_policy(&r.c.f.store, "acme", denied).await;
-	let (status, body) = request(&r.c.app, &r.c.token, "GET", &path, Value::Null).await;
+	let (status, body) = common::get(&r.c.app, &r.c.token, &path).await;
 	assert_eq!(status, 403, "{body}");
-	let (status, body) = request(
+	let (status, body) = common::get(
 		&r.c.app,
 		&r.c.token,
-		"GET",
 		"/api/research/providers?node=able-oak-00000000",
-		Value::Null,
 	)
 	.await;
 	// Absent and inaccessible Nodes share the same refusal to avoid disclosing existence.

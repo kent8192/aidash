@@ -685,6 +685,58 @@ fn chat_with_messages(messages: Value) -> Value {
 }
 
 #[tokio::test]
+async fn chat_admits_only_the_opaque_session_id_and_explicit_cache_mode() {
+	let f = Fixture::new().await;
+	let opaque = format!(
+		"{}{}",
+		aidash_domain::projection::SESSION_ID_PREFIX,
+		"0123456789abcdef".repeat(2)
+	);
+	let mut body = chat();
+	body["session_id"] = json!(opaque);
+	body["prompt_cache_options"] = json!({"mode":"explicit"});
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	for (field, value) in [
+		// Reaches observability destinations, so a caller may not choose its value.
+		("session_id", json!("run-1234")),
+		("session_id", json!(format!("{opaque}0"))),
+		(
+			"session_id",
+			json!(format!(
+				"{}{}",
+				aidash_domain::projection::SESSION_ID_PREFIX,
+				"0123456789ABCDEF".repeat(2)
+			)),
+		),
+		("session_id", json!(1)),
+		// A longer lifetime raises the cost of the signed call.
+		("prompt_cache_options", json!({"ttl":"12h"})),
+		(
+			"prompt_cache_options",
+			json!({"mode":"explicit","ttl":"12h"}),
+		),
+		("prompt_cache_options", json!({"mode":"implicit"})),
+	] {
+		let mut body = chat();
+		body[field] = value;
+		let reads = f.source.reads.load(Ordering::SeqCst);
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403, "{field}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), reads);
+	}
+}
+
+#[tokio::test]
 async fn chat_admits_one_to_four_ephemeral_breakpoints_on_text_parts_only_with_the_claim() {
 	let f = Fixture::new().await;
 	let mut granted = f.claims();

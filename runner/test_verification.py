@@ -285,10 +285,10 @@ class VerificationTest(unittest.TestCase):
             stopped = {'metadata':metadata, 'status': {'containerStatuses': [
                 {'name':'execution','state':{'terminated':{'exitCode':137}}}, {'name':'collector','state':{'running':{}}}]}}
             runner.pod = Mock(side_effect=[running, running, running, running, running, running, running, stopped])
-            runner.exec_collector = Mock(side_effect=[Mock(stdout=b'{"stdout":"","truncated":false}'),
+            runner.exec_collector = Mock(side_effect=[Mock(stdout=b'{"stdout":"","truncated":false,"offset":0}'),
                 RuntimeError('cancel unavailable'), Mock(stdout=b''),
-                Mock(stdout=b'{"stdout":"","truncated":false}'),
-                Mock(stdout=b'{"stdout":"","truncated":false}'), Mock(stdout=b'{"files":[]}')])
+                Mock(stdout=b'{"stdout":"","truncated":false,"offset":0}'),
+                Mock(stdout=b'{"stdout":"","truncated":false,"offset":0}'), Mock(stdout=b'{"files":[]}')])
             with patch('time.time', return_value=100), patch('time.sleep'):
                 runner.reconcile(operation)
             # Nobody cancelled: the watchdog's stop settles from the exit code, and the collector's flag
@@ -387,8 +387,8 @@ class VerificationTest(unittest.TestCase):
                 {'name':'execution','state':{'terminated':{'exitCode':137}}}, {'name':'collector','state':{'running':{}}}]}}
             runner.pod = Mock(side_effect=[running, running, running, running, stopped])
             runner.exec_collector = Mock(side_effect=[RuntimeError('unreachable'), Mock(stdout=b''),
-                Mock(stdout=b'{"stdout":"","truncated":false}'), Mock(stdout=b'{"stdout":"","truncated":false}'),
-                Mock(stdout=b'{"files":[]}')])
+                Mock(stdout=b'{"stdout":"","truncated":false,"offset":0}'),
+                Mock(stdout=b'{"stdout":"","truncated":false,"offset":0}'), Mock(stdout=b'{"files":[]}')])
             with patch('time.time', return_value=100), patch('time.sleep'):
                 runner.reconcile(operation)
             self.assertEqual(record['status'], 'cancelled')
@@ -545,8 +545,8 @@ class VerificationTest(unittest.TestCase):
             content = b'new file contents'
             digest = hashlib.sha256(content).hexdigest()
             file = {'path':'output.txt', 'object_id':digest, 'digest':digest, 'size':len(content)}
-            runner.exec_collector = Mock(side_effect=[Mock(stdout=b'{"stdout":"cHJldmlldw==","truncated":false}'),
-                                                     timeout, Mock(stdout=b'{"stdout":"","truncated":false}'),
+            runner.exec_collector = Mock(side_effect=[Mock(stdout=b'{"stdout":"cHJldmlldw==","truncated":false,"offset":0}'),
+                                                     timeout, Mock(stdout=b'{"stdout":"","truncated":false,"offset":0}'),
                                                      Mock(stdout=json.dumps({'files':[file]}).encode()),
                                                      Mock(stdout=content)])
             ticks = itertools.count(step=2)
@@ -745,6 +745,26 @@ class VerificationTest(unittest.TestCase):
             self.assertTrue(record['output_harvested'])
             self.assertEqual(record['error']['code'], 'SESSION_LOST')
 
+    def test_outage_does_not_turn_an_early_python_stop_into_a_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            now = time.time()
+            from datetime import datetime, timezone
+            finished = datetime.fromtimestamp(now - 100, timezone.utc).isoformat()
+            record = {'operation_id': operation, 'request': request('python'), 'status': 'running',
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'executed': True,
+                      'cancel_requested': False, 'running_at': now - 120, 'stdout': ''}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 137, 'finishedAt': finished}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+            runner.guard = Mock(return_value={'files': []})
+            runner.reconcile_python(operation)
+            self.assertFalse(record['deadline_expired'])
+            self.assertEqual(record['error']['code'], 'SESSION_LOST')
     def frozen_cell(self, root, **changes):
         """A Python cell that froze its interpreter, then lost the way to its output."""
         runner = self.runner(root)
@@ -790,6 +810,24 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(record['status'], 'uncertain')
             self.assertFalse(record['writer_frozen'])
 
+
+    def test_recovered_python_pod_uses_guard_deadline_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('python'), 'status': 'running',
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'executed': True,
+                      'cancel_requested': False, 'running_at': time.time() - 120, 'stdout': ''}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 137}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+            runner.guard = Mock(side_effect=lambda _, action, **kwargs: {'status': 'stopped', 'termination_confirmed': True, 'deadline_expired': True} if action == 'cell_status' else {'files': []})
+            runner.reconcile_python(operation)
+            self.assertTrue(record['deadline_expired'])
+
     def finished_shell(self, root, log, *, exported=None, expired=False):
         """A shell command that exited with no output, seen by the running controller."""
         runner = self.runner(root)
@@ -832,7 +870,7 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(record['error']['code'], 'WORKING_EXPORT_REFUSED')
             self.assertTrue(record['deadline_expired'])
 
-    def stopped_cell(self, root, *, running_at, stopped_while_running=True, cancel_requested=False):
+    def stopped_cell(self, root, *, running_at, expired=False, stopped_while_running=True, cancel_requested=False):
         """A Python cell whose sandbox stopped under the running controller."""
         runner = self.runner(root)
         operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
@@ -852,8 +890,8 @@ class VerificationTest(unittest.TestCase):
             'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]}, 'status': {'containerStatuses': [
                 {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
                 {'name': 'collector', 'state': {'running': {}}}]}})
-        answers = {'limits': {}, 'cell': {}, 'export': {'files': []}, 'terminate': {'termination_confirmed': True},
-                   'cell_status': {'status': 'stopped', 'termination_confirmed': True}}
+        answers = {'limits': {}, 'cell': {}, 'export': {'files': []}, 'terminate': {'termination_confirmed': True, 'deadline_expired': expired},
+                   'cell_status': {'status': 'stopped', 'termination_confirmed': True, 'deadline_expired': expired}}
         runner.guard = Mock(side_effect=lambda _, action, **kwargs: answers[action])
         runner.reconcile_python(operation)
         return record
@@ -914,6 +952,24 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(record['status'], 'completed')
             self.assertTrue(record['writer_frozen'])
             self.assertNotIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
+
+    def test_guard_reports_stop_cause_seen_after_outage(self):
+        for expired in (False, True):
+            with self.subTest(expired=expired), tempfile.TemporaryDirectory() as root:
+                runner, operation, record, _ = self.watched_cell(
+                    root, {'cell_status': {'status': 'stopped', 'termination_confirmed': True,
+                                           'deadline_expired': expired}}, running_at=1)
+                self.after_outage(runner, operation)
+                self.assertEqual(record['deadline_expired'], expired)
+                self.assertEqual(record['error']['code'], 'SESSION_LOST')
+
+    def test_unknown_stop_time_does_not_become_a_timeout_during_an_outage(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner, operation, record, _ = self.watched_cell(
+                root, {'cell_status': {'status': 'stopped', 'termination_confirmed': True}}, running_at=1)
+            self.after_outage(runner, operation)
+            self.assertFalse(record['deadline_expired'])
+            self.assertEqual(record['error']['code'], 'SESSION_LOST')
 
     def test_a_python_cell_still_running_past_its_limit_is_stopped_and_timed_out(self):
         with tempfile.TemporaryDirectory() as root:
@@ -978,7 +1034,7 @@ class VerificationTest(unittest.TestCase):
 
     def test_a_python_cell_stopped_past_its_limit_timed_out(self):
         with tempfile.TemporaryDirectory() as root:
-            record = self.stopped_cell(root, running_at=time.time() - 120)
+            record = self.stopped_cell(root, running_at=time.time() - 120, expired=True)
             self.assertTrue(record['deadline_expired'])
             self.assertEqual(record['status'], 'failed')
 
@@ -990,7 +1046,7 @@ class VerificationTest(unittest.TestCase):
 
     def test_a_python_cell_cancelled_past_its_limit_timed_out(self):
         with tempfile.TemporaryDirectory() as root:
-            record = self.stopped_cell(root, running_at=time.time() - 120, cancel_requested=True)
+            record = self.stopped_cell(root, running_at=time.time() - 120, expired=True, cancel_requested=True)
             self.assertTrue(record['deadline_expired'])
 
     def test_a_python_cell_cancelled_before_its_limit_stays_cancelled(self):
@@ -1010,8 +1066,9 @@ class VerificationTest(unittest.TestCase):
             runner.get = Mock(side_effect=lambda _: record.copy())
             runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
             runner.active = {operation}
+            from datetime import datetime, timezone
             runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
-                {'name': 'execution', 'state': {'terminated': {'exitCode': 137}}},
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 137, 'finishedAt': datetime.fromtimestamp(time.time(), timezone.utc).isoformat()}}},
                 {'name': 'collector', 'state': {'running': {}}}]}})
             runner.guard = Mock(return_value={'files': []})
             runner.reconcile_python(operation)
@@ -1023,7 +1080,7 @@ class VerificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)
             record = {'operation_id': str(uuid.uuid4()), 'request': request('python'), 'stdout': '',
-                      'running_at': time.time() - 120, 'stop_confirmed_at': time.time()}
+                      'running_at': time.time() - 120, 'stop_confirmed_at': time.time(), 'cell_deadline_expired': True}
             runner.guard = Mock(return_value={'refused': refusal})
             self.assertIsNone(runner.collect_stopped_output(record))
             recorded = runner.update.call_args.kwargs
@@ -1059,6 +1116,53 @@ class OutputTailTest(unittest.TestCase):
                 collector.append_output(b"test result: FAILED")
                 self.assertEqual(self.logs("tail"), (b"sult: FAILED", True))
                 self.assertEqual(self.logs(), (b"compilin", True))
+
+    def test_a_running_preview_returns_the_end_of_the_stored_output_with_its_offset(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output(b"abcdef")
+                stdout = io.StringIO()
+                with patch.object(collector.sys, "argv", ["collector.py", "logs", "3", "window"]), \
+                        contextlib.redirect_stdout(stdout):
+                    collector.logs(3)
+                captured = json.loads(stdout.getvalue())
+                self.assertEqual(base64.b64decode(captured["stdout"]), b"def")
+                self.assertEqual(captured["offset"], 3)
+
+    def test_a_running_preview_starts_at_a_utf8_boundary(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output("aébc".encode())
+                stdout = io.StringIO()
+                with patch.object(collector.sys, "argv", ["collector.py", "logs", "3", "window"]), \
+                        contextlib.redirect_stdout(stdout):
+                    collector.logs(3)
+                captured = json.loads(stdout.getvalue())
+                self.assertEqual((captured["offset"], base64.b64decode(captured["stdout"]).decode()), (3, "bc"))
+
+    def test_a_running_preview_keeps_standalone_invalid_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output(b"a\x80b")
+                stdout = io.StringIO()
+                with patch.object(collector.sys, "argv", ["collector.py", "logs", "2", "window"]), \
+                        contextlib.redirect_stdout(stdout):
+                    collector.logs(2)
+                captured = json.loads(stdout.getvalue())
+                self.assertEqual((captured["offset"], base64.b64decode(captured["stdout"])), (1, b"\x80b"))
+
+    def test_python_preview_keeps_a_complete_utf8_tail_and_absolute_offset(self):
+        import importlib
+        with patch.dict("sys.modules", {"jupyter_client": Mock()}):
+            python_cells = importlib.import_module("python_cells")
+        offset, data = python_cells.output_window("aébc".encode(), 3)
+        self.assertEqual((offset, data.decode()), (3, "bc"))
 
     def test_a_short_check_output_is_returned_whole(self):
         with tempfile.TemporaryDirectory() as root:

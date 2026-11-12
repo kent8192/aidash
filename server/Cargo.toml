@@ -184,8 +184,28 @@ name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
 [[test]]
+name = "authority_changes"
+path = "src/apps/identity/tests/authority_changes.rs"
+
+[[test]]
 name = "safety_stop"
 path = "src/apps/identity/tests/safety_stop.rs"
+
+[[test]]
+name = "run_control"
+path = "src/apps/identity/tests/run_control.rs"
+
+[[test]]
+name = "declined_calls"
+path = "src/apps/identity/tests/declined_calls.rs"
+
+[[test]]
+name = "decision_counts"
+path = "src/apps/identity/tests/decision_counts.rs"
+
+[[test]]
+name = "approval_governs_use"
+path = "src/apps/identity/tests/approval_governs_use.rs"
 
 [[test]]
 name = "demo_data"

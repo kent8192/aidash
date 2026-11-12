@@ -15,15 +15,36 @@ pub struct RemoteExecutionActivation {
 	/// Typed context-recovery pause reason of the remote Run.
 	#[serde(default)]
 	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
+	/// The tool call the remote Run is paused on, present only when the caller may decline it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub declinable_call: Option<aidash_domain::run_state::DeclinableCall>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
-pub struct RemoteExecutionStatus {
-	pub human_requests: Vec<aidash_domain::HumanRequest>,
-	pub grant: Prepared,
-	pub execution: Option<RemoteExecutionActivation>,
-	pub unavailable: bool,
-	pub semantic: crate::semantic::remote::status::Status,
+#[serde(tag = "view", rename_all = "snake_case")]
+pub enum RemoteExecutionStatus {
+	Requester {
+		human_requests: Vec<aidash_domain::HumanRequest>,
+		grant: Box<Prepared>,
+		execution: Option<RemoteExecutionActivation>,
+		unavailable: bool,
+		semantic: crate::semantic::remote::status::Status,
+	},
+	Holder {
+		grant: RemoteDeclineGrant,
+		execution: RemoteDeclineExecution,
+	},
+}
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct RemoteDeclineGrant {
+	pub id: Uuid,
+	pub node_id: String,
+	pub agent: aidash_domain::registry::EntityRef,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct RemoteDeclineExecution {
+	pub control: RemoteExecutionControlState,
+	pub declinable_call: aidash_domain::run_state::DeclinableCall,
 }
 
 pub use aidash_domain::federation::execution::admission::RemoteExecutionControl;
@@ -32,6 +53,29 @@ pub use aidash_domain::federation::execution::admission::RemoteExecutionControl;
 #[serde(deny_unknown_fields)]
 pub struct RemoteExecutionControlInput {
 	pub action: RemoteExecutionControl,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteExecutionDeclineInput {
+	/// The key of the call the remote Run is paused on; at most 256 characters.
+	#[validate(length(min = 1, max = 256))]
+	pub call: String,
+}
+
+impl RemoteExecutionControlInput {
+	/// Whether `request` starts work again rather than stops it, for the
+	/// boundary to decide before the route runs (ADR 0121). A body that does
+	/// not parse counts as starting: the route refuses it, but a stop is only
+	/// ever a request that says so.
+	pub fn starts_work(request: &reinhardt::Request) -> bool {
+		serde_json::from_slice::<Self>(request.body()).map_or(true, |input| {
+			!matches!(
+				input.action,
+				RemoteExecutionControl::Pause | RemoteExecutionControl::Cancel
+			)
+		})
+	}
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -68,6 +112,7 @@ impl From<aidash_domain::federation::execution::admission::Activation>
 			error: row.error,
 			semantic_reason: row.semantic_reason,
 			context_reason: row.context_reason,
+			declinable_call: row.declinable_call,
 		}
 	}
 }
@@ -96,12 +141,31 @@ impl From<RemoteExecutionMessageInput>
 }
 impl From<aidash_domain::federation::execution::home::Status> for RemoteExecutionStatus {
 	fn from(row: aidash_domain::federation::execution::home::Status) -> Self {
-		Self {
-			human_requests: row.human_requests,
-			grant: row.grant,
-			execution: row.execution.map(Into::into),
-			unavailable: row.unavailable,
-			semantic: row.semantic,
+		if row.requester {
+			Self::Requester {
+				human_requests: row.human_requests,
+				grant: Box::new(row.grant),
+				execution: row.execution.map(Into::into),
+				unavailable: row.unavailable,
+				semantic: row.semantic,
+			}
+		} else {
+			let execution = row
+				.execution
+				.expect("holder offers contain a paused execution");
+			Self::Holder {
+				grant: RemoteDeclineGrant {
+					id: row.grant.id,
+					node_id: row.grant.node_id,
+					agent: row.grant.agent,
+				},
+				execution: RemoteDeclineExecution {
+					control: execution.control,
+					declinable_call: execution
+						.declinable_call
+						.expect("holder offers contain a declinable call"),
+				},
+			}
 		}
 	}
 }

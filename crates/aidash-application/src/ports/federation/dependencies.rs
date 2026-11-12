@@ -38,14 +38,17 @@ pub trait DependencyScope: Send {
 		grant: Uuid,
 		admission: Uuid,
 	) -> Result<bool>;
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// The definition under `registry.read` alone, without a Catalog Approval.
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry>;
 	/// Retain the enabled peer's shared lock until the initiating read finishes.
 	async fn route(&mut self, node: &str) -> Result<Option<Route>>;
 	/// Whether a Node already failed to answer within this authority, so it is
 	/// not asked again (#751).
 	fn unavailable(&self, node: &str) -> bool;
 	/// Remember that `node` did not answer, and that nothing is confirmed
-	/// negatively while any Node is in that state.
+	/// negatively while any Node is in that state. A walk calls this each time it
+	/// meets such a Node, including one it did not ask again, so the call that made
+	/// the walk can tell that its own refusal is that Node's silence.
 	fn mark_unavailable(&mut self, node: &str);
 	/// The check in progress stops at a Node already known to be silent, without
 	/// asking it again, so the row it belongs to is unconfirmed (#770).

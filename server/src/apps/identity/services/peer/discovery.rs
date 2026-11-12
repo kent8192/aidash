@@ -57,10 +57,22 @@ pub(crate) async fn discover_in(
 	// with a shared lock until the authority transaction ends.
 	let routes = routes::all(&mut *access.tx, &f.config.deployment, &sender, true).await?;
 	let mut targets = vec![];
+	// Nodes of the caller's own Tenant: their reads are decided by policy alone (#769).
+	let mut same_tenant = BTreeSet::new();
 	for route in routes {
 		let target = route.target.to_string();
 		let resource = access.resource("node", &target, json!({"remote_node":target}));
 		if access.decide(&resource, "federation.discover").await? {
+			if routes::is_tenant_node(
+				&mut *access.tx,
+				&f.config.deployment,
+				sender.tenant.as_str(),
+				&route.target,
+			)
+			.await?
+			{
+				same_tenant.insert(target.clone());
+			}
 			targets.push(target);
 		}
 	}
@@ -109,9 +121,13 @@ pub(crate) async fn discover_in(
 			continue;
 		}
 		for entity in entries.into_iter().filter(|entry| query.matches(entry)) {
-			let mut resource = catalog::resource(access, &entity);
-			resource.id = crate::domain::agent_subject(&node, &entity.id, &entity.version);
-			resource.attributes["remote_node"] = json!(node);
+			// The Tenant's own Agent keeps its id; another Tenant's is named by its Node (#856).
+			let resource = aidash_application::federation::registry_reads::remote_agent_resource(
+				catalog::resource(access, &entity),
+				&node,
+				&entity.version,
+				same_tenant.contains(&node),
+			);
 			if access.decide(&resource, "registry.read").await?
 				&& access.decide(&resource, "agent.execute").await?
 			{
@@ -132,6 +148,6 @@ pub(crate) async fn discover_in(
 	result
 		.errors
 		.sort_by(|left, right| left.node_id.cmp(&right.node_id));
-	access.track_discovery(&result.agents).await?;
+	access.track_discovery(&result.agents, &same_tenant).await?;
 	Ok(result)
 }

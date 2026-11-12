@@ -268,8 +268,8 @@ enabled = false
 # snapshot_max_age_seconds = 604800
 
 # Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
-# keys this node creates only Legacy Runs. Rotate by adding a key version and
-# changing `current`.
+# keys this node derives one from `core.secret_key` (ADR 0115). Rotate by adding
+# a key version and changing `current`.
 # [cache_salt]
 # current = 1
 # [[cache_salt.keys]]

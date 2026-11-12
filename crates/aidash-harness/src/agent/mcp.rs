@@ -265,6 +265,7 @@ impl Executor<'_> {
 					}
 					Err(
 						Error::Invalid(message)
+						| Error::Refused(message)
 						| Error::Domain(aidash_domain::Error::Invalid(message)),
 					) => ToolRound::Complete(json!({"error": message})),
 					Err(Error::ToolNotDelivered {

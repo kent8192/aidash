@@ -1036,7 +1036,11 @@ impl PeerAdmissionRepository for Repository<'_> {
 		let subject = admitted.subject().unwrap_or("");
 		let store = &self.runtime.store;
 		let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
-		crate::authorization::Authorization::load_with_mode(&mut tx, tenant, true).await?;
+		// A stop waits for no Authority Change (ADR 0121). The admission's own row
+		// lock below is enough: its Run's step holds that row shared for as long as
+		// it runs, and the Home Node learns the admission's id only once it has
+		// committed, so a cancel cannot overtake its admission.
+		crate::authorization::Authorization::load_with_mode(&mut tx, tenant, false).await?;
 		super::nodes::lock_tenant(&mut *tx, tenant).await?;
 		crate::transactions::gate::read_in(&mut tx).await?;
 		let owner = store.deployment.node(receiver.clone());
@@ -1116,6 +1120,21 @@ impl PeerAdmissionRepository for Repository<'_> {
 		let run = store.control_in(&mut tx, id, action.action()).await?;
 		tx.commit().await?;
 		Ok(run)
+	}
+	async fn decline_call(
+		&self,
+		id: Uuid,
+		call: &str,
+	) -> Result<(RunInspection, aidash_domain::run_state::PausedCall)> {
+		let store = &self.runtime.store;
+		let scope = store.run_tenancy(id).await?;
+		let mut tx = store.pool.begin(&scope).await?;
+		crate::transactions::gate::read_in(&mut tx).await?;
+		// The receiver's event says the Home declined it, and never names the Home's person.
+		let declined = store.decline_call_in(&mut tx, id, call, "home").await?;
+		tx.commit().await?;
+		store.run_control_committed(id, declined.run.control);
+		Ok((declined.run, declined.call))
 	}
 	fn messages(&self, run: &Run) -> Box<dyn AdmissionMessages + '_> {
 		Box::new(crate::federation::Home::new(

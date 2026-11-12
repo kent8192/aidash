@@ -186,30 +186,36 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		200
 	);
 
-	// Discovery admitted both read and execution authority. Revoke only execution
-	// independently at each end while the catalog and credentials remain valid.
-	for (node, original, resource) in [
-		(
-			&a,
-			&a_policy,
-			aidash_domain::agent_subject(&b_node.to_string(), "remote-only", "1.0.0"),
-		),
-		(&b, &b_policy, "remote-only".to_owned()),
-	] {
-		let mut denied = original.clone();
-		denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-execution","effect":"deny","subjects":{"ids":["alice"]},"actions":["agent.execute"],"resources":{"kinds":["agent"],"ids":[resource]}}));
-		common::replace_policy(&node.store, "acme", denied).await;
-		assert_eq!(
-			request(&a_app, &token, "GET", &path, Value::Null).await.0,
-			403
-		);
-		common::replace_policy(&node.store, "acme", original.clone()).await;
-		assert_eq!(
-			request(&a_app, &token, "GET", &path, Value::Null).await.0,
-			200
-		);
+	// Reading needs `registry.read` at each end and nothing else. Denying `agent.execute`
+	// independently at each end leaves the journal readable, since it is a permission to use
+	// (#769); denying `registry.read` hides it.
+	for (action, hidden) in [("agent.execute", false), ("registry.read", true)] {
+		for (node, original, resource) in [
+			(
+				&a,
+				&a_policy,
+				aidash_domain::agent_subject(&b_node.to_string(), "remote-only", "1.0.0"),
+			),
+			(&b, &b_policy, "remote-only".to_owned()),
+		] {
+			let mut denied = original.clone();
+			denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote","effect":"deny","subjects":{"ids":["alice"]},"actions":[action],"resources":{"kinds":["agent"],"ids":[resource]}}));
+			common::replace_policy(&node.store, "acme", denied).await;
+			assert_eq!(
+				request(&a_app, &token, "GET", &path, Value::Null).await.0,
+				if hidden { 403 } else { 200 },
+				"{action}"
+			);
+			common::replace_policy(&node.store, "acme", original.clone()).await;
+			assert_eq!(
+				request(&a_app, &token, "GET", &path, Value::Null).await.0,
+				200
+			);
+		}
 	}
 
+	// The Run only listed the Agent. Withdrawing its approval on the other Deployment stops what
+	// uses it, not this Run, and hides nothing: the other Deployment no longer looks at approvals.
 	assert_eq!(
 		request(
 			&b_app,
@@ -224,51 +230,13 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	);
 	assert_eq!(
 		request(&a_app, &token, "GET", &path, Value::Null).await.0,
-		403
+		200
 	);
-	// A restarted worker uses fresh pools and rechecks the persisted dependency.
+	// A restarted worker uses fresh pools and rechecks the persisted dependency. The Run does
+	// not pause: it goes on to its next model call and completes.
 	let restarted = Harness {
 		federation: a.for_workers().await.unwrap(),
 	};
-	restarted.worker_once().await.unwrap();
-	assert_eq!(
-		a.store
-			.run(&TEST_FIXTURE, run.id)
-			.await
-			.unwrap()
-			.control
-			.as_str(),
-		"PAUSED"
-	);
-	assert_eq!(
-		calls.load(Ordering::SeqCst),
-		1,
-		"revoked metadata must not reach another model call"
-	);
-	assert_eq!(
-		request(
-			&b_app,
-			&b_token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
-		)
-		.await
-		.0,
-		200
-	);
-	assert_eq!(
-		request(
-			&a_app,
-			&token,
-			"POST",
-			&format!("/api/runs/{}/control", run.id),
-			json!({"action":"resume"})
-		)
-		.await
-		.0,
-		200
-	);
 	for _ in 0..12 {
 		restarted.worker_once().await.unwrap();
 		if a.store
@@ -289,6 +257,18 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 			.phase()
 			.as_str(),
 		"COMPLETED"
+	);
+	assert_eq!(
+		request(
+			&b_app,
+			&b_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":2,"enabled":true})
+		)
+		.await
+		.0,
+		200
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 2);
 	let (status, journal) = request(&a_app, &token, "GET", &path, Value::Null).await;

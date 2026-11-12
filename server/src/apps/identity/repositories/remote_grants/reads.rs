@@ -1,7 +1,10 @@
 //! Reader statements and producer restoration retain the same native authority transaction.
 use crate::{
 	Error as NativeError, Result as NativeResult,
-	authorization::{access::Access, identity::SubjectIdentity},
+	authorization::{
+		access::{Access, read_lookups::Passes},
+		identity::SubjectIdentity,
+	},
 };
 use aidash_application::{
 	Result,
@@ -49,9 +52,12 @@ struct Viewer {
 	/// The reader's row, which a Node met under the producer's identity must
 	/// not name (#770).
 	row_silence: Option<String>,
+	/// The walk's record of what it has visited and passed. It is the viewer's: a
+	/// Run it has visited has not been visited under the grant's chain.
+	read_passes: Passes,
 }
-struct Producer<'a> {
-	access: &'a mut Access,
+pub(crate) struct Producer<'a> {
+	pub(crate) access: &'a mut Access,
 	viewer: Option<Viewer>,
 }
 impl Drop for Producer<'_> {
@@ -65,7 +71,45 @@ impl Drop for Producer<'_> {
 			self.access.cached_humans = viewer.cached_humans;
 			self.access.read_verdicts = viewer.read_verdicts;
 			self.access.row_silence = viewer.row_silence;
+			self.access.read_lookups.restore_passes(viewer.read_passes);
 		}
+	}
+}
+impl<'a> Producer<'a> {
+	/// Read as the grant's root, under its chain, until the producer drops. What the
+	/// viewer's walk has visited and passed belongs to the viewer's chain, so the
+	/// producer starts with none of it, as it starts with none of the viewer's verdicts.
+	pub(crate) async fn lend(access: &'a mut Access, grant: &Grant) -> Result<Self> {
+		let original = SubjectIdentity {
+			http_session: None,
+			credential_id: grant.credential_id,
+			tenant: grant.tenant.clone(),
+			subject: grant.root_subject.clone(),
+		};
+		let snapshot = original.lock_with_mode(&mut access.tx, false).await?;
+		let mut viewer = Viewer {
+			snapshot: std::mem::replace(&mut access.snapshot, snapshot),
+			identity: std::mem::replace(&mut access.identity, original),
+			subjects: std::mem::replace(&mut access.subjects, grant.subject_chain.clone()),
+			context: access.context.clone(),
+			cached_runs: std::mem::take(&mut access.cached_runs),
+			cached_humans: std::mem::take(&mut access.cached_humans),
+			read_verdicts: std::mem::take(&mut access.read_verdicts),
+			read_passes: Passes::default(),
+			row_silence: access.row_silence.take(),
+		};
+		let authority = access.authority_context();
+		viewer.read_passes = access.read_lookups.lend_passes(authority);
+		Ok(Self {
+			access,
+			viewer: Some(viewer),
+		})
+	}
+	/// The chain or the context changed: what passed under the old one has not
+	/// passed under the new one.
+	fn rebind_passes(&mut self) {
+		let authority = self.access.authority_context();
+		self.access.read_lookups.rebind(authority);
 	}
 }
 #[async_trait]
@@ -75,12 +119,14 @@ impl SourceAuthorityScope for Producer<'_> {
 	}
 	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
 		self.access.subjects = subjects;
+		self.rebind_passes();
 	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
 	fn source_context(&mut self, attributes: Value) {
 		self.access.context = attributes;
+		self.rebind_passes();
 	}
 	fn source_resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
@@ -150,27 +196,7 @@ impl SourceReadScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn producer<'a>(&'a mut self, grant: &Grant) -> Result<Box<dyn ProducerScope + 'a>> {
-		let original = SubjectIdentity {
-			http_session: None,
-			credential_id: grant.credential_id,
-			tenant: grant.tenant.clone(),
-			subject: grant.root_subject.clone(),
-		};
-		let snapshot = original.lock_with_mode(&mut self.access.tx, false).await?;
-		let viewer = Viewer {
-			snapshot: std::mem::replace(&mut self.access.snapshot, snapshot),
-			identity: std::mem::replace(&mut self.access.identity, original),
-			subjects: std::mem::replace(&mut self.access.subjects, grant.subject_chain.clone()),
-			context: self.access.context.clone(),
-			cached_runs: std::mem::take(&mut self.access.cached_runs),
-			cached_humans: std::mem::take(&mut self.access.cached_humans),
-			read_verdicts: std::mem::take(&mut self.access.read_verdicts),
-			row_silence: self.access.row_silence.take(),
-		};
-		Ok(Box::new(Producer {
-			access: &mut *self.access,
-			viewer: Some(viewer),
-		}))
+		Ok(Box::new(Producer::lend(&mut *self.access, grant).await?))
 	}
 	fn record_admission(&mut self, node: &str, grant: Uuid, admission: Uuid) -> Result<()> {
 		let home_node = self.access.node_reference().to_owned();

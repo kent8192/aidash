@@ -192,3 +192,95 @@ fn expression_depth_and_role_graph_limits_prevent_unbounded_evaluation(document:
 	}
 	assert!(policy(doc).validate().is_err());
 }
+
+#[rstest::rstest]
+#[case::through_a_role_whatever_the_condition("alice", "workspace.read", true)]
+#[case::no_policy_names_the_action("alice", "workspace.write", false)]
+#[case::unknown_subject("nobody", "workspace.read", false)]
+#[case::the_agent_holds_the_role("worker", "workspace.read", true)]
+fn may_allow_ignores_resources_and_conditions(
+	document: Value,
+	#[case] subject: &str,
+	#[case] action: &str,
+	#[case] expected: bool,
+) {
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert_eq!(bundle.may_allow(subject, action), expected);
+}
+
+#[rstest::rstest]
+fn may_allow_never_refuses_what_evaluate_allows(document: Value) {
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	let allowed: Evaluation = serde_json::from_value(json!({
+		"subject":"alice","action":"workspace.read",
+		"resource":{"tenant":"acme","kind":"workspace","id":"w","attributes":{"team":"research"}},
+		"environment":{"network":"office"}
+	}))
+	.unwrap();
+	assert!(bundle.evaluate(&allowed).allowed);
+	assert!(bundle.may_allow(&allowed.subject, &allowed.action));
+}
+
+#[rstest::rstest]
+fn may_allow_follows_the_delegators_and_a_disabled_subject(mut document: Value) {
+	document["subjects"]["worker"]["delegated_by"] = json!("alice");
+	document["subjects"]["alice"]["enabled"] = json!(false);
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert!(!bundle.may_allow("alice", "workspace.read"));
+	assert!(!bundle.may_allow("worker", "workspace.read"));
+}
+
+#[rstest::rstest]
+fn may_allow_keeps_explicit_actions_out_of_a_wildcard(mut document: Value) {
+	document["policies"][0]["actions"] = json!(["*"]);
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert!(bundle.may_allow("alice", "workspace.read"));
+	assert!(!bundle.may_allow("alice", "approval.mode.bypass"));
+}
+
+#[rstest::rstest]
+#[case::every_resource("alice", json!({"subjects":{"any":true},"resources":{"kinds":["*"]}}), false)]
+#[case::every_resource_named_by_id("alice", json!({"subjects":{"ids":["alice"]},"resources":{"kinds":["*"],"ids":["*"]}}), false)]
+#[case::a_delegator_denied("worker", json!({"subjects":{"ids":["alice"]},"resources":{"kinds":["*"]}}), false)]
+#[case::another_subject("alice", json!({"subjects":{"ids":["worker"]},"resources":{"kinds":["*"]}}), true)]
+#[case::another_action("alice", json!({"subjects":{"any":true},"actions":["workspace.write"],"resources":{"kinds":["*"]}}), true)]
+#[case::one_kind("alice", json!({"subjects":{"any":true},"resources":{"kinds":["workspace"]}}), true)]
+#[case::some_resources("alice", json!({"subjects":{"any":true},"resources":{"kinds":["*"],"ids":["w1"]}}), true)]
+#[case::a_condition("alice", json!({"subjects":{"any":true},"resources":{"kinds":["*"]},
+	"condition":{"op":"exists","value":{"source":"environment","path":"/network"}}}), true)]
+fn may_allow_gives_way_to_a_deny_that_covers_every_resource(
+	mut document: Value,
+	#[case] subject: &str,
+	#[case] deny: Value,
+	#[case] expected: bool,
+) {
+	let mut policy = json!({"id":"deny","effect":"deny","actions":["workspace.read"]});
+	policy
+		.as_object_mut()
+		.unwrap()
+		.extend(deny.as_object().unwrap().clone());
+	document["policies"].as_array_mut().unwrap().push(policy);
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	bundle.validate().unwrap();
+	assert_eq!(bundle.may_allow(subject, "workspace.read"), expected);
+}
+
+#[rstest::rstest]
+fn may_allow_never_allows_what_evaluate_denies_everywhere(mut document: Value, input: Evaluation) {
+	document["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny","effect":"deny","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}
+	}));
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert!(!bundle.evaluate(&input).allowed);
+	assert!(!bundle.may_allow(&input.subject, &input.action));
+}
+
+#[rstest::rstest]
+fn a_wildcard_deny_covers_the_explicit_actions_a_wildcard_allow_leaves_out(mut document: Value) {
+	document["policies"][0]["actions"] = json!(["approval.mode.bypass"]);
+	document["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny","effect":"deny","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}
+	}));
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert!(!bundle.may_allow("alice", "approval.mode.bypass"));
+}

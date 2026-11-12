@@ -133,6 +133,9 @@ pub enum StopReason {
 	RunCancelled,
 	/// The Run's authority no longer admits it.
 	RunAuthorityRevoked,
+	/// A Node holding something the Run read did not answer five checks in a
+	/// row. Nothing was refused, so this is not a revocation (ADR 0116).
+	NodeUnreachable,
 	/// Its Tenant is being deleted.
 	TenantDeleted,
 	/// Its Working Area was cleaned up.
@@ -152,6 +155,7 @@ impl StopReason {
 			Self::Replaced => "replaced",
 			Self::RunCancelled => "run_cancelled",
 			Self::RunAuthorityRevoked => "run_authority_revoked",
+			Self::NodeUnreachable => "node_unreachable",
 			Self::TenantDeleted => "tenant_deleted",
 			Self::AreaCleanedUp => "area_cleaned_up",
 			Self::Idle => "idle",
@@ -166,6 +170,7 @@ impl StopReason {
 			"replaced" => Ok(Self::Replaced),
 			"run_cancelled" => Ok(Self::RunCancelled),
 			"run_authority_revoked" => Ok(Self::RunAuthorityRevoked),
+			"node_unreachable" => Ok(Self::NodeUnreachable),
 			"tenant_deleted" => Ok(Self::TenantDeleted),
 			"area_cleaned_up" => Ok(Self::AreaCleanedUp),
 			"idle" => Ok(Self::Idle),

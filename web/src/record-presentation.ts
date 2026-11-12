@@ -26,6 +26,8 @@ const references = new Set([
   "workspace_id",
   "task_id",
   "run_id",
+  "run",
+  "remote_grant",
   "entry_id",
   "agent_id",
   "credential_id",

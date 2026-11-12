@@ -1,4 +1,5 @@
 //! External service adapters implementing application ports.
+mod accept;
 #[cfg(feature = "cloud-adapters")]
 mod broker;
 #[cfg(feature = "cloud-adapters")]

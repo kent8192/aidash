@@ -302,7 +302,7 @@ impl HeapAuthority for Authority {
 	}
 	async fn interaction_run(&mut self, id: Uuid) -> Result<RunMetadata> {
 		self.access
-			.run_for_interaction(id)
+			.run_for_action(id)
 			.await
 			.map(|run| run.metadata())
 			.map_err(Into::into)

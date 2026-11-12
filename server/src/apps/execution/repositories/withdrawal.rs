@@ -11,7 +11,7 @@ use aidash_application::{
 	Result,
 	ports::capabilities::withdrawal::{OperationWithdrawalRepository, OperationWithdrawalScope},
 };
-use aidash_domain::capabilities::operations::withdrawal::{Change, Snapshot};
+use aidash_domain::capabilities::operations::withdrawal::{Change, Snapshot, WriterStop};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
@@ -87,7 +87,13 @@ impl OperationWithdrawalRepository for Repository<'_> {
 			operation,
 		}))
 	}
-	async fn cancel_bound(&self, operation: Uuid, digest: &str, instance: &str) -> Result<bool> {
+	async fn cancel_bound(
+		&self,
+		operation: Uuid,
+		digest: &str,
+		instance: &str,
+		refusal: Option<Value>,
+	) -> Result<WriterStop> {
 		let health =
 			operations::remote(self.store, reqwest::Method::GET, "/v1/health", None).await?;
 		if health["instance"].as_str() != Some(instance) {
@@ -95,7 +101,7 @@ impl OperationWithdrawalRepository for Repository<'_> {
 				"captured runner changed".into(),
 			));
 		}
-		let reply = self.cancel(operation).await?;
+		let reply = self.cancel(operation, refusal).await?;
 		let health =
 			operations::remote(self.store, reqwest::Method::GET, "/v1/health", None).await?;
 		if reply["operation_id"].as_str() != Some(operation.to_string().as_str())
@@ -106,14 +112,14 @@ impl OperationWithdrawalRepository for Repository<'_> {
 				"captured writer proof changed".into(),
 			));
 		}
-		Ok(reply["termination_confirmed"] == true)
+		Ok(WriterStop::from_reply(&reply))
 	}
-	async fn cancel(&self, operation: Uuid) -> Result<Value> {
+	async fn cancel(&self, operation: Uuid, refusal: Option<Value>) -> Result<Value> {
 		operations::remote(
 			self.store,
 			reqwest::Method::POST,
 			&format!("/v1/operations/{operation}/cancel"),
-			None,
+			refusal,
 		)
 		.await
 		.map_err(Into::into)

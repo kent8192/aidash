@@ -130,6 +130,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
   "fmt",
 ] }
 rcgen = "0.14"
+tokio-rustls = "0.26"
 tokio-stream = { version = "0.1", features = ["net"] }
 # The live Token Encoding checks count requests (ADR 0017).
 aidash-domain = { workspace = true, features = ["token-encodings"] }
@@ -139,6 +140,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 ] }
 rstest.workspace = true
 axum = "0.8"
+libc = "0.2"
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 flate2 = "1"

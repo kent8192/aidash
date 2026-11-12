@@ -342,3 +342,89 @@ fn diagnostic_configuration_bounds_the_frozen_inputs(
 	});
 	assert_eq!(model.validate_estimate_diagnostics().is_ok(), accepted);
 }
+
+fn cached_model(model_id: &str, cache_mode: Option<&str>) -> ModelConfig {
+	let mut config = serde_json::json!({
+		"provider": "openrouter",
+		"model_id": model_id,
+		"endpoint": "https://openrouter.ai/api/v1",
+		"context_window": 100_000,
+		"modalities": ["text"],
+		"cost": {},
+	});
+	if let Some(mode) = cache_mode {
+		config["cache_mode"] = serde_json::json!(mode);
+	}
+	serde_json::from_value(config).unwrap()
+}
+
+#[rstest::rstest]
+#[case::claude("anthropic/claude-haiku-5.5", true)]
+#[case::gpt_5_6("openai/gpt-5.6-sol", true)]
+#[case::gpt_6("openai/gpt-6.1-terra", true)]
+#[case::gpt_5_5("openai/gpt-5.5", false)]
+#[case::gemini("google/gemini-3.8-flash", false)]
+#[case::deepseek("deepseek/deepseek-v4.1-flash-1017", false)]
+fn only_checked_routes_accept_breakpoints_or_default_to_them(
+	#[case] model_id: &str,
+	#[case] accepted: bool,
+) {
+	// A declaration alone never sends markers to a route nobody checked.
+	assert_eq!(
+		cached_model(model_id, Some("explicit")).accepts_cache_breakpoints(),
+		accepted
+	);
+	assert_eq!(
+		cached_model(model_id, Some("explicit"))
+			.validate_cache_mode()
+			.is_ok(),
+		accepted
+	);
+	assert_eq!(
+		cached_model(model_id, None).explicit_cache_by_default(),
+		accepted
+	);
+}
+
+#[rstest::rstest]
+#[case::keyless_endpoint(|config: &mut serde_json::Value| {
+	config["endpoint"] = serde_json::json!("http://127.0.0.1:11434/v1");
+})]
+#[case::responses_api(|config: &mut serde_json::Value| {
+	config["wire_api"] = serde_json::json!("responses");
+})]
+fn other_transports_keep_the_omitted_cache_mode(#[case] change: fn(&mut serde_json::Value)) {
+	let mut config =
+		serde_json::to_value(cached_model("anthropic/claude-haiku-5.5", None)).unwrap();
+	change(&mut config);
+	let config: ModelConfig = serde_json::from_value(config).unwrap();
+	assert!(!config.explicit_cache_by_default());
+}
+
+#[rstest::rstest]
+#[case::explicit("openai/gpt-6.1-terra", Some("explicit"), true)]
+#[case::declared_off("openai/gpt-6.1-terra", Some("none"), true)]
+#[case::implicit_kept("openai/gpt-6.1-terra", Some("automatic"), false)]
+#[case::omitted_keeps_stored_bytes("openai/gpt-6.1-terra", None, false)]
+#[case::claude("anthropic/claude-haiku-5.5", Some("explicit"), false)]
+fn explicit_mode_follows_the_slug_and_the_declaration(
+	#[case] model_id: &str,
+	#[case] cache_mode: Option<&str>,
+	#[case] explicit_only: bool,
+) {
+	assert_eq!(
+		cached_model(model_id, cache_mode).explicit_cache_only(),
+		explicit_only
+	);
+}
+
+#[rstest::rstest]
+#[case("anthropic/claude-haiku-5.5", "anthropic")]
+#[case("openai/gpt-6.1-terra", "openai")]
+#[case("google/gemini-3.8-flash", "google")]
+#[case("deepseek/deepseek-v4.1-flash-1017", "deepseek")]
+#[case("tenant-chosen/anything", "other")]
+#[case("no-slash", "other")]
+fn metric_family_stays_bounded(#[case] model_id: &str, #[case] family: &str) {
+	assert_eq!(cached_model(model_id, None).metric_family(), family);
+}

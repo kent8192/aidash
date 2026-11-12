@@ -167,7 +167,7 @@ pub async fn register(
 		super::bindings::private::attach(&mut registration.entry, node, &registration.documents)?;
 	registration.entry.normalize_agent(node)?;
 	// The caller receives the definition as stored, defaults included.
-	super::apply_agent_defaults(scope, &mut registration.entry).await;
+	super::apply_definition_defaults(scope, &mut registration.entry).await;
 	scope.authorize(&registration.source).await?;
 	register_definition(scope, validation, &registration.source, node).await?;
 	let inserted = register_definition(scope, validation, &registration.entry, node).await?;

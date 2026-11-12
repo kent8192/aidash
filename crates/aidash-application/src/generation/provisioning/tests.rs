@@ -42,6 +42,7 @@ enum Failure {
 	DomainConflict,
 	Json,
 	External,
+	Busy,
 }
 impl Failure {
 	fn error(self) -> Error {
@@ -54,6 +55,7 @@ impl Failure {
 			Self::DomainConflict => aidash_domain::Error::Conflict("rejected".into()).into(),
 			Self::Json => Error::Json(serde_json::from_str::<Value>("{").unwrap_err()),
 			Self::External => Error::External("database unavailable".into()),
+			Self::Busy => Error::PolicyBusy { retry_after: 30 },
 		}
 	}
 }
@@ -800,6 +802,42 @@ async fn empty_scan_keeps_remote_order_and_never_notifies(
 	assert_eq!(
 		repository.0.lock().unwrap().calls,
 		["dispatch", "foreign", "read_begin", "scan", "read_drop"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_busy_tenant_leaves_its_job_for_the_next_pass(
+	repository: Repository,
+	validation: DefinitionValidation,
+) {
+	repository.0.lock().unwrap().fail = Some(("activation_begin", Failure::Busy));
+	assert_eq!(reconcile(&repository, &validation).await.unwrap(), 1);
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.job.status, "QUEUED");
+	assert!(state.committed.is_empty());
+	assert!(!state.calls.iter().any(|call| call == "terminal_begin"));
+}
+
+#[rstest]
+#[case("dispatch")]
+#[case("foreign")]
+#[tokio::test]
+async fn a_busy_tenant_does_not_stop_the_local_jobs(
+	repository: Repository,
+	validation: DefinitionValidation,
+	#[case] at: &'static str,
+) {
+	repository.0.lock().unwrap().fail = Some((at, Failure::Busy));
+	assert_eq!(reconcile(&repository, &validation).await.unwrap(), 1);
+	assert!(
+		repository
+			.0
+			.lock()
+			.unwrap()
+			.calls
+			.iter()
+			.any(|call| call == "scan")
 	);
 }
 

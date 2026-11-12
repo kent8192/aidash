@@ -77,7 +77,16 @@ impl GenerationControls for NativeControls {
 		if identity.tenancy()? != *scope {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let access = Box::new(Access::begin_exclusive(&self.runtime.store, identity).await?);
+		use aidash_domain::generation::requests::Action;
+		let access = Box::new(
+			Access::begin_change(
+				&self.runtime.store,
+				identity,
+				&[Action::Approve, Action::Stop, Action::Delete]
+					.map(|action| action.authorization()),
+			)
+			.await?,
+		);
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),
 			access,

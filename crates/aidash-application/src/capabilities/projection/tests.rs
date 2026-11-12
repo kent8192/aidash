@@ -33,6 +33,163 @@ fn view<'a>(state: &'a str, input: &'a Value, result: &'a Value) -> OperationVie
 fn output_file() -> Value {
 	json!({"file_id":Uuid::new_v4(),"path":"output.txt","digest":"digest","size":6,"media_type":"text/plain","scope":"working","provenance":null})
 }
+#[tokio::test]
+async fn polling_at_the_output_end_omits_unchanged_output_and_keeps_the_cursor() {
+	let data = json!({"output_file": output_file()});
+	let input = json!({});
+	let mut reader = Reader {
+		bytes: "ééab".as_bytes().to_vec(),
+		limit: 3,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view("running", &input, &data), 4)
+		.await
+		.unwrap();
+	let page = serde_json::to_value(page).unwrap();
+	assert_eq!(page["output"], "ab");
+	assert_eq!(page["next_offset"], 6);
+	let unchanged = result(&mut reader, &view("running", &input, &data), 6)
+		.await
+		.unwrap();
+	let unchanged = serde_json::to_value(unchanged).unwrap();
+	assert!(unchanged.get("output").is_none());
+	assert_eq!(unchanged["output_unchanged"], true);
+	assert_eq!(unchanged["next_offset"], 6);
+}
+#[tokio::test]
+async fn ended_operations_only_offer_a_cursor_when_stored_output_remains() {
+	let data = json!({"output_file": output_file()});
+	let input = json!({});
+	let mut reader = Reader {
+		bytes: "ééab".as_bytes().to_vec(),
+		limit: 3,
+		reads: 0,
+	};
+	let first = result(&mut reader, &view("completed", &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(first.next_offset, Some(2));
+	let last = result(&mut reader, &view("completed", &input, &data), 4)
+		.await
+		.unwrap();
+	assert_eq!(last.output, "ab");
+	assert_eq!(last.next_offset, None);
+	assert!(!last.output_unchanged);
+	let repeated = result(&mut reader, &view("completed", &input, &data), 6)
+		.await
+		.unwrap();
+	assert_eq!(repeated.next_offset, None);
+	assert!(repeated.output_unchanged);
+	let empty = result(&mut reader, &view("completed", &input, &json!({})), 0)
+		.await
+		.unwrap();
+	assert_eq!(empty.next_offset, None);
+	assert!(
+		!empty.output_unchanged,
+		"a first empty result is not a repeated poll"
+	);
+}
+
+#[tokio::test]
+async fn the_deadline_of_a_running_command_counts_from_its_start() {
+	let input = json!({"seconds":600});
+	let data = json!({"preview":"","started_at":1000.5});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view("running", &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(
+		page.operation_deadline,
+		chrono::DateTime::from_timestamp_millis(1_600_500)
+	);
+}
+
+#[rstest::rstest]
+#[case::not_started("submitted", json!({"preview":""}))]
+#[case::ended("failed", json!({"preview":"","exit_code":143}))]
+#[tokio::test]
+async fn a_command_that_is_not_running_has_no_deadline(#[case] state: &str, #[case] data: Value) {
+	let input = json!({"seconds":600});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view(state, &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(page.operation_deadline, None);
+}
+
+#[tokio::test]
+async fn every_active_operation_retains_its_cursor_at_the_current_end() {
+	let input = json!({});
+	let data = json!({"preview":"a"});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	for state in ["prepared", "submitted", "running", "cancelling"] {
+		let page = result(&mut reader, &view(state, &input, &data), 1)
+			.await
+			.unwrap();
+		assert_eq!(page.next_offset, Some(1), "{state}");
+		assert!(page.output_unchanged, "{state}");
+	}
+}
+
+#[tokio::test]
+async fn a_sliding_running_preview_uses_absolute_output_offsets() {
+	let input = json!({});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let first = json!({"preview":"abc", "preview_offset":4});
+	let page = result(&mut reader, &view("running", &input, &first), 0)
+		.await
+		.unwrap();
+	assert_eq!(page.output, "abc");
+	assert_eq!(page.next_offset, Some(7));
+	let later = json!({"preview":"cde", "preview_offset":6});
+	let page = result(&mut reader, &view("running", &input, &later), 7)
+		.await
+		.unwrap();
+	assert_eq!(page.output, "de");
+	assert_eq!(page.next_offset, Some(9));
+	let unchanged = result(&mut reader, &view("running", &input, &later), 9)
+		.await
+		.unwrap();
+	assert!(unchanged.output_unchanged);
+	assert_eq!(unchanged.next_offset, Some(9));
+}
+
+#[tokio::test]
+async fn lossy_preview_keeps_offsets_in_original_output_bytes() {
+	let input = json!({});
+	let data = json!({"preview":"�x", "preview_bytes":"/3g=", "preview_offset":4});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view("running", &input, &data), 4)
+		.await
+		.unwrap();
+	assert_eq!(page.output, "�x");
+	assert_eq!(page.next_offset, Some(6));
+	let unchanged = result(&mut reader, &view("running", &input, &data), 6)
+		.await
+		.unwrap();
+	assert!(unchanged.output_unchanged);
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn utf8_output_pages_preserve_complete_character_boundaries() {

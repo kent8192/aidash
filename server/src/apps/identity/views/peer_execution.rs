@@ -45,6 +45,24 @@ pub async fn control(
 	crate::http::json(api::control(service.runtime.clone(), peer.0, id, input, &request).await)
 }
 
+/// The Home declines the call a paused Run stopped on.
+#[post(
+	"/federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
+	name = "peerexecutionmanagement-decline-call",
+	auth = "protected"
+)]
+pub async fn decline_call(
+	#[inject] service: Depends<PeerExecutionManagement>,
+	#[inject] peer: InboundCall,
+	Path(id): Path<Uuid>,
+	Json(input): Json<PeerDeclineCallInput>,
+) -> ViewResult<Response> {
+	if let Err(error) = crate::http::validate(&input) {
+		return Ok(error.http_response());
+	}
+	crate::http::json(api::decline_call(service.runtime.clone(), peer.0, id, input).await)
+}
+
 #[post(
 	"/federation/v0.1/scoped/execution/admissions/{id}/messages",
 	name = "peerexecutionmanagement-message",

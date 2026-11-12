@@ -57,7 +57,7 @@ async fn a_sibling_node_is_not_asked_without_a_runtime() {
 #[rstest]
 #[tokio::test]
 async fn an_authority_with_no_transport_asks_nobody() {
-	let reach = Reach(None);
+	let reach = Reach(None, Hold::default());
 	let route = sibling();
 	assert!(matches!(
 		reach.check(&route, &input(), Duration::from_secs(20)).await,

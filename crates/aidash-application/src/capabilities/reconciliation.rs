@@ -13,7 +13,7 @@ use aidash_domain::{
 			WORKING_EXPORT_REFUSED, capability_of, counted_files, export_quota_refusal,
 			lost_area_state,
 			reconciliation::{Area, Limits, Snapshot},
-			request_validation_failure,
+			request_validation_failure, undelivered_refusal,
 		},
 	},
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
@@ -112,8 +112,13 @@ async fn reconcile(
 	}
 	let observed = if cancelling {
 		operation.state = "cancelling".into();
+		let refusal = undelivered_refusal(
+			&operation.result,
+			&operation.digest,
+			operation.runner_instance.as_deref(),
+		);
 		scope
-			.request("POST", &format!("/v1/operations/{id}/cancel"), None)
+			.request("POST", &format!("/v1/operations/{id}/cancel"), refusal)
 			.await?
 	} else if operation.result["dispatch_pending"] == true {
 		let files = scope.dispatch_files(&operation).await?;
@@ -353,9 +358,13 @@ async fn reconcile(
 				operation.result["error"] =
 					serde_json::to_value(CapabilityError::command_timed_out(&TimedOut {
 						limit_seconds: time_limit(&operation),
-						maximum_seconds: limits.maximum_seconds,
+						maximum_seconds: scope
+							.timeout_ceiling(&operation.kind)
+							.unwrap_or(limits.maximum_seconds)
+							.min(limits.maximum_seconds),
 						revision: area.revision,
 						python: operation.kind == "code_interpreter",
+						install: operation.kind == "python_install",
 					}))?;
 			}
 			if operation.kind == "code_interpreter" {
@@ -404,10 +413,24 @@ async fn reconcile(
 			if bytes.len() > 16384 {
 				return Err(Error::Invalid("runner preview limit".into()));
 			}
-			let text = String::from_utf8_lossy(&bytes);
-			let mut end = text.len().min(limits.read_bytes);
-			while !text.is_char_boundary(end) {
-				end -= 1;
+			let mut start = bytes.len().saturating_sub(limits.read_bytes);
+			while !super::projection::boundary(&bytes, start) {
+				start += 1;
+			}
+			let offset = observed["stdout_offset"]
+				.as_u64()
+				.unwrap_or(0)
+				.checked_add(start as u64)
+				.ok_or_else(|| Error::Invalid("invalid runner output offset".into()))?;
+			let preview = &bytes[start..];
+			operation.result = json!({"preview":String::from_utf8_lossy(preview),"preview_bytes":STANDARD.encode(preview),"preview_offset":offset,"truncated":observed["truncated"]});
+			// The Time Limit counts from the command's start, which only the
+			// runner knows. A Python cell's start is when it was dispatched.
+			if let Some(started) = observed["started_at"]
+				.as_f64()
+				.or_else(|| observed["running_at"].as_f64())
+			{
+				operation.result["started_at"] = json!(started);
 			}
 			let error = if observed["status"] == "cancelling"
 				&& observed["termination_confirmed"] != true
@@ -416,7 +439,6 @@ async fn reconcile(
 			} else {
 				observed["error"].clone()
 			};
-			operation.result = json!({"preview":&text[..end],"truncated":observed["truncated"]});
 			if !observed["output_fetched_at"].is_null() {
 				operation.result["output_fetched_at"] = observed["output_fetched_at"].clone();
 			}

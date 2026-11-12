@@ -117,11 +117,12 @@ A `cache_control` key is rejected before Key Material lookup unless the signed
 `cache_breakpoints` claim is set. Explicit
 [prompt-cache writes](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
 are priced above ordinary input, so the worker's issuer sets the claim only for a
-Run whose Agent opted in with `prompt_cache: explicit` (ADR 0019). With the claim,
+Run whose Agent has `prompt_cache: explicit` (ADR 0019, ADR 0115). With the claim,
 `cache_control` is accepted only as exactly `{"type":"ephemeral"}` on a
 `messages[*].content[*]` text part, at most four times across the request. That
-covers the end of the system message and the last history part of the user
-message; a message whose `content` is a plain string cannot carry one. Any other
+covers the end of the system message, the last history part of the user
+message and, on GPT-5.6 and later, the previous step's position; a message whose
+`content` is a plain string cannot carry one. Any other
 location (a message, an image or audio part, `tools`, `provider`, the request
 root or anything nested), any other value (a different `type`, a `ttl`, extra
 keys, `null`) and a fifth breakpoint are `403 capability_claim_violation`.

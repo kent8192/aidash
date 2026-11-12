@@ -18,7 +18,13 @@ use reinhardt::query::QueryStatementBuilder as _;
 use uuid::Uuid;
 
 impl Access {
-	pub(crate) async fn track_discovery(&mut self, agents: &[DiscoveredAgent]) -> Result<()> {
+	/// Record what a Run found by discovery. `same_tenant` names the Nodes of the Run's own Tenant
+	/// among them: a later read of their Agents is decided here, without asking the Node.
+	pub(crate) async fn track_discovery(
+		&mut self,
+		agents: &[DiscoveredAgent],
+		same_tenant: &std::collections::BTreeSet<String>,
+	) -> Result<()> {
 		let Some(run) = self.read_run else {
 			return Ok(());
 		};
@@ -41,6 +47,7 @@ impl Access {
 				let query_bind_4 = &agent.entity.version;
 				let query_bind_5 = digest(&metadata);
 				let query_bind_6 = metadata;
+				let query_bind_7 = same_tenant.contains(&agent.node_id);
 				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_run_remote_reads"))
@@ -52,6 +59,7 @@ impl Access {
 							Alias::new("digest"),
 							Alias::new("metadata"),
 							Alias::new("tenant"),
+							Alias::new("same_tenant"),
 						])
 						.from_subquery(
 							Query::select()
@@ -80,6 +88,10 @@ impl Access {
 									vec![Expr::value(query_bind_6.to_owned()).into()],
 								))
 								.expr(crate::database::scope::tenant())
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_7).into()],
+								))
 								.to_owned(),
 						)
 						.on_conflict(
@@ -103,9 +115,12 @@ impl Access {
 		Ok(())
 	}
 
-	pub(crate) async fn remote_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+	pub(crate) async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
 		let transport = crate::bootstrap::dependency_transport(self);
-		aidash_application::federation::registry_reads::reads_visible(
+		aidash_application::federation::registry_reads::reads(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			&transport,
 			run,

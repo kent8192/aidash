@@ -12,15 +12,24 @@ fn reply(status: u16) -> Reply {
 		execution_refusal: None,
 		transaction_pending: false,
 		unreachable: None,
+		policy_busy: None,
 		body: Ok(serde_json::to_vec(&json!({"ok":true})).unwrap()),
 	}
 }
 #[rstest]
 #[case(401)]
 #[case(403)]
-#[case(404)]
 fn permanent_denials_never_reflect_peer_body(#[case] status: u16) {
 	assert!(matches!(classify(reply(status)), Err(Error::Forbidden)));
+}
+#[rstest]
+fn a_receiver_that_did_not_find_it_is_no_denial() {
+	let mut response = reply(404);
+	response.body = Err(Error::External("private receiver text".into()));
+	assert!(matches!(
+		classify(response),
+		Err(Error::NotFound(message)) if message == "the target Node did not find it"
+	));
 }
 #[rstest]
 fn receiver_can_share_a_closed_execution_refusal_without_reflecting_its_body() {
@@ -50,6 +59,15 @@ fn conflict_and_pending_visibility_remain_distinct() {
 	let mut pending = reply(503);
 	pending.transaction_pending = true;
 	assert!(matches!(classify(pending), Err(Error::TransactionPending)));
+}
+#[rstest]
+fn a_peer_refusing_an_authority_change_keeps_its_wait() {
+	let mut busy = reply(503);
+	busy.policy_busy = Some(30);
+	assert!(matches!(
+		classify(busy),
+		Err(Error::PolicyBusy { retry_after: 30 })
+	));
 }
 #[rstest]
 #[case(401)]

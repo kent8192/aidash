@@ -44,8 +44,17 @@ pub trait HomeScope: Send + Sized {
 		response: Value,
 	) -> Result<aidash_domain::HumanRequest>;
 	async fn requester_grant(&mut self, task: Uuid, grant: Uuid) -> Result<Option<Grant>>;
+	/// The grant of `task` named `grant`, whoever asked for it. The caller's right to use it is
+	/// decided separately; this only finds it (#763).
+	async fn task_grant(&mut self, task: Uuid, grant: Uuid) -> Result<Option<Grant>>;
+	/// Whether the policy allows `action` on `resource`, without writing a denial.
+	async fn may(&mut self, resource: &Resource, action: &str) -> Result<bool>;
+	/// Record on the Task's Workspace that a person declined a call of a remote Run.
+	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()>;
 	async fn binding(&mut self, grant: Uuid) -> Result<Option<HomeBinding>>;
 	async fn grants(&mut self, task: Uuid) -> Result<Vec<Grant>>;
+	/// Grants of other requesters, considered only for a content-free decline offer.
+	async fn holder_grants(&mut self, task: Uuid) -> Result<Vec<Grant>>;
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>>;
 	async fn insert_binding(
 		&mut self,
@@ -65,6 +74,8 @@ pub trait HomeScope: Send + Sized {
 		keys: &[String],
 	) -> Result<Task>;
 	async fn binding_revision(&mut self, grant: Uuid, revision: i64) -> Result<()>;
+	/// Record that the receiving Node confirmed it started this execution.
+	async fn mark_activated(&mut self, grant: Uuid) -> Result<()>;
 	async fn resume_semantic(
 		&mut self,
 		grant: Uuid,

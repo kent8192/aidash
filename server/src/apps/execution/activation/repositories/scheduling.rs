@@ -39,6 +39,8 @@ pub(crate) struct Scope<E> {
 	pub tx: E,
 	/// What the leasing worker advertises; production passes `PersistedCapability::supported()`.
 	pub capabilities: &'static [PersistedCapability],
+	/// This process reached the database again within the last lease period (#786).
+	pub holds_recoveries: bool,
 }
 
 pub(crate) fn raw(row: Row) -> Result<RawRun> {
@@ -180,6 +182,9 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 	fn capabilities(&self) -> &[PersistedCapability] {
 		self.capabilities
 	}
+	fn holds_recoveries(&self) -> bool {
+		self.holds_recoveries
+	}
 	async fn now(&mut self) -> aidash_application::Result<DateTime<Utc>> {
 		let (sql, values) = Query::select()
 			.expr_as(Expr::current_timestamp(), Alias::new("now"))
@@ -267,6 +272,51 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.and_where(Expr::col("seq").gt(Expr::value(seq)))
 			.to_owned();
 		exists(self.tx.executor(), newer).await.map_err(Into::into)
+	}
+	async fn operation_finished(
+		&mut self,
+		run: Uuid,
+		operation: Uuid,
+	) -> aidash_application::Result<bool> {
+		let active = Query::select()
+			.expr(Expr::value(1_i64))
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col("id").eq(Expr::value(operation)))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("state").is_in(["prepared", "submitted", "running", "cancelling"]))
+			.to_owned();
+		Ok(!exists(self.tx.executor(), active)
+			.await
+			.map_err(aidash_application::Error::from)?)
+	}
+	async fn workspace_event_after(
+		&mut self,
+		run: Uuid,
+		cursor: i64,
+	) -> aidash_application::Result<Option<DateTime<Utc>>> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("created_at"))
+			.from(Alias::new("run_activations"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("generation").gt(Expr::value(cursor)))
+			.and_where(Expr::col("reason").like("workspace_task:%"))
+			.order_by(Alias::new("generation"), Order::Asc)
+			.limit(1)
+			.build(PostgresQueryBuilder);
+		let row = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?;
+		row.map(|row| {
+			let value = QueryRow::from_backend_row(row).data;
+			let at: DateTime<Utc> =
+				serde_json::from_value(value["created_at"].clone()).map_err(Error::from)?;
+			Ok::<DateTime<Utc>, Error>(at + chrono::Duration::seconds(2))
+		})
+		.transpose()
+		.map_err(Into::into)
 	}
 	async fn approval(&mut self, id: Uuid) -> aidash_application::Result<Option<Approval>> {
 		let (sql, values) = Query::select()

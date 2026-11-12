@@ -97,8 +97,8 @@ impl DependencyScope for NativeDependencies<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		catalog::entry(self.0, reference, action)
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::readable(self.0, reference)
 			.await
 			.map_err(Into::into)
 	}

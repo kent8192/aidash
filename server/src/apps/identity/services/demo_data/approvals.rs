@@ -38,7 +38,7 @@ pub(super) async fn approve(
 		return Ok(());
 	}
 	pool.scoped(&TenancyScope::tenant(tenant)?, async |tx| {
-		let snapshot = AuthorizationBundle::lock_snapshot(&mut **tx, tenant, true).await?;
+		let snapshot = AuthorizationBundle::lock_for_maintenance(&mut **tx, tenant).await?;
 		let mut pending = Vec::new();
 		for want in wanted {
 			let entry = EntityRef {

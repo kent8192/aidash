@@ -12,10 +12,23 @@ import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Field, useI18n } from "../ui";
 import type { RunManagement } from "../generated/models";
+import { collaborationCopy } from "./copy";
+import { DeclineCall } from "./decline-call";
+import { offeredDecline } from "./decline-call-model";
+import type { Submit } from "../forms";
 
-export function RemoteRunManagement({ id }: { id: string }) {
+export function RemoteRunManagement({
+  id,
+  resumeElsewhere = true,
+}: {
+  id: string;
+  /** Whether a paused Run is resumed from another Home. A Run hidden by what it
+   *  read says what stands in the way instead. */
+  resumeElsewhere?: boolean;
+}) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
+  const copy = collaborationCopy[locale];
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -44,6 +57,22 @@ export function RemoteRunManagement({ id }: { id: string }) {
       )
       .finally(() => setBusy(false));
   };
+  // A Run the caller cannot read is declined without a sentence: a message needs reading it.
+  const declinable = offeredDecline(state, state.control);
+  const submit: Submit = async (request) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request();
+      await client.invalidateQueries();
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <section
       aria-label={ja ? "実行の管理" : "Execution management"}
@@ -52,13 +81,22 @@ export function RemoteRunManagement({ id }: { id: string }) {
       <h3 className="text-[13px] font-semibold text-foreground">
         {ja ? "実行の管理" : "Execution management"}
       </h3>
-      {state.semantic_reason && (
+      {state.may_control &&
+        state.control !== "ACTIVE" &&
+        state.control_source === "deployment_administrator" && (
+          <Hint role="status">
+            {state.control === "CANCELLED"
+              ? copy.cancelledByAdministrator
+              : copy.pausedByAdministrator}
+          </Hint>
+        )}
+      {state.may_control && state.semantic_reason && (
         <Hint role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</Hint>
       )}
-      {state.memory_cleanup && (
+      {state.may_control && state.memory_cleanup && (
         <CleanupMessage state={state.memory_cleanup.state} />
       )}
-      {!terminal && (
+      {state.may_control && !terminal && (
         <div className="flex min-w-0 flex-wrap gap-2">
           {state.control === "ACTIVE" && (
             <Button
@@ -78,7 +116,23 @@ export function RemoteRunManagement({ id }: { id: string }) {
           </Button>
         </div>
       )}
-      {state.control === "PAUSED" &&
+      {declinable && !terminal && (
+        <DeclineCall
+          call={declinable}
+          submit={submit}
+          withSentence={false}
+          decline={(call) =>
+            apiFetch(`/api/runs/${id}/declined-calls`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ call }),
+            })
+          }
+        />
+      )}
+      {state.may_control &&
+        resumeElsewhere &&
+        state.control === "PAUSED" &&
         !terminal &&
         (!state.semantic_recovery ||
           state.semantic_recovery.actions.includes(

@@ -472,6 +472,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			routing_run: None,
 			disable_provider_transforms: false,
 			input_format,
 			// Growth is in the unit of the Run's current byte quotas, so a
@@ -591,6 +592,7 @@ impl RequestBudget<'_> {
 			cache_scope,
 			// Set per step by the harness; salted estimates count it either way.
 			cache_breakpoints: false,
+			routing_run: None,
 			disable_provider_transforms: false,
 			input_format: self.input_format,
 			estimate: self.estimate,
@@ -938,6 +940,13 @@ pub enum ContextEvent {
 		instruction: String,
 		through_seq: i64,
 	},
+	/// A final answer was held because the only open subtasks are ones nobody
+	/// will run. Each Task is named here once; a later final answer abandons
+	/// those this Run created (#772).
+	UnassignedTasksTold {
+		tasks: Vec<ToldTask>,
+		instruction: String,
+	},
 	/// The Completion Gate refused a final answer because a Check did not pass
 	/// on the current files. Each one spends the Repair Allowance of the input
 	/// at `through_seq`.
@@ -946,6 +955,14 @@ pub enum ContextEvent {
 		instruction: String,
 		through_seq: i64,
 	},
+}
+
+/// A subtask the model was told has nobody to run it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToldTask {
+	pub id: uuid::Uuid,
+	pub title: String,
 }
 
 /// What an elided result tells the model in place of the content it removed.

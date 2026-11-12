@@ -23,6 +23,22 @@ use crate::apps::workspaces::models::{
 };
 use crate::{Error, Result, apps::identity::services::access::Access};
 
+/// Resolve an operator-named Space before opening its Tenant transaction.
+pub(crate) async fn tenant_by_id(pool: &crate::database::native::Pool, id: Uuid) -> Result<String> {
+	use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::ScratchSpaceTenant);
+	let tenant: Option<String> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("scratch_spaces"))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(pool.in_scope(&scope))
+	.await?;
+	tenant.ok_or_else(|| Error::NotFound("Scratch Space".into()))
+}
+
 /// Locks the row before loading dependent settings and members. The Tenant is
 /// always the caller's scoped Tenant, never supplied by an API request.
 pub(crate) async fn load(

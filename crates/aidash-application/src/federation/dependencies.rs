@@ -61,12 +61,9 @@ pub async fn check_local(scope: &mut dyn DependencyScope, reference: &Reference)
 				id: id.clone(),
 				version: version.clone(),
 			};
-			let entry = scope.catalog_entry(&reference, "registry.read").await?;
-			Ok(entry.kind == "agent"
-				&& digest(&serde_json::to_value(&entry)?) == *expected
-				&& scope
-					.decide(&scope.catalog_resource(&entry), "agent.execute")
-					.await?)
+			// `registry.read` alone: a Catalog Approval decides use, not who may read (#769).
+			let entry = scope.readable_entry(&reference).await?;
+			Ok(entry.kind == "agent" && digest(&serde_json::to_value(&entry)?) == *expected)
 		}
 	};
 	match result {
