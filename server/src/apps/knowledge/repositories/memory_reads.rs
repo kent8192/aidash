@@ -150,8 +150,10 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 		));
 	}
 	// Built-in Memory changes its Units on its own (eviction, correction,
-	// reconciliation). An earlier read that no longer holds is not this read's
-	// failure (#852 decision 8), so only reads that still hold are revalidated.
+	// reconciliation). An earlier read whose Unit changed is not this read's
+	// failure (#852 decision 8), but a withdrawn source behind it (revoked or
+	// expired Research, ADR 0046) is: the Run's earlier memory tool results
+	// quote that source and nothing redacts them.
 	let builtin = binding.provider.id
 		== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
 		&& binding.provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
@@ -181,7 +183,6 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 				}
 				units::authorize(lease, &unit.bank, "memory.read").await?;
 			}
-			continue;
 		}
 		evidence
 			.entry(unit.bank.workspace)
@@ -193,35 +194,31 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 			});
 	}
 	let mut visits = 0;
+	let unit_changes = if builtin {
+		units::UnitChanges::Forgive
+	} else {
+		units::UnitChanges::Refuse
+	};
 	for (workspace, sources) in evidence {
-		// Built-in reads are checked one by one so a changed support of one read
-		// does not refuse the others; explicit memory keeps the joint check.
-		let batches: Vec<&[Evidence]> = if builtin {
-			sources.chunks(1).collect()
-		} else {
-			vec![&sources[..]]
-		};
-		for batch in batches {
-			match units::current_in_reader(
-				lease,
-				workspace,
-				batch,
-				journal_visits,
-				&mut visits,
-				Some(run),
-			)
-			.await
+		match units::sources_in_reader(
+			lease,
+			workspace,
+			&sources,
+			journal_visits,
+			&mut visits,
+			Some(run),
+			unit_changes,
+		)
+		.await
+		{
+			Err(Error::Invalid(message))
+				if message == "memory evidence traversal exceeds its bound" =>
 			{
-				Err(Error::Invalid(message))
-					if message == "memory evidence traversal exceeds its bound" =>
-				{
-					return Err(Error::Conflict(
-						"Run memory read journal exceeds its provenance bound".into(),
-					));
-				}
-				Err(Error::Conflict(_)) if builtin => {}
-				result => result?,
+				return Err(Error::Conflict(
+					"Run memory read journal exceeds its provenance bound".into(),
+				));
 			}
+			result => result?,
 		}
 	}
 	Ok(())
@@ -274,7 +271,8 @@ pub(crate) async fn has_reads(
 /// reconciles its Units automatically, and its failures are tool errors, never
 /// a Run stop. For it a read Unit that changed, left the bank or expired is not
 /// a failure: the Run already holds what it read, and Run-start hydration drops
-/// that Unit from later inferences. Lost authority still fails.
+/// that Unit from later inferences. Lost authority still fails, and so does a
+/// withdrawn source behind a read Unit, such as revoked or expired Research.
 pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Option<Failure>> {
 	// Error kinds of the shared helpers: `Conflict` reports a changed or removed
 	// source, `Forbidden` lost authority.
@@ -314,11 +312,6 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 	let builtin = binding.provider.id
 		== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
 		&& binding.provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
-	// A changed or removed source invalidates explicitly bound memory only.
-	let changed = |error: Error| match error {
-		Error::Conflict(_) if builtin => Ok(None),
-		error => source(error),
-	};
 	if !has_reads(&mut **lease.tx(), run_id).await? {
 		return Ok(None);
 	}
@@ -370,6 +363,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 			let revision: i64 = read.try_get("revision")?;
 			cursor = Some((id, revision));
 			let Some(unit) = units::load(lease, id, false).await? else {
+				// An evicted built-in Unit leaves nothing to check its sources by.
 				if builtin {
 					continue;
 				}
@@ -394,18 +388,38 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 					return source(error);
 				}
 			}
-			if !unit.visible() || unit.revision != revision {
-				if builtin {
-					continue;
+			if builtin {
+				// A Unit that changed, left the bank or expired is forgiven, but
+				// a withdrawn source behind it (revoked or expired Research, ADR
+				// 0046) still invalidates the Run: its earlier memory_recall and
+				// memory_reflect results quote that source, Run-start hydration
+				// refreshes only MemoryRecall events and Research redaction does
+				// not recognize memory results.
+				if let Err(error) = units::sources_in_reader(
+					lease,
+					unit.bank.workspace,
+					&[Evidence::Unit {
+						bank: unit.bank.clone(),
+						id: unit.id,
+						revision,
+					}],
+					policy.bounds.max_graph_visits,
+					&mut 0,
+					Some(run_id),
+					units::UnitChanges::Forgive,
+				)
+				.await
+				{
+					return source(error);
 				}
+				continue;
+			}
+			if !unit.visible() || unit.revision != revision {
 				return Ok(Some(Failure::Invalidated));
 			}
 			let policy = match units::unexpired(lease, &unit).await {
 				Ok(policy) => policy,
-				Err(error) => match changed(error)? {
-					None => continue,
-					failure => return Ok(failure),
-				},
+				Err(error) => return source(error),
 			};
 			if let Err(error) = units::current_for_run(
 				lease,
@@ -418,7 +432,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				policy.bounds.max_graph_visits,
 				Some(run_id),
 			)
-			.await && let Some(failure) = changed(error)?
+			.await && let Some(failure) = source(error)?
 			{
 				return Ok(Some(failure));
 			}

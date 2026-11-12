@@ -202,6 +202,10 @@ pub(crate) async fn text(
 	Ok(Some(unit.content.text))
 }
 
+const UNIT_EXPIRED: &str = "memory unit retention expired";
+const SUPPORT_REMOVED: &str = "memory support removed";
+const SUPPORT_CHANGED: &str = "memory support changed";
+
 /// TTL is a disclosure fence even before the bounded maintenance worker runs.
 /// Keep raw loading available to deletion/restore paths so they can clean up.
 pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<Policy> {
@@ -215,7 +219,7 @@ pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<Poli
 		.retention
 		.unit_expired(unit.learned_at, chrono::Utc::now())
 	{
-		return Err(Error::Conflict("memory unit retention expired".into()));
+		return Err(Error::Conflict(UNIT_EXPIRED.into()));
 	}
 	Ok(policy)
 }
@@ -260,6 +264,41 @@ pub(crate) fn current_in_reader<'a>(
 	visits: &'a mut usize,
 	reader: Option<Uuid>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+	sources_in_reader(
+		lease,
+		workspace,
+		evidence,
+		max_visits,
+		visits,
+		reader,
+		UnitChanges::Refuse,
+	)
+}
+
+/// How a provenance traversal treats a memory Unit on its way that changed,
+/// left its bank or expired.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnitChanges {
+	/// The Unit no longer supports what was read: `Conflict`.
+	Refuse,
+	/// Built-in Memory changes its own Units (#852 decision 8): pass over the
+	/// change and keep checking every source behind the Unit, so any `Conflict`
+	/// left reports a withdrawn source (revoked or expired Research, a removed
+	/// Journal range, message, artifact, Run or publication).
+	Forgive,
+}
+
+/// [`current_in_reader`] with a choice of how changed Units count.
+pub(crate) fn sources_in_reader<'a>(
+	lease: &'a mut Lease<'_>,
+	workspace: Uuid,
+	evidence: &'a [aidash_domain::memory::Evidence],
+	max_visits: usize,
+	visits: &'a mut usize,
+	reader: Option<Uuid>,
+	changes: UnitChanges,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+	let forgive = changes == UnitChanges::Forgive;
 	Box::pin(async move {
 		use aidash_application::ports::semantic::visibility::SemanticDisclosureScope;
 		use aidash_domain::memory::Evidence;
@@ -425,14 +464,32 @@ pub(crate) fn current_in_reader<'a>(
 					if bank.workspace != workspace {
 						return Err(Error::Forbidden);
 					}
-					let unit = load(lease, id, false)
-						.await?
-						.ok_or_else(|| Error::Conflict("memory support removed".into()))?;
-					if unit.bank != bank || unit.revision != revision || !unit.visible() {
-						return Err(Error::Conflict("memory support changed".into()));
+					let Some(unit) = load(lease, id, false).await? else {
+						if forgive {
+							continue;
+						}
+						return Err(Error::Conflict(SUPPORT_REMOVED.into()));
+					};
+					if unit.bank != bank {
+						if forgive {
+							continue;
+						}
+						return Err(Error::Conflict(SUPPORT_CHANGED.into()));
+					}
+					// A forgiven Unit's current sources stand in for those of the
+					// revision that was read: older revisions are not kept. A stale
+					// Unit lost a purged source (purge dependencies), which is a
+					// withdrawal even for Built-in Memory.
+					if unit.stale || (!forgive && (unit.revision != revision || !unit.visible())) {
+						return Err(Error::Conflict(SUPPORT_CHANGED.into()));
 					}
 					authorize(lease, &bank, "memory.read").await?;
-					unexpired(lease, &unit).await?;
+					match unexpired(lease, &unit).await {
+						Err(Error::Conflict(message)) if forgive && message == UNIT_EXPIRED => {}
+						result => {
+							result?;
+						}
+					}
 					pending.extend(
 						unit.content
 							.evidence

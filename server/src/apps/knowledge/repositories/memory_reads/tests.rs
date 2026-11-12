@@ -15,6 +15,12 @@ use serde_json::json;
 /// A Run of Agent `a` bound to memory `provider` that read revision 1 of
 /// `unit`, and a Subject allowed everything by policy revision 1.
 async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid, Actor) {
+	let actor = subject(store).await;
+	(bound_run(store, bank, provider, Some(unit)).await, actor)
+}
+
+/// A Subject allowed everything by policy revision 1.
+async fn subject(store: &Store) -> Actor {
 	crate::registry::Registry::new(store.pool.clone(), &store.deployment)
 		.unwrap()
 		.seed_system()
@@ -55,7 +61,12 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid
 		.issue_credential("acme", "alice", 3600, "deployment_administrator")
 		.await
 		.unwrap();
-	let actor = authorization.authenticate(&credential.token).await.unwrap();
+	authorization.authenticate(&credential.token).await.unwrap()
+}
+
+/// A completed Run of Agent `a` bound to memory `provider` that read revision 1
+/// of `read`, when given.
+async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid>) -> Uuid {
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
@@ -79,7 +90,7 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid
 	)
 	.unwrap();
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
-	for (table, columns, values) in [
+	let mut rows = vec![
 		(
 			"runs",
 			vec![
@@ -131,7 +142,9 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid
 				Expr::value("acme"),
 			],
 		),
-		(
+	];
+	if let Some(unit) = read {
+		rows.push((
 			"memory_run_reads",
 			vec!["run_id", "unit_id", "revision", "tenant"],
 			vec![
@@ -140,8 +153,9 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid
 				Expr::value(1_i64),
 				Expr::value("acme"),
 			],
-		),
-	] {
+		));
+	}
+	for (table, columns, values) in rows {
 		let mut row = Query::select();
 		for value in values {
 			row.expr(value);
@@ -158,13 +172,20 @@ async fn reader(store: &Store, bank: &Bank, unit: Uuid, provider: &str) -> (Uuid
 		.unwrap();
 	}
 	tx.commit().await.unwrap();
-	(run, actor)
+	run
 }
 
 async fn cause(store: &Store, actor: &Actor, workspace: Uuid, run: Uuid) -> Option<Failure> {
 	let mut lease = Lease::begin(store, actor, workspace).await.unwrap();
 	let result = invalidity(&mut lease, run).await;
 	lease.finish(result).await.unwrap()
+}
+
+/// Records a read of no new Unit, which revalidates the Run's earlier reads.
+async fn record_again(store: &Store, actor: &Actor, workspace: Uuid, run: Uuid) -> Result<()> {
+	let mut lease = Lease::begin(store, actor, workspace).await.unwrap();
+	let result = record(&mut lease, run, &[]).await;
+	lease.finish(result).await
 }
 
 #[rstest]
@@ -418,6 +439,198 @@ async fn builtin_memory_read_journal_fails_only_on_lost_authority(
 		cause(&store, &actor, bank.workspace, run).await,
 		expected,
 		"{change} of a built-in Unit"
+	);
+}
+
+/// #852 decision 8 forgives only Built-in Memory's own changes to its Units. A
+/// Run that recalled a built-in fact whose Research was later revoked or expired
+/// (ADR 0046) still stops, also when the Unit was corrected afterwards: its
+/// earlier memory tool results quote that Research and nothing redacts them.
+/// Recording a later read revalidates the earlier one and refuses as well.
+#[rstest]
+#[case::revocation("revocation", false)]
+#[case::account_terms("account_terms", false)]
+#[case::revocation_then_correction("revocation", true)]
+#[tokio::test]
+async fn builtin_memory_read_journal_fails_when_research_behind_a_unit_is_withdrawn(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] loss: &str,
+	#[case] corrected: bool,
+) {
+	// Arrange
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = memory::create_participant(
+		&store,
+		&administrator(&store).await,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let builtin = aidash_domain::registry::bindings::memory_defaults::MEMORY_ID;
+	let actor = subject(&store).await;
+	// The Run whose Research the fact was learned from.
+	let source = bound_run(&store, &bank, builtin, None).await;
+	let result = json!({});
+	let digest = aidash_domain::registry::rules::digest(&result);
+	let research = json!({"contract":"aidash.research.reference/1", "invocation":"memory-research", "digest":digest, "operation":"search", "sources":[Uuid::now_v7()], "documents":[]});
+	let event = json!({"kind":"tool", "call":{"id":"call", "name":"research", "arguments":{}}, "result":research});
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	for statement in [
+		Query::insert()
+			.into_table(Alias::new("run_context_events"))
+			.columns(["run_id", "seq", "origin", "event", "digest", "tenant"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(source))
+					.expr(Expr::value(1_i64))
+					.expr(Expr::value("appended"))
+					.expr(Expr::value(event.clone()))
+					.expr(Expr::value(aidash_domain::registry::rules::digest(&event)))
+					.expr(Expr::value("acme"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+		Query::insert()
+			.into_table(Alias::new("research_journal_results"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"run_id",
+					"invocation_key",
+					"digest",
+					"reference",
+					"bytes",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::now_v7()))
+					.expr(Expr::value("acme"))
+					.expr(Expr::value(source))
+					.expr(Expr::value("memory-research"))
+					.expr(Expr::value(digest))
+					.expr(Expr::value(research))
+					.expr(Expr::value(b"{}".to_vec()))
+					.expr(Expr::value(chrono::Utc::now()))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	] {
+		native::query(&statement).execute(&mut *tx).await.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let id = Uuid::now_v7();
+	let mut fact = content("The comet returns every 76 years.");
+	fact.evidence = vec![Evidence::JournalRange {
+		run_id: source,
+		from_seq: 1,
+		through_seq: 1,
+	}];
+	memory::mutate(
+		&store,
+		&administrator(&store).await,
+		mutation(
+			&bank,
+			Change::Add {
+				id,
+				content: fact.clone(),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let run = bound_run(&store, &bank, builtin, Some(id)).await;
+	assert_eq!(cause(&store, &actor, bank.workspace, run).await, None);
+	record_again(&store, &actor, bank.workspace, run)
+		.await
+		.unwrap();
+
+	if corrected {
+		// Built-in Memory corrects the Unit after the Run read it; that
+		// forgiven change must not hide the Research withdrawn next.
+		fact.text = "The comet returns every 75 to 79 years.".into();
+		memory::mutate(
+			&store,
+			&administrator(&store).await,
+			mutation(
+				&bank,
+				Change::Correct {
+					id,
+					expected_revision: 1,
+					content: fact,
+				},
+			),
+		)
+		.await
+		.unwrap();
+	}
+
+	// Act
+	let withdrawal = if loss == "account_terms" {
+		Query::update()
+			.table(Alias::new("research_journal_results"))
+			.value(Alias::new("bytes"), None::<Vec<u8>>)
+			.value(Alias::new("purge_reason"), "account_terms")
+			.and_where(Expr::col("run_id").eq(Expr::value(source)))
+			.to_string(PostgresQueryBuilder)
+	} else {
+		Query::insert()
+			.into_table(Alias::new("research_revocations"))
+			.columns(
+				[
+					"run_id",
+					"tenant",
+					"revoked_by",
+					"reason",
+					"revoked_at",
+					"removed",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(source))
+					.expr(Expr::value("acme"))
+					.expr(Expr::value(
+						json!({"kind":"subject","tenant":"acme","subject":"alice"}),
+					))
+					.expr(Expr::value("test"))
+					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(
+						serde_json::to_value(
+							aidash_domain::research::revocation::Removed::default(),
+						)
+						.unwrap(),
+					))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder)
+	};
+	native::query(&withdrawal)
+		.execute(store.pool.in_scope(&TEST_FIXTURE))
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(
+		cause(&store, &actor, bank.workspace, run).await,
+		Some(Failure::Invalidated),
+		"{loss} of the Research behind a recalled built-in Unit must stop the Run"
+	);
+	assert!(
+		matches!(
+			record_again(&store, &actor, bank.workspace, run).await,
+			Err(Error::Conflict(_))
+		),
+		"recording a later read must not pass over the withdrawn Research"
 	);
 }
 
