@@ -231,6 +231,15 @@ enabled = false
 # payload_days = 365
 # incident_evidence_days = 3650
 
+# Schedules (#557): the most Schedules any Tenant and any person may hold, the
+# shortest gap between two fire times (a Tenant may only raise it) and how
+# often each replica looks for due Schedules. Takes effect on restart.
+# [schedules]
+# max_schedules = 1000
+# max_per_person = 100
+# min_interval_seconds = 900
+# poll_seconds = 15
+
 # Research providers this Deployment offers to every Tenant (ADR 0048). Each
 # Tenant still approves one before use. Takes effect on restart. The
 # deterministic `fixture` corpus is for tests and evaluation and is refused in

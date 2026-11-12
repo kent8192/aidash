@@ -117,6 +117,17 @@ impl ToolOperations for Operations {
 		aidash_application::tools::connection_outcome(value, false)
 	}
 
+	async fn schedule(&self, _key: &str, operation: &str, input: Value) -> Result<Value> {
+		crate::apps::workspaces::services::schedules::agent_tool(
+			&self.0.store,
+			&self.0.run,
+			operation,
+			input,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	async fn connection_person(&self) -> Result<bool> {
 		Ok(
 			crate::apps::identity::repositories::oauth_connections::owner_of_run(

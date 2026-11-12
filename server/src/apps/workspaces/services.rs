@@ -14,6 +14,7 @@ pub use core::*;
 pub(crate) mod validation;
 
 pub mod migration_backfill;
+pub mod schedules;
 pub(crate) mod scratch;
 
 pub(crate) mod workspace_scratch_backfill;

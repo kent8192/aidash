@@ -150,6 +150,7 @@ pub async fn initialize_as(
 		.with_research_retention(settings.research_retention.rules()?)
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
+		.with_schedules(settings.schedules.ceilings()?, settings.schedules.poll()?)
 		.with_preview_limits(settings.preview_limits.limits()?)
 		.with_preview(
 			config
@@ -166,6 +167,7 @@ pub async fn initialize_as(
 	)?;
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
+	store.schedule_tier = config.tier_limits.clone();
 	let oauth = Arc::new(aidash_integrations::oauth::McpOAuth::new()?);
 	configure_oauth_connections(
 		&mut store,
@@ -518,6 +520,39 @@ impl RuntimeTasks {
 				)),
 			);
 		}
+		// Every replica runs the scheduler; SKIP LOCKED and the tick key keep a
+		// scheduled time to one Task (#557).
+		let scheduler = federation.clone();
+		tasks.spawn_service(
+			"schedules",
+			runtime_task(watched_loop::run(
+				"schedules",
+				federation.store.schedule_poll,
+				move |_| {
+					let scheduler = scheduler.clone();
+					async move {
+						match crate::apps::workspaces::services::schedules::pass(
+							&scheduler,
+							chrono::Utc::now(),
+						)
+						.await
+						{
+							Ok(pass) if !pass.started.is_empty() || !pass.stopped.is_empty() => {
+								tracing::info!(
+									started = pass.started.len(),
+									skipped = pass.skipped.len(),
+									failed = pass.failed.len(),
+									stopped = pass.stopped.len(),
+									"schedules pass"
+								);
+							}
+							Ok(_) => {}
+							Err(error) => tracing::warn!(%error, "schedules pass failed"),
+						}
+					}
+				},
+			)),
+		);
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
