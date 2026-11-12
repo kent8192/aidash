@@ -9,6 +9,10 @@ use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(super::views::tenant_administration::credential_maximum)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::tenant_administration::set_credential_maximum)
+			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::oauth_connections::list)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::oauth_connections::disconnect)

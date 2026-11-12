@@ -1020,7 +1020,12 @@ impl PolicyAdministration {
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator
-					.issue_credential(&f.store.pool, &input.subject, input.expires_in_seconds)
+					.issue_credential(
+						&f.store.pool,
+						&input.subject,
+						input.expires_in_seconds,
+						f.config.credential_max_seconds,
+					)
 					.await
 			})
 			.await

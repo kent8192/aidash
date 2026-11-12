@@ -495,6 +495,73 @@ async fn active_self_issued_credentials_are_bounded_independently_of_history(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn tenant_credential_maximum_shortens_existing_credentials(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, body) = t
+		.replace(|bundle| {
+			bundle["subjects"]["ci"] =
+				json!({"kind":"service", "node": t.node,"groups":["members"]});
+		})
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, issued) = t
+		.alice(
+			"POST",
+			"/credentials",
+			json!({"subject":"ci", "expires_in_seconds": 60 * 86400}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let path = format!("/api/tenants/{}/credential-maximum", t.tenant);
+	let (status, body) =
+		t.d.as_person(
+			&t.bob,
+			"PUT",
+			&path,
+			Some(&t.bob_context),
+			json!({"seconds":86400}),
+		)
+		.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&path,
+			Some(&t.alice_context),
+			json!({"seconds":86400}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, listed) = t.alice("GET", "/credentials", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	let row = listed
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|row| row["id"] == issued["credential"]["id"])
+		.unwrap();
+	assert_eq!(row["end_reason"], "lowered_maximum");
+	let created =
+		chrono::DateTime::parse_from_rfc3339(row["created_at"].as_str().unwrap()).unwrap();
+	let expires =
+		chrono::DateTime::parse_from_rfc3339(row["expires_at"].as_str().unwrap()).unwrap();
+	assert_eq!((expires - created).num_seconds(), 86400);
+	let (status, body) = t
+		.alice(
+			"POST",
+			"/credentials",
+			json!({"subject":"ci", "expires_in_seconds":86401}),
+		)
+		.await;
+	assert_eq!(status, 400, "{body}");
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn an_administrator_issues_credentials_only_for_subjects_no_person_was_mapped_to(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {

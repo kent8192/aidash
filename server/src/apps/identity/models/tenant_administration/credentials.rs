@@ -40,6 +40,70 @@ async fn lock_issues(tx: &mut AtomicTransaction, mapping: Uuid) -> Result<()> {
 }
 
 impl TenantAdministrator {
+	pub(crate) async fn set_credential_maximum(
+		&self,
+		db: &Pool,
+		seconds: i64,
+		deployment: i64,
+	) -> Result<()> {
+		use reinhardt::db::orm::query::FieldAssignment;
+		let action = aidash_domain::identity::tenancy::TENANT_UPDATE;
+		let may_change = self.may_change(db, action).await?;
+		db.atomic(&self.scope()?, async |tx| {
+			let waiting = if may_change {
+				Some(crate::database::authority_change::raise(tx, self.tenant()).await?)
+			} else {
+				None
+			};
+			let held = self.lock_change(tx, may_change, action).await;
+			let snapshot = if let Some(waiting) = waiting {
+				waiting.settle(tx, held).await?
+			} else {
+				held?
+			};
+			self.require(tx, &snapshot, action, self.tenant(), json!({}))
+				.await?;
+			let old = super::super::Tenant::credential_maximum(tx, self.tenant(), deployment, true)
+				.await?;
+			let assignments: Vec<FieldAssignment> = vec![
+				(
+					super::super::Tenant::field_credential_max_seconds(),
+					Some(seconds),
+				)
+					.into(),
+			];
+			super::super::Tenant::objects()
+				.filter(super::super::Tenant::field_name().eq(self.tenant().to_owned()))
+				.update_fields_with_conn(tx, assignments)
+				.await?;
+			if seconds < old {
+				let now = super::super::dashboard_administration::database_time(tx).await?;
+				super::super::authority::authority_control(tx).await?;
+				let rows = AuthorizationCredential::objects()
+					.filter(AuthorizationCredential::field_tenant().eq(self.tenant().to_owned()))
+					.filter(AuthorizationCredential::field_mapping_id().is_null())
+					.filter(AuthorizationCredential::field_issued_by().ne("dashboard-oidc"))
+					.filter(AuthorizationCredential::field_revoked_at().is_null())
+					.filter(AuthorizationCredential::field_expires_at().gt(now))
+					.select_for_update()
+					.all_with_executor(tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				for mut row in rows {
+					let shortened = row.created_at + chrono::Duration::seconds(seconds);
+					if shortened < row.expires_at {
+						row.expires_at = shortened;
+						row.end_reason = Some("lowered_maximum".into());
+						AuthorizationCredential::objects()
+							.update_with_conn(tx, &row)
+							.await?;
+					}
+				}
+			}
+			Ok(())
+		})
+		.await
+	}
 	/// Requires that this subject could issue a credential for `subject` now:
 	/// a service or agent subject that no Mapping ever named, under
 	/// `credential.issue`. A credential for a person's subject would act as that
@@ -98,15 +162,16 @@ impl TenantAdministrator {
 		db: &Pool,
 		subject: &str,
 		lifetime: i64,
+		deployment_maximum: i64,
 	) -> Result<IssuedCredential> {
 		aidash_domain::policy::identifier(subject)?;
-		credentials::validate_lifetime(lifetime)?;
 		let token = credentials::subject_token(&TenantName::new(self.tenant())?);
 		let own = subject == self.identity.subject;
 		let credential = db
 			.atomic(&self.scope()?, async |tx| {
 				let snapshot = self.lock(tx, false).await?;
 				if own {
+					credentials::validate_lifetime(lifetime)?;
 					self.require(tx, &snapshot, rules::CREDENTIAL_CREATE, subject, json!({}))
 						.await?;
 					lock_issues(tx, self.mapping_id).await?;
@@ -129,6 +194,14 @@ impl TenantAdministrator {
 					}
 				} else {
 					self.require_issuable(tx, &snapshot, subject).await?;
+					let maximum = super::super::Tenant::credential_maximum(
+						tx,
+						self.tenant(),
+						deployment_maximum,
+						false,
+					)
+					.await?;
+					credentials::validate_tenant_lifetime(lifetime, maximum)?;
 				}
 				if !crate::authorization::identity::enabled(&snapshot, subject) {
 					return Err(Error::Invalid(

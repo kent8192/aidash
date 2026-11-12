@@ -119,6 +119,7 @@ federation = true
 # Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
 # one Tenant are never covered.
 [tenancy]
+credential_max_days = 90
 # Create a Personal Tenant for each External Identity at its first sign-in.
 # personal_tenants = false
 # Let signed-in External Identities create Tenants. Deployment Administrators

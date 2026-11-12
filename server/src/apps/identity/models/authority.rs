@@ -198,6 +198,7 @@ impl AuthorizationCredential {
 			revoked_at: None,
 			issued_by: actor.into(),
 			mapping_id: mapping,
+			end_reason: None,
 		};
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))

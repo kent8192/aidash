@@ -28,6 +28,9 @@ pub struct AuthorizationCredential {
 	/// subject; the credential ends with it (ADR 0063).
 	#[field(null = true)]
 	pub mapping_id: Option<uuid::Uuid>,
+	/// Set when an administrator shortens this credential's expiry.
+	#[field(field_type = "text", null = true)]
+	pub end_reason: Option<String>,
 }
 
 use crate::apps::identity::serializers::identity::Credential;
@@ -49,6 +52,7 @@ impl AuthorizationCredential {
 			revoked_at: self.revoked_at,
 			issued_by: self.issued_by,
 			mapping_id: self.mapping_id,
+			end_reason: self.end_reason,
 		}
 	}
 
