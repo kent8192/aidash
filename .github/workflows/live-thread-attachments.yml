@@ -13,6 +13,9 @@ jobs:
       RUST_TEST_THREADS: "1"
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
+      # Retry crates.io downloads and avoid HTTP/2 framing errors on runners (#878).
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_MULTIPLEXING: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

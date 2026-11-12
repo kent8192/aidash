@@ -150,3 +150,5 @@ pub mod transactions;
 pub mod child;
 
 pub mod dashboard;
+
+pub mod open_files;

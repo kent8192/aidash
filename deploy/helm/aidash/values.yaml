@@ -188,6 +188,7 @@ execution:
     helperImage: ""
     storageClassName: ""
     admissionCapacityBytes: 5368709120
+    metadataServerAbsent: false
     maxCpu: 256
     maxMemoryBytes: 1099511627776
     maxCapacityBytes: 1099511627776

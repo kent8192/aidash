@@ -1050,6 +1050,16 @@ pub(crate) async fn reference_inspect(
 	access.finish(result).await
 }
 
+pub(crate) async fn reference_revocation(
+	f: Federation,
+	actor: Actor,
+	id: Uuid,
+) -> Result<ReferenceRevocation> {
+	let mut access = access(&f, actor).await?;
+	let result = super::references::revocation(&mut access, id).await;
+	access.finish(result).await
+}
+
 pub(crate) async fn reference_revoke(
 	f: Federation,
 	actor: Actor,

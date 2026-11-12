@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use aidash_application::egress::{
-	Admission, ConnectionRecord, Direction, EgressScopes, Meter, RequestTimes, ScopeAuthority,
-	ScopeSettings,
+	Admission, ConnectionRecord, DebitRefusal, Direction, EgressScopes, Meter, RequestTimes,
+	ScopeAuthority, ScopeSettings,
 };
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::ScopeId;
@@ -89,28 +89,46 @@ impl DurableScopes {
 		service: Option<(&str, aidash_domain::egress::Limits)>,
 		forwarded: bool,
 	) -> Result<()> {
-		let current = self.live(&settings.id).await.map_err(Error::from)?;
+		// Forwarded bytes have already crossed the gateway, so they are added
+		// even when live authority refuses: a deleted Tenant or Node can be
+		// restored the same day, and its scope's totals count again. With no
+		// live settings there is no budget to compare, and the refusal is the
+		// decision returned. A scope whose state is gone, such as one on a
+		// purged Node, keeps them only in the request record.
+		let (current, refused) = match self.live(&settings.id).await {
+			Ok(current) => (Some(current), None),
+			Err(error)
+				if forwarded && DebitRefusal::of(&error) == Some(DebitRefusal::Forbidden) =>
+			{
+				(None, Some(error))
+			}
+			Err(error) => return Err(error.into()),
+		};
+		let id = current.as_ref().map_or(&settings.id, |current| &current.id);
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
 		let mut tx = self
 			.store
 			.pool
-			.begin(&TenancyScope::tenant(&current.id.tenant)?)
+			.begin(&TenancyScope::tenant(&id.tenant)?)
 			.await?;
-		let state = locked_state(&mut tx, &current.id).await?;
-		if state.suspended {
+		let state = locked_state(&mut tx, id).await?;
+		if state.suspended && !forwarded {
 			return Err(Error::Conflict("egress_suspended".into()));
 		}
-		let mut total = daily(&mut tx, &current.id, day, "").await?;
-		let max = match direction {
-			Direction::Sent => current.budget.sent_bytes,
-			Direction::Received => current.budget.received_bytes,
-		};
+		let mut total = daily(&mut tx, id, day, "").await?;
+		let max = current
+			.as_ref()
+			.map_or(u64::MAX, |current| match direction {
+				Direction::Sent => current.budget.sent_bytes,
+				Direction::Received => current.budget.received_bytes,
+			});
 		let mut exhausted = charge_row(&mut total, direction, bytes, max, forwarded)?;
 		let service_row = if let Some((name, limits)) = service {
-			let mut row = daily(&mut tx, &current.id, day, name).await?;
-			let max = match direction {
-				Direction::Sent => limits.sent_bytes,
-				Direction::Received => limits.received_bytes,
+			let mut row = daily(&mut tx, id, day, name).await?;
+			let max = match (&current, direction) {
+				(None, _) => u64::MAX,
+				(Some(_), Direction::Sent) => limits.sent_bytes,
+				(Some(_), Direction::Received) => limits.received_bytes,
 			};
 			exhausted |= charge_row(&mut row, direction, bytes, max, forwarded)?;
 			Some(row)
@@ -128,6 +146,12 @@ impl DurableScopes {
 				.map_err(reinhardt::core::exception::Error::from)?;
 		}
 		tx.commit().await?;
+		if let Some(refused) = refused {
+			return Err(refused.into());
+		}
+		if state.suspended {
+			return Err(Error::Conflict("egress_suspended".into()));
+		}
 		if exhausted {
 			return Err(Error::Conflict("egress_budget_exhausted".into()));
 		}
@@ -510,23 +534,6 @@ impl EgressScopes for DurableScopes {
 		result.map_err(application_error)
 	}
 }
-/// A decision about the request, as opposed to a store that could not be asked.
-/// The gateway charges the whole amount again after anything else (see
-/// [`Meter::charge`]), so only a decision may leave bytes committed.
-fn decides(error: &aidash_application::Error) -> bool {
-	use aidash_application::Error;
-	match error {
-		Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => true,
-		Error::Refused(code) => code == "egress_budget_exhausted" || code == "egress_suspended",
-		Error::Conflict(code) => {
-			code == aidash_domain::egress::LIMIT_EXCEEDED
-				|| code == aidash_domain::egress::OPERATION_EXPIRED
-				|| code == aidash_domain::egress::OPERATION_INACTIVE
-		}
-		_ => false,
-	}
-}
-
 /// What one side of a debit has taken ahead of a charge both sides have
 /// acknowledged.
 #[derive(Default)]
@@ -619,7 +626,7 @@ impl Meter for ScopedMeter {
 				.map_err(application_error);
 			match result {
 				Ok(()) => ahead.scope.bytes += owed,
-				Err(error) if decides(&error) => {
+				Err(error) if DebitRefusal::of(&error).is_some() => {
 					ahead.scope.bytes += owed;
 					ahead.scope.stop = Some(error);
 				}
@@ -629,7 +636,7 @@ impl Meter for ScopedMeter {
 		if let Some(owed) = still_owed(&ahead.audit) {
 			match self.inner.charge(direction, owed as usize).await {
 				Ok(()) => ahead.audit.bytes += owed,
-				Err(error) if decides(&error) => {
+				Err(error) if DebitRefusal::of(&error).is_some() => {
 					ahead.audit.bytes += owed;
 					ahead.audit.stop = Some(error);
 				}

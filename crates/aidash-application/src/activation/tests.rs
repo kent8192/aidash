@@ -346,6 +346,8 @@ struct State {
 	/// What the worker leasing through this fake advertises; tests swap it to roll a fleet.
 	capabilities: Mutex<&'static [PersistedCapability]>,
 	deferred: Mutex<Vec<Option<DateTime<Utc>>>>,
+	/// Whether this process reached the database again within a lease period.
+	holds_recoveries: AtomicBool,
 }
 impl State {
 	fn record(&self, event: impl Into<String>) {
@@ -386,6 +388,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		quarantine_error: AtomicBool::new(false),
 		capabilities: Mutex::new(PersistedCapability::supported()),
 		deferred: Mutex::new(vec![]),
+		holds_recoveries: AtomicBool::new(false),
 	}))
 }
 struct Scope {
@@ -403,6 +406,9 @@ impl Drop for Scope {
 impl SchedulingScope for Scope {
 	fn capabilities(&self) -> &[PersistedCapability] {
 		*self.state.capabilities.lock().unwrap()
+	}
+	fn holds_recoveries(&self) -> bool {
+		self.state.holds_recoveries.load(Ordering::Acquire)
 	}
 	async fn now(&mut self) -> Result<DateTime<Utc>> {
 		self.state.record("now");
@@ -1099,7 +1105,7 @@ async fn consecutive_lease_recoveries_are_bounded(
 	if fails {
 		assert!(claimed.is_none());
 		assert!(events.iter().any(|event| event == "repair_lease"));
-		assert!(events.iter().any(|event| event == "crash_loop:3:The worker process stopped 3 times in a row while running this step, so Aidash stopped retrying it."));
+		assert!(events.iter().any(|event| event == "crash_loop:3:This step was taken over from its worker 3 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."));
 		assert!(!events.iter().any(|event| event == "lease"));
 	} else {
 		// Only the first recovery is charged at claim; an Isolated Step charges
@@ -1133,4 +1139,98 @@ async fn cancelled_run_bypasses_crash_loop_bound(repository: Repository, now: Da
 	.unwrap()
 	.unwrap();
 	assert_eq!(claimed.control, RunControl::Cancelled);
+}
+
+/// Right after a database outage, a Run whose expired lease still names an owner
+/// is left for that owner to renew; Runs with no owner and cancelled Runs are
+/// claimed as before, and once the hold ends the Run is recovered (#786).
+#[rstest]
+#[case::owned_during_hold(true, RunControl::Active, true, false)]
+#[case::ownerless_during_hold(false, RunControl::Active, true, true)]
+#[case::cancelled_during_hold(true, RunControl::Cancelled, true, true)]
+#[case::owned_after_hold(true, RunControl::Active, false, true)]
+#[tokio::test]
+async fn an_expired_lease_is_left_to_its_owner_after_an_outage(
+	repository: Repository,
+	now: DateTime<Utc>,
+	#[case] owned: bool,
+	#[case] control: RunControl,
+	#[case] holds: bool,
+	#[case] claims: bool,
+) {
+	// Arrange
+	let mut row = raw(now);
+	if owned {
+		row.metadata.lease_owner = Some(Uuid::new_v4());
+		row.metadata.lease_until = Some(now - chrono::Duration::seconds(5));
+	}
+	row.metadata.control = control;
+	*repository.0.run.lock().unwrap() = Some(row);
+	repository
+		.0
+		.holds_recoveries
+		.store(holds, Ordering::Release);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	// Act
+	let claimed = lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		None,
+		repository.node_id(),
+		&mut None,
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert_eq!(claimed.is_some(), claims);
+	let events = repository.0.events.lock().unwrap();
+	assert_eq!(events.iter().any(|event| event == "lease"), claims);
+	if owned && control == RunControl::Active && claims {
+		assert_eq!(claimed.unwrap().recovery.lease_recoveries, 1);
+	}
+}
+
+/// A notification for a Run left to its owner comes back after one lease period
+/// instead of being renotified at once, which would spin for the whole hold.
+#[rstest]
+#[tokio::test]
+async fn a_notification_for_a_held_run_comes_back_after_the_hold(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Arrange
+	let mut row = raw(now);
+	row.metadata.lease_owner = Some(Uuid::new_v4());
+	row.metadata.lease_until = Some(now - chrono::Duration::seconds(5));
+	*repository.0.run.lock().unwrap() = Some(row);
+	repository.0.holds_recoveries.store(true, Ordering::Release);
+	let envelope = repository
+		.0
+		.obligation
+		.lock()
+		.unwrap()
+		.as_ref()
+		.unwrap()
+		.envelope(repository.node_id());
+	// Act
+	let result = claim(&repository, &envelope).await.unwrap();
+	// Assert
+	assert!(matches!(result, Handoff::Recorded));
+	assert!(
+		!repository
+			.0
+			.events
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|e| e == "lease")
+	);
+	assert_eq!(
+		*repository.0.deferred.lock().unwrap(),
+		vec![Some(now + chrono::Duration::seconds(30))]
+	);
 }
