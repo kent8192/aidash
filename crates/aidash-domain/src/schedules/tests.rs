@@ -106,6 +106,12 @@ fn bad_cron_expressions_are_refused(#[case] expression: &str) {
 #[case(cron("*/5 * * * *", "UTC"), false)]
 #[case(cron("0,10 9 * * *", "UTC"), false)]
 #[case(cron("*/15 * * * *", "UTC"), true)]
+// A close pair that occurs once a year is found without waiting for it.
+#[case(cron("0,5 9 1 1 *", "UTC"), false)]
+#[case(cron("55 23,0 * * *", "UTC"), true)]
+#[case(cron("50,58 23 * * *", "UTC"), false)]
+// Across midnight, as if both days could match.
+#[case(cron("58,2 23,0 31 * *", "UTC"), false)]
 #[case(cron("0 9 * * *", "Europe/Berlin"), true)]
 #[case(Trigger::Interval { every_seconds: 600 }, false)]
 #[case(Trigger::Interval { every_seconds: 900 }, true)]
@@ -431,4 +437,18 @@ fn halts_and_tick_statuses_round_trip() {
 	}
 	assert!(!Halt::Paused.notifies());
 	assert!(Halt::RegistrantLeft.notifies());
+}
+
+#[rstest]
+fn a_tick_sooner_than_the_minimum_interval_after_the_last_is_too_soon() {
+	// Arrange: a daylight-saving change brought two times an hour apart within a minute.
+	let previous = at("2026-03-08T06:59:00Z");
+	// Act + Assert
+	assert!(too_soon(Some(previous), at("2026-03-08T07:00:00Z"), 900));
+	assert!(!too_soon(
+		Some(previous),
+		at("2026-03-08T07:14:00Z") + Duration::minutes(1),
+		900
+	));
+	assert!(!too_soon(None, at("2026-03-08T07:00:00Z"), 900));
 }

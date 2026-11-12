@@ -122,6 +122,29 @@ impl Cron {
 		})
 	}
 
+	/// The shortest gap between two fire times in local time, in minutes:
+	/// between two times of one day, and from the last time of a day to the
+	/// first of the next, as if any two days could both match. A
+	/// daylight-saving change can shorten a gap once; the scheduler also
+	/// refuses a tick sooner than the minimum interval after the previous one.
+	pub fn shortest_local_gap_minutes(&self) -> i64 {
+		let times: Vec<i64> = (0..24_i64)
+			.filter(|hour| self.hours & (1 << hour) != 0)
+			.flat_map(|hour| {
+				(0..60_i64)
+					.filter(|minute| self.minutes & (1 << minute) != 0)
+					.map(move |minute| hour * 60 + minute)
+			})
+			.collect();
+		let (Some(first), Some(last)) = (times.first(), times.last()) else {
+			return i64::MAX;
+		};
+		times
+			.windows(2)
+			.map(|pair| pair[1] - pair[0])
+			.fold(first + 24 * 60 - last, i64::min)
+	}
+
 	fn day_matches(&self, date: NaiveDate) -> bool {
 		if self.months & (1 << date.month()) == 0 {
 			return false;

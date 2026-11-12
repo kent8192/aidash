@@ -74,6 +74,9 @@ impl Trigger {
 			} => {
 				let parsed = cron::Cron::parse(expression)?;
 				let zone = cron::time_zone(time_zone)?;
+				if parsed.shortest_local_gap_minutes().saturating_mul(60) < min_interval_seconds {
+					return Err(too_frequent(min_interval_seconds));
+				}
 				let mut previous = parsed.next_after(zone, now).ok_or_else(|| {
 					Error::Invalid(format!("cron expression {expression:?} never fires"))
 				})?;
@@ -776,6 +779,19 @@ pub mod skip {
 	pub const LATE: &str = "late";
 	/// The usage gate refused the Run; `limit: <code>` carries its code.
 	pub const LIMIT: &str = "limit";
+	/// It came sooner than the minimum interval after the previous tick, as a
+	/// daylight-saving change can make it.
+	pub const INTERVAL: &str = "interval";
+}
+
+/// Whether a tick at `scheduled_at` comes sooner than the minimum interval
+/// after the previous scheduled tick, which then refuses it.
+pub fn too_soon(
+	previous: Option<DateTime<Utc>>,
+	scheduled_at: DateTime<Utc>,
+	min_interval_seconds: i64,
+) -> bool {
+	previous.is_some_and(|previous| (scheduled_at - previous).num_seconds() < min_interval_seconds)
 }
 
 /// Consecutive failures after one more settled tick, and whether the
