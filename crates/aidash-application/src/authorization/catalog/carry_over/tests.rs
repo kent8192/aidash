@@ -20,15 +20,24 @@ fn source(version: &str, carry_over: bool) -> Source {
 struct Fixture {
 	sources: Vec<Source>,
 	writes: Vec<(String, String)>,
+	scopes: Vec<ApprovalScope>,
 	approved: bool,
+	/// Nodes beyond the first; a source listed here is missing on that Node.
+	other_nodes: Vec<(NodeAddress, Vec<Source>)>,
 }
 #[async_trait]
 impl CarryScope for Fixture {
 	async fn nodes(&mut self) -> Result<Vec<NodeAddress>> {
-		Ok(vec![node()])
+		let mut nodes = vec![node()];
+		nodes.extend(self.other_nodes.iter().map(|(node, _)| node.clone()));
+		Ok(nodes)
 	}
-	async fn sources(&mut self, _: &NodeAddress, _: &str) -> Result<Vec<Source>> {
-		Ok(self.sources.clone())
+	async fn sources(&mut self, at: &NodeAddress, _: &str) -> Result<Vec<Source>> {
+		Ok(self
+			.other_nodes
+			.iter()
+			.find(|(node, _)| node == at)
+			.map_or_else(|| self.sources.clone(), |(_, sources)| sources.clone()))
 	}
 	async fn approved(&mut self, _: &NodeAddress, _: &EntityRef) -> Result<bool> {
 		Ok(self.approved)
@@ -38,9 +47,11 @@ impl CarryScope for Fixture {
 		_: &NodeAddress,
 		source: &Source,
 		entry: &Entry,
+		scope: ApprovalScope,
 	) -> Result<()> {
 		self.writes
 			.push((source.definition.version.clone(), entry.version.clone()));
+		self.scopes.push(scope);
 		Ok(())
 	}
 }
@@ -133,4 +144,38 @@ async fn invalid_consent_surface_reports_failure_without_writing() {
 	assert!(!result[0].carried);
 	assert!(result[0].changed[0].contains("consent comparison failed"));
 	assert!(fixture.writes.is_empty());
+}
+
+#[tokio::test]
+async fn a_carry_that_fails_on_one_node_writes_node_scoped_rows_elsewhere() {
+	let deployment = |version: &str, provider: &str| Source {
+		definition: model(version, provider),
+		enabled: true,
+		carry_over: true,
+		scope: ApprovalScope::Deployment,
+		approver: "alice".into(),
+	};
+	let other: NodeAddress = "aidash://local/calm-heron-p4t7w2zb".parse().unwrap();
+	let mut fixture = Fixture {
+		sources: vec![deployment("1.0.0", "provider")],
+		approved: true,
+		other_nodes: vec![(other, vec![deployment("1.0.0", "other")])],
+		..Default::default()
+	};
+	let result = carry(&mut fixture, &model("1.1.0", "provider"))
+		.await
+		.unwrap();
+	assert!(result[0].carried);
+	assert!(!result[1].carried);
+	assert_eq!(fixture.scopes, [ApprovalScope::Node]);
+
+	let mut fixture = Fixture {
+		sources: vec![deployment("1.0.0", "provider")],
+		approved: true,
+		..Default::default()
+	};
+	carry(&mut fixture, &model("1.1.0", "provider"))
+		.await
+		.unwrap();
+	assert_eq!(fixture.scopes, [ApprovalScope::Deployment]);
 }

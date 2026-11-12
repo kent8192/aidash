@@ -35,17 +35,25 @@ pub trait CarryScope: Send {
 	async fn nodes(&mut self) -> Result<Vec<NodeAddress>>;
 	async fn sources(&mut self, node: &NodeAddress, id: &str) -> Result<Vec<Source>>;
 	async fn approved(&mut self, node: &NodeAddress, dependency: &EntityRef) -> Result<bool>;
+	/// `scope` is the Carried Approval's own scope, which may be narrower
+	/// than its source's when the carry did not succeed on every Node.
 	async fn write_carried(
 		&mut self,
 		node: &NodeAddress,
 		source: &Source,
 		entry: &Entry,
+		scope: ApprovalScope,
 	) -> Result<()>;
 }
 
 /// Carry from the highest eligible lower version independently on each Node.
+///
+/// Every Node is decided before anything is written. A Deployment-scoped
+/// source that carries on only some of its Nodes gives those Nodes
+/// Node-scoped rows, so the Deployment-scoped rows of one version never
+/// differ between Nodes.
 pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<CarryResult>> {
-	let mut results = Vec::new();
+	let mut decided = Vec::new();
 	for node in scope.nodes().await? {
 		let sources = scope.sources(&node, &entry.id).await?;
 		if sources
@@ -70,27 +78,21 @@ pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<Carr
 				source.definition.version == version && source.enabled && source.carry_over
 			})
 		}) else {
-			results.push(CarryResult {
-				node,
-				source_version: None,
-				changed: vec!["no earlier carrying approval".into()],
-				unapproved_dependencies: vec![],
-				carried: false,
-			});
+			decided.push((
+				None,
+				CarryResult {
+					node,
+					source_version: None,
+					changed: vec!["no earlier carrying approval".into()],
+					unapproved_dependencies: vec![],
+					carried: false,
+				},
+			));
 			continue;
 		};
 		let changed = match carry_over::compare(&source.definition, entry) {
 			Ok(changed) => changed,
-			Err(error) => {
-				results.push(CarryResult {
-					node,
-					source_version: Some(source.definition.version.clone()),
-					changed: vec![format!("consent comparison failed: {error}")],
-					unapproved_dependencies: vec![],
-					carried: false,
-				});
-				continue;
-			}
+			Err(error) => vec![format!("consent comparison failed: {error}")],
 		};
 		let mut missing = Vec::new();
 		for dependency in approvals::dependencies(entry, node.deployment.as_str())? {
@@ -101,16 +103,35 @@ pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<Carr
 			}
 		}
 		let carried = changed.is_empty() && missing.is_empty();
-		if carried {
-			scope.write_carried(&node, source, entry).await?;
+		decided.push((
+			Some(source.clone()),
+			CarryResult {
+				node,
+				source_version: Some(source.definition.version.clone()),
+				changed,
+				unapproved_dependencies: missing,
+				carried,
+			},
+		));
+	}
+	let partial = decided.iter().any(|(source, result)| {
+		source
+			.as_ref()
+			.is_some_and(|source| source.scope == ApprovalScope::Deployment && !result.carried)
+	});
+	let mut results = Vec::new();
+	for (source, result) in decided {
+		if let Some(source) = source.filter(|_| result.carried) {
+			let scope_of_copy = if source.scope == ApprovalScope::Deployment && !partial {
+				ApprovalScope::Deployment
+			} else {
+				ApprovalScope::Node
+			};
+			scope
+				.write_carried(&result.node, &source, entry, scope_of_copy)
+				.await?;
 		}
-		results.push(CarryResult {
-			node,
-			source_version: Some(source.definition.version.clone()),
-			changed,
-			unapproved_dependencies: missing,
-			carried,
-		});
+		results.push(result);
 	}
 	Ok(results)
 }

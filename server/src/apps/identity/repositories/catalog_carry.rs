@@ -218,6 +218,7 @@ impl CarryScope for TenantCarry<'_> {
 		node: &NodeAddress,
 		source: &Source,
 		entry: &Entry,
+		scope: ApprovalScope,
 	) -> Result<()> {
 		let tenant = self.tenant.to_owned();
 		let rows = self.rows(node, &entry.id).await?;
@@ -259,7 +260,7 @@ impl CarryScope for TenantCarry<'_> {
 				.value(Alias::new("carry_over"), true)
 				.value(
 					Alias::new("scope"),
-					if source.scope == ApprovalScope::Deployment {
+					if scope == ApprovalScope::Deployment {
 						"deployment"
 					} else {
 						"node"
