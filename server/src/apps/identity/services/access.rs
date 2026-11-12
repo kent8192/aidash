@@ -1718,7 +1718,7 @@ impl Access {
 		// A refusal reached while a Node did not answer may be that Node's
 		// silence, so it is asked again and not remembered (#751).
 		if reads != aidash_application::ports::federation::registry_reads::RemoteReads::Visible
-			&& !self.unavailable_peers.is_empty()
+			&& self.row_silence.is_some()
 		{
 			return;
 		}
@@ -1782,6 +1782,14 @@ impl Access {
 	}
 	/// A list loop's row begins.
 	pub(crate) fn begin_row(&mut self) {
+		// A prior row may have cached a partial pass before a peer fell silent.
+		// Recheck each following row under the same authority; the silence memory
+		// avoids another network wait, but cannot authorize its dependencies.
+		if !self.unavailable_peers.is_empty() {
+			self.read_verdicts.clear();
+			self.read_lookups.forget_passes();
+			self.remote_read_cache.clear();
+		}
 		self.row_silence = None;
 	}
 	/// The Node the row being checked gave up on, if any.

@@ -154,21 +154,16 @@ pub async fn children(
 				// parent would complete over a Task that may be unfinished or
 				// failed. It is retried like a Read Recheck (#770).
 				// Only a child whose status could change the summary matters: a
-				// completed one cannot make the parent wait or fail.
-				if let Some(node) = scope.take_row_silence() {
-					let mut probe = ChildTaskSummary {
-						has_pending: summary.has_pending,
-						has_failed: summary.has_failed,
-					};
-					probe.include_status(row.status);
-					if probe.has_pending != summary.has_pending
-						|| probe.has_failed != summary.has_failed
-					{
-						return Err(Error::NodeUnreachable {
-							node,
-							after_effect: false,
-						});
-					}
+				// completed one cannot make the parent wait or fail. Any unfinished
+				// child can change the open count and unassigned classification, even
+				// when another pending child is already visible.
+				if let Some(node) = scope.take_row_silence()
+					&& !matches!(row.status, TaskStatus::Completed | TaskStatus::Abandoned)
+				{
+					return Err(Error::NodeUnreachable {
+						node,
+						after_effect: false,
+					});
 				}
 				continue;
 			}

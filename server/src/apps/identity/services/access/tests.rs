@@ -444,13 +444,17 @@ async fn a_row_is_counted_under_the_first_silent_node_its_check_reached_and_each
 #[rstest::rstest]
 #[tokio::test]
 async fn a_refusal_is_remembered_unless_the_row_stopped_at_a_silent_node(mut access: Access) {
+	use aidash_application::ports::federation::registry_reads::RemoteReads;
 	let (refused, silent) = (Uuid::new_v4(), Uuid::new_v4());
 	access.mark_peer_unavailable("aidash://other/sibling");
 	access.begin_row();
-	access.remember_remote_read(refused, false);
-	assert_eq!(access.cached_remote_read(refused), Some(false));
+	access.remember_remote_read(refused, RemoteReads::Unconfirmed);
+	assert_eq!(
+		access.cached_remote_read(refused),
+		Some(RemoteReads::Unconfirmed)
+	);
 	access.skip_peer("aidash://other/sibling");
-	access.remember_remote_read(silent, false);
+	access.remember_remote_read(silent, RemoteReads::Unconfirmed);
 	assert_eq!(access.cached_remote_read(silent), None);
 }
 

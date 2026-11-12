@@ -720,3 +720,16 @@ async fn a_child_that_cannot_be_confirmed_blocks_the_summary_only_if_it_could_ch
 		assert!(!summary.has_pending && !summary.has_failed);
 	}
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_silent_open_child_is_not_discarded_after_a_visible_open_child(mut scope: Scope) {
+	scope.children = vec![
+		(Uuid::from_u128(1), "visible".into(), TaskStatus::Open),
+		(Uuid::from_u128(2), "silent".into(), TaskStatus::Open),
+	];
+	let result = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99)).await;
+	assert!(
+		matches!(result, Err(Error::NodeUnreachable { ref node, after_effect: false }) if node == "aidash://other/silent")
+	);
+}

@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// audit, row locks, and transaction as the initiating read. Nested visibility
 /// checks append edges to this scope's frontier and never make recursive RPCs.
 #[async_trait]
-pub trait DependencyScope: Send {
+pub trait DependencyScope: Send + crate::ports::authorization::visibility::RowOutcome {
 	fn node(&self) -> &str;
 	fn identity(&self) -> (&str, &str);
 	fn now(&self) -> Instant {
@@ -52,7 +52,9 @@ pub trait DependencyScope: Send {
 	fn mark_unavailable(&mut self, node: &str);
 	/// The check in progress stops at a Node already known to be silent, without
 	/// asking it again, so the row it belongs to is unconfirmed (#770).
-	fn skipped(&mut self, _node: &str) {}
+	fn skipped(&mut self, node: &str) {
+		self.mark_unavailable(node);
+	}
 	/// `node` answered, with a verdict or a refusal, so it is no longer remembered
 	/// as silent.
 	fn answered(&mut self, _node: &str) {}

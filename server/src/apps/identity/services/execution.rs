@@ -1475,6 +1475,7 @@ impl WorkerAuthority {
 				.ok_or(Error::Forbidden)?;
 			memory_run_check(&mut access, &run.metadata()).await?;
 			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			lease.lists();
 			let result = crate::semantic::native_memory::run_recall(
 				store, &mut lease, run, key, query, reflect,
 			)

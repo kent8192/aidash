@@ -111,6 +111,12 @@ impl ReadLookups {
 	pub(crate) fn restore_passes(&mut self, passes: Passes) {
 		self.passes = passes;
 	}
+	/// A silent peer invalidates successful walks before the next list row.
+	pub(super) fn forget_passes(&mut self) {
+		if !self.walking {
+			self.passes = Passes::default();
+		}
+	}
 	pub(super) fn end_walk(&mut self, passed: bool) {
 		self.forget_rows();
 		if !passed {

@@ -899,3 +899,13 @@ async fn a_refused_task_check_without_silence_stays_a_plain_refusal_and_is_remem
 	// Nothing else was asked of a Run the Task already hides.
 	assert!(!scope.calls.contains(&"run.read"));
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_run_with_a_silent_task_and_refused_reads_is_not_counted(mut scope: Scope) {
+	scope.silent_task = true;
+	scope.reads = false;
+	scope.begin_row();
+	assert!(!local_run_visible(&mut scope, &run()).await.unwrap());
+	assert_eq!(scope.take_row_silence(), None);
+}

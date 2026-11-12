@@ -160,7 +160,7 @@ DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
     "GET /api/tasks/{id}/runs": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
-         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
+         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
     ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,

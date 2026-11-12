@@ -46,6 +46,7 @@ struct Scope {
 	frontier: Vec<Reference>,
 	edges: BTreeMap<Uuid, Vec<Reference>>,
 	decision: bool,
+	denied_node: Option<String>,
 	peer: Option<Route>,
 	fault: Option<Fault>,
 	admission: Option<Run>,
@@ -58,6 +59,18 @@ struct Scope {
 	answered: Vec<String>,
 	/// Every Node a walk reported meeting as unavailable, in order, repeats included.
 	met: Vec<String>,
+	row_silence: Option<String>,
+}
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn row_silence(&self) -> Option<String> {
+		self.row_silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.row_silence.take()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.row_silence = node;
+	}
 }
 #[async_trait]
 impl DependencyScope for Scope {
@@ -96,7 +109,7 @@ impl DependencyScope for Scope {
 				json!({"remote_node":"aidash://foreign"})
 			);
 		}
-		Ok(self.decision)
+		Ok(self.decision && self.denied_node.as_deref() != Some(resource.id.as_str()))
 	}
 	async fn admission(&mut self, id: Uuid, home: &str) -> Result<Option<Run>> {
 		self.calls.push(format!("admission:{id}:{home}"));
@@ -149,10 +162,12 @@ impl DependencyScope for Scope {
 	}
 	fn mark_unavailable(&mut self, node: &str) {
 		self.marked.insert(node.into());
+		self.row_silence.get_or_insert_with(|| node.into());
 		self.met.push(node.into());
 	}
 	fn skipped(&mut self, node: &str) {
 		self.marked.insert(node.into());
+		self.row_silence.get_or_insert_with(|| node.into());
 		self.skipped.push(node.into());
 		self.met.push(node.into());
 	}
@@ -189,9 +204,9 @@ fn grant(node: &str, id: u128) -> Reference {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,latency_on_peer:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
+	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,latency_on_peer:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,denied_node:None,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),skipped:vec![],answered:vec![],met:Vec::new(),
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),skipped:vec![],answered:vec![],met:Vec::new(),row_silence:None,
     }
 }
 #[fixture]
@@ -760,4 +775,52 @@ fn a_peer_that_answered_refuses_and_one_that_could_not_is_unavailable(
 		refused,
 		"{status}"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_silent_dependency_does_not_hide_a_refusal_on_another_node(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.extend([Check::Unavailable, Check::Refused]);
+	let result = verify_all(
+		&mut scope,
+		&transport,
+		vec![grant("aidash://second", 1), grant("aidash://foreign", 2)],
+	)
+	.await
+	.unwrap();
+	assert!(!result);
+	assert_eq!(scope.row_silence, None);
+	assert_eq!(transport.calls.lock().unwrap().len(), 2);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_silent_node_does_not_hide_discovery_denial_at_the_walk_deadline(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	scope.latency_on_peer = Duration::from_secs(20);
+	scope.denied_node = Some("aidash://second".into());
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Unavailable);
+	assert!(
+		!verify_all(
+			&mut scope,
+			&transport,
+			vec![grant("aidash://second", 1), grant("aidash://foreign", 2)]
+		)
+		.await
+		.unwrap()
+	);
+	assert_eq!(scope.row_silence, None);
 }

@@ -66,7 +66,15 @@ pub async fn local_run_visible(
 	scope: &mut dyn LocalRunVisibilityScope,
 	run: &RunMetadata,
 ) -> Result<bool> {
-	Ok(local_base_visible(scope, run).await? && scope.run_reads(run.id).await?)
+	if !local_base_visible(scope, run).await? {
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope.run_reads(run.id).await?;
+			conclude_chain(scope, held, rest);
+		}
+		return Ok(false);
+	}
+	scope.run_reads(run.id).await
 }
 
 /// A source Run with no native memory reads has no private memory dependency.
@@ -182,7 +190,15 @@ where
 }
 
 pub async fn run_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
-	Ok(base_visible(scope, run).await? && scope.run_reads(run.id).await?)
+	if !base_visible(scope, run).await? {
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope.run_reads(run.id).await?;
+			conclude_chain(scope, held, rest);
+		}
+		return Ok(false);
+	}
+	scope.run_reads(run.id).await
 }
 
 pub async fn event_visible(scope: &mut dyn EventVisibilityScope, event: &Event) -> Result<bool> {

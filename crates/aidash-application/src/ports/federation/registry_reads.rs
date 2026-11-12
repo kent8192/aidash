@@ -36,7 +36,7 @@ pub trait RegistryTransport: Send + Sync {
 	async fn verify(&self, route: &Route, references: &[Reference]) -> Verification;
 }
 #[async_trait]
-pub trait RegistryReadScope: Send {
+pub trait RegistryReadScope: Send + crate::ports::authorization::visibility::RowOutcome {
 	fn identity(&self) -> (&str, &str);
 	fn cached(&self, run: Uuid) -> Option<RemoteReads>;
 	fn remember(&mut self, run: Uuid, reads: RemoteReads);
@@ -47,7 +47,9 @@ pub trait RegistryReadScope: Send {
 	fn mark_unavailable(&mut self, node: &str);
 	/// The check in progress stops at a Node already known to be silent, without
 	/// asking it again, so the row it belongs to is unconfirmed (#770).
-	fn skipped(&mut self, _node: &str) {}
+	fn skipped(&mut self, node: &str) {
+		self.mark_unavailable(node);
+	}
 	/// `node` answered, with a verdict or a refusal, so it is no longer remembered
 	/// as silent.
 	fn answered(&mut self, _node: &str) {}

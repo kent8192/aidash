@@ -95,7 +95,8 @@ async fn check(
 			RemoteReads::Unconfirmed
 		});
 	}
-	for (node, references) in nodes {
+	let mut silent = None;
+	'nodes: for (node, references) in nodes {
 		let resource = scope.resource("node", &node, json!({"remote_node":node}));
 		if !scope.decide(&resource, "federation.discover").await? {
 			return Ok(RemoteReads::Unconfirmed);
@@ -104,7 +105,10 @@ async fn check(
 		// same authority, and this reader's own right comes first.
 		if scope.unavailable(&node) {
 			scope.skipped(&node);
-			return Ok(RemoteReads::Unconfirmed);
+			if let Some(node) = scope.take_row_silence() {
+				silent.get_or_insert(node);
+			}
+			continue;
 		}
 		let Some(route) = scope.route(&node).await? else {
 			return Ok(RemoteReads::Unconfirmed);
@@ -119,12 +123,20 @@ async fn check(
 				Verification::NotAsked => return Ok(RemoteReads::Unconfirmed),
 				Verification::Unavailable => {
 					scope.mark_unavailable(&node);
-					return Ok(RemoteReads::Unconfirmed);
+					if let Some(node) = scope.take_row_silence() {
+						silent.get_or_insert(node);
+					}
+					continue 'nodes;
 				}
 			}
 		}
 	}
-	Ok(RemoteReads::Visible)
+	if let Some(node) = silent {
+		scope.set_row_silence(Some(node));
+		Ok(RemoteReads::Unconfirmed)
+	} else {
+		Ok(RemoteReads::Visible)
+	}
 }
 /// The policy resource of an Agent found on another Node: the Tenant's own definition keeps its
 /// id, and another Tenant's is named by its Node. Either carries the trusted `remote_node`.

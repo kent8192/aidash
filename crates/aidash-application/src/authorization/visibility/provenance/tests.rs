@@ -21,6 +21,8 @@ struct Scope {
 	decisions: Vec<Resource>,
 	missing: bool,
 	denied: Option<&'static str>,
+	silent_remote: bool,
+	row_silence: Option<String>,
 	fail: Option<&'static str>,
 }
 #[fixture]
@@ -36,6 +38,8 @@ fn scope() -> Scope {
 		decisions: vec![],
 		missing: false,
 		denied: None,
+		silent_remote: false,
+		row_silence: None,
 		fail: None,
 	}
 }
@@ -55,7 +59,17 @@ impl Scope {
 		Ok(())
 	}
 }
-impl crate::ports::authorization::visibility::RowOutcome for Scope {}
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn row_silence(&self) -> Option<String> {
+		self.row_silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.row_silence.take()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.row_silence = node;
+	}
+}
 #[async_trait]
 impl ResourceVisibilityScope for Scope {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
@@ -154,6 +168,10 @@ impl ReadProvenanceScope for Scope {
 	}
 	async fn remote_reads(&mut self, _: Uuid) -> Result<RemoteReads> {
 		self.touch("remote")?;
+		if self.silent_remote {
+			self.row_silence = Some("aidash://other/silent".into());
+			return Ok(RemoteReads::Unconfirmed);
+		}
 		Ok(match self.denied {
 			Some("remote") => RemoteReads::Unconfirmed,
 			Some("tenant_agent") => RemoteReads::Definition(EntityRef {
@@ -1040,4 +1058,18 @@ async fn attachment_provenance_requires_existing_attachment_and_readable_message
 		.unwrap(),
 		expected
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_silent_remote_read_does_not_hide_a_semantic_refusal(mut scope: Scope) {
+	scope.silent_remote = true;
+	scope.denied = Some("semantic");
+	assert_eq!(
+		run_reads_block(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		Some(ReadBlock::SemanticRead)
+	);
+	assert_eq!(scope.row_silence, None);
 }
