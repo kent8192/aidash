@@ -51,6 +51,66 @@ impl ControlInput {
 		})
 	}
 }
+/// What resuming the caller's Runs that an Account suspension paused did to
+/// each of them, in Run order (#876).
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct SuspendedRunsResume {
+	pub(crate) runs: Vec<SuspendedRunResume>,
+}
+/// One Run's result. Each Run is resumed on its own, with the same checks as
+/// a resume through `/api/runs/{id}/control`.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct SuspendedRunResume {
+	pub(crate) run_id: Uuid,
+	pub(crate) outcome: SuspendedRunOutcome,
+	/// Why the Run was not resumed, as a single resume would answer; absent
+	/// when it was resumed.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub(crate) error: Option<String>,
+}
+/// `resumed`; `blocked` by what the Run read or uses; `refused` by sign-in or
+/// authority; `unavailable` while a check cannot be made; `failed` otherwise.
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SuspendedRunOutcome {
+	Resumed,
+	Blocked,
+	Refused,
+	Unavailable,
+	Failed,
+}
+impl SuspendedRunResume {
+	pub(crate) fn resumed(run_id: Uuid) -> Self {
+		Self {
+			run_id,
+			outcome: SuspendedRunOutcome::Resumed,
+			error: None,
+		}
+	}
+	/// The refusal a single resume of `run_id` answered with.
+	pub(crate) fn refused(run_id: Uuid, error: crate::Error) -> Self {
+		let blocked = matches!(error, crate::Error::ResumeBlocked(_));
+		let response = error.http_response();
+		let outcome = match response.status.as_u16() {
+			_ if blocked => SuspendedRunOutcome::Blocked,
+			401 | 403 => SuspendedRunOutcome::Refused,
+			503 => SuspendedRunOutcome::Unavailable,
+			_ => SuspendedRunOutcome::Failed,
+		};
+		let error = serde_json::from_slice::<serde_json::Value>(&response.body)
+			.ok()
+			.and_then(|body| {
+				body.get("error")
+					.and_then(|e| e.as_str())
+					.map(str::to_owned)
+			});
+		Self {
+			run_id,
+			outcome,
+			error,
+		}
+	}
+}
 #[derive(Default, Deserialize, JsonSchema)]
 pub(crate) struct EventQuery {
 	#[serde(default)]

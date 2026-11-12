@@ -403,6 +403,30 @@ impl HarnessManagement {
 		};
 		management::control(f, actor, id, RunManagementInput { action }).await
 	}
+	/// Resumes each of the caller's Runs that an Account suspension paused,
+	/// one at a time through the manual resume and all of its checks, and
+	/// reports each Run (#876 decision 17). A Deployment Administrator has no
+	/// Runs of its own and is refused, as on `/control`.
+	pub(crate) async fn resume_suspended(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::management::SuspendedRunsResume> {
+		use crate::apps::execution::serializers::management::{
+			SuspendedRunResume, SuspendedRunsResume,
+		};
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		let f = &self.runtime;
+		let mut runs = Vec::new();
+		for id in execution::suspension_paused(f, identity).await? {
+			runs.push(match execution::resume(f, identity, id).await {
+				Ok(_) => SuspendedRunResume::resumed(id),
+				Err(error) => SuspendedRunResume::refused(id, error),
+			});
+		}
+		Ok(SuspendedRunsResume { runs })
+	}
 	/// Declining answers as `/control` does. A Deployment Administrator never declines.
 	pub(crate) async fn run_decline_call(
 		&self,

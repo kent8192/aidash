@@ -2946,6 +2946,31 @@ pub async fn resume(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Res
 	.map_err(Into::into)
 }
 
+/// The Runs `identity` started that an Account suspension paused, in Run
+/// order, for its owner to resume them together (#876 decision 17).
+pub async fn suspension_paused(f: &Federation, identity: &SubjectIdentity) -> Result<Vec<Uuid>> {
+	use crate::apps::execution::models::Run;
+	use crate::apps::execution::services::states::RunControl;
+	use crate::apps::identity::models::AuthorizationExecution;
+	use reinhardt::db::orm::{Model, QuerySet};
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&identity.tenant)?;
+	let mut tx = f.store.pool.begin(&scope).await?.into_executor().await?;
+	let grants = AuthorizationExecution::objects()
+		.filter(AuthorizationExecution::field_tenant().eq(identity.tenant.clone()))
+		.filter(AuthorizationExecution::field_root_subject().eq(identity.subject.clone()))
+		.filter_in_subquery("run_id", |runs: QuerySet<Run>| {
+			runs.filter(Run::field_control().eq(RunControl::Paused))
+				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+				.values(&["id"])
+		})?
+		.order_by(&["run_id"])
+		.all_with_executor(tx.as_mut())
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?;
+	tx.commit().await?;
+	Ok(grants.into_iter().map(|grant| grant.run_id).collect())
+}
+
 pub async fn decline_call(
 	f: &Federation,
 	identity: &SubjectIdentity,

@@ -56744,6 +56744,60 @@
     "uuid_parameters": ["id"]
   },
   {
+    "json": false,
+    "method": "POST",
+    "name": "suspended-runs-resume",
+    "path": "/api/suspended-runs/resume",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "SuspendedRunOutcome": {
+            "description": "`resumed`; `blocked` by what the Run read or uses; `refused` by sign-in or\nauthority; `unavailable` while a check cannot be made; `failed` otherwise.",
+            "enum": ["resumed", "blocked", "refused", "unavailable", "failed"],
+            "type": "string"
+          },
+          "SuspendedRunResume": {
+            "description": "One Run's result. Each Run is resumed on its own, with the same checks as\na resume through `/api/runs/{id}/control`.",
+            "properties": {
+              "error": {
+                "description": "Why the Run was not resumed, as a single resume would answer; absent\nwhen it was resumed.",
+                "type": ["string", "null"]
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/SuspendedRunOutcome"
+              },
+              "run_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["run_id", "outcome"],
+            "type": "object"
+          },
+          "SuspendedRunsResume": {
+            "description": "What resuming the caller's Runs that an Account suspension paused did to\neach of them, in Run order (#876).",
+            "properties": {
+              "runs": {
+                "items": {
+                  "$ref": "#/components/schemas/SuspendedRunResume"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["runs"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/SuspendedRunsResume"
+        }
+      }
+    },
+    "source": "server/src/apps/execution/views/management.rs",
+    "uuid_parameters": []
+  },
+  {
     "json": true,
     "method": "POST",
     "name": "remote_execution_decline_call",
