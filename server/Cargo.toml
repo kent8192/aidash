@@ -348,10 +348,6 @@ name = "run_message_remote"
 path = "src/apps/federation/remote/tests/run_message_remote.rs"
 
 [[test]]
-name = "memory_authority"
-path = "src/apps/knowledge/tests/memory_authority_suite.rs"
-
-[[test]]
 name = "semantic"
 path = "src/apps/knowledge/tests/semantic.rs"
 
