@@ -1549,3 +1549,118 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace
 		.join()
 		.unwrap();
 }
+
+/// #852 decision 8 keeps lost authority as the one memory failure. A Run that
+/// recalled another Workspace's fact under the Tenant's `tenant_agent` scope
+/// must stop when the Tenant narrows the scope again, even though that fact
+/// also left the bank (a change that alone would not stop it).
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
+	#[future(awt)]
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
+) {
+	std::thread::Builder::new()
+		.stack_size(16 * 1024 * 1024)
+		.spawn(move || {
+			tokio::runtime::Builder::new_multi_thread()
+				.worker_threads(4)
+				.thread_stack_size(16 * 1024 * 1024)
+				.enable_all()
+				.build()
+				.unwrap()
+				.block_on(async move {
+					// Arrange: a fact from another Workspace, recalled at start.
+					let b = Batching::new(runtime, scripted_model, 1, 1).await;
+					let pool = b.f.store.pool.fixture_driver().clone();
+					let source = b.delegate(b.task).await;
+					let unit = learn(
+						&b,
+						&source,
+						&["The staging deploy key rotates every quarter."],
+					)
+					.await[0];
+					sqlx::query(
+						"INSERT INTO memory_tenant_scope (tenant, scope, revision, updated_at) \
+						 VALUES ('acme', 'tenant_agent', 1, now())",
+					)
+					.execute(&pool)
+					.await
+					.unwrap();
+					let reader = b
+						.delegate(
+							task_in_new_workspace(&b, "Check the staging deploy key rotation")
+								.await,
+						)
+						.await;
+					b.script(&[(
+						"before",
+						"file_search",
+						json!({"query":"absent","mode":"literal","scope":"working"}),
+					)]);
+					let worker = Harness {
+						federation: b.f.clone(),
+					};
+					while b
+						.f
+						.store
+						.run(&TEST_FIXTURE, reader.id)
+						.await
+						.unwrap()
+						.phase() != RunPhase::ToolCall
+					{
+						assert!(worker.worker_once().await.unwrap());
+					}
+					assert!(worker.worker_once().await.unwrap());
+					assert!(
+						start_recall_units(&b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap())
+							.contains(&unit)
+					);
+
+					// Act: the fact leaves its bank and the Tenant narrows the scope.
+					sqlx::query("UPDATE memory_units SET deleted = true WHERE id = $1")
+						.bind(unit)
+						.execute(&pool)
+						.await
+						.unwrap();
+					sqlx::query(
+						"UPDATE memory_tenant_scope SET scope = 'workspace', revision = 2 \
+						 WHERE tenant = 'acme'",
+					)
+					.execute(&pool)
+					.await
+					.unwrap();
+					b.script(&[(
+						"after",
+						"file_search",
+						json!({"query":"absent","mode":"literal","scope":"working"}),
+					)]);
+					for _ in 0..16 {
+						let phase =
+							b.f.store
+								.run(&TEST_FIXTURE, reader.id)
+								.await
+								.unwrap()
+								.phase();
+						if phase == RunPhase::Completed || !worker.worker_once().await.unwrap() {
+							break;
+						}
+					}
+
+					// Assert
+					let reader = b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap();
+					assert_ne!(
+						reader.phase(),
+						RunPhase::Completed,
+						"lost authority must stop the Run: {:?}",
+						reader.state
+					);
+					b.close().await;
+				});
+		})
+		.unwrap()
+		.join()
+		.unwrap();
+}

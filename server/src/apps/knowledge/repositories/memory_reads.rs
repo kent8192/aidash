@@ -165,6 +165,22 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 			return Err(Error::Forbidden);
 		};
 		if builtin && (!unit.visible() || unit.revision != revision) {
+			// A changed Unit is not revalidated, but authority over another
+			// Workspace's Unit still is.
+			if unit.bank.workspace != metadata.workspace_id {
+				if !foreign_read_allowed(
+					lease,
+					&unit,
+					&metadata,
+					&binding.bank.tenant,
+					policy.bounds.max_graph_visits,
+				)
+				.await?
+				{
+					return Err(Error::Forbidden);
+				}
+				units::authorize(lease, &unit.bank, "memory.read").await?;
+			}
 			continue;
 		}
 		evidence
@@ -209,6 +225,23 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 		}
 	}
 	Ok(())
+}
+
+/// Whether a built-in Run may still read a Unit from another Workspace: the
+/// Tenant shares memory per Agent and the Unit came from this Run's Agent
+/// (#852 decision 6). The caller also checks `memory.read` on its bank.
+async fn foreign_read_allowed(
+	lease: &mut Lease<'_>,
+	unit: &Unit,
+	run: &RunMetadata,
+	tenant: &str,
+	max_visits: usize,
+) -> Result<bool> {
+	Ok(unit.bank.tenant == tenant
+		&& super::sharing::get(&mut **lease.tx(), &unit.bank.tenant)
+			.await?
+			.0 == aidash_domain::memory::SharingScope::TenantAgent
+		&& super::sharing::agent_unit(lease, unit, &run.agent_id, max_visits).await?)
 }
 
 pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool> {
@@ -342,19 +375,15 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				}
 				return Ok(Some(Failure::Invalidated));
 			};
-			if builtin && (!unit.visible() || unit.revision != revision) {
-				continue;
-			}
+			// Authority over another Workspace's Unit is checked before any change
+			// to it is forgiven: losing it fails the Run even then.
 			if unit.bank.workspace != run.workspace_id {
 				if !builtin
-					|| unit.bank.tenant != binding.bank.tenant
-					|| super::sharing::get(&mut **lease.tx(), &unit.bank.tenant)
-						.await?
-						.0 != aidash_domain::memory::SharingScope::TenantAgent
-					|| !super::sharing::agent_unit(
+					|| !foreign_read_allowed(
 						lease,
 						&unit,
-						&run.agent_id,
+						&run,
+						&binding.bank.tenant,
 						policy.bounds.max_graph_visits,
 					)
 					.await?
@@ -366,6 +395,9 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				}
 			}
 			if !unit.visible() || unit.revision != revision {
+				if builtin {
+					continue;
+				}
 				return Ok(Some(Failure::Invalidated));
 			}
 			let policy = match units::unexpired(lease, &unit).await {
