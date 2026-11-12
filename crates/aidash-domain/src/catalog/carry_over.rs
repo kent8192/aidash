@@ -117,11 +117,13 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 				) => {
 					add(host_changed(ae, be), "endpoint host");
 					add(as_ != bs, "secret");
+					// Without declared scopes a Connection may request any scope, so
+					// dropping the declaration widens it like adding a scope does.
 					add(
-						bc.as_ref()
-							.into_iter()
-							.flatten()
-							.any(|scope| !ac.as_ref().is_some_and(|scopes| scopes.contains(scope))),
+						(ac.is_some() && bc.is_none())
+							|| bc.as_ref().into_iter().flatten().any(|scope| {
+								!ac.as_ref().is_some_and(|scopes| scopes.contains(scope))
+							}),
 						"scopes",
 					);
 					add(

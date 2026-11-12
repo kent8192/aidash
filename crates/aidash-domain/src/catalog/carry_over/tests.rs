@@ -75,6 +75,7 @@ fn tool_consent_detects_host_secret_scopes_and_new_read_only() {
 		),
 		("secret", json!("two"), "secret"),
 		("scopes", json!(["read", "write"]), "scopes"),
+		("scopes", json!(null), "scopes"),
 		("replay", json!("read_only"), "read-only operation"),
 	] {
 		let mut new = old.clone();
