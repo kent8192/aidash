@@ -893,6 +893,12 @@ pub(crate) async fn approval_list(
 				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call" | "sampling")
 				&& data["subjects"][0] == json!(subject)
 				&& super::approvals::can_allow_always(&f.store, &mut access, &row).await?;
+			// The Thread offers a pending card inline only when its approver is
+			// the person the Run's delegation chain starts at (#896).
+			let decide_inline = state == "pending"
+				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
+				&& data["approver"] == json!(subject)
+				&& data["subjects"][0] == json!(subject);
 			// Designated approvers see only the scoped card, never Run output.
 			items.push(json!({
 				"id": row.id,
@@ -909,7 +915,7 @@ pub(crate) async fn approval_list(
 				"grant_id": data["grant_id"],
 				"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
 				"viewer_is_approver": data["approver"] == json!(subject),
-				"viewer_can_decide_inline": data["approver"] == json!(subject) && data["subjects"][0] == json!(subject),
+				"viewer_can_decide_inline": decide_inline,
 				"agent_id": data["agent_id"],
 				"agent_version": data["agent_version"],
 				"tool": data["tool"],

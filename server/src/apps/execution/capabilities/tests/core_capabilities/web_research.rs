@@ -415,6 +415,18 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 		.collect::<std::collections::BTreeMap<_, _>>();
 	assert_eq!(states[&first.to_string()], "consumed");
 	assert_eq!(states[&second.to_string()], "pending");
+	// A decided card is no longer offered inline; the new pending one is.
+	let inline = |id: Uuid| {
+		approvals["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["id"] == json!(id))
+			.unwrap()["viewer_can_decide_inline"]
+			.clone()
+	};
+	assert_eq!(inline(first), false);
+	assert_eq!(inline(second), true);
 	assert_eq!(
 		r.requests.load(Ordering::SeqCst),
 		2,
