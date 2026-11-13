@@ -35,7 +35,6 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 struct Catalog {
 	entries: BTreeMap<QualifiedRef, Entry>,
 	reject_installations: bool,
-	foreign: BTreeMap<QualifiedRef, ForeignAgentSnapshot>,
 	plugins: BTreeMap<String, StoredAgentPlugin>,
 }
 impl Catalog {
@@ -43,7 +42,6 @@ impl Catalog {
 		let mut result = Self {
 			entries: BTreeMap::new(),
 			reject_installations: false,
-			foreign: BTreeMap::new(),
 			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
@@ -97,9 +95,6 @@ impl Catalog {
 impl BindingCatalog for Catalog {
 	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
 		Ok(self.plugins.get(digest).cloned())
-	}
-	async fn foreign_agent(&mut self, reference: &QualifiedRef) -> Result<ForeignAgentSnapshot> {
-		self.foreign.get(reference).cloned().ok_or(Error::Forbidden)
 	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		self.entries
@@ -1701,73 +1696,17 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 	assert!(!settings.core_capabilities.skills);
 }
 
-async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
-	let node = "aidash://node-b";
-	let mut catalog = Catalog::new();
-	catalog.entries = catalog
-		.entries
-		.into_iter()
-		.map(|(mut identity, mut entry)| {
-			identity.registry_deployment = node.into();
-			if entry.kind == "tool" {
-				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
-				entry.config =
-					serde_json::to_value(core_descriptor(node, &descriptor.operation).unwrap())
-						.unwrap();
-			}
-			(identity, entry)
-		})
-		.collect();
-	let saved = resolve(
-		&mut catalog,
-		&providers(),
-		QualifiedRef {
-			registry_deployment: node.into(),
-			..reference("agent")
-		},
-		&agent_entry(&agent_config()),
-		true,
-	)
-	.await
-	.unwrap();
-	ForeignAgentSnapshot::from_snapshot(saved).unwrap()
-}
-
+/// An Agent cannot bind an Agent on another Node (#373): the resolver asks the
+/// catalog for it like any other definition, and a snapshot that still pins one
+/// is refused.
 #[tokio::test]
-async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_identity() {
-	use aidash_domain::{
-		context::source::QueryPolicy,
-		registry::bindings::{source_defaults, sources},
+async fn an_agent_transport_to_another_node_is_resolved_like_any_other_reference() {
+	let node = "aidash://node-b";
+	let child = QualifiedRef {
+		registry_deployment: node.into(),
+		..reference("child")
 	};
 	let mut catalog = Catalog::new();
-	let identity = source_defaults::workspace_observation_reference(NODE);
-	let source = catalog.entries.get_mut(&identity).unwrap();
-	let mut native: sources::NativeContext = serde_json::from_value(source.config.clone()).unwrap();
-	let mut custom = native.declaration(&identity);
-	custom.query = QueryPolicy::AcceptedInputsFirstV1;
-	native.context_source = Some(custom);
-	source.config = serde_json::to_value(native).unwrap();
-	// This is a valid, freshly admitted graph with correct digests, so rejection
-	// comes from the receiver export boundary rather than corrupt snapshot bytes.
-	let mut config = agent_config();
-	config
-		.bindings
-		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
-	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
-	saved.validate().unwrap();
-	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("unsupported private or cross-Node dependency")
-	);
-}
-
-#[tokio::test]
-async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child_tools() {
-	let child = public_foreign_snapshot().await;
-	let mut catalog = Catalog::new();
-	catalog.foreign.insert(child.agent.clone(), child.clone());
 	let descriptor = ToolDescriptor {
 		registry_deployment: NODE.into(),
 		provider: "integration.agent@1".into(),
@@ -1777,8 +1716,8 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 		narrow: Default::default(),
 		lifecycle: None,
 		transport: Some(aidash_domain::tool::ToolConfig::Agent {
-			node_id: child.agent.registry_deployment.clone(),
-			agent: child.agent.local(),
+			node_id: child.registry_deployment.clone(),
+			agent: child.local(),
 		}),
 	};
 	catalog.insert(entry(
@@ -1790,87 +1729,32 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 	config
 		.bindings
 		.push(Binding::tool(reference("foreign-transport")));
-	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert_eq!(
-		graph.foreign_agents.as_slice(),
-		std::slice::from_ref(&child)
-	);
-	assert!(
-		graph
-			.definitions
-			.iter()
-			.any(|definition| definition.identity == child.agent)
-	);
-	assert!(
-		graph
-			.bindings
-			.iter()
-			.all(|binding| binding.identity.registry_deployment == NODE)
-	);
-	assert_eq!(
-		graph
-			.bindings
-			.iter()
-			.filter(|binding| binding.alias.as_deref() == Some("remote_child"))
-			.count(),
-		1
-	);
-	let mut recovered: BindingSnapshot =
-		serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
-	recovered.validate().unwrap();
-	recovered.foreign_agents.clear();
-	assert!(recovered.validate().is_err());
-	let mut forged = graph.clone();
-	forged.foreign_agents[0].agent.registry_deployment = NODE.into();
-	assert!(forged.validate().is_err());
-	let mut forged = graph.clone();
-	forged.foreign_agents[0].definitions[0].digest = "forged".into();
-	assert!(forged.validate().is_err());
-	let mut duplicated = graph;
-	duplicated.foreign_agents.push(child.clone());
-	assert!(duplicated.validate().is_err());
-	catalog.foreign.clear();
 	assert!(matches!(
 		snapshot(&mut catalog, &config, false).await,
-		Err(Error::Forbidden)
+		Err(Error::NotFound(id)) if id == "child"
 	));
-}
 
-#[tokio::test]
-async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
-	let saved = public_foreign_snapshot().await;
-	for kind in ["memory", "source", "skill"] {
-		let mut changed = saved.clone();
-		changed.definitions.push(
-			ResolvedDefinition::new(
-				QualifiedRef {
-					registry_deployment: saved.agent.registry_deployment.clone(),
-					..reference("private")
-				},
-				entry("private", kind, json!({})),
-			)
-			.unwrap(),
-		);
-		assert!(changed.validate().is_err(), "{kind}");
+	// Even a catalog that hands out the other Node's whole closure cannot get
+	// it pinned.
+	let peer = Catalog::new();
+	for (mut identity, mut entry) in peer.entries {
+		identity.registry_deployment = node.into();
+		if entry.kind == "tool" {
+			let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
+			entry.config =
+				serde_json::to_value(core_descriptor(node, &descriptor.operation).unwrap())
+					.unwrap();
+		}
+		catalog.entries.insert(identity, entry);
 	}
-	let mut installed = saved.clone();
-	installed.definitions[0].definition.installation = Some(aidash_domain::registry::Projection {
-		contract: 1,
-		tenant: "private".into(),
-		installation: "installed".into(),
-		revision: 1,
-	});
-	assert!(installed.validate().is_err());
-	let mut changed = saved.clone();
-	changed.definitions[0].identity.registry_deployment = NODE.into();
-	assert!(changed.validate().is_err());
-	let mut local = saved.snapshot();
-	local.remote = false;
-	assert!(ForeignAgentSnapshot::from_snapshot(local).is_err());
-	// Additional pinned roots cannot turn this protocol into a multi-hop export.
-	let mut recursive = saved.snapshot();
-	recursive.foreign_agents.push(saved);
-	assert!(ForeignAgentSnapshot::from_snapshot(recursive).is_err());
+	let mut remote = agent_entry(&agent_config());
+	remote.id = child.id.clone();
+	catalog.entries.insert(child.clone(), remote);
+	let result = snapshot(&mut catalog, &config, false).await;
+	assert!(
+		matches!(&result, Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message == "snapshot binds an Agent on another Node"),
+		"{result:?}"
+	);
 }
 
 #[tokio::test]

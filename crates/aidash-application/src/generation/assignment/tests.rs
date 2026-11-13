@@ -443,7 +443,6 @@ impl GenerationAssignmentScope for Scope {
 			node_id: self.node_id().into(),
 			agent_id: agent.id.clone(),
 			agent_version: agent.version.clone(),
-			delivered: true,
 		})
 	}
 }
@@ -711,10 +710,9 @@ async fn assigned_task_requires_the_exact_chain_and_live_agent_authorization(
 	)
 	.await;
 	if exact {
-		let Assignment::Existing { delegation } = result.unwrap() else {
+		let Assignment::Existing { .. } = result.unwrap() else {
 			panic!("existing")
 		};
-		assert!(delegation.delivered);
 		assert_eq!(scope.chain, chain);
 		assert_eq!(
 			scope.calls().last().unwrap(),

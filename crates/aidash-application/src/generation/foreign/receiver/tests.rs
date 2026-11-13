@@ -228,7 +228,6 @@ impl ForeignGenerationReceiverScope for Scope {
 					node_id: "aidash://executor/brave-otter-k3m9q2xa".into(),
 					agent_id: "existing".into(),
 					agent_version: "1.0.0".into(),
-					delivered: false,
 				},
 			})
 		} else {

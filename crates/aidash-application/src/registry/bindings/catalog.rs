@@ -15,12 +15,6 @@ pub struct LookupCatalog<'a> {
 }
 #[async_trait]
 impl BindingCatalog for LookupCatalog<'_> {
-	async fn foreign_agent(
-		&mut self,
-		reference: &QualifiedRef,
-	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		self.definitions.foreign_agent(self.node, reference).await
-	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		if reference.registry_deployment != self.node {
 			return Err(Error::Invalid(

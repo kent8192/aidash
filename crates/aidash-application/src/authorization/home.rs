@@ -758,7 +758,6 @@ pub async fn delegate<R: HomeRepository>(
 		node_id: node.into(),
 		agent_id: agent.id.clone(),
 		agent_version: agent.version.clone(),
-		delivered: true,
 	})
 }
 pub async fn follow_up<R: HomeRepository>(

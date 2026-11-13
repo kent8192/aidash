@@ -235,7 +235,6 @@ impl ExecutionAdmissionSession for Scope {
 			node_id: node().to_string(),
 			agent_id: agent.id.clone(),
 			agent_version: agent.version.clone(),
-			delivered: true,
 		})
 	}
 	async fn delegation_event(&mut self, workspace: Uuid, _: &Delegation) -> Result<()> {
@@ -425,7 +424,6 @@ async fn local_delegation_is_audited_only_after_admission_and_grant_binding() {
 	let d = delegate(&mut s, Uuid::from_u128(1), &agent())
 		.await
 		.unwrap();
-	assert!(d.delivered);
 	assert_eq!(d.task_id, Uuid::from_u128(1));
 	assert_eq!(s.calls[s.calls.len() - 2..], ["delegation", "event"]);
 	assert_eq!(s.grants.len(), 1);

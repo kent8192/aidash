@@ -77,8 +77,8 @@ pub async fn recheck(
 	let snapshot = scope.binding_snapshot(run).await?;
 	let agent = AgentConfig::from_snapshot(&snapshot)?;
 	// Current local approval applies independently of a newer active pointer.
-	// Foreign Agent closures are refreshed at their owning Node by the Binding
-	// authority; never resolve their unqualified IDs through this local catalog.
+	// Never resolve another Node's definition by its unqualified ID through
+	// this local catalog.
 	// A delegated agent's own dependencies are pinned here as metadata and are
 	// restricted to that agent, who uses them directly in its own Run.
 	let delegated = snapshot.delegated_users()?;
