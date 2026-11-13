@@ -4046,9 +4046,20 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		// Match end transactions: lock the Run before its Subnode.
-		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
+		// Match end transactions: lock the Run before its Subnode. An ended
+		// Subnode still refuses as Forbidden, ahead of the Run's own end; a
+		// Run that is no longer active holds no lock here.
+		let ended = match HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await {
+			Err(Error::Conflict(message)) => Some(message),
+			other => {
+				other?;
+				None
+			}
+		};
 		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		if let Some(message) = ended {
+			return Err(Error::Conflict(message));
+		}
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;

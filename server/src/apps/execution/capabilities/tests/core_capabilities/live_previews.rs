@@ -418,7 +418,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.runner = Some(
 		serde_json::from_value(json!({
-			"endpoint": runner.url, "token_env": "AIDASH_781_RUNNER_TOKEN",
+			"endpoint": runner.url, "token_env": "AIDASH_COMMAND_CLEANUP_TEST_TOKEN",
 			"image": "stub", "runtime_class": "stub", "namespace": "stub",
 		}))
 		.unwrap(),
