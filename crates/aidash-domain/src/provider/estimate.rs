@@ -26,15 +26,15 @@ const TOKENIZED_VERSION: u32 = 1;
 
 pub mod encoding;
 
-/// The estimator a model definition opts into. Omitted means `bytes`, so
-/// existing definition versions keep their fitting and compaction timing.
+/// The estimator a model definition opts into. Omitted means `calibrated`;
+/// until enough samples are available it uses the byte bound.
 /// `{"tokenized": "<encoding>"}` names a Token Encoding; an unlisted name is
 /// rejected when the definition is read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestEstimator {
-	#[default]
 	Bytes,
+	#[default]
 	Calibrated,
 	Tokenized(TokenEncoding),
 }

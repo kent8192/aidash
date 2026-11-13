@@ -57,6 +57,7 @@ impl ResearchJournalResult {
 		entries: &[HistoryEntry],
 		expired: &ExpiredResults,
 		revoked: bool,
+		revoked_sources: &std::collections::BTreeSet<Uuid>,
 	) -> Result<()> {
 		// Read identities only once; ordinary projection saves already own
 		// nearly every variant and must not query once per retained result.
@@ -106,7 +107,13 @@ impl ResearchJournalResult {
 			let terminated = ResearchAttempt::expired_tombstone(tx, run, &reference.invocation)
 				.await?
 				.is_some();
-			let reason = if revoked || ContextEvent::is_revoked_result(result) {
+			let reason = if revoked
+				|| ContextEvent::is_revoked_result(result)
+				|| reference
+					.runs
+					.iter()
+					.any(|run| revoked_sources.contains(run))
+			{
 				Some("revocation")
 			} else if terminated
 				|| reference.covered_by(expired)
@@ -150,6 +157,7 @@ impl ResearchJournalResult {
 		entries: &mut [HistoryEntry],
 		expired: &ExpiredResults,
 		revoked: bool,
+		revoked_sources: &std::collections::BTreeSet<Uuid>,
 	) -> Result<()> {
 		for entry in entries {
 			let ContextEvent::Tool { call, result } = &mut entry.event else {
@@ -162,7 +170,13 @@ impl ResearchJournalResult {
 			let reason = record
 				.as_ref()
 				.and_then(|record| record.purge_reason.as_deref());
-			*result = if revoked || reason == Some("revocation") {
+			*result = if revoked
+				|| reason == Some("revocation")
+				|| reference
+					.runs
+					.iter()
+					.any(|run| revoked_sources.contains(run))
+			{
 				ContextEvent::revoked_result(&call.id)
 			} else if reference.covered_by(expired) || reason == Some("account_terms") {
 				ContextEvent::expired_result(&call.id)
@@ -206,11 +220,39 @@ impl ResearchJournalResult {
 		keys: &[String],
 		expired: &ExpiredResults,
 	) -> Result<()> {
+		Self::expire_where(tx, Expr::col("run_id").eq(Expr::value(run)), keys, expired).await
+	}
+	/// Expire other Runs' Journal copies of `run`'s Research that `expired`
+	/// covers.
+	pub(crate) async fn expire_copies(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		expired: &ExpiredResults,
+	) -> Result<()> {
+		Self::expire_where(
+			tx,
+			Expr::col("reference").binary(
+				reinhardt::query::types::BinOper::PgOperator(
+					reinhardt::query::types::PgBinOper::Contains,
+				),
+				Expr::value(serde_json::json!({"runs":[run]})),
+			),
+			&[],
+			expired,
+		)
+		.await
+	}
+	async fn expire_where(
+		tx: &mut dyn TransactionExecutor,
+		held: SimpleExpr,
+		keys: &[String],
+		expired: &ExpiredResults,
+	) -> Result<()> {
 		// Read metadata only, including orphan variants no longer projected.
 		let (sql, values) = Query::select()
 			.columns(["id", "reference"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(held)
 			.and_where(Expr::col("bytes").is_not_null())
 			.build(PostgresQueryBuilder);
 		let mut ids = Vec::new();

@@ -22,7 +22,6 @@ pub enum Refusal {
 	InstallationInactive,
 	ExecutorMismatch,
 	DefinitionChanged,
-	DeciderMismatch,
 }
 
 impl std::fmt::Display for Refusal {
@@ -46,7 +45,6 @@ impl std::fmt::Display for Refusal {
 			Self::DefinitionChanged => {
 				"a dependency of the agent changed on the target Node since it was inspected"
 			}
-			Self::DeciderMismatch => "the target Node's decider differs from the one requested",
 		})
 	}
 }
@@ -74,8 +72,6 @@ pub struct Inspection {
 	pub definitions: Vec<Definition>,
 	#[serde(default, skip_serializing_if = "zero")]
 	pub semantic_memory: u32,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub decider: Option<EntityRef>,
 }
 
 fn zero(value: &u32) -> bool {
@@ -174,7 +170,6 @@ impl Inspection {
 			&& self.authority_digest == pinned.authority_digest
 			&& self.agent == pinned.agent
 			&& self.definitions == pinned.definitions
-			&& self.decider == pinned.decider
 			&& (pinned.semantic_memory == 0 || self.semantic_memory == pinned.semantic_memory)
 	}
 }

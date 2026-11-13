@@ -72,6 +72,15 @@ pub(super) async fn page(store: &Store) -> Result<Vec<Uuid>> {
 					Query::select()
 						.column(Alias::new("run_id"))
 						.from(Alias::new("memory_run_bindings"))
+						.cond_where(
+							Condition::any()
+								.add(Expr::col("provider_id").ne(
+									aidash_domain::registry::bindings::memory_defaults::MEMORY_ID,
+								))
+								.add(Expr::col("provider_version").ne(
+									aidash_domain::registry::bindings::memory_defaults::VERSION,
+								)),
+						)
 						.to_owned(),
 				),
 			)

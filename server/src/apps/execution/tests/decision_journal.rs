@@ -1,24 +1,20 @@
 //! Decision Evidence and Decision Attempts persist behind the portable gate:
-//! charged attempts are recovered, never charged twice, and an applied decision
-//! commits its context and evidence atomically under the Run's lease.
+//! charged attempts are recovered and never charged twice, and approval
+//! evidence is committed under the Run's lease.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "support/legacy.rs"]
 mod common;
 
 use aidash_application::{
-	decision::{
-		ApprovalTool, CompactionResult, DecisionGate, Evaluation, Judgement, Ruling,
-		approval_input_digest, compaction_input_digest,
-	},
+	decision::{ApprovalTool, DecisionGate, Judgement, Ruling, approval_input_digest},
 	ports::decision::{
-		Approval, DecisionAuthority, DecisionJournal, DecisionProvider, Disclosure, DispatchError,
+		Approval, DecisionAuthority, DecisionJournal, DecisionProvider, DispatchError,
 		DispatchRecord, PreparedDispatch, PreparedRequest, ReportedDispatch, Reservation,
-		RetainedState,
 	},
 	tenancy::TEST_FIXTURE,
 };
 use aidash_domain::{
-	context::{Context, ContextEvent, RequestBudget, RequestProjection, recovery::Failure},
+	context::{ContextEvent, recovery::Failure},
 	decision::{
 		policy::{ExecutionAllowance, StateRetention},
 		*,
@@ -34,7 +30,7 @@ use aidash_server::{
 	store::Store,
 };
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use common::{
 	ApplicationFixture, TestApplication, bootstrap, cleanup, native_application, request,
 };
@@ -50,20 +46,19 @@ use std::sync::{
 use uuid::Uuid;
 
 const IMPLEMENTATION: &str = "node-decision-adapter:fixture";
-const WINDOW: usize = 80_000;
 
 /// The only place that spells a Decider configuration, so a change of its
 /// shape touches one helper.
 fn config(mode: Mode) -> DeciderConfig {
 	DeciderConfig {
-		hook: Hook::Compaction,
+		hook: Hook::Approval,
 		answer_type: AnswerType::Noul,
-		description: "Keep needed history".into(),
+		description: "Review the requested action".into(),
 		provider_credential: "openrouter".into(),
 		routes: vec![DeciderRoute::jev("typesafe/jev-1.13")],
-		builder: BUILDER.into(),
-		option_source: OPTION_SOURCE.into(),
-		rule: RULE.into(),
+		builder: APPROVAL_BUILDER.into(),
+		option_source: APPROVAL_OPTION_SOURCE.into(),
+		rule: APPROVAL_RULE.into(),
 		mode,
 		max_calls_per_run: 1_000,
 		state_retention: StateRetention::default(),
@@ -72,8 +67,8 @@ fn config(mode: Mode) -> DeciderConfig {
 
 fn definition(mode: Mode) -> Entry {
 	serde_json::from_value(
-		json!({"id":"compaction-decider","version":"1.0.0","kind":"decider",
-		"name":{"en":"Compaction"},"description":{"en":"Retain history"},"config":config(mode)}),
+		json!({"id":"approval-decider","version":"1.0.0","kind":"decider",
+		"name":{"en":"Approval"},"description":{"en":"Retain history"},"config":config(mode)}),
 	)
 	.unwrap()
 }
@@ -248,9 +243,6 @@ impl DecisionAuthority for Authority<'_> {
 			},
 		})
 	}
-	async fn read(&self, _: &Evidence, _: bool) -> aidash_application::Result<()> {
-		Ok(())
-	}
 }
 
 /// A leased Run whose journaled context holds ten large tool results.
@@ -283,155 +275,6 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 		.await
 		.unwrap();
 	(run, worker)
-}
-
-fn budget(projection: &RequestProjection) -> RequestBudget<'_> {
-	RequestBudget {
-		input_format: Default::default(),
-		window: WINDOW,
-		instructions: "Follow the task",
-		tools: &[],
-		max_output_tokens: 0,
-		projection,
-		estimate: Default::default(),
-	}
-}
-
-fn boundary(store: &Store, run: &Run, worker: Uuid, context: &Context) -> Boundary {
-	boundary_in(store, run, worker, context, WINDOW)
-}
-
-fn boundary_in(
-	store: &Store,
-	run: &Run,
-	worker: Uuid,
-	context: &Context,
-	window: usize,
-) -> Boundary {
-	let projection = RequestProjection::Legacy;
-	let budget = RequestBudget {
-		input_format: Default::default(),
-		window,
-		..budget(&projection)
-	};
-	Boundary {
-		node: store.deployment.to_string(),
-		run: run.id,
-		step: run.step,
-		run_revision: run.revision,
-		input_revision: run.observed_input_seq,
-		worker,
-		input_digest: compaction_input_digest(context, &budget, &json!({})).unwrap(),
-		cycle: 0,
-		retry: 0,
-	}
-}
-
-fn disclosure(context: &Context) -> Disclosure {
-	Disclosure {
-		goal: Some("Reply".into()),
-		tool_inputs: context
-			.events()
-			.enumerate()
-			.filter(|(_, event)| matches!(event, ContextEvent::Tool { .. }))
-			.map(|(index, _)| (index, json!({"query":"permitted"})))
-			.collect(),
-		sources: vec![SourcePin {
-			resource: "authorized-history".into(),
-			revision_digest: format!("sha256:{}", "a".repeat(64)),
-		}],
-		..Default::default()
-	}
-}
-
-/// Runs the real gate against the PostgreSQL journal of `run`.
-async fn decide(
-	store: &Store,
-	run: &Run,
-	worker: Uuid,
-	mode: Mode,
-	authority: &Authority<'_>,
-	provider: &Provider,
-) -> (aidash_application::Result<CompactionResult>, Context) {
-	decide_in(store, run, worker, mode, authority, provider, WINDOW).await
-}
-
-/// `decide` against a model window of `window` tokens.
-async fn decide_in(
-	store: &Store,
-	run: &Run,
-	worker: Uuid,
-	mode: Mode,
-	authority: &Authority<'_>,
-	provider: &Provider,
-	window: usize,
-) -> (aidash_application::Result<CompactionResult>, Context) {
-	let decider = bound(store.deployment.as_str(), mode);
-	let admitted = Policy::new(allowance(&decider, 10));
-	let policy = authority.revoke.unwrap_or(&admitted);
-	let journal =
-		RunDecisionJournal::new(store, run.clone(), allowance(&decider, 10), policy).unwrap();
-	let mut context = run.context.clone();
-	let boundary = boundary_in(store, run, worker, &context, window);
-	let definition = definition(mode);
-	let view = disclosure(&context);
-	let projection = RequestProjection::Legacy;
-	let gate = DecisionGate {
-		authority,
-		journal: &journal,
-		provider,
-	};
-	let input = Evaluation {
-		boundary: &boundary,
-		decider: &decider,
-		definition: &definition,
-		disclosure: &view,
-		now: Utc::now(),
-	};
-	let budget = RequestBudget {
-		input_format: Default::default(),
-		window,
-		..budget(&projection)
-	};
-	let result = gate
-		.compact(&mut context, &budget, &json!({}), &input)
-		.await;
-	(result, context)
-}
-
-/// Whether `message` refuses evidence as inconsistent with its charged
-/// attempts, its replay or its answers, whichever check finds it first.
-fn inconsistent(message: &str) -> bool {
-	[
-		"charged attempts",
-		"historical",
-		"decision answers must cover",
-	]
-	.iter()
-	.any(|reason| message.contains(reason))
-}
-
-async fn evidence_rows(store: &Store, run: Uuid) -> Vec<(String, Evidence)> {
-	let rows = sqlx::query(
-		&Query::select()
-			.columns(["outcome", "evidence"].map(Alias::new))
-			.from(Alias::new("decision_evidence"))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.order_by(Alias::new("created_at"), Order::Asc)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(store.pool.fixture_driver())
-	.await
-	.unwrap();
-	use sqlx::Row as _;
-	rows.into_iter()
-		.map(|row| {
-			(
-				row.get("outcome"),
-				serde_json::from_value(row.get::<Value, _>("evidence")).unwrap(),
-			)
-		})
-		.collect()
 }
 
 async fn count(store: &Store, table: &str, run: Uuid) -> i64 {
@@ -491,336 +334,6 @@ fn seal(mut record: DispatchRecord) -> DispatchRecord {
 		&record.questions,
 	);
 	record
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn an_applied_decision_commits_its_context_and_evidence_atomically(
-	#[future(awt)]
-	#[from(native_application)]
-	fixture: ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application.clone();
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (run, worker) = leased(&f, &app, &token).await;
-	let provider_report = AttemptProviderReport::Reported {
-		served_model: Some("typesafe/jev-1.13-20260917".into()),
-		served_host: Some("typesafe".into()),
-		input_tokens: Some(124),
-		output_tokens: Some(5),
-		cost_usd: Some(ProviderCost::new(0.000002).unwrap()),
-	};
-	let provider = Provider {
-		provider_report: provider_report.clone(),
-		..Provider::new(Mode::Enforce)
-	};
-	let authority = Authority {
-		provider: &provider,
-		forbid_after_dispatch: AtomicBool::new(false),
-		retain_state: false,
-		revoke: None,
-	};
-	// Act
-	let (result, context) =
-		decide(&f.store, &run, worker, Mode::Enforce, &authority, &provider).await;
-	// Assert: the decision applied, and the saved Run holds the same context.
-	assert!(matches!(result.unwrap(), CompactionResult::Applied(_)));
-	assert!(context.history.len() < run.context.history.len());
-	let saved = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(
-		serde_json::to_value(&saved.context.history).unwrap(),
-		serde_json::to_value(&context.history).unwrap()
-	);
-	assert_eq!(saved.revision, run.revision + 1);
-	assert_eq!(
-		saved.lease_owner, None,
-		"an adopted compaction ends its step"
-	);
-	let rows = evidence_rows(&f.store, run.id).await;
-	assert_eq!(rows.len(), 1);
-	let (outcome, evidence) = &rows[0];
-	assert_eq!(outcome, "applied");
-	assert_eq!(evidence.replay().unwrap(), evidence.branches);
-	assert_eq!(evidence.state, StateReference::Disabled);
-	assert_eq!(evidence.attempts[0].provider_report, provider_report);
-	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
-	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn a_rejected_decision_resumes_with_its_charged_answers_and_ends_final(
-	#[future(awt)]
-	#[from(native_application)]
-	fixture: ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application.clone();
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (run, worker) = leased(&f, &app, &token).await;
-	let provider = Provider::new(Mode::Enforce);
-	let authority = Authority {
-		provider: &provider,
-		forbid_after_dispatch: AtomicBool::new(true),
-		retain_state: false,
-		revoke: None,
-	};
-	// Arrange: the final approval forbids applying after the provider answered.
-	let (rejected, unchanged) =
-		decide(&f.store, &run, worker, Mode::Enforce, &authority, &provider).await;
-	assert!(rejected.is_err());
-	assert_eq!(unchanged.history.len(), run.context.history.len());
-	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-	// Evidence whose answers differ from the charged result is never committed.
-	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
-	let policy = Policy::new(allowance(&decider, 10));
-	let journal =
-		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
-	let (_, mut tampered) = evidence_rows(&f.store, run.id).await.remove(0);
-	assert!(
-		tampered
-			.attempts
-			.iter()
-			.all(|attempt| attempt.status == AttemptStatus::Answered)
-	);
-	*tampered.answers.values_mut().next().unwrap() = Probability::new(1.0).unwrap();
-	assert!(matches!(
-		journal.commit(&tampered, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
-	));
-	// So is evidence that reports a durably answered attempt with another status.
-	let (_, mut relabeled) = evidence_rows(&f.store, run.id).await.remove(0);
-	relabeled.attempts[0].status = AttemptStatus::Uncertain;
-	assert!(matches!(
-		journal.commit(&relabeled, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
-	));
-	// Evidence must name every charged attempt.
-	let (_, mut omitting) = evidence_rows(&f.store, run.id).await.remove(0);
-	omitting.attempts.clear();
-	assert!(matches!(
-		journal.commit(&omitting, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
-	));
-	// This rejection selected branches, so it replays in full; it also carries
-	// only what its charges recorded: no unbacked answer, no other input or mode.
-	let (_, saved) = evidence_rows(&f.store, run.id).await.remove(0);
-	let mut unbacked = saved.clone();
-	unbacked
-		.answers
-		.insert("unanswered".into(), Probability::new(1.0).unwrap());
-	let mut other_input = saved.clone();
-	other_input.boundary.input_digest = format!("sha256:{}", "b".repeat(64));
-	let mut other_mode = saved.clone();
-	other_mode.mode = Mode::Shadow;
-	let mut uncatalogued = saved.clone();
-	uncatalogued
-		.questions
-		.remove(&saved.attempts[0].questions[0]);
-	for differing in [unbacked, other_input, other_mode, uncatalogued] {
-		assert!(matches!(
-			journal.commit(&differing, None, None).await,
-			Err(aidash_application::Error::Invalid(message)) if inconsistent(&message)
-		));
-	}
-	// Nor does it skip the invariants every rejection keeps: no fitting reason,
-	// no unsupported version and no restrictions looser than the policy floor.
-	let mut fitting = saved.clone();
-	fitting.reason = Reason::Fits;
-	// Only a complete evaluation finds the context too large, so this replays
-	// and its reason disagrees with the restrictions and fit metrics.
-	let mut mislabeled = saved.clone();
-	mislabeled.reason = Reason::Insufficient;
-	let mut unsupported = saved.clone();
-	unsupported.version = EVIDENCE_VERSION + 1;
-	let mut looser = saved.clone();
-	looser.restrictions.preserve_recent = 5;
-	for (invalid, expected) in [
-		(fitting, "corrupt historical application outcome"),
-		(mislabeled, "corrupt historical application outcome"),
-		(unsupported, "unsupported or incomplete"),
-		(looser, "looser than the admitted Binding"),
-	] {
-		assert!(matches!(
-			journal.commit(&invalid, None, None).await,
-			Err(aidash_application::Error::Invalid(message)) if message.contains(expected)
-		));
-	}
-	let mut anonymous = saved.clone();
-	anonymous.id = Uuid::nil();
-	// Its replay or the identity check refuses it, whichever runs first.
-	assert!(matches!(
-		journal.commit(&anonymous, None, None).await,
-		Err(aidash_application::Error::Invalid(message))
-			if message.contains("decision identity") || message.contains("unsupported or incomplete")
-	));
-	// An expired marker must match its retention witness, which the rejection
-	// invariants already check.
-	let (_, mut marked) = evidence_rows(&f.store, run.id).await.remove(0);
-	marked.state = StateReference::Expired {
-		id: Uuid::new_v4(),
-		digest: marked.state_digest.clone(),
-		expired_at: Utc::now(),
-	};
-	marked.state_retention = StateRetentionWitness::Enabled {
-		id: Uuid::new_v4(),
-		expires_at: Utc::now() + Duration::days(1),
-	};
-	assert!(matches!(
-		journal.commit(&marked, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("retained-state reference changed")
-	));
-	// A marker whose deadline has not passed by the commit is not an expiry.
-	let (_, mut premature) = evidence_rows(&f.store, run.id).await.remove(0);
-	let (id, deadline) = (Uuid::new_v4(), Utc::now() + Duration::days(1));
-	premature.state = StateReference::Expired {
-		id,
-		digest: premature.state_digest.clone(),
-		expired_at: deadline,
-	};
-	premature.state_retention = StateRetentionWitness::Enabled {
-		id,
-		expires_at: deadline,
-	};
-	assert!(matches!(
-		journal.commit(&premature, None, None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
-	));
-	assert_eq!(evidence_rows(&f.store, run.id).await.len(), 1);
-	// Act: the same decision resumes once applying is permitted again.
-	authority
-		.forbid_after_dispatch
-		.store(false, Ordering::SeqCst);
-	let (applied, _) = decide(&f.store, &run, worker, Mode::Enforce, &authority, &provider).await;
-	// Assert: the charged answers were reused without another provider call,
-	// and the rejected snapshot was kept beside the final one.
-	assert!(matches!(applied.unwrap(), CompactionResult::Applied(_)));
-	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-	let rows = evidence_rows(&f.store, run.id).await;
-	assert_eq!(
-		rows.iter()
-			.map(|(outcome, _)| outcome.as_str())
-			.collect::<Vec<_>>(),
-		vec!["rejected", "applied"]
-	);
-	assert_eq!(rows[0].1.reason, Reason::Forbidden);
-	assert_eq!(rows[0].1.id, rows[1].1.id);
-	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
-	// An applied decision is final: recovery under a new lease reports a conflict.
-	let worker = Uuid::new_v4();
-	let run = f
-		.store
-		.lease_run(worker, 60)
-		.await
-		.unwrap()
-		.expect("leased Run");
-	drop(journal);
-	let journal =
-		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
-	let boundary = boundary(&f.store, &run, worker, &run.context);
-	assert!(matches!(
-		journal.recover(rows[1].1.id, &boundary).await,
-		Err(aidash_application::Error::Conflict(_))
-	));
-	f.store
-		.release_lease(&TEST_FIXTURE, run.id, worker)
-		.await
-		.unwrap();
-	drop(journal);
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn retained_state_expires_to_its_marker(
-	#[future(awt)]
-	#[from(native_application)]
-	fixture: ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application.clone();
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (run, worker) = leased(&f, &app, &token).await;
-	let provider = Provider::new(Mode::Shadow);
-	let authority = Authority {
-		provider: &provider,
-		forbid_after_dispatch: AtomicBool::new(false),
-		retain_state: true,
-		revoke: None,
-	};
-	// Arrange: a Shadow decision keeps its state and leaves the Run unchanged.
-	let (result, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
-	assert!(matches!(result.unwrap(), CompactionResult::Shadow(_)));
-	assert_eq!(
-		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().revision,
-		run.revision
-	);
-	assert_eq!(count(&f.store, "decision_states", run.id).await, 1);
-	let (_, retained) = evidence_rows(&f.store, run.id).await.remove(0);
-	let StateReference::Retained {
-		id,
-		digest,
-		expires_at,
-	} = retained.state.clone()
-	else {
-		panic!("a Shadow decision retains its state");
-	};
-	// State bytes that do not match their digest are never retained.
-	let decider = bound(f.store.deployment.as_str(), Mode::Shadow);
-	let policy = Policy::new(allowance(&decider, 10));
-	let journal =
-		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
-	let foreign = RetainedState {
-		id,
-		digest,
-		expires_at,
-		state: json!({"another":"evaluation"}),
-	};
-	assert!(matches!(
-		journal.commit(&retained, None, Some(&foreign)).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("retained decision state")
-	));
-	// Act: nothing is due yet, then the deadline passes.
-	assert_eq!(f.store.expire_decision_states(Utc::now()).await.unwrap(), 0);
-	let expired = f
-		.store
-		.expire_decision_states(Utc::now() + Duration::days(8))
-		.await
-		.unwrap();
-	// Assert: the bytes are gone, the marker matches the witness, replay still holds.
-	assert_eq!(expired, 1);
-	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
-	let (outcome, evidence) = evidence_rows(&f.store, run.id).await.remove(0);
-	assert_eq!(outcome, "shadow");
-	let (
-		StateReference::Retained {
-			id,
-			digest,
-			expires_at,
-		},
-		StateReference::Expired {
-			id: expired_id,
-			digest: expired_digest,
-			expired_at,
-		},
-	) = (&retained.state, &evidence.state)
-	else {
-		panic!("expected a retained state replaced by its expired marker");
-	};
-	assert_eq!(
-		(id, digest, expires_at),
-		(expired_id, expired_digest, expired_at)
-	);
-	assert_eq!(evidence.state_retention, retained.state_retention);
-	assert_eq!(evidence.replay().unwrap(), evidence.branches);
-	f.store
-		.release_lease(&TEST_FIXTURE, run.id, worker)
-		.await
-		.unwrap();
-	drop(journal);
-	cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]
@@ -1095,57 +608,6 @@ async fn every_charge_rechecks_the_current_allowance(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_decider_revoked_before_the_commit_never_retains_state(
-	#[future(awt)]
-	#[from(native_application)]
-	fixture: ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application.clone();
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (run, worker) = leased(&f, &app, &token).await;
-	let provider = Provider::new(Mode::Shadow);
-	let decider = bound(f.store.deployment.as_str(), Mode::Shadow);
-	let policy = Policy::new(allowance(&decider, 10));
-	let authority = Authority {
-		provider: &provider,
-		forbid_after_dispatch: AtomicBool::new(false),
-		retain_state: true,
-		revoke: Some(&policy),
-	};
-	// Act: the current policy drops the Decider after the provider answered.
-	let (retaining, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
-	// Assert: nothing is retained or recorded, and the Run is unchanged.
-	assert!(matches!(
-		retaining,
-		Err(aidash_application::Error::Forbidden)
-	));
-	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
-	assert_eq!(count(&f.store, "decision_evidence", run.id).await, 0);
-	assert_eq!(
-		f.store.run(&TEST_FIXTURE, run.id).await.unwrap().revision,
-		run.revision
-	);
-	// Evidence without an effect is still recorded from the charged answers.
-	let authority = Authority {
-		retain_state: false,
-		..authority
-	};
-	let (recorded, _) = decide(&f.store, &run, worker, Mode::Shadow, &authority, &provider).await;
-	assert!(matches!(recorded.unwrap(), CompactionResult::Shadow(_)));
-	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-	assert_eq!(count(&f.store, "decision_evidence", run.id).await, 1);
-	assert_eq!(count(&f.store, "decision_states", run.id).await, 0);
-	f.store
-		.release_lease(&TEST_FIXTURE, run.id, worker)
-		.await
-		.unwrap();
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_original_fence(
 	#[future(awt)]
 	#[from(native_application)]
@@ -1226,224 +688,12 @@ async fn a_lost_lease_or_stale_revision_is_a_conflict_and_recovery_keeps_the_ori
 		.finish_attempt(&permit, None, AttemptStatus::Uncertain)
 		.await
 		.unwrap();
-	assert!(matches!(
-		journal
-			.append_outcome(&OutcomeLink {
-				decision: charged.decision,
-				next_inference: None,
-				observed_status: "paused".into(),
-			})
-			.await,
-		Err(aidash_application::Error::NotFound(_))
-	));
 	f.store
 		.release_lease(&TEST_FIXTURE, run.id, successor)
 		.await
 		.unwrap();
 	drop(journal);
 	drop(outdated);
-	cleanup(f, &url, &schema).await;
-}
-
-/// A window the unprotected history alone already outgrows, so pruning every
-/// candidate is not enough.
-const NARROW_WINDOW: usize = 1_000;
-
-#[rstest::rstest]
-#[tokio::test]
-async fn a_staged_decision_is_recorded_only_with_the_summary_adopted_from_it(
-	#[future(awt)]
-	#[from(native_application)]
-	fixture: ApplicationFixture,
-) {
-	use aidash_domain::context::recovery::{Attempt, Outcome as Settled, Settlement, Stage};
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application.clone();
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (run, worker) = leased(&f, &app, &token).await;
-	let provider = Provider::new(Mode::Enforce);
-	let authority = Authority {
-		provider: &provider,
-		forbid_after_dispatch: AtomicBool::new(false),
-		retain_state: false,
-		revoke: None,
-	};
-	// Arrange: pruning cannot fit the narrow window, so the gate hands the
-	// decision back without recording it.
-	let (result, unchanged) = decide_in(
-		&f.store,
-		&run,
-		worker,
-		Mode::Enforce,
-		&authority,
-		&provider,
-		NARROW_WINDOW,
-	)
-	.await;
-	let Ok(CompactionResult::Insufficient(staged)) = result else {
-		panic!("expected a staged decision");
-	};
-	assert_eq!(unchanged.history.len(), run.context.history.len());
-	assert!(staged.pruned.history.len() < run.context.history.len());
-	assert!(evidence_rows(&f.store, run.id).await.is_empty());
-	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
-	let policy = Policy::new(allowance(&decider, 10));
-	let journal =
-		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
-	// A staged decision is never recorded on its own.
-	assert!(matches!(
-		journal.commit(&staged.evidence, None, None).await,
-		Err(aidash_application::Error::Invalid(_))
-	));
-	// The summary absorbs the oldest pruned entry and is adopted with it.
-	let mut adopted = run.clone();
-	adopted.context = staged.pruned.clone();
-	let absorbed = adopted.context.history.remove(0);
-	adopted.context.compactions += 1;
-	let attempt = Attempt {
-		id: Uuid::new_v4(),
-		run_id: run.id,
-		stage: Stage::Summary,
-		policy_version: "context-recovery/1".into(),
-		provider: "summarizer@1.0.0#sha256:fixture".into(),
-		source_from_seq: absorbed.seq,
-		source_through_seq: absorbed.seq,
-		base_revision: run.revision,
-		observed_input_seq: run.observed_input_seq,
-		before_tokens: 1_000,
-	};
-	aidash_application::ports::execution::ExecutionStore::begin_compaction(
-		&f.store.for_run(TEST_FIXTURE),
-		&run,
-		worker,
-		&attempt,
-		2,
-	)
-	.await
-	.unwrap();
-	let settlement = Settlement {
-		outcome: Settled::Adopted,
-		reason: None,
-		candidate_digest: Some("sha256:candidate".into()),
-		after_tokens: Some(100),
-	};
-	// A summary that does not continue from the pruned projection is refused.
-	let mut unrelated = adopted.clone();
-	unrelated.context.history = run.context.history.clone();
-	assert!(matches!(
-		f.store
-			.adopt_compaction(
-				&TEST_FIXTURE,
-				&unrelated,
-				worker,
-				attempt.id,
-				&settlement,
-				Some((&journal, &staged)),
-			)
-			.await,
-		Err(aidash_server::Error::Invalid(_))
-	));
-	assert!(evidence_rows(&f.store, run.id).await.is_empty());
-	// Act
-	f.store
-		.adopt_compaction(
-			&TEST_FIXTURE,
-			&adopted,
-			worker,
-			attempt.id,
-			&settlement,
-			Some((&journal, &staged)),
-		)
-		.await
-		.unwrap();
-	// Assert: the staged evidence names the pruned projection and was saved
-	// with the adopted summary.
-	let rows = evidence_rows(&f.store, run.id).await;
-	assert_eq!(rows.len(), 1);
-	let (outcome, evidence) = &rows[0];
-	assert_eq!(outcome, "staged");
-	assert_eq!(evidence.reason, Reason::Insufficient);
-	assert_eq!(evidence.replay().unwrap(), evidence.branches);
-	assert_eq!(
-		evidence.projection_digest,
-		Some(pruning::projection_digest(&staged.pruned.history).unwrap())
-	);
-	let saved = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(saved.context.history.len(), adopted.context.history.len());
-	// A staged decision is final, like an applied one.
-	assert!(matches!(
-		journal.commit(&staged.rejected(), None, None).await,
-		Err(aidash_application::Error::Conflict(_))
-	));
-	drop(journal);
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn evidence_must_attest_to_the_context_and_identity_it_claims(
-	#[future(awt)]
-	#[from(native_application)]
-	fixture: ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application.clone();
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (run, worker) = leased(&f, &app, &token).await;
-	let provider = Provider::new(Mode::Enforce);
-	let authority = Authority {
-		provider: &provider,
-		forbid_after_dispatch: AtomicBool::new(true),
-		retain_state: false,
-		revoke: None,
-	};
-	// Arrange: a rejected decision leaves evidence whose answers are charged.
-	let (rejected, _) = decide(&f.store, &run, worker, Mode::Enforce, &authority, &provider).await;
-	assert!(rejected.is_err());
-	let decider = bound(f.store.deployment.as_str(), Mode::Enforce);
-	let policy = Policy::new(allowance(&decider, 10));
-	let journal =
-		RunDecisionJournal::new(&f.store, run.clone(), allowance(&decider, 10), &policy).unwrap();
-	let (_, saved) = evidence_rows(&f.store, run.id).await.remove(0);
-	// Act + Assert: the same decision applied with a context other than the one
-	// its branches produced is refused.
-	let mut applied = saved.clone();
-	applied.outcome = Outcome::Applied;
-	applied.reason = Reason::Fits;
-	applied.restrictions.forbid_apply = false;
-	applied.projection_digest = Some(format!("sha256:{}", "e".repeat(64)));
-	assert!(matches!(
-		journal.commit(&applied, Some(&run.context), None).await,
-		Err(aidash_application::Error::Invalid(message)) if message.contains("applied context differs")
-	));
-	// Evidence keeps the admitted Binding restrictions its identity commits to,
-	// so evidence claiming other ones is not this decision.
-	let mut other_binding = saved.clone();
-	other_binding.binding_restrictions.preserve_recent = 8;
-	other_binding.restrictions.preserve_recent = 8;
-	assert!(matches!(
-		journal.commit(&other_binding, None, None).await,
-		Err(aidash_application::Error::Invalid(_))
-	));
-	// A charge must use its stable attempt identity and the restriction floor.
-	let mut unstable = record(&f.store, &run, worker, &decider, &["q9_call"], 'a');
-	unstable.decision = Uuid::new_v4();
-	assert!(matches!(
-		journal.reserve(&unstable).await,
-		Err(aidash_application::Error::Invalid(_))
-	));
-	let mut loose = seal(unstable);
-	loose.binding_restrictions.preserve_recent = 5;
-	assert!(matches!(
-		journal.reserve(&loose).await,
-		Err(aidash_application::Error::Invalid(_))
-	));
-	assert_eq!(count(&f.store, "decision_attempts", run.id).await, 1);
-	f.store
-		.release_lease(&TEST_FIXTURE, run.id, worker)
-		.await
-		.unwrap();
-	drop(journal);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1533,6 +783,7 @@ async fn judge_call(
 		idempotency_key: "k1".into(),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	}];
 	let definition = approval_definition(mode);
 	let boundary = Boundary {

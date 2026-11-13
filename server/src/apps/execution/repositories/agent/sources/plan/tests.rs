@@ -51,7 +51,7 @@ async fn admitted_with(
 	let mut agent = entry(
 		"reader",
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Read the admitted reference sources.","bindings":[{"kind":"source","target":{"registry_deployment":NODE,"id":"references","version":"1.0.0"},"narrow":{}}],"remove_default":["compaction"]}),
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Read the admitted reference sources.","bindings":[{"kind":"source","target":{"registry_deployment":NODE,"id":"references","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
 	);
 	if source.is_none() {
 		agent.config["bindings"] = json!([]);

@@ -50,7 +50,6 @@ impl BindingResolver for PinnedResolver {
 				continue;
 			}
 			if aidash_domain::registry::bindings::sources::is_selection_decider(&binding.definition)
-				|| defaults::is_compaction_decider(&binding.definition)
 			{
 				self.authority.check_metadata(run, binding).await?;
 				continue;

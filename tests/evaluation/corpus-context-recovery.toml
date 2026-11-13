@@ -142,6 +142,16 @@ description = "Runs exposed through an Agent Client Protocol server adapter."
 # Fixture HTTP tools. The deterministic tier binds them to the scripted
 # provider's local tool endpoint and approves only those exact calls.
 [[tools]]
+alias = "document_lookup"
+description = "Fetch one named document from the procurement archive."
+schema = '{"type":"object","properties":{"document":{"type":"string"}},"required":["document"],"additionalProperties":false}'
+
+[[tools]]
+alias = "record_note"
+description = "Append one entry to the shared review ledger. Each call adds a permanent entry, so a repeated call records a duplicate."
+schema = '{"type":"object","properties":{"page":{"type":"integer","minimum":1,"maximum":64}},"required":["page"],"additionalProperties":false}'
+
+[[tools]]
 alias = "reference_lookup"
 description = "Fetch one numbered reference page from the procurement archive."
 schema = '{"type":"object","properties":{"page":{"type":"integer","minimum":1,"maximum":64}},"required":["page"],"additionalProperties":false}'
@@ -321,7 +331,7 @@ reference_pages = 20
 max_steps = 40
 reference_page_bytes = 3000
 # Page 2 carries the correction. Page 1 is the oldest call and stays pinned.
-reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso." }
+reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
 [tasks.oracle]
 kind = "constraint-retention"
 budget_usd = 300
@@ -536,3 +546,107 @@ excluded_vendors = ["Contoso", "Northwind"]
 outcome = "success"
 claimed_success = true
 long_context = "summary_recovery"
+
+# Recovery tasks that exercise details inside results and side-effect history.
+
+# The correction sits inside page 2 and the page keeps the length of every other page:
+# no head and no length cue.
+[[tasks]]
+id = "correction-mid-page"
+kind = "long-context"
+language = "en-US"
+title = "Correction in the middle of an archive page"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and EXCLUDE-VENDOR=Northwind. Read reference pages 1 to 20 with reference_lookup; an archive page may contain corrections, and later corrections replace earlier values. Call reference_lookup for one page per turn, in page order; never request several pages in one turn. Reply with one JSON object in a ```json block: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "small-window"
+comparisons = ["projection"]
+fixture_agent = "constraint-tracker"
+context_policy = { version = "context-recovery/1", preserve_recent = 6, overflow_retries = 2, overflow_shrink = 0.75 }
+reference_pages = 20
+max_steps = 40
+reference_page_bytes = 3000
+reference_correction_offset = 1500
+reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
+[tasks.oracle]
+kind = "constraint-retention"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "unresolved"
+context_reason = "context_unreducible"
+long_context = "none"
+
+# The tool input names what matters, so a judge that sees inputs can tell this document
+# from the others while recency and a fixed rule cannot.
+[[tasks]]
+id = "relevance-visible-in-input"
+kind = "long-context"
+language = "en-US"
+title = "Correction in the one document whose name is relevant"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and EXCLUDE-VENDOR=Northwind. Read these archive documents with document_lookup, in this order: cafeteria-menu-week-12, procurement-budget-policy-update, parking-permit-renewals, office-plant-watering-rota, printer-toner-inventory, fire-drill-schedule, holiday-party-minutes, desk-relocation-plan, elevator-maintenance-log, visitor-badge-audit, recycling-bin-collection, gym-membership-discounts, kitchen-appliance-manual, meeting-room-etiquette, stationery-order-history, window-cleaning-contract, coffee-machine-service-notes, staff-newsletter-october, bicycle-rack-survey, lost-and-found-register. A document may contain corrections to the constraints, and later corrections replace earlier values. Call document_lookup for one document per turn; never request several documents in one turn. Reply with one JSON object in a ```json block: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "small-window"
+comparisons = ["projection"]
+fixture_agent = "constraint-tracker"
+tools = ["document_lookup"]
+fixture_documents = [
+  "cafeteria-menu-week-12",
+  "procurement-budget-policy-update",
+  "parking-permit-renewals",
+  "office-plant-watering-rota",
+  "printer-toner-inventory",
+  "fire-drill-schedule",
+  "holiday-party-minutes",
+  "desk-relocation-plan",
+  "elevator-maintenance-log",
+  "visitor-badge-audit",
+  "recycling-bin-collection",
+  "gym-membership-discounts",
+  "kitchen-appliance-manual",
+  "meeting-room-etiquette",
+  "stationery-order-history",
+  "window-cleaning-contract",
+  "coffee-machine-service-notes",
+  "staff-newsletter-october",
+  "bicycle-rack-survey",
+  "lost-and-found-register",
+]
+context_policy = { version = "context-recovery/1", preserve_recent = 6, overflow_retries = 2, overflow_shrink = 0.75 }
+max_steps = 40
+reference_page_bytes = 3000
+reference_correction_offset = 1500
+document_corrections = { "procurement-budget-policy-update" = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
+[tasks.oracle]
+kind = "constraint-retention"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "unresolved"
+context_reason = "context_unreducible"
+long_context = "none"
+
+# Each page is followed by a call with a side effect. Duplicates are counted from the
+# fixture service log; the oracle is unchanged.
+[[tasks]]
+id = "side-effect-ledger"
+kind = "long-context"
+language = "en-US"
+title = "Record each page once while keeping a correction"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and EXCLUDE-VENDOR=Northwind. Read reference pages 1 to 20 with reference_lookup, and after reading each page call record_note once with that page number. Every record_note call adds a permanent ledger entry, so never record a page twice. An archive page may contain corrections, and later corrections replace earlier values. Call one tool per turn, in page order. Reply with one JSON object in a ```json block: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "small-window"
+comparisons = ["projection"]
+fixture_agent = "constraint-tracker"
+tools = ["reference_lookup", "record_note"]
+fixture_record_pages = true
+context_policy = { version = "context-recovery/1", preserve_recent = 6, overflow_retries = 2, overflow_shrink = 0.75 }
+reference_pages = 20
+max_steps = 60
+reference_page_bytes = 3000
+reference_correction_offset = 1500
+reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
+[tasks.oracle]
+kind = "constraint-retention"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "unresolved"
+context_reason = "context_unreducible"
+long_context = "none"

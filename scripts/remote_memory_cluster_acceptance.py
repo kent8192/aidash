@@ -17,7 +17,6 @@ import uuid
 
 from transaction_cluster_acceptance import ADMINISTRATOR, PEER_SUBJECT, Cluster, ROOT, now
 from cluster_runtime import fixture_runtime
-from golden_path import COMPACTION_DECIDER
 
 
 def digest(value):
@@ -163,11 +162,6 @@ class RemoteMemory(Cluster):
         self.entries[node][name] = stored
         return stored
 
-    def approve_decider(self, node):
-        """Approve the compaction Decider every Agent depends on, as `golden_path.py` does."""
-        self.ok(self.user(node, f"/api/authorization/{self.tenants[node]}/catalog/approvals", {"node": self.nodes[node]["node"],
-            "approvals": [{"entry": COMPACTION_DECIDER, "enabled": True, "expected_revision": 0}]}))
-
     def configure(self):
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
         self.tenants = [self.nodes[node]["tenant"] for node in range(2)]
@@ -182,7 +176,6 @@ class RemoteMemory(Cluster):
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": revision, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            self.approve_decider(node)
             # The other Node's alice acts here as a service subject. The Tenant's
             # administrator writes the Peer Mapping, through a browser Mapping (#484).
             peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)

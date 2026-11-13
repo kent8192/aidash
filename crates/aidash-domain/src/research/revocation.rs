@@ -73,12 +73,15 @@ pub fn tombstone(operation: Operation) -> Value {
 	super::failure(operation, Failure::EvidenceRevoked)
 }
 
-/// The research operation of a stored tool result, recognized by the shared
-/// result envelope rather than by a tool name, so a result is recognized even
-/// after its tool is no longer bound or loaded. Only the envelope's contract
-/// marker counts: an unrelated tool may return the other fields too.
+/// Recognize a Research result or a Journal result with recorded Research
+/// dependencies, even after its tool is no longer bound or loaded.
 pub fn result_operation(result: &Value) -> Option<Operation> {
 	if let Some(reference) = crate::context::research::ResearchReference::parse(result) {
+		return Some(reference.operation);
+	}
+	if let Some(reference) =
+		crate::context::research::ResearchReference::from_result("journal", result)
+	{
 		return Some(reference.operation);
 	}
 	if result["contract"] != super::RESULT_CONTRACT {
