@@ -32,7 +32,7 @@ export function DeclineCall({
   submit: Submit;
   /** Send the sentence as a Run message. */
   send?: (content: string, key: string) => Promise<unknown>;
-  decline: (call: string) => Promise<unknown>;
+  decline: (call: string, restOfRun: boolean) => Promise<unknown>;
   order?: "sentence-first" | "decline-first";
   withSentence?: boolean;
   /** The call is declined, though the sentence may still be unsent. The Run goes on, so a parent
@@ -44,6 +44,7 @@ export function DeclineCall({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [sentence, setSentence] = useState("");
+  const [restOfRun, setRestOfRun] = useState(false);
   const [sent, setSent] = useState(false);
   const sentRef = useRef(false);
   const [declined, setDeclined] = useState(false);
@@ -79,7 +80,7 @@ export function DeclineCall({
             sentRef.current = true;
             setSent(true);
           } else {
-            await decline(call.call);
+            await decline(call.call, restOfRun);
             declinedRef.current = true;
             setDeclined(true);
             onDeclined?.();
@@ -89,6 +90,7 @@ export function DeclineCall({
       if (ok) {
         setOpen(false);
         setSentence("");
+        setRestOfRun(false);
         sentRef.current = false;
         declinedRef.current = false;
         setSent(false);
@@ -113,6 +115,15 @@ export function DeclineCall({
       </p>
       <p className="text-xs text-foreground [overflow-wrap:anywhere]">{what}</p>
       <Hint>{t("declineCallExplain")}</Hint>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={restOfRun}
+          disabled={busy || declined}
+          onChange={(event) => setRestOfRun(event.target.checked)}
+        />
+        {t("declineCallRestOfRun")}
+      </label>
       {withSentence && send && (
         <>
           <Field label={t("declineCallSentence")}>

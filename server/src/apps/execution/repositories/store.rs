@@ -5658,7 +5658,27 @@ impl Store {
 		// that decides it; `STARTED` and `COMPLETED` rows record nothing.
 		let recovery_reason = match (recovery_reason, refusal) {
 			(None, Some(refusal)) => match self.declinable_pause(&mut tx, run.id, refusal).await? {
-				Some(paused) => Some(("paused_call", serde_json::to_value(paused)?)),
+				Some(paused) => {
+					if self
+						.standing_decline_in(&mut tx, run.id, worker, &paused)
+						.await?
+					{
+						let closed =
+							crate::apps::execution::repositories::inference::close_pending(
+								tx.as_mut(),
+								self.deployment.as_str(),
+								run.id,
+								None,
+							)
+							.await?;
+						tx.commit().await?;
+						crate::apps::execution::repositories::inference::record_interruptions(
+							&closed,
+						);
+						return Ok(());
+					}
+					Some(("paused_call", serde_json::to_value(paused)?))
+				}
 				None => None,
 			},
 			(reason, _) => reason,

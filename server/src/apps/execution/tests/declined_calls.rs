@@ -178,7 +178,7 @@ impl World {
 		let mut tx = self.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 		let declined = self
 			.store
-			.decline_call_in(&mut tx, self.id, call, by)
+			.decline_call_in(&mut tx, self.id, call, by, false)
 			.await?;
 		assert_eq!(declined.call.tool, "task_delegate");
 		tx.commit().await.unwrap();
@@ -352,7 +352,7 @@ async fn a_legacy_pause_does_not_journal_a_different_tool(
 	let mut tx = w.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let result = w
 		.store
-		.decline_call_in(&mut tx, w.id, &w.key, "alice")
+		.decline_call_in(&mut tx, w.id, &w.key, "alice", false)
 		.await;
 	assert!(matches!(result, Err(Error::Conflict(_))));
 	drop(tx);
@@ -429,4 +429,87 @@ async fn declining_keeps_what_resuming_changed_in_the_pending_state(
 		recovery["declined_calls"],
 		json!([{"key": w.key, "kind": "policy"}])
 	);
+}
+
+#[rstest]
+#[case::same_refusal("task_delegate", RefusalCheck::Policy, true)]
+#[case::same_kind_different_check("task_delegate", RefusalCheck::CallUnapprovedDeny, true)]
+#[case::different_tool("other_tool", RefusalCheck::Policy, false)]
+#[case::different_kind("task_delegate", RefusalCheck::Catalog, false)]
+#[tokio::test]
+async fn standing_decline_only_answers_matching_later_refusals(
+	#[future] database: DatabaseFixture,
+	run: Record,
+	#[case] tool: &str,
+	#[case] check: RefusalCheck,
+	#[case] matches: bool,
+) {
+	let mut w = world(database.await, run).await;
+	w.pause(&w.refusal(RefusalCheck::Policy, true)).await;
+	let mut tx = w.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	w.store
+		.decline_call_in(&mut tx, w.id, &w.key, "alice", true)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+
+	// The model has produced a new response, with a distinct invocation key.
+	let current = w.run().await;
+	let mut recovery = current.recovery;
+	recovery.declined_calls.clear();
+	let state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			tool_calls: vec![ToolCall {
+				id: "later".into(),
+				name: tool.into(),
+				arguments: json!({}),
+			}],
+			..Default::default()
+		},
+		response_epoch: EPOCH + 1,
+		..Default::default()
+	}));
+	w.key = format!("{}:{}:0", w.id, EPOCH + 1);
+	let mut fixture_tx = w.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT set_config('aidash.input_ledger_worker', 'true', true)")
+		.execute(&mut *fixture_tx)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE runs SET pending = $1, lease_owner = $2, lease_until = $3, ledger_worker_ready = true WHERE id = $4")
+		.bind(run_fixtures::pending(state, recovery))
+		.bind(w.worker)
+		.bind(Utc::now() + Duration::minutes(1))
+		.bind(w.id)
+		.execute(&mut *fixture_tx)
+		.await
+		.unwrap();
+	fixture_tx.commit().await.unwrap();
+	let mut refusal = w.refusal(check, true);
+	refusal.tool = tool.into();
+	w.pause(&refusal).await;
+	let run = w.run().await;
+	if matches {
+		assert_eq!(run.control, aidash_domain::RunControl::Active);
+		assert_eq!(
+			w.row().await,
+			Some((
+				"COMPLETED".into(),
+				Some(json!({"error":RefusalKind::Policy.declined_sentence()}))
+			))
+		);
+		let event: Value = sqlx::query_scalar(
+			"SELECT data FROM events WHERE data->>'run_id' = $1 AND data->>'standing_decline' = 'true'",
+		)
+		.bind(w.id.to_string())
+		.fetch_one(w.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert_eq!(event["tool"], tool);
+		assert_eq!(event["call"], w.key);
+		assert_eq!(event["by"], "alice");
+	} else {
+		assert_eq!(run.control, aidash_domain::RunControl::Paused);
+		assert!(w.row().await.is_none());
+		assert_eq!(w.recovery().await["paused_call"]["tool"], tool);
+	}
 }

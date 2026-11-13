@@ -216,11 +216,16 @@ impl RunControlScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn decline_call(&mut self, id: Uuid, call: &str) -> Result<RunInspection> {
+	async fn decline_call(
+		&mut self,
+		id: Uuid,
+		call: &str,
+		rest_of_run: bool,
+	) -> Result<RunInspection> {
 		let by = self.access.identity.subject.clone();
 		self.federation
 			.store
-			.decline_call_in(&mut self.access.tx, id, call, &by)
+			.decline_call_in(&mut self.access.tx, id, call, &by, rest_of_run)
 			.await
 			.map(|declined| declined.run)
 			.map_err(Into::into)

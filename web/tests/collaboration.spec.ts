@@ -3231,6 +3231,11 @@ for (const failDecline of [false, true]) {
       .click();
     await expect(dialog.getByText("task_delegate")).toBeVisible();
     await dialog
+      .getByLabel(
+        "Decline later calls to this tool for the same reason in this Run",
+      )
+      .check();
+    await dialog
       .getByLabel("Tell the Agent why (optional)")
       .fill("Use the shared notes instead.");
     await dialog
@@ -3250,7 +3255,7 @@ for (const failDecline of [false, true]) {
     expect(
       submissions.find((item) => item.path === "/api/runs/run-0/declined-calls")
         ?.body,
-    ).toEqual({ call: "run-0:3:0" });
+    ).toEqual({ call: "run-0:3:0", rest_of_run: true });
     if (failDecline) {
       // The message stays sent, the Run stays paused and the form is still open to retry.
       await expect(
@@ -3409,6 +3414,7 @@ for (const failMessage of [false, true]) {
       recovery: null,
     };
     const order: string[] = [];
+    const declinedBodies: unknown[] = [];
     let failures = failMessage ? 1 : 0;
     await page.route("**/api/tasks/task-0/remote-**", async (route) => {
       const path = new URL(route.request().url()).pathname;
@@ -3417,6 +3423,7 @@ for (const failMessage of [false, true]) {
           json: [{ grant, execution, semantic, unavailable: false }],
         });
       if (path.endsWith("/declined-calls")) {
+        declinedBodies.push(route.request().postDataJSON());
         order.push("decline");
         execution.control = "ACTIVE";
         delete execution.declinable_call;
@@ -3449,6 +3456,11 @@ for (const failMessage of [false, true]) {
     await panel
       .getByRole("button", { name: "Decline this call", exact: true })
       .click();
+    await panel
+      .getByLabel(
+        "Decline later calls to this tool for the same reason in this Run",
+      )
+      .check();
     // The hint says plainly that the sentence goes after the decline on another Node.
     await expect(panel).toContainText("sent after it");
     await panel
@@ -3475,6 +3487,9 @@ for (const failMessage of [false, true]) {
           ? ["decline", "message", "message"]
           : ["decline", "message"],
       );
+    expect(declinedBodies).toEqual([
+      { call: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70:5:0", rest_of_run: true },
+    ]);
     expect(errors.filter((error) => !error.includes("503"))).toEqual([]);
   });
 }

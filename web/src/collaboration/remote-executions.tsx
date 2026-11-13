@@ -128,13 +128,16 @@ export function RemoteExecutions({ task }: { task: string }) {
                   call={execution.declinable_call}
                   submit={submit}
                   withSentence={false}
-                  decline={(call) =>
+                  decline={(call, rest_of_run) =>
                     apiFetch(
                       `/api/tasks/${task}/remote-grants/${grant.id}/declined-calls`,
                       {
                         method: "POST",
                         headers: { "content-type": "application/json" },
-                        body: JSON.stringify({ call }),
+                        body: JSON.stringify({
+                          call,
+                          ...(rest_of_run ? { rest_of_run: true } : {}),
+                        }),
                       },
                     )
                   }
@@ -334,7 +337,7 @@ export function RemoteExecutions({ task }: { task: string }) {
                                 },
                               )
                             }
-                            decline={(call) =>
+                            decline={(call, rest_of_run) =>
                               apiFetch(
                                 `/api/tasks/${task}/remote-grants/${grant.id}/declined-calls`,
                                 {
@@ -342,7 +345,12 @@ export function RemoteExecutions({ task }: { task: string }) {
                                   headers: {
                                     "content-type": "application/json",
                                   },
-                                  body: JSON.stringify({ call }),
+                                  body: JSON.stringify({
+                                    call,
+                                    ...(rest_of_run
+                                      ? { rest_of_run: true }
+                                      : {}),
+                                  }),
                                 },
                               )
                             }

@@ -71,6 +71,7 @@
   "cancel": "Cancel",
   "close": "Close",
   "pause": "Pause",
+  "declineCallRestOfRun": "Decline later calls to this tool for the same reason in this Run",
   "declineCall": "Decline this call",
   "remoteDeclineGrant": "Grant",
   "remoteDeclineState": "Control state",

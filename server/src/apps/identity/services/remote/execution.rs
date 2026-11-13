@@ -57,6 +57,7 @@ pub(crate) async fn decline_call(
 		task,
 		id,
 		&input.call,
+		input.rest_of_run,
 	)
 	.await
 	.map(Into::into)
