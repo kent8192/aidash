@@ -936,3 +936,33 @@ fn the_withheld_reasoning_mark_persists_and_only_lowers() {
 	let unmarked = serde_json::to_value(crate::context::Context::default()).unwrap();
 	assert!(unmarked.get("reasoning_withheld_from_seq").is_none());
 }
+
+/// Marking also replaces the projection's copy of later reasoning with its
+/// withheld form, so inspection never shows it; earlier turns keep theirs.
+#[test]
+fn marking_replaces_later_reasoning_in_the_projection() {
+	use crate::provider::reasoning::{ChatTextField, Reasoning};
+	let mut context = context(vec![
+		reasoned(1, &["a"], chat_details("before")),
+		ContextEvent::tool(call("a"), ContextEvent::revoked_result("a")),
+		reasoned(2, &["b"], chat_details("after")),
+		tool("b"),
+		reasoned(
+			3,
+			&["c"],
+			Reasoning::ChatText {
+				field: ChatTextField::ReasoningContent,
+				text: "quoted".into(),
+			},
+		),
+		tool("c"),
+	]);
+	context.withhold_reasoning_after_withheld_results();
+	let stored = serde_json::to_string(&context).unwrap();
+	assert!(stored.contains("sig-before"));
+	assert!(!stored.contains("sig-after") && !stored.contains("quoted"));
+	assert!(matches!(
+		&context.history[4].event,
+		ContextEvent::Assistant { reasoning: Some(Reasoning::ChatText { text, .. }), .. } if text.is_empty()
+	));
+}

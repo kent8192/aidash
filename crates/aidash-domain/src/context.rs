@@ -370,8 +370,10 @@ impl Context {
 
 	/// Provider-visible projection of this context.
 	/// Lower [`Self::reasoning_withheld_from_seq`] to the earliest result now
-	/// replaced as revoked or expired. Call it after every pass that replaces
-	/// results so; it never raises the mark (#942).
+	/// replaced as revoked or expired, and put the withheld form in place of
+	/// the reasoning of every turn from it on, so no reader of the projection
+	/// sees it either; the Context Journal keeps the original. Call it after
+	/// every pass that replaces results so; it never raises the mark (#942).
 	pub fn withhold_reasoning_after_withheld_results(&mut self) {
 		let earliest = self
 			.history
@@ -386,6 +388,16 @@ impl Context {
 				self.reasoning_withheld_from_seq
 					.map_or(seq, |kept| kept.min(seq)),
 			);
+		}
+		let Some(from) = self.reasoning_withheld_from_seq else {
+			return;
+		};
+		for entry in self.history.iter_mut().filter(|entry| entry.seq >= from) {
+			if let ContextEvent::Assistant { reasoning, .. } = &mut entry.event
+				&& let Some(recorded) = reasoning.as_ref()
+			{
+				*reasoning = recorded.withheld();
+			}
 		}
 	}
 

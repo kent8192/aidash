@@ -44,6 +44,7 @@ fn config(
 		request_estimator: None,
 		provider_route: None,
 		estimate_diagnostics: None,
+		reasoning_passback: None,
 	}
 }
 

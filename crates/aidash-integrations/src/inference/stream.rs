@@ -74,7 +74,7 @@ pub(crate) struct StreamAssembler<'a> {
 	content: String,
 	/// Assembled `reasoning_details` entries in first-seen order. Fragments
 	/// sharing an `index` form one entry; see [`Self::reasoning_detail`].
-	reasoning_details: Vec<Map<String, Value>>,
+	reasoning_details: Vec<Value>,
 	/// Position in `reasoning_details` of each entry `index` seen so far.
 	reasoning_positions: BTreeMap<u64, usize>,
 	/// Plain reasoning text by the delta key it arrived under.
@@ -183,12 +183,7 @@ impl<'a> StreamAssembler<'a> {
 		if !self.reasoning_details.is_empty() {
 			message.insert(
 				"reasoning_details".into(),
-				Value::Array(
-					self.reasoning_details
-						.into_iter()
-						.map(Value::Object)
-						.collect(),
-				),
+				Value::Array(self.reasoning_details),
 			);
 		}
 		for (key, text) in self.reasoning_text {
@@ -484,10 +479,12 @@ impl<'a> StreamAssembler<'a> {
 	/// OpenRouter's documented rule that the sequence is built by concatenating
 	/// chunks in order, and it yields the entries a non-streamed body carries.
 	fn reasoning_detail(&mut self, fragment: &Value) -> Result<()> {
+		// An entry that is not an object cannot continue another one; it is
+		// kept as received, as a non-streamed body keeps it.
 		let Value::Object(fragment) = fragment else {
-			return Err(Error::External(
-				"provider streamed an invalid reasoning detail".into(),
-			));
+			self.grow(serde_json::to_vec(fragment)?.len())?;
+			self.reasoning_details.push(fragment.clone());
+			return Ok(());
 		};
 		let position = fragment
 			.get("index")
@@ -499,27 +496,32 @@ impl<'a> StreamAssembler<'a> {
 				self.reasoning_positions
 					.insert(index, self.reasoning_details.len());
 			}
-			self.reasoning_details.push(fragment.clone());
+			self.reasoning_details.push(Value::Object(fragment.clone()));
 			return Ok(());
 		};
+		let Value::Object(entry) = &mut self.reasoning_details[position] else {
+			unreachable!("indexed entries are objects");
+		};
+		let mut growth = 0_usize;
 		for (key, value) in fragment {
-			let current = self.reasoning_details[position].get(key);
+			let current = entry.get(key);
 			let append = matches!(key.as_str(), "text" | "summary" | "data")
 				&& matches!(current, Some(Value::String(_)))
 				&& value.is_string();
 			if append {
 				let more = value.as_str().unwrap_or_default();
-				self.grow(more.len())?;
-				if let Some(Value::String(current)) = self.reasoning_details[position].get_mut(key)
-				{
+				growth = growth.saturating_add(more.len());
+				if let Some(Value::String(current)) = entry.get_mut(key) {
 					current.push_str(more);
 				}
 			} else if !(value.is_null() && current.is_some()) {
-				self.grow(serde_json::to_vec(value)?.len().saturating_add(key.len()))?;
-				self.reasoning_details[position].insert(key.clone(), value.clone());
+				growth = growth
+					.saturating_add(serde_json::to_vec(value)?.len())
+					.saturating_add(key.len());
+				entry.insert(key.clone(), value.clone());
 			}
 		}
-		Ok(())
+		self.grow(growth)
 	}
 
 	fn tool_call(&mut self, index: u64, fragment: &Value) -> Result<()> {
