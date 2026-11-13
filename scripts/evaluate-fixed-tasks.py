@@ -254,6 +254,24 @@ def settings_directory(private, cache_salt):
     return settings
 
 
+def fixture_ledger_endpoint(fixture_endpoint, override):
+    """Where the evaluator reads the approved fixture's per-Run ledger.
+
+    The backend reaches the fixture through the approved tool endpoint, which may be a name only
+    containers resolve (host.docker.internal). The evaluator can read the same service on loopback
+    instead. Without an approved fixture there is no ledger to read.
+    """
+    if fixture_endpoint is None:
+        return None
+    if override is None:
+        return fixture_endpoint
+    parsed = urllib.parse.urlsplit(override)
+    if parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1", "::1") \
+            or parsed.query or parsed.fragment:
+        raise ValueError("the fixture ledger endpoint must be a loopback http URL without query parameters")
+    return override
+
+
 def local_usage_reader_for(database_url, container=None):
     """Read only the specified Run from a loopback PostgreSQL bench using psql."""
     parsed = urllib.parse.urlsplit(database_url)
@@ -842,6 +860,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                       "--model mapping; map them or drop the selectors")
     fixture_endpoint, code_oracle = evaluation.live_task_support(approval, corpus, planned_runs,
                                                                  args.tool_endpoint)
+    ledger_endpoint = fixture_ledger_endpoint(fixture_endpoint, getattr(args, "fixture_ledger_endpoint", None))
     auxiliary = evaluation.auxiliary_allowance(approval)
     auxiliary_entries = {}
     for kind in ("summary",):
@@ -896,8 +915,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                        execution_seed=args.execution_seed,
                                        usage_reader=local_usage_reader_for(args.usage_database_url, getattr(args, "usage_psql_container", None)) if getattr(args, "usage_database_url", None) else None,
                                        auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None,
-                                       side_effect_reader=(lambda run_id: runner.read_fixture_ledger(fixture_endpoint, run_id))
-                                       if fixture_endpoint is not None else None)
+                                       side_effect_reader=(lambda run_id: runner.read_fixture_ledger(ledger_endpoint, run_id))
+                                       if ledger_endpoint is not None else None)
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
         error = f"interrupted by the evaluator ({type(stop).__name__})"
@@ -1032,6 +1051,9 @@ def main(argv=None):
                                    "hexadecimal characters (a git commit or SHA-256)")
     live_command.add_argument("--tool-endpoint", default="https://tools.invalid/aidash-fixed-task-evaluation",
                               help="endpoint declared by fixture tools; approvals for them are denied")
+    live_command.add_argument("--fixture-ledger-endpoint",
+                              help="loopback URL where this evaluator reads the approved fixture's per-Run ledger "
+                                   "when the tool endpoint is a container-only name (default: the tool endpoint)")
     live_command.add_argument("--provider-credential", help="connected Tenant Provider Credential ID")
     live_command.add_argument("--execution-estimator", choices=("bytes", "calibrated"), default="bytes",
                               help="Bytes primary comparison; calibrated requires an explicit matching disclosure approval")

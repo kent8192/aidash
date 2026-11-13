@@ -1008,6 +1008,16 @@ class CacheReuseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             cli.local_usage_reader_for("postgresql://remote.example/db")
 
+    def test_fixture_ledger_endpoint_defaults_to_the_tool_endpoint_and_stays_on_loopback(self):
+        # The backend reaches the fixture as host.docker.internal; the evaluator on the host may not (#942).
+        tool = "http://host.docker.internal:18780"
+        self.assertEqual(cli.fixture_ledger_endpoint(tool, None), tool)
+        self.assertEqual(cli.fixture_ledger_endpoint(tool, "http://127.0.0.1:18780"), "http://127.0.0.1:18780")
+        self.assertIsNone(cli.fixture_ledger_endpoint(None, "http://127.0.0.1:18780"))
+        for unsafe in ("http://example.com:18780", "https://10.0.0.5:18780", "file:///tmp/x", "http://127.0.0.1:18780/?q=1"):
+            with self.assertRaises(ValueError):
+                cli.fixture_ledger_endpoint(tool, unsafe)
+
     def test_local_usage_reader_can_use_bench_container_psql(self):
         url = "postgresql://reader:secret@127.0.0.1:54391/bench"
         results = [subprocess.CompletedProcess([], 0, "127.0.0.1:54391\n", ""),
