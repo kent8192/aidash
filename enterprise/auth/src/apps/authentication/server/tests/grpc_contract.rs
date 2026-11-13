@@ -193,9 +193,10 @@ async fn actual_auth_grpc_preserves_session_stop_and_administrator_boundaries() 
 			.await,
 		Err(ApplicationError::Forbidden)
 	));
+	// A suspended Account names its epoch so the Run can wait to resume (#876).
 	assert!(matches!(
 		client.validate_bound_origin(&original).await,
-		Err(ApplicationError::Forbidden)
+		Err(ApplicationError::AccountSuspended { .. })
 	));
 	assert!(
 		administrator

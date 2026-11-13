@@ -59,8 +59,11 @@ pub struct Client {
 	interactive_cache: Cache<(Uuid, Uuid)>,
 	/// The dashboard reads its session on every page load; the sign-in method
 	/// count is asked at most once per session per [`SIGN_IN_METHOD_COUNT_TTL`].
-	sign_in_method_counts: Arc<Mutex<HashMap<(Uuid, Uuid), (Instant, Option<u32>)>>>,
+	sign_in_method_counts: Arc<Mutex<SignInMethodCounts>>,
 }
+
+/// Per session `(identity, session)`: when the count was read, and the count.
+type SignInMethodCounts = HashMap<(Uuid, Uuid), (Instant, Option<u32>)>;
 
 const SIGN_IN_METHOD_COUNT_TTL: Duration = Duration::from_secs(60 * 60);
 fn rpc_error(status: tonic::Status) -> Error {
@@ -365,10 +368,9 @@ impl Authority for Client {
 				.account_id
 				.is_none_or(|id| response.account_id == id.to_string())
 			&& origin.source_disable_epoch.unwrap_or(0) == response.source_disable_epoch
+			&& let Some(epoch) = response.suspension_epoch
 		{
-			if let Some(epoch) = response.suspension_epoch {
-				return Err(Error::AccountSuspended { epoch });
-			}
+			return Err(Error::AccountSuspended { epoch });
 		}
 		require_validity(origin.identity_id, &response, false)?;
 		if origin

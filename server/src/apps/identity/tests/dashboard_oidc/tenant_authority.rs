@@ -418,9 +418,10 @@ async fn a_member_issues_credentials_for_itself_that_end_with_its_mapping(
 		.await,
 		0
 	);
+	// A credential that ended with its Mapping answers 403 (#876 decision 12).
 	assert_eq!(
 		t.bearer(&token, "GET", "/api/state", Value::Null).await,
-		401
+		403
 	);
 	t.finish().await;
 }

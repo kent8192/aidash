@@ -1235,16 +1235,15 @@ impl DashboardSessions {
 			return Err(Error::Forbidden);
 		}
 		DashboardSession::revoke(&f.store.pool, session.id, false).await?;
-		if let Some(authority) = &f.config.common_auth {
-			if let Some(remote) = session
+		if let Some(authority) = &f.config.common_auth
+			&& let Some(remote) = session
 				.provider_sid
 				.as_deref()
 				.and_then(|sid| Uuid::parse_str(sid).ok())
-			{
-				authority
-					.forget_session(session.identity_id(), remote)
-					.await;
-			}
+		{
+			authority
+				.forget_session(session.identity_id(), remote)
+				.await;
 		}
 		let mut response = Response::new(http::StatusCode::NO_CONTENT);
 		clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
