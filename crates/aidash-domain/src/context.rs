@@ -1048,6 +1048,62 @@ pub enum ContextEvent {
 		instruction: String,
 		through_seq: i64,
 	},
+	/// The bookkeeping of a Native step (#942): the Agent's state, this
+	/// step's instructions and deferred reads, and open markers. It holds no
+	/// evidence, so no authority change ever alters it. It is recorded only
+	/// when it differs from the last one in history and is sent at its
+	/// position, so later requests keep the same prefix.
+	StepState {
+		state: Value,
+		/// The Harness requirements of a `structured@*` contract, sent with
+		/// trust `aidash` after the state.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		harness: Option<Value>,
+	},
+	/// Evidence a Native step admitted that history did not hold yet (#942):
+	/// workspace observation entries and Run messages. Like a tool result it
+	/// is appended once and sent at its position; only offloading or
+	/// compaction removes it.
+	Evidence {
+		items: Vec<EvidenceItem>,
+	},
+}
+
+/// One admitted piece of per-step evidence: an entry of a collection, or a
+/// whole field, of one pinned key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceItem {
+	/// The pinned key, such as `workspace` or `run_messages`.
+	pub key: String,
+	/// The field of the key's object the item belongs to; absent when the key
+	/// holds a list.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub field: Option<String>,
+	/// Whether the item is one entry of a list rather than a whole field.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub listed: bool,
+	/// Digest of the key, field and content. It identifies the item after
+	/// its content was offloaded, so a later step never appends it again.
+	pub digest: String,
+	pub content: Value,
+}
+
+impl EvidenceItem {
+	pub fn new(key: &str, field: Option<&str>, listed: bool, content: Value) -> Self {
+		Self {
+			key: key.to_owned(),
+			field: field.map(str::to_owned),
+			listed,
+			digest: Self::digest(key, field, &content),
+			content,
+		}
+	}
+
+	/// The identity of `content` under `key` and `field`.
+	pub fn digest(key: &str, field: Option<&str>, content: &Value) -> String {
+		crate::registry::rules::digest(&json!([key, field, content]))
+	}
 }
 
 /// A subtask the model was told has nobody to run it.

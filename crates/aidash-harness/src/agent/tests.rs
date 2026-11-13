@@ -160,6 +160,8 @@ struct State {
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
+	/// Tool calls and provider activity the summarizer answers with.
+	summary_extras: (Vec<ToolCall>, Vec<Value>),
 	summary_truncations: Mutex<u32>,
 	model_reasoning: bool,
 	/// The agent model's `reasoning_passback`, omitted when `None` (#942).
@@ -1749,6 +1751,9 @@ impl ModelProvider for Backend {
 				.expect("summary fixture");
 			return Ok(ModelResponse {
 				text,
+				tool_calls: self.0.summary_extras.0.clone(),
+				provider_activity: self.0.summary_extras.1.clone(),
+				reasoning: None,
 				input_tokens: 100,
 				output_tokens: 50,
 				usage_complete: true,
@@ -1761,7 +1766,6 @@ impl ModelProvider for Backend {
 					}),
 					..Default::default()
 				},
-				..Default::default()
 			});
 		}
 		request.ensure_fits(128000).unwrap();
@@ -1933,6 +1937,7 @@ fn fixture() -> Fixture {
 		context_policy: None,
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
+		summary_extras: (vec![], vec![]),
 		summary_truncations: Mutex::new(0),
 		model_reasoning: false,
 		reasoning_passback: None,
@@ -4506,7 +4511,19 @@ async fn subnode_results_reach_the_model_inside_a_data_envelope(
 	let state = match &requests[0].context {
 		ModelContext::Legacy(value) => value["current"].clone(),
 		ModelContext::Ordered(value) => serde_json::from_str(&value.volatile).unwrap(),
-		ModelContext::Native(value) => serde_json::from_str(&value.volatile).unwrap(),
+		// Run messages are evidence in history (#942).
+		ModelContext::Native(value) => value
+			.history
+			.iter()
+			.find_map(|message| match message {
+				aidash_domain::projection::native::NativeMessage::Data { envelope }
+					if envelope.source == aidash_domain::projection::native::Source::Evidence =>
+				{
+					Some(envelope.content.clone())
+				}
+				_ => None,
+			})
+			.unwrap(),
 		_ => panic!("unexpected projection"),
 	};
 	assert_eq!(state["run_messages"][0]["trust"], "data");

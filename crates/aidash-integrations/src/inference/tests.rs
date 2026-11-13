@@ -1400,13 +1400,14 @@ mod cache_salt {
 			.iter()
 			.map(|m| m["role"].as_str().unwrap())
 			.collect();
-		assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
+		// Since #942 no step state trails the history when nothing changed:
+		// an empty workspace is evidence and appends nothing.
+		assert_eq!(roles, ["system", "user", "assistant", "tool"]);
 		assert_eq!(messages[0]["content"][0]["cache_control"], ephemeral);
 		let attachment = messages[1]["content"].as_array().unwrap();
 		assert_eq!(attachment.last().unwrap()["cache_control"], ephemeral);
 		assert_eq!(messages[3]["content"][0]["cache_control"], ephemeral);
 		assert_eq!(body.to_string().matches("cache_control").count(), 3);
-		assert!(messages[4]["content"].is_string(), "the volatile message");
 	}
 
 	/// Only Native has a previous-step position to mark. An Ordered Agent's
@@ -1578,7 +1579,8 @@ mod cache_salt {
 			.iter()
 			.map(|m| m["role"].as_str().unwrap())
 			.collect();
-		assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
+		// Since #942 no step state trails the history when nothing changed.
+		assert_eq!(roles, ["system", "user", "assistant", "tool"]);
 		assert_eq!(messages[2]["tool_calls"][0]["id"], "call-1");
 		assert_eq!(messages[3]["tool_call_id"], "call-1");
 		assert_eq!(messages[3]["content"][0]["cache_control"], ephemeral);
