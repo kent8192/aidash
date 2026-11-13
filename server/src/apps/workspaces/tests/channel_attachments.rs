@@ -1121,3 +1121,56 @@ async fn posted_images_use_the_image_limit_not_the_text_source_quota(
 		("UNSUPPORTED", Some("limit"))
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn backfill_pages_past_images_the_configuring_person_cannot_read(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: Bob posts the oldest image, in a message Alice may not read;
+	// Alice posts a newer one. The index has room for one image.
+	let ScopedChannel {
+		app,
+		mut policy,
+		token: alice,
+		workspace,
+	} = Box::pin(scoped_channel).await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"hide-bob","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/sender"},"right":{"source":"literal","value":"bob"}}}));
+	let (status, changed) = request(
+		&app,
+		&app.runtime.config.api_token.clone(),
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	let bob = crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
+	let hidden = post_image(&app, &bob, &workspace, "Bob's photo").await;
+	let visible = post_image(&app, &alice, &workspace, "Alice's photo").await;
+	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
+
+	// Act: Alice configures the index.
+	let (status, index) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+
+	// Assert: Bob's image stays out; Alice's newer image still enters.
+	assert_eq!(status, 200, "{index}");
+	assert!(image_entry(&app, &hidden).await.is_none());
+	assert_eq!(
+		image_entry(&app, &visible)
+			.await
+			.map(|entry| entry.0)
+			.as_deref(),
+		Some("PENDING")
+	);
+}

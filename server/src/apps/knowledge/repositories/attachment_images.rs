@@ -275,20 +275,24 @@ async fn working(tx: &mut native::Transaction, workspace: Uuid) -> Result<usize>
 	Ok(slots.entries.iter().filter(|slot| slot.assigned).count())
 }
 
+/// The advisory lock class that serializes image admissions in one Workspace.
+/// No other lock uses it.
+const ADMISSION_LOCK: i64 = 71003250;
+
 /// Enter posted images into the Workspace index. With `refresh`, also queue an
 /// image already there again, because its Image Description changed; without
 /// it a replayed post leaves existing entries alone. The caller's transaction
 /// holds the attachments; this adds the entries under the same authority. A
 /// Workspace without an enabled index, or an author who may not write to it,
-/// leaves them out.
+/// leaves them out. Returns how many images it entered or queued again.
 pub(crate) async fn enqueue(
 	lease: &mut Lease<'_>,
 	workspace: Uuid,
 	ids: &[Uuid],
 	refresh: bool,
-) -> Result<()> {
+) -> Result<usize> {
 	if ids.is_empty() || lease.access().is_none() {
-		return Ok(());
+		return Ok(0);
 	}
 	// A shared index lock keeps the generation fixed without waiting for an
 	// embedding call in progress, which holds the same shared lock. Admissions
@@ -297,19 +301,20 @@ pub(crate) async fn enqueue(
 		crate::apps::knowledge::models::SemanticIndexe::locked(&mut **lease.tx(), workspace, false)
 			.await?
 	else {
-		return Ok(());
+		return Ok(0);
 	};
 	let admission = Query::select()
 		.expr(Expr::cust(format!(
-			"pg_advisory_xact_lock(71003202, hashtext('{workspace}'::text))"
+			"pg_advisory_xact_lock({ADMISSION_LOCK}, hashtext('{workspace}'::text))"
 		)))
 		.to_string(PostgresQueryBuilder);
 	native::query(&admission).execute(&mut **lease.tx()).await?;
 	let spec: IndexingSpec = serde_json::from_value(index.spec.clone())?;
 	if !spec.enabled {
-		return Ok(());
+		return Ok(0);
 	}
 	let authority = lease.saved()?;
+	let mut entered = 0;
 	let posted = rows(lease, workspace, ids).await?;
 	for row in posted {
 		let key = attachment_image_key(row.id);
@@ -372,6 +377,7 @@ pub(crate) async fn enqueue(
 					)
 					.await?;
 			}
+			entered += 1;
 			continue;
 		}
 		let held = counted(lease.tx(), workspace).await? + working(lease.tx(), workspace).await?;
@@ -391,8 +397,9 @@ pub(crate) async fn enqueue(
 				)
 				.await?;
 		}
+		entered += 1;
 	}
-	Ok(())
+	Ok(entered)
 }
 
 /// Reapply the image limit to posted images after a reconfiguration queued
@@ -446,39 +453,63 @@ pub(crate) async fn relimit(
 }
 
 /// Enter images posted before the index existed or was enabled, under the
-/// authority of the person configuring it, oldest message first and at most
-/// the image limit at a time.
+/// authority of the person configuring it, oldest message first, until the
+/// image limit's worth have entered or none remain. Images that person may
+/// not read or index stay out and are paged past, so they never hold back
+/// newer ones.
 pub(crate) async fn backfill(
 	lease: &mut Lease<'_>,
 	workspace: Uuid,
 	max_images: usize,
 ) -> Result<()> {
+	const PAGE: usize = 64;
 	if lease.access().is_none() || max_images == 0 {
 		return Ok(());
 	}
-	let query = Query::select()
-		.column(("a", "id"))
-		.from_as(Alias::new("channel_attachments"), Alias::new("a"))
-		.join(
-			JoinType::InnerJoin,
-			TableRef::table_alias(Alias::new("messages"), Alias::new("m")),
-			Expr::col(("m", "id")).equals(("a", "message_id")),
-		)
-		.and_where(Expr::col(("a", "workspace_id")).eq(Expr::value(workspace)))
-		.and_where(Expr::col(("a", "media_type")).like("image/%"))
-		.and_where(Expr::cust(
-			"NOT EXISTS (SELECT 1 FROM semantic_entries se WHERE se.workspace_id = a.workspace_id \
-			 AND se.key = 'attachment-image:' || a.id::text)",
-		))
-		.order_by(("m", "created_at"), Order::Asc)
-		.order_by(("a", "position"), Order::Asc)
-		.order_by(("a", "id"), Order::Asc)
-		.limit(u64::try_from(max_images).unwrap_or(u64::MAX))
-		.to_string(PostgresQueryBuilder);
-	let ids: Vec<Uuid> = native::query_scalar(&query)
-		.scalar_all(&mut **lease.tx())
-		.await?;
-	enqueue(lease, workspace, &ids, false).await
+	let enabled =
+		crate::apps::knowledge::models::SemanticIndexe::locked(&mut **lease.tx(), workspace, false)
+			.await?
+			.map(|index| serde_json::from_value::<IndexingSpec>(index.spec))
+			.transpose()?
+			.is_some_and(|spec| spec.enabled);
+	if !enabled {
+		return Ok(());
+	}
+	let (mut entered, mut skipped) = (0, 0);
+	while entered < max_images {
+		let query = Query::select()
+			.column(("a", "id"))
+			.from_as(Alias::new("channel_attachments"), Alias::new("a"))
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(Alias::new("messages"), Alias::new("m")),
+				Expr::col(("m", "id")).equals(("a", "message_id")),
+			)
+			.and_where(Expr::col(("a", "workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(("a", "media_type")).like("image/%"))
+			.and_where(Expr::cust(
+				"NOT EXISTS (SELECT 1 FROM semantic_entries se WHERE se.workspace_id = a.workspace_id \
+				 AND se.key = 'attachment-image:' || a.id::text)",
+			))
+			.order_by(("m", "created_at"), Order::Asc)
+			.order_by(("a", "position"), Order::Asc)
+			.order_by(("a", "id"), Order::Asc)
+			.limit(PAGE.min(max_images - entered) as u64)
+			.offset(skipped as u64)
+			.to_string(PostgresQueryBuilder);
+		let ids: Vec<Uuid> = native::query_scalar(&query)
+			.scalar_all(&mut **lease.tx())
+			.await?;
+		if ids.is_empty() {
+			break;
+		}
+		// Entered images leave the candidate set; refused ones stay in it, in
+		// front, so the next page starts after them.
+		let admitted = enqueue(lease, workspace, &ids, false).await?;
+		entered += admitted;
+		skipped += ids.len() - admitted;
+	}
+	Ok(())
 }
 
 /// Retire the entry of a deleted image with its attachment (#622 decision 11).

@@ -915,6 +915,7 @@ impl ChannelScope for NativeChannels<'_> {
 			true,
 		)
 		.await
+		.map(|_| ())
 		.map_err(Into::into)
 	}
 	async fn index_attachment_images(
@@ -934,6 +935,7 @@ impl ChannelScope for NativeChannels<'_> {
 			&mut lease, workspace, &ids, false,
 		)
 		.await
+		.map(|_| ())
 		.map_err(Into::into)
 	}
 }
