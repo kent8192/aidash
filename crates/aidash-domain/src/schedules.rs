@@ -157,6 +157,9 @@ pub enum Halt {
 	ThreadDeleted,
 	/// The Tenant was deleted. A restore leaves it stopped.
 	TenantDeleted,
+	/// The Tenant raised its minimum interval above the Schedule's; it runs
+	/// again once its Registrant changes the trigger and resumes it.
+	IntervalTooShort,
 }
 
 impl Halt {
@@ -168,6 +171,7 @@ impl Halt {
 			Self::AgentVersionUnusable => "agent_version_unusable",
 			Self::ThreadDeleted => "thread_deleted",
 			Self::TenantDeleted => "tenant_deleted",
+			Self::IntervalTooShort => "interval_too_short",
 		}
 	}
 
@@ -179,6 +183,7 @@ impl Halt {
 			"agent_version_unusable" => Self::AgentVersionUnusable,
 			"thread_deleted" => Self::ThreadDeleted,
 			"tenant_deleted" => Self::TenantDeleted,
+			"interval_too_short" => Self::IntervalTooShort,
 			other => return Err(Error::Invalid(format!("unknown Schedule halt {other}"))),
 		})
 	}
@@ -279,11 +284,17 @@ pub struct Schedule {
 	pub next_scheduled_at: Option<DateTime<Utc>>,
 	pub halt: Option<Halt>,
 	pub halted_at: Option<DateTime<Utc>>,
+	/// Why it stopped, in words, when the halt alone does not say it all.
+	pub halt_reason: Option<String>,
 	/// Who may take over a Schedule whose Registrant left.
 	pub successor: Option<String>,
 	pub consecutive_failures: i32,
 	/// The Run whose Agent registered it, if an Agent did.
 	pub created_by_run_id: Option<Uuid>,
+	/// The tool call that registered it, so a retried call returns it.
+	#[serde(skip)]
+	#[schemars(skip)]
+	pub creation_key: Option<String>,
 	pub revision: i64,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
@@ -322,11 +333,25 @@ impl Schedule {
 	}
 
 	pub fn stop(&mut self, halt: Halt, now: DateTime<Utc>) {
+		self.stop_because(halt, None, now);
+	}
+
+	/// [`Self::stop`], saying why in words.
+	pub fn stop_because(&mut self, halt: Halt, reason: Option<String>, now: DateTime<Utc>) {
 		self.halt = Some(halt);
 		self.halted_at = Some(now);
+		self.halt_reason = reason;
 		if halt != Halt::RegistrantLeft {
 			self.successor = None;
 		}
+	}
+
+	/// Clears a stop, on resume.
+	pub fn clear_halt(&mut self) {
+		self.halt = None;
+		self.halted_at = None;
+		self.halt_reason = None;
+		self.successor = None;
 	}
 
 	pub fn status(&self) -> &'static str {

@@ -61,15 +61,40 @@ fn cron_fires_as_ordinary_cron(
 }
 
 #[rstest]
-fn a_skipped_local_time_does_not_fire_and_a_repeated_one_fires_once() {
-	// Arrange: New York skips 02:00-03:00 on 2026-03-08 and repeats 01:00-02:00 on 2026-11-01.
-	let skipped = cron("30 2 * * *", "America/New_York");
-	let repeated = cron("30 1 * * *", "America/New_York");
+fn a_time_skipped_by_spring_forward_runs_once_right_after_the_gap() {
+	// Arrange: New York skips 02:00-03:00 on 2026-03-08.
+	let daily = cron("30 2 * * *", "America/New_York");
+	let quarterly = cron("*/15 2 * * *", "America/New_York");
 	// Act
-	let after_gap = skipped
+	let on_the_day = daily
 		.next_after(at("2026-03-08T00:00:00Z"), at("2026-03-08T05:00:00Z"))
 		.unwrap()
 		.unwrap();
+	let next_day = daily
+		.next_after(at("2026-03-08T00:00:00Z"), on_the_day)
+		.unwrap()
+		.unwrap();
+	let first = quarterly
+		.next_after(at("2026-03-08T00:00:00Z"), at("2026-03-08T05:00:00Z"))
+		.unwrap()
+		.unwrap();
+	let after_first = quarterly
+		.next_after(at("2026-03-08T00:00:00Z"), first)
+		.unwrap()
+		.unwrap();
+	// Assert: 02:30 never exists that day, so it runs at 03:00 EDT (07:00Z);
+	// four times inside the gap run once.
+	assert_eq!(on_the_day, at("2026-03-08T07:00:00Z"));
+	assert_eq!(next_day, at("2026-03-09T06:30:00Z"));
+	assert_eq!(first, at("2026-03-08T07:00:00Z"));
+	assert_eq!(after_first, at("2026-03-09T06:00:00Z"));
+}
+
+#[rstest]
+fn a_time_repeated_by_fall_back_runs_once() {
+	// Arrange: New York repeats 01:00-02:00 on 2026-11-01.
+	let repeated = cron("30 1 * * *", "America/New_York");
+	// Act
 	let first = repeated
 		.next_after(at("2026-11-01T00:00:00Z"), at("2026-11-01T04:00:00Z"))
 		.unwrap()
@@ -78,8 +103,7 @@ fn a_skipped_local_time_does_not_fire_and_a_repeated_one_fires_once() {
 		.next_after(at("2026-11-01T00:00:00Z"), first)
 		.unwrap()
 		.unwrap();
-	// Assert: 02:30 on the 8th never happens, so the next is 02:30 EDT on the 9th.
-	assert_eq!(after_gap, at("2026-03-09T06:30:00Z"));
+	// Assert: 01:30 EDT only; the next run is the following day.
 	assert_eq!(first, at("2026-11-01T05:30:00Z"));
 	assert_eq!(second, at("2026-11-02T06:30:00Z"));
 }
@@ -422,6 +446,7 @@ fn halts_and_tick_statuses_round_trip() {
 		Halt::AgentVersionUnusable,
 		Halt::ThreadDeleted,
 		Halt::TenantDeleted,
+		Halt::IntervalTooShort,
 	] {
 		assert_eq!(Halt::parse(halt.as_str()).unwrap(), halt);
 		assert_eq!(serde_json::to_value(halt).unwrap(), halt.as_str());

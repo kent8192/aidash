@@ -159,8 +159,9 @@ impl Cron {
 	}
 
 	/// The first fire time strictly after `after`, read in `zone`. A local time
-	/// that a daylight-saving change skips does not fire; one it repeats fires
-	/// at its first occurrence.
+	/// that a daylight-saving change skips fires once, at the first instant
+	/// after the gap, as common cron does; one it repeats fires once, at its
+	/// first occurrence.
 	pub fn next_after(&self, zone: Tz, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
 		let local = after.with_timezone(&zone).naive_local();
 		let start_day = local.date();
@@ -179,10 +180,9 @@ impl Cron {
 					if offset == 0 && candidate + Duration::hours(3) < local {
 						continue;
 					}
-					let Some(at) = zone.from_local_datetime(&candidate).earliest() else {
+					let Some(at) = local_instant(zone, candidate) else {
 						continue;
 					};
-					let at = at.with_timezone(&Utc);
 					if at > after {
 						return Some(at);
 					}
@@ -191,6 +191,23 @@ impl Cron {
 		}
 		None
 	}
+}
+
+/// The instant a local time names. A repeated local time is its first
+/// occurrence; one inside a daylight-saving gap moves to the first instant
+/// after the gap, so `30 2 * * *` in New York runs at 03:00 on the day the
+/// clocks spring forward. Several times inside one gap meet at that instant,
+/// which then fires once.
+fn local_instant(zone: Tz, local: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
+	if let Some(at) = zone.from_local_datetime(&local).earliest() {
+		return Some(at.with_timezone(&Utc));
+	}
+	// Gaps are whole minutes and at most a day long.
+	(1..=24 * 60).find_map(|minutes| {
+		zone.from_local_datetime(&(local + Duration::minutes(minutes)))
+			.earliest()
+			.map(|at| at.with_timezone(&Utc))
+	})
 }
 
 /// A time zone name from the IANA database, such as `Asia/Tokyo` or `UTC`.
