@@ -2485,6 +2485,7 @@ pub(crate) fn workbench_sandbox_repository(
 ) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
+		search_destination: workbench_search_destination,
 		node_id: runtime.config.deployment.to_string(),
 		tenant_actions:
 			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
@@ -2493,6 +2494,20 @@ pub(crate) fn workbench_sandbox_repository(
 			),
 		actor,
 	}
+}
+
+fn workbench_search_destination(
+	provider: &str,
+	arguments: &serde_json::Value,
+) -> aidash_application::Result<Option<String>> {
+	let query = aidash_domain::research::search::SearchQuery::parse(arguments, None)?;
+	let provider = crate::apps::execution::services::research::providers()
+		.search(provider)
+		.map_err(aidash_application::Error::from)?;
+	Ok(provider
+		.disclosure(&query)
+		.ok()
+		.map(|outbound| outbound.destination))
 }
 
 /// Isolated test HTTP requests retain their original timeout, redirect and

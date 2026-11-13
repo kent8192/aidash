@@ -18,6 +18,9 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 impl ExecutionRepository for Repository {
+	fn search_destination(&self, provider: &str, arguments: &Value) -> Result<Option<String>> {
+		(self.search_destination)(provider, arguments)
+	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		Ok(Box::new(Scope {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,
@@ -26,6 +29,7 @@ impl ExecutionRepository for Repository {
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
 			tenant_secrets: self.store.tenant_secrets.clone(),
+			capabilities: self.store.capabilities.clone(),
 		}))
 	}
 	async fn read_session(&self, id: Uuid) -> Result<TestSession> {
