@@ -11,6 +11,15 @@ use aidash_domain::registry::{
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
+
+/// One approval needed by a test, evaluated without a Run or workspace.
+#[derive(Debug, Clone)]
+pub struct TestApproval {
+	pub call: aidash_domain::provider::ToolCall,
+	pub resource: aidash_domain::policy::Resource,
+	pub action: &'static str,
+	pub requires_approval: bool,
+}
 #[async_trait]
 pub trait ExecutionScope: RealDispatchScope {
 	/// Reuse the canonical draft-content/dependency authorization use case on this same scope.
@@ -23,6 +32,10 @@ pub trait ExecutionScope: RealDispatchScope {
 }
 #[async_trait]
 pub trait ExecutionRepository: RealDispatchRepository {
+	/// The configured search provider's actual disclosure destination.
+	fn search_destination(&self, _provider: &str, _arguments: &Value) -> Result<Option<String>> {
+		Ok(None)
+	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>>;
 	/// Read and commit one observation before inference or outcome classification.
 	async fn read_session(&self, id: Uuid) -> Result<TestSession>;
