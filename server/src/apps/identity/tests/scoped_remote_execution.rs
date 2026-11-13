@@ -718,42 +718,49 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 		scope: aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 		run: text_run,
 	};
+	// #622 decision 6: a model that cannot read images receives the Image
+	// Description, file name and message text instead of the image, with no
+	// selection and without fetching the attachment bytes from Home.
+	let described = |read: &Value| {
+		assert_eq!(read["status"], "completed", "{read}");
+		assert_eq!(read["metadata"]["filename"], "sample.png", "{read}");
+		assert_eq!(
+			read["described_instead"]["reason"], "this model cannot read images",
+			"{read}"
+		);
+		assert_eq!(
+			read["described_instead"]["message_text"], "remote image",
+			"{read}"
+		);
+		assert!(read["described_instead"]["description"].is_null(), "{read}");
+		assert!(read.get("selection").is_none(), "{read}");
+	};
 	let before = p.peers.attachment_fetches.load(Ordering::Acquire);
-	let error = aidash_server::tool::builtins()["workspace_read"]
+	let read = aidash_server::tool::builtins()["workspace_read"]
 		.invoke(
 			&ctx,
 			json!({"kind":"attachment","id":attachment["id"],"representation":"model_input"}),
 			"text-only",
 		)
 		.await
-		.unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("cannot read image/png through any current route"),
-		"{error}"
-	);
+		.unwrap();
+	described(&read);
 	assert_eq!(
 		p.peers.attachment_fetches.load(Ordering::Acquire),
 		before,
-		"unsupported media must not fetch attachment bytes from Home"
+		"a described image must not fetch attachment bytes from Home"
 	);
 	let mut without_observation = ctx.clone();
 	without_observation.run.context.history.clear();
-	let error = aidash_server::tool::builtins()["workspace_read"]
+	let read = aidash_server::tool::builtins()["workspace_read"]
 		.invoke(
 			&without_observation,
 			json!({"kind":"attachment","id":attachment["id"],"representation":"model_input"}),
 			"text-only-no-observation",
 		)
 		.await
-		.unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("cannot read image/png through any current route"),
-		"{error}"
-	);
+		.unwrap();
+	described(&read);
 	assert_eq!(p.peers.attachment_fetches.load(Ordering::Acquire), before);
 	let credential = common::issued_credential(&p.a.store, "acme", "alice").await;
 	let mapping = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});

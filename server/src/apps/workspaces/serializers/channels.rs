@@ -42,6 +42,21 @@ pub struct ChannelAttachmentUploadQuery {
 	#[validate(length(min = 1, max = 128))]
 	pub media_type: String,
 	pub idempotency_key: Uuid,
+	/// An Agent's Image Description of an image it posts (#622). Never read
+	/// from the query string: people describe an upload through the JSON
+	/// description endpoint, so the words stay out of URLs and access logs.
+	#[serde(skip)]
+	#[schemars(skip)]
+	pub description: Option<String>,
+}
+
+/// An Image Description, written by the person who uploaded the image, before
+/// or after posting it. Its limit of 2,000 characters is checked with the
+/// attachment's media type.
+#[derive(Debug, Deserialize, Validate, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelAttachmentDescription {
+	pub description: String,
 }
 
 pub(crate) fn default_limit() -> u16 {

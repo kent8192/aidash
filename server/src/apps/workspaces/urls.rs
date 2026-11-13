@@ -54,5 +54,7 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_attachment_download)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(channels::channel_attachment_description)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 	})
 }

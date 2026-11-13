@@ -808,3 +808,413 @@ async fn metered_storage_counts_stored_attachments_once_and_inline_bytes_separat
 		before + bytes.len() as u64 + inline.len() as u64
 	);
 }
+
+/// The index entry of a posted image, as (state, last_error, revision, deleted).
+async fn image_entry(
+	app: &EndpointFixture,
+	attachment: &str,
+) -> Option<(String, Option<String>, i64, bool)> {
+	sqlx::query_as(
+		"SELECT state, last_error, revision, deleted FROM semantic_entries WHERE key = $1",
+	)
+	.bind(format!("attachment-image:{attachment}"))
+	.fetch_optional(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// Upload a PNG and, if given, describe it through the JSON endpoint before
+/// it is posted, as the dashboard does.
+async fn upload_image(
+	app: &EndpointFixture,
+	token: &str,
+	workspace: &str,
+	description: Option<&str>,
+) -> (u16, Value) {
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}",
+		Uuid::new_v4()
+	);
+	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
+	let client = client_for(&app.server.url, token).await;
+	let (status, uploaded) = decoded(
+		client
+			.post_raw(&path, png, "application/octet-stream")
+			.await
+			.unwrap(),
+	);
+	match description {
+		Some(text) if status == 200 => {
+			let id = uploaded["id"].as_str().unwrap();
+			request(
+				app,
+				token,
+				"PUT",
+				&format!("/api/workspaces/{workspace}/attachments/{id}/description"),
+				json!({"description":text}),
+			)
+			.await
+		}
+		_ => (status, uploaded),
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn posted_images_enter_the_index_with_the_description_only_their_writer_edits(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: an image posted before the Workspace had an index, and a second
+	// person who may read and post but did not post the image.
+	let ScopedChannel {
+		app,
+		mut policy,
+		token: alice,
+		workspace,
+	} = Box::pin(scoped_channel).await;
+	let message_path = format!("/api/workspaces/{workspace}/thread-messages");
+	let (status, early) = upload_image(&app, &alice, &workspace, Some("A red bicycle")).await;
+	assert_eq!(status, 200, "{early}");
+	assert_eq!(early["description"], "A red bicycle");
+	let (status, first) = request(&app, &alice, "POST", &message_path,
+		json!({"content":"Before the index", "idempotency_key":Uuid::new_v4(), "attachment_ids":[early["id"]]})).await;
+	assert_eq!(status, 200, "{first}");
+	let early_id = early["id"].as_str().unwrap();
+	assert!(image_entry(&app, early_id).await.is_none());
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	let (status, changed) = request(
+		&app,
+		&app.runtime.config.api_token.clone(),
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	let bob = crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
+
+	// Act: configure a text-only index, post a second image, and index both.
+	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256});
+	let (status, index) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let backfilled = image_entry(&app, early_id).await;
+	let (status, late) = upload_image(&app, &alice, &workspace, None).await;
+	assert_eq!(status, 200, "{late}");
+	let (status, second) = request(&app, &alice, "POST", &message_path,
+		json!({"content":"After the index", "idempotency_key":Uuid::new_v4(), "attachment_ids":[late["id"]]})).await;
+	assert_eq!(status, 200, "{second}");
+	let late_id = late["id"].as_str().unwrap();
+	let posted = image_entry(&app, late_id).await;
+	aidash_server::semantic::worker::sweep(&app.runtime.store)
+		.await
+		.unwrap();
+	let (_, history) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/workspaces/{workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	let description_path = format!("/api/workspaces/{workspace}/attachments/{late_id}/description");
+	let (foreign_status, _) = request(
+		&app,
+		&bob,
+		"PUT",
+		&description_path,
+		json!({"description":"Not mine"}),
+	)
+	.await;
+	let (own_status, described) = request(
+		&app,
+		&alice,
+		"PUT",
+		&description_path,
+		json!({"description":"A blue door"}),
+	)
+	.await;
+	let redescribed = image_entry(&app, late_id).await;
+
+	// Assert
+	assert_eq!(backfilled.map(|entry| entry.0), Some("PENDING".to_owned()));
+	assert_eq!(posted.map(|entry| entry.0), Some("PENDING".to_owned()));
+	let listed: Vec<&Value> = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.flat_map(|message| message["attachments"].as_array().unwrap())
+		.collect();
+	assert_eq!(listed.len(), 2, "{history}");
+	for attachment in &listed {
+		assert_eq!(attachment["index_state"], "unsupported", "{history}");
+	}
+	assert_eq!(
+		image_entry(&app, early_id).await.unwrap().1.as_deref(),
+		Some("modality")
+	);
+	assert_eq!(foreign_status, 403);
+	assert_eq!(own_status, 200, "{described}");
+	assert_eq!(described["description"], "A blue door");
+	let redescribed = redescribed.unwrap();
+	assert_eq!(
+		redescribed.0, "PENDING",
+		"an edited description is indexed again"
+	);
+	assert_eq!(redescribed.2, 2);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_image_leaves_the_index_with_its_thread(#[future] scoped_channel: ScopedChannel) {
+	// Arrange
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256});
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let (status, image) = upload_image(&app, &token, &workspace, Some("A harbour at dusk")).await;
+	assert_eq!(status, 200, "{image}");
+	let (status, message) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/thread-messages"),
+		json!({"content":"root", "idempotency_key":Uuid::new_v4(), "attachment_ids":[image["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	let (status, thread) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":message["message"]["id"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let id = image["id"].as_str().unwrap();
+	assert_eq!(
+		image_entry(&app, id).await.map(|entry| entry.3),
+		Some(false)
+	);
+
+	// Act
+	let (status, deleted) = request(
+		&app,
+		&token,
+		"POST",
+		&format!(
+			"/api/workspaces/{workspace}/threads/{}/delete",
+			thread["id"].as_str().unwrap()
+		),
+		json!({"idempotency_key":Uuid::new_v4(), "files":[]}),
+	)
+	.await;
+
+	// Assert
+	assert_eq!(status, 200, "{deleted}");
+	let entry = image_entry(&app, id).await.unwrap();
+	assert_eq!((entry.0.as_str(), entry.3), ("DELETED", true));
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChannel) {
+	// Arrange
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let client = client_for(&app.server.url, &token).await;
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename=notes.txt&media_type=text%2Fplain&idempotency_key={}",
+		Uuid::new_v4()
+	);
+	let (status, notes) = decoded(
+		client
+			.post_raw(&path, b"plain notes", "application/octet-stream")
+			.await
+			.unwrap(),
+	);
+	assert_eq!(status, 200, "{notes}");
+	let in_url = format!(
+		"/api/workspaces/{workspace}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}&description=Words",
+		Uuid::new_v4()
+	);
+	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
+
+	// Act
+	let (text_status, text_refusal) = request(
+		&app,
+		&token,
+		"PUT",
+		&format!(
+			"/api/workspaces/{workspace}/attachments/{}/description",
+			notes["id"].as_str().unwrap()
+		),
+		json!({"description":"Notes"}),
+	)
+	.await;
+	let (url_status, url_refusal) = decoded(
+		client
+			.post_raw(&in_url, png, "application/octet-stream")
+			.await
+			.unwrap(),
+	);
+	let (long_status, long_refusal) =
+		upload_image(&app, &token, &workspace, Some(&"画".repeat(2001))).await;
+	let (full_status, full) =
+		upload_image(&app, &token, &workspace, Some(&"画".repeat(2000))).await;
+
+	// Assert: only an image is described, never through the URL, and the
+	// limit is 2,000 characters however many bytes they take.
+	assert_eq!(text_status, 400, "{text_refusal}");
+	assert_eq!(url_status, 400, "{url_refusal}");
+	assert_eq!(long_status, 400, "{long_refusal}");
+	assert_eq!(full_status, 200, "{full}");
+}
+
+async fn post_image(app: &EndpointFixture, token: &str, workspace: &str, content: &str) -> String {
+	let (status, image) = upload_image(app, token, workspace, None).await;
+	assert_eq!(status, 200, "{image}");
+	let (status, message) = request(
+		app,
+		token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/thread-messages"),
+		json!({"content":content, "idempotency_key":Uuid::new_v4(), "attachment_ids":[image["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	image["id"].as_str().unwrap().to_owned()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn posted_images_use_the_image_limit_not_the_text_source_quota(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: room for one text source and one image.
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let index_path = format!("/api/workspaces/{workspace}/semantic/index");
+	let mut spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":1,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let first = post_image(&app, &token, &workspace, "First").await;
+	let second = post_image(&app, &token, &workspace, "Second").await;
+
+	// Act: add the one text source, then reconfigure the index.
+	let (text_status, text) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"),
+		json!({"key":"note","source":{"kind":"memory","text":"A note"},"expected_revision":0,"metadata":{}})).await;
+	spec["max_results"] = json!(4);
+	let (reconfigured, body) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+
+	// Assert: images never counted against the text quota, and the image the
+	// limit turned away stays turned away after the rebuild.
+	assert_eq!(text_status, 200, "{text}");
+	assert_eq!(reconfigured, 200, "{body}");
+	assert_eq!(image_entry(&app, &first).await.unwrap().0, "PENDING");
+	let limited = image_entry(&app, &second).await.unwrap();
+	assert_eq!(
+		(limited.0.as_str(), limited.1.as_deref()),
+		("UNSUPPORTED", Some("limit"))
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn backfill_pages_past_images_the_configuring_person_cannot_read(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: Bob posts the oldest image, in a message Alice may not read;
+	// Alice posts a newer one. The index has room for one image.
+	let ScopedChannel {
+		app,
+		mut policy,
+		token: alice,
+		workspace,
+	} = Box::pin(scoped_channel).await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"hide-bob","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/sender"},"right":{"source":"literal","value":"bob"}}}));
+	let (status, changed) = request(
+		&app,
+		&app.runtime.config.api_token.clone(),
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	let bob = crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
+	let hidden = post_image(&app, &bob, &workspace, "Bob's photo").await;
+	let visible = post_image(&app, &alice, &workspace, "Alice's photo").await;
+	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
+
+	// Act: Alice configures the index.
+	let (status, index) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+
+	// Assert: Bob's image stays out; Alice's newer image still enters.
+	assert_eq!(status, 200, "{index}");
+	assert!(image_entry(&app, &hidden).await.is_none());
+	assert_eq!(
+		image_entry(&app, &visible)
+			.await
+			.map(|entry| entry.0)
+			.as_deref(),
+		Some("PENDING")
+	);
+}

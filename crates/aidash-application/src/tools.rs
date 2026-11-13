@@ -464,8 +464,24 @@ impl Builtin {
 				let files: Vec<String> = serde_json::from_value(
 					input.get("files").cloned().unwrap_or_else(|| json!([])),
 				)?;
+				let descriptions: std::collections::BTreeMap<String, String> =
+					serde_json::from_value(
+						input
+							.get("image_descriptions")
+							.cloned()
+							.unwrap_or_else(|| json!({})),
+					)
+					.map_err(|error| Error::Invalid(error.to_string()))?;
+				if let Some(path) = descriptions.keys().find(|path| !files.contains(path)) {
+					return Err(Error::Invalid(format!(
+						"image_descriptions names {path}, which is not in files"
+					)));
+				}
+				for text in descriptions.values() {
+					aidash_domain::semantic::indexing::validate_image_description(text)?;
+				}
 				ctx.operations
-					.message_with_files(key, required(&input, "content")?, &files)
+					.message_with_files(key, required(&input, "content")?, &files, &descriptions)
 					.await?;
 				Ok(json!({"sent":true}))
 			}
@@ -542,10 +558,19 @@ impl Builtin {
 						"provide exactly one text or image query".into(),
 					));
 				}
-				if has_image {
-					let _: aidash_domain::media::WorkingImageSelection =
-						serde_json::from_value(input["image"].clone())
-							.map_err(|error| Error::Invalid(error.to_string()))?;
+				if has_image
+					&& serde_json::from_value::<aidash_domain::media::WorkingImageSelection>(
+						input["image"].clone(),
+					)
+					.is_err() && serde_json::from_value::<
+					aidash_domain::media::ThreadAttachmentSelection,
+				>(input["image"].clone())
+				.is_err()
+				{
+					return Err(Error::Invalid(
+						"image must name a Working Area File version or a selected Thread Attachment"
+							.into(),
+					));
 				}
 				ctx.operations.workspace_search(input).await
 			}
@@ -708,8 +733,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_message",
 			contract: aidash_domain::tool::builtin_contract("workspace_message")
 				.expect("declared builtin"),
-			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total).",
-			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string}},"additionalProperties":false}),
+			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
+			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string},"image_descriptions":{"type":"object","maxProperties":8,"additionalProperties":{"type":"string","minLength":1,"maxLength":aidash_domain::semantic::indexing::MAX_IMAGE_DESCRIPTION_CHARS}}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_observe",
@@ -729,8 +754,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_search",
 			contract: aidash_domain::tool::builtin_contract("workspace_search")
 				.expect("declared builtin"),
-			description: "Search the Workspace index by text or by an image in your own Working Area. Image matches are File pointers; open a match with workspace_read.",
-			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["area_id","generation","file_id","path","expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
+			description: "Search the Workspace index by text, or by an image you have seen: a File version in your own Working Area (area_id, generation, file_id, path, expected_digest), or a Thread Attachment you selected with workspace_read (pass the selection it returned). Image matches are pointers, never images: a Working Area match names its File version, and a Thread Attachment match names its message and attachment with the message text and Image Description. Open a match with workspace_read.",
+			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"attachment_id":{"type":"string"},"message_id":{"type":"string"},"wav":{"type":"boolean"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "attachment_copy",

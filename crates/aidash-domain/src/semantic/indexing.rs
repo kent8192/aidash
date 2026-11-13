@@ -21,6 +21,42 @@ pub fn default_max_images() -> usize {
 	256
 }
 
+/// The longest Image Description, in characters, as people and JSON Schema
+/// count them. It is embedded with its image, so it stays well inside one
+/// embedding input.
+pub const MAX_IMAGE_DESCRIPTION_CHARS: usize = 2000;
+
+/// An Image Description is plain prose: present, bounded, without control
+/// characters other than line breaks.
+pub fn validate_image_description(text: &str) -> Result<()> {
+	if text.trim().is_empty()
+		|| text.chars().count() > MAX_IMAGE_DESCRIPTION_CHARS
+		|| text
+			.chars()
+			.any(|c| c.is_control() && c != '\n' && c != '\t')
+	{
+		return Err(Error::Invalid(format!(
+			"an Image Description must be 1 to {MAX_IMAGE_DESCRIPTION_CHARS} characters of text"
+		)));
+	}
+	Ok(())
+}
+
+/// The digest a point records for an image: the image bytes' digest alone, or
+/// that digest together with the Image Description embedded with it. Editing
+/// the description therefore makes the old point stale.
+pub fn image_digest(bytes_digest: &str, description: Option<&str>) -> String {
+	match description {
+		None => bytes_digest.to_owned(),
+		Some(text) => content_digest(&format!("{bytes_digest}\n{text}")),
+	}
+}
+
+/// The entry key of a Thread Attachment image. One attachment has one entry.
+pub fn attachment_image_key(attachment: Uuid) -> String {
+	format!("attachment-image:{attachment}")
+}
+
 /// The reason an image cannot currently enter its Workspace index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

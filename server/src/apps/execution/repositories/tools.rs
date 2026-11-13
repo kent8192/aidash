@@ -206,7 +206,13 @@ impl ToolOperations for Operations {
 	async fn message(&self, key: &str, content: &str) -> Result<()> {
 		self.0.home.message(key, content).await.map_err(Into::into)
 	}
-	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+	async fn message_with_files(
+		&self,
+		key: &str,
+		content: &str,
+		files: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
+	) -> Result<()> {
 		if files.is_empty() {
 			return self.message(key, content).await;
 		}
@@ -220,16 +226,26 @@ impl ToolOperations for Operations {
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
-			.message_with_files(&self.0.store, &self.0.run, key, content, files)
+			.message_with_files(
+				&self.0.store,
+				&self.0.run,
+				key,
+				content,
+				files,
+				descriptions,
+			)
 			.await
 			.map_err(operation_error)
 	}
 	async fn attachment(&self, id: &str, model_input: bool) -> Result<Value> {
+		use aidash_application::execution::media::{describes_instead, thread_attachment_wav};
 		let model = if model_input {
 			let model = run_model(&self.0.run)?;
 			let observed = observed_media_type(&self.0.run, id);
-			if let Some(media_type) = observed {
-				aidash_application::execution::media::thread_attachment_wav(&model, &media_type)?;
+			if let Some(media_type) = observed
+				&& !describes_instead(&model, &media_type)
+			{
+				thread_attachment_wav(&model, &media_type)?;
 			}
 			Some(model)
 		} else {
@@ -244,7 +260,25 @@ impl ToolOperations for Operations {
 			.as_str()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		let model = model.ok_or(aidash_application::Error::Forbidden)?;
-		let wav = aidash_application::execution::media::thread_attachment_wav(&model, media_type)?;
+		if describes_instead(&model, media_type) {
+			// A model that cannot read images gets the words instead: the
+			// Image Description, file name and message text, and no selection,
+			// so the next inference carries no image (#622 decision 6).
+			let message_id = record["message_id"]
+				.as_str()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let message = self.0.home.read_record("message", message_id).await?;
+			let message_text: String = message["content"]
+				.as_str()
+				.unwrap_or_default()
+				.chars()
+				.take(aidash_application::semantic::retrieval::ATTACHMENT_MESSAGE_TEXT_CHARS)
+				.collect();
+			return Ok(json!({"status":"completed", "metadata":metadata,
+				"described_instead":{"reason":"this model cannot read images",
+					"description":metadata["description"], "message_text":message_text}}));
+		}
+		let wav = thread_attachment_wav(&model, media_type)?;
 		Ok(
 			json!({"status":"completed", "metadata":metadata, "selection":{
 				"attachment_id":id, "message_id":record["message_id"], "expected_digest":record["sha256"], "wav":wav

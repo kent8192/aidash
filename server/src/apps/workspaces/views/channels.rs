@@ -1,7 +1,7 @@
 use crate::apps::workspaces::{serializers::*, services::channels::Channels};
 use crate::http::json::Json;
 use reinhardt::{Depends, Path, Query, Request, Response, http::ViewResult};
-use reinhardt::{get, post};
+use reinhardt::{get, post, put};
 use uuid::Uuid;
 
 #[post(
@@ -57,6 +57,19 @@ pub async fn channel_attachment_upload(
 	// Gateway admission has already bounded this route to 8 MiB; the generic
 	// Body extractor's fixed 2 MiB limit is too small for attachments.
 	crate::http::json(channels.upload(id, input, request.body()).await)
+}
+
+#[put(
+	"/api/workspaces/{id}/attachments/{attachment_id}/description",
+	name = "channel-attachment-description",
+	auth = "protected"
+)]
+pub async fn channel_attachment_description(
+	#[inject] channels: Depends<Channels>,
+	Path((workspace, attachment)): Path<(Uuid, Uuid)>,
+	Json(input): Json<ChannelAttachmentDescription>,
+) -> ViewResult<Response> {
+	crate::http::json(channels.describe(workspace, attachment, input).await)
 }
 
 #[get(

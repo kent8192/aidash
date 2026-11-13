@@ -917,3 +917,7 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`workspaces/0027_attachment_description` adds the nullable `channel_attachments.description` (#622 part 2): the Image Description that the person or Agent who posted an image wrote for it. One Reinhardt `AddColumn` carries both the table and the model state. Nothing is backfilled; an image posted earlier has no description until its poster writes one. Thread Attachment images are indexed in the existing `semantic_entries` under the key `attachment-image:<attachment id>`, so no knowledge table changes.
+
+`knowledge/0051_attachment_images` (after `0050_recovery_lifetime_merge`) widens the `semantic_entries_counters` CHECK so a semantic entry may name a Thread Attachment image: `{"kind":"attachment_image","message_id":…,"attachment_id":…}` with exactly those keys and UUID strings (#622 part 2). Reinhardt can only replace a named CHECK by dropping and re-adding it, so the migration repeats the `0041_working_images` expression and adds one alternative. It is database-only, like `0041`. Rolling back fails while any attachment image entry remains.

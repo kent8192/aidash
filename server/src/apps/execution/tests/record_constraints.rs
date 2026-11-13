@@ -1873,6 +1873,8 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		json!({"kind":"message","id":7}),
 		json!({"kind":"artifact"}),
 		json!({"kind":"message","id":uuid::Uuid::new_v4(),"text":"extra"}),
+		json!({"kind":"attachment_image","message_id":"invalid","attachment_id":uuid::Uuid::new_v4()}),
+		json!({"kind":"attachment_image","message_id":uuid::Uuid::new_v4()}),
 	] {
 		check_rejected(
 			update(

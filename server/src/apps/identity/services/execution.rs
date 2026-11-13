@@ -430,19 +430,35 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
-		let image = if input.get("image").is_some_and(|value| !value.is_null()) {
-			let selected: aidash_domain::media::WorkingImageSelection =
-				serde_json::from_value(input["image"].clone())?;
-			Some(aidash_domain::semantic::retrieval::ImageQuery {
-				run_id: run.id,
-				area_id: selected.area_id,
-				generation: selected.generation,
-				file_id: selected.file_id,
-				path: selected.path,
-				expected_digest: selected.expected_digest,
-			})
+		// An image query names a File version in the Run's own Working Area, or
+		// a Thread Attachment by the selection `workspace_read` returned (#622).
+		let (image, attachment) = if input.get("image").is_some_and(|value| !value.is_null()) {
+			if let Ok(selected) = serde_json::from_value::<
+				aidash_domain::media::WorkingImageSelection,
+			>(input["image"].clone())
+			{
+				let query = aidash_domain::semantic::retrieval::ImageQuery {
+					run_id: run.id,
+					area_id: selected.area_id,
+					generation: selected.generation,
+					file_id: selected.file_id,
+					path: selected.path,
+					expected_digest: selected.expected_digest,
+				};
+				(Some(query), None)
+			} else {
+				let selected: aidash_domain::media::ThreadAttachmentSelection =
+					serde_json::from_value(input["image"].clone())?;
+				let query = aidash_domain::semantic::retrieval::AttachmentImageQuery {
+					run_id: run.id,
+					message_id: selected.message_id,
+					attachment_id: selected.attachment_id,
+					expected_digest: selected.expected_digest,
+				};
+				(None, Some(query))
+			}
 		} else {
-			None
+			(None, None)
 		};
 		let mut access = self.access.write().await;
 		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
@@ -493,6 +509,7 @@ impl WorkerAuthority {
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
 			image: image.clone(),
+			attachment: attachment.clone(),
 			agent: None,
 			metadata: json!({}),
 			limit: input["limit"].as_u64().map_or_else(
@@ -530,14 +547,35 @@ impl WorkerAuthority {
 		if reference.is_some() {
 			use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession;
 			let limit = limit.min(8);
-			let reference = if let Some(image) = &image {
-				let content = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
-					.query_image(
-						run.workspace_id,
-						image,
-						aidash_domain::semantic::indexing::default_max_image_bytes(),
+			// The same image query, read under the same rules as the Workspace
+			// search, against this agent version's private Reference Documents.
+			let max_bytes = aidash_domain::semantic::indexing::default_max_image_bytes();
+			let read = async |lease: &mut crate::semantic::service::Lease<'_>| -> Result<
+				Option<aidash_application::ports::semantic::IndexImage>,
+			> {
+				let mut scope = crate::bootstrap::semantic_retrieval_scope(store, lease);
+				Ok(if let Some(image) = &image {
+					Some(
+						scope
+							.query_image(run.workspace_id, image, max_bytes)
+							.await?,
 					)
-					.await?;
+				} else if let Some(attachment) = &attachment {
+					if !scope.attachment_seen(attachment).await? {
+						return Err(
+							aidash_application::semantic::retrieval::attachment_not_seen().into(),
+						);
+					}
+					Some(
+						scope
+							.query_attachment(run.workspace_id, attachment, max_bytes)
+							.await?,
+					)
+				} else {
+					None
+				})
+			};
+			let reference = if let Some(content) = read(&mut lease).await? {
 				let found = crate::apps::registry::services::knowledge::reference_image_context(
 					lease.access().ok_or(Error::Forbidden)?,
 					store,
@@ -549,13 +587,7 @@ impl WorkerAuthority {
 					limit,
 				)
 				.await?;
-				let current = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
-					.query_image(
-						run.workspace_id,
-						image,
-						aidash_domain::semantic::indexing::default_max_image_bytes(),
-					)
-					.await?;
+				let current = read(&mut lease).await?.ok_or(Error::Forbidden)?;
 				if current.media_type != content.media_type || current.bytes != content.bytes {
 					return Err(Error::Conflict(
 						"image query changed during retrieval".into(),
@@ -645,6 +677,7 @@ impl WorkerAuthority {
 		key: &str,
 		content: &str,
 		paths: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
 	) -> Result<()> {
 		use sha2::{Digest, Sha256};
 		fn operation_id(run: Uuid, key: &str, position: usize) -> Uuid {
@@ -656,8 +689,17 @@ impl WorkerAuthority {
 			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
 		}
 		let receipt_key = operation_id(run.id, key, 9);
-		let receipt_digest =
-			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
+		let receipt_digest = if descriptions.is_empty() {
+			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]))
+		} else {
+			crate::registry::digest(&json!([
+				"workspace_message_files",
+				run.id,
+				content,
+				paths,
+				descriptions
+			]))
+		};
 		let agent = run.executor_subject(store.deployment.as_str());
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
@@ -725,6 +767,17 @@ impl WorkerAuthority {
 			Ok(None) => return access.finish(Ok(())).await,
 			Err(error) => return access.finish(Err(error)).await,
 		};
+		// An Agent describes every image it posts, so people and Agents that
+		// cannot see it can still find and understand it (#622 decision 7).
+		if let Some((file, _)) = snapshots.iter().find(|(file, _)| {
+			file.media_type.starts_with("image/") && !descriptions.contains_key(&file.path)
+		}) {
+			let missing = Error::Invalid(format!(
+				"{} is an image: give it an Image Description in image_descriptions",
+				file.path
+			));
+			return access.finish(Err(missing)).await;
+		}
 		let mut lease = crate::collaboration::access::Lease::from_access(access);
 		let result: Result<()> = async {
 			let mut ids = Vec::with_capacity(snapshots.len());
@@ -734,6 +787,7 @@ impl WorkerAuthority {
 					filename,
 					media_type: file.media_type.clone(),
 					idempotency_key: operation_id(run.id, key, index),
+					description: descriptions.get(&file.path).cloned(),
 				};
 				let attachment = crate::collaboration::attachments::upload_for_run(
 					store,

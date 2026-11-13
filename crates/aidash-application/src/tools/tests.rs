@@ -104,12 +104,19 @@ impl ToolOperations for Operations {
 	async fn message(&self, _key: &str, _content: &str) -> Result<()> {
 		panic!("unexpected tool effect: message")
 	}
-	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+	async fn message_with_files(
+		&self,
+		key: &str,
+		content: &str,
+		files: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
+	) -> Result<()> {
 		self.record("message.files");
-		self.inputs
-			.lock()
-			.unwrap()
-			.push((key.to_owned(), json!({"content":content,"files":files})));
+		let mut input = json!({"content":content,"files":files});
+		if !descriptions.is_empty() {
+			input["image_descriptions"] = json!(descriptions);
+		}
+		self.inputs.lock().unwrap().push((key.to_owned(), input));
 		Ok(())
 	}
 	async fn observation(&self, _offset: usize, _limit: usize) -> Result<Value> {
@@ -397,6 +404,78 @@ async fn workspace_search_accepts_only_one_current_image_or_text_query(fixture: 
 	assert_eq!(
 		*fixture.operations.calls.lock().unwrap(),
 		["workspace.search", "workspace.search"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_search_accepts_the_selection_of_a_thread_attachment(fixture: Fixture) {
+	// Arrange
+	let tool = builtins().remove("workspace_search").unwrap();
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let selection = json!({"attachment_id":Uuid::from_u128(7),"message_id":Uuid::from_u128(8),"expected_digest":"d","wav":false});
+	let mixed = json!({"attachment_id":Uuid::from_u128(7),"message_id":Uuid::from_u128(8),"expected_digest":"d","path":"x.png"});
+
+	// Act
+	let accepted = tool.invoke(&ctx, json!({"image":selection}), "key").await;
+	let refused = tool.invoke(&ctx, json!({"image":mixed}), "key").await;
+
+	// Assert
+	assert!(accepted.is_ok());
+	assert!(matches!(refused, Err(Error::Invalid(_))));
+	assert_eq!(
+		*fixture.operations.calls.lock().unwrap(),
+		["workspace.search"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_message_passes_image_descriptions_for_its_own_files(fixture: Fixture) {
+	// Arrange
+	let tool = builtins().remove("workspace_message").unwrap();
+	let context = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+
+	// Act
+	let sent = tool
+		.invoke(
+			&context,
+			json!({"content":"sharing", "files":["chart.png"], "image_descriptions":{"chart.png":"Sales by month"}}),
+			"call-1",
+		)
+		.await;
+	let stray = tool
+		.invoke(
+			&context,
+			json!({"content":"sharing", "files":["chart.png"], "image_descriptions":{"other.png":"Sales"}}),
+			"call-2",
+		)
+		.await;
+	let blank = tool
+		.invoke(
+			&context,
+			json!({"content":"sharing", "files":["chart.png"], "image_descriptions":{"chart.png":"  "}}),
+			"call-3",
+		)
+		.await;
+
+	// Assert
+	assert!(sent.is_ok());
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1["image_descriptions"],
+		json!({"chart.png":"Sales by month"})
+	);
+	assert!(stray.is_err());
+	assert!(blank.is_err());
+	assert_eq!(
+		fixture.operations.calls.lock().unwrap().as_slice(),
+		&["message.files"]
 	);
 }
 

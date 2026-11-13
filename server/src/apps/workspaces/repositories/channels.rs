@@ -37,13 +37,17 @@ struct LinkRecord {
 	media_type: String,
 	size_bytes: i64,
 	message_id: Option<Uuid>,
+	description: Option<String>,
+	index_state: Option<String>,
 }
 crate::native_record!(LinkRecord {
 	id,
 	filename,
 	media_type,
 	size_bytes,
-	message_id
+	message_id,
+	description,
+	index_state
 });
 
 impl LinkRecord {
@@ -54,8 +58,21 @@ impl LinkRecord {
 			media_type: self.media_type.clone(),
 			size_bytes: self.size_bytes,
 			no_assigned_agent_can_read: false,
+			description: self.description.clone(),
+			index_state: self.index_state.clone(),
 		}
 	}
+}
+
+/// Where an image attachment stands in its Workspace index, as a status word
+/// only; the entry itself stays under the semantic index's own authority.
+fn index_state() -> SimpleExpr {
+	SimpleExpr::from(Expr::cust(
+		"(SELECT CASE se.state WHEN 'READY' THEN 'indexed' WHEN 'PENDING' THEN 'pending' \
+		 WHEN 'UNSUPPORTED' THEN 'unsupported' ELSE 'failed' END \
+		 FROM semantic_entries se WHERE se.workspace_id = channel_attachments.workspace_id \
+		 AND se.key = 'attachment-image:' || channel_attachments.id::text AND NOT se.deleted)",
+	))
 }
 
 struct HistoryRecord {
@@ -459,7 +476,9 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("size_bytes"),
 				Alias::new("message_id"),
 				Alias::new("position"),
+				Alias::new("description"),
 			])
+			.expr_as(Expr::cust("NULL::text"), Alias::new("index_state"))
 			.from(Alias::new("channel_attachments"))
 			.and_where(
 				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
@@ -588,6 +607,7 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("width"),
 				Alias::new("height"),
 				Alias::new("duration_ms"),
+				Alias::new("description"),
 				Alias::new("tenant"),
 			])
 			.values_expr(vec![
@@ -603,6 +623,7 @@ impl ChannelScope for NativeChannels<'_> {
 				Expr::value(input.measurements.width).into(),
 				Expr::value(input.measurements.height).into(),
 				Expr::value(input.measurements.duration_ms).into(),
+				Expr::value(input.description.map(str::to_owned)).into(),
 				Expr::subquery(tenant).into(),
 			])
 			.expect("one value per column")
@@ -795,7 +816,9 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("size_bytes"),
 				Alias::new("message_id"),
 				Alias::new("position"),
+				Alias::new("description"),
 			])
+			.expr_as(index_state(), Alias::new("index_state"))
 			.from(Alias::new("channel_attachments"))
 			.and_where(
 				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
@@ -813,6 +836,8 @@ impl ChannelScope for NativeChannels<'_> {
 				"size_bytes",
 				"message_id",
 				"position",
+				"description",
+				"index_state",
 			])
 			.bind(workspace)
 			.bind(ids.to_vec())
@@ -859,5 +884,58 @@ impl ChannelScope for NativeChannels<'_> {
 		super::citations::for_messages(self.store, self.federation, &mut *self.lease, ids)
 			.await
 			.map_err(Into::into)
+	}
+	async fn describe_attachment(
+		&mut self,
+		workspace: Uuid,
+		id: Uuid,
+		writer: &str,
+		description: &str,
+	) -> Result<()> {
+		let update = Query::update()
+			.table(Alias::new("channel_attachments"))
+			.value(Alias::new("description"), description)
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::value(writer)))
+			.to_string(PostgresQueryBuilder);
+		let updated = crate::database::native::query(&update)
+			.execute(&mut **self.lease.tx())
+			.await?;
+		if updated.rows_affected() != 1 {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		// The words are embedded with the image, so its entry is queued again.
+		let mut lease =
+			crate::apps::knowledge::repositories::access::Lease::Inherited(self.lease.access_mut());
+		crate::apps::knowledge::repositories::attachment_images::enqueue(
+			&mut lease,
+			workspace,
+			&[id],
+			true,
+		)
+		.await
+		.map(|_| ())
+		.map_err(Into::into)
+	}
+	async fn index_attachment_images(
+		&mut self,
+		workspace: Uuid,
+		_message: Uuid,
+		attachments: &[ChannelAttachment],
+	) -> Result<()> {
+		let ids: Vec<Uuid> = attachments
+			.iter()
+			.filter(|attachment| attachment.media_type.starts_with("image/"))
+			.map(|attachment| attachment.id)
+			.collect();
+		let mut lease =
+			crate::apps::knowledge::repositories::access::Lease::Inherited(self.lease.access_mut());
+		crate::apps::knowledge::repositories::attachment_images::enqueue(
+			&mut lease, workspace, &ids, false,
+		)
+		.await
+		.map(|_| ())
+		.map_err(Into::into)
 	}
 }

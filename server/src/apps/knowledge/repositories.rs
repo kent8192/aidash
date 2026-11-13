@@ -1,5 +1,6 @@
 //! Knowledge persistence implements portable semantic ports.
 pub(crate) mod access;
+pub(crate) mod attachment_images;
 pub(crate) mod bindings;
 pub(crate) mod candidates;
 pub(crate) mod image_files;

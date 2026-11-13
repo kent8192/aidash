@@ -121,6 +121,25 @@ pub fn legacy_workspace_entries(
 	attachment_reader.description.insert("en".into(), "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.".into());
 	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
 	entries.push(attachment_reader);
+	// The Thread Attachment versions as they were before Thread Attachment
+	// images could be described and searched (#622 part 2).
+	let mut file_poster = entries
+		.iter()
+		.find(|entry| entry.id == "aidash.workspace_message")
+		.unwrap()
+		.clone();
+	file_poster.version = "1.0.1".into();
+	file_poster.description.insert("en".into(), "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total).".into());
+	file_poster.schema = json!({"type":"object","required":["content"],"properties":{"content":{"type":"string"},"files":{"type":"array","maxItems":8,"items":{"type":"string"}}},"additionalProperties":false});
+	entries.push(file_poster);
+	let mut file_search = self::entries(validation, node)?
+		.into_iter()
+		.find(|entry| entry.id == "aidash.workspace_search")
+		.ok_or_else(|| crate::Error::Invalid("system provider has no workspace_search".into()))?;
+	file_search.version = "1.0.0".into();
+	file_search.description.insert("en".into(), "Search the Workspace index by text or by an image in your own Working Area. Image matches are File pointers; open a match with workspace_read.".into());
+	file_search.schema = json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["area_id","generation","file_id","path","expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false});
+	entries.push(file_search);
 	Ok(entries)
 }
 
@@ -305,7 +324,10 @@ pub fn is_builtin(entry: &Entry) -> bool {
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
 	(reference.version == "1.0.0"
-		|| (reference.id == "aidash.workspace_read" && reference.version == "1.1.0")
+		|| (matches!(
+			reference.id.as_str(),
+			"aidash.workspace_read" | "aidash.workspace_search" | "aidash.workspace_message"
+		) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),

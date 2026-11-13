@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  channelAttachmentDescription,
   channelAttachmentUpload,
   channelMessageCreate,
   channelMessageHistory,
@@ -53,6 +54,8 @@ import {
   attachmentWarningKey,
   attachmentWarningText,
   submissionFor,
+  descriptionTooLong,
+  uploadDescription,
   validAttachments,
   type MessageSubmission,
 } from "./conversation-model";
@@ -67,7 +70,13 @@ import {
   PopoverTrigger,
 } from "../components/ui/popover";
 
-type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
+type DraftFile = {
+  key: string;
+  file: File;
+  uploaded?: ChannelAttachment;
+  /** The sender's Image Description of an image, sent with its upload. */
+  description?: string;
+};
 type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
@@ -395,6 +404,16 @@ function ConversationFeed({
       query.isPending
     )
       return;
+    if (
+      draft.files.some(
+        (entry) =>
+          entry.file.type.startsWith("image/") &&
+          descriptionTooLong(entry.description),
+      )
+    ) {
+      setError(words.imageDescriptionTooLong);
+      return;
+    }
     const cited = omitCitations ? [] : citations;
     inFlight.current = true;
     setSending(true);
@@ -418,6 +437,25 @@ function ConversationFeed({
             ...current,
             files: current.files.map((file) =>
               file.key === entry.key ? { ...file, uploaded } : file,
+            ),
+          }));
+        }
+        // The description travels in a JSON body, never in the upload URL.
+        const description = uploadDescription(
+          entry.file.type,
+          entry.description,
+        );
+        if (description && uploaded.description !== description) {
+          uploaded = await channelAttachmentDescription(
+            workspace,
+            uploaded.id,
+            { description },
+          );
+          const described = uploaded;
+          updateDraft((current) => ({
+            ...current,
+            files: current.files.map((file) =>
+              file.key === entry.key ? { ...file, uploaded: described } : file,
             ),
           }));
         }
@@ -918,6 +956,38 @@ function ConversationFeed({
                             <X className="size-3" />
                           </button>
                         </span>
+                        {entry.file.type.startsWith("image/") && (
+                          <input
+                            className="mt-1 block h-6 w-full max-w-sm rounded-sm border border-border bg-background px-2 text-[11px]"
+                            aria-invalid={descriptionTooLong(entry.description)}
+                            disabled={busy}
+                            value={entry.description ?? ""}
+                            placeholder={words.imageDescriptionPlaceholder}
+                            aria-label={`${words.imageDescription}: ${entry.file.name}`}
+                            onChange={(event) =>
+                              updateDraft((current) => ({
+                                ...current,
+                                files: current.files.map((file) =>
+                                  file.key === entry.key
+                                    ? {
+                                        ...file,
+                                        description: event.target.value,
+                                      }
+                                    : file,
+                                ),
+                              }))
+                            }
+                          />
+                        )}
+                        {entry.file.type.startsWith("image/") &&
+                          descriptionTooLong(entry.description) && (
+                            <p
+                              className="text-xs text-destructive"
+                              role="alert"
+                            >
+                              {words.imageDescriptionTooLong}
+                            </p>
+                          )}
                         {entry.uploaded?.no_assigned_agent_can_read && (
                           <p className="text-xs text-warning">
                             {attachmentWarningText(

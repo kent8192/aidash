@@ -182,7 +182,15 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value>;
 	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact>;
 	async fn message(&self, key: &str, content: &str) -> Result<()>;
-	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+	/// `descriptions` holds the Image Description of each attached image, by path.
+	async fn message_with_files(
+		&self,
+		key: &str,
+		content: &str,
+		files: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
+	) -> Result<()> {
+		let _ = descriptions;
 		if files.is_empty() {
 			self.message(key, content).await
 		} else {

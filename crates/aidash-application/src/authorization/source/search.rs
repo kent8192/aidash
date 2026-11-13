@@ -86,6 +86,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let input = Search {
 			query,
 			image: None,
+			attachment: None,
 			agent: Some(aidash_domain::agent_subject(
 				node,
 				&description.inspection.agent.id,

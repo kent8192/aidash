@@ -133,7 +133,14 @@ fn media(part: &Value) -> Result<ContentPart, Failure> {
 	ContentPart::from_media(mime, bytes).map_err(|_| Failure::ClaimViolation)
 }
 
-/// The embedding adapter sends one image as a single inline media part.
+/// The longest Image Description an embedding request may carry with its
+/// image, in bytes: `MAX_IMAGE_DESCRIPTION_CHARS` characters of up to four
+/// bytes each.
+const MAX_EMBEDDING_TEXT_BYTES: usize =
+	aidash_domain::semantic::indexing::MAX_IMAGE_DESCRIPTION_CHARS * 4;
+
+/// The embedding adapter sends one image as a single inline media part,
+/// optionally after one text part holding its Image Description (#622).
 pub(crate) fn embedding_input(input: Option<&Value>) -> Result<(), Failure> {
 	let input = input.ok_or(Failure::ClaimViolation)?;
 	if input.is_string() {
@@ -150,13 +157,29 @@ pub(crate) fn embedding_input(input: Option<&Value>) -> Result<(), Failure> {
 	if document.len() != 1 {
 		return Err(Failure::ClaimViolation);
 	}
-	let [part] = document
+	let part = match document
 		.get("content")
 		.and_then(Value::as_array)
 		.map(Vec::as_slice)
 		.ok_or(Failure::ClaimViolation)?
-	else {
-		return Err(Failure::ClaimViolation);
+	{
+		[part] => part,
+		[text, part] => {
+			let text = text.as_object().ok_or(Failure::ClaimViolation)?;
+			let words = text
+				.get("text")
+				.and_then(Value::as_str)
+				.ok_or(Failure::ClaimViolation)?;
+			if text.len() != 2
+				|| text.get("type").and_then(Value::as_str) != Some("text")
+				|| words.trim().is_empty()
+				|| words.len() > MAX_EMBEDDING_TEXT_BYTES
+			{
+				return Err(Failure::ClaimViolation);
+			}
+			part
+		}
+		_ => return Err(Failure::ClaimViolation),
 	};
 	let fields = part.as_object().ok_or(Failure::ClaimViolation)?;
 	let image = fields
