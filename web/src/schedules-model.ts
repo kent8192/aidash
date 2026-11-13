@@ -13,7 +13,8 @@ export type Halt =
   | "registrant_left"
   | "agent_version_unusable"
   | "thread_deleted"
-  | "tenant_deleted";
+  | "tenant_deleted"
+  | "interval_too_short";
 export type Schedule = {
   id: string;
   workspace_id: string;
@@ -29,6 +30,7 @@ export type Schedule = {
   status: "active" | "paused" | "stopped";
   halt: Halt | null;
   halted_at: string | null;
+  halt_reason: string | null;
   successor: string | null;
   next_scheduled_at: string | null;
   consecutive_failures: number;
@@ -36,6 +38,10 @@ export type Schedule = {
   revision: number;
   created_at: string;
   updated_at: string;
+  /** What the viewer may do: edit, pause or delete, resume. */
+  may_edit: boolean;
+  may_manage: boolean;
+  may_resume: boolean;
 };
 export type Tick = {
   id: string;
@@ -62,6 +68,7 @@ export type ScheduleNotice = {
   registrant: string;
   halt: Halt;
   halted_at: string | null;
+  halt_reason: string | null;
   successor: string | null;
 };
 export type ScheduleNotices = {
@@ -73,7 +80,13 @@ export type Limits = {
   max_per_person: number;
   min_interval_seconds: number;
 };
-export type LimitsView = { limits: Limits; ceilings: Limits };
+/** The Tenant's limits as set, the Deployment's ceilings, and the limits
+ *  that apply now after the ceilings and any Tier. */
+export type LimitsView = {
+  limits: Limits;
+  ceilings: Limits;
+  effective: Limits;
+};
 
 /** What a person fills in to register or change a Schedule. */
 export type ScheduleForm = {
@@ -258,6 +271,10 @@ export const haltCopy: Record<Halt, { ja: string; en: string }> = {
     ja: "Tenant が削除されたため停止しました",
     en: "Stopped: the Tenant was deleted",
   },
+  interval_too_short: {
+    ja: "Tenant の最短間隔より短いため停止しました。間隔を変えて再開してください",
+    en: "Stopped: shorter than the Tenant's minimum interval. Change it and resume",
+  },
 };
 
 /** "skipped (limit)" and the like, for the tick history. */
@@ -312,7 +329,7 @@ export function scheduleNoticeEntries(
       signature: `${notice.halt}:${notice.halted_at ?? ""}`,
       kind: "schedule_stopped",
       detail:
-        `${notice.title} — ${haltCopy[notice.halt][ja ? "ja" : "en"]}`.slice(
+        `${notice.title} — ${haltText(notice.halt, notice.halt_reason, ja)}`.slice(
           0,
           180,
         ),
@@ -335,4 +352,38 @@ export function quietCompletion(
   scheduled: ReadonlySet<string>,
 ): boolean {
   return kind === "completed" && scheduled.has(task);
+}
+
+/** Which actions a Schedule's row offers the viewer. The server decides
+ *  the `may_*` flags from the same rules it enforces: only the Registrant
+ *  edits or resumes; the Registrant or a holder of `schedule.administer`
+ *  pauses and deletes; only the named successor takes a departed
+ *  Registrant's Schedule over. */
+export function scheduleActions(schedule: Schedule): {
+  edit: boolean;
+  pause: boolean;
+  resume: "resume" | "takeOver" | null;
+  remove: boolean;
+} {
+  return {
+    edit: schedule.may_edit,
+    pause: schedule.status === "active" && schedule.may_manage,
+    resume:
+      schedule.status !== "active" && schedule.may_resume
+        ? schedule.mine
+          ? "resume"
+          : "takeOver"
+        : null,
+    remove: schedule.may_manage,
+  };
+}
+
+/** Why a Schedule stopped, with the server's words when it gave them. */
+export function haltText(
+  halt: Halt,
+  reason: string | null,
+  ja: boolean,
+): string {
+  const text = haltCopy[halt][ja ? "ja" : "en"];
+  return reason ? `${text} (${reason})` : text;
 }

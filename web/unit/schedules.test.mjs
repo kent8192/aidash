@@ -5,7 +5,9 @@ import {
   emptyForm,
   formOf,
   formProblems,
+  haltText,
   patchOf,
+  scheduleActions,
   quietCompletion,
   scheduleNoticeEntries,
   tickLabel,
@@ -153,4 +155,57 @@ test("only a scheduled Task's completion is quiet", () => {
   assert.equal(quietCompletion("completed", "t1", scheduled), true);
   assert.equal(quietCompletion("failed", "t1", scheduled), false);
   assert.equal(quietCompletion("completed", "t2", scheduled), false);
+});
+
+function row(overrides) {
+  return {
+    mine: false,
+    status: "active",
+    may_edit: false,
+    may_manage: false,
+    may_resume: false,
+    ...overrides,
+  };
+}
+
+test("a row offers only what the viewer may do", () => {
+  // The Registrant's own active Schedule.
+  assert.deepEqual(
+    scheduleActions(row({ mine: true, may_edit: true, may_manage: true })),
+    { edit: true, pause: true, resume: null, remove: true },
+  );
+  // Someone else's, seen through the Workspace: nothing to change.
+  assert.deepEqual(scheduleActions(row({})), {
+    edit: false,
+    pause: false,
+    resume: null,
+    remove: false,
+  });
+  // An administrator pauses and deletes but never resumes it.
+  assert.deepEqual(
+    scheduleActions(row({ status: "paused", may_manage: true })),
+    { edit: false, pause: false, resume: null, remove: true },
+  );
+  // Waiting for a successor: only the named successor takes it over.
+  assert.equal(
+    scheduleActions(row({ status: "stopped", may_resume: true })).resume,
+    "takeOver",
+  );
+  assert.equal(
+    scheduleActions(row({ status: "stopped", mine: true, may_resume: false }))
+      .resume,
+    null,
+  );
+});
+
+test("a stop names the server's reason when it gave one", () => {
+  assert.equal(
+    haltText(
+      "interval_too_short",
+      "the Tenant's minimum interval is now 120 minutes",
+      false,
+    ),
+    "Stopped: shorter than the Tenant's minimum interval. Change it and resume (the Tenant's minimum interval is now 120 minutes)",
+  );
+  assert.equal(haltText("paused", null, false), "Paused");
 });

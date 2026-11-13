@@ -17,8 +17,9 @@ import {
   formOf,
   formProblems,
   formatTime,
-  haltCopy,
+  haltText,
   patchOf,
+  scheduleActions,
   tickLabel,
   triggerSummary,
   type FormProblem,
@@ -199,11 +200,11 @@ export function SchedulesPanel({
       setBusy(false);
     }
   }
-  const minInterval = limits.data?.limits.min_interval_seconds ?? 900;
+  const minInterval = limits.data?.effective.min_interval_seconds ?? 900;
   return (
     <Panel title={scope.kind === "workspace" ? words.title : words.mine}>
       <Hint>{words.hint}</Hint>
-      {limits.data && <Hint>{words.limits(limits.data.limits)}</Hint>}
+      {limits.data && <Hint>{words.limits(limits.data.effective)}</Hint>}
       {scope.kind === "mine" && administrator && (
         <label className="flex items-center gap-2 text-sm">
           <input
@@ -248,10 +249,10 @@ export function SchedulesPanel({
                 ` · ${words.registrant}: ${schedule.registrant}`}
             </div>
             {schedule.halt && schedule.halt !== "paused" && (
-              <Hint>{haltCopy[schedule.halt][ja ? "ja" : "en"]}</Hint>
+              <Hint>{haltText(schedule.halt, schedule.halt_reason, ja)}</Hint>
             )}
             <div className="flex flex-wrap gap-2">
-              {schedule.mine && schedule.halt !== "registrant_left" && (
+              {scheduleActions(schedule).edit && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -261,7 +262,7 @@ export function SchedulesPanel({
                   {words.edit}
                 </Button>
               )}
-              {schedule.status === "active" ? (
+              {scheduleActions(schedule).pause && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -274,24 +275,25 @@ export function SchedulesPanel({
                 >
                   {words.pause}
                 </Button>
-              ) : (
-                (schedule.mine || schedule.successor !== null) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      void act(() =>
-                        apiFetch(
-                          `/api/schedules/${schedule.id}/resume`,
-                          json({}),
-                        ),
-                      )
-                    }
-                  >
-                    {schedule.mine ? words.resume : words.takeOver}
-                  </Button>
-                )
+              )}
+              {scheduleActions(schedule).resume && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(() =>
+                      apiFetch(
+                        `/api/schedules/${schedule.id}/resume`,
+                        json({}),
+                      ),
+                    )
+                  }
+                >
+                  {scheduleActions(schedule).resume === "resume"
+                    ? words.resume
+                    : words.takeOver}
+                </Button>
               )}
               <Button
                 size="sm"
@@ -305,21 +307,23 @@ export function SchedulesPanel({
               >
                 {words.runNow}
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={busy}
-                onClick={() => {
-                  if (window.confirm(words.confirmDelete))
-                    void act(() =>
-                      apiFetch(`/api/schedules/${schedule.id}`, {
-                        method: "DELETE",
-                      }),
-                    );
-                }}
-              >
-                {words.remove}
-              </Button>
+              {scheduleActions(schedule).remove && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm(words.confirmDelete))
+                      void act(() =>
+                        apiFetch(`/api/schedules/${schedule.id}`, {
+                          method: "DELETE",
+                        }),
+                      );
+                  }}
+                >
+                  {words.remove}
+                </Button>
+              )}
             </div>
             {selected === schedule.id && (
               <ScheduleHistory
