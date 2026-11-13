@@ -1058,3 +1058,177 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
 	d.finish().await;
 }
+
+/// A Schedule runs on its Registrant's Mapping credential, whichever
+/// credential registered it: it keeps firing after the API token it was
+/// registered with expires, and stops only when the Mapping is disabled
+/// (#557, ADR 0134).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_was_registered_with(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::workspaces::services::schedules::pass;
+	// Arrange: Bob, a member, can start an Agent of the Tenant.
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let (tenant, context) = d.tenant_of(&alice, "Team").await;
+	let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
+	let name = aidash_domain::tenancy::TenantName::new(&tenant).unwrap();
+	d.federation.registry.seed(&name).await.unwrap();
+	let mut entries = vec![];
+	for (kind, key, config) in [
+		(
+			"model",
+			"reporter-model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"reporter",
+			json!({"schema_version":1,"model":{"id":"reporter-model","version":"1.0.0"},"instructions":"Report","bindings":[],"remove_default":["compaction"]}),
+		),
+	] {
+		let entry: aidash_server::registry::Entry = serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Schedule fixture"},"schema":{},"config":config})).unwrap();
+		d.federation
+			.registry
+			.register(&name, entry.clone())
+			.await
+			.unwrap();
+		entries.push(entry);
+	}
+	{
+		// The Tenant's Agents may act; the people keep the initial policy.
+		let authorization = aidash_server::authorization::Authorization {
+			pool: d.federation.store.pool.clone(),
+		};
+		let snapshot = authorization.snapshot(&tenant).await.unwrap();
+		let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"fixture-agents","effect":"allow","subjects":{"kinds":["agent"]},"actions":["*"],"resources":{"kinds":["*"]}}));
+		authorization
+			.replace(
+				&tenant,
+				snapshot.revision,
+				serde_json::from_value(bundle).unwrap(),
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+	common::approve_agent(&d.federation, &tenant, &entries[1]).await;
+	// Bob issues an API token through their Mapping and registers with it.
+	let (status, issued) = d
+		.as_person(
+			&bob,
+			"POST",
+			&format!("/api/authorization/{tenant}/credentials"),
+			Some(&bob_context),
+			json!({"subject":"bob"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let token = issued["token"].as_str().unwrap().to_owned();
+	let token_id: Uuid = serde_json::from_value(issued["credential"]["id"].clone()).unwrap();
+	let (status, workspace, _) = d
+		.send(
+			"POST",
+			"/api/workspaces",
+			None,
+			None,
+			Some(&token),
+			json!({"title":"Reports","goal":"Weekly reports"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{workspace}");
+	let workspace = workspace["id"]
+		.as_str()
+		.or(workspace["workspace"]["id"].as_str())
+		.unwrap()
+		.to_owned();
+	let (status, schedule, _) = d
+		.send(
+			"POST",
+			&format!("/api/workspaces/{workspace}/schedules"),
+			None,
+			None,
+			Some(&token),
+			json!({"title":"Weekly","request":"Report","agent":{"id":"reporter","version":"1.0.0"},"trigger":{"kind":"interval","every_seconds":3600}}),
+		)
+		.await;
+	assert_eq!(status, 200, "{schedule}");
+	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	let pool = d.federation.store.pool.fixture_driver().clone();
+	let (credential, mapping_credential): (Uuid, Uuid) = sqlx::query_as(
+		"SELECT s.credential_id, m.credential_id FROM schedules s JOIN dashboard_mappings m ON m.tenant = s.tenant AND m.subject = s.registrant WHERE s.id = $1",
+	)
+	.bind(id)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	// Assert: the Schedule holds Bob's Mapping credential, not the token's.
+	assert_eq!(credential, mapping_credential);
+	assert_ne!(credential, token_id);
+	let make_due = || {
+		let pool = pool.clone();
+		async move {
+			sqlx::query(
+				"UPDATE schedules SET anchor = now() - interval '1 day' - interval '90 seconds', next_scheduled_at = now() - interval '90 seconds', next_fire_at = now() - interval '90 seconds' WHERE id = $1",
+			)
+			.bind(id)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+	};
+	// Act: the token expires, and the tick comes.
+	sqlx::query("UPDATE authorization_credentials SET created_at = now() - interval '2 days', expires_at = now() - interval '1 minute' WHERE id = $1")
+		.bind(token_id)
+		.execute(&pool)
+		.await
+		.unwrap();
+	make_due().await;
+	let fired = pass(&d.federation, chrono::Utc::now()).await.unwrap();
+	// Assert: it fired as Bob.
+	assert_eq!(fired.started.len(), 1, "{fired:?}");
+	assert!(fired.stopped.is_empty(), "{fired:?}");
+	// Act: an administrator disables Bob's Mapping.
+	let (status, mappings) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/tenants/{tenant}/mappings"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{mappings}");
+	let mapping = mappings
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|mapping| mapping["subject"] == "bob")
+		.unwrap()
+		.clone();
+	let (status, body) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!(
+				"/api/tenants/{tenant}/mappings/{}/disable",
+				mapping["id"].as_str().unwrap()
+			),
+			Some(&context),
+			json!({"expected_revision": mapping["revision"]}),
+		)
+		.await;
+	assert!((200..300).contains(&status), "{status}: {body}");
+	// Assert: the Schedule waits for a successor.
+	let halt: Option<String> = sqlx::query_scalar("SELECT halt FROM schedules WHERE id = $1")
+		.bind(id)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+	assert_eq!(halt.as_deref(), Some("registrant_left"));
+	d.finish().await;
+}

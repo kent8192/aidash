@@ -278,10 +278,10 @@ async fn an_agent_registers_for_its_person_and_a_scheduled_run_cannot(
 		"trigger": {"kind": "cron", "expression": "0 9 * * 1-5", "time_zone": "Asia/Tokyo"},
 	});
 	// Act
-	let created = agent_tool(&c.f.store, &run, "schedule_create", input.clone())
+	let created = agent_tool(&c.f.store, &run, "call-1", "schedule_create", input.clone())
 		.await
 		.unwrap();
-	let listed = agent_tool(&c.f.store, &run, "schedule_list", json!({}))
+	let listed = agent_tool(&c.f.store, &run, "call-2", "schedule_list", json!({}))
 		.await
 		.unwrap();
 	// Assert: it acts as the person at the root of the Run's chain.
@@ -318,6 +318,7 @@ async fn an_agent_registers_for_its_person_and_a_scheduled_run_cannot(
 	let reach = agent_tool(
 		&c.f.store,
 		&run,
+		"call-3",
 		"schedule_delete",
 		json!({"schedule_id": foreign["id"], "action": "pause"}),
 	)
@@ -338,13 +339,13 @@ async fn an_agent_registers_for_its_person_and_a_scheduled_run_cannot(
 			.into_iter()
 			.find(|candidate| candidate.task_id == report.started[0])
 			.unwrap();
-	let refused = agent_tool(&c.f.store, &scheduled, "schedule_create", input).await;
+	let refused = agent_tool(&c.f.store, &scheduled, "call-4", "schedule_create", input).await;
 	assert!(
 		matches!(&refused, Err(aidash_server::Error::Invalid(message)) if message.contains("started by a Schedule")),
 		"{refused:?}"
 	);
 	assert!(
-		agent_tool(&c.f.store, &scheduled, "schedule_list", json!({}))
+		agent_tool(&c.f.store, &scheduled, "call-5", "schedule_list", json!({}))
 			.await
 			.is_ok()
 	);
@@ -531,5 +532,192 @@ async fn an_agent_definition_removes_the_schedule_tools(#[future] capability_fix
 		);
 	}
 	assert!(refused.is_err(), "{refused:?}");
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_retried_schedule_tool_call_returns_the_schedule_it_registered(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let input = json!({
+		"title": "Retried digest",
+		"request": "Collect the open questions.",
+		"trigger": {"kind": "interval", "every_seconds": 3600},
+	});
+	// Act: the same tool call arrives twice, as after a lost answer.
+	let first = agent_tool(&c.f.store, &run, "call-a", "schedule_create", input.clone())
+		.await
+		.unwrap();
+	let again = agent_tool(&c.f.store, &run, "call-a", "schedule_create", input.clone())
+		.await
+		.unwrap();
+	let other = agent_tool(&c.f.store, &run, "call-b", "schedule_create", input)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(again["schedule_id"], first["schedule_id"]);
+	assert_ne!(other["schedule_id"], first["schedule_id"]);
+	let registered: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM schedules WHERE title = 'Retried digest'")
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(registered, 2);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_a_schedule_started_cannot_escape_its_mark_by_delegating(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use aidash_server::{
+		authorization::services::execution::Step,
+		tool::{ToolContext, builtins},
+	};
+	// Arrange: the Run's Agent may create and delegate Tasks, and a tick
+	// starts a Run, which a worker leases.
+	let mut c = capability_fixture.await;
+	c.policy["policies"].as_array_mut().unwrap().push(json!({
+		"id": "agents-delegate", "effect": "allow", "subjects": {"any": true},
+		"actions": ["node.use", "workspace.read", "tool.invoke", "task.create", "task.read", "task.delegate", "agent.execute", "registry.read"],
+		"resources": {"kinds": ["*"]}
+	}));
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	let workspace = workspace(&c).await;
+	let schedule = register(&c, workspace, definition("Hourly digest", 3600)).await;
+	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	make_due(&c, id).await;
+	let report = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(report.started.len(), 1, "{report:?}");
+	let marked: bool =
+		sqlx::query_scalar("SELECT scheduled FROM authorization_execution WHERE task_id = $1")
+			.bind(report.started[0])
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(marked, "the tick marks the Run it started");
+	let leased =
+		c.f.store
+			.lease_run(Uuid::new_v4(), 120)
+			.await
+			.unwrap()
+			.unwrap();
+	assert_eq!(leased.task_id, report.started[0]);
+	// The tools see the Run's own authority, as a worker's step holds it.
+	let step = Step::begin(&c.f, &leased).await.unwrap();
+	let ctx = ToolContext {
+		home: step.home(c.f.clone()),
+		store: c.f.store.clone(),
+		run: leased.clone(),
+		scope: TEST_FIXTURE.clone(),
+	};
+	let tools = builtins();
+	let agent = json!({"id": "research", "version": "1.0.0"});
+	// (b) A Task created under the person's own Task, then delegated.
+	let child = tools["task_create"]
+		.invoke(
+			&ctx,
+			json!({"title": "Side work", "description": "Outside the chain", "requirements": {}, "parent_id": c.task}),
+			"escape-create",
+		)
+		.await
+		.unwrap();
+	let child: Uuid = serde_json::from_value(child["id"].clone()).unwrap();
+	tools["task_delegate"]
+		.invoke(
+			&ctx,
+			json!({"task_id": child, "node_id": c.f.config.deployment, "agent": agent}),
+			"escape-delegate-b",
+		)
+		.await
+		.unwrap();
+	// (a) The person's older, unrelated Task, delegated.
+	tools["task_delegate"]
+		.invoke(
+			&ctx,
+			json!({"task_id": c.task, "node_id": c.f.config.deployment, "agent": agent}),
+			"escape-delegate-a",
+		)
+		.await
+		.unwrap();
+	step.commit().await.unwrap();
+	let runs = c.f.store.runs(&TEST_FIXTURE).await.unwrap();
+	let input = json!({
+		"title": "Escaped",
+		"request": "Register myself again.",
+		"trigger": {"kind": "interval", "every_seconds": 3600},
+	});
+	// Act + Assert: neither delegated Run may register a Schedule.
+	for task in [child, c.task] {
+		let delegated = runs
+			.iter()
+			.find(|run| run.task_id == task)
+			.unwrap_or_else(|| panic!("no Run for {task}"));
+		let refused = agent_tool(
+			&c.f.store,
+			delegated,
+			"escape-schedule",
+			"schedule_create",
+			input.clone(),
+		)
+		.await;
+		assert!(
+			matches!(&refused, Err(aidash_server::Error::Invalid(message)) if message.contains("started by a Schedule")),
+			"{task}: {refused:?}"
+		);
+	}
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_raised_minimum_interval_stops_a_schedule_and_says_why(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: an hourly Schedule, then the Tenant asks for two hours at least.
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let schedule = register(&c, workspace, definition("Hourly digest", 3600)).await;
+	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	let (status, limits) = request(
+		&c.app,
+		&c.token,
+		"PUT",
+		"/api/schedules/limits",
+		json!({"max_schedules": 50, "max_per_person": 10, "min_interval_seconds": 7200}),
+	)
+	.await;
+	assert_eq!(status, 200, "{limits}");
+	assert_eq!(limits["effective"]["min_interval_seconds"], 7200);
+	make_due(&c, id).await;
+	// Act
+	let report = pass(&c.f, Utc::now()).await.unwrap();
+	// Assert: stopped with a notice naming the new minimum, not skipped forever.
+	assert!(report.started.is_empty(), "{report:?}");
+	assert_eq!(halt(&c, id).await.as_deref(), Some("interval_too_short"));
+	let recorded = ticks(&c, id).await;
+	assert_eq!(recorded.len(), 1, "{recorded:?}");
+	assert_eq!(recorded[0].0, "skipped");
+	let (status, notices) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		"/api/schedules/notices",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{notices}");
+	assert_eq!(notices["stopped"][0]["halt"], "interval_too_short");
+	assert!(
+		notices["stopped"][0]["halt_reason"]
+			.as_str()
+			.is_some_and(|reason| reason.contains("120 minutes")),
+		"{notices}"
+	);
 	c.close().await;
 }

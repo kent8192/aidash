@@ -120,6 +120,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0120_event_waits"),
 	("execution", "0121_invocation_refused"),
 	("execution", "0122_invocation_refused_state"),
+	("execution", "0123_generation_scheduled"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -138,6 +139,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0120_event_waits"),
 	("execution", "0121_invocation_refused"),
 	("execution", "0122_invocation_refused_state"),
+	("execution", "0123_generation_scheduled"),
 ];
 
 async fn history_size() -> usize {
@@ -447,14 +449,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0123_policy_probe")
+		.get_migration("execution", "0124_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0122_invocation_refused_state".to_owned()
+			"0123_generation_scheduled".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -506,6 +508,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0120_event_waits"),
 			("execution", "0121_invocation_refused"),
 			("execution", "0122_invocation_refused_state"),
+			("execution", "0123_generation_scheduled"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
