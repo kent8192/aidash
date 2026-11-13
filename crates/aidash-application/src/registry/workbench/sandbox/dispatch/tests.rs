@@ -63,6 +63,7 @@ impl Repository {
 	}
 	fn dispatch(&self) -> Dispatch<'_> {
 		Dispatch {
+			approval: None,
 			repository: self,
 			configuration: self,
 			transport: self,
@@ -245,6 +246,26 @@ impl SandboxScope for Scope<'_> {
 	}
 	async fn stop(&mut self, _: Uuid) -> Result<TestSession> {
 		panic!("dispatch must not stop sessions")
+	}
+	fn approver(&self) -> Option<crate::ports::registry::workbench::sandbox::Approver> {
+		Some(crate::ports::registry::workbench::sandbox::Approver {
+			subject: "owner".into(),
+			person: None,
+		})
+	}
+	async fn approval_policy(&mut self) -> Result<aidash_domain::policy::PolicyBundle> {
+		self.repository
+			.state
+			.lock()
+			.unwrap()
+			.order
+			.push("approval_policy".into());
+		// A policy that lets the owner make the call needs no answer.
+		if self.repository.failing("test_approval") {
+			Err(Error::Forbidden)
+		} else {
+			Ok(serde_json::from_value(json!({"tenant":"tenant","subjects":{"owner":{"kind":"user"}},"policies":[{"id":"call","effect":"allow","subjects":{"ids":["owner"]},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})).unwrap())
+		}
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		let mut state = self.repository.state.lock().unwrap();
@@ -483,16 +504,16 @@ async fn pending_is_durable_before_send_and_current_leases_cover_result(
 	assert_eq!(
 		state.order,
 		[
-			"session_update_lock",
 			"identity_lock",
+			"session_update_lock",
 			"draft_update_lock",
 			"current_authority",
 			"profile_share_lock",
 			"effective_tool",
 			"persist_pending",
 			"commit",
-			"session_update_lock",
 			"identity_lock",
+			"session_update_lock",
 			"draft_update_lock",
 			"current_authority",
 			"profile_share_lock",
@@ -581,6 +602,36 @@ async fn changed_authority_after_marker_records_denial_without_sending(
 	assert_eq!(state.calls.as_ref().unwrap()[1]["outcome"], "denied");
 	assert_eq!(state.calls.as_ref().unwrap()[1]["error"], error.to_string());
 	assert!(!state.active);
+}
+
+#[tokio::test]
+async fn revoked_test_approval_before_dispatch_never_sends_the_call() {
+	use crate::ports::registry::workbench::sandbox::execution::TestApproval;
+	let mut repository = Repository::new();
+	repository.failure = Some((2, "test_approval"));
+	let approval = TestApproval {
+		call: call(),
+		resource: aidash_domain::policy::Resource {
+			tenant: "tenant".into(),
+			kind: "tool".into(),
+			id: "tool".into(),
+			attributes: json!({}),
+		},
+		action: "tool.call_unapproved",
+		requires_approval: true,
+	};
+	let dispatch = Dispatch {
+		approval: Some(&approval),
+		..repository.dispatch()
+	};
+	assert!(
+		invoke(&dispatch, session().id, &pin(), &rule(), &call())
+			.await
+			.is_err()
+	);
+	let state = repository.state.lock().unwrap();
+	assert_eq!(state.sent, 0);
+	assert_eq!(state.calls.as_ref().unwrap()[1]["outcome"], "denied");
 }
 #[tokio::test]
 async fn transport_error_preserves_unknown_durable_outcome() {
