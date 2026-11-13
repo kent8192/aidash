@@ -46,6 +46,17 @@ pub struct Revoke {
 
 use uuid::Uuid;
 
+/// How an approval that someone else decided first was decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecidedOutcome {
+	Allowed,
+	Denied,
+}
+
+/// Whether `subject` is an Eligible approver of what `evaluation` names: an
+/// enabled person whom the Tenant's policy lets approve it, and who is its
+/// requester or holds `capability_approver`.
 pub fn approver_eligible(bundle: &PolicyBundle, evaluation: &Evaluation, requester: &str) -> bool {
 	bundle
 		.subjects
@@ -109,10 +120,12 @@ pub fn workbench_policy(bundle: &PolicyBundle) -> PolicyBundle {
 	});
 	scoped
 }
-pub fn requested_state(direct: bool, grant: bool, designated: bool) -> &'static str {
+/// The state of a new approval: `approvable` says whether any Eligible
+/// approver may decide it now.
+pub fn requested_state(direct: bool, grant: bool, approvable: bool) -> &'static str {
 	if direct || grant {
 		"approved"
-	} else if designated {
+	} else if approvable {
 		"pending"
 	} else {
 		"blocked"
@@ -125,7 +138,7 @@ pub fn projection(record: &Record, expired: bool) -> Value {
 		"approved" | "attempted" => "running",
 		other => other,
 	};
-	json!({"operation_id":record.id,"approval_id":record.id,"status":status,"approval_state":if expired&&record.state=="pending"{"expired"}else{&record.state},"approval_revision":record.revision,"targets":record.data["targets"],"approver":record.data["approver"],"expires_at":record.expires_at,"grant_id":record.data["grant_id"],"effects_may_have_occurred":record.data["attempted_at"].is_string(),"error":record.data["error"]})
+	json!({"operation_id":record.id,"approval_id":record.id,"status":status,"approval_state":if expired&&record.state=="pending"{"expired"}else{&record.state},"approval_revision":record.revision,"targets":record.data["targets"],"decided_by":record.data["decided_by"],"expires_at":record.expires_at,"grant_id":record.data["grant_id"],"effects_may_have_occurred":record.data["attempted_at"].is_string(),"error":record.data["error"]})
 }
 
 #[cfg(test)]

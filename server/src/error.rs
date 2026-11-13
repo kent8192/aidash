@@ -24,6 +24,12 @@ pub enum Error {
 	Invalid(String),
 	#[error("{0}")]
 	Conflict(String),
+	/// Someone else decided the approval first (ADR 0135); 409 naming who and how.
+	#[error("APPROVAL_ALREADY_DECIDED")]
+	ApprovalDecided {
+		decided_by: String,
+		outcome: aidash_domain::capabilities::approvals::DecidedOutcome,
+	},
 	#[error("{0}")]
 	NotFound(String),
 	/// Federation with other Deployments is off or has no key (503).
@@ -136,6 +142,7 @@ impl Error {
 				tracing::debug!(reason = s, "request conflicts with current state");
 				(StatusCode::CONFLICT, s.clone())
 			}
+			Self::ApprovalDecided { .. } => (StatusCode::CONFLICT, self.to_string()),
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
@@ -258,6 +265,15 @@ impl Error {
 			Self::NodeUnreachable { node, .. } => {
 				json!({"error": message, "code": "node_unreachable", "node": node})
 			}
+			Self::ApprovalDecided {
+				decided_by,
+				outcome,
+			} => json!({
+				"error": message,
+				"code": "approval_already_decided",
+				"decided_by": decided_by,
+				"outcome": outcome,
+			}),
 			_ => json!({"error": message}),
 		};
 		if let Self::RunHidden(block) | Self::ResumeBlocked(block) = &self {
@@ -443,6 +459,13 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Json(error) => Self::Json(error),
 			ApplicationError::Invalid(message) => Self::Invalid(message),
 			ApplicationError::Conflict(message) => Self::Conflict(message),
+			ApplicationError::ApprovalDecided {
+				decided_by,
+				outcome,
+			} => Self::ApprovalDecided {
+				decided_by,
+				outcome,
+			},
 			ApplicationError::NotFound(message) => Self::NotFound(message),
 			ApplicationError::Unprocessable(message) => Self::Unprocessable(message),
 			ApplicationError::FederationDisabled => Self::FederationDisabled,
@@ -526,6 +549,13 @@ impl From<Error> for aidash_application::Error {
 			Error::Connection(cause) => Self::Connection(cause),
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
+			Error::ApprovalDecided {
+				decided_by,
+				outcome,
+			} => Self::ApprovalDecided {
+				decided_by,
+				outcome,
+			},
 			Error::NotFound(message) => Self::NotFound(message),
 			Error::Unprocessable(message) => Self::Unprocessable(message),
 			Error::FederationDisabled => Self::FederationDisabled,

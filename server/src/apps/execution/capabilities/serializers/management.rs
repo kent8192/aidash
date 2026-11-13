@@ -27,7 +27,6 @@ pub struct ApprovalCard {
 	pub state: String,
 	pub revision: i64,
 	pub requester: String,
-	pub approver: Option<String>,
 	pub targets: Vec<String>,
 	pub action: String,
 	pub expires_at: Option<DateTime<Utc>>,
@@ -36,10 +35,12 @@ pub struct ApprovalCard {
 	/// would leave the Node.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub disclosure: Option<String>,
-	/// Whether the reader is the approver this card is addressed to.
+	/// Whether the reader acts on this card as an Eligible approver: for a
+	/// pending approval, they may decide it now (ADR 0135); for anything else,
+	/// they may approve its kind for its destination now, so may revoke it.
 	pub viewer_is_approver: bool,
-	/// The card is a pending outbound, disclosure or tool call approval whose
-	/// designated approver is the reader and the person at the root of the
+	/// The card is a pending outbound, disclosure or tool call approval that
+	/// the reader decides as its requester and the person at the root of the
 	/// Run's delegation chain, so the Thread may offer it inline.
 	pub viewer_can_decide_inline: bool,
 	pub agent_id: Option<String>,

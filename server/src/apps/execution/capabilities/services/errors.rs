@@ -31,10 +31,18 @@ impl reinhardt::http::Middleware for CapabilityErrors {
 		if response.status.is_client_error() || response.status.is_server_error() {
 			let value: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
 			let text = String::from_utf8_lossy(&response.body);
-			let error = CapabilityError::message(
+			let mut error = CapabilityError::message(
 				response.status.as_u16(),
 				value["error"].as_str().unwrap_or(&text),
 			);
+			// A decision that came too late says who decided first and how
+			// (ADR 0135).
+			if value["code"] == "approval_already_decided" {
+				error.details = Some(json!({
+					"decided_by": value["decided_by"],
+					"outcome": value["outcome"],
+				}));
+			}
 			response.body = serde_json::to_vec(&json!({"error":error}))?.into();
 			response.headers.insert(
 				http::header::CONTENT_TYPE,
