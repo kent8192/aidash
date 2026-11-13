@@ -171,8 +171,39 @@ const thread: Card[] = [
 
 async function research(
   page: Page,
-  { admittedPageReading = true, nextVersionWithoutResearch = false } = {},
+  {
+    admittedPageReading = true,
+    nextVersionWithoutResearch = false,
+    inlineApprovals = false,
+    inboxBehind = false,
+  } = {},
 ) {
+  const pendingCards = pending.map((item) => ({ ...item }));
+  const grantCards = grants.map((item) => ({ ...item }));
+  const inlineCards = [
+    Object.assign(pendingCards[0], { viewer_can_decide_inline: true }),
+    {
+      ...pendingCards[0],
+      id: "outbound",
+      kind: "outbound",
+      action: "network.get",
+      viewer_can_decide_inline: true,
+    },
+    {
+      ...pendingCards[0],
+      id: "tool-call",
+      kind: "tool_call",
+      action: "tool.call_unapproved",
+      tool: "fixture",
+      viewer_can_decide_inline: true,
+    },
+    {
+      ...pendingCards[2],
+      id: "other-thread",
+      area_id: "area-other",
+      viewer_can_decide_inline: true,
+    },
+  ];
   const fixture = await setup(page, { subject: true, coreCapabilities: true });
   await page.goto("/collaboration?channel=workspace-one");
   const data = await page.evaluate(() =>
@@ -375,11 +406,24 @@ async function research(
     if (path === "/api/capabilities/approvals") {
       const state = url.searchParams.get("state");
       const role = url.searchParams.get("role");
+      if (inlineApprovals && state === "pending" && role === "approver") {
+        // The shell inbox polls less often than the Thread's list, so it may
+        // not have the card yet when the list first shows it.
+        if (inboxBehind) return send({ items: [], next_cursor: null });
+        return url.searchParams.has("cursor")
+          ? send({ items: inlineCards.slice(1), next_cursor: null })
+          : send({ items: [inlineCards[0]], next_cursor: "page-2" });
+      }
+      if (inlineApprovals && !state && !role) {
+        return url.searchParams.has("cursor")
+          ? send({ items: inlineCards.slice(1), next_cursor: null })
+          : send({ items: [thread[0], inlineCards[0]], next_cursor: "page-2" });
+      }
       const items =
         role === "approver"
           ? state === "pending"
-            ? pending.filter((item) => item.state === "pending")
-            : grants.filter((item) => item.state === "active")
+            ? pendingCards.filter((item) => item.state === "pending")
+            : grantCards.filter((item) => item.state === "active")
           : state === "pending"
             ? thread.filter((item) => item.state === "pending")
             : thread;
@@ -391,7 +435,7 @@ async function research(
         path,
       );
       if (decided) {
-        const card = pending.find((item) => item.id === decided[1])!;
+        const card = pendingCards.find((item) => item.id === decided[1])!;
         card.state = body.choice === "deny" ? "denied" : "approved";
         return send({
           approval_id: card.id,
@@ -404,7 +448,7 @@ async function research(
         path,
       );
       if (revoked) {
-        grants.find((item) => item.id === revoked[1])!.state = "revoked";
+        grantCards.find((item) => item.id === revoked[1])!.state = "revoked";
         return send({
           id: revoked[1],
           state: "revoked",
@@ -426,6 +470,79 @@ async function research(
   });
   return { ...fixture, calls };
 }
+
+test("a requester-approver decides their Run's approval in the Thread", async ({
+  page,
+}) => {
+  const { calls } = await research(page, { inlineApprovals: true });
+  await openThread(page);
+  const inline = page.getByRole("region", {
+    name: "Approvals for this Thread",
+  });
+  await expect(inline.getByRole("article")).toHaveCount(3);
+  await expect(
+    inline.getByRole("article", { name: "Outbound request" }),
+  ).toBeVisible();
+  await expect(
+    inline.getByRole("article", { name: "Tool call approval" }),
+  ).toBeVisible();
+  await expect(inline).toContainText("rust release");
+  const work = page.getByRole("heading", { name: "Agent work" }).locator("..");
+  const waiting = work
+    .getByRole("article", { name: "Page reading disclosure" })
+    .filter({ hasText: "Awaiting a decision" });
+  await expect(waiting).toHaveCount(1);
+  await expect(waiting).toContainText("Approver: bob");
+  await expect(waiting.getByRole("button", { name: /Allow|Deny/ })).toHaveCount(
+    0,
+  );
+  await work.getByRole("button", { name: "Load more" }).click();
+  for (const name of [
+    "Web search disclosure",
+    "Outbound request",
+    "Tool call approval",
+  ]) {
+    await expect(work.getByRole("article", { name })).toHaveCount(1);
+  }
+  await inline
+    .getByRole("article", { name: "Web search disclosure" })
+    .getByRole("button", { name: "Allow once" })
+    .click();
+  await expect
+    .poll(
+      () =>
+        calls.find(
+          (call) =>
+            call.path === "/api/capabilities/approvals/disclose-search/decide",
+        )?.body.choice,
+    )
+    .toBe("allow_once");
+  await expect(
+    inline.getByRole("article", { name: "Web search disclosure" }),
+  ).toHaveCount(0);
+});
+
+test("a card the Thread list sees before the inbox is offered inline at once", async ({
+  page,
+}) => {
+  await research(page, { inlineApprovals: true, inboxBehind: true });
+  await openThread(page);
+  const inline = page.getByRole("region", {
+    name: "Approvals for this Thread",
+  });
+  await expect(
+    inline.getByRole("article", { name: "Web search disclosure" }),
+  ).toBeVisible();
+  const list = page
+    .locator("details")
+    .filter({ has: page.getByText(/^Approvals and grants/) });
+  await expect(
+    list.getByRole("article", { name: "Page reading disclosure" }),
+  ).toHaveCount(1);
+  await expect(
+    list.getByRole("article", { name: "Web search disclosure" }),
+  ).toHaveCount(0);
+});
 
 async function openThread(page: Page) {
   await page.goto("/collaboration?channel=workspace-one");
@@ -660,8 +777,14 @@ test("an approver decides Web disclosures and revokes Run grants from the global
     .toBe(true);
   await page.keyboard.press("Escape");
 
-  // The requester's Thread shows denied and expired disclosures as such; its
-  // list is open because one disclosure is still waiting.
+  // The Thread retains the pending status and decided history.
+  const bobWaiting = page
+    .getByRole("article", { name: "Page reading disclosure" })
+    .filter({ hasText: "Awaiting a decision" });
+  await expect(bobWaiting).toBeVisible();
+  await expect(
+    bobWaiting.getByRole("button", { name: /Allow|Deny/ }),
+  ).toHaveCount(0);
   await expect(
     page.getByText("Denied by bob at", { exact: false }),
   ).toBeVisible();

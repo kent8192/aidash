@@ -462,8 +462,8 @@ async function createGenerationScenario(
     await expect
       .poll(
         async () =>
-          (await api(`${semanticRoot}/entries`, undefined, credential.token))[0]
-            .state,
+          (await api(`${semanticRoot}/entries`, undefined, credential.token))
+            .entries[0]?.state,
       )
       .toBe("READY");
     const assign = async (title: string) => {

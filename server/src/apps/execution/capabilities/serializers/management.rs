@@ -38,6 +38,10 @@ pub struct ApprovalCard {
 	pub disclosure: Option<String>,
 	/// Whether the reader is the approver this card is addressed to.
 	pub viewer_is_approver: bool,
+	/// The card is a pending outbound, disclosure or tool call approval whose
+	/// designated approver is the reader and the person at the root of the
+	/// Run's delegation chain, so the Thread may offer it inline.
+	pub viewer_can_decide_inline: bool,
 	pub agent_id: Option<String>,
 	pub agent_version: Option<String>,
 	/// For a Tool call approval, or a Run grant from one, the Tenant's tool and
