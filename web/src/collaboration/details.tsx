@@ -29,7 +29,9 @@ import {
   runMessage,
   channelAttachmentUpload,
   humanAnswer,
+  humanRequests,
   taskAbandon,
+  taskRuns as taskRunPage,
 } from "../generated/aidash";
 import type {
   Artifact,
@@ -128,9 +130,30 @@ export function OperationsDialog({
     taskSnapshot.isError || !taskSnapshot.data
       ? undefined
       : taskSnapshot.data.tasks.find((value) => value.id === d.task?.id);
-  const request = data.human_requests.find(
+  const pendingRequest = data.human_requests.find(
     (value) => value.id === d.request?.id,
   );
+  const requestDetail = useQuery({
+    queryKey: ["human-request", d.request?.run_id, d.request?.id],
+    enabled: Boolean(d.kind === "human" && d.request && !pendingRequest),
+    queryFn: async ({ signal }) => {
+      let cursor: string | null = null;
+      do {
+        const page = await humanRequests(
+          { run: d.request!.run_id, state: "all", cursor },
+          { signal },
+        );
+        const match = page.items.find((item) => item.id === d.request!.id);
+        if (match) return match;
+        cursor = page.next_cursor;
+      } while (cursor);
+      return null;
+    },
+    retry: false,
+  });
+  const request =
+    pendingRequest ??
+    (requestDetail.isError ? undefined : (requestDetail.data ?? undefined));
   const continues = request ? continuesAt(request) : null;
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
@@ -145,6 +168,20 @@ export function OperationsDialog({
         (run) => run.task_id === task.id && isLocalRun(run, data),
       )
     : [];
+  const started = useQuery({
+    queryKey: ["task-has-runs", task?.id, task?.revision],
+    enabled: task?.status === "OPEN",
+    queryFn: async ({ signal }) => {
+      let cursor: string | null = null;
+      do {
+        const page = await taskRunPage(task!.id, { cursor }, { signal });
+        if (page.items.length) return true;
+        cursor = page.next_cursor;
+      } while (cursor);
+      return false;
+    },
+    retry: false,
+  });
   return (
     <Modal
       title={
@@ -355,7 +392,12 @@ export function OperationsDialog({
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  {abandonable(task, taskRuns) && (
+                  {abandonable(
+                    task,
+                    task.status === "OPEN" && started.data !== false
+                      ? [true]
+                      : [],
+                  ) && (
                     <form
                       className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {
@@ -381,6 +423,13 @@ export function OperationsDialog({
                         </Button>
                       </div>
                     </form>
+                  )}
+                  {data.next_cursors.runs && (
+                    <p className="text-xs text-faint">
+                      {locale === "ja-JP"
+                        ? "以前の実行があります"
+                        : "Older runs exist"}
+                    </p>
                   )}
                   {taskRuns.length > 0 && (
                     <Panel title={t("execution")}>

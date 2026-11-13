@@ -29,6 +29,15 @@ pub async fn task_list(
 	crate::http::json(service.task_list(actor, page).await)
 }
 
+#[get("/api/workspaces", name = "workspace-list", auth = "protected")]
+pub async fn workspace_list(
+	#[inject] service: Depends<crate::apps::execution::services::management::HarnessManagement>,
+	#[inject] actor: Actor,
+	Query(query): Query<crate::apps::execution::serializers::state::WorkspacePageQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.workspace_page(actor, query).await)
+}
+
 #[post("/api/workspaces", name = "workspace-create", auth = "protected")]
 pub async fn workspace_create(
 	#[inject] service: Depends<CollaborationManagement>,

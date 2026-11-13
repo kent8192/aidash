@@ -18,7 +18,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { state as getState, session as getSession } from "./generated/aidash";
+import { session as getSession, workspaceGet } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
 import { AdministratorTenantNotice } from "./administrator-notice";
@@ -27,6 +27,7 @@ import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
   sessionFetch,
+  authenticatedFetch,
   signIn,
   signOut,
   dashboardContext,
@@ -45,6 +46,31 @@ const Configuration = lazy(() =>
   })),
 );
 
+import type { TenantState, HumanRequest, Workspace } from "./types";
+import {
+  continuation,
+  emptyPages,
+  mergeWindow,
+  olderRows,
+  uniqueById,
+  type WindowPages,
+} from "./window-pages";
+
+const noWorkspaces: Workspace[] = [];
+
+/** One page of a Node's pending Human Requests (`GET /api/human-requests`). */
+async function readHumanPage(
+  node: string | undefined,
+  cursor: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ cursor });
+  if (node) params.set("node", node);
+  return (await (
+    await authenticatedFetch(`/api/human-requests?${params}`, { signal })
+  ).json()) as { items: HumanRequest[]; next_cursor: string | null };
+}
+const noHumanRequests: HumanRequest[] = [];
 import type { Selection } from "./collaboration/details";
 const OperationsDialog = lazy(() =>
   import("./collaboration/details").then((module) => ({
@@ -298,12 +324,6 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 5000,
   });
-  const state = useQuery({
-    queryKey: ["state"],
-    queryFn: () => getState(),
-    enabled: connected,
-    refetchInterval: 5000,
-  });
   // A Deployment Administrator's role grants no Tenant content authority
   // (ADR 0102): the server refuses Tenant content routes and event streams in
   // this context, so the dashboard does not ask for them.
@@ -323,10 +343,230 @@ function Dashboard({
       (mapping) => mappingContext(mapping) === context,
     )?.tenant ?? null;
   const remembered = useNodeSelection(subjectTenant ?? mappedTenant);
-  // State lists every Node of the Tenant; the dashboard works in one: the Node
-  // of the open Workspace, whichever way it was reached, and otherwise the
-  // Node this browser remembers.
-  const everything = state.isError ? undefined : state.data;
+  const nodeGeneration = useRef(0);
+  useEffect(() => {
+    nodeGeneration.current += 1;
+  }, [remembered.selected?.name]);
+  const state = useQuery({
+    queryKey: ["state", remembered.selected?.name],
+    queryFn: async (): Promise<TenantState> => {
+      const params = new URLSearchParams();
+      if (remembered.selected?.name)
+        params.set("node", remembered.selected.name);
+      const result = (await (
+        await authenticatedFetch(`/api/state?${params}`)
+      ).json()) as TenantState;
+      return result;
+    },
+    enabled: connected && (administratorContext || !remembered.pending),
+    refetchInterval: 60_000,
+  });
+  // "Show more" pages beyond the Workspace and pending Human Request windows
+  // of `/api/state` (#664) belong to one Node: a refresh merges them with the
+  // fresh window instead of dropping them, and only a Node change resets them.
+  const pagesKey = `${context ?? ""}:${remembered.selected?.name ?? ""}`;
+  const [workspacePages, setWorkspacePages] = useState<WindowPages<Workspace>>(
+    () => emptyPages(""),
+  );
+  const workspacePage =
+    workspacePages.key === pagesKey
+      ? workspacePages
+      : emptyPages<Workspace>(pagesKey);
+  const workspaceWindowCursor = state.data?.next_cursors.workspaces ?? null;
+  const olderWorkspaces =
+    (workspacePages.key === pagesKey &&
+      olderRows(workspacePages, workspaceWindowCursor)) ||
+    noWorkspaces;
+  const workspaceCursor = continuation(workspacePage, workspaceWindowCursor);
+  const loadMoreWorkspaces = async () => {
+    if (!workspaceCursor || workspacePage.loading) return;
+    const key = pagesKey;
+    const read = workspacePage.read;
+    setWorkspacePages({ ...workspacePage, loading: true, error: false });
+    try {
+      const params = new URLSearchParams({ cursor: workspaceCursor });
+      if (remembered.selected?.name)
+        params.set("node", remembered.selected.name);
+      const page = (await (
+        await authenticatedFetch(`/api/workspaces?${params}`)
+      ).json()) as { items: Workspace[]; next_cursor: string | null };
+      setWorkspacePages((old) =>
+        old.key !== key
+          ? old
+          : old.read !== read
+            ? { ...old, loading: false }
+            : {
+                ...old,
+                items: uniqueById([...old.items, ...page.items]),
+                read: read + 1,
+                cursor: page.next_cursor,
+                loading: false,
+              },
+      );
+    } catch {
+      setWorkspacePages((old) =>
+        old.key === key ? { ...old, loading: false, error: true } : old,
+      );
+    }
+  };
+  const [humanPages, setHumanPages] = useState<WindowPages<HumanRequest>>(() =>
+    emptyPages(""),
+  );
+  const humanPage =
+    humanPages.key === pagesKey
+      ? humanPages
+      : emptyPages<HumanRequest>(pagesKey);
+  const humanWindowCursor = state.data?.next_cursors.human_requests ?? null;
+  const olderHumans =
+    (humanPages.key === pagesKey && olderRows(humanPages, humanWindowCursor)) ||
+    noHumanRequests;
+  const humanCursor = continuation(humanPage, humanWindowCursor);
+  const humanLoading = humanPage.loading;
+  const humanError = humanPage.error;
+  // Pages "show more" asked for in this Node, one in flight included; a
+  // refresh re-reads that many (see below).
+  const humanDepth = useRef({ key: "", depth: 0 });
+  const loadOlderHumans = async () => {
+    if (!humanCursor || humanLoading) return;
+    const key = pagesKey;
+    const { read, cursor } = humanPage;
+    // The depth counts this page at once, so a refresh that re-reads the
+    // pages while it is in flight reads it too.
+    humanDepth.current = { key, depth: read + 1 };
+    setHumanPages({ ...humanPage, loading: true, error: false });
+    try {
+      const page = await readHumanPage(remembered.selected?.name, humanCursor);
+      setHumanPages((old) =>
+        old.key !== key
+          ? old
+          : old.read !== read || old.cursor !== cursor
+            ? { ...old, loading: false }
+            : {
+                ...old,
+                items: uniqueById([...old.items, ...page.items]),
+                read: read + 1,
+                cursor: page.next_cursor,
+                loading: false,
+              },
+      );
+    } catch {
+      setHumanPages((old) =>
+        old.key === key ? { ...old, error: true, loading: false } : old,
+      );
+    }
+  };
+  // The pending list is how the dashboard learns that a request was answered:
+  // a request leaves it once answered. Every fresh window therefore re-reads
+  // as many older pages as were loaded, starting at the window's own cursor,
+  // and replaces the old ones, so answered requests drop out and requests
+  // that slid out of the newest window are not skipped.
+  const selectedNode = remembered.selected?.name;
+  useEffect(() => {
+    const key = pagesKey;
+    const { depth } =
+      humanDepth.current.key === key ? humanDepth.current : { depth: 0 };
+    if (!state.dataUpdatedAt || depth === 0) return;
+    const controller = new AbortController();
+    void (async () => {
+      const items: HumanRequest[] = [];
+      let cursor = humanWindowCursor;
+      let read = 0;
+      try {
+        while (cursor && read < depth) {
+          const page = await readHumanPage(
+            selectedNode,
+            cursor,
+            controller.signal,
+          );
+          items.push(...page.items);
+          cursor = page.next_cursor;
+          read += 1;
+        }
+      } catch {
+        if (!controller.signal.aborted)
+          setHumanPages((old) =>
+            old.key === key ? { ...old, error: true } : old,
+          );
+        return;
+      }
+      if (controller.signal.aborted) return;
+      setHumanPages((old) =>
+        old.key === key
+          ? { ...old, items: uniqueById(items), read, cursor, error: false }
+          : old,
+      );
+    })();
+    return () => controller.abort();
+    // A fresh window, not each render, starts a re-read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.dataUpdatedAt, pagesKey, selectedNode]);
+  // State is scoped to the selected Node.
+  const projected = useMemo(() => {
+    const fresh = state.isError ? undefined : state.data;
+    if (!fresh) return fresh;
+    return {
+      ...fresh,
+      workspaces: mergeWindow(fresh.workspaces, olderWorkspaces),
+      next_cursors: {
+        ...fresh.next_cursors,
+        workspaces: workspaceCursor,
+        human_requests: humanCursor,
+      },
+    };
+  }, [
+    state.isError,
+    state.data,
+    olderWorkspaces,
+    workspaceCursor,
+    humanCursor,
+  ]);
+  const selectedWorkspace = useQuery({
+    queryKey: ["workspace", route.channel],
+    queryFn: () => workspaceGet(route.channel),
+    enabled: Boolean(
+      projected &&
+        route.channel &&
+        !projected.workspaces.some((row) => row.id === route.channel),
+    ),
+  });
+  useEffect(() => {
+    const workspace = selectedWorkspace.data?.workspace;
+    if (
+      workspace &&
+      workspace.id === route.channel &&
+      workspace.node !== remembered.selected?.name &&
+      remembered.nodes.some((node) => node.name === workspace.node)
+    ) {
+      remembered.select(workspace.node);
+    }
+  }, [selectedWorkspace.data, route.channel, remembered]);
+  const everything = useMemo(() => {
+    const snapshot = selectedWorkspace.data;
+    if (
+      !projected ||
+      !snapshot ||
+      snapshot.workspace.node !== remembered.selected?.name ||
+      projected.workspaces.some((row) => row.id === snapshot.workspace.id)
+    )
+      return projected;
+    return {
+      ...projected,
+      workspaces: [...projected.workspaces, snapshot.workspace],
+      tasks: [
+        ...new Map(
+          [...projected.tasks, ...snapshot.tasks].map((row) => [row.id, row]),
+        ).values(),
+      ],
+      artifacts: [
+        ...new Map(
+          [...projected.artifacts, ...snapshot.artifacts].map((row) => [
+            row.id,
+            row,
+          ]),
+        ).values(),
+      ],
+    };
+  }, [projected, selectedWorkspace.data, remembered.selected?.name]);
   const channelNode = route.channel
     ? everything?.workspaces.find((value) => value.id === route.channel)?.node
     : undefined;
@@ -338,8 +578,14 @@ function Dashboard({
     [remembered, current],
   );
   const nodeState = useMemo(
-    () => (everything ? nodeView(everything, current) : undefined),
-    [everything, current],
+    () =>
+      everything
+        ? {
+            ...nodeView(everything, current),
+            human_requests: mergeWindow(everything.human_requests, olderHumans),
+          }
+        : undefined,
+    [everything, current, olderHumans],
   );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
@@ -555,34 +801,38 @@ function Dashboard({
   }, [browserSessionId, client]);
   useEffect(() => {
     if (!connected) return;
-    if (administratorContext) return;
     const controller = new AbortController();
     const refresher = coalescedRefresh(client);
+    const onFocus = () => refresher.refresh("state");
+    window.addEventListener("focus", onFocus);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    void subscribe(
-      controller.signal,
-      () => {
-        if (timer) return;
-        timer = setTimeout(() => {
-          for (const key of [
-            "state",
-            "workspace",
-            "channel-history",
-            "run",
-            "marketplace",
-            "generation",
-            "provider-credentials",
-            "provider-credential-bindings",
-            "scratch-space",
-          ]) {
-            refresher.refresh(key);
-          }
-          timer = undefined;
-        }, 250);
-      },
-      setStreamStatus,
-    );
+    if (!administratorContext)
+      void subscribe(
+        controller.signal,
+        () => {
+          if (timer) return;
+          timer = setTimeout(() => {
+            for (const key of [
+              "state",
+              "human-request",
+              "workspace",
+              "channel-history",
+              "run",
+              "marketplace",
+              "generation",
+              "provider-credentials",
+              "provider-credential-bindings",
+              "scratch-space",
+            ]) {
+              refresher.refresh(key);
+            }
+            timer = undefined;
+          }, 250);
+        },
+        setStreamStatus,
+      );
     return () => {
+      window.removeEventListener("focus", onFocus);
       controller.abort();
       refresher.close();
       clearTimeout(timer);
@@ -804,9 +1054,8 @@ function Dashboard({
   const runs = data
     ? data.runs.map((run) => ({ run, node: data.node.id }))
     : [];
-  // What awaits the person is Tenant-wide: a request in another Node's
-  // Workspace is as pending as one in the selected Node's.
-  const requests = (everything?.human_requests ?? []).map((request) => {
+  // The queue includes the selected Node's pending requests.
+  const requests = (data?.human_requests ?? []).map((request) => {
     const owner = everything?.workspaces.find(
       (value) => value.id === request.workspace_id,
     );
@@ -815,6 +1064,7 @@ function Dashboard({
       request,
       node:
         nodes.nodes.find((value) => value.name === owner?.node)?.address ??
+        current?.address ??
         everything?.deployment.id ??
         "",
       workspace:
@@ -823,7 +1073,7 @@ function Dashboard({
           : title,
     };
   });
-  const visit = (target: NoticeTarget) => {
+  const visit = async (target: NoticeTarget) => {
     // An approval is decided in the decision queue, where its card lives.
     if (target.kind === "approval") return setQueueOpen(true);
     const item =
@@ -833,14 +1083,54 @@ function Dashboard({
               item.request.id === target.id && item.request.response === null,
           )
         : undefined;
-    const task =
+    let task =
       target.kind === "task"
         ? everything?.tasks.find((task) => task.id === target.id)
         : undefined;
-    const owner = everything?.workspaces.find(
+    let owner = everything?.workspaces.find(
       (workspace) => workspace.id === target.workspace,
     );
-    if ((!item && !task) || !owner) return;
+    if (target.kind === "human" && !item) return;
+    if ((!owner && item) || (target.kind === "task" && !task)) {
+      const generation = nodeGeneration.current;
+      try {
+        const snapshot = await workspaceGet(target.workspace);
+        if (
+          nodeGeneration.current !== generation ||
+          client.getQueryState(["state", remembered.selected?.name])
+            ?.dataUpdatedAt !== state.dataUpdatedAt
+        )
+          return;
+        owner = snapshot.workspace;
+        if (target.kind === "task") {
+          task = snapshot.tasks.find((value) => value.id === target.id);
+          if (!task) return;
+          client.setQueryData(["workspace", target.workspace], snapshot);
+        }
+        client.setQueryData<TenantState>(
+          ["state", remembered.selected?.name],
+          (old) =>
+            old
+              ? {
+                  ...old,
+                  workspaces: [
+                    ...new Map(
+                      [...old.workspaces, snapshot.workspace].map((row) => [
+                        row.id,
+                        row,
+                      ]),
+                    ).values(),
+                  ],
+                }
+              : old,
+          { updatedAt: state.dataUpdatedAt },
+        );
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      }
+    }
+    if (!owner) return;
     nodes.select(owner.node);
     go("collaboration", { channel: owner.id, focus: "" });
     if (item) open({ kind: "human", request: item.request, node: item.node });
@@ -864,6 +1154,18 @@ function Dashboard({
           deploymentAdministrator={deploymentAdministrator}
           streamStatus={administratorContext ? "live" : streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
+          workspaceMore={{
+            available: workspaceCursor !== null,
+            loading: workspacePage.loading,
+            error: workspacePage.error,
+            load: () => void loadMoreWorkspaces(),
+          }}
+          humanMore={{
+            available: humanCursor !== null,
+            loading: humanLoading,
+            error: humanError,
+            load: loadOlderHumans,
+          }}
           inbox={inbox}
           queueOpen={queueOpen}
           setQueueOpen={setQueueOpen}

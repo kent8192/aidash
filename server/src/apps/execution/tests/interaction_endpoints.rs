@@ -152,7 +152,7 @@ async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
 ) {
 	let execution = Box::pin(execution).await;
 	let run = claim(&execution).await;
-	let private_request = execution
+	execution
 		.app
 		.runtime
 		.store
@@ -241,19 +241,28 @@ async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
 			.unwrap(),
 		200,
 	);
+	// Each candidate's Workspace is checked in turn (#664 decision 1), so the
+	// 51 hidden requests still page by candidates and every page is empty.
 	let requests = assert_json(
 		execution.subject.get("/api/human-requests").await.unwrap(),
 		200,
 	);
 	assert!(requests["items"].as_array().unwrap().is_empty());
-	assert!(requests["next_cursor"].is_null());
+	let cursor = requests["next_cursor"].as_str().unwrap();
+	let rest = assert_json(
+		execution
+			.subject
+			.get(&format!("/api/human-requests?cursor={cursor}"))
+			.await
+			.unwrap(),
+		200,
+	);
+	assert!(rest["items"].as_array().unwrap().is_empty(), "{rest}");
+	assert!(rest["next_cursor"].is_null());
 	assert_json(
 		execution
 			.subject
-			.get(&format!(
-				"/api/human-requests?cursor={}",
-				private_request.id
-			))
+			.get(&format!("/api/human-requests?cursor={}", Uuid::new_v4()))
 			.await
 			.unwrap(),
 		400,

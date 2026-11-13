@@ -129,26 +129,41 @@ async function setup(
           workspaces: [
             workspace("w-home", "Home research", "first"),
             workspace("w-lab", "Lab notebook", "second"),
-          ],
+          ].filter(
+            (row) =>
+              !new URL(request.url()).searchParams.get("node") ||
+              row.node === new URL(request.url()).searchParams.get("node"),
+          ),
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
-          human_requests: options.lab?.request
-            ? [
-                {
-                  id: "ask-lab",
-                  workspace_id: "w-lab",
-                  run_id: "run-lab",
-                  kind: "QUESTION",
-                  prompt: "Which sample goes first?",
-                  response: null,
-                  answered_by: null,
-                  created_at: created,
-                },
-              ]
-            : [],
+          next_cursors: {
+            workspaces: null,
+            tasks: null,
+            runs: null,
+            artifacts: null,
+            human_requests: null,
+            conversations: null,
+          },
+          human_requests:
+            options.lab?.request &&
+            (!new URL(request.url()).searchParams.get("node") ||
+              new URL(request.url()).searchParams.get("node") === "second")
+              ? [
+                  {
+                    id: "ask-lab",
+                    workspace_id: "w-lab",
+                    run_id: "run-lab",
+                    kind: "QUESTION",
+                    prompt: "Which sample goes first?",
+                    response: null,
+                    answered_by: null,
+                    created_at: created,
+                  },
+                ]
+              : [],
         },
       });
     if (path === "/api/tenants/alpha/administration")
@@ -295,7 +310,10 @@ async function setup(
           workspace: workspace(
             snapshot[1],
             snapshot[1] === "w-lab" ? "Lab notebook" : "Home research",
-            snapshot[1] === "w-lab" ? "second" : "first",
+            snapshot[1] === "w-lab" ||
+              (snapshot[1] === "w-new" && posts.at(-1)?.body.node === "second")
+              ? "second"
+              : "first",
           ),
           tasks: [],
           artifacts: [],
@@ -324,6 +342,12 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   page,
 }) => {
   const { errors } = await setup(page);
+  const stateNodes: (string | null)[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/state")
+      stateNodes.push(url.searchParams.get("node"));
+  });
   await page.goto("/");
   await switcher(page).click();
   const list = page.getByRole("navigation", { name: "Workspaces" });
@@ -340,6 +364,8 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   await expect(selector).toHaveValue("first");
   await selector.selectOption("second");
   await expect(page.getByText("home / Lab", { exact: true })).toBeVisible();
+  await expect.poll(() => stateNodes).toContain("second");
+  expect(stateNodes).toContain("first");
 
   await switcher(page).click();
   await expect(
@@ -519,13 +545,18 @@ test("registrations belong to the selected Node", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("a question waiting in another Node is listed, and answering it goes to that Node", async ({
+test("a question is listed and answered within its selected Node", async ({
   page,
 }) => {
   const { errors } = await setup(page, { lab: { request: true } });
   await page.goto("/");
+  await expect(page.getByRole("button", { name: /^Decisions/ })).toHaveCount(0);
+  await openAccountMenu(page);
+  await page.getByTestId("node-selector").selectOption("second");
   await page.getByRole("button", { name: /^Decisions/ }).click();
-  const queue = page.getByRole("button", { name: /Which sample goes first\?/ });
+  const queue = page.getByRole("button", {
+    name: /Lab \/ Lab notebook.*Which sample goes first\?/,
+  });
   await expect(queue).toContainText("Lab / Lab notebook");
   await queue.click();
   const dialog = page.getByRole("dialog", { name: "Human input", exact: true });

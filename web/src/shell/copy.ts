@@ -14,7 +14,10 @@ export const shellCopy = {
     workspaces: "ワークスペース",
     startFirst: "最初の依頼を始めましょう。",
     noMatch: "一致する依頼がありません。",
-    awaiting: (count: number) => `判断待ち ${count}`,
+    showMore: "さらに表示",
+    moreError: "ワークスペースを読み込めませんでした。",
+    awaiting: (count: number, more = false) =>
+      `判断待ち ${count}${more ? "+" : ""}`,
     decisions: "判断待ち",
     decisionQueue: "判断キュー",
     decisionCount: (count: number) => `${count} 件`,
@@ -56,7 +59,10 @@ export const shellCopy = {
     workspaces: "Workspaces",
     startFirst: "Start your first request.",
     noMatch: "No matching requests.",
-    awaiting: (count: number) => `Decisions ${count}`,
+    showMore: "Show more",
+    moreError: "Unable to load more workspaces.",
+    awaiting: (count: number, more = false) =>
+      `Decisions ${count}${more ? "+" : ""}`,
     decisions: "Decisions",
     decisionQueue: "Decision queue",
     decisionCount: (count: number) => `${count} pending`,

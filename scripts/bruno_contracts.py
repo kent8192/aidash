@@ -158,6 +158,10 @@ TENANT_ROUTES = {
 # action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
+    "GET /api/workspaces/{id}/runs": [
+        ("Subject lists the readable Workspace's live Runs", 200, SUBJECT,
+         "/api/workspaces/{{workspace_id}}/runs?live=true", 'expect(res.getBody().items).to.be.an("array");'),
+    ],
     "GET /api/tasks/{id}/runs": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
          "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
@@ -908,7 +912,7 @@ def render():
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.
         actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
-        if route["name"] in {"task-runs", "human-requests"}:
+        if route["name"] in {"task-runs", "workspace-runs", "human-requests", "workspace-list"}:
             add(endpoint, "Deployment Administrator cannot read Tenant data", 403,
                 headers=DEPLOYMENT_ADMINISTRATOR)
         if route["name"] == "tenants-personal":
@@ -1490,6 +1494,7 @@ def render():
         # replace a subject or browser-bound graph grant.
         denied_reads = {
             "task-runs",
+            "workspace-runs",
             "memory-participant-current",
             "remote-semantic-home-provenance",
             "remote-semantic-run-provenance",
@@ -1521,7 +1526,9 @@ def render():
             status = 403
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
-        if route["name"] == "human-requests":
+        if route["name"] == "state":
+            checks += 'const c=res.getBody().next_cursors;for(const key of ["workspaces","tasks","runs","artifacts","human_requests","conversations"])expect(c[key]).to.equal(null);'
+        if route["name"] in {"human-requests", "workspace-list"}:
             checks += 'expect(res.getBody().items).to.be.an("array");'
         if route["name"] == "file_recipient_list":
             uri = path + "?node_id={{node_id}}/{{tenant_node}}"
@@ -1610,7 +1617,7 @@ def render():
         # response the journeys fix; every other Tenant route is shown to refuse
         # the administrator (#484).
         subject_read = (
-            path in ("/api/workspaces/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
+            path in ("/api/workspaces", "/api/workspaces/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
             or path.endswith("/message-history")
         )
         if not admitted and not core:

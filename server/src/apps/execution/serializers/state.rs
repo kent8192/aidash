@@ -21,4 +21,20 @@ pub struct StateResponse {
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
 	pub artifacts: Vec<Artifact>,
+	pub next_cursors: aidash_application::authorization::state::NextCursors,
+}
+
+#[derive(Default, serde::Deserialize, JsonSchema)]
+pub struct StateQuery {
+	pub node: Option<String>,
+}
+#[derive(Default, serde::Deserialize, JsonSchema)]
+pub struct WorkspacePageQuery {
+	pub node: Option<String>,
+	pub cursor: Option<String>,
+}
+#[derive(Serialize, JsonSchema)]
+pub struct WorkspacePage {
+	pub items: Vec<Workspace>,
+	pub next_cursor: Option<String>,
 }

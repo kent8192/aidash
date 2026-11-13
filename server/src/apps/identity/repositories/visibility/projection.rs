@@ -286,3 +286,88 @@ impl WorkspaceProjection for Reads<'_> {
 		result.map_err(Into::into)
 	}
 }
+
+/// Scan state events without first listing every authorized Workspace.
+pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> Result<Vec<Event>> {
+	use std::collections::HashMap;
+	let tenant = reads.access.identity.tenant.clone();
+	let mut workspace_query = Query::select();
+	workspace_query
+		.column(Alias::new("id"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.clone())));
+	if let Some(node) = node {
+		workspace_query.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())));
+	}
+	let tenant_workspaces =
+		Expr::col(Alias::new("workspace_id")).in_subquery(workspace_query.to_owned());
+	let mut result = Vec::new();
+	let mut checked = HashMap::new();
+	let mut runs = RunVerdicts::default();
+	let mut cursor = i64::MAX;
+	let mut scanned = 0;
+	while scanned < aidash_application::authorization::projection::EVENT_SCAN_LIMIT {
+		let size =
+			(aidash_application::authorization::projection::EVENT_SCAN_LIMIT - scanned).min(100);
+		let mut query = Query::select();
+		query
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("events"))
+			.cond_where(event_scope(true, &tenant, &[]).add(tenant_workspaces.clone()))
+			.and_where(
+				Expr::col(Alias::new("kind")).not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
+			)
+			.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
+			.order_by(Alias::new("sequence"), Order::Desc)
+			.limit(size as u64);
+		if let Some(node) = node {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("node")).is_null())
+					.add(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned()))),
+			);
+		}
+		let rows: Vec<Event> =
+			aidash_server::database::query_as(&query.to_string(PostgresQueryBuilder))
+				.fetch_all(&mut **reads.access.tx)
+				.await
+				.map_err(aidash_application::Error::from)?;
+		let exhausted = rows.len() < size;
+		scanned += rows.len();
+		for row in rows {
+			cursor = row.sequence;
+			if let Some(id) = row.workspace_id {
+				let allowed = if let Some(value) = checked.get(&id) {
+					*value
+				} else {
+					let value = reads
+						.access
+						.allowed(id, "workspace.read")
+						.await
+						.map_err(aidash_application::Error::from)?
+						&& reads
+							.access
+							.allowed(id, "workspace.events")
+							.await
+							.map_err(aidash_application::Error::from)?;
+					checked.insert(id, value);
+					value
+				};
+				if !allowed {
+					continue;
+				}
+			}
+			if WorkspaceProjection::event_visible(reads, &row, &mut runs).await? {
+				result.push(row);
+			}
+			if result.len() == 100 {
+				break;
+			}
+		}
+		if exhausted || result.len() == 100 {
+			break;
+		}
+	}
+	result.reverse();
+	Ok(result)
+}

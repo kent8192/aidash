@@ -4,21 +4,24 @@ import { Plus, Search } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Kbd } from "../components/ui/kbd";
 import { cn } from "../lib/utils";
-import { taskProgress } from "../collaboration/model";
 import type { State } from "../types";
 import { useI18n } from "../ui";
 import { shellCopy } from "./copy";
+import { workspaceStatus } from "./workspace-status";
 
 const dotTone = {
   attention: "bg-warning",
   active: "bg-brand-mark",
   done: "bg-success",
   idle: "bg-faint",
+  // Older Tasks lie beyond the window, so neither done nor idle is known.
+  unknown: "border border-faint bg-transparent",
 } as const;
 
 /** Searchable request history: the workspace switcher body on desktop and in the mobile menu. */
 export function WorkspaceList({
   data,
+  more,
   current,
   filter,
   setFilter,
@@ -29,6 +32,13 @@ export function WorkspaceList({
   className,
 }: {
   data?: State;
+  /** "Show more" beyond the Workspace window; the pages live with State. */
+  more: {
+    available: boolean;
+    loading: boolean;
+    error: boolean;
+    load: () => void;
+  };
   current: string;
   filter: string;
   setFilter: (value: string) => void;
@@ -40,11 +50,14 @@ export function WorkspaceList({
 }) {
   const { locale } = useI18n();
   const copy = shellCopy[locale];
+  const windows = {
+    moreTasks: Boolean(data?.next_cursors.tasks),
+    moreRequests: Boolean(data?.next_cursors.human_requests),
+  };
   const query = filter.toLocaleLowerCase();
-  const workspaces =
-    data?.workspaces.filter((value) =>
-      `${value.title} ${value.goal}`.toLocaleLowerCase().includes(query),
-    ) ?? [];
+  const workspaces = (data?.workspaces ?? []).filter((value) =>
+    `${value.title} ${value.goal}`.toLocaleLowerCase().includes(query),
+  );
   return (
     <div className={cn("flex min-h-0 flex-col", className)}>
       <label className="relative mx-1 mb-1 flex items-center">
@@ -71,21 +84,12 @@ export function WorkspaceList({
         className="flex min-h-0 flex-col gap-px overflow-y-auto"
       >
         {workspaces.map((workspace) => {
-          const progress = taskProgress(data?.tasks ?? [], workspace.id);
-          const pending =
-            data?.human_requests.filter(
-              (request) =>
-                request.workspace_id === workspace.id &&
-                request.response === null,
-            ).length ?? 0;
-          const tone =
-            progress.attention > 0
-              ? "attention"
-              : progress.active > 0
-                ? "active"
-                : progress.total > 0 && progress.completed === progress.total
-                  ? "done"
-                  : "idle";
+          const { tone, progress, pending, pendingMore } = workspaceStatus(
+            data?.tasks ?? [],
+            data?.human_requests ?? [],
+            workspace.id,
+            windows,
+          );
           const selected = workspace.id === current;
           return (
             <Link
@@ -118,7 +122,7 @@ export function WorkspaceList({
                   </span>
                   {pending > 0 && (
                     <span className="shrink-0 rounded-sm bg-warning-soft px-1.5 font-mono text-[11px] leading-[18px] text-warning tabular">
-                      {copy.awaiting(pending)}
+                      {copy.awaiting(pending, pendingMore)}
                     </span>
                   )}
                 </span>
@@ -126,7 +130,7 @@ export function WorkspaceList({
                   {workspace.goal}
                 </span>
               </span>
-              {progress.total > 0 && (
+              {progress && (
                 <span className="font-mono text-xs text-muted-foreground tabular">
                   {progress.completed}/{progress.total}
                 </span>
@@ -140,6 +144,12 @@ export function WorkspaceList({
           </p>
         )}
       </nav>
+      {more.available && (
+        <Button variant="ghost" onClick={more.load} disabled={more.loading}>
+          {more.loading ? copy.loading : copy.showMore}
+        </Button>
+      )}
+      {more.error && <p role="alert">{copy.moreError}</p>}
       {showCreate && (
         <div className="mt-1 border-t border-border pt-1">
           <Button

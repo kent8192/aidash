@@ -5,6 +5,7 @@ import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { uniqueById } from "../window-pages";
 import {
   ChevronRight,
   FileText,
@@ -17,7 +18,7 @@ import {
   Play,
   Plus,
 } from "lucide-react";
-import { workspaceGet } from "../generated/aidash";
+import { workspaceGet, workspaceRuns } from "../generated/aidash";
 import type {
   Artifact,
   Discovery,
@@ -189,12 +190,25 @@ function eventTask(event: MeshEvent, tasks: readonly Task[]) {
   return tasks.find((task) => task.id === id);
 }
 
-export function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
+export function ArtifactList({
+  artifacts,
+  hasOlder = false,
+}: {
+  artifacts: Artifact[];
+  hasOlder?: boolean;
+}) {
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   return (
     <section className="grid gap-2" aria-label={copy.results}>
       <h3 className="text-[11px] font-medium text-faint">{copy.results}</h3>
+      {hasOlder && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の成果物があります"
+            : "Older artifacts exist"}
+        </p>
+      )}
       {artifacts.length === 0 && (
         <p className="text-xs text-faint">{copy.empty}</p>
       )}
@@ -347,8 +361,38 @@ export function Channel({
     ? []
     : (query.data?.tasks ??
       data.tasks.filter((task) => task.workspace_id === workspace.id));
+  const liveRuns = useQuery({
+    queryKey: ["workspace-live-runs", workspace.id],
+    queryFn: async ({ signal }) => {
+      const items: Run[] = [];
+      let cursor: string | null = null;
+      do {
+        const page = await workspaceRuns(
+          workspace.id,
+          { live: true, cursor: cursor ?? undefined },
+          { signal },
+        );
+        items.push(...page.items);
+        cursor = page.next_cursor;
+      } while (cursor);
+      // Pages follow `updated_at`, so a Run that changes while they are read
+      // can come back on a later page; the later copy is the newer one.
+      return uniqueById(items);
+    },
+    refetchInterval: 2000,
+    retry: false,
+  });
   const scopedRuns = runs.filter(
     ({ run }) => run.workspace_id === workspace.id && isLocalRun(run, data),
+  );
+  const terminal = scopedRuns.filter(({ run }) => terminalRun(run));
+  scopedRuns.splice(
+    0,
+    scopedRuns.length,
+    ...terminal,
+    ...(liveRuns.isError ? [] : (liveRuns.data ?? []))
+      .filter((run) => isLocalRun(run, data))
+      .map((run) => ({ run, node: data.node.id })),
   );
   const scopedRequests = requests.filter(
     ({ request }) =>
@@ -545,7 +589,10 @@ export function Channel({
   );
   const resultPane = (
     <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto p-4">
-      <ArtifactList artifacts={artifacts} />
+      <ArtifactList
+        artifacts={artifacts}
+        hasOlder={data.next_cursors.artifacts !== null}
+      />
       <ChannelFiles workspace={workspace.id} />
     </div>
   );
@@ -989,7 +1036,10 @@ export function Channel({
               value="results"
               className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-5 py-4"
             >
-              <ArtifactList artifacts={artifacts} />
+              <ArtifactList
+                artifacts={artifacts}
+                hasOlder={data.next_cursors.artifacts !== null}
+              />
               <ChannelFiles workspace={workspace.id} />
             </TabsContent>
             <TabsContent

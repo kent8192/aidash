@@ -100,6 +100,8 @@ function frame(
   const scopes = data.workspaces.map((workspace) =>
     JSON.stringify([data.deployment.id, workspace.id]),
   );
+  const eventScope = JSON.stringify([data.deployment.id, "task-events"]);
+  scopes.push(eventScope);
   scopes.push(
     ...data.human_requests.map((request) =>
       JSON.stringify([data.deployment.id, request.workspace_id]),
@@ -126,6 +128,63 @@ function frame(
       workspace: task.workspace_id,
     },
   }));
+  for (const event of [...data.events].sort(
+    (a, b) => a.sequence - b.sequence,
+  )) {
+    if (
+      !event.workspace_id ||
+      !["task.updated", "task.completed"].includes(event.kind)
+    )
+      continue;
+    const payload = event.data;
+    if (!payload || typeof payload !== "object") continue;
+    const object = payload as Record<string, unknown>;
+    const value = (
+      object.task && typeof object.task === "object" ? object.task : object
+    ) as Record<string, unknown>;
+    if (
+      typeof value.id !== "string" ||
+      typeof value.status !== "string" ||
+      typeof value.title !== "string"
+    )
+      continue;
+    const windowed = data.tasks.find((task) => task.id === value.id);
+    if (
+      windowed &&
+      (typeof value.revision !== "number" || value.revision < windowed.revision)
+    )
+      continue;
+    const scope = JSON.stringify([data.deployment.id, event.workspace_id]);
+    if (!scopes.includes(scope)) scopes.push(scope);
+    const key = JSON.stringify([data.deployment.id, "task", value.id]);
+    const prior = entries.findIndex((entry) => entry.key === key);
+    const entry: NoticeEntry = {
+      key,
+      scope,
+      eventId: event.id,
+      eventScope,
+      eventSequence: event.sequence,
+      signature: `${value.revision}:${value.status}`,
+      kind:
+        value.status === "FAILED"
+          ? "failed"
+          : value.status === "COMPLETED"
+            ? "completed"
+            : null,
+      detail: value.title.slice(0, 180),
+      workspaceTitle:
+        data.workspaces.find((workspace) => workspace.id === event.workspace_id)
+          ?.title ?? "",
+      target: {
+        kind: "task",
+        id: value.id,
+        node: data.deployment.id,
+        workspace: event.workspace_id,
+      },
+    };
+    if (prior < 0) entries.push(entry);
+    else entries[prior] = entry;
+  }
   const requests = data.human_requests.map((request) => ({
     request,
     node: data.deployment.id,
@@ -176,7 +235,14 @@ function frame(
         },
       });
   }
-  return { scopes, entries };
+  return {
+    scopes,
+    entries,
+    eventWatermark: {
+      scope: eventScope,
+      sequence: Math.max(0, ...data.events.map((event) => event.sequence)),
+    },
+  };
 }
 const NotificationContext = createContext<{
   store: NoticeStore;

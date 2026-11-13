@@ -21,6 +21,25 @@ pub struct HumanPage {
 	pub next_cursor: Option<String>,
 }
 
+pub async fn workspace_runs(
+	scope: &mut dyn Scope,
+	workspace: Uuid,
+	live: bool,
+	cursor: Option<Uuid>,
+) -> Result<RunPage> {
+	scope.require_workspace(workspace).await?;
+	let rows = scope.workspace_runs(workspace, live, cursor).await?;
+	let next_cursor =
+		(rows.len() == PAGE_SIZE).then(|| rows.last().unwrap().metadata.id.to_string());
+	let mut items = Vec::new();
+	for row in rows {
+		if let Some(run) = scope.visible_run(row.metadata.id).await? {
+			items.push(run);
+		}
+	}
+	Ok(RunPage { items, next_cursor })
+}
+
 /// Pages contain at most 50 candidate rows. Denied rows are skipped, so a
 /// short or empty page can still have a cursor to the next candidate page.
 pub async fn runs(scope: &mut dyn Scope, task: Uuid, cursor: Option<Uuid>) -> Result<RunPage> {
@@ -44,6 +63,7 @@ pub async fn humans(
 	cursor: Option<Uuid>,
 ) -> Result<HumanPage> {
 	let mut visible = HashMap::new();
+	let mut workspaces = HashMap::new();
 	if let Some(id) = run {
 		visible.insert(id, Some(scope.require_run(id).await?));
 	}
@@ -51,6 +71,14 @@ pub async fn humans(
 	let next_cursor = (rows.len() == PAGE_SIZE).then(|| rows.last().unwrap().id.to_string());
 	let mut items = Vec::new();
 	for mut request in rows {
+		if let std::collections::hash_map::Entry::Vacant(entry) =
+			workspaces.entry(request.workspace_id)
+		{
+			entry.insert(scope.workspace_allowed(request.workspace_id).await?);
+		}
+		if !workspaces[&request.workspace_id] {
+			continue;
+		}
 		if let std::collections::hash_map::Entry::Vacant(entry) = visible.entry(request.run_id) {
 			entry.insert(scope.visible_run(request.run_id).await?);
 		}
@@ -81,6 +109,17 @@ mod tests {
 	}
 	#[async_trait]
 	impl Scope for Hidden {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			Ok(())
 		}
@@ -128,6 +167,9 @@ mod tests {
 		) -> Result<Vec<HumanRequest>> {
 			unreachable!()
 		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
+		}
 		async fn human_resource(&mut self, _: &HumanRequest) -> Result<Resource> {
 			unreachable!()
 		}
@@ -152,6 +194,17 @@ mod tests {
 	}
 	#[async_trait]
 	impl Scope for Requests {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			unreachable!()
 		}
@@ -185,6 +238,9 @@ mod tests {
 					answer_by: None,
 				})
 				.collect())
+		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
 		}
 		async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
 			Ok(Resource {

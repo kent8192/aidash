@@ -1883,7 +1883,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denied_tail(
+async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denied_tail(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -1967,10 +1967,23 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 		.0,
 		200
 	);
+	// The Runs window scans 50 candidates, all of them denied, and stops there
+	// instead of scanning on for a visible Run (#664 decision 1).
 	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200, "{state}");
-	assert_eq!(state["runs"].as_array().unwrap().len(), 1);
-	assert_eq!(state["runs"][0]["id"], visible.id.to_string());
+	assert!(state["runs"].as_array().unwrap().is_empty(), "{state}");
+	assert!(state["next_cursors"]["runs"].is_string(), "{state}");
+	// The visible Run is still reached through its Task.
+	let (status, page) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/tasks/{task}/runs"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page["items"][0]["id"], visible.id.to_string());
 	let before: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COALESCE(MAX(sequence), 0)"))

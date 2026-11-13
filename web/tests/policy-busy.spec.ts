@@ -8,7 +8,7 @@ test("a refused policy change says so and offers a retry once its wait has passe
   await page.addInitScript(() => {
     localStorage.setItem("aidash-locale", "en-US");
   });
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     route.fulfill({
       status: 503,
       json: { error: "atomic transaction visibility pending" },

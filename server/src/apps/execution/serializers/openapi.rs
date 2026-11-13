@@ -10,7 +10,9 @@ use crate::apps::execution::serializers::research::{
 	TenantRetentionView,
 };
 use crate::apps::execution::serializers::runs::RunDetails;
-use crate::apps::execution::serializers::state::StateResponse;
+use crate::apps::execution::serializers::state::{
+	StateQuery, StateResponse, WorkspacePage, WorkspacePageQuery,
+};
 use crate::apps::federation::remote::serializers::actions::SentResponse;
 use crate::apps::workspaces::serializers::entities::Event;
 use crate::apps::workspaces::serializers::entities::Task;
@@ -46,6 +48,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.query::<_, super::management::RunListQuery>(document, views::management::task_runs)?;
 	contracts.path(document, views::management::task_runs, &["Uuid"])?;
+	contracts.response::<_, aidash_application::authorization::bounded_reads::RunPage>(
+		document,
+		views::management::workspace_runs,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, super::management::WorkspaceRunListQuery>(
+		document,
+		views::management::workspace_runs,
+	)?;
+	contracts.path(document, views::management::workspace_runs, &["Uuid"])?;
 	contracts.response::<_, aidash_application::authorization::bounded_reads::HumanPage>(
 		document,
 		views::management::human_requests,
@@ -62,6 +75,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::state,
 		200,
 		"application/json",
+	)?;
+	contracts.query::<_, StateQuery>(document, views::management::state)?;
+	contracts.response::<_, WorkspacePage>(
+		document,
+		crate::apps::workspaces::views::management::workspace_list,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, WorkspacePageQuery>(
+		document,
+		crate::apps::workspaces::views::management::workspace_list,
 	)?;
 	contracts.response::<_, aidash_domain::catalog::CatalogSnapshot>(
 		document,

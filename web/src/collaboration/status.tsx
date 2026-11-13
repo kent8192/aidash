@@ -55,6 +55,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
       client.invalidateQueries({ queryKey: ["state"] }),
       client.invalidateQueries({ queryKey: ["mesh"] }),
       client.invalidateQueries({ queryKey: ["run"] }),
+      client.invalidateQueries({ queryKey: ["workspace-live-runs"] }),
     ]);
     if (failed) setError(words.partialFailure);
     inFlight.current = false;

@@ -26,6 +26,8 @@ ADDITIONS = {
     ("POST", NODE_PATH + "/deletion"): ("tenant-node-deletion", "nodes"),
     ("POST", NODE_PATH + "/restore"): ("tenant-node-restore", "nodes"),
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
+    ("GET", "/api/workspaces"): ("workspace-list", "workspaces/management"),
+    ("GET", "/api/workspaces/{id}/runs"): ("workspace-runs", "execution/management"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
 }
@@ -184,7 +186,7 @@ def project(showurls, document, reviewed):
             if addition is None or native_name != addition[0]:
                 raise ValueError(f"unannotated native route: {method} {path}")
             name, module = addition
-            prior = {"name": name, "source": f"server/src/apps/identity/views/{module}.rs"}
+            prior = {"name": name, "source": (f"server/src/apps/{module.rsplit('/', 1)[0]}/views/{module.rsplit('/', 1)[1]}.rs" if '/' in module else f"server/src/apps/identity/views/{module}.rs")}
             if identity not in public:
                 raise ValueError(f"new typed operation missing from native OpenAPI: {identity}")
         name = prior["name"]

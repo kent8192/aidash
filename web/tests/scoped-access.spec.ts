@@ -249,7 +249,14 @@ test("subject dashboard completes a conversation and clears expired access", asy
       subject: "alice",
     });
     expect(scoped.conversations[0].created_by).toBe("alice");
-    expect(scoped.human_requests[0].answered_by).toBe("alice");
+    // /api/state lists only pending Human Requests (#664); answered ones are paged.
+    const answeredRequests = await (
+      await request.get("/api/human-requests?state=answered", {
+        headers: { authorization: `Bearer ${credential.token}` },
+      })
+    ).json();
+    expect(scoped.human_requests).toHaveLength(0);
+    expect(answeredRequests.items[0].answered_by).toBe("alice");
     expect(scoped.artifacts).toHaveLength(1);
     await page.goto("/settings");
     await expect(page.getByText(tenant, { exact: true })).toBeVisible();

@@ -121,6 +121,14 @@ async function fixture(
     runs: [],
     artifacts: [],
     conversations: [],
+    next_cursors: {
+      workspaces: null,
+      tasks: null,
+      runs: null,
+      artifacts: null,
+      human_requests: null,
+      conversations: null,
+    },
     human_requests: [],
     installations: [],
   };
