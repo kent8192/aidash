@@ -44,3 +44,12 @@ The method depends on the model, not on the Tenant's Data Protection Level. The 
 - Compaction costs more with a cache. Removing X tokens from the middle of history makes the provider rewrite the S tokens after it, and later steps save only the read price. That pays back after about 11.5 × S / X steps on Claude Haiku, and 24 × S / X where reads cost 0.05×.
 - Claude Haiku 5.5 charges five times the price above 100,000 prompt tokens, counting cached tokens. Caching does not avoid that tier. Keep `context_window` below it where the cost matters.
 - `aidash_model_tokens_total` gains a bounded `family` label so a loss on one provider is visible. A cache that fails stays silent otherwise: requests succeed and the bill rises.
+
+## Amendment (2026-11-13, #942)
+
+The volatile step message no longer sets the ceiling on what a Run can read. Each Native call reused all but about 1,780 tokens of the previous one, and that gap was the step message rebuilt at the end of every request. Its content is now split in two:
+
+- **Bookkeeping**: `agent_state` without the step counter, turn instructions, deferred reads, read instructions, open markers and the Harness requirements of a structured contract. It carries no evidence. It is recorded in the Context Journal as a step state only when it differs from the last one, and it is sent at the position where it was recorded. A notice at 80 % and at 90 % of `max_steps` replaces the step counter, which changed every step.
+- **Evidence**: workspace observation entries and Run messages. Like a tool result, each new item is appended once and is kept until offloading or compaction removes it. The budget admits items when they are appended and never trims them afterwards; a refused item is left out of that request.
+
+Semantic memory, declared step sources and the other per-step keys stay in the volatile message, which is now sent only when it has content. Semantic memory content is never journaled, and its per-step recheck fails the step instead of marking a revoked hit. Evidence follows tool results when authority changes: Research evidence revoked later renders as the ADR 0046 placeholder, which edits history and breaks the cache from that position. That is rare and correct. The workspace entries and Run messages appended so far carry no Research evidence, and like `workspace_observe` and `workspace_read` results they stay in history when a read changes.

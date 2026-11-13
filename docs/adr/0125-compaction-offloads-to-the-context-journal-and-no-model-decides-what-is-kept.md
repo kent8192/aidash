@@ -29,3 +29,11 @@ Each marker names the Context Journal range of its original. The Run pauses only
 - Journal Query runs on runner/1 without network, writes or tool calls, in a kernel apart from `code_interpreter` and keyed to the Run. It needs no Catalog Approval because it reads only the Run's own Context Journal, with revoked content replaced (ADR 0046). Its output reaches the model as data. Without a Runner, a code-free fallback offers search and range reads. Reading the same range back repeatedly sends it to the Summary Stage instead of starting a loop.
 - The summary prompt and marker wording are optimized offline with DSPy/GEPA on a panel of model families. Each candidate is scored on the worst family with probes generated from the Context Journal. Aidash runs on any OpenRouter model, so it cannot optimize per model.
 - Aidash is undeployed: compaction Decider records and approvals are removed, not migrated.
+
+## Amendment (2026-11-13, #942)
+
+On the Native Projection Version the Summary Stage continues the main request instead of sending a separate one. It sends the main request's instructions, tools, attachments and history through the last entry it folds, then one message: the call IDs to fold and the previous item IDs as data, and the summary instruction from Aidash. The provider therefore reads that input from its prompt cache. Before this, a summary read none of it. The summarizer is still the Agent's own model, so nothing reaches a new recipient. It now also sees the history around the folded turns, which the main request already sends to that model. The output schema, validation and adoption are unchanged, and a response that calls a tool is invalid.
+
+The continued request keeps the Agent's reasoning settings, and its output limit adds the main request's output limit to the summary's, so reasoning cannot use up the summary. Legacy and Ordered Runs still send only the task, the previous summary and the folded events, without reasoning. So does a Native merge whose continued request does not fit the window, or one whose Run had Research revoked since the step began.
+
+Native step states and evidence lie outside Model Turns, so the Summary Stage never folds them. Offloading replaces older evidence item by item and keeps each item's identity, so an offloaded item is never appended again. The latest step state is never offloaded.
