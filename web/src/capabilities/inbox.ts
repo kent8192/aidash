@@ -24,15 +24,19 @@ export async function every(path: string, signal: AbortSignal) {
  * be unable to read the Thread, so decisions and revocations live here.
  * Keys start with `core-approvals`, so every decision refreshes them.
  */
-export function useApprovalInbox(enabled: boolean) {
-  const pending = useQuery({
+export function usePendingApprovalInbox(enabled: boolean) {
+  return useQuery({
     queryKey: ["core-approvals", "inbox", "pending"],
     queryFn: ({ signal }) =>
       every("/api/capabilities/approvals?state=pending&role=approver", signal),
-    refetchInterval: 5000,
+    refetchInterval: enabled ? 5000 : false,
     retry: false,
     enabled,
   });
+}
+
+export function useApprovalInbox(enabled: boolean) {
+  const pending = usePendingApprovalInbox(enabled);
   const grants = useQuery({
     queryKey: ["core-approvals", "inbox", "grants"],
     queryFn: ({ signal }) =>

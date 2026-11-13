@@ -730,6 +730,7 @@ function toolApproval(id: string, patch: Record<string, unknown> = {}) {
     requester: "alice",
     approver: "alice",
     viewer_is_approver: true,
+    viewer_can_decide_inline: true,
     targets: ["tool:crm@1.0.0#invoke"],
     action: "tool.call_unapproved",
     expires_at: "2099-01-01T00:00:00Z",
@@ -793,8 +794,11 @@ test("a Tool call approval shows the exact call and is allowed once, for this Ru
     return route.fulfill({ json: { items: cards, next_cursor: null } });
   });
   await openThread(page);
+  const inline = page.getByRole("region", {
+    name: "Approvals for this Thread",
+  });
 
-  const once = page
+  const once = inline
     .getByRole("article", { name: "Tool call approval" })
     .filter({
       has: page
@@ -816,7 +820,7 @@ test("a Tool call approval shows the exact call and is allowed once, for this Ru
   ).toBeVisible();
 
   // A long argument list stays in a bounded block that scrolls.
-  const long = page
+  const long = inline
     .getByRole("article", { name: "Tool call approval" })
     .filter({ hasText: "export" })
     .getByRole("region", { name: /^Arguments/ });
@@ -838,7 +842,7 @@ test("a Tool call approval shows the exact call and is allowed once, for this Ru
       expires_at: null,
     });
 
-  const run = page
+  const run = inline
     .getByRole("article", { name: "Tool call approval" })
     .filter({ hasText: '"id": "run"' });
   await run.getByRole("checkbox").check();
@@ -862,7 +866,7 @@ test("a Tool call approval shows the exact call and is allowed once, for this Ru
   expect(minutes).toBeGreaterThan(29);
   expect(minutes).toBeLessThanOrEqual(30);
 
-  await page
+  await inline
     .getByRole("article", { name: "Tool call approval" })
     .filter({ hasText: '"id": "deny"' })
     .getByRole("button", { name: "Deny", exact: true })
