@@ -1434,7 +1434,10 @@ async fn an_attachment_the_run_never_selected_is_refused_as_a_query() {
 	.await;
 
 	// Assert
-	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == ATTACHMENT_NOT_SEEN),
+		"{result:?}"
+	);
 	let calls = calls.lock().unwrap();
 	assert!(!calls.contains(&"query_attachment"));
 	assert!(!calls.contains(&"candidates"));

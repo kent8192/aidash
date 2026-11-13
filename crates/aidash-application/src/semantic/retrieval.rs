@@ -44,6 +44,12 @@ impl Candidate {
 		}
 	}
 }
+/// The refusal of a Thread Attachment image query the Run has not selected
+/// for itself. It says what to do and nothing about the attachment.
+pub const ATTACHMENT_NOT_SEEN: &str = "ATTACHMENT_NOT_SEEN: this Run has not selected that Thread Attachment; open it with workspace_read representation=model_input before using it as an image query";
+pub fn attachment_not_seen() -> Error {
+	Error::Invalid(ATTACHMENT_NOT_SEEN.into())
+}
 /// The surrounding message text an attachment match carries, in characters.
 pub const ATTACHMENT_MESSAGE_TEXT_CHARS: usize = 1000;
 /// Discard any adapter-supplied fields outside the pointer contract, and
@@ -422,10 +428,13 @@ async fn search_or_outage(
 	// An attachment is a query only once this Run selected it for its own
 	// inference; anything else would disclose an image it never opened (#622
 	// decision 4). Check before any read of the bytes.
-	if let Some(attachment) = &input.attachment
-		&& (run != Some(attachment.run_id) || !scope.attachment_seen(attachment).await?)
-	{
-		return Err(Error::Forbidden);
+	if let Some(attachment) = &input.attachment {
+		if run != Some(attachment.run_id) {
+			return Err(Error::Forbidden);
+		}
+		if !scope.attachment_seen(attachment).await? {
+			return Err(attachment_not_seen());
+		}
 	}
 	let prepared = prepare(scope, workspace, input, controls).await?;
 	let query_image = if let Some(attachment) = &input.attachment {

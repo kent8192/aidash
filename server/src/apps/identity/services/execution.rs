@@ -562,7 +562,9 @@ impl WorkerAuthority {
 					)
 				} else if let Some(attachment) = &attachment {
 					if !scope.attachment_seen(attachment).await? {
-						return Err(Error::Forbidden);
+						return Err(
+							aidash_application::semantic::retrieval::attachment_not_seen().into(),
+						);
 					}
 					Some(
 						scope

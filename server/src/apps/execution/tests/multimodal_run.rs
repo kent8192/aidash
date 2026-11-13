@@ -2198,6 +2198,25 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 	let (status, body) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Photo from this morning", "idempotency_key":Uuid::new_v4(), "attachment_ids":[photo["id"]]})).await;
 	assert_eq!(status, 200, "{body}");
 	let photo_id = photo["id"].as_str().unwrap().to_owned();
+	// An unrelated image, so the description is what finds the photo.
+	let (status, soup) = upload_described(
+		&app,
+		&token,
+		&workspace,
+		"soup.png",
+		PNG,
+		"A bowl of soup on a table",
+	)
+	.await;
+	assert_eq!(status, 200, "{soup}");
+	let (status, body) = common::post(
+		&app,
+		&token,
+		&format!("/api/workspaces/{workspace}/thread-messages"),
+		json!({"content":"Lunch", "idempotency_key":Uuid::new_v4(), "attachment_ids":[soup["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
 	let messages = message_history(&app, &token, &workspace).await;
 	assert_eq!(
 		with_content(&messages, "Photo from this morning")[0]["attachments"][0]["index_state"],
@@ -2263,6 +2282,17 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		"{found}"
 	);
 	assert_eq!(matched["metadata"]["message_id"], message_id, "{found}");
+	let ranked: Vec<&Value> = found["matches"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|item| &item["metadata"]["attachment_id"])
+		.collect();
+	assert_eq!(ranked, vec![&json!(photo_id), &soup["id"]], "{found}");
+	assert!(
+		found["matches"][0]["score"].as_f64() > found["matches"][1]["score"].as_f64(),
+		"{found}"
+	);
 	assert_eq!(
 		matched["metadata"]["message_text"],
 		"Photo from this morning"
@@ -2277,6 +2307,12 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		early.get("matches").is_none(),
 		"an unseen image must be refused: {early}"
 	);
+	assert!(
+		early
+			.to_string()
+			.contains(aidash_application::semantic::retrieval::ATTACHMENT_NOT_SEEN),
+		"the refusal names the missing selection: {early}"
+	);
 	assert_eq!(
 		opened["selection"]["attachment_id"],
 		json!(photo_id),
@@ -2287,10 +2323,10 @@ async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selec
 		inference[0].to_string().contains(&encoded),
 		"the next inference carries the selected image"
 	);
-	assert!(later.get("matches").is_some(), "{later}");
-	assert_eq!(
-		later["matches"][0]["metadata"]["attachment_id"],
-		json!(photo_id),
+	assert!(
+		later["matches"].as_array().is_some_and(|matches| matches
+			.iter()
+			.any(|item| item["metadata"]["attachment_id"] == json!(photo_id))),
 		"{later}"
 	);
 	cleanup(f, &url, &schema).await;
@@ -2304,19 +2340,17 @@ async fn upload_described(
 	bytes: &[u8],
 	description: &str,
 ) -> (u16, Value) {
-	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename={name}&media_type=image%2Fpng&idempotency_key={}&description={}",
-		Uuid::new_v4(),
-		description.replace(' ', "%20")
-	);
-	let response = app
-		.api_http
-		.request(http::Method::POST, &path)
-		.body(bytes::Bytes::copy_from_slice(bytes))
-		.header(http::header::CONTENT_TYPE, "application/octet-stream")
-		.header("authorization", format!("Bearer {token}").as_str())
-		.send()
-		.await
-		.unwrap();
-	(response.status_code(), response.json_value().unwrap())
+	let (status, uploaded) = upload_response(app, token, workspace, name, "image/png", bytes).await;
+	if status != 200 {
+		return (status, uploaded);
+	}
+	let id = uploaded["id"].as_str().unwrap();
+	common::request(
+		app,
+		token,
+		"PUT",
+		&format!("/api/workspaces/{workspace}/attachments/{id}/description"),
+		json!({"description":description}),
+	)
+	.await
 }
