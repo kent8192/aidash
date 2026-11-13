@@ -119,6 +119,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0120_event_waits"),
 	("execution", "0121_invocation_refused"),
 	("execution", "0122_invocation_refused_state"),
+	("execution", "0123_host_connection_limits"),
+	("execution", "0124_scope_refusals"),
+	("execution", "0125_scope_refusals_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -137,6 +140,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0120_event_waits"),
 	("execution", "0121_invocation_refused"),
 	("execution", "0122_invocation_refused_state"),
+	("execution", "0123_host_connection_limits"),
+	("execution", "0124_scope_refusals"),
+	("execution", "0125_scope_refusals_state"),
 ];
 
 async fn history_size() -> usize {
@@ -191,7 +197,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		108
 	);
 	let tables = migrations
 		.iter()
@@ -446,14 +452,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0123_policy_probe")
+		.get_migration("execution", "0126_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0122_invocation_refused_state".to_owned()
+			"0125_scope_refusals_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -505,6 +511,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0120_event_waits"),
 			("execution", "0121_invocation_refused"),
 			("execution", "0122_invocation_refused_state"),
+			("execution", "0123_host_connection_limits"),
+			("execution", "0124_scope_refusals"),
+			("execution", "0125_scope_refusals_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -972,7 +981,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		108
 	);
 }
 
@@ -5125,8 +5134,12 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 				&& definition.contains("delivered_at IS NULL"))
 	);
 	let scope = Uuid::new_v4();
-	sqlx::query("INSERT INTO egress_scope_state (scope_id, tenant, node, suspended, window_started_at, connections_in_window) VALUES ($1, 'acme', $2, false, now(), 0)")
-		.bind(scope).bind(&node).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO egress_scope_state (scope_id, tenant, node) VALUES ($1, 'acme', $2)")
+		.bind(scope)
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
 	sqlx::query("INSERT INTO egress_scope_daily (id, tenant, node, scope_id, day, service, sent_bytes, received_bytes) VALUES ($1, 'acme', $2, $3, CURRENT_DATE::text, '', 1, 2)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
 	let foreign = sqlx::query("INSERT INTO egress_scope_daily (id, tenant, node, scope_id, day, service, sent_bytes, received_bytes) VALUES ($1, 'beta', $2, $3, CURRENT_DATE::text, '', 1, 2)")
@@ -5145,8 +5158,13 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 		invalid_completed.is_err(),
 		"port zero cannot represent a completed connection"
 	);
-	sqlx::query("INSERT INTO egress_scope_events (id, tenant, node, scope_id, kind, created_at) VALUES ($1, 'acme', $2, $3, 'suspended', now())")
+	sqlx::query("INSERT INTO egress_scope_events (id, tenant, node, scope_id, kind, created_at) VALUES ($1, 'acme', $2, $3, 'many_hosts', now())")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO egress_scope_refusals (id, tenant, node, scope_id, minute, host, reason, count) VALUES ($1, 'acme', $2, $3, date_trunc('minute', now()), 'denied.example', 'egress_host_forbidden', 4)")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	let empty = sqlx::query("INSERT INTO egress_scope_refusals (id, tenant, node, scope_id, minute, host, reason, count) VALUES ($1, 'acme', $2, $3, now(), '', 'egress_host_forbidden', 0)")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await;
+	assert!(empty.is_err(), "a tally counts at least one connection");
 	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
 		.bind(&node)
 		.execute(&pool)
@@ -5157,6 +5175,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 		"egress_scope_daily",
 		"egress_scope_connections",
 		"egress_scope_events",
+		"egress_scope_refusals",
 	] {
 		let count: i64 =
 			sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE scope_id = $1"))

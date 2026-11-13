@@ -81,6 +81,6 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- $e := .Values.execution.egress -}}
 {{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" $e.clusterIP) -}}{{ fail "execution.egress.clusterIP must be a reserved internal IPv4 Service IP" }}{{- end -}}
 {{- if not .Values.execution.runner.enabled -}}{{ fail "execution.egress requires execution.runner.enabled" }}{{- end -}}
-{{- if or (lt (int $e.proxyTenantTunnels) 1) (le (int $e.proxyGlobalTunnels) (int $e.proxyTenantTunnels)) -}}{{ fail "execution.egress proxyTenantTunnels must be positive and below proxyGlobalTunnels" }}{{- end -}}
+{{- if or (lt (int $e.proxyTenantTunnels) 32) (le (int $e.proxyGlobalTunnels) (int $e.proxyTenantTunnels)) -}}{{ fail "execution.egress proxyTenantTunnels must be at least 32, one Scratch Space's limit, and below proxyGlobalTunnels" }}{{- end -}}
 {{- toJson (dict "endpoint" (printf "http://%s:%d" $e.clusterIP (int $e.port)) "listen" (printf "0.0.0.0:%d" (int $e.port)) "namespace" .Release.Namespace "pod_selector" (dict "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "server") "limits" $e.limits "proxy_global_tunnels" (int $e.proxyGlobalTunnels) "proxy_tenant_tunnels" (int $e.proxyTenantTunnels)) -}}
 {{- end -}}

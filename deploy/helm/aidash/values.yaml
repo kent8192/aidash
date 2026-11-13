@@ -252,7 +252,7 @@ execution:
     port: 8950
     # Per gateway instance; the Tenant limit must be below the global limit.
     proxyGlobalTunnels: 1024
-    proxyTenantTunnels: 32
+    proxyTenantTunnels: 256
     limits:
       { sent_bytes: 1073741824, received_bytes: 1073741824, requests: 1000 }
   limits:

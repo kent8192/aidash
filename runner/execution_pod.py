@@ -440,6 +440,9 @@ def execution_manifests(settings, config):
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
         v2_network_policy(config)  # validate before passing the proxy to user processes
+        # Node's built-in fetch, which corepack uses, ignores the proxy variables
+        # unless asked to read them (#845).
+        podspec['containers'][0]['env'].append({'name': 'NODE_USE_ENV_PROXY', 'value': '1'})
         proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
         podspec['containers'][0]['env'] += [
             {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]

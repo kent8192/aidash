@@ -54,8 +54,13 @@ const DEBIT_ABANDONED: &str = "egress_debit_abandoned";
 /// The record's error for a body that stopped before its end, unless something
 /// said why: a client that went away, or a response cut short.
 const STREAM_INTERRUPTED: &str = "stream_interrupted";
-/// Connections served at once. Beyond this a connection is refused.
-const CONNECTION_SLOTS: usize = 128;
+/// How often counts of connections that ended before they held a Host
+/// connection limit are written (#845).
+const TALLY_INTERVAL: Duration = Duration::from_secs(60);
+/// Connections served at once. Beyond this a connection is refused. A Host
+/// connection gives its slot back once admitted, so the slots cover only the
+/// admission of a burst from several Scratch Spaces (#845).
+const CONNECTION_SLOTS: usize = 512;
 /// Refused connections answered at once, and for how long each. Sandboxed code
 /// can open connections freely, so answering them must be bounded too; beyond
 /// this a connection is dropped unanswered.
@@ -339,10 +344,6 @@ impl Refusal {
 			Some(DebitRefusal::ScopeBudget) => Self {
 				status: StatusCode::TOO_MANY_REQUESTS,
 				code: "egress_budget_exhausted",
-			},
-			Some(DebitRefusal::Suspended) => Self {
-				status: StatusCode::FORBIDDEN,
-				code: "egress_suspended",
 			},
 			Some(DebitRefusal::Forbidden) => Self::FORBIDDEN,
 			None => Self::UNAVAILABLE,
@@ -964,19 +965,45 @@ pub async fn serve(
 	serve_with_scopes(listener, authority, None, ProxyLimits::default(), stopping).await
 }
 
-/// Per-instance proxy capacity. Tenant capacity must be lower than global capacity.
+/// Per-instance proxy capacity. Tenant capacity must be at least one Scratch
+/// Space's and lower than global capacity.
 #[derive(Clone, Copy, Debug)]
 pub struct ProxyLimits {
 	pub global_concurrent: usize,
 	pub tenant_concurrent: usize,
+	/// Host connections that may wait for a limit at once; a Tenant may use a
+	/// quarter. The server derives it from its open-file limit
+	/// ([`waiting_budget`]).
+	pub waiting: usize,
 }
 impl Default for ProxyLimits {
 	fn default() -> Self {
 		Self {
 			global_concurrent: 1024,
-			tenant_concurrent: 32,
+			tenant_concurrent: 256,
+			waiting: 2048,
 		}
 	}
+}
+
+/// Open files kept back from waiting Host connections for everything else the
+/// process opens: database and NATS connections, listeners, open connections
+/// and files.
+const RESERVED_OPEN_FILES: u64 = 8192;
+
+/// Open files counted at most. An unlimited limit (macOS often reports
+/// `RLIM_INFINITY`) leaves memory as the bound, so the budget stays finite.
+const COUNTED_OPEN_FILES: u64 = 1 << 20;
+
+/// The waiting budget for a process allowed `open_files` open files: half of
+/// what remains after the reserve, and at least 64, so that a small limit still
+/// leaves waiting possible without letting it exhaust the process (#845).
+pub fn waiting_budget(open_files: u64) -> usize {
+	let budget = open_files
+		.min(COUNTED_OPEN_FILES)
+		.saturating_sub(RESERVED_OPEN_FILES)
+		/ 2;
+	usize::try_from(budget).unwrap_or(usize::MAX).max(64)
 }
 
 /// Serve legacy External service calls and, when configured, scope proxy calls.
@@ -987,9 +1014,10 @@ pub async fn serve_with_scopes(
 	limits: ProxyLimits,
 	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
-	if limits.tenant_concurrent == 0
+	if limits.tenant_concurrent < aidash_application::egress::TunnelLimits::default().concurrent
 		|| limits.tenant_concurrent >= limits.global_concurrent
 		|| limits.global_concurrent > tokio::sync::Semaphore::MAX_PERMITS
+		|| limits.waiting == 0
 	{
 		return Err(aidash_application::Error::Invalid(
 			"invalid Egress proxy tunnel capacity".into(),
@@ -1033,15 +1061,31 @@ async fn serve_with_clients(
 	let mut connections = tokio::task::JoinSet::new();
 	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
 	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
+	let mut tallies = tokio::time::interval(TALLY_INTERVAL);
+	tallies.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	tallies.tick().await;
+	// A write is not cut short at stop: it has taken its counts already.
+	let mut flushes = tokio::task::JoinSet::new();
 	loop {
 		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
 			while connections.join_next().await.is_some() {}
 			tunnels.drain().await;
+			while flushes.join_next().await.is_some() {}
+			if let Some(scopes) = &scopes {
+				tunnels.flush_tallies(&**scopes).await;
+			}
 			return Ok(());
 		}
 		tokio::select! {
 			_ = stopping.changed() => {},
+			_ = tallies.tick(), if scopes.is_some() => {
+				if let Some(scopes) = scopes.clone() {
+					let tunnels = tunnels.clone();
+					while flushes.try_join_next().is_some() {}
+					flushes.spawn(async move { tunnels.flush_tallies(&*scopes).await });
+				}
+			},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
 				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
@@ -1432,9 +1476,6 @@ async fn forward(
 			if message == "egress_budget_exhausted" =>
 		{
 			return refuse(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted");
-		}
-		Err(aidash_application::Error::Refused(message)) if message == "egress_suspended" => {
-			return refuse(StatusCode::FORBIDDEN, "egress_suspended");
 		}
 		Err(aidash_application::Error::Invalid(message)) if message == "secret_unavailable" => {
 			return refuse(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");

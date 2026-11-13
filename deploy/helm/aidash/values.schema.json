@@ -122,7 +122,7 @@
           "type": "object",
           "properties": {
             "proxyGlobalTunnels": { "type": "integer", "minimum": 2 },
-            "proxyTenantTunnels": { "type": "integer", "minimum": 1 }
+            "proxyTenantTunnels": { "type": "integer", "minimum": 32 }
           }
         },
         "guard": {

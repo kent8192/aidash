@@ -186,9 +186,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			sent_bytes: 10,
 			received_bytes: 10,
 		},
-		anomaly: AnomalyRule {
-			connections_per_minute: 1,
-		},
+		anomaly: AnomalyRule::default(),
 		operator_allows_all: false,
 		tunnel_limits: Default::default(),
 	};
@@ -204,6 +202,8 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		received_bytes: 0,
 		duration_ms: 0,
 		outcome: "interrupted".into(),
+		error: None,
+		wait_ms: None,
 	};
 	durable.record(connection.clone()).await.unwrap();
 	connection.sent_bytes = 7;
@@ -221,6 +221,29 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		..connection.clone()
 	};
 	durable.record(invalid_target).await.unwrap();
+	let over_limit = ConnectionRecord {
+		id: Uuid::new_v4(),
+		outcome: "refused".into(),
+		error: Some("egress_tenant_tunnel_limit".into()),
+		wait_ms: Some(10_000),
+		..connection.clone()
+	};
+	durable.record(over_limit.clone()).await.unwrap();
+	let cause: (String, Option<String>, Option<i64>) = sqlx::query_as(
+		"SELECT outcome, error, wait_ms FROM egress_scope_connections WHERE id = $1",
+	)
+	.bind(over_limit.id)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		cause,
+		(
+			"refused".into(),
+			Some("egress_tenant_tunnel_limit".into()),
+			Some(10_000)
+		)
+	);
 	let mut other = federation
 		.store
 		.pool
@@ -338,35 +361,54 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 				.contains("egress_budget_exhausted")
 		);
 	}
-	durable.admit_connection(&scope).await.unwrap();
-	assert!(
-		durable
-			.admit_connection(&scope)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("egress_suspended")
+	// No number of connections stops a scope (#845).
+	for _ in 0..3 {
+		durable.admit_connection(&scope).await.unwrap();
+	}
+	durable.check_active(&scope, "credential").await.unwrap();
+	let minute = chrono::DateTime::from_timestamp(Utc::now().timestamp() / 60 * 60, 0).unwrap();
+	durable
+		.record_refusals(vec![
+			aidash_application::egress::RefusalTally {
+				scope: scope.id.clone(),
+				minute,
+				host: "denied.example".into(),
+				reason: "egress_host_forbidden".into(),
+				count: 3,
+			},
+			aidash_application::egress::RefusalTally {
+				scope: scope.id.clone(),
+				minute,
+				host: String::new(),
+				reason: "egress_client_closed".into(),
+				count: 2,
+			},
+		])
+		.await
+		.unwrap();
+	let refusals: Vec<(String, String, i64)> = sqlx::query_as(
+		"SELECT host, reason, count FROM egress_scope_refusals WHERE scope_id = $1 ORDER BY reason",
+	)
+	.bind(scope.id.scratch_space)
+	.fetch_all(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		refusals,
+		vec![
+			(String::new(), "egress_client_closed".into(), 2),
+			("denied.example".into(), "egress_host_forbidden".into(), 3),
+		]
 	);
-	assert!(
-		durable
-			.debit(&scope, Direction::Received, 1, day)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("egress_suspended")
-	);
-	assert_eq!(total().await, 9, "new tunnel bytes remain refused");
-	assert!(durable.check_active(&scope, "credential").await.is_err());
+	durable.notify_many_hosts(&scope.id, 101).await.unwrap();
 	let events: i64 = sqlx::query_scalar(
-		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'suspended'",
+		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'many_hosts'",
 	)
 	.bind(scope.id.scratch_space)
 	.fetch_one(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(events, 1);
-	durable.lift_suspension(&scope.id).await.unwrap();
-	durable.admit_connection(&scope).await.unwrap();
 	durable
 		.debit(&scope, Direction::Sent, 1, day)
 		.await
@@ -381,49 +423,6 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 				.contains("egress_budget_exhausted")
 		);
 	}
-	// A separate scope retains room in its budget when its anomaly rule suspends it.
-	let mut suspended = scope.clone();
-	suspended.id.scratch_space = Uuid::new_v4();
-	let suspended_durable = DurableScopes::new(
-		federation.store.clone(),
-		Arc::new(Authority(suspended.clone())),
-	);
-	suspended_durable.resolve("credential").await.unwrap();
-	suspended_durable
-		.admit_connection(&suspended)
-		.await
-		.unwrap();
-	assert!(
-		suspended_durable
-			.admit_connection(&suspended)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("egress_suspended")
-	);
-	let audit = Arc::new(FlakyAuditMeter::default());
-	audit.calls.store(1, std::sync::atomic::Ordering::Relaxed);
-	let meter = ScopedMeter::new(
-		suspended_durable,
-		suspended.clone(),
-		"maps",
-		None,
-		audit.clone(),
-	);
-	assert!(
-		meter
-			.charge(Direction::Received, 1)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("egress_suspended")
-	);
-	let recorded = received_bytes(&federation.store, &suspended.id, day, "").await;
-	assert_eq!(
-		(recorded, audit.committed()),
-		(1, 1),
-		"both meters retain forwarded bytes after suspension"
-	);
 }
 
 #[test]
@@ -816,7 +815,7 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	)
 	.await;
 	assert!(forbidden.contains("egress_host_forbidden"), "{forbidden}");
-	// Port 0 is held to the record's check constraint from its first write.
+	// Port 0 and a port other than 443 are both invalid targets.
 	for port in [22, 0] {
 		let invalid = proxy_request(
 			address,
@@ -828,26 +827,33 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
 
-	let records: Vec<(String, i32, String)> = sqlx::query_as(
-		"SELECT host, port, outcome FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
+	// Each ended before it held a Host connection limit: no row, a tally.
+	let rows: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM egress_scope_connections WHERE scope_id = $1")
+			.bind(space)
+			.fetch_one(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(rows, 0);
+	let tallies: Vec<(String, String, i64)> = sqlx::query_as(
+		"SELECT host, reason, sum(count)::bigint FROM egress_scope_refusals WHERE scope_id = $1 GROUP BY 1, 2 ORDER BY 1",
 	)
 	.bind(space)
 	.fetch_all(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(
-		records,
+		tallies,
 		vec![
-			("not-allowed.example".to_owned(), 443, "refused".to_owned()),
 			(
-				"registry.npmjs.org".to_owned(),
-				22,
-				"invalid_proxy_target".to_owned()
+				"not-allowed.example".to_owned(),
+				"egress_host_forbidden".to_owned(),
+				1
 			),
 			(
 				"registry.npmjs.org".to_owned(),
-				0,
-				"invalid_proxy_target".to_owned()
+				"invalid_proxy_target".to_owned(),
+				2
 			),
 		]
 	);
