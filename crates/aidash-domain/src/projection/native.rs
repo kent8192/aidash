@@ -309,7 +309,8 @@ pub fn record_evidence(context: &mut Context, pinned: &mut Value, quota: usize) 
 }
 
 /// The value of evidence `key` as this request delivers it: `pinned`'s value
-/// with every item history holds only offloaded set to `null`. Source
+/// with every item whose content history no longer holds as admitted (it
+/// was offloaded) set to `null`. Source
 /// delivery receipts read it, so offloaded bytes never earn one.
 pub fn delivered_evidence(context: &Context, pinned: &Value, key: &str) -> Option<Value> {
 	let mut value = pinned.get(key)?.clone();
@@ -320,7 +321,9 @@ pub fn delivered_evidence(context: &Context, pinned: &Value, key: &str) -> Optio
 			_ => None,
 		})
 		.flatten()
-		.filter(|item| ContextEvent::is_elided_result(&item.content))
+		.filter(|item| {
+			item.digest != EvidenceItem::digest(&item.key, item.field.as_deref(), &item.content)
+		})
 		.map(|item| item.digest.as_str())
 		.collect();
 	let gone = |field: Option<&str>, entry: &Value| {
