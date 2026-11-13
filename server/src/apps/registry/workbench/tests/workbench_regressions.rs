@@ -423,6 +423,10 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 	assert_eq!(first["status"], "completed", "first: {first}");
 	let second = wb.finished(json!({"expected_revision":1,"message":"Continue","mode":"real","profile_id":"sandbox","continue_from":first["id"],"fixtures":{"private_fixture":{"status":"success","response":{"private":"payload"}}}})).await;
 	assert_eq!(second["status"], "completed", "second: {second}");
+	let second_id: uuid::Uuid = second["id"].as_str().unwrap().parse().unwrap();
+	sqlx::query("UPDATE agent_test_sessions SET scenario = scenario || $1 WHERE id = $2")
+		.bind(json!({"starter_identity": uuid::Uuid::new_v4(), "starter_subject": "alice", "pending_approval": {"call": {"arguments": {"private": "approval payload"}}}}))
+		.bind(second_id).execute(wb.f.store.pool.fixture_driver()).await.unwrap();
 	wb.register().await;
 	sqlx::query(
 		&Query::update()
@@ -456,6 +460,15 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 	assert_eq!(continued["scenario"]["profile_revision"], 1);
 	assert_eq!(continued["scenario"]["continue_from"], first["id"]);
 	assert!(continued["scenario"].get("fixtures").is_none());
+	let stored: Value =
+		sqlx::query_scalar("SELECT scenario FROM agent_test_sessions WHERE id = $1")
+			.bind(second_id)
+			.fetch_one(wb.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(stored.get("starter_identity").is_none());
+	assert!(stored.get("starter_subject").is_none());
+	assert!(stored.get("pending_approval").is_none());
 	assert_eq!(continued["conversation"], Value::Null);
 	assert_eq!(continued["tool_calls"], Value::Null);
 	let inspection = wb

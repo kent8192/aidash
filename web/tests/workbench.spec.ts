@@ -660,6 +660,49 @@ test("Creator renders object-valued Tool conversation content", async ({
   await expect(page.getByPlaceholder("Test message…")).toBeVisible();
 });
 
+for (const [label, choice] of [
+  ["Allow once", "allow_once"],
+  ["Deny", "deny"],
+] as const) {
+  test(`Creator answers a Workbench approval: ${label}`, async ({ page }) => {
+    const { drafts } = await editableDrafts(page);
+    const approval = {
+      id: "00000000-0000-7000-8000-000000000111",
+      state: "pending",
+      call: { name: "example", arguments: { query: "hello" } },
+      resource: { kind: "tool", id: "example" },
+    };
+    const session = {
+      ...behavioralSession(drafts[0], "running"),
+      scenario: {
+        mode: "simulated",
+        profile_id: null,
+        pending_approval: approval,
+      },
+    };
+    const answers: unknown[] = [];
+    await page.route(`**/api/workbench/drafts/${drafts[0].id}/tests`, (route) =>
+      route.fulfill({ json: [session] }),
+    );
+    await page.route(
+      `**/api/workbench/tests/${session.id}/approval`,
+      async (route) => {
+        answers.push(route.request().postDataJSON());
+        approval.state = choice;
+        await route.fulfill({ json: session });
+      },
+    );
+    await page.reload();
+    await page.getByRole("tab", { name: "Test", exact: true }).click();
+    const card = page.getByRole("group", { name: "Test approval" });
+    await expect(card).toContainText("example");
+    await card.getByRole("button", { name: label, exact: true }).click();
+    await expect.poll(() => answers.length).toBe(1);
+    expect(answers[0]).toEqual({ approval_id: approval.id, choice });
+    await expect(card).toHaveCount(0);
+  });
+}
+
 for (const change of ["add", "replace", "remove", "unchanged"]) {
   test(`Creator version differences include ${change} private reference state`, async ({
     page,
