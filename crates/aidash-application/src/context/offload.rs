@@ -194,9 +194,12 @@ fn replace(context: &mut Context, index: usize, batch: &mut OffloadBatch) -> boo
 		true
 	};
 	let replaced = match &mut entry.event {
+		// Every item is offloaded, so no short-circuit.
 		ContextEvent::Evidence { items } => items
 			.iter_mut()
-			.fold(false, |any, item| shrink(&mut item.content) || any),
+			.map(|item| shrink(&mut item.content))
+			.collect::<Vec<_>>()
+			.contains(&true),
 		ContextEvent::StepState { state, harness } if latest_state != Some(index) => {
 			let shrunk = shrink(state);
 			shrunk | harness.as_mut().is_some_and(&mut shrink)

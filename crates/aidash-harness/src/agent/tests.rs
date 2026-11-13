@@ -1756,7 +1756,6 @@ impl ModelProvider for Backend {
 					}),
 					..Default::default()
 				},
-				..Default::default()
 			});
 		}
 		request.ensure_fits(128000).unwrap();

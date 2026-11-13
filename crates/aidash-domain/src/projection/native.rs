@@ -581,7 +581,7 @@ fn step_state(pinned: &Value, markers: &[&ContextEvent]) -> Option<ContextEvent>
 			None
 		}
 	};
-	(!state.is_empty() || harness.is_some()).then(|| ContextEvent::StepState {
+	(!state.is_empty() || harness.is_some()).then_some(ContextEvent::StepState {
 		state: Value::Object(state),
 		harness,
 	})
