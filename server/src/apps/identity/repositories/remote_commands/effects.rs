@@ -84,9 +84,15 @@ impl RemoteCommandEffects for Scope<'_> {
 			.map(|value| json!(value))
 			.map_err(Into::into)
 	}
-	async fn observation(&mut self, workspace: Uuid, offset: usize, limit: usize) -> Result<Value> {
+	async fn observation(
+		&mut self,
+		workspace: Uuid,
+		offset: usize,
+		limit: usize,
+		exclude_run: Option<Uuid>,
+	) -> Result<Value> {
 		self.access
-			.workspace_observation(workspace, offset, limit)
+			.workspace_observation(workspace, offset, limit, exclude_run)
 			.await
 			.map_err(Into::into)
 	}

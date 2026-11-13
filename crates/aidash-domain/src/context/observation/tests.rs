@@ -97,3 +97,46 @@ fn fit_projection_defers_when_even_one_row_cannot_fit() {
 			.is_none()
 	);
 }
+
+fn event(sequence: i64, kind: &str, data: Value) -> Event {
+	Event {
+		sequence,
+		id: Uuid::from_u128(1000 + sequence as u128),
+		node: None,
+		workspace_id: None,
+		kind: kind.into(),
+		data,
+		created_at: chrono::DateTime::<Utc>::UNIX_EPOCH,
+	}
+}
+
+#[rstest::rstest]
+fn a_step_view_leaves_out_the_observing_runs_own_events() {
+	// Arrange: the Run's own telemetry, another Run's event and a run-less one.
+	let own = Uuid::from_u128(1);
+	let mut snapshot = snapshot(0);
+	snapshot.events = vec![
+		event(1, "run.thinking", json!({"run_id": own})),
+		event(2, "task.created", json!({"run_id": Uuid::from_u128(2)})),
+		event(3, "tool.completed", json!({"run_id": own.to_string()})),
+		event(4, "workspace.updated", json!({})),
+		event(5, "context.compacted", json!({"run_id": own, "other": 1})),
+	];
+
+	// Act
+	let unfiltered = project(&snapshot, 0, DEFAULT_LIMIT);
+	without_run_events(&mut snapshot, own);
+	let filtered = project(&snapshot, 0, DEFAULT_LIMIT);
+
+	// Assert: the observe tool's view keeps every event; the step view keeps
+	// only the foreign and the run-less event, and counts only those.
+	assert_eq!(unfiltered["events"].as_array().unwrap().len(), 5);
+	let kinds = filtered["events"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|event| event["kind"].as_str().unwrap())
+		.collect::<Vec<_>>();
+	assert_eq!(kinds, ["workspace.updated", "task.created"]);
+	assert_eq!(filtered["pages"]["events"]["total"], 2);
+}

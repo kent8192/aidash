@@ -643,22 +643,41 @@ impl Home {
 			Ok(snapshot)
 		}
 	}
+	/// The Workspace view the model's observe tool reads: every event.
 	pub async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		self.observe(offset, limit, None).await
+	}
+	/// The Workspace view a Run's step pins as evidence. It leaves out the
+	/// Run's own events, which its history already holds and which every step
+	/// renews, so the evidence and its page counts stay put (#942).
+	pub async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		self.observe(offset, limit, Some(self.run.id)).await
+	}
+	async fn observe(
+		&self,
+		offset: usize,
+		limit: usize,
+		exclude_run: Option<Uuid>,
+	) -> Result<Value> {
 		if let Some(authority) = &self.authority {
 			return authority
-				.workspace_observation(self.run.workspace_id, offset, limit)
+				.workspace_observation(self.run.workspace_id, offset, limit, exclude_run)
 				.await;
 		}
 		if !self.local() {
 			let limit = limit.clamp(1, aidash_domain::context::observation::MAX_LIMIT);
-			return self
-				.command(
-					"workspace_observation",
-					json!({"offset":offset,"limit":limit}),
-				)
-				.await;
+			// The home Node knows this Run by the same id (`admission_id`).
+			// An older home Node ignores the key and returns every event.
+			let mut data = json!({"offset":offset,"limit":limit});
+			if let Some(run) = exclude_run {
+				data["exclude_run"] = json!(run);
+			}
+			return self.command("workspace_observation", data).await;
 		}
-		let snapshot = self.snapshot().await?;
+		let mut snapshot = self.snapshot().await?;
+		if let Some(run) = exclude_run {
+			aidash_domain::context::observation::without_run_events(&mut snapshot, run);
+		}
 		Ok(crate::context::observation::project(
 			&snapshot, offset, limit,
 		))

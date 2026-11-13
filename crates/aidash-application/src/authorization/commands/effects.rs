@@ -167,7 +167,15 @@ pub async fn execute(
 			if !(1..=aidash_domain::context::observation::MAX_LIMIT).contains(&limit) {
 				return Err(Error::Invalid("invalid workspace observation limit".into()));
 			}
-			scope.observation(task.workspace_id, offset, limit).await?
+			// A per-step view names its own Run to leave out (#942); older
+			// callers send no key and get every event.
+			let exclude_run: Option<Uuid> = match data.get("exclude_run") {
+				None | Some(Value::Null) => None,
+				Some(value) => Some(serde_json::from_value(value.clone())?),
+			};
+			scope
+				.observation(task.workspace_id, offset, limit, exclude_run)
+				.await?
 		}
 		"workspace_record" | "workspace_record_chunk" => {
 			let id: Uuid = serde_json::from_value(data["id"].clone())?;

@@ -1289,3 +1289,96 @@ fn events_for_other_readers_carry_no_reasoning() {
 		}
 	));
 }
+
+/// A Workspace whose events are the observing Run's own telemetry plus one
+/// foreign and one run-less event, which stay identical from step to step.
+fn workspace_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::WorkspaceSnapshot {
+	let at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
+	let event = |sequence: u128, kind: &str, data: Value| crate::Event {
+		sequence: sequence as i64,
+		id: uuid::Uuid::from_u128(1000 + sequence),
+		node: None,
+		workspace_id: None,
+		kind: kind.into(),
+		data,
+		created_at: at,
+	};
+	let mut events = vec![
+		event(
+			1,
+			"task.created",
+			json!({"run_id": uuid::Uuid::from_u128(9)}),
+		),
+		event(2, "workspace.updated", json!({})),
+	];
+	events.extend((0..own_events).map(|n| event(3 + n, "run.thinking", json!({"run_id": own}))));
+	crate::WorkspaceSnapshot {
+		workspace: crate::Workspace {
+			scratch_space_id: uuid::Uuid::nil(),
+			id: uuid::Uuid::from_u128(5),
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
+			title: "title".into(),
+			goal: "goal".into(),
+			state: json!({}),
+			revision: 1,
+			created_at: at,
+		},
+		tasks: vec![],
+		artifacts: vec![],
+		events,
+		messages: vec![],
+	}
+}
+
+fn step_workspace(snapshot: &crate::WorkspaceSnapshot, own: Option<uuid::Uuid>) -> Value {
+	let mut snapshot = snapshot.clone();
+	if let Some(own) = own {
+		crate::context::observation::without_run_events(&mut snapshot, own);
+	}
+	json!({"workspace": crate::context::observation::project(
+		&snapshot,
+		0,
+		crate::context::observation::DEFAULT_LIMIT,
+	)})
+}
+
+#[test]
+fn a_runs_own_workspace_events_never_become_evidence() {
+	// Arrange: each step the Run mints new telemetry of its own (#942).
+	let own = uuid::Uuid::from_u128(1);
+	let first = workspace_with_own_events(own, 3);
+	let second = workspace_with_own_events(own, 6);
+	let mut run = context(vec![]);
+
+	// Act: two steps with the per-step view.
+	let mut pinned = step_workspace(&first, Some(own));
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	let first_volatile = native_context(&run, &pinned).volatile;
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut next = step_workspace(&second, Some(own));
+	let appended = pending_evidence(&run, &next).len();
+	record_evidence(&mut run, &mut next, usize::MAX);
+
+	// Assert: no own event is recorded, the second step appends nothing and
+	// its volatile tail matches the first step's.
+	let recorded = evidence(&run).concat();
+	assert!(
+		recorded.iter().all(|item| item["kind"] != "run.thinking"),
+		"{recorded:?}"
+	);
+	assert_eq!(appended, 0);
+	assert_eq!(evidence(&run).len(), 1);
+	assert_eq!(native_context(&run, &next).volatile, first_volatile);
+
+	// Control: the unfiltered view appends the new own events every step.
+	let mut unfiltered = context(vec![]);
+	let mut pinned = step_workspace(&first, None);
+	record_evidence(&mut unfiltered, &mut pinned, usize::MAX);
+	unfiltered.push(assistant(1, "", &["x"]));
+	unfiltered.push(tool("x"));
+	assert_eq!(
+		pending_evidence(&unfiltered, &step_workspace(&second, None)).len(),
+		3
+	);
+}

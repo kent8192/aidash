@@ -1082,6 +1082,9 @@ impl ExecutionHome for Backend {
 		let _ = (offset, limit);
 		Ok(json!({"workspace_id":self.task_value().workspace_id}))
 	}
+	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		self.observation(offset, limit).await
+	}
 	async fn observation_fitted(
 		&self,
 		offset: usize,
@@ -1438,7 +1441,7 @@ impl ExecutionEnvironment for Backend {
 			}
 			"workspace" => self
 				.home(run)
-				.observation(0, context::observation::DEFAULT_LIMIT)
+				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
 			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),

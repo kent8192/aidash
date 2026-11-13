@@ -20,6 +20,7 @@ struct Scope {
 	failure: Option<String>,
 	output: Option<Uuid>,
 	record: Value,
+	excluded_run: Option<Uuid>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -52,6 +53,7 @@ fn scope() -> Scope {
 		failure: None,
 		output: Some(Uuid::from_u128(9)),
 		record: json!({"visible":true}),
+		excluded_run: None,
 	}
 }
 impl Scope {
@@ -174,8 +176,15 @@ impl RemoteCommandEffects for Scope {
 		self.call("snapshot")?;
 		Ok(json!({"snapshot":"visible"}))
 	}
-	async fn observation(&mut self, _: Uuid, _: usize, _: usize) -> Result<Value> {
+	async fn observation(
+		&mut self,
+		_: Uuid,
+		_: usize,
+		_: usize,
+		exclude_run: Option<Uuid>,
+	) -> Result<Value> {
 		self.call("observation")?;
+		self.excluded_run = exclude_run;
 		Ok(self.record.clone())
 	}
 	async fn record(&mut self, _: Uuid, kind: &str, id: Uuid) -> Result<Value> {
@@ -332,6 +341,38 @@ async fn remote_observation_keeps_attachment_metadata_and_rechecks_grant(mut sco
 		run(&mut scope, "workspace_observation", &data).await,
 		Err(Error::Forbidden)
 	));
+}
+#[rstest]
+#[tokio::test]
+async fn remote_observation_passes_an_optional_run_to_leave_out(mut scope: Scope) {
+	// A caller that sends no key, as older Nodes do, gets every event.
+	run(
+		&mut scope,
+		"workspace_observation",
+		&json!({"offset":0,"limit":20}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(scope.excluded_run, None);
+	// A per-step view names its own Run (#942).
+	let own = Uuid::from_u128(11);
+	run(
+		&mut scope,
+		"workspace_observation",
+		&json!({"offset":0,"limit":20,"exclude_run":own}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(scope.excluded_run, Some(own));
+	assert!(
+		run(
+			&mut scope,
+			"workspace_observation",
+			&json!({"offset":0,"limit":20,"exclude_run":"not-a-run"}),
+		)
+		.await
+		.is_err()
+	);
 }
 #[rstest]
 #[tokio::test]

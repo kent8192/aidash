@@ -273,7 +273,7 @@ impl Environment<'_> {
 			Slot::Skills => self.skill_context(run).await.map(|text| Some(json!(text))),
 			Slot::Observation => self
 				.home(run)
-				.observation(0, aidash_domain::context::observation::DEFAULT_LIMIT)
+				.step_observation(0, aidash_domain::context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
 			Slot::Semantic => {
