@@ -38,6 +38,50 @@ fn context(events: Vec<ContextEvent>) -> Context {
 	context
 }
 
+fn request_messages(context: &Context, pinned: &Value) -> Vec<Value> {
+	let request = crate::provider::ModelRequest {
+		instructions: "Work on the task".into(),
+		context: crate::provider::ModelContext::Native(native_context(context, pinned)),
+		..Default::default()
+	};
+	request.input_body()["messages"].as_array().unwrap().clone()
+}
+
+#[test]
+fn native_turns_preserve_the_serialized_message_prefix() {
+	let pinned = json!({"identity": {"agent": "a"}, "agent_state": {"phase": "thinking"}});
+	let mut run = context(vec![]);
+	let first = request_messages(&run, &pinned);
+	run.push(assistant(1, "Reading", &["a"]));
+	run.push(tool("a"));
+	let next = request_messages(&run, &pinned);
+	for (before, after) in first.iter().zip(&next) {
+		assert_eq!(
+			serde_json::to_vec(before).unwrap(),
+			serde_json::to_vec(after).unwrap()
+		);
+	}
+	assert!(next.len() >= first.len());
+	let changed = request_messages(
+		&run,
+		&json!({"identity": {"agent": "a"}, "agent_state": {"phase": "waiting"}}),
+	);
+	assert_eq!(&changed[..next.len()], next.as_slice());
+	assert_eq!(changed.len(), next.len() + 1);
+}
+
+#[test]
+fn unchanged_step_state_does_not_add_another_message() {
+	let pinned = json!({"agent_state": {"phase": "thinking"}});
+	let mut run = context(vec![]);
+	let first = request_messages(&run, &pinned);
+	run.push(assistant(1, "Reading", &["a"]));
+	run.push(tool("a"));
+	let next = request_messages(&run, &pinned);
+	assert_eq!(next.len(), first.len() + 2);
+	assert_eq!(next.last().unwrap()["role"], "tool");
+}
+
 #[test]
 fn run_start_memory_is_projected_as_data() {
 	let context = context(vec![ContextEvent::MemoryRecall {
