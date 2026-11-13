@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  channelAttachmentDescription,
   channelAttachmentUpload,
   channelMessageCreate,
   channelMessageHistory,
@@ -53,9 +54,9 @@ import {
   attachmentWarningKey,
   attachmentWarningText,
   submissionFor,
+  descriptionTooLong,
   uploadDescription,
   validAttachments,
-  MAX_IMAGE_DESCRIPTION_CHARS,
   type MessageSubmission,
 } from "./conversation-model";
 import { Avatar } from "./avatar";
@@ -403,6 +404,16 @@ function ConversationFeed({
       query.isPending
     )
       return;
+    if (
+      draft.files.some(
+        (entry) =>
+          entry.file.type.startsWith("image/") &&
+          descriptionTooLong(entry.description),
+      )
+    ) {
+      setError(words.imageDescriptionTooLong);
+      return;
+    }
     const cited = omitCitations ? [] : citations;
     inFlight.current = true;
     setSending(true);
@@ -417,20 +428,34 @@ function ConversationFeed({
         let uploaded = entry.uploaded;
         if (!uploaded) {
           setUploading(true);
-          const description = uploadDescription(
-            entry.file.type,
-            entry.description,
-          );
           uploaded = await channelAttachmentUpload(workspace, entry.file, {
             filename: entry.file.name,
             media_type: entry.file.type || "application/octet-stream",
             idempotency_key: entry.key,
-            ...(description ? { description } : {}),
           });
           updateDraft((current) => ({
             ...current,
             files: current.files.map((file) =>
               file.key === entry.key ? { ...file, uploaded } : file,
+            ),
+          }));
+        }
+        // The description travels in a JSON body, never in the upload URL.
+        const description = uploadDescription(
+          entry.file.type,
+          entry.description,
+        );
+        if (description && uploaded.description !== description) {
+          uploaded = await channelAttachmentDescription(
+            workspace,
+            uploaded.id,
+            { description },
+          );
+          const described = uploaded;
+          updateDraft((current) => ({
+            ...current,
+            files: current.files.map((file) =>
+              file.key === entry.key ? { ...file, uploaded: described } : file,
             ),
           }));
         }
@@ -934,8 +959,8 @@ function ConversationFeed({
                         {entry.file.type.startsWith("image/") && (
                           <input
                             className="mt-1 block h-6 w-full max-w-sm rounded-sm border border-border bg-background px-2 text-[11px]"
-                            maxLength={MAX_IMAGE_DESCRIPTION_CHARS}
-                            disabled={busy || !!entry.uploaded}
+                            aria-invalid={descriptionTooLong(entry.description)}
+                            disabled={busy}
                             value={entry.description ?? ""}
                             placeholder={words.imageDescriptionPlaceholder}
                             aria-label={`${words.imageDescription}: ${entry.file.name}`}
@@ -954,6 +979,15 @@ function ConversationFeed({
                             }
                           />
                         )}
+                        {entry.file.type.startsWith("image/") &&
+                          descriptionTooLong(entry.description) && (
+                            <p
+                              className="text-xs text-destructive"
+                              role="alert"
+                            >
+                              {words.imageDescriptionTooLong}
+                            </p>
+                          )}
                         {entry.uploaded?.no_assigned_agent_can_read && (
                           <p className="text-xs text-warning">
                             {attachmentWarningText(

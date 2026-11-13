@@ -129,15 +129,19 @@ export function validAttachments(
 export const MAX_IMAGE_DESCRIPTION_CHARS = 2000;
 
 /**
- * The Image Description an upload sends: only for an image, trimmed, and only
- * when the sender wrote one within the limit. Anything else sends none, so the
- * server never refuses an upload for its description.
+ * The Image Description to send after an upload: only for an image, and
+ * trimmed. Its length is checked separately, so a long one is shown as an
+ * error instead of being dropped.
  */
 export function uploadDescription(
   mediaType: string,
   description: string | undefined,
 ): string | undefined {
   const text = description?.trim();
-  if (!mediaType.startsWith("image/") || !text) return undefined;
-  return [...text].length <= MAX_IMAGE_DESCRIPTION_CHARS ? text : undefined;
+  return mediaType.startsWith("image/") && text ? text : undefined;
+}
+
+/** Whether a description exceeds the limit, counted in characters as the server counts it. */
+export function descriptionTooLong(description: string | undefined): boolean {
+  return [...(description?.trim() ?? "")].length > MAX_IMAGE_DESCRIPTION_CHARS;
 }

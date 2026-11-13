@@ -49,6 +49,7 @@ export const workspaceCopy = {
     editImageDescription: "説明を編集",
     saveImageDescription: "説明を保存",
     imageDescriptionFailed: "説明を保存できませんでした。",
+    imageDescriptionTooLong: "画像の説明は2,000文字以内にしてください。",
     indexState: {
       pending: "索引待ち",
       indexed: "索引済み",
@@ -133,6 +134,8 @@ export const workspaceCopy = {
     editImageDescription: "Edit description",
     saveImageDescription: "Save description",
     imageDescriptionFailed: "The description could not be saved.",
+    imageDescriptionTooLong:
+      "An Image Description can be at most 2,000 characters.",
     indexState: {
       pending: "Index pending",
       indexed: "Indexed",

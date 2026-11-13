@@ -13,8 +13,8 @@ import { authenticatedFetch } from "../transport";
 import { Modal, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import {
-  MAX_IMAGE_DESCRIPTION_CHARS,
   attachmentWarningText,
+  descriptionTooLong,
   mergeMessagePages,
 } from "./conversation-model";
 import { threadCopy } from "./thread-copy";
@@ -194,8 +194,9 @@ function ImageDescription({
     | keyof typeof words.indexState
     | null
     | undefined;
+  const tooLong = descriptionTooLong(text);
   async function save() {
-    if (!text.trim()) return;
+    if (!text.trim() || tooLong) return;
     setSaving(true);
     setError("");
     try {
@@ -226,13 +227,18 @@ function ImageDescription({
         >
           <input
             className="h-6 min-w-0 flex-1 rounded-sm border border-border bg-background px-2"
-            maxLength={MAX_IMAGE_DESCRIPTION_CHARS}
+            aria-invalid={tooLong}
             value={text}
             disabled={saving}
             aria-label={`${words.imageDescription}: ${attachment.filename}`}
             onChange={(event) => setText(event.target.value)}
           />
-          <Button size="sm" variant="outline" type="submit" disabled={saving}>
+          <Button
+            size="sm"
+            variant="outline"
+            type="submit"
+            disabled={saving || tooLong}
+          >
             {words.saveImageDescription}
           </Button>
         </form>
@@ -252,6 +258,11 @@ function ImageDescription({
         <span className="text-faint" data-index-state={state}>
           {words.indexState[state]}
         </span>
+      )}
+      {editing && tooLong && (
+        <p className="text-destructive" role="alert">
+          {words.imageDescriptionTooLong}
+        </p>
       )}
       {error && <Alert>{error}</Alert>}
     </div>
