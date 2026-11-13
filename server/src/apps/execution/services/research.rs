@@ -172,7 +172,7 @@ impl Providers {
 		}
 	}
 
-	fn search(&self, provider: &str) -> Result<Arc<dyn SearchProvider>> {
+	pub(crate) fn search(&self, provider: &str) -> Result<Arc<dyn SearchProvider>> {
 		match provider {
 			"research.brave@1" => self
 				.brave
