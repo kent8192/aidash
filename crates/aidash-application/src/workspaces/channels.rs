@@ -212,7 +212,9 @@ pub async fn upload(
 			if existing.sha256 != digest
 				|| existing.filename != input.filename
 				|| existing.media_type != input.media_type
-				|| existing.description.as_deref() != input.description
+				|| input
+					.description
+					.is_some_and(|text| existing.description.as_deref() != Some(text))
 				|| attachment_bytes(scope, &existing).await? != content
 			{
 				return Err(Error::Conflict(
@@ -255,7 +257,8 @@ async fn attachment_bytes(
 	Ok(bytes)
 }
 /// Write or replace an image's Image Description. Only the person or Agent who
-/// posted the image writes it (#622 decision 7); the indexed image follows.
+/// uploaded the image writes it (#622 decision 7), before or after posting it;
+/// an indexed image follows.
 pub async fn describe(
 	scope: &mut dyn ChannelScope,
 	workspace: Uuid,
@@ -266,12 +269,17 @@ pub async fn describe(
 		.attachment(workspace, id)
 		.await?
 		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
-	let message = attachment
-		.message_id
-		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
-	scope.message(workspace, message).await?;
+	// A posted image is described only by a writer who can still read its
+	// message; an unposted upload is visible to its uploader alone.
+	if let Some(message) = attachment.message_id {
+		scope.message(workspace, message).await?;
+	}
 	if attachment.uploaded_by != scope.principal() {
-		return Err(Error::Forbidden);
+		return Err(if attachment.message_id.is_some() {
+			Error::Forbidden
+		} else {
+			Error::NotFound("attachment unavailable".into())
+		});
 	}
 	validate_attachment_description(&attachment.media_type, description)?;
 	if attachment.description.as_deref() == Some(description) {

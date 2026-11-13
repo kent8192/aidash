@@ -719,3 +719,55 @@ async fn a_description_needs_an_image_and_words(#[case] media_type: &str, #[case
 	);
 	assert!(scope.described.is_none());
 }
+
+#[rstest]
+#[tokio::test]
+async fn an_uploader_describes_an_image_before_posting_it() {
+	// Arrange
+	let mut state = image_state();
+	state.message_id = None;
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let described = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(described.description.as_deref(), Some("A red bicycle"));
+	assert_eq!(scope.calls, vec!["attachment.read", "attachment.describe"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_unposted_upload_of_someone_else_is_not_found() {
+	// Arrange
+	let mut state = image_state();
+	state.message_id = None;
+	state.uploaded_by = "someone else".into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::NotFound(_))), "{result:?}");
+	assert!(scope.described.is_none());
+}

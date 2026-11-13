@@ -823,27 +823,40 @@ async fn image_entry(
 	.unwrap()
 }
 
+/// Upload a PNG and, if given, describe it through the JSON endpoint before
+/// it is posted, as the dashboard does.
 async fn upload_image(
 	app: &EndpointFixture,
 	token: &str,
 	workspace: &str,
 	description: Option<&str>,
 ) -> (u16, Value) {
-	let mut path = format!(
+	let path = format!(
 		"/api/workspaces/{workspace}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}",
 		Uuid::new_v4()
 	);
-	if let Some(text) = description {
-		path.push_str(&format!("&description={}", text.replace(' ', "%20")));
-	}
 	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
 	let client = client_for(&app.server.url, token).await;
-	decoded(
+	let (status, uploaded) = decoded(
 		client
 			.post_raw(&path, png, "application/octet-stream")
 			.await
 			.unwrap(),
-	)
+	);
+	match description {
+		Some(text) if status == 200 => {
+			let id = uploaded["id"].as_str().unwrap();
+			request(
+				app,
+				token,
+				"PUT",
+				&format!("/api/workspaces/{workspace}/attachments/{id}/description"),
+				json!({"description":text}),
+			)
+			.await
+		}
+		_ => (status, uploaded),
+	}
 }
 
 #[rstest::rstest]
@@ -1036,22 +1049,53 @@ async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChann
 		workspace,
 		..
 	} = Box::pin(scoped_channel).await;
+	let client = client_for(&app.server.url, &token).await;
 	let path = format!(
-		"/api/workspaces/{workspace}/attachments?filename=notes.txt&media_type=text%2Fplain&idempotency_key={}&description=Notes",
+		"/api/workspaces/{workspace}/attachments?filename=notes.txt&media_type=text%2Fplain&idempotency_key={}",
 		Uuid::new_v4()
 	);
-	let client = client_for(&app.server.url, &token).await;
-
-	// Act
-	let (status, refusal) = decoded(
+	let (status, notes) = decoded(
 		client
 			.post_raw(&path, b"plain notes", "application/octet-stream")
 			.await
 			.unwrap(),
 	);
+	assert_eq!(status, 200, "{notes}");
+	let in_url = format!(
+		"/api/workspaces/{workspace}/attachments?filename=photo.png&media_type=image%2Fpng&idempotency_key={}&description=Words",
+		Uuid::new_v4()
+	);
+	let png = include_bytes!("../../execution/tests/support/media/pixel.png");
 
-	// Assert
-	assert_eq!(status, 400, "{refusal}");
+	// Act
+	let (text_status, text_refusal) = request(
+		&app,
+		&token,
+		"PUT",
+		&format!(
+			"/api/workspaces/{workspace}/attachments/{}/description",
+			notes["id"].as_str().unwrap()
+		),
+		json!({"description":"Notes"}),
+	)
+	.await;
+	let (url_status, url_refusal) = decoded(
+		client
+			.post_raw(&in_url, png, "application/octet-stream")
+			.await
+			.unwrap(),
+	);
+	let (long_status, long_refusal) =
+		upload_image(&app, &token, &workspace, Some(&"画".repeat(2001))).await;
+	let (full_status, full) =
+		upload_image(&app, &token, &workspace, Some(&"画".repeat(2000))).await;
+
+	// Assert: only an image is described, never through the URL, and the
+	// limit is 2,000 characters however many bytes they take.
+	assert_eq!(text_status, 400, "{text_refusal}");
+	assert_eq!(url_status, 400, "{url_refusal}");
+	assert_eq!(long_status, 400, "{long_refusal}");
+	assert_eq!(full_status, 200, "{full}");
 }
 
 async fn post_image(app: &EndpointFixture, token: &str, workspace: &str, content: &str) -> String {

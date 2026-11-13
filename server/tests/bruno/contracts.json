@@ -13494,12 +13494,7 @@
     "method": "POST",
     "name": "channel-attachment-upload",
     "path": "/api/workspaces/{id}/attachments",
-    "query_parameters": [
-      "description",
-      "filename",
-      "idempotency_key",
-      "media_type"
-    ],
+    "query_parameters": ["filename", "idempotency_key", "media_type"],
     "responses": {
       "200": {
         "definitions": {
