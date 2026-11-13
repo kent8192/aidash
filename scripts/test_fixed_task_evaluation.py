@@ -966,7 +966,103 @@ class OfflineCalibrationTest(unittest.TestCase):
                 self.assertEqual(evaluation.calibrate(value, [result]), [])
 
 
+class CacheReuseTest(unittest.TestCase):
+    def test_compaction_events_paginate_past_snapshot_limit(self):
+        class Api:
+            def get(self, path, token):
+                after = int(path.split("after=")[1])
+                if after == 0:
+                    return [{"sequence": i, "kind": "model.completed", "data": {"run_id": "r", "context_usage": {"compactions": 0}}} for i in range(1, 151)]
+                return []
+        events = runner.compaction_events(Api(), "token", "w", "r")
+        self.assertEqual(len(events), 150)
+
+    def test_probe_dry_run_preserves_reasoning_and_pins_route(self):
+        script = Path(__file__).resolve().parent / "prompt_cache_route_probe.py"
+        completed = subprocess.run([sys.executable, str(script), "--route", "example/model@Example", "--max-spend-usd", "1", "--echo-upstream-body"],
+                                   text=True, capture_output=True, check=True, env={"PATH": os.environ["PATH"]})
+        value = json.loads(completed.stdout)
+        self.assertEqual(len(value["requests"]), 4)
+        request = value["requests"][1]
+        self.assertEqual(request["provider"]["only"], ["Example"])
+        self.assertEqual(request["debug"], {"echo_upstream_body": True})
+        assistant = next(m for m in request["messages"] if m["role"] == "assistant")
+        self.assertEqual(assistant["reasoning_details"], [{"type": "reasoning.text", "text": "dry-run reasoning"}])
+        self.assertEqual(len([m for m in value["requests"][-1]["messages"] if m["role"] == "tool"]), 3)
+
+    def test_local_usage_reader_filters_run_and_never_passes_url_as_argument(self):
+        run_id = str(uuid.uuid4())
+        url = "postgresql://reader:secret@127.0.0.1:54391/bench"
+        with mock.patch.object(cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"purpose":"main"}\n', '')) as execute:
+            result = cli.local_usage_reader_for(url)(run_id)
+        self.assertEqual(result, [{"purpose": "main"}])
+        args, kwargs = execute.call_args
+        self.assertNotIn(url, args[0])
+        self.assertIn(run_id, kwargs["input"])
+        self.assertIn("WHERE run_id", kwargs["input"])
+        self.assertEqual(kwargs["env"]["PGDATABASE"], url)
+        with self.assertRaises(ValueError):
+            cli.local_usage_reader_for("postgresql://remote.example/db")
+
+    def test_local_usage_reader_can_use_bench_container_psql(self):
+        url = "postgresql://reader:secret@127.0.0.1:54391/bench"
+        results = [subprocess.CompletedProcess([], 0, "127.0.0.1:54391\n", ""),
+                   subprocess.CompletedProcess([], 0, "", "")]
+        with mock.patch.object(cli.subprocess, "run", side_effect=results) as execute:
+            cli.local_usage_reader_for(url, "bench-postgres")(str(uuid.uuid4()))
+        args, kwargs = execute.call_args
+        self.assertEqual(args[0][:3], ["docker", "exec", "-i"])
+        self.assertNotIn(url, args[0])
+        self.assertEqual(kwargs["env"]["PGDATABASE"], "postgresql://reader:secret@127.0.0.1:5432/bench")
+
+    def test_reuse_excludes_compaction_and_separates_summary(self):
+        records = [
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "after_compaction": False},
+            {"purpose": "summary", "outcome": "accepted", "input_tokens": 120, "output_tokens": 5, "cache_read_tokens": 100},
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 130, "output_tokens": 10, "cache_read_tokens": 110, "after_compaction": False},
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 80, "output_tokens": 10, "cache_read_tokens": 30, "after_compaction": True},
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 90, "after_compaction": False},
+        ]
+        metric = evaluation.summarize_usage(records)["cache_reuse"]
+        self.assertEqual([call["reuse"] for call in metric["main_calls"]], [None, 1.0, 30 / 140, 1.0])
+        self.assertEqual(metric["eligible_calls"], 2)
+        self.assertEqual(metric["reuse_at_least_999_share"], 1.0)
+        self.assertAlmostEqual(metric["overall_hit"], 330 / 530)
+        self.assertAlmostEqual(metric["summary_hit"], 100 / 120)
+        self.assertIsNone(evaluation.summarize_usage(None)["cache_reuse"]["overall_hit"])
+
+    def test_compaction_markers_follow_accepted_workspace_events(self):
+        records = [{"purpose": "main", "outcome": "completed"} for _ in range(3)]
+        events = [{"context_usage": {"compactions": n}} for n in (0, 1, 1)]
+        runner.mark_compaction(records, events)
+        self.assertEqual([r["after_compaction"] for r in records], [False, True, False])
+        runner.mark_compaction(records, events[:2])
+        self.assertEqual([r["after_compaction"] for r in records], [None, None, None])
+        records.insert(1, {"purpose": "main", "outcome": "unknown"})
+        runner.mark_compaction(records, events)
+        self.assertIsNone(records[2]["after_compaction"])
+
+
 class RecoveryCorpusTest(unittest.TestCase):
+    def test_long_cache_ledger_requires_late_correction_and_every_side_effect(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "long-cache-ledger")
+        fixture = fixture_module.Fixture({})
+        probe = fixture_module.Probe(item, "run")
+        for page in range(1, 76):
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("reference_lookup", {"page": page})])
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("record_note", {"page": page})])
+        status, result = fixture.tool(item, "reference_lookup", {"page": 45})
+        self.assertEqual(status, 200)
+        self.assertIn("BUDGET-USD=300", result["content"])
+        self.assertEqual(len(result["content"]), 150000)
+        self.assertEqual(len(fixture.tool(item, "reference_lookup", {"page": 46})[1]["content"]), 1200)
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        for pages, expected in [(list(range(1, 76)), True), (list(range(1, 75)), False),
+                                (list(range(1, 76)) + [75], False)]:
+            result = evaluation.grade(value, item, observation(final_answer=answer, fixture_record_pages=pages), False)
+            self.assertEqual(result["passed"], expected)
+
     def test_fixture_corrections_and_ledger(self):
         value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
         fixture = fixture_module.Fixture({})
