@@ -3256,7 +3256,6 @@ async fn an_approved_tool_call_runs_exactly_once_without_another_model_response(
 	assert_eq!(card["operation"], "invoke");
 	assert_eq!(card["call"]["name"], "plugin_0");
 	assert_eq!(card["call"]["arguments"], json!({"call":1}));
-	assert_eq!(card["approver"], "alice");
 	assert_eq!(card["viewer_is_approver"], true);
 	let (status, decided) =
 		decide_tool_call(&t.application.application, &token, approval, "allow_once").await;

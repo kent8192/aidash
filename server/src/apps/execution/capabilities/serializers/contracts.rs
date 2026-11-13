@@ -297,7 +297,9 @@ pub struct OutboundResult {
 	pub approval_state: String,
 	pub approval_revision: i64,
 	pub targets: Vec<String>,
-	pub approver: Option<String>,
+	/// Who decided the approval, once someone has; nobody is named while it
+	/// waits for an Eligible approver (ADR 0135).
+	pub decided_by: Option<String>,
 	pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 	pub grant_id: Option<Uuid>,
 	pub effects_may_have_occurred: bool,

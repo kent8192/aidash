@@ -11,7 +11,7 @@ import {
 import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "../transport";
+import { ApiError, apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
@@ -37,6 +37,7 @@ import {
   toolLabel,
   toolStateText,
 } from "./tool-approval-model";
+import { approverText, decisionErrorText } from "./approver-text";
 
 const DISCLOSE = "research.disclose";
 
@@ -305,7 +306,11 @@ export function ApprovalCardView({ item }: { item: Approval }) {
         });
       await client.invalidateQueries({ queryKey: ["core-approvals"] });
     } catch (e) {
-      setError(String(e));
+      // Someone else may have decided first (ADR 0135); say who and how. The
+      // next refresh of the list removes the card.
+      const late =
+        e instanceof ApiError ? decisionErrorText(e.detail, ja) : null;
+      setError(late ?? String(e));
     } finally {
       setBusy(false);
     }
@@ -341,12 +346,8 @@ export function ApprovalCardView({ item }: { item: Approval }) {
       )}
       {item.kind === "grant" && scope && <Hint>{scope}</Hint>}
       <Hint>
-        {ja ? "要求者" : "Requester"}: {item.requester} ·{" "}
-        {ja ? "承認者" : "Approver"}:{" "}
-        {item.approver ??
-          (ja
-            ? "承認できる人がいないため実行できません"
-            : "Blocked: no eligible approver")}
+        {ja ? "要求者" : "Requester"}: {item.requester}
+        {approverText(item, ja) && ` · ${approverText(item, ja)}`}
       </Hint>
       <Hint role="status">{stateText(item, ja, locale)}</Hint>
       {advance && (

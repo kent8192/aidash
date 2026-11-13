@@ -464,7 +464,7 @@ overlapping or out-of-call requests are refused. Roots are not advertised and
 root requests are refused; resources, prompts, URL elicitation and sampling tools
 are not used.
 
-Sampling is addressed to a Designated approver through the existing capability
+Sampling is decided by an Eligible approver through the existing capability
 approval API, with `kind: sampling`. Its card shows the server, copy, origin,
 messages, system prompt and capped maxTokens. `includeContext` is always `none`,
 model preferences are ignored, and the completion uses the Run's model and
@@ -513,7 +513,7 @@ still executes nothing. See [the accepted remaining-work decisions](../design/ag
 
 A call of a plugin tool needs a Tool call approval, like a call of a Tenant's
 HTTP or MCP tool, unless the Agent declares the tool Read-only against the
-pinned schema digest. The approval is addressed to a Designated approver, who
+pinned schema digest. The approval is decided by an Eligible approver, who
 sees the plugin, the server, the tool, the copy of the plugin and the exact
 call, and decides through the capability approval API. The approved call runs as
 asked.

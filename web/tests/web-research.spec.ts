@@ -33,7 +33,6 @@ const pending: Card[] = [
     state: "pending",
     revision: 1,
     requester: "alice",
-    approver: "alice",
     viewer_is_approver: true,
     targets: ["api.search.brave.com"],
     action: "research.disclose",
@@ -57,7 +56,6 @@ const pending: Card[] = [
     state: "pending",
     revision: 1,
     requester: "alice",
-    approver: "alice",
     viewer_is_approver: true,
     targets: ["example.com"],
     action: "research.disclose",
@@ -79,7 +77,6 @@ const pending: Card[] = [
     state: "pending",
     revision: 1,
     requester: "alice",
-    approver: "alice",
     viewer_is_approver: true,
     targets: ["example.org"],
     action: "research.disclose",
@@ -103,7 +100,6 @@ const grants: Card[] = [
     state: "active",
     revision: 1,
     requester: "alice",
-    approver: "alice",
     viewer_is_approver: true,
     targets: ["api.search.brave.com"],
     action: "research.disclose",
@@ -113,7 +109,7 @@ const grants: Card[] = [
     agent_version: "1.0.0",
     operation: "search",
     provider: "research.brave@1",
-    decided_by: null,
+    decided_by: "alice",
     decided_at: null,
   },
 ];
@@ -126,14 +122,12 @@ const thread: Card[] = [
   {
     ...pending[1],
     id: "waiting",
-    approver: "bob",
     viewer_is_approver: false,
   },
   {
     ...pending[2],
     id: "denied",
     state: "denied",
-    approver: "bob",
     viewer_is_approver: false,
     decided_by: "bob",
     decided_at: "2026-10-14T09:00:00Z",
@@ -142,7 +136,6 @@ const thread: Card[] = [
     ...pending[0],
     id: "expired",
     state: "expired",
-    approver: "bob",
     viewer_is_approver: false,
     expires_at: "2026-10-01T00:00:00Z",
   },
@@ -150,7 +143,6 @@ const thread: Card[] = [
     ...pending[2],
     id: "closed",
     state: "closed",
-    approver: "bob",
     viewer_is_approver: false,
     closed_reason: "evidence_revoked",
   },
@@ -158,13 +150,12 @@ const thread: Card[] = [
     ...pending[1],
     id: "blocked",
     state: "blocked",
-    approver: null,
     viewer_is_approver: false,
   },
   {
     ...grants[0],
     id: "thread-grant",
-    approver: "bob",
+    decided_by: "bob",
     viewer_is_approver: false,
   },
 ];
@@ -492,7 +483,8 @@ test("a requester-approver decides their Run's approval in the Thread", async ({
     .getByRole("article", { name: "Page reading disclosure" })
     .filter({ hasText: "Awaiting a decision" });
   await expect(waiting).toHaveCount(1);
-  await expect(waiting).toContainText("Approver: bob");
+  // A waiting approval names nobody (ADR 0135).
+  await expect(waiting).toContainText("Waiting for an eligible approver");
   await expect(waiting.getByRole("button", { name: /Allow|Deny/ })).toHaveCount(
     0,
   );
@@ -585,9 +577,12 @@ test("an Agent's bound research operations show their availability, the Run's us
     ),
   ).toBeVisible();
   await expect(
-    panel.getByText("Waiting for Web disclosure approval by bob", {
-      exact: false,
-    }),
+    panel.getByText(
+      "Web disclosure approval: Waiting for an eligible approver",
+      {
+        exact: false,
+      },
+    ),
   ).toBeVisible();
   await page.screenshot({ path: info.outputPath("research-panel.png") });
   expect(errors).toEqual([]);
@@ -605,9 +600,12 @@ test("the active Run's research stays with its pinned Agent version when another
     panel.getByText("This Run: searches 3/20", { exact: false }),
   ).toBeVisible();
   await expect(
-    panel.getByText("Waiting for Web disclosure approval by bob", {
-      exact: false,
-    }),
+    panel.getByText(
+      "Web disclosure approval: Waiting for an eligible approver",
+      {
+        exact: false,
+      },
+    ),
   ).toBeVisible();
   // The selected version binds no research, so it has no readiness to show.
   await expect(
@@ -807,7 +805,7 @@ test("an approver decides Web disclosures and revokes Run grants from the global
   // The Thread lists the Run's grant with its scope; its requester may revoke it.
   const threadGrant = page
     .getByRole("article", { name: "Web disclosure Run grant" })
-    .filter({ hasText: "Approver: bob" });
+    .filter({ hasText: "bob allowed it" });
   await expect(
     threadGrant.getByRole("button", { name: "Revoke" }),
   ).toBeVisible();

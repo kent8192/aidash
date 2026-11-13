@@ -141,7 +141,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       manual: {
         label: "Manual",
         description:
-          "The Run waits, and the designated approver is asked to decide.",
+          "The Run waits, and an eligible approver is asked to decide.",
       },
       auto: {
         label: "Auto",
@@ -326,7 +326,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     modes: {
       manual: {
         label: "Manual",
-        description: "Run は待機し、指定された承認者に判断を求めます。",
+        description: "Run は待機し、承認できる人に判断を求めます。",
       },
       auto: {
         label: "Auto",

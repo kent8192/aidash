@@ -385,46 +385,107 @@ fn eligible(scope: &dyn ApprovalScope, subject: &str, requester: &str, target: &
 	let evaluation = api_evaluation(scope, subject, target, "capability.approve");
 	approvals::approver_eligible(scope.bundle(), &evaluation, requester)
 }
-fn approver(scope: &dyn ApprovalScope, target: &Resource) -> Option<String> {
-	if eligible(scope, scope.principal(), scope.principal(), target) {
-		return Some(scope.principal().into());
-	}
-	scope
-		.bundle()
-		.subjects
-		.keys()
-		.find(|id| eligible(scope, id, scope.principal(), target))
-		.cloned()
+/// Whether anyone may decide an approval of `target` that the current
+/// principal requests: they themselves, or another Eligible approver.
+fn any_approver(scope: &dyn ApprovalScope, target: &Resource) -> bool {
+	let requester = scope.principal();
+	eligible(scope, requester, requester, target)
+		|| scope
+			.bundle()
+			.subjects
+			.keys()
+			.any(|id| eligible(scope, id, requester, target))
 }
-pub async fn visible(scope: &mut dyn ApprovalScope, record: &Record) -> Result<bool> {
-	if record.owner == scope.principal() {
-		return Ok(true);
-	}
-	if record.data["approver"] != scope.principal() {
-		return Ok(false);
-	}
+
+/// The protected targets of `record`, with its Run's context loaded.
+async fn targets_of(
+	scope: &mut dyn ApprovalScope,
+	record: &Record,
+) -> Result<Option<Vec<Resource>>> {
 	let run: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	scope.run_context(run).await?;
 	let Some(targets) = record.data["targets"]
 		.as_array()
 		.filter(|items| !items.is_empty())
 	else {
-		return Ok(false);
+		return Ok(None);
 	};
+	let mut resources = Vec::with_capacity(targets.len());
 	for origin in targets {
 		let Some(origin) = origin.as_str() else {
-			return Ok(false);
+			return Ok(None);
 		};
-		if !eligible(
-			scope,
-			scope.principal(),
-			&record.owner,
-			&target_of(scope, record, origin, run)?.0,
-		) {
-			return Ok(false);
-		}
+		resources.push(target_of(scope, record, origin, run)?.0);
 	}
-	Ok(true)
+	Ok(Some(resources))
+}
+
+/// Whether `subject` is an Eligible approver of every target, as the Tenant's
+/// policy stands now.
+fn eligible_for_all(
+	scope: &dyn ApprovalScope,
+	subject: &str,
+	requester: &str,
+	targets: &[Resource],
+) -> bool {
+	targets
+		.iter()
+		.all(|target| eligible(scope, subject, requester, target))
+}
+
+/// Who may decide a pending approval, judged now (ADR 0135): its requester
+/// alone when they are an Eligible approver of it, otherwise every Eligible
+/// approver. Nothing about whom it was addressed to is stored.
+fn decides(
+	scope: &dyn ApprovalScope,
+	subject: &str,
+	requester: &str,
+	targets: &[Resource],
+) -> bool {
+	if eligible_for_all(scope, requester, requester, targets) {
+		subject == requester
+	} else {
+		eligible_for_all(scope, subject, requester, targets)
+	}
+}
+
+/// What the current principal may do with an approval record or Run grant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reader {
+	/// They may see it: its requester, or someone it concerns as an approver.
+	pub visible: bool,
+	/// They act on it as an approver: they may decide it while it is pending;
+	/// for anything else they gave it or may approve its kind for its
+	/// destination now, so they may revoke it.
+	pub approver: bool,
+}
+
+/// What the current principal may do with `record`, judged now.
+pub async fn reader(scope: &mut dyn ApprovalScope, record: &Record) -> Result<Reader> {
+	let principal = scope.principal().to_owned();
+	let owner = record.owner == principal;
+	let Some(targets) = targets_of(scope, record).await? else {
+		return Ok(Reader {
+			visible: owner,
+			approver: false,
+		});
+	};
+	let approver = if record.kind != "grant" && record.state == "pending" {
+		decides(scope, &principal, &record.owner, &targets)
+	} else {
+		eligible_for_all(scope, &principal, &record.owner, &targets)
+	};
+	Ok(Reader {
+		visible: owner || approver,
+		approver,
+	})
+}
+
+pub async fn visible(scope: &mut dyn ApprovalScope, record: &Record) -> Result<bool> {
+	if record.owner == scope.principal() {
+		return Ok(true);
+	}
+	Ok(reader(scope, record).await?.visible)
 }
 pub async fn prepare(
 	scope: &mut dyn ApprovalScope,
@@ -449,7 +510,6 @@ pub async fn prepare(
 	let target = resource(scope, &origin, run.id);
 	scope.require(&target, "capability.request").await?;
 	let direct = ordinary(scope, &target, "network.get")?;
-	let designated = approver(scope, &target);
 	let grants = scope.grants(run.id).await?;
 	let grant = grants.into_iter().find(|g| {
 		g.data["targets"]
@@ -468,18 +528,20 @@ pub async fn prepare(
 			)
 	});
 	let id = Uuid::new_v4();
-	let designated = grant
+	// `approver` names who gave the approval, once someone has; a request
+	// waiting for an Eligible approver names nobody (ADR 0135).
+	let given = grant
 		.as_ref()
-		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
-		.or(designated);
+		.and_then(|g| g.data["approver"].as_str().map(str::to_owned));
+	let approvable = given.is_some() || any_approver(scope, &target);
 	let advice = if direct || grant.is_some() {
 		Advice::Ask
 	} else {
 		advise(scope, run, ApprovalKind::Outbound, &origin, &target).await?
 	};
-	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let state = approvals::requested_state(direct, grant.is_some(), approvable);
 	let state = advice.state("approved").unwrap_or(state);
-	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),"url":input.url,"targets":[origin],"action":"network.get","digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),"url":input.url,"targets":[origin],"action":"network.get","digest":digest,"policy_revision":scope.policy_revision(),"approver":given,"grant_id":grant.map(|g|g.id),"ordinary":direct});
 	advice.record(&mut data);
 	let record = scope
 		.insert(Creation {
@@ -494,7 +556,13 @@ pub async fn prepare(
 	scope
 		.cache(input.idempotency_key, &digest, &json!({"operation_id":id}))
 		.await?;
-	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"]})).await?;
+	scope
+		.event(
+			run.workspace_id,
+			"capability.approval_requested",
+			json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"]}),
+		)
+		.await?;
 	view(scope, run, &record).await
 }
 pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> Result<Value> {
@@ -589,7 +657,9 @@ pub async fn can_allow_always(
 	if record.state != "pending"
 		|| !KINDS.contains(&record.kind.as_str())
 		|| record.data["subjects"][0].as_str() != Some(owner.as_str())
-		|| record.data["approver"] != owner
+		// Only a requester deciding their own approval; the ceiling below
+		// checks they are an Eligible approver of it.
+		|| record.owner != owner
 		|| record.data["run_id"] != json!(run.id)
 		|| record.expires_at.is_none_or(|t| t <= Utc::now())
 		|| run.control == RunControl::Cancelled
@@ -622,10 +692,28 @@ pub async fn decide(
 	let run = scope.run_context(run_id).await?;
 	let origin = record.data["targets"][0].as_str().ok_or(Error::Forbidden)?;
 	let (target, action) = target_of(scope, &record, origin, run_id)?;
-	if record.data["approver"] != scope.principal()
-		|| !eligible(scope, scope.principal(), &record.owner, &target)
-	{
+	let principal = scope.principal().to_owned();
+	let targets = targets_of(scope, &record)
+		.await?
+		.ok_or_else(|| Error::NotFound("approval unavailable".into()))?;
+	if !decides(scope, &principal, &record.owner, &targets) {
 		return Err(Error::NotFound("approval unavailable".into()));
+	}
+	// Every Eligible approver is offered it and the first decision counts
+	// (ADR 0135). A later one is told who decided and how; only a person who
+	// may decide it now gets this far.
+	if let (Some(by), Some(outcome)) = (
+		record.data["decided_by"].as_str(),
+		match record.state.as_str() {
+			"approved" | "attempted" | "consumed" => Some(approvals::DecidedOutcome::Allowed),
+			"denied" => Some(approvals::DecidedOutcome::Denied),
+			_ => None,
+		},
+	) {
+		return Err(Error::ApprovalDecided {
+			decided_by: by.into(),
+			outcome,
+		});
 	}
 	if record.revision != input.expected_revision
 		|| record.state != "pending"
@@ -738,6 +826,9 @@ pub async fn decide(
 		}
 	}
 	record.data["decided_by"] = json!(scope.principal());
+	// Whoever decides is the approver the decision rests on: later checks
+	// require them to stay an Eligible approver.
+	record.data["approver"] = json!(scope.principal());
 	record.data["decided_at"] = json!(Utc::now());
 	record.data["decision_policy_revision"] = json!(scope.policy_revision());
 	scope.update(&mut record).await?;
@@ -763,7 +854,12 @@ pub async fn revoke(
 	if let Some(result) = scope.cached(input.idempotency_key, &digest).await? {
 		return Ok(result);
 	}
-	if record.owner != scope.principal() && record.data["approver"] != scope.principal() {
+	// Its requester, whoever gave it, or anyone who may approve its kind for its
+	// destination now may revoke it (ADR 0135).
+	if record.owner != scope.principal()
+		&& record.data["approver"] != scope.principal()
+		&& !reader(scope, &record).await?.approver
+	{
 		return Err(Error::NotFound("grant unavailable".into()));
 	}
 	if record.revision != input.expected_revision {
@@ -941,7 +1037,7 @@ async fn still_approved(scope: &mut dyn ApprovalScope, run: &Run, record: &Recor
 }
 
 /// Admit one exact Web disclosure of a Run. Policy may permit it directly or
-/// through a Run grant; otherwise a designated approver decides through the
+/// through a Run grant; otherwise an Eligible approver decides through the
 /// ordinary approval decision, and the Run waits on the returned approval.
 /// An approval is consumed by the one disclosure it allows; repeating the same
 /// disclosure later needs a new approval.
@@ -1021,10 +1117,11 @@ pub async fn disclose(
 				&target,
 			)
 	});
-	let designated = grant
+	// `approver` names who gave the approval, once someone has (ADR 0135).
+	let given = grant
 		.as_ref()
-		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
-		.or_else(|| approver(scope, &target));
+		.and_then(|g| g.data["approver"].as_str().map(str::to_owned));
+	let approvable = given.is_some() || any_approver(scope, &target);
 	let advice = if direct || grant.is_some() {
 		Advice::Ask
 	} else {
@@ -1032,12 +1129,12 @@ pub async fn disclose(
 			disclosure_rule(request.operation, &request.provider, &request.destination);
 		advise(scope, run, kind, &name, &target).await?
 	};
-	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let state = approvals::requested_state(direct, grant.is_some(), approvable);
 	let state = advice.state("approved").unwrap_or(state);
 	let id = Uuid::new_v4();
 	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
 		"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,"attribution":request.attribution,"query":request.query,
-		"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+		"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":given,"grant_id":grant.map(|g|g.id),"ordinary":direct});
 	advice.record(&mut data);
 	let record = scope
 		.insert(Creation {
@@ -1061,7 +1158,7 @@ pub async fn disclose(
 			&json!({"operation_id":id}),
 		)
 		.await?;
-	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"],"action":DISCLOSE})).await?;
+	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"action":DISCLOSE})).await?;
 	Ok(match state {
 		"approved" => DisclosureState::Permitted,
 		"pending" => DisclosureState::Pending {
@@ -1103,7 +1200,7 @@ pub async fn consume_disclosure(
 
 /// Admit one exact call of a Tenant's HTTP or MCP tool. Policy may permit it
 /// directly (`tool.call_unapproved`) or through a Run grant; otherwise a
-/// designated approver decides through the ordinary approval decision and the
+/// Eligible approver decides through the ordinary approval decision and the
 /// Run waits on the returned approval. The same invocation key and call always
 /// map to the same approval, which the one call it allows consumes.
 pub async fn tool_call(
@@ -1153,22 +1250,23 @@ pub async fn tool_call(
 				&target,
 			)
 	});
-	let designated = grant
+	// `approver` names who gave the approval, once someone has (ADR 0135).
+	let given = grant
 		.as_ref()
-		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
-		.or_else(|| approver(scope, &target));
+		.and_then(|g| g.data["approver"].as_str().map(str::to_owned));
+	let approvable = given.is_some() || any_approver(scope, &target);
 	let advice = if direct || grant.is_some() {
 		Advice::Ask
 	} else {
 		let name = tool_rule_target(&request.tool.id(), &request.operation);
 		advise(scope, run, ApprovalKind::ToolCall, &name, &target).await?
 	};
-	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let state = approvals::requested_state(direct, grant.is_some(), approvable);
 	let state = advice.state("approved").unwrap_or(state);
 	let id = Uuid::new_v4();
 	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
 		"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,
-		"digest":digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+		"digest":digest,"policy_revision":scope.policy_revision(),"approver":given,"grant_id":grant.map(|g|g.id),"ordinary":direct});
 	if let (Some(data), Some(target)) = (data.as_object_mut(), request.tool.record().as_object()) {
 		data.extend(target.clone());
 	}
@@ -1191,7 +1289,7 @@ pub async fn tool_call(
 	scope
 		.cache(cache_key, &digest, &json!({"operation_id":id}))
 		.await?;
-	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"],"action":CALL_UNAPPROVED})).await?;
+	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"action":CALL_UNAPPROVED})).await?;
 	Ok(settled_tool_call(&record))
 }
 

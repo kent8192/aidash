@@ -792,6 +792,13 @@ pub(crate) async fn outbound_history(
 fn ends_with_run(row: &super::records::Record) -> bool {
 	matches!(row.kind.as_str(), "disclosure" | "tool_call" | "sampling") && row.state == "pending"
 }
+/// The most cards one page of approvals holds.
+const APPROVAL_PAGE: usize = 50;
+/// The most rows one request reads before it returns a short page and a cursor.
+/// Who may decide an approval is judged per row (ADR 0135), so rows the reader
+/// cannot see are skipped after the query; this bounds the work a page of
+/// mostly invisible rows costs.
+const APPROVAL_SCAN: usize = 10 * APPROVAL_PAGE;
 pub(crate) async fn approval_list(
 	f: Federation,
 	actor: Actor,
@@ -800,146 +807,207 @@ pub(crate) async fn approval_list(
 	let mut access = access(&f, actor).await?;
 	let result = async {
 		let subject = access.identity.subject.clone();
-		let mut select = sessions::select("core_records")
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.to_owned())))
-			.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query.cursor.unwrap_or(Uuid::nil()))))
-			.order_by(Alias::new("id"), Order::Asc)
-			.limit(51)
-			.to_owned();
-		select.and_where(match query.role {
-			// An inbox lists only what the reader is asked to decide or gave.
-			Some(ApprovalRole::Approver) => SimpleExpr::CustomWithExpr(
-				"data->>'approver' = ?".into(),
-				vec![Expr::value(subject.clone()).into()],
-			),
-			None => SimpleExpr::CustomWithExpr(
-				"(owner = ? OR data->>'approver' = ?)".into(),
-				vec![Expr::value(subject.clone()).into(), Expr::value(subject.clone()).into()],
-			),
-		});
+		// Only a requester or a `capability_approver` can be an Eligible
+		// approver of anything (ADR 0135), so anyone else is shown only their
+		// own requests. Who may see each row is judged below, as policy stands.
+		let may_approve_others =
+			access
+				.snapshot
+				.bundle
+				.subjects
+				.get(&subject)
+				.is_some_and(|person| {
+					person.enabled
+						&& person.kind == aidash_domain::policy::SubjectKind::User
+						&& person.attributes["capability_approver"] == true
+				});
 		let (kinds, state): (&[&str], _) = match query.state {
-			Some(ApprovalState::Pending) => {
-				(&["outbound", "disclosure", "tool_call", "sampling"], Some("pending"))
-			}
+			Some(ApprovalState::Pending) => (
+				&["outbound", "disclosure", "tool_call", "sampling"],
+				Some("pending"),
+			),
 			Some(ApprovalState::Active) => (&["grant"], Some("active")),
-			None => (&["outbound", "grant", "disclosure", "tool_call", "sampling"], None),
+			None => (
+				&["outbound", "grant", "disclosure", "tool_call", "sampling"],
+				None,
+			),
 		};
-		select.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()));
-		if let Some(state) = state {
-			select
-				.and_where(Expr::col(Alias::new("state")).eq(Expr::value(state)))
-				.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())));
-		}
-		if query.state == Some(ApprovalState::Pending) {
-			// A disclosure or tool call approval ends with its Run: an inbox never
-			// offers one whose Run has ended, since no decision on it could take
-			// effect.
-			select.and_where(Expr::cust(
-				"(kind NOT IN ('disclosure', 'tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM runs r \
-				 WHERE r.id::text = core_records.data->>'run_id' \
-				 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
-			));
-		}
-		let rows: Vec<super::records::Record> =
-			crate::database::native::query_as(&select.to_string(PostgresQueryBuilder))
-				.fetch_all(&mut **access.tx)
-				.await?;
-		let next_cursor = (rows.len() == 51).then(|| rows[49].id);
-		// Every view, not only the inbox, shows a pending disclosure or tool call
-		// approval whose Run has ended as closed, as a decision on it would close
-		// it, so no reader is offered it.
-		let waiting: Vec<Uuid> = rows
-			.iter()
-			.take(50)
-			.filter(|row| ends_with_run(row))
-			.filter_map(|row| serde_json::from_value(row.data["run_id"].clone()).ok())
-			.collect();
-		let ended: std::collections::HashSet<Uuid> = if waiting.is_empty() {
-			Default::default()
-		} else {
-			crate::database::native::query_scalar(
-				&reinhardt::query::Query::select()
-					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
-					.and_where(Expr::col(Alias::new("id")).is_in(waiting.into_iter().map(Expr::value)))
-					.and_where(
-						Expr::col(Alias::new("phase"))
-							.is_in(["COMPLETED", "FAILED", "CANCELLED"])
-							.or(Expr::col(Alias::new("control")).eq(Expr::value("CANCELLED"))),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_all(&mut **access.tx)
-			.await?
-			.into_iter()
-			.collect()
-		};
+		let mut cursor = query.cursor.unwrap_or(Uuid::nil());
+		let mut scanned = 0;
+		let mut next_cursor = None;
 		let mut items = vec![];
-		for row in rows.into_iter().take(50) {
-			if !super::approvals::visible(&mut access, &row).await? {
-				continue;
+		'pages: loop {
+			let mut select = sessions::select("core_records")
+				.and_where(
+					Expr::col(Alias::new("tenant"))
+						.eq(Expr::value(access.identity.tenant.to_owned())),
+				)
+				.and_where(Expr::col(Alias::new("id")).gt(Expr::value(cursor)))
+				.and_where(Expr::col(Alias::new("kind")).is_in(kinds.iter().copied()))
+				.order_by(Alias::new("id"), Order::Asc)
+				.limit(APPROVAL_PAGE as u64 + 1)
+				.to_owned();
+			if !may_approve_others {
+				select.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(subject.clone())));
 			}
-			let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
-			let run_ended = ends_with_run(&row) && ended.contains(&run);
-			// A Run grant past its `expires_at` no longer admits anything, so
-			// it reads as expired rather than active and revocable.
-			let expired = matches!(row.state.as_str(), "pending" | "active")
-				&& row.expires_at.is_some_and(|t| t < chrono::Utc::now());
-			let data = &row.data;
-			let state = if run_ended { "closed" } else if expired { "expired" } else { &row.state };
-			// A rule can name an outbound read, a Web disclosure or a tool call, and
-			// only the person the Run's delegation chain starts at may make one.
-			let allow_always = state == "pending"
-				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call" | "sampling")
-				&& data["subjects"][0] == json!(subject)
-				&& super::approvals::can_allow_always(&f.store, &mut access, &row).await?;
-			// The Thread offers a pending card inline only when its approver is
-			// the person the Run's delegation chain starts at (#896).
-			let decide_inline = state == "pending"
-				&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
-				&& data["approver"] == json!(subject)
-				&& data["subjects"][0] == json!(subject);
-			// Designated approvers see only the scoped card, never Run output.
-			items.push(json!({
-				"id": row.id,
-				"kind": row.kind,
-				"run_id": run,
-				"area_id": row.area_id,
-				"state": state,
-				"revision": row.revision,
-				"requester": row.owner,
-				"approver": data["approver"],
-				"targets": data["targets"],
-				"action": data["action"].as_str().or_else(|| data["actions"][0].as_str()).unwrap_or("network.get"),
-				"expires_at": row.expires_at,
-				"grant_id": data["grant_id"],
-				"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
-				"viewer_is_approver": data["approver"] == json!(subject),
-				"viewer_can_decide_inline": decide_inline,
-				"agent_id": data["agent_id"],
-				"agent_version": data["agent_version"],
-				"tool": data["tool"],
-				"version": if data["tool"].is_string() { data["version"].clone() } else { Value::Null },
-				"plugin_tool": data["plugin_tool"],
-				"operation": data["operation"],
-				"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
-				"sampling_target": data["sampling_target"],
-				"sampling": data["sampling"],
-				"provider": data["provider"],
-				"estimated_micro_usd": data["attribution"]["price_micro_usd"],
-				"query": data["query"],
-				"decided_by": data["decided_by"],
-				"decided_at": data["decided_at"],
-				"given_by": data["given_by"],
-				"refused_by": data["refused_by"],
-				"allow_always": allow_always,
-				"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
-			}));
+			if let Some(state) = state {
+				select
+					.and_where(Expr::col(Alias::new("state")).eq(Expr::value(state)))
+					.and_where(
+						Expr::col(Alias::new("expires_at")).gt(Expr::value(chrono::Utc::now())),
+					);
+			}
+			if query.state == Some(ApprovalState::Pending) {
+				// A disclosure or tool call approval ends with its Run: an inbox never
+				// offers one whose Run has ended, since no decision on it could take
+				// effect.
+				select.and_where(Expr::cust(
+					"(kind NOT IN ('disclosure', 'tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM runs r \
+					 WHERE r.id::text = core_records.data->>'run_id' \
+					 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
+				));
+			}
+			let mut rows: Vec<super::records::Record> =
+				crate::database::native::query_as(&select.to_string(PostgresQueryBuilder))
+					.fetch_all(&mut **access.tx)
+					.await?;
+			let more = rows.len() > APPROVAL_PAGE;
+			rows.truncate(APPROVAL_PAGE);
+			// Every view, not only the inbox, shows a pending disclosure or tool call
+			// approval whose Run has ended as closed, as a decision on it would close
+			// it, so no reader is offered it.
+			let waiting: Vec<Uuid> = rows
+				.iter()
+				.filter(|row| ends_with_run(row))
+				.filter_map(|row| serde_json::from_value(row.data["run_id"].clone()).ok())
+				.collect();
+			let ended: std::collections::HashSet<Uuid> = if waiting.is_empty() {
+				Default::default()
+			} else {
+				crate::database::native::query_scalar(
+					&reinhardt::query::Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("runs"))
+						.and_where(
+							Expr::col(Alias::new("id")).is_in(waiting.into_iter().map(Expr::value)),
+						)
+						.and_where(
+							Expr::col(Alias::new("phase"))
+								.is_in(["COMPLETED", "FAILED", "CANCELLED"])
+								.or(Expr::col(Alias::new("control")).eq(Expr::value("CANCELLED"))),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_all(&mut **access.tx)
+				.await?
+				.into_iter()
+				.collect()
+			};
+			let count = rows.len();
+			for (index, row) in rows.into_iter().enumerate() {
+				cursor = row.id;
+				scanned += 1;
+				let reader = super::approvals::reader(&mut access, &row).await?;
+				// An inbox lists only what the reader may decide, or revoke as an
+				// approver; otherwise their own requests are listed too.
+				let listed = match query.role {
+					Some(ApprovalRole::Approver) => reader.approver,
+					None => reader.visible,
+				};
+				if listed {
+					items.push(
+						approval_card(&f, &mut access, &subject, &row, reader, &ended).await?,
+					);
+				}
+				let rest = more || index + 1 < count;
+				if items.len() == APPROVAL_PAGE || (scanned >= APPROVAL_SCAN && rest) {
+					next_cursor = rest.then_some(cursor);
+					break 'pages;
+				}
+			}
+			if !more {
+				break;
+			}
 		}
 		Ok(json!({"items": items, "next_cursor": next_cursor}))
 	}
 	.await;
 	typed(access.finish(result).await?)
+}
+/// One approval card as `subject` may see it.
+async fn approval_card(
+	f: &Federation,
+	access: &mut Access,
+	subject: &str,
+	row: &super::records::Record,
+	reader: aidash_application::capabilities::approvals::Reader,
+	ended: &std::collections::HashSet<Uuid>,
+) -> Result<Value> {
+	let run: Uuid = serde_json::from_value(row.data["run_id"].clone())?;
+	let run_ended = ends_with_run(row) && ended.contains(&run);
+	// A Run grant past its `expires_at` no longer admits anything, so
+	// it reads as expired rather than active and revocable.
+	let expired = matches!(row.state.as_str(), "pending" | "active")
+		&& row.expires_at.is_some_and(|t| t < chrono::Utc::now());
+	let data = &row.data;
+	let state = if run_ended {
+		"closed"
+	} else if expired {
+		"expired"
+	} else {
+		&row.state
+	};
+	// A rule can name an outbound read, a Web disclosure or a tool call, and
+	// only the person the Run's delegation chain starts at may make one.
+	let allow_always = state == "pending"
+		&& matches!(
+			row.kind.as_str(),
+			"outbound" | "disclosure" | "tool_call" | "sampling"
+		) && data["subjects"][0] == json!(subject)
+		&& super::approvals::can_allow_always(&f.store, access, row).await?;
+	// The Thread offers a pending card inline only when the reader decides it
+	// as the requester at the root of the Run's delegation chain (#896).
+	let decide_inline = state == "pending"
+		&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
+		&& reader.approver
+		&& row.owner == subject
+		&& data["subjects"][0] == json!(subject);
+	// Eligible approvers see only the scoped card, never Run output.
+	Ok(json!({
+		"id": row.id,
+		"kind": row.kind,
+		"run_id": run,
+		"area_id": row.area_id,
+		"state": state,
+		"revision": row.revision,
+		"requester": row.owner,
+		"targets": data["targets"],
+		"action": data["action"].as_str().or_else(|| data["actions"][0].as_str()).unwrap_or("network.get"),
+		"expires_at": row.expires_at,
+		"grant_id": data["grant_id"],
+		"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
+		"viewer_is_approver": reader.approver,
+		"viewer_can_decide_inline": decide_inline,
+		"agent_id": data["agent_id"],
+		"agent_version": data["agent_version"],
+		"tool": data["tool"],
+		"version": if data["tool"].is_string() { data["version"].clone() } else { Value::Null },
+		"plugin_tool": data["plugin_tool"],
+		"operation": data["operation"],
+		"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
+		"sampling_target": data["sampling_target"],
+		"sampling": data["sampling"],
+		"provider": data["provider"],
+		"estimated_micro_usd": data["attribution"]["price_micro_usd"],
+		"query": data["query"],
+		// A Run grant names who gave it; an approval, who decided it.
+		"decided_by": if row.kind == "grant" { data["approver"].clone() } else { data["decided_by"].clone() },
+		"decided_at": data["decided_at"],
+		"given_by": data["given_by"],
+		"refused_by": data["refused_by"],
+		"allow_always": allow_always,
+		"closed_reason": if run_ended { json!("run_ended") } else { data["closed_reason"].clone() },
+	}))
 }
 pub(crate) async fn approval_decide(
 	f: Federation,

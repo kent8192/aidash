@@ -186,7 +186,7 @@ async fn approver_fixture(
 #[case("permission", true)]
 #[case("attribute", true)]
 #[tokio::test]
-async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
+async fn eligible_approver_is_rechecked_and_preserves_the_original_requester(
 	#[case] withdrawal: &str,
 	#[case] grant: bool,
 	#[future] approver_fixture: (CoreFixture, aidash_server::domain::Run, String),
@@ -200,7 +200,8 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	)
 	.await;
 	assert_eq!(status, 200, "{pending}");
-	assert_eq!(pending["approver"], "bob");
+	// A waiting approval names nobody (ADR 0135).
+	assert!(pending["decided_by"].is_null(), "{pending}");
 	if grant {
 		let (status,approved)=common::post(&c.app, &bob, &format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
 		assert_eq!(status, 200, "{approved}");
@@ -208,7 +209,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	}
 	let (_, cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
 	assert_eq!(cards["items"][0]["requester"], "alice");
-	assert_eq!(cards["items"][0]["approver"], "bob");
+	assert_eq!(cards["items"][0]["viewer_is_approver"], true);
 	assert_eq!(cards["items"][0]["viewer_can_decide_inline"], false);
 	let (_, requester_cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
 	let requester_card = requester_cards["items"]
@@ -223,7 +224,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 		if withdrawal == "attribute" {
 			c.policy["subjects"]["bob"]["attributes"] = json!({});
 		} else {
-			c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-designated-approver","effect":"deny","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
+			c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-approver","effect":"deny","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
 		}
 		assert_eq!(
 			common::post(
@@ -242,7 +243,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	assert_eq!(
 		cards["items"].as_array().unwrap().len(),
 		if revoke { 0 } else { 1 + usize::from(grant) },
-		"revoked designated approvers must not see stored cards: {cards}"
+		"approvers who lost the right must not see stored cards: {cards}"
 	);
 	let (_, owner_cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
 	assert_eq!(
@@ -262,7 +263,6 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 		.await;
 		assert_eq!(blocked_status, 200, "{blocked}");
 		assert_eq!(blocked["status"], "blocked", "{blocked}");
-		assert!(blocked["approver"].is_null());
 		let (status, cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
 		assert_eq!(status, 200, "{cards}");
 		assert!(
@@ -270,7 +270,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 				.as_array()
 				.unwrap()
 				.iter()
-				.any(|card| card["state"] == "blocked" && card["approver"].is_null())
+				.any(|card| card["state"] == "blocked" && card["decided_by"].is_null())
 		);
 	} else {
 		assert_eq!(status, 200, "{result}");
@@ -282,7 +282,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 			.find(|card| card["kind"] == "grant")
 			.unwrap();
 		assert_eq!(grant["requester"], "alice");
-		assert_eq!(grant["approver"], "bob");
+		assert_eq!(grant["decided_by"], "bob");
 	}
 	c.close().await;
 }
@@ -320,7 +320,8 @@ async fn approval_list_and_decision_restore_the_request_workspace_context(
 	)
 	.await;
 	assert_eq!(status, 200, "{pending}");
-	assert_eq!(pending["approver"], "bob");
+	// A waiting approval names nobody (ADR 0135).
+	assert!(pending["decided_by"].is_null(), "{pending}");
 	let (status, cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
 	assert_eq!(status, 200, "{cards}");
 	assert_eq!(cards["items"][0]["requester"], "alice");
@@ -340,3 +341,65 @@ async fn approval_list_and_decision_restore_the_request_workspace_context(
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+#[rstest::rstest]
+#[tokio::test]
+async fn every_eligible_approver_sees_a_waiting_approval_and_a_late_one_is_told_who_decided(
+	#[future] approver_fixture: (CoreFixture, aidash_server::domain::Run, String),
+) {
+	// Arrange: Alice may not approve her own outbound read; Bob and Carol may.
+	let (mut c, run, bob) = Box::pin(approver_fixture).await;
+	c.policy["subjects"]["carol"] =
+		json!({"kind":"user","attributes":{"capability_approver":true}});
+	crate::common::replace_policy(&c.f.store, "acme", c.policy.clone()).await;
+	let carol = common::issued_credential(&c.f.store, "acme", "carol").await["token"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let (status, pending) = common::post(
+		&c.app,
+		&c.token,
+		&format!("/api/runs/{}/outbound", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	let id = pending["approval_id"].as_str().unwrap().to_owned();
+	let inbox = "/api/capabilities/approvals?state=pending&role=approver";
+
+	// Act
+	let (_, bob_inbox) = common::get(&c.app, &bob, inbox).await;
+	let (_, carol_inbox) = common::get(&c.app, &carol, inbox).await;
+	let (_, alice_inbox) = common::get(&c.app, &c.token, inbox).await;
+	let decide = |choice: &str| json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":choice});
+	let path = format!("/api/capabilities/approvals/{id}/decide");
+	let (carol_status, carol_decision) =
+		common::post(&c.app, &carol, &path, decide("allow_once")).await;
+	let (bob_status, bob_decision) = common::post(&c.app, &bob, &path, decide("deny")).await;
+	let (_, bob_after) = common::get(&c.app, &bob, inbox).await;
+
+	// Assert
+	let offered = |page: &serde_json::Value| {
+		page["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|card| card["id"] == json!(id) && card["viewer_is_approver"] == true)
+	};
+	assert!(offered(&bob_inbox), "{bob_inbox}");
+	assert!(offered(&carol_inbox), "{carol_inbox}");
+	assert!(!offered(&alice_inbox), "{alice_inbox}");
+	assert_eq!(carol_status, 200, "{carol_decision}");
+	assert_eq!(bob_status, 409, "{bob_decision}");
+	assert_eq!(
+		bob_decision["error"]["code"], "APPROVAL_ALREADY_DECIDED",
+		"{bob_decision}"
+	);
+	assert_eq!(bob_decision["error"]["details"]["decided_by"], "carol");
+	assert_eq!(bob_decision["error"]["details"]["outcome"], "allowed");
+	assert!(
+		!offered(&bob_after),
+		"a decided approval leaves every inbox: {bob_after}"
+	);
+	c.close().await;
+}

@@ -19,8 +19,8 @@ export async function every(path: string, signal: AbortSignal) {
 }
 
 /**
- * The signed-in approver's inbox: capability approvals awaiting their
- * decision and the unexpired Run grants they gave. A designated approver may
+ * The signed-in approver's inbox: capability approvals they may decide and
+ * the unexpired Run grants they may revoke. An Eligible approver may
  * be unable to read the Thread, so decisions and revocations live here.
  * Keys start with `core-approvals`, so every decision refreshes them.
  */
