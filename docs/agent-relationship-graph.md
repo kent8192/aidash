@@ -172,7 +172,7 @@ A selected local Workspace limits remote operational records to
 explicitly related resources; selecting all Workspaces allows the receiving
 Node's own authorized Workspaces. Continuation resources retain their explicit
 Node and Workspace ownership even if their page omits the Workspace vertex.
-Peer expansion does not traverse onward to a third Node.
+Peer expansion does not traverse onward to a third Node. If the answering Node cannot confirm scanned rows, a separate warning names that answering Node and the count; the silent Node is not disclosed. The count does not promise that the rows will be visible when confirmation succeeds.
 
 Expanded projections refresh within 30 seconds while the view is visible.
 Denial, connection loss, expiry, collapse, context change and reload remove

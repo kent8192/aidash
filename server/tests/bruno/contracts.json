@@ -3493,6 +3493,14 @@
                   "$ref": "#/components/schemas/GraphNode"
                 },
                 "type": "array"
+              },
+              "unconfirmed": {
+                "default": [],
+                "description": "Rows the answering Node could not confirm; node identifies the answering Node.",
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -3502,9 +3510,47 @@
               "nodes",
               "edges",
               "activity",
+              "unconfirmed",
               "next_cursor"
             ],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           }
         },
         "schema": {
@@ -3642,6 +3688,14 @@
                   "$ref": "#/components/schemas/GraphNode"
                 },
                 "type": "array"
+              },
+              "unconfirmed": {
+                "default": [],
+                "description": "Rows the answering Node could not confirm; node identifies the answering Node.",
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -3651,9 +3705,47 @@
               "nodes",
               "edges",
               "activity",
+              "unconfirmed",
               "next_cursor"
             ],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           }
         },
         "schema": {
@@ -10557,7 +10649,8 @@
               }
             },
             "required": ["reference_id", "revision", "state"],
-            "type": "object"
+            "type": "object",
+            "description": "What a subject holding `reference.delete` needs to revoke a Reference: the\nrevision to send back and its state. It carries no content or name (#826)."
           }
         },
         "schema": {
@@ -12212,7 +12305,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -12634,7 +12727,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -13578,7 +13671,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -25830,7 +25923,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -26145,7 +26238,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -35084,7 +35177,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -37367,6 +37460,17 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
             "additionalProperties": false
@@ -37767,6 +37871,13 @@
                 "type": ["integer", "null"],
                 "format": "int64",
                 "description": "Last workspace event delivered to this Run."
+              },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
               }
             },
             "additionalProperties": false
@@ -39350,6 +39461,17 @@
             },
             "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
+            "type": "object"
           }
         },
         "schema": {
@@ -39841,7 +39963,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -41747,7 +41869,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -55509,7 +55631,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {
@@ -55633,7 +55755,7 @@
                 "$ref": "#/components/schemas/UnconfirmedKind"
               },
               "node": {
-                "description": "The address of the Node that did not answer.",
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
               "workspace_id": {

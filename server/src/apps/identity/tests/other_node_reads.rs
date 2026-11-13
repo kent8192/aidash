@@ -1071,6 +1071,20 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	let children = world.all_handed_over().await;
 	assert_eq!(children.len(), 4);
 	let workspace = children[0].workspace_id.to_string();
+	let source =
+		common::register_source(&world.f, &world.app, "aidash://graph-asker", "acme").await;
+	let credential = common::issued_credential(&world.f.store, "acme", "alice").await;
+	let (status, mapping) = common::set_peer_mapping(
+		&world.f,
+		"acme",
+		"alice",
+		json!({
+			"node": source.receiver.node, "source_node": source.address(), "source_subject": "viewer",
+			"credential_id": credential["credential"]["id"], "enabled": true, "expected_revision": 0,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
 	let bob = credential_without_discovery(&world).await;
 	// Arrange: every Node answers, so nothing is left out.
 	let (status, tasks) = world.get("/api/tasks").await;
@@ -1114,6 +1128,26 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 		hidden.len() as u64,
 	)];
 	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
+	let (status, graph) = common::post_graph(
+		&world.app,
+		&source,
+		"viewer",
+		&json!({
+			"subject":"viewer", "scope_workspace":null, "mode":"mesh", "kinds":["task"],
+			"relations":[], "hours":0, "limit":80, "cursor":null
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{graph}");
+	assert_eq!(
+		unconfirmed_of(&graph, "task"),
+		vec![(source.receiver.to_string(), workspace.clone(), 4)],
+		"{graph}"
+	);
+	assert!(
+		!graph.to_string().contains(&world.sibling.to_string()),
+		"{graph}"
+	);
 	let single = format!("/api/tasks/{}/runs", hidden[0].id);
 	// The same Node is named in the state and the Workspace.
 	let (status, state) = world.get("/api/state").await;

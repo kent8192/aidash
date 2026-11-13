@@ -73,6 +73,7 @@ fn page() -> GraphPage {
 		}],
 		edges: vec![],
 		activity: vec![],
+		unconfirmed: vec![],
 		next_cursor: None,
 	}
 }
@@ -139,4 +140,18 @@ fn scoped_keys_preserve_resource_and_definition_namespaces() {
 		entity_key("aidash://b", "agent", "one", "1.0.0"),
 		json!(["entity", "aidash://b", "agent", "one", "1.0.0"]).to_string()
 	);
+}
+
+#[test]
+fn unconfirmed_graph_entries_must_name_the_answering_node() {
+	let mut p = page();
+	p.unconfirmed.push(crate::unconfirmed::Unconfirmed {
+		node: "aidash://b".into(),
+		kind: crate::unconfirmed::Kind::Task,
+		workspace_id: Uuid::from_u128(1),
+		count: 1,
+	});
+	assert!(valid_remote_page(&p, "aidash://b", &options()));
+	p.unconfirmed[0].node = "aidash://c".into();
+	assert!(!valid_remote_page(&p, "aidash://b", &options()));
 }

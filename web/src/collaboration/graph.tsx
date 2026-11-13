@@ -21,7 +21,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Loading } from "../components/patterns";
+import { Loading, Notice } from "../components/patterns";
 import {
   Focus,
   List,
@@ -43,6 +43,7 @@ import {
   type GraphPage,
   type RemoteExpansion,
 } from "./federated-graph";
+import { graphUnconfirmed } from "./graph-unconfirmed";
 import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
 import { floatingToolbar, MeshIcon } from "./mesh-icons";
@@ -773,6 +774,14 @@ export function Graph({
       )}
       aria-label="Graph View"
     >
+      {mode !== "neighborhood" &&
+        graphUnconfirmed(expansions, scope).map(({ node: peer, count }) => (
+          <Notice key={peer} tone="warning" role="status">
+            {locale === "ja-JP"
+              ? `${peer} は ${count} 件を確認できませんでした。`
+              : `${peer} could not confirm ${count} items.`}
+          </Notice>
+        ))}
       {mode === "neighborhood" ? (
         <>
           <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
