@@ -36,6 +36,9 @@ default.
   No two fire times may be closer than the minimum interval: the Deployment's
   (`[schedules] min_interval_seconds`, 15 minutes by default), which a Tenant
   may only raise. A small hidden jitter delays each tick by up to 30 seconds.
+  A time a daylight-saving change skips runs once at the first instant after
+  the gap (`30 2 * * *` in New York runs at 03:00 that day); a repeated time
+  runs once.
 - `thread` opens a new Thread on every tick (the default) or always uses
   `{"kind":"fixed","thread_id":…}` of the same Workspace.
 - `approval_mode` is the mode of the Schedule's Runs, within what the Tenant's
@@ -45,7 +48,12 @@ default.
 
 The Registrant edits, pauses, resumes, deletes or runs a Schedule now from the
 Schedules tab or **Settings → Schedules** ("my Schedules"). "Run now" starts an
-ordinary Run as the person who clicked it and records it in the history.
+ordinary Run as the person who clicked it, in their own Approval Mode, and
+records it in the history.
+
+A Schedule runs on its Registrant's Mapping credential, whichever credential
+registered it, so an API token may expire without stopping it; disabling the
+Mapping stops it.
 
 ## Ticks
 
@@ -54,19 +62,21 @@ default). It claims due Schedules with `FOR UPDATE SKIP LOCKED` in the
 Registrant's own transaction, starts the Run, records the tick and moves the
 next time on, all in one transaction; a scheduled time starts at most one Task.
 
-| Tick                                                       | Recorded as                                                                            |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| The Run started                                            | `started`, then `completed`, `failed` or `cancelled` with its Task                     |
-| The previous tick's Run is unfinished                      | `skipped (overlap)`                                                                    |
-| Aidash was down past the maximum lateness                  | `skipped (late)`; earlier missed ticks fold into the latest one, which runs once, late |
-| The usage gate refused the Run                             | `skipped (limit: <code>)`                                                              |
-| Sooner than the minimum interval after the previous tick   | `skipped (interval)`                                                                   |
-| Any other refusal, such as `COMPACTION_DECIDER_UNAPPROVED` | `failed` with the reason; never retried silently                                       |
+| Tick                                                                        | Recorded as                                                                            |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| The Run started                                                             | `started`, then `completed`, `failed` or `cancelled` with its Task                     |
+| The previous tick's Run is unfinished                                       | `skipped (overlap)`                                                                    |
+| Aidash was down past the maximum lateness                                   | `skipped (late)`; earlier missed ticks fold into the latest one, which runs once, late |
+| The usage gate refused the Run                                              | `skipped (limit: <code>)`                                                              |
+| Sooner than the minimum interval after the previous tick that started a Run | `skipped (interval)`                                                                   |
+| Any other refusal, such as `COMPACTION_DECIDER_UNAPPROVED`                  | `failed` with the reason; never retried silently                                       |
+| A transient error, such as a database outage                                | nothing; the next pass tries the tick again                                            |
 
 After three failed Runs in a row the Schedule pauses itself. It stops when its
 Registrant leaves the Tenant or loses access, when its Agent version can no
-longer be started, when its fixed Thread is deleted and when the Tenant is
-deleted (a restore leaves it stopped). Deleting the Workspace deletes its
+longer be started, when its fixed Thread is deleted, when the Tenant raises its
+minimum interval above the Schedule's (the notice names the new minimum) and
+when the Tenant is deleted (a restore leaves it stopped). Deleting the Workspace deletes its
 Schedules. The bell shows a **Schedule stopped** notice to the Registrant, and
 to holders of `schedule.administer` for a Schedule waiting for a successor. A
 scheduled Run's completion appears in the bell without a toast; a failure also
@@ -86,11 +96,14 @@ the root of the Run's chain, decided by their Approval Mode and Approval Rules;
 `schedule_list` needs none. A Schedule an Agent registers acts as that person
 and belongs to the Run's Workspace. A Run that arrived through Federation, a
 Run whose chain starts at no person, and a Run a Schedule started (or any Run
-whose Task descends from one) cannot register or change Schedules.
+it delegates to, whatever Task) cannot register or change Schedules. A retried
+tool call returns the Schedule its first call registered.
 
 ## Limits
 
 `GET`/`PUT /api/schedules/limits` read and set the Tenant's limits: the total
 number of Schedules (50 by default), the number per person (10) and the
 minimum interval. Setting them needs `schedule.administer`. They stay within the
-Deployment's `[schedules]` ceilings, and a Cloud Tier may lower the total.
+Deployment's `[schedules]` ceilings, and on Cloud the covering Tier's
+`schedules` cap may lower the total. The response also gives the limits that
+apply now.
