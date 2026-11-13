@@ -401,7 +401,12 @@ pub(crate) async fn mutate_origin(
 		{
 			return Err(Error::Conflict("memory bank storage limit reached".into()));
 		}
-		let protected: BTreeSet<_> = mutation.changes.iter().map(Change::id).collect();
+		// Evicting a Unit that supports an added or corrected Unit would stale
+		// the very Unit this request admits, so its support is never a candidate.
+		let mut protected: BTreeSet<_> = mutation.changes.iter().map(Change::id).collect();
+		for unit in result.iter().filter(|unit| !unit.deleted) {
+			protected.extend(supporting_units(lease, unit, bounds.max_graph_visits).await?);
+		}
 		let needed = retained - bounds.max_units;
 		let rows = native::query(
 			&Query::select()
@@ -961,6 +966,61 @@ pub(crate) async fn bump_bank(lease: &mut Lease<'_>, id: Uuid) -> Result<()> {
 	.execute(&mut **lease.tx())
 	.await?;
 	Ok(())
+}
+/// Every Unit that transitively supports `unit`, following the same edges as
+/// [`units::current_for_run`]: Unit evidence, a Publication's source Unit and
+/// the Units a Run evidence read. It visits at most `max_visits` evidence
+/// entries, the bound admission's provenance check already passed.
+async fn supporting_units(
+	lease: &mut Lease<'_>,
+	unit: &Unit,
+	max_visits: usize,
+) -> Result<BTreeSet<Uuid>> {
+	let mut pending: VecDeque<Evidence> = unit.content.evidence.iter().cloned().collect();
+	let mut support = BTreeSet::new();
+	let mut visits = 0_usize;
+	while let Some(evidence) = pending.pop_front() {
+		visits += 1;
+		if visits > max_visits {
+			return Err(Error::Invalid(
+				"memory evidence traversal exceeds its bound".into(),
+			));
+		}
+		let id = match evidence {
+			Evidence::Unit { id, .. } => id,
+			Evidence::Publication { id, revision } => {
+				super::publications::source(lease, id, revision).await?.0
+			}
+			Evidence::Run { id, .. } => {
+				let reads = native::query(
+					&Query::select()
+						.column(Alias::new("unit_id"))
+						.from(Alias::new("memory_run_reads"))
+						.and_where(Expr::col("run_id").eq(Expr::value(id)))
+						.limit(max_visits as u64 + 1)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **lease.tx())
+				.await?;
+				for read in reads {
+					if let Some(source) =
+						units::load(lease, read.try_get("unit_id")?, false).await?
+					{
+						pending.push_back(source.evidence());
+					}
+				}
+				continue;
+			}
+			_ => continue,
+		};
+		if !support.insert(id) {
+			continue;
+		}
+		if let Some(source) = units::load(lease, id, false).await? {
+			pending.extend(source.content.evidence);
+		}
+	}
+	Ok(support)
 }
 async fn fence_dependents(
 	lease: &mut Lease<'_>,

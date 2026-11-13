@@ -301,6 +301,120 @@ async fn builtin_evicts_oldest_units_when_the_live_cap_is_reached(
 
 #[rstest]
 #[tokio::test]
+async fn builtin_eviction_keeps_the_oldest_unit_when_the_new_unit_rests_on_it(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	// Arrange: a full built-in bank of 64 live Units.
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, workspace).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let provider = reference("aidash.memory");
+	let actor = administrator(&store).await;
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let ids: Vec<_> = (0..65).map(|_| Uuid::now_v7()).collect();
+	for chunk in ids[..64].chunks(32) {
+		memory::mutate(
+			&store,
+			&actor,
+			Mutation {
+				operation_id: Uuid::now_v7(),
+				provider: provider.clone(),
+				bank: bank.clone(),
+				changes: chunk
+					.iter()
+					.map(|id| {
+						let mut fact = content(&format!("Fact {id}"));
+						fact.evidence = vec![proof.clone()];
+						Change::Add {
+							id: *id,
+							content: fact,
+						}
+					})
+					.collect(),
+			},
+		)
+		.await
+		.unwrap();
+	}
+	let eviction_order: Vec<Uuid> = native::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("deleted").eq(false))
+			.order_by(Alias::new("updated_at"), reinhardt::query::Order::Asc)
+			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+			.limit(2)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(store.pool.in_scope(&TEST_FIXTURE))
+	.await
+	.unwrap()
+	.iter()
+	.map(|row| row.try_get("id").unwrap())
+	.collect();
+	let (oldest, next_oldest) = (eviction_order[0], eviction_order[1]);
+
+	// Act: add a Unit supported by the oldest Unit, the first eviction candidate.
+	let added = memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			changes: vec![Change::Add {
+				id: ids[64],
+				content: {
+					let mut fact = content("fact resting on the oldest unit");
+					fact.evidence = vec![
+						proof.clone(),
+						Evidence::Unit {
+							bank: bank.clone(),
+							id: oldest,
+							revision: 1,
+						},
+					];
+					fact
+				},
+			}],
+		},
+	)
+	.await;
+
+	// Assert: the addition is admitted and an unrelated Unit is evicted instead.
+	assert!(added.is_ok(), "{added:?}");
+	let units = memory::list(&store, &actor, memory::ReadBank { provider, bank })
+		.await
+		.unwrap();
+	assert_eq!(units.len(), 64);
+	assert!(units.iter().any(|unit| unit.id == ids[64] && !unit.stale));
+	assert!(units.iter().any(|unit| unit.id == oldest));
+	assert!(!units.iter().any(|unit| unit.id == next_oldest));
+}
+
+#[rstest]
+#[tokio::test]
 async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
