@@ -160,6 +160,8 @@ struct State {
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
+	/// Tool calls and provider activity the summarizer answers with.
+	summary_extras: (Vec<ToolCall>, Vec<Value>),
 	summary_truncations: Mutex<u32>,
 	model_reasoning: bool,
 	provider_configs: Mutex<Vec<ModelConfig>>,
@@ -1740,6 +1742,8 @@ impl ModelProvider for Backend {
 				.expect("summary fixture");
 			return Ok(ModelResponse {
 				text,
+				tool_calls: self.0.summary_extras.0.clone(),
+				provider_activity: self.0.summary_extras.1.clone(),
 				input_tokens: 100,
 				output_tokens: 50,
 				usage_complete: true,
@@ -1923,6 +1927,7 @@ fn fixture() -> Fixture {
 		context_policy: None,
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
+		summary_extras: (vec![], vec![]),
 		summary_truncations: Mutex::new(0),
 		model_reasoning: false,
 		provider_configs: Mutex::new(vec![]),

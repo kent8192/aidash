@@ -264,7 +264,7 @@ fn pending_evidence(context: &Context, pinned: &Value) -> Vec<EvidenceItem> {
 
 /// Admit this step's new evidence into history (#942), in send order, while
 /// the encoded items stay within `quota` bytes; Run messages are always
-/// admitted. Admission is final: an
+/// admitted and do not count against it. Admission is final: an
 /// admitted item is never trimmed later, and a refused one is removed from
 /// `pinned`, so this request never carries it; a later step may admit it.
 /// Returns how many items it refused. Only Native Runs record evidence.
@@ -274,7 +274,10 @@ pub fn record_evidence(context: &mut Context, pinned: &mut Value, quota: usize) 
 	let mut used = 0_usize;
 	for item in pending_evidence(context, pinned) {
 		let size = item.content.to_string().len();
-		if MANDATORY_EVIDENCE.contains(&item.key.as_str()) || used.saturating_add(size) <= quota {
+		// The Harness's quota already leaves out the Run messages.
+		if MANDATORY_EVIDENCE.contains(&item.key.as_str()) {
+			admitted.push(item);
+		} else if used.saturating_add(size) <= quota {
 			used += size;
 			admitted.push(item);
 		} else {

@@ -321,3 +321,27 @@ fn a_native_summary_request_continues_the_main_request() {
 	};
 	assert!(summary_continuation(&plan, &legacy_fitting, 2048).is_none());
 }
+
+#[test]
+fn a_main_request_with_provider_tools_is_never_continued() {
+	let context = turns(4);
+	let absorbed = native_summary_candidates(&context, 2);
+	let plan = SummaryPlan {
+		pruned: context.clone(),
+		absorbed,
+		people: vec![],
+		before_tokens: 0,
+	};
+	let pinned = json!({"task": {"id": "t"}});
+	let main = budget(usize::MAX).request(&context, &pinned);
+	assert!(super::super::continue_request(main.clone(), &plan, &pinned, 2048).is_some());
+	let mut with_provider_tools = main;
+	with_provider_tools.provider_tools = vec![aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: "openrouter:web_search".into(),
+		binding: aidash_domain::tool::provider_tools::Parameters {
+			max_tool_calls: 1,
+			parameters: json!({}),
+		},
+	}];
+	assert!(super::super::continue_request(with_provider_tools, &plan, &pinned, 2048).is_none());
+}

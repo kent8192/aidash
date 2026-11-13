@@ -923,24 +923,47 @@ impl<'a> Executor<'a> {
 		// A Native merge continues the main request (#942, ADR 0125): the same
 		// model, reasoning settings, instructions, tools and history, so its
 		// input is read from the prompt cache. Its output limit reserves the
-		// main request's room for reasoning on top of the summary. Research
-		// revoked since the step began would reach the summarizer in that
-		// history, so such a merge, and one whose continuation exceeds the
-		// window, sends only what it folds instead, without reasoning.
-		let continuation = if fitting.native()
-			&& !(aidash_application::research::revocation::may_carry_research(&plan.pruned)
-				&& store.research_revoked(run).await?)
-		{
+		// main request's room for reasoning on top of the summary.
+		let mut continuation = None;
+		if fitting.native() {
+			// As before the main request: Research revoked or expired since
+			// the step began must reach no provider, so the step is redone
+			// from the redacted projection (ADR 0046, ADR 0058).
+			if aidash_application::research::revocation::may_carry_research(&run.context)
+				&& !run.context.research_revoked
+			{
+				let expired = store.expired_research(run).await?;
+				let fresh =
+					!expired.is_empty() && expired.through > run.context.research_expired_through;
+				if store.research_revoked(run).await? {
+					self.apply_research_revocation(run).await?;
+					store.save_run(run, token, "run.research_revoked").await?;
+					return Ok(());
+				}
+				if fresh && self.apply_research_expiry(run).await? {
+					store.save_run(run, token, "run.research_expired").await?;
+					return Ok(());
+				}
+			}
 			let output = max_tokens
 				.saturating_add(model_cfg.output_token_limit())
 				.min(model_cfg.provider_max_output_tokens.unwrap_or(u32::MAX));
-			summary_continuation(&plan, fitting, output)
-				.filter(|request| request.ensure_fits(summary_window).is_ok())
-		} else {
-			None
-		};
+			// Provider tools could run during a summary with no audited call,
+			// and dropping them would change the prefix: such a Run sends the
+			// standalone request. So does one whose continued request renders
+			// a source a summary cannot recheck.
+			if let Some(request) = summary_continuation(&plan, fitting, output).filter(|request| {
+				request.provider_tools.is_empty() && request.ensure_fits(summary_window).is_ok()
+			}) && let Some(rendered) =
+				continuation_dependencies(&plan, &store.run_inputs(run.id).await?, tools)
+			{
+				continuation = Some((request, rendered));
+			}
+		}
 		let mut summary_model = model_cfg.clone();
-		let request = if let Some(mut request) = continuation {
+		let mut rendered_dependencies = None;
+		let request = if let Some((mut request, rendered)) = continuation {
+			rendered_dependencies = Some(rendered);
 			request.routing_run = Some(run.id);
 			request.cache_breakpoints = cache_breakpoints;
 			summary_model.max_output_tokens = Some(request.max_output_tokens);
@@ -1014,7 +1037,10 @@ impl<'a> Executor<'a> {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
 		// The candidate carries the previous summary's sources as well.
-		let mut dependencies = summary_dependencies(&plan.absorbed, tools);
+		// A continued request shows the summarizer everything it renders, so
+		// the summary depends on all of it, not only what it folds.
+		let mut dependencies =
+			rendered_dependencies.unwrap_or_else(|| summary_dependencies(&plan.absorbed, tools));
 		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
 			dependencies
 				.message_ids
@@ -1249,8 +1275,9 @@ impl<'a> Executor<'a> {
 				return Err(error);
 			}
 		};
-		// A continued request offers the main tools, but a summary never acts.
-		if !response.tool_calls.is_empty() {
+		// A summary never acts: a response that calls a tool, or that carries
+		// provider-owned activity, is never adopted.
+		if !response.tool_calls.is_empty() || !response.provider_activity.is_empty() {
 			store
 				.settle_compaction(
 					run,
@@ -4828,6 +4855,92 @@ fn summarizable(event: &ContextEvent, tools: &Tools) -> bool {
 		_ => true,
 	}
 }
+/// The sources a continued summary request renders through the last folded
+/// entry, as dependencies the Summary Stage rechecks (#942, ADR 0125), or
+/// `None` when it renders one a summary cannot recheck: an observation page
+/// or a workspace record other than a message, workspace entries other than
+/// messages, recalled memory or a declared Run source.
+fn continuation_dependencies(
+	plan: &aidash_application::context::SummaryPlan,
+	inputs: &[aidash_domain::run_input::RunInput],
+	tools: &Tools,
+) -> Option<context::summary::SummaryDependencies> {
+	let through = plan.absorbed.last()?.seq;
+	let context = &plan.pruned;
+	if context.source_contributions.iter().any(|contribution| {
+		contribution
+			.placement
+			.as_ref()
+			.is_some_and(|placement| placement.volatility == Some(context::source::Volatility::Run))
+	}) {
+		return None;
+	}
+	let rendered = context
+		.history
+		.iter()
+		.filter(|entry| entry.seq <= through)
+		.cloned()
+		.collect::<Vec<_>>();
+	let mut dependencies = summary_dependencies(&rendered, tools);
+	let message = |seq: i64| {
+		inputs
+			.iter()
+			.find(|input| input.seq == seq)
+			.and_then(|input| input.message_id)
+	};
+	// The run-message summary attachment holds every input it folded.
+	for input in inputs
+		.iter()
+		.filter(|input| input.seq <= context.run_message_summary_seq)
+	{
+		dependencies.message_ids.insert(input.message_id?);
+	}
+	for entry in &rendered {
+		match &entry.event {
+			ContextEvent::Tool { .. } if !summarizable(&entry.event, tools) => return None,
+			ContextEvent::MemoryRecall { .. } => return None,
+			ContextEvent::ModelMediaObservation {
+				through_seq: Some(through_seq),
+				..
+			} => {
+				for input in inputs.iter().filter(|input| input.seq <= *through_seq) {
+					dependencies.message_ids.insert(input.message_id?);
+				}
+			}
+			ContextEvent::Evidence { items } => {
+				for item in items {
+					let content = &item.content;
+					match (item.key.as_str(), item.field.as_deref()) {
+						("run_messages", None) => {
+							let record = content
+								.pointer("/record/id")
+								.or_else(|| content.pointer("/content/record/id"));
+							let id = match record.and_then(Value::as_str) {
+								Some(id) => id.parse().ok()?,
+								None => message(
+									content["seq"]
+										.as_i64()
+										.or_else(|| content["revision"].as_i64())?,
+								)?,
+							};
+							dependencies.message_ids.insert(id);
+						}
+						("workspace", Some("messages")) => {
+							dependencies
+								.message_ids
+								.insert(content["id"].as_str()?.parse().ok()?);
+						}
+						("workspace", Some("view" | "details" | "workspace_id")) => {}
+						_ => return None,
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+	Some(dependencies)
+}
+
 /// Sources whose current authority the summarized text depends on.
 fn summary_dependencies(
 	entries: &[context::HistoryEntry],

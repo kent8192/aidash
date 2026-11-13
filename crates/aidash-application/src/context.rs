@@ -384,13 +384,35 @@ const CONTINUATION_INSTRUCTIONS: &str = "Stop working on the task for this reque
 /// folded entry, then only the fold request and the summary instruction, so
 /// the provider reads the shared prefix from its cache. The summarizer is
 /// the Agent's own model, so nothing reaches a new recipient. `None` for
-/// other Projection Versions, which keep [`summary_request`].
+/// other Projection Versions, which keep [`summary_request`], and when the
+/// main request offers provider tools.
 pub fn summary_continuation(
 	plan: &SummaryPlan,
 	fitting: &Fitting<'_>,
 	max_output_tokens: u32,
 ) -> Option<ModelRequest> {
 	if !fitting.native() {
+		return None;
+	}
+	continue_request(
+		fitting.budget.request(&plan.pruned, fitting.pinned),
+		plan,
+		fitting.pinned,
+		max_output_tokens,
+	)
+}
+
+/// Turn `request`, the main request built from `plan.pruned`, into its Summary
+/// Stage continuation. `None` when it offers provider tools: they could run
+/// during a summary without an audited call, and leaving them out would
+/// change the prefix the continuation exists to reuse.
+fn continue_request(
+	mut request: ModelRequest,
+	plan: &SummaryPlan,
+	pinned: &Value,
+	max_output_tokens: u32,
+) -> Option<ModelRequest> {
+	if !request.provider_tools.is_empty() {
 		return None;
 	}
 	let through = plan.absorbed.last()?.seq;
@@ -406,11 +428,10 @@ pub fn summary_continuation(
 		"previous_item_ids": SummaryContent::retained_ids(plan.pruned.execution_summary.as_deref()),
 		"call_ids": call_ids,
 	});
-	let mut request = fitting.budget.request(&plan.pruned, fitting.pinned);
 	request.context =
 		ModelContext::Native(aidash_domain::projection::native::summary_continuation(
 			&plan.pruned,
-			fitting.pinned,
+			pinned,
 			through,
 			fold,
 			CONTINUATION_INSTRUCTIONS,

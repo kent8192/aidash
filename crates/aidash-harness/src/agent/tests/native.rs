@@ -771,10 +771,9 @@ async fn structured_usage_records_carry_the_pinned_contract_version(mut canonica
 	);
 }
 
-#[rstest]
-#[tokio::test]
-async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixture: Fixture) {
-	// Arrange: repeated Journal reads ask for a summary of older turns.
+/// A Native Run whose repeated Journal reads ask for a summary of older
+/// turns, with `prefix` journaled before them.
+fn native_summary_due(fixture: &mut Fixture, prefix: Vec<ContextEvent>) {
 	{
 		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 		state.scoped = true;
@@ -784,8 +783,11 @@ async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixtu
 		state.model_reasoning = true;
 		*state.summary_text.lock().unwrap() = Some(valid_summary());
 	}
-	native(&mut fixture);
+	native(fixture);
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for event in prefix {
+		fixture.run.context.push(event);
+	}
 	for i in 0..8 {
 		let id = format!("old-{i}");
 		fixture
@@ -801,6 +803,13 @@ async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixtu
 	}
 	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
 	fixture.run.context.offload_reads.summary_pending = true;
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixture: Fixture) {
+	// Arrange
+	native_summary_due(&mut fixture, vec![]);
 	// Act
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert
@@ -835,5 +844,67 @@ async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixtu
 	assert_eq!(
 		configs.last().unwrap().max_output_tokens,
 		Some(summary.max_output_tokens)
+	);
+}
+
+#[rstest]
+#[case::tool_call(true)]
+#[case::provider_activity(false)]
+#[tokio::test]
+async fn a_summary_that_acts_is_never_adopted(mut fixture: Fixture, #[case] tool_call: bool) {
+	// Arrange
+	native_summary_due(&mut fixture, vec![]);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.summary_extras = if tool_call {
+		(vec![call("acted", "read", json!({}))], vec![])
+	} else {
+		(vec![], vec![json!({"type": "web_search_call"})])
+	};
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the forced summary is skipped, never adopted.
+	assert!(calls(&fixture).contains(&"summarizer.infer"));
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_skipped");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
+		Some(Outcome::Invalid)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn withdrawing_a_source_only_the_continuation_rendered_discards_the_summary(
+	mut fixture: Fixture,
+) {
+	// Arrange: a Run message admitted as evidence before the folded turns;
+	// the summary folds no read of it.
+	let message = Uuid::from_u128(0x77);
+	native_summary_due(
+		&mut fixture,
+		vec![ContextEvent::Evidence {
+			items: vec![aidash_domain::context::EvidenceItem::new(
+				"run_messages",
+				None,
+				true,
+				json!({"seq": 1, "record": {"kind": "message", "id": message}}),
+			)],
+		}],
+	);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.summary_checks_before_revocation = Some(0);
+	state.revoked_message = Some(message);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert!(matches!(
+		result,
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
+	));
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert!(!calls(&fixture).contains(&"summarizer.infer"));
+	assert_eq!(
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
+		Some(Outcome::Unauthorized)
 	);
 }
