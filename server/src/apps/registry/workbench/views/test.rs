@@ -10,6 +10,20 @@ use reinhardt::http::ViewResult;
 use reinhardt::{get, post, put};
 use uuid::Uuid;
 
+#[post(
+	"/api/workbench/tests/{id}/approval",
+	name = "workbench-answer-approval",
+	auth = "protected"
+)]
+pub async fn answer_approval(
+	#[inject] service: Depends<BehavioralTests>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Json(input): Json<crate::apps::registry::workbench::serializers::test::TestApprovalAnswer>,
+) -> ViewResult<Response> {
+	crate::http::json(service.answer_approval(actor, id, input).await)
+}
+
 #[get(
 	"/api/workbench/drafts/{id}/test-limits",
 	name = "workbench-get-test-limits",
