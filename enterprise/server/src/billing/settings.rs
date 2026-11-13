@@ -34,6 +34,10 @@ pub struct Tier {
 	pub pod_seconds: u64,
 	/// Bytes of stored files included.
 	pub storage_bytes: u64,
+	/// Schedules one covered Tenant may have (#557). It only lowers the
+	/// Tenant's own limit; none leaves that limit alone.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub schedules: Option<u32>,
 	#[serde(default)]
 	pub prices: Prices,
 }
@@ -63,12 +67,14 @@ pub fn sandbox_defaults() -> serde_json::Value {
 				"nodes": 1,
 				"pod_seconds": 3_600,
 				"storage_bytes": 1_073_741_824_u64,
+				"schedules": 5,
 			},
 			"team": {
 				"tenants": 5,
 				"nodes": 10,
 				"pod_seconds": 360_000,
 				"storage_bytes": 53_687_091_200_u64,
+				"schedules": 100,
 			},
 		},
 	})
@@ -104,6 +110,9 @@ impl Settings {
 			if tier.tenants == 0 || tier.nodes == 0 {
 				return invalid("a Tier covers at least one Tenant and one Node");
 			}
+			if tier.schedules == Some(0) {
+				return invalid("a Tier that caps Schedules allows at least one");
+			}
 		}
 		Ok(())
 	}
@@ -129,6 +138,7 @@ mod tests {
 		assert_eq!(settings.free().nodes, 1);
 		assert!(settings.paid(FREE).is_none());
 		assert_eq!(settings.paid("team").unwrap().tenants, 5);
+		assert_eq!(settings.free().schedules, Some(5));
 		assert_eq!(settings.paid("team").unwrap().prices, Prices::default());
 		assert!(settings.paid("missing").is_none());
 	}
@@ -155,5 +165,13 @@ mod tests {
 		let mut value = sandbox_defaults();
 		value["tiers"]["team"]["unknown"] = 1.into();
 		assert!(Settings::from_value(value).is_err());
+		let mut value = sandbox_defaults();
+		value["tiers"]["team"]["schedules"] = 0.into();
+		assert!(
+			Settings::from_value(value)
+				.unwrap_err()
+				.to_string()
+				.contains("Schedules")
+		);
 	}
 }

@@ -3500,3 +3500,90 @@ async fn attribution_intake_waits_for_the_actual_tenant_policy_lifecycle_lock(
 	);
 	d.finish().await;
 }
+
+/// The covering Tier's Schedule cap reaches the Schedule limits on Cloud only
+/// (#557 decision 16): Free's while a personal Tenant has no Subscription,
+/// then the attached Tier's.
+#[rstest::rstest]
+#[tokio::test]
+async fn the_covering_tier_caps_schedules_on_cloud_only(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_application::ports::nodes::TierLimits;
+	// Arrange
+	let d = Cloud::new(runtime).await;
+	let alice = d.person("alice").await;
+	let (tenant, _) = d.tenant_of(&alice).await;
+	d.make_personal(&tenant).await;
+	let name = aidash_domain::tenancy::TenantName::new(&tenant).unwrap();
+	struct Held(Option<Subscription>);
+	#[async_trait::async_trait]
+	impl PaymentState for Held {
+		async fn subscription(&self, _: Uuid) -> aidash_server::Result<Option<Subscription>> {
+			Ok(self.0.clone())
+		}
+		async fn change_tier(&self, _: Uuid, _: &str) -> aidash_server::Result<()> {
+			panic!("reading a cap never changes the Tier");
+		}
+	}
+	let gate = |offering, subscription| Gate {
+		pool: d.control().clone(),
+		settings: settings(),
+		payments: Arc::new(Held(subscription)),
+		offering,
+	};
+	// Act + Assert: Free's cap before any Subscription.
+	assert_eq!(
+		gate(Offering::Cloud, None).schedules(&name).await.unwrap(),
+		Some(5)
+	);
+	assert_eq!(
+		gate(Offering::Dedicated, None)
+			.schedules(&name)
+			.await
+			.unwrap(),
+		None
+	);
+	// The attached Tier's cap once a Subscription covers the Tenant.
+	let account = d.account(&alice, Some("team")).await;
+	sqlx::query(
+		"INSERT INTO billing_attachments (tenant, account_id, attached_at, consented_by_administrator, consented_by_owner) VALUES ($1, $2, clock_timestamp(), $3, $3)",
+	)
+	.bind(&tenant)
+	.bind(account)
+	.bind(alice.identity)
+	.execute(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let team = Subscription {
+		tier: "team".into(),
+		status: Status::Active,
+		grace_ends_at: None,
+	};
+	assert_eq!(
+		gate(Offering::Cloud, Some(team))
+			.schedules(&name)
+			.await
+			.unwrap(),
+		Some(100)
+	);
+	// A Tier without a cap leaves the Tenant's own limit alone.
+	let mut uncapped = sandbox_defaults();
+	uncapped["tiers"]["free"]
+		.as_object_mut()
+		.unwrap()
+		.remove("schedules");
+	let gate = Gate {
+		pool: d.control().clone(),
+		settings: Arc::new(Settings::from_value(uncapped).unwrap()),
+		payments: Arc::new(Held(None)),
+		offering: Offering::Cloud,
+	};
+	sqlx::query("DELETE FROM billing_attachments WHERE tenant = $1")
+		.bind(&tenant)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(gate.schedules(&name).await.unwrap(), None);
+	d.finish().await;
+}
