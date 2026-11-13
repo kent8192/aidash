@@ -33,3 +33,31 @@ not been established.
 - Reasoning continuity and cache benefits from encrypted reasoning replay are
   not promised. Adding replay later requires revisiting this decision and the
   journal's retention and recovery contract.
+
+## Amendment (2026-11-13, #942)
+
+The premise of this decision changed with #942. Current provider documents say
+that resending previous reasoning keeps reasoning continuity and lets the
+previous output become cached prefix: DeepSeek rejects a tool conversation
+without it, Gemini 3 and 4 require thought signatures on function calls, and
+OpenAI, xAI, Kimi, MiniMax, GLM and Mistral recommend it. Native Runs now record
+the reasoning of each accepted response on its `assistant` event exactly as
+received: Chat `reasoning_details` (or plain reasoning text when that is all a
+route returns) and Responses `reasoning` items, encrypted content included.
+Every later request resends it unchanged in the transport's format, on ChatGPT
+plan routes as well. A model's `reasoning_passback: false` turns a route off.
+
+- Recorded reasoning is treated like the model's own text under ADR 0046: the
+  Context Journal keeps it after a revocation, and it is deleted with the
+  Journal row. It is left out of the Journal export that Journal Query, journal
+  search and reads, and memory extraction use.
+- Unlike the model's text, a request does not resend the reasoning of a turn
+  recorded at or after a result that was revoked or expired, because reasoning
+  often copies evidence verbatim and encrypted reasoning cannot be inspected.
+  Routes that require the field get an empty reasoning string instead. The
+  decision is stored on the Run's context, so a summary that absorbs the
+  placeholder does not bring the reasoning back.
+- Request Estimates count the resent reasoning. Compaction steps drop the
+  reasoning of turns older than the protected recent tail; ordinary steps
+  never drop any.
+- Reasoning is still never shown in Inference Progress.
