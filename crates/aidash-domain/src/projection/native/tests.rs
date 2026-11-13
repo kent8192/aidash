@@ -908,3 +908,31 @@ fn withheld_plain_text_details_keep_an_empty_reasoning_field() {
 		None
 	);
 }
+
+/// The stored mark withholds reasoning even with no placeholder left in
+/// history, survives serialization, and only ever lowers.
+#[test]
+fn the_withheld_reasoning_mark_persists_and_only_lowers() {
+	let mut context = context(vec![
+		reasoned(1, &["a"], chat_details("before")),
+		tool("a"),
+		reasoned(2, &["b"], chat_details("after")),
+		tool("b"),
+	]);
+	context.reasoning_withheld_from_seq = Some(3);
+	let restored: Context =
+		serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();
+	assert_eq!(restored.reasoning_withheld_from_seq, Some(3));
+	let sent = serde_json::to_string(&sent_messages(&restored)).unwrap();
+	assert!(sent.contains("sig-before") && !sent.contains("sig-after"));
+
+	context.history[1].event = ContextEvent::tool(call("a"), ContextEvent::revoked_result("a"));
+	context.withhold_reasoning_after_withheld_results();
+	assert_eq!(context.reasoning_withheld_from_seq, Some(2));
+	context.history[1].event = tool("a");
+	context.history[3].event = ContextEvent::tool(call("b"), ContextEvent::expired_result("b"));
+	context.withhold_reasoning_after_withheld_results();
+	assert_eq!(context.reasoning_withheld_from_seq, Some(2));
+	let unmarked = serde_json::to_value(crate::context::Context::default()).unwrap();
+	assert!(unmarked.get("reasoning_withheld_from_seq").is_none());
+}

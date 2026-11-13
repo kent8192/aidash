@@ -78,6 +78,13 @@ pub struct Context {
 	/// Execution Summary holds them. A purge after it is applied next.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
+	/// The smallest journal sequence whose content was replaced because it
+	/// was revoked or expired. Model Turns from it on never resend their
+	/// recorded reasoning, which may quote that content (#942). It only ever
+	/// lowers and outlives the placeholder itself, so a Summary or offload
+	/// that absorbs the placeholder cannot bring the reasoning back.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reasoning_withheld_from_seq: Option<u64>,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
@@ -150,6 +157,8 @@ struct StoredContext {
 	research_revoked: bool,
 	#[serde(default)]
 	research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
+	#[serde(default)]
+	reasoning_withheld_from_seq: Option<u64>,
 	#[serde(default, rename = "summary")]
 	legacy_summary: Option<String>,
 	run_message_summary: String,
@@ -257,6 +266,7 @@ impl<'de> Deserialize<'de> for Context {
 			revoked_summary_dependencies: stored.revoked_summary_dependencies,
 			research_revoked: stored.research_revoked,
 			research_expired_through: stored.research_expired_through,
+			reasoning_withheld_from_seq: stored.reasoning_withheld_from_seq,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
 			media_inferred_seq: stored.media_inferred_seq,
@@ -359,6 +369,26 @@ impl Context {
 	}
 
 	/// Provider-visible projection of this context.
+	/// Lower [`Self::reasoning_withheld_from_seq`] to the earliest result now
+	/// replaced as revoked or expired. Call it after every pass that replaces
+	/// results so; it never raises the mark (#942).
+	pub fn withhold_reasoning_after_withheld_results(&mut self) {
+		let earliest = self
+			.history
+			.iter()
+			.filter(|entry| {
+				matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result))
+			})
+			.map(|entry| entry.seq)
+			.min();
+		if let Some(seq) = earliest {
+			self.reasoning_withheld_from_seq = Some(
+				self.reasoning_withheld_from_seq
+					.map_or(seq, |kept| kept.min(seq)),
+			);
+		}
+	}
+
 	pub fn model_view(&self, current: &Value) -> Value {
 		let projected = source::project(self, current);
 		let mut current = projected.snapshot;

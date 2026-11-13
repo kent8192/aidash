@@ -194,10 +194,17 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let entries = &context.history;
 	// Reasoning may copy evidence verbatim and encrypted reasoning cannot be
 	// inspected, so no turn after a withheld result resends its reasoning.
-	let withheld_from = entries
-		.iter()
-		.position(|entry| matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result)))
-		.unwrap_or(entries.len());
+	// The stored mark decides even once a Summary or offload absorbed the
+	// placeholder; a placeholder still in history is a second guard.
+	let placeholder = entries.iter().position(|entry| {
+		matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result))
+	});
+	let withholds = |start: usize| {
+		context
+			.reasoning_withheld_from_seq
+			.is_some_and(|seq| entries[start].seq >= seq)
+			|| placeholder.is_some_and(|placeholder| start > placeholder)
+	};
 	let mut index = 0;
 	while index < entries.len() {
 		let Some(turn) = Turn::at(entries, index) else {
@@ -240,7 +247,7 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 					ContextEvent::Assistant {
 						reasoning: Some(reasoning),
 						..
-					} if turn.start > withheld_from => reasoning.withheld(),
+					} if withholds(turn.start) => reasoning.withheld(),
 					ContextEvent::Assistant { reasoning, .. } => reasoning.clone(),
 					_ => None,
 				},

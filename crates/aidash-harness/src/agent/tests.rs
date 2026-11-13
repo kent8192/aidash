@@ -162,6 +162,10 @@ struct State {
 	summary_text: Mutex<Option<String>>,
 	summary_truncations: Mutex<u32>,
 	model_reasoning: bool,
+	/// The agent model's `reasoning_passback`, omitted when `None` (#942).
+	reasoning_passback: Option<bool>,
+	/// Reasoning each ordinary response carries (#942).
+	response_reasoning: Option<aidash_domain::provider::reasoning::Reasoning>,
 	provider_configs: Mutex<Vec<ModelConfig>>,
 	/// The summarizer is approved at reservation but revoked during its call.
 	revoke_summarizer: bool,
@@ -370,6 +374,11 @@ impl Backend {
 		});
 		if id == "model" && self.0.model_reasoning {
 			config["reasoning_effort"] = json!("medium");
+		}
+		if id == "model"
+			&& let Some(passback) = self.0.reasoning_passback
+		{
+			config["reasoning_passback"] = json!(passback);
 		}
 		if id == "model"
 			&& let Some(limit) = self.0.summarizer_provider_limit
@@ -1815,6 +1824,7 @@ impl ModelProvider for Backend {
 				cache_read_tokens: Some(150),
 				..Default::default()
 			},
+			reasoning: self.0.response_reasoning.clone(),
 			..Default::default()
 		})
 	}
@@ -1925,6 +1935,8 @@ fn fixture() -> Fixture {
 		summary_text: Mutex::new(None),
 		summary_truncations: Mutex::new(0),
 		model_reasoning: false,
+		reasoning_passback: None,
+		response_reasoning: None,
 		provider_configs: Mutex::new(vec![]),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,

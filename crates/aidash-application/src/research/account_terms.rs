@@ -167,6 +167,8 @@ pub async fn expire_projection(
 		context.research_expired_through = expired.through;
 	}
 	changed |= expiry::expire(&mut context.history, expired, &originals);
+	// Later turns stop resending reasoning that may quote it (#942).
+	context.withhold_reasoning_after_withheld_results();
 	Ok(changed)
 }
 

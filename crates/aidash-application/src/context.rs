@@ -78,6 +78,8 @@ pub fn compact(context: &Context, fitting: &Fitting<'_>, step: u32) -> Result<Co
 	// Recheck intake after recovery too: a crash may happen after the original
 	// was journaled but before its offloaded projection was saved.
 	let mut candidate = context.clone();
+	// Keep the reasoning mark of any placeholder this compaction may absorb (#942).
+	candidate.withhold_reasoning_after_withheld_results();
 	let mut batch = offload::intake(&mut candidate, fitting.budget.window, 1, step);
 	if fitting.fits(&candidate) {
 		if !batch.ranges.is_empty() {

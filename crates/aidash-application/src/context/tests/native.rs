@@ -332,3 +332,124 @@ fn turns_a_summary_absorbs_carry_no_reasoning_into_it() {
 	)));
 	assert_eq!(reasoning_by_turn(&plan.pruned).last(), Some(&true));
 }
+
+/// Whether each rendered Model Turn still resends its recorded reasoning in
+/// full, rather than nothing or an empty stand-in.
+fn full_reasoning_by_turn(context: &Context) -> Vec<bool> {
+	native_context(context, &json!({}))
+		.history
+		.iter()
+		.filter_map(|message| match message {
+			NativeMessage::Assistant { reasoning, .. } => Some(matches!(
+				reasoning,
+				Some(provider::reasoning::Reasoning::ChatDetails { .. })
+			)),
+			_ => None,
+		})
+		.collect()
+}
+
+/// `turns_with_reasoning(count)` whose second turn's first result was revoked.
+fn revoked_in_second_turn(count: usize) -> Context {
+	let mut context = turns_with_reasoning(count);
+	for entry in &mut context.history {
+		if let ContextEvent::Tool { call, result } = &mut entry.event
+			&& call.id == "t1-a"
+		{
+			*result = ContextEvent::revoked_result(&call.id);
+		}
+	}
+	context.withhold_reasoning_after_withheld_results();
+	context
+}
+
+/// Absorbing a revoked result's placeholder into a summary does not bring
+/// back the reasoning of the turns after it: the mark outlives the placeholder.
+#[rstest::rstest]
+#[tokio::test]
+async fn reasoning_stays_withheld_after_a_summary_absorbs_the_revoked_result() {
+	// Arrange
+	let context = revoked_in_second_turn(12);
+	let mark = context.reasoning_withheld_from_seq;
+	assert_eq!(mark, Some(6), "the first result of the second turn");
+	assert_eq!(
+		full_reasoning_by_turn(&context),
+		[true, true]
+			.into_iter()
+			.chain([false; 10])
+			.collect::<Vec<_>>()
+	);
+	let pinned = json!({"task": {"description": "Ship the release"}});
+	let mut retained = context.clone();
+	let candidates = native_summary_candidates(&context, 6);
+	retained.history.retain(|entry| {
+		!candidates
+			.iter()
+			.any(|candidate| candidate.seq == entry.seq)
+	});
+	let window = budget(usize::MAX)
+		.request(&retained, &pinned)
+		.estimated_total_tokens()
+		+ 2_000;
+	let budget = budget(window);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	// Act
+	let plan = *super::super::summary_plan(context.clone(), &fitting).unwrap();
+	let (adopted, _) = summary_candidate(
+		&plan,
+		&summary_text(&[], &[], &[]),
+		Default::default(),
+		summarizer(),
+		1024,
+		&fitting,
+	)
+	.unwrap();
+	let adopted: Context = serde_json::from_value(serde_json::to_value(&adopted).unwrap()).unwrap();
+	// Assert: the placeholder is gone, the mark is not, and no later turn
+	// resends its reasoning.
+	assert!(!adopted.history.iter().any(|entry| matches!(
+		&entry.event,
+		ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result)
+	)));
+	assert_eq!(adopted.reasoning_withheld_from_seq, mark);
+	let kept = full_reasoning_by_turn(&adopted);
+	assert!(!kept.is_empty());
+	assert!(kept.iter().all(|full| !full));
+}
+
+/// Offloading at a compaction step keeps the mark, and later turns still
+/// withhold their reasoning.
+#[test]
+fn reasoning_stays_withheld_after_offloading() {
+	let context = revoked_in_second_turn(10);
+	let pinned = json!({});
+	let full = budget(usize::MAX)
+		.request(&context, &pinned)
+		.estimated_total_tokens();
+	let budget = budget(full - 1);
+	let policy = recovery_policy(false);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let Compaction::Offloaded {
+		context: offloaded,
+		batch,
+	} = super::super::compact(&context, &fitting, 0).unwrap()
+	else {
+		panic!("offloading fits the request")
+	};
+	assert!(!batch.ranges.is_empty());
+	assert_eq!(offloaded.reasoning_withheld_from_seq, Some(6));
+	assert!(
+		full_reasoning_by_turn(&offloaded)[2..]
+			.iter()
+			.all(|full| !full)
+	);
+}

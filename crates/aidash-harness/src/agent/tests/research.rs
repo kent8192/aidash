@@ -368,6 +368,21 @@ async fn revoked_research_results_never_reach_a_model_request_again(fixture: Fix
 			if call.id == "call-page" && ContextEvent::is_revoked_result(result)
 	)));
 	assert!(fixture.run.context.research_revoked);
+	// Reasoning from the revoked result on is no longer resent (#942).
+	let revoked = fixture
+		.run
+		.context
+		.history
+		.iter()
+		.find(
+			|entry| matches!(&entry.event, ContextEvent::Tool { call, .. } if call.id == "call-page"),
+		)
+		.unwrap()
+		.seq;
+	assert_eq!(
+		fixture.run.context.reasoning_withheld_from_seq,
+		Some(revoked)
+	);
 }
 
 #[rstest]
