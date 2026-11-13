@@ -21,7 +21,9 @@ async fn definition(
 		access.closure_entry(reference, action, users).await
 	}
 	.map_err(|error| match error {
-		Error::Forbidden => Error::RemoteExecutionRefused(
+		// A definition this Node lacks is refused like an unapproved one, so a peer
+		// cannot tell the two apart (#813 keeps `NotFound` for local callers only).
+		Error::Forbidden | Error::NotFound(_) => Error::RemoteExecutionRefused(
 			aidash_domain::federation::execution::Refusal::CatalogApproval,
 		),
 		Error::AuthorityRefused(_) => {

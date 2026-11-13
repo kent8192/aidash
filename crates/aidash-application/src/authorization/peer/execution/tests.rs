@@ -17,6 +17,8 @@ struct Scope {
 	active: bool,
 	model_kind: String,
 	denied_action: Option<String>,
+	/// The action whose definition this Node's Registry lacks.
+	missing_action: Option<String>,
 }
 impl Scope {
 	fn new() -> Self {
@@ -32,6 +34,7 @@ impl Scope {
 			active: true,
 			model_kind: "model".into(),
 			denied_action: None,
+			missing_action: None,
 		}
 	}
 	fn call(&mut self, name: &str) {
@@ -116,6 +119,12 @@ impl PeerInspectionScope for Scope {
 	}
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.call(action);
+		if self.missing_action.as_deref() == Some(action) {
+			return Err(Error::NotFound(format!(
+				"registry entry {}@{} was not found",
+				reference.id, reference.version
+			)));
+		}
 		if self.denied_action.as_deref() == Some(action) {
 			if action == aidash_domain::decision::INVOKE {
 				return Err(Error::Forbidden);
@@ -265,6 +274,26 @@ async fn denied_bound_tool_invocation_prevents_remote_preflight() {
 			"mapped".to_owned(),
 			aidash_domain::agent_subject(&receiver_address(), "agent", "1.0.0")
 		]
+	);
+	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
+}
+
+/// A dependency this Node lacks is refused like an unapproved one, so a peer cannot
+/// tell a missing definition from an unapproved one (#813).
+#[rstest]
+#[tokio::test]
+async fn a_missing_dependency_is_refused_like_an_unapproved_one() {
+	let mut scope = Scope::new();
+	scope.missing_action = Some("tool.invoke".into());
+	let result = inspect(&mut scope, "aidash://home", &input()).await;
+	assert!(
+		matches!(
+			result,
+			Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::CatalogApproval
+			))
+		),
+		"{result:?}"
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
 }
