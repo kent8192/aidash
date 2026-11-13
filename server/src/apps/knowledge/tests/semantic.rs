@@ -1292,7 +1292,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	)
 	.await
 	.1;
-	let current_point = current_points
+	let current_point = current_points["entries"]
 		.as_array()
 		.unwrap()
 		.iter()
@@ -1534,8 +1534,8 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	)
 	.await;
 	assert_eq!(entries.0, 200);
-	assert_eq!(entries.1[0]["state"], "ERROR");
-	assert_eq!(entries.1[0]["attempts"], 1);
+	assert_eq!(entries.1["entries"][0]["state"], "ERROR");
+	assert_eq!(entries.1["entries"][0]["attempts"], 1);
 	assert_eq!(search(&app, &token, workspace).await.0, 409);
 	config.embedding.dimensions = 3;
 	configure(&app, &token, workspace, &config, 1).await;
@@ -1683,7 +1683,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	.await
 	.1;
 	assert_eq!(
-		visible.as_array().unwrap().len(),
+		visible["entries"].as_array().unwrap().len(),
 		0,
 		"inline source reads require the semantic entry permission"
 	);
@@ -2311,8 +2311,8 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	assert_eq!(current["spec"]["max_results"], 10);
 	let (status, stored) = common::get(&app, &token, &entries).await;
 	assert_eq!(status, 200, "{stored}");
-	assert_eq!(stored.as_array().unwrap().len(), 1);
-	assert_eq!(stored[0]["id"], entry["id"]);
+	assert_eq!(stored["entries"].as_array().unwrap().len(), 1);
+	assert_eq!(stored["entries"][0]["id"], entry["id"]);
 	drop(server);
 	dispose(f, &url, &schema).await;
 }

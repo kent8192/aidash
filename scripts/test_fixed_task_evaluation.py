@@ -1544,7 +1544,8 @@ class MemoryTest(unittest.TestCase):
 
         def call(method, path, body, token, timeout=None):
             if path.endswith("/query"):
-                return 200, [{"id": key, "content": {"text": value[1]}} for key, value in units.items()]
+                return 200, {"units": [{"id": key, "content": {"text": value[1]}} for key, value in units.items()],
+                             "unconfirmed": []}
             change = body["changes"][0]
             current = units.get(change["id"])
             if change["operation"] == "add":
