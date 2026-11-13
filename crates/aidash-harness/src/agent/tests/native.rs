@@ -16,22 +16,64 @@ fn native_context(request: &ModelRequest) -> &aidash_domain::projection::native:
 	}
 }
 
-/// Record the step state `request` sent, as saving its accepted inference
-/// does (#942).
+/// Record the step state and evidence `request` sent at the end of its
+/// history, as saving its accepted inference does (#942).
 fn keep_step_state(run: &mut Run, request: &ModelRequest) {
-	let state = native_context(request)
-		.history
+	use aidash_domain::context::EvidenceItem;
+	let history = &native_context(request).history;
+	let pending = history
 		.iter()
 		.rev()
-		.find_map(|message| match message {
-			NativeMessage::StepState { state, harness } => Some(ContextEvent::StepState {
-				state: state.content.clone(),
-				harness: harness.as_ref().map(|harness| harness.content.clone()),
-			}),
-			_ => None,
+		.take_while(|message| match message {
+			NativeMessage::StepState { .. } => true,
+			NativeMessage::Data { envelope } => {
+				envelope.source == aidash_domain::projection::native::Source::Evidence
+			}
+			_ => false,
 		})
-		.expect("a step state");
-	run.context.push(state);
+		.collect::<Vec<_>>();
+	for message in pending.into_iter().rev() {
+		match message {
+			NativeMessage::StepState { state, harness } => {
+				run.context.push(ContextEvent::StepState {
+					state: state.content.clone(),
+					harness: harness.as_ref().map(|harness| harness.content.clone()),
+				})
+			}
+			NativeMessage::Data { envelope } => {
+				let mut items = Vec::new();
+				for (key, value) in envelope.content.as_object().unwrap() {
+					match value {
+						Value::Array(entries) => items.extend(
+							entries
+								.iter()
+								.map(|entry| EvidenceItem::new(key, None, true, entry.clone())),
+						),
+						Value::Object(fields) => {
+							for (field, value) in fields {
+								match value {
+									Value::Array(entries) => {
+										items.extend(entries.iter().map(|entry| {
+											EvidenceItem::new(key, Some(field), true, entry.clone())
+										}))
+									}
+									value => items.push(EvidenceItem::new(
+										key,
+										Some(field),
+										false,
+										value.clone(),
+									)),
+								}
+							}
+						}
+						value => items.push(EvidenceItem::new(key, None, false, value.clone())),
+					}
+				}
+				run.context.push(ContextEvent::Evidence { items });
+			}
+			_ => unreachable!(),
+		}
+	}
 }
 
 fn turn(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
@@ -128,6 +170,7 @@ async fn native_request_bytes_match_the_multi_round_golden_fixture(mut canonical
 			"tool",
 			"user",
 			"assistant",
+			"user",
 			"user",
 			"user"
 		]
@@ -239,17 +282,24 @@ async fn explicit_native_requests_mark_system_and_the_last_history_message(mut c
 	let messages = body["messages"].as_array().unwrap();
 	assert_eq!(body.to_string().matches("cache_control").count(), 2);
 	assert!(messages[0]["content"][0].get("cache_control").is_some());
-	// This step's state ends the history (#942); the next step keeps it.
+	// This step's state and new evidence end the history (#942); the next
+	// step keeps them.
 	let last_history = &messages[messages.len() - 2];
 	assert_eq!(last_history["role"], "user");
 	assert!(
 		last_history["content"][0]["text"]
 			.as_str()
 			.unwrap()
-			.contains(r#""source":"step","provenance":{"scope":"step"}"#)
+			.contains(r#""source":"evidence""#)
 	);
 	assert!(last_history["content"][0].get("cache_control").is_some());
-	assert_eq!(messages[messages.len() - 3]["role"], "assistant");
+	assert!(
+		messages[messages.len() - 3]["content"]
+			.as_str()
+			.unwrap()
+			.contains(r#""source":"step","provenance":{"scope":"step"}"#)
+	);
+	assert_eq!(messages[messages.len() - 4]["role"], "assistant");
 	assert!(messages[messages.len() - 1]["content"].is_string());
 }
 
@@ -598,11 +648,14 @@ async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture:
 		.await
 		.unwrap();
 	// The step state recorded before fitting is journaled after the originals (#942).
-	let (states, journal): (Vec<_>, Vec<_>) = journal
-		.into_iter()
-		.partition(|entry| matches!(entry.event, ContextEvent::StepState { .. }));
+	let (states, journal): (Vec<_>, Vec<_>) = journal.into_iter().partition(|entry| {
+		matches!(
+			entry.event,
+			ContextEvent::StepState { .. } | ContextEvent::Evidence { .. }
+		)
+	});
 	assert_eq!(journal, originals);
-	assert_eq!(states.len(), 1);
+	assert!(!states.is_empty());
 	assert!(states[0].seq > originals.last().unwrap().seq);
 	advance_sources(&mut fixture).await.unwrap();
 	let request = last_request(&fixture);
@@ -662,9 +715,16 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	assert!(!request.instructions.contains("Media intake is continuing"));
 	let body = request.input_body();
 	let messages = body["messages"].as_array().unwrap();
-	// The step state, recorded in history (#942), is the last message before
-	// the volatile evidence.
-	let content = messages[messages.len() - 2]["content"]
+	// The step state, recorded in history (#942), carries the requirements.
+	let content = messages
+		.iter()
+		.rev()
+		.find(|message| {
+			message["content"][0]["text"]
+				.as_str()
+				.is_some_and(|text| text.contains(r#""provenance":{"scope":"step"}"#))
+		})
+		.unwrap()["content"]
 		.as_array()
 		.expect("the step data and the harness envelope are separate text parts");
 	let harness: Value = serde_json::from_str(

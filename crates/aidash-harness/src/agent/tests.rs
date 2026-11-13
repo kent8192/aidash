@@ -4492,7 +4492,19 @@ async fn subnode_results_reach_the_model_inside_a_data_envelope(
 	let state = match &requests[0].context {
 		ModelContext::Legacy(value) => value["current"].clone(),
 		ModelContext::Ordered(value) => serde_json::from_str(&value.volatile).unwrap(),
-		ModelContext::Native(value) => serde_json::from_str(&value.volatile).unwrap(),
+		// Run messages are evidence in history (#942).
+		ModelContext::Native(value) => value
+			.history
+			.iter()
+			.find_map(|message| match message {
+				aidash_domain::projection::native::NativeMessage::Data { envelope }
+					if envelope.source == aidash_domain::projection::native::Source::Evidence =>
+				{
+					Some(envelope.content.clone())
+				}
+				_ => None,
+			})
+			.unwrap(),
 		_ => panic!("unexpected projection"),
 	};
 	assert_eq!(state["run_messages"][0]["trust"], "data");

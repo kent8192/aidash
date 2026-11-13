@@ -4,13 +4,13 @@
 //!
 //! The harness builds this IR; `ModelRequest::input_body` gives it its
 //! canonical chat serialization, which transport and request budgeting share.
-use crate::context::{Context, ContextEvent, HistoryEntry, ORDERED_STABLE_KEYS};
+use crate::context::{Context, ContextEvent, EvidenceItem, HistoryEntry, ORDERED_STABLE_KEYS};
 use crate::provider::ToolCall;
 use crate::{Error, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How enveloped content may be read. `Data` never instructs; `Aidash` states
 /// requirements from Aidash for this step under a `structured@*` Harness
@@ -45,6 +45,8 @@ pub enum Source {
 	Step,
 	/// The Harness requirements of this step under a `structured@*` contract.
 	Harness,
+	/// Evidence a step admitted into history (#942).
+	Evidence,
 }
 
 /// The provenance envelope around every piece of enveloped content in a Native
@@ -189,6 +191,207 @@ pub const STEP_STATE_KEYS: [&str; 8] = [
 	"journal_read_notice",
 ];
 
+/// Pinned keys whose evidence a Native step appends to history once, item by
+/// item (#942). Semantic memory stays in the volatile part: its content is
+/// never journaled, and its per-step recheck fails the step instead of
+/// marking a revoked hit.
+pub const EVIDENCE_KEYS: [&str; 2] = ["workspace", "run_messages"];
+
+/// Evidence keys admitted whatever the quota: the Run bounds its run-directed
+/// input when it accepts it, and its required reads depend on every entry.
+const MANDATORY_EVIDENCE: [&str; 1] = ["run_messages"];
+
+/// Fields of an evidence key that describe this step's page rather than any
+/// entry; they change with every count and stay in the volatile part.
+const PAGE_FIELDS: [&str; 1] = ["pages"];
+
+/// The evidence items of `pinned`, in send order: every entry of a list, and
+/// every entry of each list field or each other field of an object.
+fn evidence_items(pinned: &Value) -> Vec<EvidenceItem> {
+	let item = |key: &str, field: Option<&str>, listed: bool, content: &Value| {
+		EvidenceItem::new(key, field, listed, content.clone())
+	};
+	let mut items = Vec::new();
+	for key in EVIDENCE_KEYS {
+		match pinned.get(key) {
+			Some(Value::Array(entries)) => {
+				items.extend(entries.iter().map(|entry| item(key, None, true, entry)));
+			}
+			Some(Value::Object(fields)) => {
+				for (field, value) in fields {
+					if PAGE_FIELDS.contains(&field.as_str()) {
+						continue;
+					}
+					match value {
+						Value::Array(entries) => items.extend(
+							entries
+								.iter()
+								.map(|entry| item(key, Some(field), true, entry)),
+						),
+						value => items.push(item(key, Some(field), false, value)),
+					}
+				}
+			}
+			Some(Value::Null) | None => {}
+			Some(value) => items.push(item(key, None, false, value)),
+		}
+	}
+	items
+}
+
+/// Digests of every evidence item history holds, offloaded or not.
+fn recorded_evidence(context: &Context) -> BTreeSet<&str> {
+	context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Evidence { items } => Some(items),
+			_ => None,
+		})
+		.flatten()
+		.map(|item| item.digest.as_str())
+		.collect()
+}
+
+/// The evidence of `pinned` that history does not hold yet.
+fn pending_evidence(context: &Context, pinned: &Value) -> Vec<EvidenceItem> {
+	let recorded = recorded_evidence(context);
+	let mut seen = BTreeSet::new();
+	evidence_items(pinned)
+		.into_iter()
+		.filter(|item| !recorded.contains(item.digest.as_str()) && seen.insert(item.digest.clone()))
+		.collect()
+}
+
+/// Admit this step's new evidence into history (#942), in send order, while
+/// the encoded items stay within `quota` bytes; Run messages are always
+/// admitted. Admission is final: an
+/// admitted item is never trimmed later, and a refused one is removed from
+/// `pinned`, so this request never carries it; a later step may admit it.
+/// Returns how many items it refused. Only Native Runs record evidence.
+pub fn record_evidence(context: &mut Context, pinned: &mut Value, quota: usize) -> usize {
+	let mut admitted = Vec::new();
+	let mut refused = BTreeSet::new();
+	let mut used = 0_usize;
+	for item in pending_evidence(context, pinned) {
+		let size = item.content.to_string().len();
+		if MANDATORY_EVIDENCE.contains(&item.key.as_str()) || used.saturating_add(size) <= quota {
+			used += size;
+			admitted.push(item);
+		} else {
+			refused.insert(item.digest);
+		}
+	}
+	if !refused.is_empty() {
+		for key in EVIDENCE_KEYS {
+			let Some(value) = pinned.get_mut(key) else {
+				continue;
+			};
+			let keep = |field: Option<&str>, entry: &Value| {
+				!refused.contains(&EvidenceItem::digest(key, field, entry))
+			};
+			match value {
+				Value::Array(entries) => entries.retain(|entry| keep(None, entry)),
+				Value::Object(fields) => fields.retain(|field, value| match value {
+					Value::Array(entries) => {
+						entries.retain(|entry| keep(Some(field), entry));
+						true
+					}
+					value => PAGE_FIELDS.contains(&field.as_str()) || keep(Some(field), value),
+				}),
+				_ => {}
+			}
+		}
+	}
+	if !admitted.is_empty() {
+		context.push(ContextEvent::Evidence { items: admitted });
+	}
+	refused.len()
+}
+
+/// The value of evidence `key` as this request delivers it: `pinned`'s value
+/// with every item history holds only offloaded set to `null`. Source
+/// delivery receipts read it, so offloaded bytes never earn one.
+pub fn delivered_evidence(context: &Context, pinned: &Value, key: &str) -> Option<Value> {
+	let mut value = pinned.get(key)?.clone();
+	let offloaded: BTreeSet<&str> = context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Evidence { items } => Some(items),
+			_ => None,
+		})
+		.flatten()
+		.filter(|item| ContextEvent::is_elided_result(&item.content))
+		.map(|item| item.digest.as_str())
+		.collect();
+	let gone = |field: Option<&str>, entry: &Value| {
+		offloaded.contains(EvidenceItem::digest(key, field, entry).as_str())
+	};
+	match &mut value {
+		Value::Array(entries) => {
+			for entry in entries.iter_mut().filter(|entry| gone(None, entry)) {
+				*entry = Value::Null;
+			}
+		}
+		Value::Object(fields) => {
+			for (field, value) in fields.iter_mut() {
+				match value {
+					Value::Array(entries) => {
+						for entry in entries.iter_mut() {
+							if gone(Some(field), entry) {
+								*entry = Value::Null;
+							}
+						}
+					}
+					value => {
+						if gone(Some(field), value) {
+							*value = Value::Null;
+						}
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+	Some(value)
+}
+
+/// How admitted evidence renders: one data envelope whose content groups the
+/// items by key and field in admission order. Its revision stays `null`, so
+/// the pending and the recorded form are the same bytes.
+fn evidence_message(items: &[EvidenceItem]) -> NativeMessage {
+	let mut content = serde_json::Map::new();
+	for item in items {
+		let value = item.content.clone();
+		let slot = content
+			.entry(item.key.clone())
+			.or_insert_with(|| match item.field {
+				Some(_) => json!({}),
+				None => json!([]),
+			});
+		let target = match (&item.field, slot) {
+			(Some(field), Value::Object(fields)) => {
+				fields.entry(field.clone()).or_insert(Value::Null)
+			}
+			(_, slot) => slot,
+		};
+		match target {
+			Value::Array(entries) if item.listed => entries.push(value),
+			Value::Null if item.listed => *target = json!([value]),
+			// Items of one key are either listed or whole fields; a whole
+			// field replaces nothing else.
+			target => *target = value,
+		}
+	}
+	NativeMessage::Data {
+		envelope: Envelope::data(
+			Source::Evidence,
+			json!({"scope": "step"}),
+			None,
+			Value::Object(content),
+		),
+	}
+}
+
 /// The notice a Native step's `agent_state` carries instead of a step
 /// counter (#942), which would change the state, and so the request, every
 /// step. It changes once at 80 % and once at 90 % of `max_steps`.
@@ -238,6 +441,10 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	if let Some(state) = pending_step_state(context, &pinned, &markers) {
 		history.push(step_message(&state).expect("a step state event"));
 	}
+	let evidence = pending_evidence(context, &pinned);
+	if !evidence.is_empty() {
+		history.push(evidence_message(&evidence));
+	}
 	let mut attachments = attachments(context, &pinned);
 	let source_position = attachments
 		.iter()
@@ -252,6 +459,19 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	if let Some(fields) = pinned.as_object_mut() {
 		for key in STEP_STATE_KEYS.into_iter().chain([HARNESS_REQUIREMENTS]) {
 			fields.remove(key);
+		}
+		// Only an evidence key's page fields stay per step.
+		for key in EVIDENCE_KEYS {
+			let pages = match fields.remove(key) {
+				Some(Value::Object(object)) => object
+					.into_iter()
+					.filter(|(field, _)| PAGE_FIELDS.contains(&field.as_str()))
+					.collect::<serde_json::Map<_, _>>(),
+				_ => continue,
+			};
+			if !pages.is_empty() {
+				fields.insert(key.into(), Value::Object(pages));
+			}
 		}
 	}
 	NativeContext {
@@ -562,6 +782,7 @@ fn single<'a>(
 		ContextEvent::StepState { .. } => {
 			history.extend(step_message(&entry.event));
 		}
+		ContextEvent::Evidence { items } => history.push(evidence_message(items)),
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}
 	}

@@ -182,6 +182,139 @@ fn the_step_limit_notice_changes_only_at_80_and_90_percent() {
 	assert_eq!(step_limit_notice(0, 0), None);
 }
 
+fn workspace(tasks: &[&str]) -> Value {
+	json!({
+		"view": "workspace_observation_v1",
+		"tasks": tasks.iter().map(|title| json!({"title": title})).collect::<Vec<_>>(),
+		"pages": {"tasks": {"total": tasks.len()}},
+	})
+}
+
+fn evidence(context: &Context) -> Vec<Vec<Value>> {
+	context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Evidence { items } => {
+				Some(items.iter().map(|item| item.content.clone()).collect())
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+#[test]
+fn a_delta_appends_only_new_evidence() {
+	let mut run = context(vec![]);
+	let mut first = json!({"workspace": workspace(&["a", "b"])});
+	assert_eq!(record_evidence(&mut run, &mut first, usize::MAX), 0);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut next = json!({"workspace": workspace(&["a", "b", "c"]), "run_messages": [{"seq": 1}]});
+	record_evidence(&mut run, &mut next, usize::MAX);
+	assert_eq!(
+		evidence(&run),
+		[
+			vec![
+				json!({"title": "a"}),
+				json!({"title": "b"}),
+				json!("workspace_observation_v1")
+			],
+			vec![json!({"title": "c"}), json!({"seq": 1})],
+		]
+	);
+	// The page counts stay in the volatile part.
+	let native = native_context(&run, &next);
+	assert_eq!(
+		native.volatile,
+		r#"{"workspace":{"pages":{"tasks":{"total":3}}}}"#
+	);
+	assert_eq!(
+		shape(&native.history),
+		["data:Evidence", "assistant[x]", "tool:x", "data:Evidence"]
+	);
+}
+
+#[test]
+fn evidence_history_already_holds_is_not_appended_again() {
+	let mut run = context(vec![]);
+	let mut pinned = json!({"run_messages": [{"seq": 1}, {"seq": 1}]});
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	// Duplicates within one step are admitted once.
+	assert_eq!(evidence(&run), [vec![json!({"seq": 1})]]);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut again = json!({"run_messages": [{"seq": 1}], "workspace": workspace(&[])});
+	record_evidence(&mut run, &mut again, usize::MAX);
+	assert_eq!(evidence(&run).len(), 2);
+	assert_eq!(evidence(&run)[1], [json!("workspace_observation_v1")]);
+	let mut unchanged = again.clone();
+	record_evidence(&mut run, &mut unchanged, usize::MAX);
+	assert_eq!(evidence(&run).len(), 2);
+}
+
+#[test]
+fn evidence_refused_at_admission_never_reaches_history_or_the_request() {
+	let mut run = context(vec![]);
+	let large = "x".repeat(400);
+	let mut pinned = json!({
+		"workspace": workspace(&["small", &large]),
+		"run_messages": [{"content": "y".repeat(400)}],
+	});
+	let refused = record_evidence(&mut run, &mut pinned, 100);
+	assert_eq!(refused, 1);
+	let recorded = evidence(&run).concat();
+	assert!(recorded.contains(&json!({"title": "small"})));
+	// Run messages are admitted whatever the quota.
+	assert!(recorded.contains(&json!({"content": "y".repeat(400)})));
+	assert!(!serde_json::to_string(&run).unwrap().contains(&large));
+	let messages = request_messages_unrecorded(&run, &pinned);
+	assert!(!serde_json::to_string(&messages).unwrap().contains(&large));
+	// A later step with room admits it.
+	let mut later = json!({"workspace": workspace(&["small", &large])});
+	assert_eq!(record_evidence(&mut run, &mut later, usize::MAX), 0);
+	assert_eq!(evidence(&run).last().unwrap(), &[json!({"title": large})]);
+}
+
+#[test]
+fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
+	let mut run = context(vec![assistant(1, "", &["x"]), tool("x")]);
+	let mut pinned = json!({
+		"agent_state": {"phase": "thinking"},
+		"workspace": workspace(&["a"]),
+		"run_messages": [{"seq": 4, "content": "hi"}],
+	});
+	let pending = request_messages_unrecorded(&run, &pinned);
+	record_step_state(&mut run, &pinned);
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	assert_eq!(request_messages_unrecorded(&run, &pinned), pending);
+	let envelope: Envelope =
+		serde_json::from_str(pending[pending.len() - 2]["content"].as_str().unwrap()).unwrap();
+	assert_eq!(envelope.source, Source::Evidence);
+	assert_eq!(envelope.trust, Trust::Data);
+	assert_eq!(
+		envelope.content,
+		json!({
+			"run_messages": [{"seq": 4, "content": "hi"}],
+			"workspace": {"tasks": [{"title": "a"}], "view": "workspace_observation_v1"},
+		})
+	);
+}
+
+#[test]
+fn delivered_evidence_leaves_out_offloaded_items() {
+	let mut run = context(vec![]);
+	let mut pinned = json!({"workspace": workspace(&["a", "b"])});
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	let ContextEvent::Evidence { items } = &mut run.history[0].event else {
+		panic!("expected evidence")
+	};
+	items[1].content = ContextEvent::elided_result("evidence");
+	assert_eq!(
+		delivered_evidence(&run, &pinned, "workspace").unwrap()["tasks"],
+		json!([{"title": "a"}, null])
+	);
+}
+
 #[test]
 fn run_start_memory_is_projected_as_data() {
 	let context = context(vec![ContextEvent::MemoryRecall {
@@ -642,7 +775,9 @@ fn stable_sources_become_enveloped_attachments_in_send_order() {
 	);
 	assert_eq!(native.attachments[1].revision, Some(7));
 	assert!(native.attachments.iter().all(|e| e.trust == Trust::Data));
-	assert_eq!(native.volatile, r#"{"workspace":{"workspace_id":"w"}}"#);
+	// The workspace is evidence, appended to history (#942).
+	assert_eq!(native.volatile, "{}");
+	assert_eq!(shape(&native.history), ["human", "data:Evidence"]);
 }
 
 #[test]
@@ -686,7 +821,7 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 	]);
 	let native = native_context(
 		&context,
-		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}, "workspace": {"id": "w"}}),
+		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}, "semantic_memory": {"id": "w"}}),
 	);
 	// Act
 	let body = request(native, false).input_body();
@@ -726,7 +861,7 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 	);
 	assert_eq!(
 		messages[7]["content"],
-		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"workspace":{"id":"w"}}}"#
+		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"semantic_memory":{"id":"w"}}}"#
 	);
 	assert!(body.to_string().find("cache_control").is_none());
 }
@@ -737,7 +872,7 @@ fn breakpoints_mark_system_and_the_last_history_message_only() {
 	let context = context(vec![assistant(1, "", &["a"]), tool("a")]);
 	let native = native_context(
 		&context,
-		&json!({"task": {"id": "t"}, "workspace": {"id": "w"}}),
+		&json!({"task": {"id": "t"}, "semantic_memory": {"id": "w"}}),
 	);
 	// Act
 	let body = request(native, true).input_body();

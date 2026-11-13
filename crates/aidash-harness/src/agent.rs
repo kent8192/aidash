@@ -2362,8 +2362,11 @@ impl<'a> Executor<'a> {
                 }
                 // A changed Native step state joins history before fitting, so
                 // compaction and the request see the bytes the next step keeps.
+                // New evidence is admitted under this step's snapshot budget and
+                // then stays; refused items leave this request (#942).
                 if agent.projection_version == ProjectionVersion::Native {
                     aidash_domain::projection::native::record_step_state(&mut context, &pinned);
+                    aidash_domain::projection::native::record_evidence(&mut context, &mut pinned, volatile_budget);
                 }
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
                 context::observation::normalize_history(&mut context.history);
@@ -2453,7 +2456,7 @@ impl<'a> Executor<'a> {
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
-				let source_delivery = fit_source_delivery(&context,&request,&source_instruction_slots,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
+				let source_delivery = fit_source_delivery(&context,&pinned,&request,&source_instruction_slots,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
                 let source_request_digest=aidash_domain::registry::rules::digest(&serde_json::to_value(&request)?);
                 let provider_tools_enabled = !request.provider_tools.is_empty();
 				let request_estimate = request.request_estimate();
@@ -4841,6 +4844,7 @@ fn copy_source_records(from: &Context, to: &mut Context) {
 /// clipping and compaction. Fetched/selected bytes absent here earn no receipt.
 fn fit_source_delivery(
 	context: &Context,
+	pinned: &Value,
 	request: &aidash_domain::provider::ModelRequest,
 	instruction_slots: &std::collections::BTreeMap<String, [usize; 2]>,
 	remote: bool,
@@ -4887,7 +4891,7 @@ fn fit_source_delivery(
 				};
 				return text_placement(text, &placement.pointer) == item.content.as_str();
 			}
-			request_source_slot(request, &placement.slot)
+			request_source_slot(context, pinned, request, &placement.slot)
 				.and_then(|slot| slot.pointer(&placement.pointer).cloned())
 				.as_ref() == Some(&item.content)
 		}))
@@ -4918,6 +4922,8 @@ fn text_placement<'a>(text: &'a str, pointer: &str) -> Option<&'a str> {
 	text.get(start.parse().ok()?..end.parse().ok()?)
 }
 fn request_source_slot(
+	history: &Context,
+	pinned: &Value,
 	request: &aidash_domain::provider::ModelRequest,
 	slot: &str,
 ) -> Option<Value> {
@@ -4950,6 +4956,10 @@ fn request_source_slot(
 							== aidash_domain::projection::native::Source::ReferenceDocuments
 					})
 					.map(|envelope| envelope.content.clone())
+			} else if aidash_domain::projection::native::EVIDENCE_KEYS.contains(&key) {
+				// Admitted evidence lives in history (#942); offloaded items
+				// deliver nothing.
+				aidash_domain::projection::native::delivered_evidence(history, pinned, key)
 			} else {
 				serde_json::from_str::<Value>(&context.volatile)
 					.ok()?

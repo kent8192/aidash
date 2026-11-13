@@ -229,7 +229,7 @@ fn native_responses_media_reserves_escaped_frames_but_not_base64_payloads() {
 		input_format: InputFormat::Responses,
 		context: ModelContext::Native(crate::projection::native::native_context(
 			&crate::context::Context::default(),
-			&json!({"run_messages":["東京"]}),
+			&json!({"semantic_memory":["東京"]}),
 		)),
 		..Default::default()
 	};
