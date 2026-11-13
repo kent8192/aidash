@@ -298,7 +298,9 @@ impl<'a> Executor<'a> {
 			match guard.tool(call, &contract).await {
 				Ok(()) => {}
 				Err(
-					Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
+					Error::Invalid(message)
+					| Error::NotFound(message)
+					| Error::Domain(aidash_domain::Error::Invalid(message)),
 				) => {
 					if !resumed {
 						end = index;
@@ -3097,7 +3099,7 @@ connection: None,
 				if let Some(guard) = guard {
 					match guard.tool(&call, &contract).await {
 						Ok(()) => {},
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
+						Err(Error::Invalid(message) | Error::NotFound(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
 						// The gate runs before the call is journaled, so the pause names the call.
 						Err(Error::AuthorityRefused(mut refusal)) => {
 							refusal.call = Some(RefusedCall { key, index: cursor, replay_safe: contract.replay_safe(), tool_call: Some(RefusedToolCall { name: call.name.clone(), arguments: call.arguments.clone() }) });
