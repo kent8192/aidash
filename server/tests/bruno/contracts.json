@@ -56021,6 +56021,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -56064,6 +56069,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -56075,6 +56084,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -56136,13 +56157,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -56308,6 +56333,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -56351,6 +56381,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -56362,6 +56396,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -56423,13 +56469,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -56592,6 +56642,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -56635,6 +56690,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -56646,6 +56705,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -56707,13 +56778,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -56842,6 +56917,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -56870,6 +56950,9 @@
             "properties": {
               "halt": {
                 "$ref": "#/components/schemas/Halt"
+              },
+              "halt_reason": {
+                "type": ["string", "null"]
               },
               "halted_at": {
                 "format": "date-time",
@@ -56900,6 +56983,7 @@
               "registrant",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor"
             ],
             "type": "object"
@@ -56978,11 +57062,16 @@
               "ceilings": {
                 "$ref": "#/components/schemas/Ceilings"
               },
+              "effective": {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The limits that apply now, after the ceilings and any Tier."
+              },
               "limits": {
-                "$ref": "#/components/schemas/Limits"
+                "$ref": "#/components/schemas/Limits",
+                "description": "The Tenant's limits as its administrators set them."
               }
             },
-            "required": ["limits", "ceilings"],
+            "required": ["limits", "ceilings", "effective"],
             "type": "object"
           }
         },
@@ -57059,11 +57148,16 @@
               "ceilings": {
                 "$ref": "#/components/schemas/Ceilings"
               },
+              "effective": {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The limits that apply now, after the ceilings and any Tier."
+              },
               "limits": {
-                "$ref": "#/components/schemas/Limits"
+                "$ref": "#/components/schemas/Limits",
+                "description": "The Tenant's limits as its administrators set them."
               }
             },
-            "required": ["limits", "ceilings"],
+            "required": ["limits", "ceilings", "effective"],
             "type": "object"
           }
         },
@@ -57186,6 +57280,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -57229,6 +57328,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -57240,6 +57343,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -57301,13 +57416,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -57552,6 +57671,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -57595,6 +57719,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -57606,6 +57734,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -57667,13 +57807,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -57836,6 +57980,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -57879,6 +58028,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -57890,6 +58043,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -57951,13 +58116,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -58120,6 +58289,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -58163,6 +58337,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -58174,6 +58352,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -58235,13 +58425,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },
@@ -58404,6 +58598,11 @@
                 "description": "The Tenant was deleted. A restore leaves it stopped.",
                 "enum": ["tenant_deleted"],
                 "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
               }
             ]
           },
@@ -58447,6 +58646,10 @@
                   }
                 ]
               },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
               "halted_at": {
                 "format": "date-time",
                 "type": ["string", "null"]
@@ -58458,6 +58661,18 @@
               "max_lateness_seconds": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
               },
               "mine": {
                 "description": "The viewer is its Registrant.",
@@ -58519,13 +58734,17 @@
               "status",
               "halt",
               "halted_at",
+              "halt_reason",
               "successor",
               "next_scheduled_at",
               "consecutive_failures",
               "created_by_run_id",
               "revision",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
             ],
             "type": "object"
           },

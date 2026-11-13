@@ -57,6 +57,18 @@ pub(super) fn migration() -> Migration {
         })
         .add_operation(Operation::DropNamedIndex {
             table: "schedules".to_string(),
+            name: "schedules_creation_key".to_string(),
+            columns: vec!["created_by_run_id".to_string(), "creation_key".to_string()],
+            unique: true,
+            index_type: None,
+            where_clause: Some("creation_key IS NOT NULL".to_string()),
+            concurrently: false,
+            expressions: None,
+            mysql_options: None,
+            operator_class: None,
+        })
+        .add_operation(Operation::DropNamedIndex {
+            table: "schedules".to_string(),
             name: "schedules_due".to_string(),
             columns: vec!["next_fire_at".to_string()],
             unique: false,
@@ -190,7 +202,7 @@ pub(super) fn migration() -> Migration {
             table: "schedules".to_string(),
             constraint: Constraint::Check {
                 name: "schedules_halt_check".to_string(),
-                expression: "halt IS NULL OR halt IN ('paused', 'failures', 'registrant_left', 'agent_version_unusable', 'thread_deleted', 'tenant_deleted')"
+                expression: "halt IS NULL OR halt IN ('paused', 'failures', 'registrant_left', 'agent_version_unusable', 'thread_deleted', 'tenant_deleted', 'interval_too_short')"
                     .to_string(),
             },
         })

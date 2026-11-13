@@ -31,6 +31,8 @@ pub(crate) struct ScheduleView {
 	pub status: String,
 	pub halt: Option<Halt>,
 	pub halted_at: Option<DateTime<Utc>>,
+	/// Why it stopped, in words, when the halt alone does not say it all.
+	pub halt_reason: Option<String>,
 	pub successor: Option<String>,
 	/// The next scheduled time; the viewer's time zone renders it.
 	pub next_scheduled_at: Option<DateTime<Utc>>,
@@ -40,10 +42,24 @@ pub(crate) struct ScheduleView {
 	pub revision: i64,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
+	/// What the viewer may do with it.
+	pub may_edit: bool,
+	/// Pause and delete: its Registrant or a holder of `schedule.administer`.
+	pub may_manage: bool,
+	/// Resume it: its Registrant, or the successor named for it.
+	pub may_resume: bool,
 }
 
 impl ScheduleView {
-	pub fn new(schedule: Schedule, viewer: &str) -> Self {
+	pub fn new(schedule: Schedule, viewer: &str, administers: bool) -> Self {
+		use aidash_domain::schedules::{Change, Requester, permit, resumption};
+		let requester = Requester {
+			subject: viewer,
+			administers,
+		};
+		let may = |change| permit(requester, schedule.standing(), change).is_ok();
+		let (may_edit, may_manage) = (may(Change::Edit), may(Change::Pause));
+		let may_resume = resumption(requester, schedule.standing()).is_ok();
 		let status = schedule.status().to_owned();
 		let definition = schedule.definition;
 		Self {
@@ -61,6 +77,7 @@ impl ScheduleView {
 			status,
 			halt: schedule.halt,
 			halted_at: schedule.halted_at,
+			halt_reason: schedule.halt_reason,
 			successor: schedule.successor,
 			next_scheduled_at: schedule.next_scheduled_at,
 			consecutive_failures: schedule.consecutive_failures,
@@ -68,6 +85,9 @@ impl ScheduleView {
 			revision: schedule.revision,
 			created_at: schedule.created_at,
 			updated_at: schedule.updated_at,
+			may_edit,
+			may_manage,
+			may_resume,
 		}
 	}
 }
@@ -87,7 +107,7 @@ pub(crate) struct DetailView {
 impl DetailView {
 	pub fn new(detail: Detail, viewer: &str) -> Self {
 		Self {
-			schedule: ScheduleView::new(detail.schedule, viewer),
+			schedule: ScheduleView::new(detail.schedule, viewer, detail.may_administer),
 			ticks: detail.ticks,
 			newer_agent_version: detail.newer_agent_version,
 			may_edit: detail.may_edit,
@@ -98,8 +118,11 @@ impl DetailView {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(crate) struct LimitsView {
+	/// The Tenant's limits as its administrators set them.
 	pub limits: Limits,
 	pub ceilings: Ceilings,
+	/// The limits that apply now, after the ceilings and any Tier.
+	pub effective: Limits,
 }
 
 /// A Schedule that stopped without anyone choosing it (#557 decision 25).
@@ -111,6 +134,7 @@ pub(crate) struct ScheduleNotice {
 	pub registrant: String,
 	pub halt: Halt,
 	pub halted_at: Option<DateTime<Utc>>,
+	pub halt_reason: Option<String>,
 	pub successor: Option<String>,
 }
 
@@ -123,6 +147,7 @@ impl ScheduleNotice {
 			registrant: schedule.registrant.clone(),
 			halt: schedule.halt.unwrap_or(Halt::Paused),
 			halted_at: schedule.halted_at,
+			halt_reason: schedule.halt_reason.clone(),
 			successor: schedule.successor.clone(),
 		}
 	}

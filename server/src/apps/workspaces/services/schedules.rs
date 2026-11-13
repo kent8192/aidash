@@ -45,8 +45,21 @@ impl ScheduleScope for Adapter<'_> {
 	fn subject(&self) -> &str {
 		&self.access.identity.subject
 	}
-	fn credential(&self) -> Uuid {
-		self.access.identity.credential_id
+	async fn registrant_credential(&mut self) -> aidash_application::Result<Uuid> {
+		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
+		Ok(
+			repository::mapping_credential(&mut *self.access.tx, &tenant, &subject)
+				.await?
+				.unwrap_or(self.access.identity.credential_id),
+		)
+	}
+	async fn created_by(
+		&mut self,
+		run: Uuid,
+		key: &str,
+	) -> aidash_application::Result<Option<Schedule>> {
+		let tenant = tenant(self.access);
+		Ok(repository::created_by(&mut *self.access.tx, &tenant, run, key).await?)
 	}
 	fn now(&self) -> DateTime<Utc> {
 		self.now
@@ -240,7 +253,8 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 			now,
 		};
 		let mine = scope.subject().to_owned();
-		let view = |schedule: Schedule| ScheduleView::new(schedule, &mine);
+		let administers = scope.administers().await?;
+		let view = |schedule: Schedule| ScheduleView::new(schedule, &mine, administers);
 		Ok(match op {
 			Operation::Create(workspace, definition) => serde_json::to_value(view(
 				app::register(&mut scope, workspace, definition, Origin::Person).await?,
@@ -270,14 +284,20 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 				serde_json::to_value(view(app::name_successor(&mut scope, id, &successor).await?))?
 			}
 			Operation::Limits => {
-				let (limits, ceilings) = app::limits(&mut scope).await?;
-				serde_json::to_value(LimitsView { limits, ceilings })?
-			}
-			Operation::SetLimits(limits) => {
-				let limits = app::set_limits(&mut scope, limits).await?;
+				let (limits, ceilings, effective) = app::limits(&mut scope).await?;
 				serde_json::to_value(LimitsView {
 					limits,
-					ceilings: f.store.schedule_ceilings,
+					ceilings,
+					effective,
+				})?
+			}
+			Operation::SetLimits(limits) => {
+				app::set_limits(&mut scope, limits).await?;
+				let (limits, ceilings, effective) = app::limits(&mut scope).await?;
+				serde_json::to_value(LimitsView {
+					limits,
+					ceilings,
+					effective,
 				})?
 			}
 			Operation::Notices => serde_json::to_value(notices(&mut scope).await?)?,
@@ -554,21 +574,44 @@ async fn settle(f: &Federation, ended: &repository::Ended, now: DateTime<Utc>) -
 }
 
 /// Why a claimed tick did not start.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Miss {
-	/// Recorded as skipped with this reason; it does not count as a failure.
-	Skip(String),
 	/// Recorded as failed; it counts toward the pause.
 	Fail(String),
-	/// The Schedule stops for this reason, and the tick is recorded as failed.
-	Stop(Halt, String),
+	/// The Schedule stops for this reason, and the tick is recorded with this
+	/// status: failed when its start was refused, skipped when it never tried.
+	Stop(Halt, String, TickStatus),
 }
 
-/// What became of a claimed tick that started nothing.
-fn classify(error: &Error) -> Miss {
+/// Whether a conflict names a refusal by its code, such as
+/// `COMPACTION_DECIDER_UNAPPROVED: <id>@<version>`, rather than a race that
+/// the same request can lose once and win next time.
+fn refusal_code(message: &str) -> bool {
+	let code = message.split(':').next().unwrap_or_default();
+	code.len() >= 3
+		&& code
+			.bytes()
+			.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+/// What a start that failed after its claim records. A definite refusal is a
+/// failed tick with its reason, never retried silently (#557, carried from
+/// #540). A transient error, such as a policy revision that changed under
+/// the start, an unavailable peer or a database error, records nothing: the
+/// claim rolls back and the next pass tries the same tick again.
+fn classify(error: &Error) -> Option<Miss> {
 	match error {
-		// The usage gate refused it, as it would a Run started by hand.
-		Error::Refused(code) => Miss::Skip(format!("{}: {code}", schedules::skip::LIMIT)),
-		other => Miss::Fail(other.to_string()),
+		Error::Forbidden
+		| Error::NotFound(_)
+		| Error::Invalid(_)
+		| Error::Unprocessable(_)
+		| Error::Refused(_)
+		| Error::AuthorityRefused(_)
+		| Error::RemoteExecutionRefused(_)
+		| Error::ResumeBlocked(_)
+		| Error::RunHidden(_) => Some(Miss::Fail(error.to_string())),
+		Error::Conflict(message) if refusal_code(message) => Some(Miss::Fail(message.clone())),
+		_ => None,
 	}
 }
 
@@ -576,7 +619,7 @@ fn classify(error: &Error) -> Miss {
 enum Fired {
 	/// Another replica held it, or it was no longer due.
 	Nothing,
-	Skipped(&'static str),
+	Skipped(String),
 	Started(Uuid),
 }
 
@@ -616,7 +659,11 @@ async fn fire(
 				&schedule,
 				None,
 				now,
-				Miss::Stop(Halt::RegistrantLeft, "the Registrant lost access".into()),
+				Miss::Stop(
+					Halt::RegistrantLeft,
+					"the Registrant lost access".into(),
+					TickStatus::Failed,
+				),
 				report,
 			)
 			.await;
@@ -626,7 +673,7 @@ async fn fire(
 	let mut lease = Lease::from_access(access);
 	let mut claimed: Option<Claim> = None;
 	// Set when the tick shows the Schedule must stop, before the start rolls back.
-	let mut stopping: Option<(Halt, String)> = None;
+	let mut stopping: Option<(Halt, String, TickStatus)> = None;
 	let result: Result<Fired> = async {
 		let Some(schedule) = repository::claim(lease.tx(), tenant, id, now).await? else {
 			return Ok(Fired::Nothing);
@@ -638,26 +685,45 @@ async fn fire(
 			return Ok(Fired::Nothing);
 		};
 		claimed = Some(claim.clone());
+		let limits = repository::limits(lease.tx(), tenant).await?;
+		let min_interval = f
+			.store
+			.schedule_ceilings
+			.effective(limits, None)
+			.min_interval_seconds;
+		// A Tenant that raised its minimum above this Schedule's interval
+		// stops it, saying so, rather than skipping every tick.
+		if schedule
+			.definition
+			.trigger
+			.validate(min_interval, now)
+			.is_err()
+		{
+			stopping = Some((
+				Halt::IntervalTooShort,
+				format!(
+					"the Tenant's minimum interval is now {} minutes",
+					min_interval / 60
+				),
+				TickStatus::Skipped,
+			));
+			return Err(Error::Forbidden);
+		}
 		let skip = if claim.late {
-			Some(schedules::skip::LATE)
+			Some(schedules::skip::LATE.to_owned())
 		} else if repository::running(lease.tx(), tenant, id).await? {
-			Some(schedules::skip::OVERLAP)
+			Some(schedules::skip::OVERLAP.to_owned())
 		} else {
 			// The minimum interval holds at run time too: a daylight-saving
-			// change can bring two scheduled times closer than registration saw.
-			let limits = repository::limits(lease.tx(), tenant).await?;
-			let min_interval = f
-				.store
-				.schedule_ceilings
-				.effective(limits, None)
-				.min_interval_seconds;
-			let previous = repository::last_scheduled(lease.tx(), tenant, id).await?;
+			// change can bring two scheduled times closer than registration
+			// saw. Only a tick that started a Run counts as the previous one.
+			let previous = repository::last_started(lease.tx(), tenant, id).await?;
 			schedules::too_soon(previous, claim.scheduled_at, min_interval)
-				.then_some(schedules::skip::INTERVAL)
+				.then(|| schedules::skip::INTERVAL.to_owned())
 		};
 		if let Some(reason) = skip {
 			advance(lease.tx(), tenant, &schedule, &claim, now).await?;
-			skipped_tick(lease.tx(), tenant, &schedule, &claim, reason, now).await?;
+			skipped_tick(lease.tx(), tenant, &schedule, &claim, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
 		}
 		// The Registrant must still be able to register it and start Tasks
@@ -668,6 +734,7 @@ async fn fire(
 				stopping = Some((
 					Halt::RegistrantLeft,
 					format!("the Registrant may no longer {action} in this Workspace"),
+					TickStatus::Failed,
 				));
 				return Err(Error::Forbidden);
 			}
@@ -687,6 +754,7 @@ async fn fire(
 					stopping = Some((
 						Halt::ThreadDeleted,
 						"the Schedule's Thread was deleted".into(),
+						TickStatus::Failed,
 					));
 					return Err(error);
 				}
@@ -706,12 +774,26 @@ async fn fire(
 					"Agent {}@{} can no longer be started",
 					schedule.definition.agent.id, schedule.definition.agent.version
 				);
-				stopping = Some((Halt::AgentVersionUnusable, reason));
+				stopping = Some((Halt::AgentVersionUnusable, reason, TickStatus::Failed));
 				return Err(error);
 			}
 			Err(error) => return Err(error),
 		}
+		// The usage gate judges the tick as it would a Run started by hand; its
+		// refusal is a skip (limit), and any later refusal a failed start.
+		if let aidash_application::usage::Verdict::Refuse(refusal) = f
+			.store
+			.admission
+			.admit(tenant, aidash_application::usage::Work::Run)
+			.await?
+		{
+			let reason = format!("{}: {}", schedules::skip::LIMIT, refusal.code);
+			advance(lease.tx(), tenant, &schedule, &claim, now).await?;
+			skipped_tick(lease.tx(), tenant, &schedule, &claim, &reason, now).await?;
+			return Ok(Fired::Skipped(reason));
+		}
 		let (task, thread) = start(f, &mut lease, &schedule, (claim.scheduled_at, "")).await?;
+		repository::mark_scheduled(lease.tx(), task).await?;
 		advance(lease.tx(), tenant, &schedule, &claim, now).await?;
 		repository::insert_tick(
 			lease.tx(),
@@ -738,7 +820,7 @@ async fn fire(
 			lease.finish(Ok(())).await?;
 			match fired {
 				Fired::Started(task) => report.started.push(task),
-				Fired::Skipped(reason) => report.skipped.push((id, reason.into())),
+				Fired::Skipped(reason) => report.skipped.push((id, reason)),
 				Fired::Nothing => {}
 			}
 			return Ok(());
@@ -749,8 +831,12 @@ async fn fire(
 		return Err(outcome);
 	};
 	let miss = match stopping {
-		Some((halt, reason)) => Miss::Stop(halt, reason),
-		None => classify(&outcome),
+		Some((halt, reason, status)) => Miss::Stop(halt, reason, status),
+		None => match classify(&outcome) {
+			Some(miss) => miss,
+			// Transient: nothing is recorded and the next pass retries.
+			None => return Err(outcome),
+		},
 	};
 	record_miss(f, tenant, &schedule, Some(&claim), now, miss, report).await
 }
@@ -821,14 +907,13 @@ async fn record_miss(
 		}
 		let scheduled_at = claim.map_or(now, |claim| claim.scheduled_at);
 		let (status, reason) = match &miss {
-			Miss::Skip(reason) => (TickStatus::Skipped, reason.clone()),
-			Miss::Fail(reason) | Miss::Stop(_, reason) => (TickStatus::Failed, reason.clone()),
+			Miss::Fail(reason) => (TickStatus::Failed, reason.clone()),
+			Miss::Stop(_, reason, status) => (*status, reason.clone()),
 		};
 		if let Some(claim) = claim {
 			schedule.next_scheduled_at = claim.next;
 		}
 		match miss {
-			Miss::Skip(reason) => report.skipped.push((schedule.id, reason)),
 			Miss::Fail(reason) => {
 				let (failures, pause) =
 					schedules::after_settled(schedule.consecutive_failures, TickStatus::Failed);
@@ -839,8 +924,8 @@ async fn record_miss(
 				}
 				report.failed.push((schedule.id, reason));
 			}
-			Miss::Stop(halt, _) => {
-				schedule.stop(halt, now);
+			Miss::Stop(halt, reason, _) => {
+				schedule.stop_because(halt, Some(reason), now);
 				report.stopped.push((schedule.id, halt));
 			}
 		}
@@ -922,6 +1007,7 @@ pub(crate) async fn stop_for_tenant(
 pub async fn agent_tool(
 	store: &Store,
 	run: &aidash_domain::Run,
+	key: &str,
 	operation: &str,
 	input: Value,
 ) -> Result<Value> {
@@ -948,7 +1034,10 @@ pub async fn agent_tool(
 			store
 				.pool
 				.scoped(&scope, async |tx| {
-					repository::scheduled_chain(&mut **tx, &tenant, run.task_id).await
+					// The mark on the Run's authority follows every delegation;
+					// the Task chain also covers a Run admitted before it.
+					Ok(repository::run_scheduled(&mut **tx, run.id).await?
+						|| repository::scheduled_chain(&mut **tx, &tenant, run.task_id).await?)
 				})
 				.await?
 		}
@@ -1032,7 +1121,10 @@ pub async fn agent_tool(
 					&mut scope,
 					run.workspace_id,
 					definition,
-					Origin::Agent { run_id: run.id },
+					Origin::Agent {
+						run_id: run.id,
+						key: key.to_owned(),
+					},
 				)
 				.await?;
 				summary(&schedule)
@@ -1078,4 +1170,29 @@ pub async fn agent_tool(
 	}
 	.await;
 	access.finish(result).await
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use rstest::rstest;
+
+	#[rstest]
+	#[case(Error::Conflict("COMPACTION_DECIDER_UNAPPROVED: aidash.compaction@1.0.0".into()), true)]
+	#[case(Error::Forbidden, true)]
+	#[case(Error::NotFound("agent".into()), true)]
+	#[case(Error::Refused("Subnode has ended".into()), true)]
+	#[case(Error::Conflict("authorization revision changed".into()), false)]
+	#[case(Error::PolicyBusy { retry_after: 1 }, false)]
+	#[case(Error::RateLimited, false)]
+	#[case(Error::External("peer unavailable".into()), false)]
+	fn only_a_definite_refusal_burns_a_tick(#[case] error: Error, #[case] recorded: bool) {
+		// Act
+		let miss = classify(&error);
+		// Assert: a transient error records nothing, so the next pass retries.
+		assert_eq!(miss.is_some(), recorded, "{error:?}");
+		if let Some(Miss::Fail(reason)) = miss {
+			assert_eq!(reason, error.to_string());
+		}
+	}
 }

@@ -48,11 +48,16 @@ pub struct ScheduleRecord {
 	#[field(null = true)]
 	pub halted_at: Option<DateTime<Utc>>,
 	#[field(field_type = "text", null = true)]
+	pub halt_reason: Option<String>,
+	#[field(field_type = "text", null = true)]
 	pub successor: Option<String>,
 	#[field(default = 0)]
 	pub consecutive_failures: i32,
 	#[field(null = true)]
 	pub created_by_run_id: Option<Uuid>,
+	/// The invocation key of the Agent tool call that registered it.
+	#[field(field_type = "text", null = true)]
+	pub creation_key: Option<String>,
 	#[field(default = 0)]
 	pub revision: i64,
 	#[field]

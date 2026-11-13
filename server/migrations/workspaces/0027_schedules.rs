@@ -29,9 +29,11 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("next_fire_at", FieldType::TimestampTz),
 				ColumnDefinition::new("halt", FieldType::Text),
 				ColumnDefinition::new("halted_at", FieldType::TimestampTz),
+				ColumnDefinition::new("halt_reason", FieldType::Text),
 				ColumnDefinition::new("successor", FieldType::Text),
 				ColumnDefinition::new("consecutive_failures", FieldType::Integer).with_not_null(true).with_default(Some("0".into())),
 				ColumnDefinition::new("created_by_run_id", FieldType::Uuid),
+				ColumnDefinition::new("creation_key", FieldType::Text),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true).with_default(Some("0".into())),
 				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("updated_at", FieldType::TimestampTz).with_not_null(true),
@@ -61,7 +63,7 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::Check {
 					name: "schedules_halt_check".into(),
-					expression: "halt IS NULL OR halt IN ('paused', 'failures', 'registrant_left', 'agent_version_unusable', 'thread_deleted', 'tenant_deleted')".into(),
+					expression: "halt IS NULL OR halt IN ('paused', 'failures', 'registrant_left', 'agent_version_unusable', 'thread_deleted', 'tenant_deleted', 'interval_too_short')".into(),
 				},
 				Constraint::Check {
 					name: "schedules_halted_at_check".into(),
@@ -202,6 +204,19 @@ pub(super) fn migration() -> Migration {
 			unique: false,
 			index_type: Some(IndexType::BTree),
 			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		// An Agent's retried tool call finds the Schedule its first call registered.
+		.add_operation(Operation::CreateNamedIndex {
+			table: "schedules".into(),
+			name: "schedules_creation_key".into(),
+			columns: vec!["created_by_run_id".into(), "creation_key".into()],
+			unique: true,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some("creation_key IS NOT NULL".into()),
 			concurrently: false,
 			expressions: None,
 			mysql_options: None,

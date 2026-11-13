@@ -27,6 +27,10 @@ pub struct AuthorizationExecution {
 	pub root_subject: String,
 	#[field]
 	pub subject_chain: Vec<String>,
+	/// A Schedule started this Run, or a Run it descends from by delegation
+	/// (#557): it never registers or changes Schedules.
+	#[field(default = false)]
+	pub scheduled: bool,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

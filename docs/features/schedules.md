@@ -96,7 +96,8 @@ the root of the Run's chain, decided by their Approval Mode and Approval Rules;
 `schedule_list` needs none. A Schedule an Agent registers acts as that person
 and belongs to the Run's Workspace. A Run that arrived through Federation, a
 Run whose chain starts at no person, and a Run a Schedule started (or any Run
-it delegates to, whatever Task) cannot register or change Schedules. A retried
+it delegates to, whatever Task, or assigns through a generated Agent) cannot
+register or change Schedules. A retried
 tool call returns the Schedule its first call registered.
 
 ## Limits

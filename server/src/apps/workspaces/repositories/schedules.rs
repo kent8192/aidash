@@ -60,9 +60,11 @@ pub(crate) fn domain(row: ScheduleRecord) -> Result<Schedule> {
 		next_scheduled_at: row.next_scheduled_at,
 		halt: row.halt.as_deref().map(Halt::parse).transpose()?,
 		halted_at: row.halted_at,
+		halt_reason: row.halt_reason,
 		successor: row.successor,
 		consecutive_failures: row.consecutive_failures,
 		created_by_run_id: row.created_by_run_id,
+		creation_key: row.creation_key,
 		revision: row.revision,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
@@ -91,9 +93,11 @@ fn write(row: &mut ScheduleRecord, schedule: &Schedule) -> Result<()> {
 	row.next_fire_at = schedule.next_fire_at();
 	row.halt = schedule.halt.map(|halt| halt.as_str().to_owned());
 	row.halted_at = schedule.halted_at;
+	row.halt_reason = schedule.halt_reason.clone();
 	row.successor = schedule.successor.clone();
 	row.consecutive_failures = schedule.consecutive_failures;
 	row.created_by_run_id = schedule.created_by_run_id;
+	row.creation_key = schedule.creation_key.clone();
 	row.created_at = schedule.created_at;
 	row.updated_at = schedule.updated_at;
 	Ok(())
@@ -123,9 +127,11 @@ pub(crate) async fn insert(
 		.next_fire_at(None)
 		.halt(None)
 		.halted_at(None)
+		.halt_reason(None)
 		.successor(None)
 		.consecutive_failures(0)
 		.created_by_run_id(None)
+		.creation_key(None)
 		.revision(0)
 		.created_at(schedule.created_at)
 		.updated_at(schedule.updated_at)
@@ -733,8 +739,9 @@ pub(crate) async fn task_thread(
 	.await
 }
 
-/// When the Schedule's latest scheduled tick was due; "Run now" ticks aside.
-pub(crate) async fn last_scheduled(
+/// When the Schedule's latest tick that started a Run was due; skipped and
+/// refused ticks, and "Run now", do not count.
+pub(crate) async fn last_started(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	schedule: Uuid,
@@ -746,10 +753,143 @@ pub(crate) async fn last_scheduled(
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 			.and_where(Expr::col("schedule_id").eq(Expr::value(schedule)))
 			.and_where(Expr::col("started_by").is_null())
+			.and_where(Expr::col("task_id").is_not_null())
 			.order_by(Alias::new("scheduled_at"), Order::Desc)
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut *tx)
 	.await
+}
+
+/// Marks the Run a scheduled tick started for `task` (#557 decision 7).
+pub(crate) async fn mark_scheduled(tx: &mut dyn TransactionExecutor, task: Uuid) -> Result<()> {
+	native::query(
+		&Query::update()
+			.table(Alias::new("authorization_execution"))
+			.value(Alias::new("scheduled"), true)
+			.and_where(Expr::col("task_id").eq(Expr::value(task)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}
+
+/// Carries the mark of a delegating Run over to the Run it admitted.
+pub(crate) async fn inherit_scheduled(
+	tx: &mut dyn TransactionExecutor,
+	from: Uuid,
+	to: Uuid,
+) -> Result<()> {
+	if !run_scheduled(&mut *tx, from).await? {
+		return Ok(());
+	}
+	native::query(
+		&Query::update()
+			.table(Alias::new("authorization_execution"))
+			.value(Alias::new("scheduled"), true)
+			.and_where(Expr::col("run_id").eq(Expr::value(to)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}
+
+/// Whether a Schedule started the Run, or a Run it descends from by delegation.
+pub(crate) async fn run_scheduled(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<bool> {
+	Ok(native::query_scalar::<bool>(
+		&Query::select()
+			.column(Alias::new("scheduled"))
+			.from(Alias::new("authorization_execution"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut *tx)
+	.await?
+	.unwrap_or(false))
+}
+
+/// The Schedule an Agent's tool call with this invocation key registered.
+pub(crate) async fn created_by(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	run: Uuid,
+	key: &str,
+) -> Result<Option<Schedule>> {
+	ScheduleRecord::objects()
+		.filter(ScheduleRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(ScheduleRecord::field_created_by_run_id().eq(Some(run)))
+		.filter(ScheduleRecord::field_creation_key().eq(Some(key.to_owned())))
+		.all_with_executor(tx)
+		.await
+		.map_err(framework)?
+		.pop()
+		.map(domain)
+		.transpose()
+}
+
+/// The long-lived credential of `subject`'s enabled Mapping in `tenant`.
+pub(crate) async fn mapping_credential(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	subject: &str,
+) -> Result<Option<Uuid>> {
+	native::query_scalar::<Uuid>(
+		&Query::select()
+			.column(Alias::new("credential_id"))
+			.from(Alias::new("dashboard_mappings"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("subject").eq(subject.to_owned()))
+			.and_where(Expr::col("enabled").eq(true))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut *tx)
+	.await
+}
+
+/// Marks a generation request a Run a Schedule started made.
+pub(crate) async fn mark_generation(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	generation: Uuid,
+) -> Result<()> {
+	if !run_scheduled(&mut *tx, run).await? {
+		return Ok(());
+	}
+	native::query(
+		&Query::update()
+			.table(Alias::new("generation_requests"))
+			.value(Alias::new("scheduled"), true)
+			.and_where(Expr::col("id").eq(Expr::value(generation)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}
+
+/// Carries a marked generation request's mark over to the Run its generated
+/// Agent was delegated for `task`.
+pub(crate) async fn inherit_generation(
+	tx: &mut dyn TransactionExecutor,
+	generation: Uuid,
+	task: Uuid,
+) -> Result<()> {
+	let scheduled = native::query_scalar::<bool>(
+		&Query::select()
+			.column(Alias::new("scheduled"))
+			.from(Alias::new("generation_requests"))
+			.and_where(Expr::col("id").eq(Expr::value(generation)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut *tx)
+	.await?
+	.unwrap_or(false);
+	if scheduled {
+		mark_scheduled(&mut *tx, task).await?;
+	}
+	Ok(())
 }
