@@ -6,6 +6,18 @@ pub use aidash_domain::registry::workbench::sandbox::{
 use reinhardt::Validate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TestApprovalAnswer {
+	pub approval_id: uuid::Uuid,
+	pub choice: TestApprovalChoice,
+}
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TestApprovalChoice {
+	AllowOnce,
+	Deny,
+}
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct TestLimits {

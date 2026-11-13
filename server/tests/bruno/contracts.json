@@ -9494,6 +9494,10 @@
               "version": {
                 "type": ["string", "null"]
               },
+              "viewer_can_decide_inline": {
+                "description": "The card is a pending outbound, disclosure or tool call approval whose\ndesignated approver is the reader and the person at the root of the\nRun's delegation chain, so the Thread may offer it inline.",
+                "type": "boolean"
+              },
               "viewer_is_approver": {
                 "description": "Whether the reader is the approver this card is addressed to.",
                 "type": "boolean"
@@ -9513,6 +9517,7 @@
               "expires_at",
               "grant_id",
               "viewer_is_approver",
+              "viewer_can_decide_inline",
               "agent_id",
               "agent_version",
               "decided_by",
@@ -57249,6 +57254,86 @@
       }
     },
     "source": "server/src/apps/identity/views/peer_execution.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "workbench-answer-approval",
+    "path": "/api/workbench/tests/{id}/approval",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "TestSession": {
+            "properties": {
+              "conversation": {},
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "draft_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "expired_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scenario": {},
+              "status": {
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              },
+              "tool_calls": {},
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "usage": {}
+            },
+            "required": [
+              "id",
+              "draft_id",
+              "tenant",
+              "revision",
+              "status",
+              "scenario",
+              "conversation",
+              "tool_calls",
+              "usage",
+              "error",
+              "created_at",
+              "updated_at",
+              "expires_at",
+              "expired_at"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/TestSession"
+        }
+      }
+    },
+    "source": "server/src/apps/registry/workbench/views/test.rs",
     "uuid_parameters": ["id"]
   }
 ]
