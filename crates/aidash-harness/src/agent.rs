@@ -871,9 +871,10 @@ impl<'a> Executor<'a> {
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
 		retry_truncated: bool,
+		cache_breakpoints: bool,
 	) -> Result<()> {
 		use aidash_application::context::{
-			record_stage, record_tokens, summary_candidate, summary_request,
+			record_stage, record_tokens, summary_candidate, summary_continuation, summary_request,
 		};
 		use context::recovery::{Attempt, Failure as ContextFailure, Outcome, Settlement, Stage};
 		let store = self.environment.store();
@@ -919,67 +920,96 @@ impl<'a> Executor<'a> {
 		let max_tokens = max_tokens
 			.min(summary.max_tokens)
 			.min(model_cfg.provider_max_output_tokens.unwrap_or(u32::MAX));
+		// A Native merge continues the main request (#942, ADR 0125): the same
+		// model, reasoning settings, instructions, tools and history, so its
+		// input is read from the prompt cache. Its output limit reserves the
+		// main request's room for reasoning on top of the summary. Research
+		// revoked since the step began would reach the summarizer in that
+		// history, so such a merge, and one whose continuation exceeds the
+		// window, sends only what it folds instead, without reasoning.
+		let continuation = if fitting.native()
+			&& !(aidash_application::research::revocation::may_carry_research(&plan.pruned)
+				&& store.research_revoked(run).await?)
+		{
+			let output = max_tokens
+				.saturating_add(model_cfg.output_token_limit())
+				.min(model_cfg.provider_max_output_tokens.unwrap_or(u32::MAX));
+			summary_continuation(&plan, fitting, output)
+				.filter(|request| request.ensure_fits(summary_window).is_ok())
+		} else {
+			None
+		};
 		let mut summary_model = model_cfg.clone();
-		summary_model.reasoning_effort = Some(aidash_domain::model::ReasoningEffort::None);
-		summary_model.max_output_tokens = Some(max_tokens);
+		let request = if let Some(mut request) = continuation {
+			request.routing_run = Some(run.id);
+			request.cache_breakpoints = cache_breakpoints;
+			summary_model.max_output_tokens = Some(request.max_output_tokens);
+			request
+		} else {
+			summary_model.reasoning_effort = Some(aidash_domain::model::ReasoningEffort::None);
+			summary_model.max_output_tokens = Some(max_tokens);
+			loop {
+				if let Some(last) = plan.absorbed.last() {
+					plan.people.retain(|entry| entry.seq <= last.seq);
+				}
+				let request = summary_request(&plan, fitting.pinned, max_tokens);
+				if request.ensure_fits(summary_window).is_ok() {
+					break request;
+				}
+				// An original whose bytes exceed a quarter of the summarizer's window goes
+				// back to its marker before any turn is dropped: the summary then
+				// still absorbs the turns around it, and one huge result cannot
+				// block every later summary. `from_draft` reads only a short
+				// outcome of each result anyway.
+				if aidash_application::context::offload_largest_absorbed(
+					&mut plan.absorbed,
+					summary_window / 4,
+				) {
+					continue;
+				}
+				if fitting.native() {
+					let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
+					let Some(last) = turns.iter().flatten().max().copied() else {
+						return Err(Error::Context(ContextFailure::ContextUnreducible));
+					};
+					// The oldest turn alone does not fit: its remaining originals
+					// go back to their markers, largest first.
+					if turns.iter().flatten().min() == Some(&last) {
+						if aidash_application::context::offload_largest_absorbed(
+							&mut plan.absorbed,
+							0,
+						) {
+							continue;
+						}
+						return Err(Error::Context(ContextFailure::ContextUnreducible));
+					}
+					let before = plan.absorbed.len();
+					let mut index = 0;
+					plan.absorbed.retain(|_| {
+						let keep = turns[index] != Some(last);
+						index += 1;
+						keep
+					});
+					if plan.absorbed.len() == before {
+						return Err(Error::Context(ContextFailure::ContextUnreducible));
+					}
+				} else if plan.absorbed.len() == 1 {
+					if !aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0)
+					{
+						return Err(Error::Context(ContextFailure::ContextUnreducible));
+					}
+				} else {
+					plan.absorbed.pop();
+				}
+				if plan.absorbed.is_empty() {
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				}
+			}
+		};
 		let provider = self
 			.environment
 			.provider(summary_model)
 			.map_err(|_| unavailable())?;
-		let request = loop {
-			if let Some(last) = plan.absorbed.last() {
-				plan.people.retain(|entry| entry.seq <= last.seq);
-			}
-			let request = summary_request(&plan, fitting.pinned, max_tokens);
-			if request.ensure_fits(summary_window).is_ok() {
-				break request;
-			}
-			// An original whose bytes exceed a quarter of the summarizer's window goes
-			// back to its marker before any turn is dropped: the summary then
-			// still absorbs the turns around it, and one huge result cannot
-			// block every later summary. `from_draft` reads only a short
-			// outcome of each result anyway.
-			if aidash_application::context::offload_largest_absorbed(
-				&mut plan.absorbed,
-				summary_window / 4,
-			) {
-				continue;
-			}
-			if fitting.native() {
-				let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
-				let Some(last) = turns.iter().flatten().max().copied() else {
-					return Err(Error::Context(ContextFailure::ContextUnreducible));
-				};
-				// The oldest turn alone does not fit: its remaining originals
-				// go back to their markers, largest first.
-				if turns.iter().flatten().min() == Some(&last) {
-					if aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0)
-					{
-						continue;
-					}
-					return Err(Error::Context(ContextFailure::ContextUnreducible));
-				}
-				let before = plan.absorbed.len();
-				let mut index = 0;
-				plan.absorbed.retain(|_| {
-					let keep = turns[index] != Some(last);
-					index += 1;
-					keep
-				});
-				if plan.absorbed.len() == before {
-					return Err(Error::Context(ContextFailure::ContextUnreducible));
-				}
-			} else if plan.absorbed.len() == 1 {
-				if !aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0) {
-					return Err(Error::Context(ContextFailure::ContextUnreducible));
-				}
-			} else {
-				plan.absorbed.pop();
-			}
-			if plan.absorbed.is_empty() {
-				return Err(Error::Context(ContextFailure::ContextUnreducible));
-			}
-		};
 		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
@@ -1053,7 +1083,7 @@ impl<'a> Executor<'a> {
 				// Each physical summary call, a truncation retry included, is
 				// its own Usage Record: reserve it under its attempt, not the
 				// lease shared by every call of this step.
-				.reserve_inference(attempt.id, summary_window, max_tokens, &request)
+				.reserve_inference(attempt.id, summary_window, request.max_output_tokens, &request)
 				.await
 			{
 				Ok(reservation) => reservation,
@@ -1199,6 +1229,7 @@ impl<'a> Executor<'a> {
 							plan,
 							tools,
 							false,
+							cache_breakpoints,
 						))
 						.await;
 					}
@@ -1218,6 +1249,23 @@ impl<'a> Executor<'a> {
 				return Err(error);
 			}
 		};
+		// A continued request offers the main tools, but a summary never acts.
+		if !response.tool_calls.is_empty() {
+			store
+				.settle_compaction(
+					run,
+					token,
+					attempt.id,
+					&settlement(
+						Outcome::Invalid,
+						Some(context::summary::Rejection::Malformed.label()),
+						None,
+					),
+				)
+				.await?;
+			record_stage("summary", "invalid");
+			return Err(Error::Context(ContextFailure::SummaryInvalid));
+		}
 		// Authority was released during I/O: recheck the Run's ordinary inference
 		// authority and every summarized source before any candidate is adopted.
 		let current = async {
@@ -2413,7 +2461,7 @@ impl<'a> Executor<'a> {
                         // request fit (ADR 0125): a failed summary is dropped and
                         // the step goes on with the projection it already has.
                         let forced = plan.pruned.offload_reads.summary_pending && plan.before_tokens <= fitting.budget.window;
-                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true)).await {
+                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true, explicit_cache)).await {
                             // Every exit of `summarize` settles its attempt first.
                             Err(Error::Context(_) | Error::ContextOverflow) if forced => {
                                 run.context.offload_reads.release();

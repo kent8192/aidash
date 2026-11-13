@@ -448,17 +448,7 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	if !evidence.is_empty() {
 		history.push(evidence_message(&evidence));
 	}
-	let mut attachments = attachments(context, &pinned);
-	let source_position = attachments
-		.iter()
-		.position(|envelope| {
-			matches!(
-				envelope.source,
-				Source::RunMessageSummary | Source::ExecutionSummary
-			)
-		})
-		.unwrap_or(attachments.len());
-	attachments.splice(source_position..source_position, projected.run);
+	let attachments = run_attachments(context, &pinned, projected.run);
 	if let Some(fields) = pinned.as_object_mut() {
 		for key in STEP_STATE_KEYS.into_iter().chain([HARNESS_REQUIREMENTS]) {
 			fields.remove(key);
@@ -482,6 +472,53 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		history,
 		volatile: crate::context::volatile_part(&pinned, None),
 		harness: None,
+	}
+}
+
+/// Run-stable attachments with the Run-volatility declared sources before
+/// the summaries, as every Native request sends them.
+fn run_attachments(context: &Context, pinned: &Value, run: Vec<Envelope>) -> Vec<Envelope> {
+	let mut attachments = attachments(context, pinned);
+	let source_position = attachments
+		.iter()
+		.position(|envelope| {
+			matches!(
+				envelope.source,
+				Source::RunMessageSummary | Source::ExecutionSummary
+			)
+		})
+		.unwrap_or(attachments.len());
+	attachments.splice(source_position..source_position, run);
+	attachments
+}
+
+/// The context of a Summary Stage merge that continues the main request
+/// (#942, ADR 0125): the main request's attachments and its history through
+/// `through_seq`, the last entry the merge folds, rendered exactly as the
+/// main request renders them so the provider reads them from the prompt
+/// cache. The fold request replaces this step's volatile part, and the
+/// summary instruction follows it as an `aidash` envelope.
+pub fn summary_continuation(
+	context: &Context,
+	pinned: &Value,
+	through_seq: u64,
+	fold: Value,
+	instruction: &str,
+) -> NativeContext {
+	let projected = crate::context::source::project(context, pinned);
+	let attachments = run_attachments(context, &projected.snapshot, projected.run);
+	let end = context
+		.history
+		.iter()
+		.position(|entry| entry.seq > through_seq)
+		.unwrap_or(context.history.len());
+	let (history, _) = render_history(&context.history[..end]);
+	NativeContext {
+		attachments,
+		history,
+		volatile: serde_json::to_string(&json!({"summary_request": fold}))
+			.expect("serializable fold request"),
+		harness: Some(Envelope::harness(json!({"instruction": instruction})).text()),
 	}
 }
 

@@ -223,3 +223,101 @@ fn a_turn_with_a_verbatim_result_is_never_absorbed_in_part() {
 		[2, 3, 4, 8, 9, 10]
 	);
 }
+
+#[test]
+fn a_native_summary_request_continues_the_main_request() {
+	// Arrange: a recorded step state and evidence, then four turns; the plan
+	// folds the two oldest.
+	let mut context = Context::default();
+	let mut pinned = json!({
+		"identity": {"agent_id": "agent"},
+		"task": {"id": "t", "title": "Task"},
+		"agent_state": {"phase": "THINKING"},
+		"workspace": {"tasks": [{"title": "Task"}]},
+		"semantic_memory": {"fact": "observed"},
+	});
+	aidash_domain::projection::native::record_step_state(&mut context, &pinned);
+	aidash_domain::projection::native::record_evidence(&mut context, &mut pinned, usize::MAX);
+	for event in turns(4).history.into_iter().map(|entry| entry.event) {
+		context.push(event);
+	}
+	context.journal.inferred_through = context.journal.head;
+	let tools = [provider::ToolSpec {
+		name: "read".into(),
+		description: "Read a file".into(),
+		parameters: json!({"type": "object"}),
+	}];
+	let budget = RequestBudget {
+		tools: &tools,
+		..budget(usize::MAX)
+	};
+	let policy = policy::Effective::of(None);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let absorbed = native_summary_candidates(&context, 2);
+	let through = absorbed.last().unwrap().seq;
+	let plan = SummaryPlan {
+		pruned: context.clone(),
+		absorbed,
+		people: vec![],
+		before_tokens: 0,
+	};
+	// Act
+	let main = budget.request(&context, &pinned);
+	let summary = summary_continuation(&plan, &fitting, 2048).unwrap();
+	// Assert: the same instructions and tools, the main messages through the
+	// last folded turn, then only the summary instruction.
+	assert_eq!(summary.instructions, main.instructions);
+	assert_eq!(json!(summary.tools), json!(main.tools));
+	assert_eq!(summary.cache_scope, main.cache_scope);
+	assert_eq!(
+		summary.response_format,
+		Some(aidash_domain::context::summary::SummaryContent::response_format())
+	);
+	assert_eq!(summary.max_output_tokens, 2048);
+	let main = main.input_body()["messages"].as_array().unwrap().clone();
+	let sent = summary.input_body()["messages"].as_array().unwrap().clone();
+	let (last, prefix) = sent.split_last().unwrap();
+	assert_eq!(prefix, &main[..prefix.len()]);
+	// System, attachments, the step state, the evidence, the Human answer and
+	// two turns of three messages each.
+	assert_eq!(prefix.len(), 5 + 2 * 3);
+	assert!(
+		prefix.last().unwrap()["content"]
+			.as_str()
+			.unwrap()
+			.contains(&format!("\"revision\":{through}"))
+	);
+	let parts = last["content"].as_array().unwrap();
+	let fold: aidash_domain::projection::native::Envelope =
+		serde_json::from_str(parts[0]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(fold.trust, aidash_domain::projection::native::Trust::Data);
+	assert_eq!(
+		fold.content["summary_request"]["call_ids"],
+		json!(["t0-a", "t0-b", "t1-a", "t1-b"])
+	);
+	assert!(!parts[0]["text"].as_str().unwrap().contains("observed"));
+	let instruction: aidash_domain::projection::native::Envelope =
+		serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(
+		instruction.trust,
+		aidash_domain::projection::native::Trust::Aidash
+	);
+	assert!(
+		instruction.content["instruction"]
+			.as_str()
+			.unwrap()
+			.contains("Do not call tools")
+	);
+	// Other Projection Versions keep the standalone request.
+	let legacy = super::Scenario::budget(usize::MAX);
+	let legacy_fitting = Fitting {
+		budget: &legacy,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	assert!(summary_continuation(&plan, &legacy_fitting, 2048).is_none());
+}

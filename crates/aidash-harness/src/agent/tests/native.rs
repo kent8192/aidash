@@ -770,3 +770,70 @@ async fn structured_usage_records_carry_the_pinned_contract_version(mut canonica
 		aidash_domain::harness_contract::HarnessContract::Structured3.number()
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixture: Fixture) {
+	// Arrange: repeated Journal reads ask for a summary of older turns.
+	{
+		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+		state.scoped = true;
+		state.context_policy = Some(recovery_policy(true));
+		state.summarizer_output_tokens = 1024;
+		state.summarizer_window = 62_000;
+		state.model_reasoning = true;
+		*state.summary_text.lock().unwrap() = Some(valid_summary());
+	}
+	native(&mut fixture);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..8 {
+		let id = format!("old-{i}");
+		fixture
+			.run
+			.context
+			.push(turn_event(i, std::slice::from_ref(&id)));
+		fixture.run.context.push(result(
+			&id,
+			"read",
+			json!({"path": id}),
+			json!("x".repeat(1000)),
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	fixture.run.context.offload_reads.summary_pending = true;
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let summary = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	assert_eq!(summary.routing_run, Some(fixture.run.id));
+	let messages = summary.input_body()["messages"].as_array().unwrap().clone();
+	let last = messages.last().unwrap()["content"].as_array().unwrap();
+	assert!(
+		last.last().unwrap()["text"]
+			.as_str()
+			.unwrap()
+			.contains(r#""trust":"aidash""#)
+	);
+	assert!(
+		messages
+			.iter()
+			.any(|message| message["role"] == "tool" && message["tool_call_id"] == "old-0")
+	);
+	// The main request's reasoning settings, and room for reasoning on top
+	// of the summary.
+	let configs = fixture.backend.0.provider_configs.lock().unwrap();
+	assert_eq!(
+		serde_json::to_value(configs.last().unwrap().reasoning_effort).unwrap(),
+		json!("medium")
+	);
+	assert!(summary.max_output_tokens > 1024);
+	assert_eq!(
+		configs.last().unwrap().max_output_tokens,
+		Some(summary.max_output_tokens)
+	);
+}
