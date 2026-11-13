@@ -75,6 +75,67 @@ fn a_nonhuman_cannot_approve_even_when_it_is_the_requester(mut bundle: PolicyBun
 	assert!(!approver_eligible(&bundle, &evaluation("user"), "user"));
 }
 
+#[test]
+fn workbench_preserves_a_conditional_deny_with_an_independent_matching_branch() {
+	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"tenant","subjects":{"user":{"kind":"user","attributes":{"contractor":true}}},"policies":[{"id":"approval","effect":"allow","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}},{"id":"contractor-deny","effect":"deny","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]},"condition":{"op":"any","conditions":[{"op":"exists","value":{"source":"resource","path":"/workspace_id"}},{"op":"eq","left":{"source":"subject","path":"/contractor"},"right":{"source":"literal","value":true}}]}}]})).unwrap();
+	let target = Resource {
+		tenant: "tenant".into(),
+		kind: "tool".into(),
+		id: "fixture".into(),
+		attributes: json!({}),
+	};
+	assert!(!workbench_approver_eligible(&bundle, "user", &target));
+}
+
+#[test]
+fn workbench_approver_uses_only_the_approval_resource() {
+	let mut bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"tenant","subjects":{"user":{"kind":"user"}},"policies":[{"id":"approval","effect":"allow","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}]})).unwrap();
+	let target = Resource {
+		tenant: "tenant".into(),
+		kind: "tool".into(),
+		id: "fixture".into(),
+		attributes: json!({"operation":"invoke"}),
+	};
+	assert!(workbench_approver_eligible(&bundle, "user", &target));
+	let mut invalid = bundle.clone();
+	let mut malformed = invalid.policies[0].clone();
+	malformed.id.clear();
+	malformed.condition = Some(crate::policy::Condition::Exists {
+		value: crate::policy::Operand::Resource {
+			path: "/run_id".into(),
+		},
+	});
+	invalid.policies.push(malformed);
+	assert!(!workbench_approver_eligible(&invalid, "user", &target));
+	bundle.subjects.get_mut("user").unwrap().enabled = false;
+	assert!(!workbench_approver_eligible(&bundle, "user", &target));
+	bundle.subjects.get_mut("user").unwrap().enabled = true;
+	let mut denial = bundle.policies[0].clone();
+	denial.id = "deny".into();
+	denial.effect = crate::policy::Effect::Deny;
+	bundle.policies.push(denial);
+	assert!(!workbench_approver_eligible(&bundle, "user", &target));
+	bundle.policies.pop();
+	bundle.policies[0].condition = Some(crate::policy::Condition::Exists {
+		value: crate::policy::Operand::Resource {
+			path: "/workspace_id".into(),
+		},
+	});
+	assert!(!workbench_approver_eligible(&bundle, "user", &target));
+	assert!(!workbench_approver_eligible(&bundle, "unknown", &target));
+	bundle.policies[0].condition = Some(crate::policy::Condition::Exists {
+		value: crate::policy::Operand::Resource {
+			path: "/run_id".into(),
+		},
+	});
+	assert!(!workbench_approver_eligible(&bundle, "user", &target));
+	let mut forged = target.clone();
+	forged.attributes["run_id"] = json!(uuid::Uuid::new_v4());
+	assert!(!workbench_approver_eligible(&bundle, "user", &forged));
+	bundle.policies[0].condition = Some(serde_json::from_value(json!({"op":"any","conditions":[{"op":"exists","value":{"source":"resource","path":"/workspace_id"}},{"op":"eq","left":{"source":"literal","value":true},"right":{"source":"literal","value":true}}]})).unwrap());
+	assert!(!workbench_approver_eligible(&bundle, "user", &target));
+}
+
 #[rstest]
 #[case::ordinary(true, false, false, "approved")]
 #[case::grant(false, true, false, "approved")]
