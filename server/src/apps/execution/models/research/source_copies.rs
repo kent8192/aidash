@@ -52,8 +52,7 @@ fn names(json: SimpleExpr, sources: Sources, nested: bool) -> SimpleExpr {
 							Alias::new(ResearchRevocation::table_name()),
 							Alias::new("run_id"),
 						))
-						.cast_as_text()
-						.into(),
+						.cast_as_text(),
 					],
 				),
 			);
