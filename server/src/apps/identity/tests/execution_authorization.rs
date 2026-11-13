@@ -2230,10 +2230,13 @@ async fn delegation_distinguishes_missing_and_unapproved_agents(
 	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	let history = json!(run.context);
-	let error = history["history"][0]["event"]["result"]["error"]
-		.as_str()
-		.unwrap();
+	// Built-in Memory's Run-start recall may come first, so find the delegation by its call id.
+	let history = json!(run.context)["history"].as_array().unwrap().clone();
+	let result = history
+		.iter()
+		.find(|entry| entry["event"]["call"]["id"] == "missing-agent")
+		.expect("the delegation is recorded");
+	let error = result["event"]["result"]["error"].as_str().unwrap();
 	assert!(error.contains("not found"), "{error}");
 	cleanup(f, &url, &schema).await;
 }
