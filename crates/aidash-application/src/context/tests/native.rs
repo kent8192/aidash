@@ -225,3 +225,110 @@ fn a_turn_with_a_verbatim_result_is_never_absorbed_in_part() {
 		[2, 3, 4, 8, 9, 10]
 	);
 }
+
+/// `turns(count)` with each turn's reasoning recorded (#942).
+fn turns_with_reasoning(count: usize) -> Context {
+	let mut context = turns(count);
+	for entry in &mut context.history {
+		if let ContextEvent::Assistant {
+			epoch, reasoning, ..
+		} = &mut entry.event
+		{
+			*reasoning = Some(provider::reasoning::Reasoning::ChatDetails {
+				details: vec![
+					json!({"type":"reasoning.text","text":format!("thinking {epoch}"),"index":0}),
+				],
+			});
+		}
+	}
+	context
+}
+
+/// Whether each rendered Model Turn, oldest first, still carries reasoning.
+fn reasoning_by_turn(context: &Context) -> Vec<bool> {
+	native_context(context, &json!({}))
+		.history
+		.iter()
+		.filter_map(|message| match message {
+			NativeMessage::Assistant { reasoning, .. } => Some(reasoning.is_some()),
+			_ => None,
+		})
+		.collect()
+}
+
+#[test]
+fn an_ordinary_step_keeps_every_turns_reasoning() {
+	let context = turns_with_reasoning(10);
+	let pinned = json!({});
+	let budget = budget(1_000_000);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	assert!(matches!(
+		super::super::compact(&context, &fitting, 0).unwrap(),
+		Compaction::Fits
+	));
+	assert!(reasoning_by_turn(&context).iter().all(|kept| *kept));
+}
+
+#[test]
+fn a_compaction_step_drops_reasoning_only_before_the_protected_tail() {
+	// Arrange: a request just over the window must be reduced.
+	let context = turns_with_reasoning(10);
+	let pinned = json!({});
+	let full = budget(usize::MAX)
+		.request(&context, &pinned)
+		.estimated_total_tokens();
+	let budget = budget(full - 1);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	// Act
+	let compacted = match super::super::compact(&context, &fitting, 0).unwrap() {
+		Compaction::Offloaded { context, .. } => *context,
+		Compaction::NeedsSummary(plan, _) => plan.pruned,
+		Compaction::Fits => panic!("the request does not fit"),
+	};
+	// Assert: older turns lost their reasoning, the protected tail and the
+	// newest turn kept theirs, and the journal-backed original is untouched.
+	let kept = reasoning_by_turn(&compacted);
+	assert_eq!(kept.len(), 10);
+	assert!(!kept[0], "the oldest turn's reasoning is dropped");
+	assert!(kept[9], "the newest turn keeps its reasoning");
+	let first_kept = kept.iter().position(|kept| *kept).unwrap();
+	assert!(kept[first_kept..].iter().all(|kept| *kept));
+	assert!(compacted.compactions > context.compactions);
+	assert!(reasoning_by_turn(&context).iter().all(|kept| *kept));
+}
+
+#[test]
+fn turns_a_summary_absorbs_carry_no_reasoning_into_it() {
+	let context = turns_with_reasoning(3);
+	let pinned = json!({"task": {"description": "x".repeat(500_000)}});
+	let budget = budget(100_000);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let Compaction::NeedsSummary(plan, _) = super::super::compact(&context, &fitting, 0).unwrap()
+	else {
+		panic!("older turns remain reducible")
+	};
+	assert!(!plan.absorbed.is_empty());
+	assert!(plan.absorbed.iter().all(|entry| !matches!(
+		&entry.event,
+		ContextEvent::Assistant {
+			reasoning: Some(_),
+			..
+		}
+	)));
+	assert_eq!(reasoning_by_turn(&plan.pruned).last(), Some(&true));
+}

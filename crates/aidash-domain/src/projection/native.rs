@@ -192,6 +192,12 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
 	let entries = &context.history;
+	// Reasoning may copy evidence verbatim and encrypted reasoning cannot be
+	// inspected, so no turn after a withheld result resends its reasoning.
+	let withheld_from = entries
+		.iter()
+		.position(|entry| matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result)))
+		.unwrap_or(entries.len());
 	let mut index = 0;
 	while index < entries.len() {
 		let Some(turn) = Turn::at(entries, index) else {
@@ -228,7 +234,13 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
 				// The reasoning that produced the response, whatever part of it
 				// renders: calls that never ran and withheld text leave it whole.
+				// Turns after a withheld result send only what a route
+				// requires in place of their reasoning (#942).
 				reasoning: match &entries[turn.start].event {
+					ContextEvent::Assistant {
+						reasoning: Some(reasoning),
+						..
+					} if turn.start > withheld_from => reasoning.withheld(),
 					ContextEvent::Assistant { reasoning, .. } => reasoning.clone(),
 					_ => None,
 				},

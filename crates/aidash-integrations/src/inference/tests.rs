@@ -1855,3 +1855,59 @@ async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_c
 	assert_eq!(access.contexts.lock().unwrap().len(), 7);
 	assert!(bodies.try_recv().is_err());
 }
+
+/// A non-streamed completion keeps its `reasoning_details` exactly, Gemini
+/// signature and encrypted entries included, and the next Native request sends
+/// them back unchanged on the assistant message (#942).
+#[test]
+fn chat_reasoning_details_are_captured_and_sent_back_unchanged() {
+	use aidash_domain::{
+		context::{Context, ContextEvent},
+		provider::{ModelContext, reasoning::Reasoning},
+	};
+	let details = json!([
+		{"type":"reasoning.text","text":"Need the weather.","signature":null,"format":"google-gemini-v1","index":0},
+		{"type":"reasoning.encrypted","data":"gemini-thought-signature","id":"call_1","format":"google-gemini-v1","index":1},
+		{"type":"reasoning.encrypted","data":"enc-blob","id":"rs_1","format":"openai-responses-v1","index":2}
+	]);
+	let body = json!({"choices":[{"finish_reason":"tool_calls","message":{
+		"content":null,"reasoning":"Need the weather.","reasoning_details":details,
+		"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{}"}}]
+	}}],"usage":{"prompt_tokens":3,"completion_tokens":5}});
+	let response = parse_openai(body.to_string().as_bytes()).unwrap();
+	let Some(Reasoning::ChatDetails { details: kept }) = &response.reasoning else {
+		panic!("reasoning_details were not captured");
+	};
+	assert_eq!(json!(kept), details);
+
+	let mut context = Context::default();
+	context.push(ContextEvent::Assistant {
+		provider_activity: vec![],
+		epoch: 1,
+		text: response.text.clone(),
+		calls: vec!["call_1".into()],
+		reasoning: response.reasoning.clone(),
+	});
+	context.push(ContextEvent::tool(
+		response.tool_calls[0].clone(),
+		json!({"sunny": true}),
+	));
+	let request = ModelRequest {
+		context: ModelContext::Native(aidash_domain::projection::native::native_context(
+			&context,
+			&Value::Null,
+		)),
+		..Default::default()
+	};
+	let config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://openrouter.ai/api/v1","context_window":62000,"modalities":["text"],"cost":{}})).unwrap();
+	let sent = request_body(&config, &request, vec![], None, None, Default::default());
+	let assistant = sent["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|message| message["role"] == "assistant")
+		.unwrap();
+	assert_eq!(assistant["reasoning_details"], details);
+	assert!(assistant.get("reasoning").is_none());
+	assert!(!sent.to_string().contains("_reasoning_items"));
+}

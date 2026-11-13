@@ -83,6 +83,34 @@ impl Reasoning {
 		(!items.is_empty()).then_some(Self::Responses { items })
 	}
 
+	/// What a turn sends in place of this reasoning once its content may no
+	/// longer be resent, such as after revoked evidence. Plain reasoning text
+	/// becomes an empty string under the same key, because routes such as
+	/// DeepSeek's reject a tool conversation whose earlier turns lack the
+	/// field; `reasoning_details` that hold only plain text become an empty
+	/// `reasoning` string for the same reason. Signatures, encrypted
+	/// reasoning and Responses items are left out.
+	pub fn withheld(&self) -> Option<Self> {
+		let empty = |field| Self::ChatText {
+			field,
+			text: String::new(),
+		};
+		match self {
+			Self::ChatText { field, .. } => Some(empty(*field)),
+			Self::ChatDetails { details }
+				if details.iter().all(|detail| {
+					detail["type"] == "reasoning.text"
+						&& detail
+							.get("signature")
+							.is_none_or(|signature| signature.is_null())
+				}) =>
+			{
+				Some(empty(ChatTextField::Reasoning))
+			}
+			Self::ChatDetails { .. } | Self::Responses { .. } => None,
+		}
+	}
+
 	/// Add this reasoning to a rendered Chat assistant message in the form its
 	/// transport resends: Chat fields directly, Responses items on
 	/// [`RESPONSES_ITEMS_KEY`].

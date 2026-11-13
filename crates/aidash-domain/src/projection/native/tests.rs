@@ -695,3 +695,216 @@ fn media_labels_are_enveloped_as_data() {
 	assert_eq!(envelope.content, json!(label));
 	assert_eq!(parts[2]["type"], "image_url");
 }
+
+fn reasoned(
+	epoch: i64,
+	calls: &[&str],
+	reasoning: crate::provider::reasoning::Reasoning,
+) -> ContextEvent {
+	let ContextEvent::Assistant {
+		provider_activity,
+		epoch,
+		text,
+		calls,
+		..
+	} = assistant(epoch, "", calls)
+	else {
+		unreachable!()
+	};
+	ContextEvent::Assistant {
+		provider_activity,
+		epoch,
+		text,
+		calls,
+		reasoning: Some(reasoning),
+	}
+}
+
+fn chat_details(text: &str) -> crate::provider::reasoning::Reasoning {
+	crate::provider::reasoning::Reasoning::ChatDetails {
+		details: vec![
+			json!({"type":"reasoning.text","text":text,"signature":null,"format":"google-gemini-v1","index":0}),
+			json!({"type":"reasoning.encrypted","data":format!("sig-{text}"),"id":"call","format":"google-gemini-v1","index":1}),
+		],
+	}
+}
+
+/// The Chat messages of a Native request for `context`, as sent.
+fn sent_messages(context: &Context) -> Vec<Value> {
+	// Every step reloads its Run, so render from a serde round trip.
+	let context: Context = serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+	crate::provider::ModelRequest {
+		context: crate::provider::ModelContext::Native(native_context(&context, &Value::Null)),
+		..Default::default()
+	}
+	.input_body()["messages"]
+		.as_array()
+		.unwrap()
+		.clone()
+}
+
+/// Recorded reasoning goes back on its assistant message unchanged, and every
+/// message before step N's volatile message is resent byte for byte at step
+/// N+1, reasoning included (#942).
+#[test]
+fn recorded_reasoning_is_resent_unchanged_and_each_step_extends_the_last() {
+	let mut context = context(vec![reasoned(1, &["a"], chat_details("first")), tool("a")]);
+	let step_one = sent_messages(&context);
+	context.push(reasoned(2, &["b"], chat_details("second")));
+	context.push(tool("b"));
+	let step_two = sent_messages(&context);
+
+	let assistants = step_two
+		.iter()
+		.filter(|message| message["role"] == "assistant")
+		.collect::<Vec<_>>();
+	let crate::provider::reasoning::Reasoning::ChatDetails { details } = chat_details("first")
+	else {
+		unreachable!()
+	};
+	assert_eq!(assistants[0]["reasoning_details"], json!(details));
+	assert_eq!(assistants.len(), 2);
+	let sent = |messages: &[Value]| serde_json::to_string(messages).unwrap();
+	let kept = step_one.len() - 1;
+	assert_eq!(sent(&step_one[..kept]), sent(&step_two[..kept]));
+	assert!(step_two[kept]["reasoning_details"].is_array());
+}
+
+/// A turn whose calls did not all run still sends the reasoning that produced
+/// it whole: it is the provider's output, and only the provider may judge it.
+#[test]
+fn a_partly_rendered_turn_keeps_its_whole_reasoning() {
+	let context = context(vec![
+		reasoned(1, &["a", "deferred"], chat_details("both")),
+		tool("a"),
+	]);
+	let messages = sent_messages(&context);
+	let assistant = messages
+		.iter()
+		.find(|message| message["role"] == "assistant")
+		.unwrap();
+	assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 1);
+	assert_eq!(assistant["reasoning_details"].as_array().unwrap().len(), 2);
+}
+
+/// Responses reasoning items precede the turn's output in a Responses body
+/// and never reach a Chat body.
+#[test]
+fn responses_reasoning_items_lead_their_turn_and_stay_off_chat() {
+	let items = vec![
+		json!({"type":"reasoning","id":"rs_1","encrypted_content":"enc-1","summary":[]}),
+		json!({"type":"reasoning","id":"rs_2","encrypted_content":"enc-2","summary":[]}),
+	];
+	let mut first = assistant(1, "Reading", &["a"]);
+	if let ContextEvent::Assistant { reasoning, .. } = &mut first {
+		*reasoning = Some(crate::provider::reasoning::Reasoning::Responses {
+			items: items.clone(),
+		});
+	}
+	let context = context(vec![first, tool("a")]);
+	let request = crate::provider::ModelRequest {
+		input_format: crate::provider::InputFormat::Responses,
+		context: crate::provider::ModelContext::Native(native_context(&context, &Value::Null)),
+		..Default::default()
+	};
+	let body = crate::provider::responses::input_body(&request, std::iter::empty()).unwrap();
+	let input = body["input"].as_array().unwrap();
+	assert_eq!(input[0..2], items[..]);
+	assert_eq!(input[2]["role"], "assistant");
+	assert_eq!(input[3]["type"], "function_call");
+	assert!(!request.input_body().to_string().contains("enc-1"));
+	// The request estimate counts the replayed items.
+	let mut without = request.clone();
+	if let crate::provider::ModelContext::Native(native) = &mut without.context
+		&& let NativeMessage::Assistant { reasoning, .. } = &mut native.history[0]
+	{
+		*reasoning = None;
+	}
+	assert!(request.byte_estimate().basis > without.byte_estimate().basis + 60);
+}
+
+/// Contexts recorded before #942 have no reasoning field and still load;
+/// turns without reasoning keep their stored and sent bytes.
+#[test]
+fn assistant_events_without_reasoning_load_and_keep_their_shape() {
+	let stored = json!({"kind":"assistant","epoch":1,"text":"Hi","calls":[]});
+	let event: ContextEvent = serde_json::from_value(stored.clone()).unwrap();
+	assert!(matches!(
+		event,
+		ContextEvent::Assistant {
+			reasoning: None,
+			..
+		}
+	));
+	assert_eq!(serde_json::to_value(&event).unwrap(), stored);
+	let messages = sent_messages(&context(vec![event]));
+	assert_eq!(messages[1], json!({"role":"assistant","content":"Hi"}));
+}
+
+/// Once a result is replaced because its content was revoked or expired, no
+/// later turn resends its reasoning, which may quote that content; earlier
+/// turns keep theirs (#942). Signatures and encrypted reasoning are left out,
+/// while plain reasoning text becomes an empty string so routes that require
+/// the field, such as DeepSeek's, still accept the request.
+#[rstest::rstest]
+#[case::revoked(ContextEvent::revoked_result("a"))]
+#[case::expired(ContextEvent::expired_result("a"))]
+fn reasoning_after_a_withheld_result_is_not_resent(#[case] placeholder: Value) {
+	use crate::provider::reasoning::{ChatTextField, Reasoning};
+	let deepseek = |text: &str| Reasoning::ChatText {
+		field: ChatTextField::ReasoningContent,
+		text: text.into(),
+	};
+	let context = context(vec![
+		reasoned(1, &["a"], chat_details("before")),
+		ContextEvent::tool(call("a"), placeholder),
+		reasoned(2, &["b"], chat_details("quotes the evidence")),
+		tool("b"),
+		reasoned(3, &["c"], deepseek("also quotes it")),
+		tool("c"),
+	]);
+	let messages = sent_messages(&context);
+	let assistants = messages
+		.iter()
+		.filter(|message| message["role"] == "assistant")
+		.collect::<Vec<_>>();
+	assert_eq!(assistants.len(), 3);
+	assert!(assistants[0]["reasoning_details"].is_array());
+	assert!(assistants[1].get("reasoning_details").is_none());
+	assert!(assistants[1].get("reasoning").is_none());
+	assert_eq!(assistants[2]["reasoning_content"], "");
+	let sent = serde_json::to_string(&messages).unwrap();
+	assert!(!sent.contains("quotes"));
+	assert!(!sent.contains("sig-quotes"));
+
+	// The same turns resend everything while nothing is withheld.
+	let mut kept = context.clone();
+	kept.history[1].event = tool("a");
+	let sent = serde_json::to_string(&sent_messages(&kept)).unwrap();
+	assert!(sent.contains("sig-quotes the evidence") && sent.contains("also quotes it"));
+}
+
+/// Plain-text `reasoning_details` become an empty `reasoning` string when
+/// withheld, as plain text does.
+#[test]
+fn withheld_plain_text_details_keep_an_empty_reasoning_field() {
+	use crate::provider::reasoning::{ChatTextField, Reasoning};
+	let plain = Reasoning::ChatDetails {
+		details: vec![json!({"type":"reasoning.text","text":"x","format":"unknown","index":0})],
+	};
+	assert_eq!(
+		plain.withheld(),
+		Some(Reasoning::ChatText {
+			field: ChatTextField::Reasoning,
+			text: String::new(),
+		})
+	);
+	assert_eq!(chat_details("signed").withheld(), None);
+	assert_eq!(
+		Reasoning::Responses {
+			items: vec![json!({"type":"reasoning"})]
+		}
+		.withheld(),
+		None
+	);
+}

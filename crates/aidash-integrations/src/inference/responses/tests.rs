@@ -731,7 +731,9 @@ async fn plan_calls_stream_from_the_responses_endpoint_with_the_plan_bearer() {
 
 /// The provider's streamed calls survive a complete tool step and a persisted
 /// request reload, including an assistant turn containing calls without text.
-/// Reasoning can contribute usage, but never enters the replay or progress.
+/// Reasoning items are captured from the completed response and replayed
+/// unchanged before their turn's output on every later request (#942), but
+/// never enter progress.
 #[tokio::test]
 async fn native_streamed_tool_steps_resume_with_the_complete_observable_history() {
 	let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -745,7 +747,7 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 				seen.push(body);
 				let output = match seen.len() {
 					1 => json!([
-						{"type":"reasoning","encrypted_content":"opaque-reasoning-never-retained","summary":[{"text":"hidden-summary"}]},
+						{"type":"reasoning","id":"rs_1","encrypted_content":"opaque-reasoning-replayed","summary":[{"type":"summary_text","text":"hidden-summary"}]},
 						{"type":"message","content":[{"type":"output_text","text":"Checking two sources."}]},
 						{"type":"function_call","namespace":"aidash","call_id":"step-1-a","name":"search","arguments":"{\"q\":\"one\"}"},
 						{"type":"function_call","namespace":"aidash","call_id":"step-1-b","name":"search","arguments":"{\"q\":\"two\"}"}
@@ -795,10 +797,11 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 		let ModelContext::Native(native) = &mut request.context else {
 			unreachable!()
 		};
+		assert_eq!(result.reasoning.is_some(), step == 1);
 		native.history.push(NativeMessage::Assistant {
 			text: (!result.text.is_empty()).then_some(result.text),
 			tool_calls: result.tool_calls.clone(),
-			reasoning: None,
+			reasoning: result.reasoning,
 		});
 		for call in result.tool_calls {
 			native.history.push(NativeMessage::Tool {
@@ -807,8 +810,8 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 			});
 		}
 		native.volatile = json!({"step":step+1}).to_string();
-		// A resumed Run rehydrates the projected messages rather than a
-		// provider response ID or opaque reasoning blob.
+		// A resumed Run rehydrates the projected messages and the recorded
+		// reasoning items, never a provider response ID.
 		request = serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
 	}
 	let result = plan.infer(request, &recorder).await.unwrap();
@@ -820,29 +823,39 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 	let second = seen[1]["input"].as_array().unwrap();
 	let third = seen[2]["input"].as_array().unwrap();
 	assert_eq!(first.len(), 2);
-	assert_eq!(second.len(), 7);
-	assert_eq!(third.len(), 9);
+	assert_eq!(second.len(), 8);
+	assert_eq!(third.len(), 10);
 	assert_eq!(first[0], second[0]);
-	assert_eq!(second[..6], third[..6]);
-	assert_eq!(second[1]["role"], "assistant");
+	// Everything before the volatile step message is resent byte for byte.
+	assert_eq!(
+		serde_json::to_string(&second[..7]).unwrap(),
+		serde_json::to_string(&third[..7]).unwrap()
+	);
+	assert_eq!(
+		second[1],
+		json!({"type":"reasoning","id":"rs_1","encrypted_content":"opaque-reasoning-replayed","summary":[{"type":"summary_text","text":"hidden-summary"}]})
+	);
+	assert_eq!(second[2]["role"], "assistant");
 	for (index, kind, id) in [
-		(2, "function_call", "step-1-a"),
-		(3, "function_call", "step-1-b"),
-		(4, "function_call_output", "step-1-a"),
-		(5, "function_call_output", "step-1-b"),
-		(6, "function_call", "step-2-a"),
-		(7, "function_call_output", "step-2-a"),
+		(3, "function_call", "step-1-a"),
+		(4, "function_call", "step-1-b"),
+		(5, "function_call_output", "step-1-a"),
+		(6, "function_call_output", "step-1-b"),
+		(7, "function_call", "step-2-a"),
+		(8, "function_call_output", "step-2-a"),
 	] {
 		assert_eq!(third[index]["type"], kind);
 		assert_eq!(third[index]["call_id"], id);
 	}
-	for body in seen.iter() {
+	for (step, body) in seen.iter().enumerate() {
 		assert_eq!(body["store"], false);
 		assert_eq!(body["stream"], true);
 		assert!(body.get("previous_response_id").is_none());
 		assert!(body.get("include").is_none());
-		assert!(!body.to_string().contains("opaque-reasoning-never-retained"));
-		assert!(!body.to_string().contains("hidden-summary"));
+		assert_eq!(
+			body.to_string().contains("opaque-reasoning-replayed"),
+			step > 0
+		);
 	}
 	let progress = recorder.0.lock().unwrap();
 	assert!(progress.iter().any(
@@ -850,7 +863,7 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 	));
 	assert!(progress.iter().any(|item| matches!(item, InferenceProgress::ToolCall { id:Some(id), argument_bytes, .. } if id == "step-1-b" && *argument_bytes > 0)));
 	assert!(!format!("{progress:?}").contains("hidden-summary"));
-	assert!(!format!("{progress:?}").contains("opaque-reasoning-never-retained"));
+	assert!(!format!("{progress:?}").contains("opaque-reasoning-replayed"));
 }
 
 #[tokio::test]

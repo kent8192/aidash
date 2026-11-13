@@ -1078,6 +1078,13 @@ impl ContextEvent {
 			&& result["invocation"].is_string()
 	}
 
+	/// Whether this result is a placeholder for content the Run may no longer
+	/// send: revoked (ADR 0046) or expired research. Reasoning recorded after
+	/// it is not resent (#942).
+	pub fn is_withheld_result(result: &Value) -> bool {
+		Self::is_revoked_result(result) || Self::is_expired_result(result)
+	}
+
 	/// What replaces a revoked research call's arguments, which name the
 	/// query or address that was disclosed.
 	pub fn revoked_arguments() -> Value {
