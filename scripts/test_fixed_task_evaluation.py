@@ -967,6 +967,23 @@ class OfflineCalibrationTest(unittest.TestCase):
 
 
 class RecoveryCorpusTest(unittest.TestCase):
+    def test_long_cache_ledger_requires_late_correction_and_every_side_effect(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "long-cache-ledger")
+        fixture = fixture_module.Fixture({})
+        probe = fixture_module.Probe(item, "run")
+        for page in range(1, 51):
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("reference_lookup", {"page": page})])
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("record_note", {"page": page})])
+        status, result = fixture.tool(item, "reference_lookup", {"page": 45})
+        self.assertEqual(status, 200)
+        self.assertIn("BUDGET-USD=300", result["content"])
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        for pages, expected in [(list(range(1, 51)), True), (list(range(1, 50)), False),
+                                (list(range(1, 51)) + [50], False)]:
+            result = evaluation.grade(value, item, observation(final_answer=answer, fixture_record_pages=pages), False)
+            self.assertEqual(result["passed"], expected)
+
     def test_fixture_corrections_and_ledger(self):
         value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
         fixture = fixture_module.Fixture({})

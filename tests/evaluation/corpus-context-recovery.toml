@@ -38,6 +38,10 @@ max_steps = 24
 context_window = 128000
 max_output_tokens = 4096
 
+[models.measurement-large]
+context_window = 512000
+max_output_tokens = 4096
+
 # Sized so the base request plus seven reference pages fits and plus eight does
 # not: the eighth page outgrows the window in both arms. The evaluator's Agents
 # remove the default compaction binding and carry no Summary Stage, so nothing
@@ -305,6 +309,32 @@ excluded_vendors = ["Contoso", "Northwind"]
 [tasks.expected]
 outcome = "unresolved"
 context_reason = "context_unreducible"
+long_context = "none"
+
+# About 100 tool calls and roughly 4–6 million input tokens per Run, depending
+# on the tokenizer and model output; measure actual usage before budgeting.
+[[tasks]]
+id = "long-cache-ledger"
+kind = "long-context"
+language = "en-US"
+title = "Survey a long archive and record every page"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and EXCLUDE-VENDOR=Northwind. Read reference pages 1 to 50 with reference_lookup, and after reading each page call record_note once with that page number. Every record_note call adds a permanent ledger entry, so never record a page twice. Later corrections replace earlier values. Call one tool per turn, in page order. Reply with one JSON object in a ```json block: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "measurement-large"
+comparisons = ["projection"]
+fixture_agent = "constraint-tracker"
+tools = ["reference_lookup", "record_note"]
+fixture_record_pages = true
+reference_pages = 50
+max_steps = 105
+reference_page_bytes = 8000
+reference_correction_offset = 4000
+reference_corrections = { 45 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
+[tasks.oracle]
+kind = "constraint-retention"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "success"
 long_context = "none"
 
 # The same correction arrives only inside an early tool result. Pruning would
