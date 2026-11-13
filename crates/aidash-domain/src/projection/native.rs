@@ -462,19 +462,15 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		for key in STEP_STATE_KEYS.into_iter().chain([HARNESS_REQUIREMENTS]) {
 			fields.remove(key);
 		}
-		// Only an evidence key's page fields stay per step.
+		// Evidence travels as history items and its page counts in the step
+		// state, so no evidence key trails the request.
 		for key in EVIDENCE_KEYS {
-			let pages = match fields.remove(key) {
-				Some(Value::Object(object)) => object
-					.into_iter()
-					.filter(|(field, _)| PAGE_FIELDS.contains(&field.as_str()))
-					.collect::<serde_json::Map<_, _>>(),
-				_ => continue,
-			};
-			if !pages.is_empty() {
-				fields.insert(key.into(), Value::Object(pages));
-			}
+			fields.remove(key);
 		}
+		// An absent source (for example no memory provider) says nothing. A
+		// trailing message drops out of the cached prefix at the next step,
+		// so a step with nothing volatile must send none (#942).
+		fields.retain(|_, value| !value.is_null());
 	}
 	NativeContext {
 		attachments,
@@ -568,6 +564,22 @@ fn step_state(pinned: &Value, markers: &[&ContextEvent]) -> Option<ContextEvent>
 	for key in STEP_STATE_KEYS {
 		if let Some(value) = pinned.get(key) {
 			state.insert(key.into(), value.clone());
+		}
+	}
+	// An evidence key's page counts are bookkeeping: they name no entry and
+	// change only when entries arrive, so they travel in the step state
+	// instead of trailing every request (#942).
+	for key in EVIDENCE_KEYS {
+		let pages = pinned
+			.get(key)
+			.and_then(Value::as_object)
+			.into_iter()
+			.flatten()
+			.filter(|(field, _)| PAGE_FIELDS.contains(&field.as_str()))
+			.map(|(field, value)| (field.clone(), value.clone()))
+			.collect::<serde_json::Map<_, _>>();
+		for (field, value) in pages {
+			state.insert(format!("{key}_{field}"), value);
 		}
 	}
 	// A structured Harness Contract builds one requirements envelope; markers

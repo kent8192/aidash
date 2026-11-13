@@ -223,15 +223,18 @@ fn a_delta_appends_only_new_evidence() {
 			vec![json!({"title": "c"}), json!({"seq": 1})],
 		]
 	);
-	// The page counts stay in the volatile part.
+	// The page counts travel in the step state, so nothing trails (#942).
 	let native = native_context(&run, &next);
-	assert_eq!(
-		native.volatile,
-		r#"{"workspace":{"pages":{"tasks":{"total":3}}}}"#
-	);
+	assert_eq!(native.volatile, "{}");
 	assert_eq!(
 		shape(&native.history),
-		["data:Evidence", "assistant[x]", "tool:x", "data:Evidence"]
+		[
+			"data:Evidence",
+			"assistant[x]",
+			"tool:x",
+			"data:Evidence",
+			"state"
+		]
 	);
 }
 
@@ -288,8 +291,9 @@ fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
 	record_step_state(&mut run, &pinned);
 	record_evidence(&mut run, &mut pinned, usize::MAX);
 	assert_eq!(request_messages_unrecorded(&run, &pinned), pending);
+	// No trailing message: the evidence envelope ends the request (#942).
 	let envelope: Envelope =
-		serde_json::from_str(pending[pending.len() - 2]["content"].as_str().unwrap()).unwrap();
+		serde_json::from_str(pending[pending.len() - 1]["content"].as_str().unwrap()).unwrap();
 	assert_eq!(envelope.source, Source::Evidence);
 	assert_eq!(envelope.trust, Trust::Data);
 	assert_eq!(
@@ -1381,4 +1385,80 @@ fn a_runs_own_workspace_events_never_become_evidence() {
 		pending_evidence(&unfiltered, &step_workspace(&second, None)).len(),
 		3
 	);
+}
+
+#[test]
+fn an_unchanged_step_sends_no_trailing_message() {
+	// Arrange: the per-step view's page counts and an absent memory source.
+	// Any trailing message drops out of the cached prefix at the next step,
+	// because the step's assistant turn takes its place (#942).
+	let own = uuid::Uuid::from_u128(1);
+	let workspace = workspace_with_own_events(own, 3);
+	let mut run = context(vec![]);
+	let mut pinned = step_workspace(&workspace, Some(own));
+	pinned["memory"] = Value::Null;
+
+	// Act: one step, then the next with the same counts.
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	record_step_state(&mut run, &pinned);
+	let first = native_context(&run, &pinned);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut next = pinned.clone();
+	record_evidence(&mut run, &mut next, usize::MAX);
+	let recorded = record_step_state(&mut run, &next);
+	let second = native_context(&run, &next);
+
+	// Assert: the counts travel in the recorded step state, nothing trails,
+	// and the second step records no new state.
+	assert_eq!(first.volatile, "{}");
+	assert_eq!(second.volatile, "{}");
+	assert!(!recorded);
+	let states = run
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::StepState { state, .. } => Some(state.clone()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(states.len(), 1);
+	assert_eq!(
+		states[0]["workspace_pages"]["events"]["total"],
+		json!(2),
+		"{states:?}"
+	);
+}
+
+#[test]
+fn changed_page_counts_record_a_new_step_state() {
+	// Arrange: a foreign event arrives between two steps.
+	let own = uuid::Uuid::from_u128(1);
+	let mut run = context(vec![]);
+	let mut pinned = step_workspace(&workspace_with_own_events(own, 3), Some(own));
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	record_step_state(&mut run, &pinned);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut changed = workspace_with_own_events(own, 3);
+	let mut arrived = changed.events[0].clone();
+	arrived.sequence = 99;
+	arrived.id = uuid::Uuid::from_u128(1099);
+	changed.events.push(arrived);
+	let mut next = step_workspace(&changed, Some(own));
+
+	// Act
+	record_evidence(&mut run, &mut next, usize::MAX);
+	let recorded = record_step_state(&mut run, &next);
+
+	// Assert: the new counts are recorded once, as a new step state.
+	assert!(recorded);
+	let last = run
+		.events()
+		.rev()
+		.find_map(|event| match event {
+			ContextEvent::StepState { state, .. } => Some(state.clone()),
+			_ => None,
+		})
+		.expect("a step state");
+	assert_eq!(last["workspace_pages"]["events"]["total"], json!(3));
 }
