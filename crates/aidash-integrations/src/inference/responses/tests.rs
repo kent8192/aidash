@@ -230,6 +230,7 @@ fn native_requests_preserve_all_messages_calls_results_and_media_in_order() {
 					arguments: json!({"q":"second"}),
 				},
 			],
+			reasoning: None,
 		},
 		NativeMessage::Tool {
 			tool_call_id: "call-a".into(),
@@ -246,6 +247,7 @@ fn native_requests_preserve_all_messages_calls_results_and_media_in_order() {
 		NativeMessage::Assistant {
 			text: Some("Continuing after approval.".into()),
 			tool_calls: vec![],
+			reasoning: None,
 		},
 		NativeMessage::Data {
 			envelope: envelope(NativeSource::ModelMediaObservation, json!("observed image")),
@@ -796,6 +798,7 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 		native.history.push(NativeMessage::Assistant {
 			text: (!result.text.is_empty()).then_some(result.text),
 			tool_calls: result.tool_calls.clone(),
+			reasoning: None,
 		});
 		for call in result.tool_calls {
 			native.history.push(NativeMessage::Tool {
@@ -1688,6 +1691,7 @@ fn warning_activity_retains_observable_results_and_replays_advisor_identity() {
 		text: response.text,
 		calls: vec![],
 		provider_activity: response.provider_activity.clone(),
+		reasoning: None,
 	});
 	let request = ModelRequest {
 		context: aidash_domain::provider::ModelContext::Native(

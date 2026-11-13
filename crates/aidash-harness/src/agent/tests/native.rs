@@ -22,6 +22,7 @@ fn turn(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	}
 }
 
@@ -419,6 +420,7 @@ fn turn_event(epoch: i64, ids: &[String]) -> ContextEvent {
 		epoch,
 		text: "Reading.".into(),
 		calls: ids.to_vec(),
+		reasoning: None,
 	}
 }
 

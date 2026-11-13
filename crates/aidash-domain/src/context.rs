@@ -971,13 +971,17 @@ pub enum ContextEvent {
 	/// The accepted response that opens a Model Turn, recorded only for Runs
 	/// on the Native Projection Version: its text and the IDs of its tool
 	/// calls in the model's order. Each executed call's `Tool` event follows
-	/// and carries the call itself. Reasoning output is never recorded.
+	/// and carries the call itself. The provider's reasoning is recorded as
+	/// received when the route passes it back, and every later request of the
+	/// Run resends it unchanged (#942); events recorded before have none.
 	Assistant {
 		#[serde(default, skip_serializing_if = "Vec::is_empty")]
 		provider_activity: Vec<Value>,
 		epoch: i64,
 		text: String,
 		calls: Vec<String>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		reasoning: Option<crate::provider::reasoning::Reasoning>,
 	},
 	/// A final answer cited evidence this Run never received. Recorded once
 	/// per user input (`through_seq` is the Run's observed input sequence); a

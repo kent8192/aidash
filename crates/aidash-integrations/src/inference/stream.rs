@@ -4,7 +4,10 @@
 //! and validated by `parse_openai`, so a streamed and a non-streamed response
 //! with the same content are accepted or rejected identically. Only sanitized
 //! progress (text, and tool-call identity plus argument size) is offered while
-//! the stream is open; argument text and reasoning never leave the assembler.
+//! the stream is open; argument text and reasoning never leave the assembler
+//! before the completion is assembled. Reasoning is assembled into the same
+//! `reasoning_details` and plain reasoning fields a non-streamed message has,
+//! so `parse_openai` captures it identically (#942).
 use super::{parse_openai, provider_identity, safe_upstream_reason};
 use crate::{Error, Result};
 use aidash_application::ports::InferenceProgressSink;
@@ -69,6 +72,13 @@ pub(crate) struct StreamAssembler<'a> {
 	received: usize,
 	assembled: usize,
 	content: String,
+	/// Assembled `reasoning_details` entries in first-seen order. Fragments
+	/// sharing an `index` form one entry; see [`Self::reasoning_detail`].
+	reasoning_details: Vec<Map<String, Value>>,
+	/// Position in `reasoning_details` of each entry `index` seen so far.
+	reasoning_positions: BTreeMap<u64, usize>,
+	/// Plain reasoning text by the delta key it arrived under.
+	reasoning_text: BTreeMap<&'static str, String>,
 	annotations: Vec<Value>,
 	refusal: Option<String>,
 	calls: BTreeMap<u64, PartialCall>,
@@ -98,6 +108,9 @@ impl<'a> StreamAssembler<'a> {
 			received: 0,
 			assembled: 0,
 			content: String::new(),
+			reasoning_details: Vec::new(),
+			reasoning_positions: BTreeMap::new(),
+			reasoning_text: BTreeMap::new(),
 			annotations: Vec::new(),
 			refusal: None,
 			calls: BTreeMap::new(),
@@ -167,6 +180,20 @@ impl<'a> StreamAssembler<'a> {
 		};
 		let mut message = Map::new();
 		message.insert("content".into(), Value::String(self.content));
+		if !self.reasoning_details.is_empty() {
+			message.insert(
+				"reasoning_details".into(),
+				Value::Array(
+					self.reasoning_details
+						.into_iter()
+						.map(Value::Object)
+						.collect(),
+				),
+			);
+		}
+		for (key, text) in self.reasoning_text {
+			message.insert(key.into(), Value::String(text));
+		}
 		if !self.annotations.is_empty() {
 			message.insert("annotations".into(), json!(self.annotations));
 		}
@@ -386,7 +413,25 @@ impl<'a> StreamAssembler<'a> {
 		let Some(delta) = choice.get("delta") else {
 			return Ok(());
 		};
-		// Reasoning fields are dropped; their arrival already counted as liveness.
+		// Reasoning is assembled for the completion, never offered as progress.
+		for key in ["reasoning", "reasoning_content"] {
+			if let Some(text) = delta
+				.get(key)
+				.and_then(Value::as_str)
+				.filter(|text| !text.is_empty())
+			{
+				self.grow(text.len())?;
+				self.reasoning_text.entry(key).or_default().push_str(text);
+			}
+		}
+		for detail in delta
+			.get("reasoning_details")
+			.and_then(Value::as_array)
+			.into_iter()
+			.flatten()
+		{
+			self.reasoning_detail(detail)?;
+		}
 		if let Some(text) = delta.get("content").and_then(Value::as_str) {
 			self.grow(text.len())?;
 			self.content.push_str(text);
@@ -427,6 +472,51 @@ impl<'a> StreamAssembler<'a> {
 			}
 			for (index, call) in indices.into_iter().zip(calls) {
 				self.tool_call(index, call)?;
+			}
+		}
+		Ok(())
+	}
+
+	/// Add one streamed `reasoning_details` fragment. A fragment whose `index`
+	/// was seen before continues that entry: its `text`, `summary` and `data`
+	/// strings are appended, and its other non-null fields are set, such as a
+	/// signature that arrives last. Any other fragment is a new entry. This is
+	/// OpenRouter's documented rule that the sequence is built by concatenating
+	/// chunks in order, and it yields the entries a non-streamed body carries.
+	fn reasoning_detail(&mut self, fragment: &Value) -> Result<()> {
+		let Value::Object(fragment) = fragment else {
+			return Err(Error::External(
+				"provider streamed an invalid reasoning detail".into(),
+			));
+		};
+		let position = fragment
+			.get("index")
+			.and_then(Value::as_u64)
+			.and_then(|index| self.reasoning_positions.get(&index).copied());
+		let Some(position) = position else {
+			self.grow(serde_json::to_vec(fragment)?.len())?;
+			if let Some(index) = fragment.get("index").and_then(Value::as_u64) {
+				self.reasoning_positions
+					.insert(index, self.reasoning_details.len());
+			}
+			self.reasoning_details.push(fragment.clone());
+			return Ok(());
+		};
+		for (key, value) in fragment {
+			let current = self.reasoning_details[position].get(key);
+			let append = matches!(key.as_str(), "text" | "summary" | "data")
+				&& matches!(current, Some(Value::String(_)))
+				&& value.is_string();
+			if append {
+				let more = value.as_str().unwrap_or_default();
+				self.grow(more.len())?;
+				if let Some(Value::String(current)) = self.reasoning_details[position].get_mut(key)
+				{
+					current.push_str(more);
+				}
+			} else if !(value.is_null() && current.is_some()) {
+				self.grow(serde_json::to_vec(value)?.len().saturating_add(key.len()))?;
+				self.reasoning_details[position].insert(key.clone(), value.clone());
 			}
 		}
 		Ok(())

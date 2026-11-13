@@ -3863,6 +3863,7 @@ async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fi
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		fixture.run.context.push(ContextEvent::tool(
 			call(&id, "read", json!({})),
@@ -3899,6 +3900,7 @@ async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		let result = if i == 0 {
 			json!("h".repeat(200_000))
@@ -7238,6 +7240,7 @@ async fn intake_keeps_parallel_results_in_the_journal_before_offloading(mut fixt
 		epoch: 1,
 		text: String::new(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	});
 	for id in calls {
 		fixture.run.context.push(ContextEvent::tool(

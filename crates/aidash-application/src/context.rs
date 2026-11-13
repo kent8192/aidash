@@ -86,7 +86,7 @@ pub fn compact(context: &Context, fitting: &Fitting<'_>, step: u32) -> Result<Co
 		if candidate.offload_reads.summary_pending {
 			// Repeated retrieval asks to summarize older material even when the
 			// request fits. The newest turn stays protected.
-			if let Ok(plan) = summary_plan(candidate.clone(), fitting) {
+			if let Ok(plan) = summary_plan(without_old_reasoning(&candidate, fitting), fitting) {
 				return Ok(Compaction::NeedsSummary(plan, batch));
 			}
 			let mut policy = fitting.policy.clone();
@@ -96,7 +96,7 @@ pub fn compact(context: &Context, fitting: &Fitting<'_>, step: u32) -> Result<Co
 				pinned: fitting.pinned,
 				policy: &policy,
 			};
-			if let Ok(plan) = summary_plan(candidate.clone(), &forced) {
+			if let Ok(plan) = summary_plan(without_old_reasoning(&candidate, &forced), &forced) {
 				return Ok(Compaction::NeedsSummary(plan, batch));
 			}
 		}
@@ -109,6 +109,9 @@ pub fn compact(context: &Context, fitting: &Fitting<'_>, step: u32) -> Result<Co
 			})
 		};
 	}
+	// Compaction rewrites history the provider already cached, so this is the
+	// one step that also drops the reasoning of older Model Turns (#942).
+	let reasoning_dropped = drop_old_reasoning(&mut candidate, fitting);
 	let older = offload::batch(
 		&mut candidate,
 		fitting.budget.window,
@@ -119,7 +122,7 @@ pub fn compact(context: &Context, fitting: &Fitting<'_>, step: u32) -> Result<Co
 		|value| fitting.size(value),
 	);
 	batch.ranges.extend(older.ranges);
-	if !batch.ranges.is_empty() {
+	if !batch.ranges.is_empty() || reasoning_dropped {
 		candidate.compactions = candidate.compactions.saturating_add(1);
 	}
 	if fitting.fits(&candidate) {
@@ -140,6 +143,7 @@ pub fn compact(context: &Context, fitting: &Fitting<'_>, step: u32) -> Result<Co
 				pinned: fitting.pinned,
 				policy: &policy,
 			};
+			drop_old_reasoning(&mut candidate, &fallback);
 			summary_plan(candidate, &fallback).map(|plan| Compaction::NeedsSummary(plan, batch))
 		}
 		Err(error) => Err(error),
@@ -189,6 +193,40 @@ fn summary_plan(candidate: Context, fitting: &Fitting<'_>) -> Result<Box<Summary
 		people,
 		before_tokens,
 	}))
+}
+
+/// Drop the recorded reasoning of Native Model Turns older than the protected
+/// recent tail, the turns the Summary Stage would keep (#942). Only a
+/// compaction step that rewrites history calls this: an ordinary step resends
+/// every turn's reasoning unchanged, so its prompt stays a cached prefix. The
+/// newest turn always keeps its reasoning; the Context Journal keeps all of it.
+/// Returns whether anything was dropped.
+fn drop_old_reasoning(context: &mut Context, fitting: &Fitting<'_>) -> bool {
+	let tail_limit = fitting
+		.budget
+		.window
+		.saturating_mul(usize::from(fitting.policy.protected_tail_permille))
+		/ 1000;
+	let preserve = bounded_native_tail(context, fitting.policy.preserve_recent, tail_limit).max(1);
+	let turns = model_turns(&context.history);
+	let total = turns.iter().flatten().max().map_or(0, |last| last + 1);
+	let protected = total.saturating_sub(preserve);
+	let mut dropped = false;
+	for (entry, turn) in context.history.iter_mut().zip(turns) {
+		if turn.is_some_and(|turn| turn < protected)
+			&& let ContextEvent::Assistant { reasoning, .. } = &mut entry.event
+		{
+			dropped |= reasoning.take().is_some();
+		}
+	}
+	dropped
+}
+
+/// A copy of `context` after [`drop_old_reasoning`].
+fn without_old_reasoning(context: &Context, fitting: &Fitting<'_>) -> Context {
+	let mut context = context.clone();
+	drop_old_reasoning(&mut context, fitting);
+	context
 }
 
 fn bounded_event_tail(context: &Context, requested: usize, limit: usize) -> usize {

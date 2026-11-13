@@ -129,6 +129,11 @@ pub enum NativeMessage {
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		text: Option<String>,
 		tool_calls: Vec<ToolCall>,
+		/// The response's recorded reasoning, resent unchanged on every later
+		/// request (#942). Omitted when absent, so requests without reasoning
+		/// keep their bytes and digests.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		reasoning: Option<crate::provider::reasoning::Reasoning>,
 	},
 	/// One call's result, paired with its call by `tool_call_id`.
 	Tool {
@@ -221,6 +226,12 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 					turn.text.map(str::to_owned)
 				},
 				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
+				// The reasoning that produced the response, whatever part of it
+				// renders: calls that never ran and withheld text leave it whole.
+				reasoning: match &entries[turn.start].event {
+					ContextEvent::Assistant { reasoning, .. } => reasoning.clone(),
+					_ => None,
+				},
 			});
 			for (seq, call, result) in results {
 				history.push(NativeMessage::Tool {
@@ -586,8 +597,15 @@ impl NativeMessage {
 				json!({"role":"assistant","content":null,"_provider_activity":items})
 			}
 			Self::Data { envelope } => json!({"role": "user", "content": envelope.text()}),
-			Self::Assistant { text, tool_calls } => {
+			Self::Assistant {
+				text,
+				tool_calls,
+				reasoning,
+			} => {
 				let mut message = json!({"role": "assistant", "content": text});
+				if let Some(reasoning) = reasoning {
+					reasoning.render_chat(&mut message);
+				}
 				if !tool_calls.is_empty() {
 					message["tool_calls"] = tool_calls
 						.iter()

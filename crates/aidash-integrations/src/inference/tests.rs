@@ -1045,6 +1045,7 @@ mod cache_salt {
 			epoch: 1,
 			text: String::new(),
 			calls: vec!["call-1".into()],
+			reasoning: None,
 		});
 		context.push(aidash_domain::context::ContextEvent::tool(
 			aidash_domain::provider::ToolCall {
@@ -1657,6 +1658,7 @@ fn provider_tools_activity_survives_acceptance_and_model_authored_history() {
 		text: accepted.text,
 		calls: vec![],
 		provider_activity: accepted.provider_activity,
+		reasoning: None,
 	});
 	context.push(aidash_domain::context::ContextEvent::Assistant {
 		epoch: 2,
@@ -1665,6 +1667,7 @@ fn provider_tools_activity_survives_acceptance_and_model_authored_history() {
 		provider_activity: vec![
 			json!({"type":"datetime_call","result":{"datetime":"2026-10-27T00:00:00Z"}}),
 		],
+		reasoning: None,
 	});
 	assert!(context.history.iter().all(|entry| entry.research.is_none()));
 	let restored = serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();

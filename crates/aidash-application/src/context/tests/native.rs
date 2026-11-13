@@ -34,6 +34,7 @@ fn turns(turns: usize) -> Context {
 				String::new()
 			},
 			calls: ids.to_vec(),
+			reasoning: None,
 		});
 		for id in &ids {
 			context.push(ContextEvent::tool(call(id), json!("r".repeat(600))));
@@ -129,6 +130,7 @@ fn a_turn_that_renders_nothing_takes_no_protected_slot() {
 		epoch: 10,
 		text: String::new(),
 		calls: vec!["deferred".into()],
+		reasoning: None,
 	});
 	context.journal.inferred_through = context.journal.head;
 	// Act

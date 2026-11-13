@@ -2570,7 +2570,18 @@ impl<'a> Executor<'a> {
 				};
 				let recorded = store.complete_usage_record(run, attempt.0, &outcome).await;
 				let result = match inference {
-					Inference::Response(response) => *response,
+					Inference::Response(response) => {
+						let mut response = *response;
+						// Reasoning is passed back only by Native Runs on routes
+						// that keep it on (#942). The model version is immutable,
+						// so a Run records it on every turn or on none.
+						if agent.projection_version != ProjectionVersion::Native
+							|| !model_cfg.reasoning_passback()
+						{
+							response.reasoning = None;
+						}
+						response
+					}
 					Inference::Superseded => {
 						self.close_inference(run, token, attempt, ProgressOutcome::Discarded)
 							.await?;
@@ -4148,6 +4159,16 @@ fn record_model_turn(
 	calls: &[aidash_domain::provider::ToolCall],
 ) -> Result<()> {
 	let provider_activity = run.state.tool()?.response.provider_activity.clone();
+	// Acceptance already kept reasoning only for Native Runs on routes that
+	// pass it back (#942); a Legacy or Ordered turn never carries any.
+	let reasoning = (version == ProjectionVersion::Native)
+		.then(|| {
+			run.state
+				.tool()
+				.map(|state| state.response.reasoning.clone())
+		})
+		.transpose()?
+		.flatten();
 	if version != ProjectionVersion::Native && provider_activity.is_empty() {
 		return Ok(());
 	}
@@ -4169,6 +4190,7 @@ fn record_model_turn(
 				epoch,
 				text: text.to_owned(),
 				calls: vec![],
+				reasoning: None,
 			},
 		);
 		if let ContextEvent::Assistant { text: kept, .. } = &mut run.context.history[index].event
@@ -4185,6 +4207,7 @@ fn record_model_turn(
 		epoch,
 		text: text.to_owned(),
 		calls: calls.iter().map(|call| call.id.clone()).collect(),
+		reasoning,
 	};
 	let growth = context::tool_event_growth(&run.context, &event);
 	run.context.push(event);

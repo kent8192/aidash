@@ -15,6 +15,7 @@ fn assistant(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	}
 }
 
@@ -98,7 +99,9 @@ fn shape(history: &[NativeMessage]) -> Vec<String> {
 			NativeMessage::ProviderActivity { .. } => "provider_activity".into(),
 			NativeMessage::Human { .. } => "human".into(),
 			NativeMessage::Data { envelope } => format!("data:{:?}", envelope.source),
-			NativeMessage::Assistant { tool_calls, text } => format!(
+			NativeMessage::Assistant {
+				tool_calls, text, ..
+			} => format!(
 				"assistant[{}]{}",
 				tool_calls
 					.iter()
@@ -495,6 +498,7 @@ fn the_invariant_rejects_partial_turns_and_orphan_results() {
 		NativeMessage::Assistant {
 			text: None,
 			tool_calls: vec![call("a"), call("b")],
+			reasoning: None,
 		},
 		NativeMessage::Tool {
 			tool_call_id: "a".into(),
@@ -614,6 +618,7 @@ fn a_partial_turn_is_rejected_before_any_request_is_sent() {
 		history: vec![NativeMessage::Assistant {
 			text: None,
 			tool_calls: vec![call("a")],
+			reasoning: None,
 		}],
 		volatile: "{}".into(),
 		harness: None,

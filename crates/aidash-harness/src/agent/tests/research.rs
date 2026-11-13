@@ -287,6 +287,7 @@ async fn a_native_model_turn_records_no_text_the_citation_gate_withheld(mut fixt
 			epoch: 4,
 			text: String::new(),
 			calls: vec!["call-0".into()],
+			reasoning: None,
 		})
 	);
 }
