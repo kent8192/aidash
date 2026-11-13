@@ -135,31 +135,76 @@ pub enum NativeMessage {
 		tool_call_id: String,
 		envelope: Envelope,
 	},
+	/// A step's bookkeeping (#942), sent as a user message at the position it
+	/// was recorded: the state as data, then the Harness requirements of a
+	/// `structured@*` contract with trust `aidash`.
+	StepState {
+		state: Envelope,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		harness: Option<Envelope>,
+	},
 }
 
 /// A complete Native request context: Run-stable attachments, then history
-/// rendered as whole Model Turns, then this step's volatile content.
+/// rendered as whole Model Turns and recorded step states, then this step's
+/// volatile evidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NativeContext {
 	/// Run-stable sources, one envelope each, sent in one user message right
 	/// after `system`. They are part of the Stable Prefix.
 	pub attachments: Vec<Envelope>,
+	/// History, ending with this step's state when it differs from the last
+	/// recorded one and is not recorded yet ([`record_step_state`]); it
+	/// renders byte for byte as it will once recorded.
 	pub history: Vec<NativeMessage>,
-	/// Canonical JSON of this step's volatile content, sent enveloped as the
-	/// trailing user message. It is never stored in history.
+	/// Canonical JSON of this step's volatile evidence, sent enveloped as the
+	/// trailing user message. It is never stored in history; an empty object
+	/// without media sends no message.
 	pub volatile: String,
-	/// The Harness requirements envelope text of a `structured@*` contract, a
-	/// separate text part after the step data and this step's media. `None`
-	/// under `legacy@1`.
+	/// A Harness requirements envelope text sent after the volatile part.
+	/// [`native_context`] never sets it: since #942 the requirements travel
+	/// in the step state.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub harness: Option<String>,
 }
 
 /// The reserved pinned key that carries the Harness requirements envelope
 /// content of a `structured@*` contract. It is never part of the step's data
-/// envelope; the Harness builds it and [`native_context`] moves it out.
+/// envelope; the Harness builds it and the step state carries it.
 pub const HARNESS_REQUIREMENTS: &str = "harness_requirements";
+
+/// Pinned keys of a Native step's bookkeeping (#942): state and instructions
+/// that carry no evidence. They go to the step state, recorded in history
+/// only when it changes. Every other per-step key is evidence and stays in
+/// the volatile part.
+pub const STEP_STATE_KEYS: [&str; 8] = [
+	"agent_state",
+	"turn_instructions",
+	"run_message_read_instruction",
+	"deferred_run_message_reads",
+	"deferred_skill_read",
+	"deferred_workspace_observation",
+	"deferred_workspace_read",
+	"journal_read_notice",
+];
+
+/// The notice a Native step's `agent_state` carries instead of a step
+/// counter (#942), which would change the state, and so the request, every
+/// step. It changes once at 80 % and once at 90 % of `max_steps`.
+pub fn step_limit_notice(step: i32, max_steps: i32) -> Option<&'static str> {
+	let used = i64::from(step) * 10;
+	let max = i64::from(max_steps);
+	if max <= 0 {
+		None
+	} else if used >= max * 9 {
+		Some("90% of this Run's steps are used. Finish the task in the next few steps.")
+	} else if used >= max * 8 {
+		Some("80% of this Run's steps are used. Plan to finish within the remaining steps.")
+	} else {
+		None
+	}
+}
 
 /// Project a Run's context and this step's pinned snapshot into the Native IR.
 ///
@@ -171,22 +216,131 @@ pub const HARNESS_REQUIREMENTS: &str = "harness_requirements";
 /// Legacy leaves them out of history, so no request carries a partial Model
 /// Turn. A turn without text or an executed call renders nothing.
 ///
-/// Continuation markers move to the volatile part, or to the Harness
-/// requirements envelope under a `structured@*` contract, until a rendered
-/// Model Turn answers them. A citation correction or a Completion Gate repair
-/// asks for a corrected answer, so only a turn without calls answers it;
-/// tool-call turns that gather the missing evidence or repair the files keep it
-/// current. The notice of Unassigned Tasks is kept the same way: delegating one
-/// of two listed Tasks must not hide the warning about the other.
+/// Continuation markers move to the step state, or to its Harness
+/// requirements under a `structured@*` contract, until a rendered Model Turn
+/// answers them. A citation correction or a Completion Gate repair asks for a
+/// corrected answer, so only a turn without calls answers it; tool-call turns
+/// that gather the missing evidence or repair the files keep it current. The
+/// notice of Unassigned Tasks is kept the same way: delegating one of two
+/// listed Tasks must not hide the warning about the other.
+///
+/// Recorded step states render where they were recorded. This step's state
+/// ends the history when it differs from the last recorded one, exactly as
+/// [`record_step_state`] will record it, so a request built before recording
+/// measures and sends the same bytes.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let projected = crate::context::source::project(context, pinned);
 	let mut pinned = projected.snapshot;
 	if !projected.step.is_empty() {
 		pinned["context_sources"] = json!(projected.step);
 	}
+	let (mut history, markers) = render_history(&context.history);
+	if let Some(state) = pending_step_state(context, &pinned, &markers) {
+		history.push(step_message(&state).expect("a step state event"));
+	}
+	let mut attachments = attachments(context, &pinned);
+	let source_position = attachments
+		.iter()
+		.position(|envelope| {
+			matches!(
+				envelope.source,
+				Source::RunMessageSummary | Source::ExecutionSummary
+			)
+		})
+		.unwrap_or(attachments.len());
+	attachments.splice(source_position..source_position, projected.run);
+	if let Some(fields) = pinned.as_object_mut() {
+		for key in STEP_STATE_KEYS.into_iter().chain([HARNESS_REQUIREMENTS]) {
+			fields.remove(key);
+		}
+	}
+	NativeContext {
+		attachments,
+		history,
+		volatile: crate::context::volatile_part(&pinned, None),
+		harness: None,
+	}
+}
+
+/// This step's state when it differs from the last one recorded in history.
+fn pending_step_state(
+	context: &Context,
+	pinned: &Value,
+	markers: &[&ContextEvent],
+) -> Option<ContextEvent> {
+	let state = step_state(pinned, markers)?;
+	let last = context
+		.events()
+		.rev()
+		.find(|event| matches!(event, ContextEvent::StepState { .. }));
+	(last != Some(&state)).then_some(state)
+}
+
+/// Record this step's state in history when it differs from the last one,
+/// so it is journaled and later requests send it at the same position.
+/// Returns whether it recorded one. Only Native Runs record step states.
+pub fn record_step_state(context: &mut Context, pinned: &Value) -> bool {
+	let (_, markers) = render_history(&context.history);
+	let Some(state) = pending_step_state(context, pinned, &markers) else {
+		return false;
+	};
+	context.push(state);
+	true
+}
+
+/// The step state of `pinned` with the open `markers`, or `None` when it has
+/// nothing to say.
+fn step_state(pinned: &Value, markers: &[&ContextEvent]) -> Option<ContextEvent> {
+	let markers = markers
+		.iter()
+		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
+		.collect::<Vec<_>>();
+	let mut state = serde_json::Map::new();
+	for key in STEP_STATE_KEYS {
+		if let Some(value) = pinned.get(key) {
+			state.insert(key.into(), value.clone());
+		}
+	}
+	// A structured Harness Contract builds one requirements envelope; markers
+	// join it because only the projected history knows which are still open.
+	let harness = match pinned.get(HARNESS_REQUIREMENTS) {
+		Some(Value::Object(content)) => {
+			let mut content = content.clone();
+			if !markers.is_empty() {
+				content.insert("markers".into(), Value::Array(markers));
+			}
+			(!content.is_empty()).then_some(Value::Object(content))
+		}
+		_ => {
+			if !markers.is_empty() {
+				state.insert("markers".into(), Value::Array(markers));
+			}
+			None
+		}
+	};
+	(!state.is_empty() || harness.is_some()).then(|| ContextEvent::StepState {
+		state: Value::Object(state),
+		harness,
+	})
+}
+
+/// How a step state renders: its revision stays `null`, so the pending and
+/// the recorded form are the same bytes.
+fn step_message(event: &ContextEvent) -> Option<NativeMessage> {
+	let ContextEvent::StepState { state, harness } = event else {
+		return None;
+	};
+	Some(NativeMessage::StepState {
+		state: Envelope::data(Source::Step, json!({"scope": "step"}), None, state.clone()),
+		harness: harness.clone().map(Envelope::harness),
+	})
+}
+
+/// Render recorded history and collect the continuation markers no rendered
+/// Model Turn has answered yet.
+fn render_history(entries: &[HistoryEntry]) -> (Vec<NativeMessage>, Vec<&ContextEvent>) {
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
-	let entries = &context.history;
 	let mut index = 0;
 	while index < entries.len() {
 		let Some(turn) = Turn::at(entries, index) else {
@@ -252,52 +406,7 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		}
 		index = turn.end;
 	}
-	let markers = markers
-		.into_iter()
-		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
-		.collect();
-	let markers = Value::Array(markers);
-	// A structured Harness Contract builds one requirements envelope. Its
-	// content leaves the step's data envelope; markers join it here because
-	// only the projected history knows which ones are still open.
-	let harness_content = pinned
-		.as_object_mut()
-		.and_then(|fields| fields.remove(HARNESS_REQUIREMENTS));
-	let structured = harness_content.is_some();
-	let harness = harness_content.and_then(|content| {
-		let Value::Object(mut content) = content else {
-			return None;
-		};
-		if markers
-			.as_array()
-			.is_some_and(|markers| !markers.is_empty())
-		{
-			content.insert("markers".into(), markers.clone());
-		}
-		(!content.is_empty()).then(|| Envelope::harness(Value::Object(content)).text())
-	});
-	let extra = (!structured
-		&& markers
-			.as_array()
-			.is_some_and(|markers| !markers.is_empty()))
-	.then_some(("markers", &markers));
-	let mut attachments = attachments(context, &pinned);
-	let source_position = attachments
-		.iter()
-		.position(|envelope| {
-			matches!(
-				envelope.source,
-				Source::RunMessageSummary | Source::ExecutionSummary
-			)
-		})
-		.unwrap_or(attachments.len());
-	attachments.splice(source_position..source_position, projected.run);
-	NativeContext {
-		attachments,
-		history,
-		volatile: crate::context::volatile_part(&pinned, extra),
-		harness,
-	}
+	(history, markers)
 }
 
 /// The Model Turn each history entry belongs to, by ordinal from the oldest:
@@ -450,6 +559,9 @@ fn single<'a>(
 		| ContextEvent::CitationCorrectionRequired { .. }
 		| ContextEvent::UnassignedTasksTold { .. }
 		| ContextEvent::CompletionRepairRequired { .. } => markers.push(&entry.event),
+		ContextEvent::StepState { .. } => {
+			history.extend(step_message(&entry.event));
+		}
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}
 	}
@@ -502,7 +614,8 @@ fn attachments(context: &Context, pinned: &Value) -> Vec<Envelope> {
 impl NativeContext {
 	/// Canonical chat messages after `system`: the attachment message, the
 	/// history, then the volatile message with this step's media parts and,
-	/// last, the Harness requirements envelope.
+	/// last, any Harness requirements envelope. Without volatile evidence,
+	/// media or requirements there is no volatile message.
 	/// `breakpoint` marks the end of the Stable Prefix, the last history
 	/// message or, without history, the last attachment (ADR 0019); the
 	/// volatile message is never marked.
@@ -539,9 +652,12 @@ impl NativeContext {
 				part["cache_control"] = crate::provider::cache_control();
 			}
 		}
+		let mut media = media.map(media_part).peekable();
+		if self.volatile == "{}" && self.harness.is_none() && media.peek().is_none() {
+			return messages;
+		}
 		let volatile =
 			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
-		let mut media = media.map(media_part).peekable();
 		let content = if self.harness.is_none() && media.peek().is_none() {
 			Value::String(volatile)
 		} else {
@@ -605,6 +721,17 @@ impl NativeMessage {
 				tool_call_id,
 				envelope,
 			} => json!({"role": "tool", "tool_call_id": tool_call_id, "content": envelope.text()}),
+			Self::StepState {
+				state,
+				harness: None,
+			} => json!({"role": "user", "content": state.text()}),
+			Self::StepState {
+				state,
+				harness: Some(harness),
+			} => json!({"role": "user", "content": [
+				{"type": "text", "text": state.text()},
+				{"type": "text", "text": harness.text()},
+			]}),
 		}
 	}
 }
@@ -638,6 +765,7 @@ pub fn check_model_turns(history: &[NativeMessage]) -> Result<()> {
 			}
 			NativeMessage::Human { .. }
 			| NativeMessage::Data { .. }
+			| NativeMessage::StepState { .. }
 			| NativeMessage::ProviderActivity { .. } => index += 1,
 		}
 	}

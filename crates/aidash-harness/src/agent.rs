@@ -1977,7 +1977,19 @@ impl<'a> Executor<'a> {
 				{
 					push_turn_paragraph(AUTO_MODE_INSTRUCTION);
 				}
-				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":{"phase":run.phase(),"step":run.step}});
+				// A Native step state is recorded whenever it changes (#942), so it
+				// carries no step counter; a notice at 80 % and 90 % of the
+				// limit replaces it.
+				let agent_state = if agent.projection_version == ProjectionVersion::Native {
+					let mut state = json!({"phase":run.phase()});
+					if let Some(notice) = aidash_domain::projection::native::step_limit_notice(run.step, agent.max_steps) {
+						state["step_limit"] = json!(notice);
+					}
+					state
+				} else {
+					json!({"phase":run.phase(),"step":run.step})
+				};
+				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":agent_state});
                 pinned.as_object_mut().expect("request snapshot").extend(snapshot_sources);
 				if let Some(deferred_read) = &thinking.deferred_workspace_read {
 					pinned["deferred_workspace_read"] = json!(deferred_read);
@@ -2347,6 +2359,11 @@ impl<'a> Executor<'a> {
                 let current_step = u32::try_from(run.step).unwrap_or_default();
                 if context.offload_reads.notice_pending {
                     pinned.as_object_mut().expect("request snapshot").insert("journal_read_notice".into(), json!("The same Journal range has been read repeatedly and is being considered for the Summary Stage."));
+                }
+                // A changed Native step state joins history before fitting, so
+                // compaction and the request see the bytes the next step keeps.
+                if agent.projection_version == ProjectionVersion::Native {
+                    aidash_domain::projection::native::record_step_state(&mut context, &pinned);
                 }
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
                 context::observation::normalize_history(&mut context.history);

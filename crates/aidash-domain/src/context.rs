@@ -1002,6 +1002,18 @@ pub enum ContextEvent {
 		instruction: String,
 		through_seq: i64,
 	},
+	/// The bookkeeping of a Native step (#942): the Agent's state, this
+	/// step's instructions and deferred reads, and open markers. It holds no
+	/// evidence, so no authority change ever alters it. It is recorded only
+	/// when it differs from the last one in history and is sent at its
+	/// position, so later requests keep the same prefix.
+	StepState {
+		state: Value,
+		/// The Harness requirements of a `structured@*` contract, sent with
+		/// trust `aidash` after the state.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		harness: Option<Value>,
+	},
 }
 
 /// A subtask the model was told has nobody to run it.

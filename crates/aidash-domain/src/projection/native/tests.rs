@@ -38,7 +38,10 @@ fn context(events: Vec<ContextEvent>) -> Context {
 	context
 }
 
-fn request_messages(context: &Context, pinned: &Value) -> Vec<Value> {
+/// Messages of one step's request, recording its state first as the Harness
+/// does before each step.
+fn request_messages(context: &mut Context, pinned: &Value) -> Vec<Value> {
+	record_step_state(context, pinned);
 	let request = crate::provider::ModelRequest {
 		instructions: "Work on the task".into(),
 		context: crate::provider::ModelContext::Native(native_context(context, pinned)),
@@ -51,10 +54,10 @@ fn request_messages(context: &Context, pinned: &Value) -> Vec<Value> {
 fn native_turns_preserve_the_serialized_message_prefix() {
 	let pinned = json!({"identity": {"agent": "a"}, "agent_state": {"phase": "thinking"}});
 	let mut run = context(vec![]);
-	let first = request_messages(&run, &pinned);
+	let first = request_messages(&mut run, &pinned);
 	run.push(assistant(1, "Reading", &["a"]));
 	run.push(tool("a"));
-	let next = request_messages(&run, &pinned);
+	let next = request_messages(&mut run, &pinned);
 	for (before, after) in first.iter().zip(&next) {
 		assert_eq!(
 			serde_json::to_vec(before).unwrap(),
@@ -63,7 +66,7 @@ fn native_turns_preserve_the_serialized_message_prefix() {
 	}
 	assert!(next.len() >= first.len());
 	let changed = request_messages(
-		&run,
+		&mut run,
 		&json!({"identity": {"agent": "a"}, "agent_state": {"phase": "waiting"}}),
 	);
 	assert_eq!(&changed[..next.len()], next.as_slice());
@@ -74,12 +77,109 @@ fn native_turns_preserve_the_serialized_message_prefix() {
 fn unchanged_step_state_does_not_add_another_message() {
 	let pinned = json!({"agent_state": {"phase": "thinking"}});
 	let mut run = context(vec![]);
-	let first = request_messages(&run, &pinned);
+	let first = request_messages(&mut run, &pinned);
 	run.push(assistant(1, "Reading", &["a"]));
 	run.push(tool("a"));
-	let next = request_messages(&run, &pinned);
+	let next = request_messages(&mut run, &pinned);
 	assert_eq!(next.len(), first.len() + 2);
 	assert_eq!(next.last().unwrap()["role"], "tool");
+}
+
+#[test]
+fn recording_an_unchanged_state_appends_nothing() {
+	let pinned = json!({"agent_state": {"phase": "thinking"}});
+	let mut run = context(vec![]);
+	assert!(record_step_state(&mut run, &pinned));
+	run.push(assistant(1, "Reading", &["a"]));
+	run.push(tool("a"));
+	assert!(!record_step_state(&mut run, &pinned));
+	assert!(!record_step_state(&mut run, &pinned));
+	assert_eq!(
+		run.events()
+			.filter(|event| matches!(event, ContextEvent::StepState { .. }))
+			.count(),
+		1
+	);
+	// Evidence keys never reach the state.
+	assert!(!record_step_state(
+		&mut run,
+		&json!({"agent_state": {"phase": "thinking"}, "workspace": {"id": "w"}})
+	));
+}
+
+#[test]
+fn a_pending_state_sends_the_bytes_it_is_recorded_with() {
+	let pinned = json!({
+		"agent_state": {"phase": "thinking"},
+		"turn_instructions": ["Read first."],
+		HARNESS_REQUIREMENTS: {"run_message_read_instruction": "Read m1."},
+	});
+	let mut run = context(vec![
+		assistant(1, "", &["a"]),
+		tool("a"),
+		ContextEvent::RunMessageReadRequired {
+			message_ids: vec![uuid::Uuid::from_u128(1)],
+		},
+	]);
+	let pending = request_messages_unrecorded(&run, &pinned);
+	assert!(record_step_state(&mut run, &pinned));
+	let recorded = request_messages_unrecorded(&run, &pinned);
+	assert_eq!(pending, recorded);
+	let state = recorded.last().unwrap();
+	assert_eq!(state["role"], "user");
+	let harness: Envelope =
+		serde_json::from_str(state["content"][1]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(harness.trust, Trust::Aidash);
+	assert_eq!(
+		harness.content["markers"][0]["kind"],
+		"run_message_read_required"
+	);
+	let data: Envelope =
+		serde_json::from_str(state["content"][0]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(data.trust, Trust::Data);
+	assert_eq!(data.content["turn_instructions"], json!(["Read first."]));
+	assert!(data.content.get("markers").is_none());
+}
+
+fn request_messages_unrecorded(context: &Context, pinned: &Value) -> Vec<Value> {
+	let request = crate::provider::ModelRequest {
+		instructions: "Work on the task".into(),
+		context: crate::provider::ModelContext::Native(native_context(context, pinned)),
+		..Default::default()
+	};
+	request.input_body()["messages"].as_array().unwrap().clone()
+}
+
+#[test]
+fn the_step_limit_notice_changes_only_at_80_and_90_percent() {
+	let notices = (0..20)
+		.map(|step| step_limit_notice(step, 20))
+		.collect::<Vec<_>>();
+	assert!(notices[..16].iter().all(Option::is_none));
+	assert!(
+		notices[16..18]
+			.iter()
+			.all(|notice| notice.is_some_and(|text| text.starts_with("80%")))
+	);
+	assert!(
+		notices[18..]
+			.iter()
+			.all(|notice| notice.is_some_and(|text| text.starts_with("90%")))
+	);
+	// The state changes, and so is recorded, exactly three times in 20 steps.
+	let mut run = context(vec![]);
+	let mut recorded = 0;
+	for step in 0..20 {
+		let mut state = json!({"phase": "thinking"});
+		if let Some(notice) = step_limit_notice(step, 20) {
+			state["step_limit"] = json!(notice);
+		}
+		recorded += usize::from(record_step_state(&mut run, &json!({"agent_state": state})));
+		run.push(assistant(i64::from(step), "", &["a"]));
+		run.push(tool("a"));
+	}
+	assert_eq!(recorded, 3);
+	assert_eq!(step_limit_notice(0, 0), None);
 }
 
 #[test]
@@ -153,8 +253,23 @@ fn shape(history: &[NativeMessage]) -> Vec<String> {
 					.map_or(String::new(), |text| format!(":{text}"))
 			),
 			NativeMessage::Tool { tool_call_id, .. } => format!("tool:{tool_call_id}"),
+			NativeMessage::StepState { .. } => "state".into(),
 		})
 		.collect()
+}
+
+/// The content of the last step state in a projected history, `null` when
+/// there is none.
+fn last_state(native: &NativeContext) -> Value {
+	native
+		.history
+		.iter()
+		.rev()
+		.find_map(|message| match message {
+			NativeMessage::StepState { state, .. } => Some(state.content.clone()),
+			_ => None,
+		})
+		.unwrap_or(Value::Null)
 }
 
 #[test]
@@ -252,7 +367,7 @@ fn elided_results_keep_their_call_id() {
 }
 
 #[test]
-fn only_markers_since_the_last_turn_reach_the_volatile_part() {
+fn only_markers_since_the_last_turn_reach_the_step_state() {
 	// Arrange
 	let stale = ContextEvent::RunMessageReadRequired {
 		message_ids: vec![uuid::Uuid::from_u128(1)],
@@ -271,12 +386,12 @@ fn only_markers_since_the_last_turn_reach_the_volatile_part() {
 	// Act
 	let native = native_context(&context, &json!({"agent_state": {"step": 2}}));
 	// Assert
-	assert_eq!(shape(&native.history), ["assistant[a]", "tool:a"]);
-	let volatile: Value = serde_json::from_str(&native.volatile).unwrap();
+	assert_eq!(shape(&native.history), ["assistant[a]", "tool:a", "state"]);
 	assert_eq!(
-		volatile,
+		last_state(&native),
 		json!({"agent_state": {"step": 2}, "markers": [current]})
 	);
+	assert_eq!(native.volatile, "{}");
 }
 
 #[test]
@@ -299,18 +414,21 @@ fn a_citation_correction_is_a_marker_until_the_corrected_answer() {
 	let pending = native_context(&pending, &pinned);
 	let corrected = native_context(&corrected, &pinned);
 	// Assert
-	assert_eq!(shape(&pending.history), ["assistant[a]", "tool:a"]);
-	let volatile: Value = serde_json::from_str(&pending.volatile).unwrap();
+	assert_eq!(shape(&pending.history), ["assistant[a]", "tool:a", "state"]);
 	assert_eq!(
-		volatile,
+		last_state(&pending),
 		json!({"agent_state": {"step": 3}, "markers": [correction]})
 	);
 	assert_eq!(
 		shape(&corrected.history),
-		["assistant[a]", "tool:a", "assistant[]:Corrected answer"]
+		[
+			"assistant[a]",
+			"tool:a",
+			"assistant[]:Corrected answer",
+			"state"
+		]
 	);
-	let volatile: Value = serde_json::from_str(&corrected.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&corrected), pinned);
 }
 
 #[test]
@@ -338,13 +456,11 @@ fn a_citation_correction_survives_turns_that_gather_evidence() {
 	let answered = native_context(&answered, &pinned);
 	// Assert: the tool-call turn answers the read marker but not the
 	// correction; the answer without calls answers both.
-	let volatile: Value = serde_json::from_str(&gathering.volatile).unwrap();
 	assert_eq!(
-		volatile,
+		last_state(&gathering),
 		json!({"agent_state": {"step": 4}, "markers": [correction]})
 	);
-	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&answered), pinned);
 }
 
 #[test]
@@ -379,13 +495,11 @@ fn the_unassigned_notice_survives_turns_that_delegate_some_of_the_tasks() {
 	let answered = native_context(&answered, &pinned);
 	// Assert: the notice stays a marker, never history, until an answer
 	// without calls.
-	let volatile: Value = serde_json::from_str(&delegating.volatile).unwrap();
 	assert_eq!(
-		volatile,
+		last_state(&delegating),
 		json!({"agent_state": {"step": 4}, "markers": [notice]})
 	);
-	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&answered), pinned);
 }
 
 #[test]
@@ -423,16 +537,15 @@ fn a_completion_repair_survives_turns_that_repair_the_files() {
 			"assistant[a]",
 			"tool:a",
 			"assistant[b]:Fixing the failing test.",
-			"tool:b"
+			"tool:b",
+			"state"
 		]
 	);
-	let volatile: Value = serde_json::from_str(&repairing.volatile).unwrap();
 	assert_eq!(
-		volatile,
+		last_state(&repairing),
 		json!({"agent_state": {"step": 5}, "markers": [repair]})
 	);
-	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&answered), pinned);
 }
 
 #[test]
@@ -448,10 +561,9 @@ fn a_turn_that_renders_nothing_answers_no_marker() {
 	// Act
 	let native = native_context(&context, &pinned);
 	// Assert
-	assert!(native.history.is_empty());
-	let volatile: Value = serde_json::from_str(&native.volatile).unwrap();
+	assert_eq!(shape(&native.history), ["state"]);
 	assert_eq!(
-		volatile,
+		last_state(&native),
 		json!({"agent_state": {"step": 2}, "markers": [marker]})
 	);
 }
@@ -574,7 +686,7 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 	]);
 	let native = native_context(
 		&context,
-		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}}),
+		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}, "workspace": {"id": "w"}}),
 	);
 	// Act
 	let body = request(native, false).input_body();
@@ -593,6 +705,7 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 			"tool",
 			"tool",
 			"user",
+			"user",
 			"user"
 		]
 	);
@@ -609,7 +722,11 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 	);
 	assert_eq!(
 		messages[6]["content"],
-		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"agent_state":{"step":1}}}"#
+		r#"{"source":"step","provenance":{"scope":"step"},"revision":null,"trust":"data","content":{"agent_state":{"step":1}}}"#
+	);
+	assert_eq!(
+		messages[7]["content"],
+		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"workspace":{"id":"w"}}}"#
 	);
 	assert!(body.to_string().find("cache_control").is_none());
 }
@@ -618,7 +735,10 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 fn breakpoints_mark_system_and_the_last_history_message_only() {
 	// Arrange
 	let context = context(vec![assistant(1, "", &["a"]), tool("a")]);
-	let native = native_context(&context, &json!({"task": {"id": "t"}}));
+	let native = native_context(
+		&context,
+		&json!({"task": {"id": "t"}, "workspace": {"id": "w"}}),
+	);
 	// Act
 	let body = request(native, true).input_body();
 	// Assert

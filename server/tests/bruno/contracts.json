@@ -30848,6 +30848,22 @@
                 },
                 "required": ["kind", "checks", "instruction", "through_seq"],
                 "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The bookkeeping of a Native step (#942): the Agent's state, this\nstep's instructions and deferred reads, and open markers. It holds no\nevidence, so no authority change ever alters it. It is recorded only\nwhen it differs from the last one in history and is sent at its\nposition, so later requests keep the same prefix.",
+                "properties": {
+                  "harness": {
+                    "description": "The Harness requirements of a `structured@*` contract, sent with\ntrust `aidash` after the state."
+                  },
+                  "kind": {
+                    "enum": ["step_state"],
+                    "type": "string"
+                  },
+                  "state": {}
+                },
+                "required": ["kind", "state"],
+                "type": "object"
               }
             ]
           },
@@ -35417,6 +35433,22 @@
                   }
                 },
                 "required": ["kind", "checks", "instruction", "through_seq"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The bookkeeping of a Native step (#942): the Agent's state, this\nstep's instructions and deferred reads, and open markers. It holds no\nevidence, so no authority change ever alters it. It is recorded only\nwhen it differs from the last one in history and is sent at its\nposition, so later requests keep the same prefix.",
+                "properties": {
+                  "harness": {
+                    "description": "The Harness requirements of a `structured@*` contract, sent with\ntrust `aidash` after the state."
+                  },
+                  "kind": {
+                    "enum": ["step_state"],
+                    "type": "string"
+                  },
+                  "state": {}
+                },
+                "required": ["kind", "state"],
                 "type": "object"
               }
             ]
@@ -51920,6 +51952,22 @@
                   }
                 },
                 "required": ["kind", "checks", "instruction", "through_seq"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The bookkeeping of a Native step (#942): the Agent's state, this\nstep's instructions and deferred reads, and open markers. It holds no\nevidence, so no authority change ever alters it. It is recorded only\nwhen it differs from the last one in history and is sent at its\nposition, so later requests keep the same prefix.",
+                "properties": {
+                  "harness": {
+                    "description": "The Harness requirements of a `structured@*` contract, sent with\ntrust `aidash` after the state."
+                  },
+                  "kind": {
+                    "enum": ["step_state"],
+                    "type": "string"
+                  },
+                  "state": {}
+                },
+                "required": ["kind", "state"],
                 "type": "object"
               }
             ]

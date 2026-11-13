@@ -248,13 +248,15 @@ fn native_responses_media_reserves_escaped_frames_but_not_base64_payloads() {
 	let sent = responses::encoded_input_body(&request).unwrap();
 	let required = sent.to_string().len() - encoded + 4097 + estimate::FRAMING_RESERVE;
 	assert_eq!(request.estimated_total_tokens(), required);
-	assert_eq!(
-		ModelRequest::content_parts_reservation(
-			&request.content_parts,
-			crate::projection::ProjectionVersion::Native,
-			InputFormat::Responses
-		)
-		.unwrap(),
-		required - before
-	);
+	// The reservation probe has no volatile evidence, so it also reserves the
+	// volatile message that media opens when a step has none (#942). That
+	// surplus is the small empty step envelope.
+	let reserved = ModelRequest::content_parts_reservation(
+		&request.content_parts,
+		crate::projection::ProjectionVersion::Native,
+		InputFormat::Responses,
+	)
+	.unwrap();
+	assert!(reserved >= required - before);
+	assert!(reserved - (required - before) < 256);
 }

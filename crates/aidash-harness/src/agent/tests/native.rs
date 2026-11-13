@@ -16,6 +16,24 @@ fn native_context(request: &ModelRequest) -> &aidash_domain::projection::native:
 	}
 }
 
+/// Record the step state `request` sent, as saving its accepted inference
+/// does (#942).
+fn keep_step_state(run: &mut Run, request: &ModelRequest) {
+	let state = native_context(request)
+		.history
+		.iter()
+		.rev()
+		.find_map(|message| match message {
+			NativeMessage::StepState { state, harness } => Some(ContextEvent::StepState {
+				state: state.content.clone(),
+				harness: harness.as_ref().map(|harness| harness.content.clone()),
+			}),
+			_ => None,
+		})
+		.expect("a step state");
+	run.context.push(state);
+}
+
 fn turn(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 	ContextEvent::Assistant {
 		provider_activity: vec![],
@@ -110,6 +128,7 @@ async fn native_request_bytes_match_the_multi_round_golden_fixture(mut canonical
 			"tool",
 			"user",
 			"assistant",
+			"user",
 			"user"
 		]
 	);
@@ -138,6 +157,11 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 	canonical.run.context = multi_round_journal();
 	assert!(advance_sources(&mut canonical).await.is_err());
 	canonical.run.step += 1;
+	// An accepted inference saves the step state it recorded (#942).
+	keep_step_state(
+		&mut canonical.run,
+		&canonical.backend.0.requests.lock().unwrap()[0],
+	);
 	canonical.run.context.push(turn(4, "", &["call-4"]));
 	canonical.run.context.push(result(
 		"call-4",
@@ -186,9 +210,11 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 	let first = bodies[0][key].as_array().unwrap();
 	let second = bodies[1][key].as_array().unwrap();
 	assert_eq!(first[..first.len() - 1], second[..first.len() - 1]);
-	assert_eq!(second.len(), first.len() + 2);
+	// The call answered the open read marker, so the changed step state is
+	// appended after its turn (#942).
+	assert_eq!(second.len(), first.len() + 3);
 	assert_eq!(
-		second[second.len() - 2][if plan { "call_id" } else { "tool_call_id" }],
+		second[second.len() - 3][if plan { "call_id" } else { "tool_call_id" }],
 		"call-4"
 	);
 	let usage = canonical.backend.0.usage.lock().unwrap();
@@ -213,9 +239,17 @@ async fn explicit_native_requests_mark_system_and_the_last_history_message(mut c
 	let messages = body["messages"].as_array().unwrap();
 	assert_eq!(body.to_string().matches("cache_control").count(), 2);
 	assert!(messages[0]["content"][0].get("cache_control").is_some());
+	// This step's state ends the history (#942); the next step keeps it.
 	let last_history = &messages[messages.len() - 2];
-	assert_eq!(last_history["role"], "assistant");
+	assert_eq!(last_history["role"], "user");
+	assert!(
+		last_history["content"][0]["text"]
+			.as_str()
+			.unwrap()
+			.contains(r#""source":"step","provenance":{"scope":"step"}"#)
+	);
 	assert!(last_history["content"][0].get("cache_control").is_some());
+	assert_eq!(messages[messages.len() - 3]["role"], "assistant");
 	assert!(messages[messages.len() - 1]["content"].is_string());
 }
 
@@ -563,7 +597,13 @@ async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture:
 		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
 		.await
 		.unwrap();
+	// The step state recorded before fitting is journaled after the originals (#942).
+	let (states, journal): (Vec<_>, Vec<_>) = journal
+		.into_iter()
+		.partition(|entry| matches!(entry.event, ContextEvent::StepState { .. }));
 	assert_eq!(journal, originals);
+	assert_eq!(states.len(), 1);
+	assert!(states[0].seq > originals.last().unwrap().seq);
 	advance_sources(&mut fixture).await.unwrap();
 	let request = last_request(&fixture);
 	let native = native_context(&request);
@@ -622,7 +662,9 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	assert!(!request.instructions.contains("Media intake is continuing"));
 	let body = request.input_body();
 	let messages = body["messages"].as_array().unwrap();
-	let content = messages.last().unwrap()["content"]
+	// The step state, recorded in history (#942), is the last message before
+	// the volatile evidence.
+	let content = messages[messages.len() - 2]["content"]
 		.as_array()
 		.expect("the step data and the harness envelope are separate text parts");
 	let harness: Value = serde_json::from_str(
