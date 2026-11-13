@@ -90,7 +90,8 @@ type RunReadsBlock =
   | { kind: "definition_not_usable" }
   | { kind: "remote_read" }
   | { kind: "semantic_read" }
-  | { kind: "source"; source: string };
+  | { kind: "source"; source: string }
+  | { kind: "source_changed" };
 function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
   switch (block.kind) {
     case "definition_not_approved":
@@ -110,6 +111,8 @@ function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
       return messages.runReadsSemantic;
     case "source":
       return messages.runReadsSource.replace("{source}", block.source);
+    case "source_changed":
+      return messages.runReadsSourceChanged;
   }
 }
 /** The wait a Policy Busy refusal asks for, or `undefined` for any other response. */

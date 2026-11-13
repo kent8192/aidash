@@ -101,12 +101,30 @@ async fn use_block(
 	scope.use_block(run).await
 }
 
+/// A paused Run that stopped because something it read changed (`invalidated`). Its context
+/// already holds the obsolete text, so no resume can let it go on: only a Follow-up Task can
+/// (#127). Its disclosure is withheld for the same reason, so this is asked before the read walk.
+fn invalidated(run: &RunInspection) -> bool {
+	run.control == aidash_domain::RunControl::Paused
+		&& !run.phase.is_terminal()
+		&& run.recovery.as_ref().and_then(|r| r.semantic_reason)
+			== Some(aidash_domain::semantic::Failure::Invalidated)
+}
+
 pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
 	let run = in_workspace(scope, id).await?;
-	let block = reads_block(scope, &run).await?;
+	let invalidated = invalidated(&run);
+	let block = if invalidated {
+		None
+	} else {
+		reads_block(scope, &run).await?
+	};
 	// Only someone who could otherwise resume the Run learns what blocks it.
 	require_control(scope, id).await?;
 	require_own_grant(scope, id).await?;
+	if invalidated {
+		return Err(Error::ResumeBlocked(RunReadsBlock::SourceChanged));
+	}
 	if let Some(block) = block {
 		return Err(Error::ResumeBlocked(block));
 	}
