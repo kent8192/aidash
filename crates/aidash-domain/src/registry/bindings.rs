@@ -411,14 +411,6 @@ impl AgentBindings {
 	) -> Result<Vec<NormalizedBinding>> {
 		self.normalize_mode(node, compaction_override, 0)
 	}
-	fn normalize_version(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-		legacy: bool,
-	) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, compaction_override, if legacy { 1 } else { 0 })
-	}
 	fn normalize_mode(
 		&self,
 		node: &str,

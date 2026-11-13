@@ -96,9 +96,7 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
-	let old = config
-		.normalize_version("aidash://node-a", None, true)
-		.unwrap();
+	let old = config.normalize_mode("aidash://node-a", None, 1).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
@@ -127,7 +125,7 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	let node = "aidash://node-a";
 	let config = agent();
-	let old = config.normalize_version(node, None, true).unwrap();
+	let old = config.normalize_mode(node, None, 1).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"schema":{},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
