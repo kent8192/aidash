@@ -13,6 +13,7 @@ import { apiFetch } from "../transport";
 import type { State } from "../types";
 import { useI18n } from "../ui";
 import { every } from "./inbox";
+import { approverText } from "./approver-text";
 
 type Agent = State["registry"][number];
 
@@ -192,11 +193,10 @@ export function ResearchPanel({
       )}
       {pending.map((item) => (
         <Hint key={item.id} role="status">
-          {ja ? "Web 開示の承認待ち" : "Waiting for Web disclosure approval by"}
-          {ja ? "：" : " "}
-          {item.approver ??
-            (ja ? "承認できる人がいません" : "no eligible approver")}{" "}
-          · <code>{item.targets.join(", ")}</code>
+          {ja ? "Web 開示の承認" : "Web disclosure approval"}
+          {ja ? "：" : ": "}
+          {approverText(item, ja) ?? (ja ? "判断済みです" : "Decided")} ·{" "}
+          <code>{item.targets.join(", ")}</code>
         </Hint>
       ))}
       {(usage.data?.url_intents ?? []).map((intent) => (
