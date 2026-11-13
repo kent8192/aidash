@@ -863,3 +863,35 @@ fn streamed_reasoning_counts_toward_the_assembled_limit() {
 		matches!(result, Err(Error::External(message)) if message == "response exceeds 400 bytes")
 	);
 }
+
+/// A reused `index` with another type starts a new entry instead of
+/// overwriting the signed one before it.
+#[test]
+fn a_reused_reasoning_index_with_another_type_is_a_new_entry() {
+	let body = sse(
+		&[
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.text","text":"a","signature":"sig","index":0}]}),
+			),
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"enc","index":0}]}),
+			),
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"-more","index":0}]}),
+			),
+			delta(json!({"content":"Done."})),
+			finish("stop"),
+		],
+		true,
+	);
+	let (response, _) = assemble(&body, 4096, 1_048_576);
+	assert_eq!(
+		response.unwrap().reasoning,
+		Some(aidash_domain::provider::reasoning::Reasoning::ChatDetails {
+			details: vec![
+				json!({"type":"reasoning.text","text":"a","signature":"sig","index":0}),
+				json!({"type":"reasoning.encrypted","data":"enc-more","index":0}),
+			],
+		})
+	);
+}

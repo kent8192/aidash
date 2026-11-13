@@ -1120,6 +1120,15 @@ impl ContextEvent {
 			&& result["invocation"].is_string()
 	}
 
+	/// This event without recorded reasoning, as every reader other than the
+	/// Run's own later requests receives it (#942).
+	pub fn without_reasoning(mut self) -> Self {
+		if let Self::Assistant { reasoning, .. } = &mut self {
+			*reasoning = None;
+		}
+		self
+	}
+
 	/// Whether this result is a placeholder for content the Run may no longer
 	/// send: revoked (ADR 0046) or expired research. Reasoning recorded after
 	/// it is not resent (#942).

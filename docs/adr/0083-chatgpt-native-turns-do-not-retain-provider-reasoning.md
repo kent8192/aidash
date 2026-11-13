@@ -60,4 +60,7 @@ plan routes as well. A model's `reasoning_passback: false` turns a route off.
 - Request Estimates count the resent reasoning. Compaction steps drop the
   reasoning of turns older than the protected recent tail; ordinary steps
   never drop any.
-- Reasoning is still never shown in Inference Progress.
+- Reasoning is still never shown in Inference Progress. It now appears wherever
+  the `assistant` event does, including the Run's context inspection history,
+  except after a revoked or expired result, where the projection keeps only the
+  withheld form. Memory extraction of a Journal range never receives it.

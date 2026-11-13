@@ -966,3 +966,18 @@ fn marking_replaces_later_reasoning_in_the_projection() {
 		ContextEvent::Assistant { reasoning: Some(Reasoning::ChatText { text, .. }), .. } if text.is_empty()
 	));
 }
+
+/// Readers other than the Run's own requests, such as memory extraction of a
+/// Journal range, get events without recorded reasoning.
+#[test]
+fn events_for_other_readers_carry_no_reasoning() {
+	let event = reasoned(1, &["a"], chat_details("private")).without_reasoning();
+	assert!(!serde_json::to_string(&event).unwrap().contains("private"));
+	assert!(matches!(
+		event,
+		ContextEvent::Assistant {
+			reasoning: None,
+			..
+		}
+	));
+}

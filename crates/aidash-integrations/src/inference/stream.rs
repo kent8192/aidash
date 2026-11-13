@@ -486,10 +486,19 @@ impl<'a> StreamAssembler<'a> {
 			self.reasoning_details.push(fragment.clone());
 			return Ok(());
 		};
+		// A fragment continues an entry only with the same `index` and type;
+		// a reused index with another type starts a new entry.
 		let position = fragment
 			.get("index")
 			.and_then(Value::as_u64)
-			.and_then(|index| self.reasoning_positions.get(&index).copied());
+			.and_then(|index| self.reasoning_positions.get(&index).copied())
+			.filter(|&position| {
+				fragment.get("type").is_none_or(|kind| {
+					self.reasoning_details[position]
+						.get("type")
+						.is_none_or(|seen| seen == kind)
+				})
+			});
 		let Some(position) = position else {
 			self.grow(serde_json::to_vec(fragment)?.len())?;
 			if let Some(index) = fragment.get("index").and_then(Value::as_u64) {
