@@ -453,15 +453,13 @@ impl AgentBindings {
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
 			// Mode 2 predates image retrieval and mode 4 predates Thread
-			// Attachment images (#622): each keeps the versions it pinned.
+			// Attachment images (#622). `workspace_read` keeps the version each
+			// pinned; `workspace_message` and `workspace_search` move to 1.1.0,
+			// which only adds inputs (see `upgraded`).
 			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
 				target.version = "1.0.0".into();
-			} else if (mode == 2 && matches!(*operation, "workspace_read" | "workspace_message"))
-				|| (mode == 4 && *operation == "workspace_message")
-			{
+			} else if mode == 2 && *operation == "workspace_read" {
 				target.version = "1.0.1".into();
-			} else if mode == 4 && *operation == "workspace_search" {
-				target.version = "1.0.0".into();
 			}
 			let pinned: &[&str] = match *operation {
 				"workspace_read" if matches!(mode, 0 | 3 | 4) => &["1.0.0", "1.0.1", "1.1.0"],
@@ -572,25 +570,20 @@ impl Entry {
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			let current = config.normalize_with_compaction(node, replacement);
-			let legacy = config.normalize_version(node, replacement, true);
-			if !current.is_ok_and(|expected| saved.bindings == expected)
-				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, replacement, 2)
-					.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, replacement, 3)
-					.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, replacement, 4)
-					.is_ok_and(|expected| saved.bindings == expected)
-			{
+			// A saved normalization is compared, and resolved, with the tool
+			// versions it would bind today.
+			let saved_bindings = upgraded(node, saved.bindings.clone());
+			let matches = |mode: u8| {
+				config
+					.normalize_mode(node, replacement, mode)
+					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+			};
+			if !(0..=4).any(matches) {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			return Ok(saved.bindings.clone());
+			return Ok(saved_bindings);
 		}
 		config.normalize_with_compaction(node, replacement)
 	}
@@ -606,6 +599,28 @@ impl Entry {
 				&& attachment_selection_tool(&item.binding.target, &item.binding.narrow, node)
 		}))
 	}
+}
+
+/// Bind `workspace_message` 1.0.1 and `workspace_search` 1.0.0 as 1.1.0, in
+/// Agent versions normalized before #622 part 2 too. 1.1.0 only adds inputs
+/// (Image Descriptions, and a selected Thread Attachment as an image query),
+/// so earlier calls behave the same; without it a pinned 1.0.1 could not post
+/// an image, since every posted image needs a description. This is an owner
+/// decision (2026-11-13) that departs, for these two tools only, from #640's
+/// rule that a pinned tool does not change. `workspace_read` keeps its pins:
+/// its versions decide whether an Agent can select a Thread Attachment at all.
+fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
+	for item in &mut bindings {
+		let target = &mut item.binding.target;
+		if target.registry_deployment == node
+			&& matches!(
+				(target.id.as_str(), target.version.as_str()),
+				("aidash.workspace_message", "1.0.1") | ("aidash.workspace_search", "1.0.0")
+			) {
+			target.version = "1.1.0".into();
+		}
+	}
+	bindings
 }
 
 fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {

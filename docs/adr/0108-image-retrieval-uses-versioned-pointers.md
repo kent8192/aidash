@@ -91,5 +91,12 @@ same rule applies when the query also searches the agent version's private
 Reference Document images.
 
 `workspace_search` and `workspace_message` move to version 1.1.0 for these
-inputs; Agent versions that pinned 1.0.0 and 1.0.1 keep them. A pinned 1.0.1
-`workspace_message` cannot supply a description, so it cannot post an image.
+inputs, and Agent versions registered earlier bind 1.1.0 too: `workspace_message`
+1.0.1 and `workspace_search` 1.0.0 resolve as 1.1.0. This is an owner decision
+(2026-11-13). Version 1.1.0 only adds inputs, so every earlier call behaves the
+same, and without it an earlier Agent version could not post an image, because
+each posted image needs a description. It deliberately departs, for these two
+tools only, from #640's rule that a pinned tool does not change.
+`workspace_read` keeps its pins, because its version decides whether an Agent
+can select a Thread Attachment at all; `workspace_message` 1.0.0, which has no
+`files` input, is also kept.

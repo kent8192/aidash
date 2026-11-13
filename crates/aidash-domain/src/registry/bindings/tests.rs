@@ -602,12 +602,19 @@ fn legacy_harness_contract_accepts_every_projection_version() {
 }
 
 #[test]
-fn an_agent_normalized_before_attachment_image_search_keeps_its_tool_versions() {
-	// Arrange: the defaults pinned between image retrieval (#639) and Thread
-	// Attachment image search (#622 part 2).
+fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
+	// Arrange: a normalization saved between image retrieval (#639) and
+	// Thread Attachment image search (#622 part 2), as it was stored then.
 	let node = "aidash://node-a";
 	let config = agent();
-	let previous = config.normalize_mode(node, None, 4).unwrap();
+	let mut saved = config.normalize(node).unwrap();
+	for item in &mut saved {
+		match item.binding.target.id.as_str() {
+			"aidash.workspace_message" => item.binding.target.version = "1.0.1".into(),
+			"aidash.workspace_search" => item.binding.target.version = "1.0.0".into(),
+			_ => {}
+		}
+	}
 	let version = |bindings: &[NormalizedBinding], id: &str| {
 		bindings
 			.iter()
@@ -619,33 +626,65 @@ fn an_agent_normalized_before_attachment_image_search_keeps_its_tool_versions() 
 		schema_version: BINDING_SCHEMA,
 		registry_deployment: node.into(),
 		compaction_override: None,
-		bindings: previous.clone(),
+		bindings: saved.clone(),
 	});
 
 	// Act
 	let resolved = entry.normalized_bindings(node).unwrap();
-	let current = config.normalize(node).unwrap();
+
+	// Assert: the two tools move to 1.1.0; workspace_read keeps its pin.
+	assert_eq!(
+		version(&resolved, "aidash.workspace_message").as_deref(),
+		Some("1.1.0")
+	);
+	assert_eq!(
+		version(&resolved, "aidash.workspace_search").as_deref(),
+		Some("1.1.0")
+	);
+	assert_eq!(
+		version(&resolved, "aidash.workspace_read"),
+		version(&saved, "aidash.workspace_read")
+	);
+	entry.binding_normalization.as_mut().unwrap().bindings.pop();
+	assert!(entry.normalized_bindings(node).is_err());
+}
+
+#[test]
+fn an_agent_from_before_image_retrieval_binds_workspace_message_1_1_0() {
+	// Arrange: the #640-era defaults (mode 2) with workspace_message 1.0.1.
+	let node = "aidash://node-a";
+	let config = agent();
+	let mut saved = config.normalize_mode(node, None, 2).unwrap();
+	for item in &mut saved {
+		if item.binding.target.id == "aidash.workspace_message" {
+			item.binding.target.version = "1.0.1".into();
+		}
+	}
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: node.into(),
+		compaction_override: None,
+		bindings: saved,
+	});
+
+	// Act
+	let resolved = entry.normalized_bindings(node).unwrap();
 
 	// Assert
-	assert_eq!(resolved, previous);
-	assert_eq!(
-		version(&previous, "aidash.workspace_message").as_deref(),
-		Some("1.0.1")
-	);
-	assert_eq!(
-		version(&previous, "aidash.workspace_search").as_deref(),
-		Some("1.0.0")
-	);
-	assert_eq!(
-		version(&previous, "aidash.workspace_read").as_deref(),
-		Some("1.1.0")
-	);
-	assert_eq!(
-		version(&current, "aidash.workspace_message").as_deref(),
-		Some("1.1.0")
-	);
-	assert_eq!(
-		version(&current, "aidash.workspace_search").as_deref(),
-		Some("1.1.0")
+	let message = resolved
+		.iter()
+		.find(|item| item.binding.target.id == "aidash.workspace_message")
+		.unwrap();
+	assert_eq!(message.binding.target.version, "1.1.0");
+	let read = resolved
+		.iter()
+		.find(|item| item.binding.target.id == "aidash.workspace_read")
+		.unwrap();
+	assert_eq!(read.binding.target.version, "1.0.1");
+	assert!(
+		!resolved
+			.iter()
+			.any(|item| item.binding.target.id == "aidash.workspace_search")
 	);
 }
