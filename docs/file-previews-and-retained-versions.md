@@ -42,7 +42,7 @@ File preview exists rather than showing its bytes as text.
 
 HTML, XHTML and PDF File versions are served from the preview domain through
 the Preview gateway, pinned to their Working Area revision and file digest.
-The dashboard never renders them. An HTML File version resolves relative
+With a preview domain, an HTML File version resolves relative
 references inside the same revision, and its scripts run under a Content
 Security Policy that permits only that origin. A PDF opens in the browser's
 viewer. The Preview gateway reads at most 64 MiB per page.
@@ -55,9 +55,9 @@ subdomain of the preview domain; the cookie lasts an hour. The gateway re-runs
 the download decision on each viewing request: the cookie identifies a
 session, it is not authority.
 
-Without a preview domain, HTML and PDF File versions have no File preview. The
-dashboard reports that File previews are unavailable for those formats, while
-the dashboard formats above still work.
+Without a preview domain, local PDF File versions render on canvas in the
+dashboard with PDF scripting disabled. HTML and XHTML show escaped source;
+rendering the page itself requires a preview domain. Downloads remain available.
 
 ## Retained versions
 
@@ -162,14 +162,15 @@ correction request tells the agent exactly which File version it refers to.
 ### Settings
 
 `[preview]` and `[preview_limits]` are optional settings sections. A profile
-that omits either keeps the defaults: no preview domain, and the 15-minute idle
+that omits either defaults to a `localhost` preview domain for a localhost or
+loopback dashboard origin, otherwise no preview domain, and the 15-minute idle
 and 2-hour absolute Live preview ceilings. The server supplies these defaults
 even when the sections are absent from TOML. Every value below is optional.
 
 ```toml
 [preview]
 # The registrable domain File previews and Live previews are served from.
-# Leave unset to offer no HTML/PDF File previews and no Live previews.
+# Leave unset for dashboard PDF and HTML source fallbacks; Live previews need a domain.
 domain = "aidashusercontent.app"
 # The Preview gateway listener. Defaults to 127.0.0.1:8960.
 listen = "127.0.0.1:8960"
@@ -219,10 +220,9 @@ subdomain carries at least 128 bits. The `__Host-` prefix requires `Secure`,
 `Path=/` and no `Domain`, so the cookie is host-only; `SameSite=None` lets the
 dashboard frame the File preview.
 
-Without a preview domain, the dashboard reports File previews unavailable for
-HTML and PDF, the Live preview tools are not seeded or offered to a model, and
-the dashboard formats listed above still render. A Retained version can still
-be downloaded.
+Without a preview domain, local PDF previews and HTML source remain available
+in the dashboard. Live preview tools are not seeded or offered to a model. A
+Retained version can still be downloaded.
 
 Under Federation, the viewer's Deployment asks the hosting Node for a
 one-time ticket. Every remote File version, including formats rendered in the
@@ -237,8 +237,8 @@ explicit unavailable state.
 
 ### Helm
 
-The chart keeps the preview domain off by default; without it there are no
-Live previews and no HTML/PDF File previews.
+The chart keeps the preview domain off by default; without it Live previews
+are unavailable and local HTML/PDF use the dashboard fallback described above.
 
 ```yaml
 preview:

@@ -746,6 +746,9 @@ def main():
         env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_DEPLOYMENT_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
+        # Loopback endpoints default the preview domain to `*.localhost` (#894);
+        # every Node on this host cannot hold the default gateway listener.
+        env["AIDASH_PREVIEW_IN_PROCESS"] = "false"
         env["AIDASH_CAPABILITY_PROFILE"] = str(profiles[node])
         # Each Deployment holds its own Deployment Key, which it signs Federation tokens with.
         if keyed:

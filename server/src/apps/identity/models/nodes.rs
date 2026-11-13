@@ -29,7 +29,7 @@ pub struct Node {
 	pub is_default: bool,
 	#[field]
 	pub created_at: DateTime<Utc>,
-	/// `identity` or `deployment_administrator`, as `tenants.created_by_kind`.
+	/// `identity`, `deployment_administrator`, or `host_access`, as for the Tenant.
 	#[field(field_type = "text")]
 	pub created_by_kind: String,
 	#[field(null = true)]

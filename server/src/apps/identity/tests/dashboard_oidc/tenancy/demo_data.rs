@@ -292,3 +292,320 @@ async fn a_reservation_that_cannot_be_spent_never_blocks_the_sign_in(
 	);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_reserves_both_roles_and_reruns_idempotently(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let first = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"dana@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	let second = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"dana@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	assert_eq!(first.tenant, second.tenant);
+	assert!(first.created);
+	assert!(!second.created);
+	let snapshot = aidash_server::authorization::Authorization { pool: pool.clone() }
+		.snapshot(&first.tenant)
+		.await
+		.unwrap();
+	assert!(
+		aidash_domain::identity::tenancy::has_unconditional_administrator(
+			&snapshot.bundle,
+			["owner"]
+		)
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM tenants WHERE name = '{}' AND created_by_kind = 'host_access'",
+			first.tenant
+		))
+		.await,
+		1
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM nodes WHERE tenant = '{}' AND created_by_kind = 'host_access'",
+			first.tenant
+		))
+		.await,
+		1
+	);
+	assert_eq!(d.spent_by(&first.tenant, "dana@example.com").await, None);
+	assert_eq!(d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations WHERE email = 'dana@example.com' AND issuer = 'host_access'").await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM demo_reservations WHERE tenant = '{}' AND email = 'dana@example.com' AND subject = 'owner' AND source = 'host_access'", first.tenant)).await, 1);
+	let identity = d
+		.sign_in_as("dana-bootstrap", Some("DANA@example.com"))
+		.await;
+	assert_eq!(d.mappings(identity, &first.tenant).await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
+	assert_eq!(
+		d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations")
+			.await,
+		0
+	);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE actor_kind = 'host_access' AND identity_id = '{identity}' AND action = 'deployment_administrator.grant'")).await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE actor_kind = 'host_access' AND identity_id = '{identity}' AND action = 'demo_reservation.fulfil'")).await, 1);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_grants_an_existing_identity_immediately(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let identity = d
+		.sign_in_as("existing-bootstrap", Some("existing@example.com"))
+		.await;
+	let result = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"existing@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	assert_eq!(d.mappings(identity, &result.tenant).await, 1);
+	let again = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"existing@example.com",
+		&result.tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(again.tenant_administrator, "already mapped");
+	assert_eq!(again.deployment_administrator, "already granted");
+	assert_eq!(d.mappings(identity, &result.tenant).await, 1);
+	let db = d.federation.store.pool.fixture_driver();
+	sqlx::query(
+		"UPDATE dashboard_mappings SET enabled = false WHERE identity_id = $1 AND tenant = $2",
+	)
+	.bind(identity)
+	.bind(&result.tenant)
+	.execute(db)
+	.await
+	.unwrap();
+	sqlx::query(
+		"UPDATE dashboard_deployment_administrator_grants SET enabled = false WHERE identity_id = $1",
+	)
+	.bind(identity)
+	.execute(db)
+	.await
+	.unwrap();
+	let recovered = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"existing@example.com",
+		&result.tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(recovered.tenant_administrator, "mapped");
+	assert_eq!(recovered.deployment_administrator, "granted");
+	assert_eq!(d.mappings(identity, &result.tenant).await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
+	assert_eq!(
+		d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations")
+			.await,
+		0
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_reuses_name_and_refuses_ambiguous_labels(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let a = d.demo_tenant("Duplicate", "member-a").await;
+	let b = d.demo_tenant("Duplicate", "member-b").await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let error = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"admin@example.com",
+		"Duplicate",
+	)
+	.await
+	.unwrap_err()
+	.to_string();
+	assert!(error.contains(&a));
+	assert!(error.contains(&b));
+	let by_name = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		config,
+		"admin@example.com",
+		&a,
+	)
+	.await
+	.unwrap();
+	assert_eq!(by_name.tenant, a);
+	assert!(!by_name.created);
+	d.finish().await;
+}
+
+struct BoundIssuer(String);
+impl aidash_application::ports::authorization::dashboard::Issuers for BoundIssuer {
+	fn admitted(&self) -> Vec<String> {
+		vec![GOOGLE.to_owned()]
+	}
+	fn restriction(&self, issuer: &str) -> Option<String> {
+		(issuer == GOOGLE).then(|| self.0.clone())
+	}
+	fn restricted_issuer(&self, tenant: &str) -> Option<String> {
+		(tenant == self.0).then(|| GOOGLE.to_owned())
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn demo_reservation_never_maps_a_tenant_bound_issuer(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), true).await;
+	let tenant = d.demo_tenant("Bound", "dana").await;
+	let identity = d
+		.sign_in_as("bound-person", Some("bound@example.com"))
+		.await;
+	let policy = aidash_application::ports::authorization::dashboard::AccountPolicy {
+		issuers: std::sync::Arc::new(BoundIssuer(tenant.clone())),
+		authority: None,
+		personal_tenants: false,
+		demo_data: true,
+	};
+	DemoReservation::provide(
+		&d.federation.store.pool,
+		Some(&policy),
+		&tenant,
+		"bound@example.com",
+		"dana",
+	)
+	.await
+	.unwrap();
+	assert_eq!(d.mappings(identity, &tenant).await, 0);
+	assert_eq!(d.spent_by(&tenant, "bound@example.com").await, None);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_coexists_with_an_existing_demo_reservation(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), true).await;
+	let tenant = d.demo_tenant("Demo", "alex").await;
+	let identity = d.sign_in_as("alex-demo", Some("alex@example.com")).await;
+	d.provide(&tenant, "alex@example.com", "alex").await;
+	let result = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"alex@example.com",
+		&tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.tenant, tenant);
+	assert_eq!(d.mappings(identity, &tenant).await, 2);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM demo_reservations WHERE tenant = '{tenant}' AND email = 'alex@example.com' AND spent_by = '{identity}'")).await, 2);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{identity}' AND enabled")).await, 1);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bootstrap_with_ambiguous_email_waits_for_the_next_sign_in(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let a = d
+		.sign_in_as("shared-first", Some("shared@example.com"))
+		.await;
+	let b = d
+		.sign_in_as("shared-second", Some("shared@example.com"))
+		.await;
+	let result = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"shared@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.tenant_administrator, "reserved");
+	assert_eq!(result.deployment_administrator, "reserved");
+	assert_eq!(d.mappings(a, &result.tenant).await, 0);
+	assert_eq!(d.mappings(b, &result.tenant).await, 0);
+	d.sign_in_as("shared-second", Some("shared@example.com"))
+		.await;
+	assert_eq!(d.mappings(b, &result.tenant).await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{b}' AND enabled")).await, 1);
+	d.sign_in_as("shared-first", Some("shared@example.com"))
+		.await;
+	let again = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		&d.federation.store.pool,
+		&d.federation.config,
+		"shared@example.com",
+		&result.tenant,
+	)
+	.await
+	.unwrap();
+	assert_eq!(again.tenant_administrator, "already mapped");
+	assert_eq!(again.deployment_administrator, "already granted");
+	assert_eq!(d.mappings(a, &result.tenant).await, 0);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{a}' AND enabled")).await, 0);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn concurrent_bootstrap_reuses_one_tenant_and_reservations(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let config = &d.federation.config;
+	let (a, b) = tokio::join!(
+		aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+			pool,
+			config,
+			"race@example.com",
+			"Race"
+		),
+		aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+			pool,
+			config,
+			"race@example.com",
+			"Race"
+		),
+	);
+	let a = a.unwrap();
+	let b = b.unwrap();
+	assert_eq!(a.tenant, b.tenant);
+	assert_eq!(
+		d.count("SELECT count(*) FROM tenants WHERE label = 'Race'")
+			.await,
+		1
+	);
+	assert_eq!(d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations WHERE email = 'race@example.com'").await, 1);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM demo_reservations WHERE tenant = '{}' AND email = 'race@example.com' AND source = 'host_access'", a.tenant)).await, 1);
+	d.finish().await;
+}

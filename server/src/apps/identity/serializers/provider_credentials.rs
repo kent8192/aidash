@@ -1,4 +1,6 @@
-//! Provider Credential metadata management contracts; no public Key Material input.
+//! Provider Credential metadata management contracts. Key Material is accepted
+//! only by [`Supply`], on a Self-hosted Deployment, and is never returned.
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 mod settings;
@@ -8,6 +10,32 @@ pub(crate) use settings::ManagedSource;
 #[schemars(rename = "ProviderCredentialRevision")]
 pub struct Revision {
 	pub expected_revision: i64,
+}
+/// Key Material a person pastes on a Self-hosted Deployment (#892): a new
+/// Provider Credential, or a new version of one when both
+/// `provider_credential_id` and `expected_revision` are present.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ProviderCredentialSupply")]
+pub struct Supply {
+	/// A Provider Catalog entry served by Provider Credentials, such as `openrouter`.
+	pub provider: String,
+	#[schemars(with = "String")]
+	pub key: SecretString,
+	#[serde(default)]
+	pub provider_credential_id: Option<Uuid>,
+	#[serde(default)]
+	pub expected_revision: Option<i64>,
+}
+/// The stored Provider Credential and whether its provider's binding now names it.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "SuppliedProviderCredential")]
+pub struct Supplied {
+	#[serde(flatten)]
+	pub validated: aidash_application::provider_credentials::Validated,
+	/// False when another active Provider Credential stays bound, or the
+	/// binding could not be updated, so Runs do not use the new key yet.
+	pub bound: bool,
 }
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

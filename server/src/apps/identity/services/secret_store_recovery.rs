@@ -113,6 +113,8 @@ async fn recover(execute: bool) -> Result<Counts> {
 			),
 			fingerprint_key,
 			max_per_tenant: settings.provider_credentials.max_per_tenant,
+			// Recovery only revokes.
+			supplied_keys: false,
 		};
 		for row in affected {
 			service

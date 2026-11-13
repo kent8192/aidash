@@ -244,6 +244,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "dashboard_login_transactions"
 		| "dashboard_logout_tokens"
 		| "dashboard_mappings"
+		| "bootstrap_deployment_administrator_reservations"
 		| "dashboard_deployment_administrator_grants"
 		| "dashboard_registration_requests"
 		| "dashboard_sessions"

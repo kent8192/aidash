@@ -24,6 +24,7 @@ pub mod management;
 
 pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	let mut registry = reinhardt::commands::CommandRegistry::new();
+	registry.register_capability(Box::new(crate::database::setup_roles::Command));
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::worker::RunWorker,
 	));
@@ -52,10 +53,16 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		crate::apps::identity::services::secret_store_recovery::Command,
 	));
 	registry.register_capability(Box::new(
+		crate::apps::identity::services::bootstrap_command::Command,
+	));
+	registry.register_capability(Box::new(
 		crate::apps::identity::services::demo_data::Command,
 	));
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::subject_credential_command::Command,
+	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::provider_credential_command::Command,
 	));
 	registry
 }
@@ -904,11 +911,11 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 			.as_ref()
 			.is_some_and(|s| s.provider_credentials.offers_tenant_secrets()),
 	)
-	.with_preview_available(
-		settings
-			.as_ref()
-			.is_some_and(|s| s.preview.domain.is_some()),
-	)
+	.with_preview_available(settings.as_ref().is_some_and(|s| {
+		let origin = s.dashboard.oidc.as_ref().map(|oidc| oidc.public_origin.as_str())
+			.unwrap_or(&s.deployment.endpoint);
+		s.preview.configured(origin).ok().flatten().is_some()
+	}))
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -2704,8 +2711,9 @@ pub(crate) fn dashboard_logout(
 pub(crate) fn dashboard_login(
 	pool: crate::database::native::Pool,
 	node: &str,
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(pool, node.into())
+	crate::apps::identity::repositories::dashboard::Login(pool, node.into(), policy)
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(
@@ -2848,6 +2856,9 @@ pub async fn configure_provider_credentials(
 			),
 			fingerprint_key,
 			max_per_tenant: settings.max_per_tenant,
+			// A Self-hosted host already reads the Secret Store (ADR 0008), so
+			// a key a person pastes trusts nothing new (#877).
+			supplied_keys: build::offering() == aidash_domain::offering::Offering::SelfHosted,
 		},
 	));
 	store.provider_key_material_reader = reader;

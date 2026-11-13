@@ -315,6 +315,7 @@ async fn issuer_copies_the_cache_breakpoint_request_into_the_signed_claims(
 		fingerprint: String::new(),
 		last4: String::new(),
 		key_digest: None,
+		key_origin: Default::default(),
 		state: State::Active,
 		created_at: chrono::Utc::now(),
 		rotated_at: None,

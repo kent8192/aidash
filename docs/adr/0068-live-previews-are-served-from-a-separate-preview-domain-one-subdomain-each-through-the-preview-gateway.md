@@ -28,3 +28,8 @@ Decided on 2026-10-19 while grilling Live previews. A Live preview runs code an 
 - Every Deployment issues preview cookies as host-only cookies with the `__Host-` prefix, so a sibling subdomain cannot overwrite them.
 - CSV and XLSX File versions are shown in the dashboard as a plain table, not on the preview domain: parsed off the main thread, with stored cell values as text, no formula recalculation, no macros, images, charts or active links, and a notice that the view is simplified. They have the same 16 MiB limit as images, plus row and cell limits; beyond them the person downloads the file.
 - File previews and the HTML static site are pinned to File versions, which stay viewable while referenced (ADR 0095).
+
+## Amendment (2026-11-11, #877)
+
+- A Deployment without a preview domain still shows PDF and HTML File versions, in a reduced form. A PDF is rendered in the dashboard by a bundled viewer with PDF scripting disabled, from the bytes a person who may download the file already receives. An HTML file is shown as its source text, never rendered. Both can still be downloaded. Live previews still need a preview domain, as before.
+- When the dashboard's origin is `localhost` and no preview domain is configured, the preview domain defaults to `localhost`, so a local Deployment serves every preview from `*.localhost` subdomains without configuration.

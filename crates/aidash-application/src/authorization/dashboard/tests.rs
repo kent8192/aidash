@@ -514,9 +514,7 @@ async fn login_fulfils_demo_reservations_before_provisioning_the_personal_tenant
 }
 
 #[rstest]
-#[case::demo_data_off(false, None, Some("dana@example.com"))]
 #[case::no_verified_email(true, None, None)]
-#[case::bound_pool(true, Some("pool-a"), Some("dana@example.com"))]
 #[tokio::test]
 async fn login_does_not_fulfil_demo_reservations_outside_their_conditions(
 	mut scope: Scope,

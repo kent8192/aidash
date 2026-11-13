@@ -909,6 +909,10 @@ pub fn native_process_environment(
 	settings.keyless_endpoints.permitted_private_origins = f.store.keyless.permitted_origins();
 	settings.deployment.hosted_model_origins = f.store.keyless.hosted_origins();
 	peering::configure_process(&mut settings, f);
+	// A loopback endpoint defaults the preview domain to `*.localhost` (#894),
+	// and concurrent processes on one host cannot all hold the default
+	// gateway listener.
+	settings.preview.in_process = false;
 	let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 	std::fs::create_dir_all(&destination).unwrap();
 	std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();

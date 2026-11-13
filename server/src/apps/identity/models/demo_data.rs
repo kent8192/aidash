@@ -31,11 +31,14 @@ pub struct DemoTenant {
 	pub tenant: String,
 }
 
-/// A Demo Reservation: the one path from a verified email address to a
-/// Mapping. It names a Tenant and a fictional subject, and sign-in spends it.
+/// A Tenant reservation maps a verified email to a subject at sign-in.
+/// Its source distinguishes Demo data from Host Access.
 #[model(app_label = "identity", table_name = "demo_reservations")]
 #[derive(Serialize, Deserialize)]
 pub struct DemoReservation {
+	/// The source that authorized this reservation.
+	#[field(field_type = "text")]
+	pub source: String,
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]

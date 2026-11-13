@@ -1337,47 +1337,56 @@ impl DashboardDeploymentAdministratorGrant {
 		revision: i64,
 	) -> Result<DeploymentAdministratorGrant> {
 		db.atomic(&TenancyScope::NoTenant, async |tx| {
-			let identity = DashboardIdentity::objects()
-				.filter(DashboardIdentity::field_id().eq(identity))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or_else(|| Error::NotFound("identity".into()))?;
-			if enabled && identity.disabled_at.is_some() {
-				return Err(Error::Forbidden);
-			}
-			let existing = Self::objects()
-				.filter(Self::field_identity_id().eq(identity.id))
-				.all_with_db(tx)
-				.await?
-				.pop();
-			let grant = if let Some(mut grant) = existing {
-				if grant.revision != revision {
-					return Err(Error::Conflict(
-						"Deployment Administrator grant revision changed".into(),
-					));
-				}
-				grant.enabled = enabled;
-				grant.revision = dashboard_rules::next_revision(grant.revision)?;
-				Self::objects().update_with_conn(tx, &grant).await?
-			} else {
-				if revision != 0 {
-					return Err(Error::Conflict(
-						"Deployment Administrator grant revision changed".into(),
-					));
-				}
-				let grant = Self::build()
-					.identity_id(identity.id)
-					.enabled(enabled)
-					.revision(1)
-					.finish();
-				Self::objects().create_with_conn(tx, &grant).await?
-			};
-			Ok(grant.contract())
+			Self::change_enabled_in(tx, identity, enabled, revision).await
 		})
 		.await
+	}
+
+	pub(crate) async fn change_enabled_in(
+		tx: &mut AtomicTransaction,
+		identity: Uuid,
+		enabled: bool,
+		revision: i64,
+	) -> Result<DeploymentAdministratorGrant> {
+		let identity = DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_id().eq(identity))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or_else(|| Error::NotFound("identity".into()))?;
+		if enabled && identity.disabled_at.is_some() {
+			return Err(Error::Forbidden);
+		}
+		let existing = Self::objects()
+			.filter(Self::field_identity_id().eq(identity.id))
+			.all_with_db(tx)
+			.await?
+			.pop();
+		let grant = if let Some(mut grant) = existing {
+			if grant.revision != revision {
+				return Err(Error::Conflict(
+					"Deployment Administrator grant revision changed".into(),
+				));
+			}
+			grant.enabled = enabled;
+			grant.revision = dashboard_rules::next_revision(grant.revision)?;
+			Self::objects().update_with_conn(tx, &grant).await?
+		} else {
+			if revision != 0 {
+				return Err(Error::Conflict(
+					"Deployment Administrator grant revision changed".into(),
+				));
+			}
+			let grant = Self::build()
+				.identity_id(identity.id)
+				.enabled(enabled)
+				.revision(1)
+				.finish();
+			Self::objects().create_with_conn(tx, &grant).await?
+		};
+		Ok(grant.contract())
 	}
 }
 

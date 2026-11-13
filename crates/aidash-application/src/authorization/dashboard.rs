@@ -85,12 +85,9 @@ impl DashboardAuthority {
 		if let Some(authority) = &policy.authority {
 			authority.validate_origin(account.id).await?;
 		}
-		// A Demo Reservation never reaches an issuer with a Tenant Binding, and
-		// only a Deployment that loads Demo data holds one.
-		if policy.demo_data
-			&& policy.unrestricted(&sign_in.issuer)
-			&& let Some(email) = &sign_in.verified_email
-		{
+		// The repository distinguishes Demo and Host Access reservations and
+		// checks each Tenant's issuer restrictions before making a Mapping.
+		if let Some(email) = &sign_in.verified_email {
 			scope.fulfil_demo_reservations(account.id, email).await?;
 		}
 		if policy.provisions_personal(&sign_in.issuer) {

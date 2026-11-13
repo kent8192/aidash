@@ -17,7 +17,7 @@ pub struct Tenant {
 	pub personal: bool,
 	#[field]
 	pub created_at: DateTime<Utc>,
-	/// `identity` for a Tenant Creator, `deployment_administrator` for a Deployment Administrator.
+	/// `identity`, `deployment_administrator`, or `host_access` for the creator.
 	#[field(field_type = "text")]
 	pub created_by_kind: String,
 	/// The creating External Identity: the Tenant Creator, or the Deployment

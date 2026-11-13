@@ -17,3 +17,7 @@ A provider answers only in Aidash's result shapes or with an error code from a c
 - Replicas of one Node whose declarations disagree cannot both start.
 - Brave, the page reader and the fixture are configured in the same `research_providers` settings block, keep their native implementations, and keep their reserved names. The fixture is refused in the production profile.
 - The request, result and error shapes of `aidash.research/v1` are generated as JSON Schema from the domain types and committed under `docs/`; the HTTP and MCP stubs used by the acceptance tests serve as reference adapters.
+
+## Amendment (2026-11-11, #877)
+
+A changed digest for the same `@n` no longer stops the Node. The Node starts. That provider's Entries read `provider_unavailable` with a reason asking whoever runs the Deployment to declare the change as a new version, and startup logs a warning naming the provider. One misdeclared provider then costs only its own calls, not every Run of the Node. Silent re-seeding stays rejected: the old version never takes the changed endpoint. Replicas whose declarations disagree each mark the disagreeing provider unavailable rather than refusing to start. This was decided before declared providers were implemented, so the implementation follows this amendment.
