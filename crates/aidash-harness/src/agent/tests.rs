@@ -162,6 +162,10 @@ struct State {
 	summary_text: Mutex<Option<String>>,
 	summary_truncations: Mutex<u32>,
 	model_reasoning: bool,
+	/// The agent model's `reasoning_passback`, omitted when `None` (#942).
+	reasoning_passback: Option<bool>,
+	/// Reasoning each ordinary response carries (#942).
+	response_reasoning: Option<aidash_domain::provider::reasoning::Reasoning>,
 	provider_configs: Mutex<Vec<ModelConfig>>,
 	/// The summarizer is approved at reservation but revoked during its call.
 	revoke_summarizer: bool,
@@ -370,6 +374,11 @@ impl Backend {
 		});
 		if id == "model" && self.0.model_reasoning {
 			config["reasoning_effort"] = json!("medium");
+		}
+		if id == "model"
+			&& let Some(passback) = self.0.reasoning_passback
+		{
+			config["reasoning_passback"] = json!(passback);
 		}
 		if id == "model"
 			&& let Some(limit) = self.0.summarizer_provider_limit
@@ -1815,6 +1824,7 @@ impl ModelProvider for Backend {
 				cache_read_tokens: Some(150),
 				..Default::default()
 			},
+			reasoning: self.0.response_reasoning.clone(),
 			..Default::default()
 		})
 	}
@@ -1925,6 +1935,8 @@ fn fixture() -> Fixture {
 		summary_text: Mutex::new(None),
 		summary_truncations: Mutex::new(0),
 		model_reasoning: false,
+		reasoning_passback: None,
+		response_reasoning: None,
 		provider_configs: Mutex::new(vec![]),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
@@ -3863,6 +3875,7 @@ async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fi
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		fixture.run.context.push(ContextEvent::tool(
 			call(&id, "read", json!({})),
@@ -3899,6 +3912,7 @@ async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		let result = if i == 0 {
 			json!("h".repeat(200_000))
@@ -7238,6 +7252,7 @@ async fn intake_keeps_parallel_results_in_the_journal_before_offloading(mut fixt
 		epoch: 1,
 		text: String::new(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	});
 	for id in calls {
 		fixture.run.context.push(ContextEvent::tool(

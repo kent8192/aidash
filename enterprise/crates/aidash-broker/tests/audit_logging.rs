@@ -196,6 +196,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			request_estimator: None,
 			provider_route: None,
 			estimate_diagnostics: None,
+			reasoning_passback: None,
 		},
 		Arc::new(access),
 		context,

@@ -96,7 +96,7 @@ fn streamed_text_matches_the_non_streamed_completion(#[values(1, 7, 4096)] split
 	// Assert
 	same_outcome(
 		response,
-		json!({"choices":[{"finish_reason":"stop","message":{"content":"Hello, 世界"}}],
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Hello, 世界","reasoning":"private chain of thought"}}],
 			"usage":{"prompt_tokens":12,"completion_tokens":7}}),
 	);
 	assert_eq!(
@@ -330,7 +330,7 @@ fn oversized_streams_fail_like_oversized_bodies() {
 }
 
 #[rstest::rstest]
-#[case::reasoning(json!({"choices":[{"delta":{"reasoning":"x"}}]}))]
+#[case::empty_reasoning(json!({"choices":[{"delta":{"reasoning":""}}]}))]
 #[case::unknown_field(json!({"padding":"0123456789012345678901234567"}))]
 fn events_without_assembled_text_count_toward_the_stream_cap(#[case] event: Value) {
 	// Arrange: each event fits the 64-byte line bound and adds nothing assembled.
@@ -759,4 +759,139 @@ fn provider_tools_streamed_annotations_are_retained_with_reported_usage() {
 	);
 	assert_eq!(response.reported.server_tool_use["web_search_requests"], 1);
 	assert_eq!(response.reported.cost.unwrap().nanocredits, 7_000_000);
+}
+
+/// Streamed `reasoning_details` fragments assemble into the entries a
+/// non-streamed message carries (#942): fragments of one `index` concatenate
+/// their text, a signature arriving last joins its entry, and Gemini-style
+/// signature and encrypted entries stay whole and in order. Reasoning is
+/// captured, never offered as progress.
+#[rstest::rstest]
+fn streamed_reasoning_details_match_the_non_streamed_message(#[values(1, 11, 4096)] split: usize) {
+	// Arrange
+	let text = |text: &str, signature: Value| json!({"type":"reasoning.text","text":text,"signature":signature,"format":"google-gemini-v1","index":0});
+	let body = sse(
+		&[
+			delta(
+				json!({"role":"assistant","content":"","reasoning":"Let me ","reasoning_details":[text("Let me ", Value::Null)]}),
+			),
+			delta(json!({"reasoning":"check.","reasoning_details":[text("check.", Value::Null)]})),
+			delta(json!({"reasoning_details":[text("", json!("sig-text"))]})),
+			delta(json!({"reasoning_details":[
+				{"type":"reasoning.encrypted","data":"gemini-thought-signature","id":"call_1","format":"google-gemini-v1","index":1},
+				{"type":"reasoning.encrypted","data":"opaque","id":null,"format":"openai-responses-v1","index":2}
+			]})),
+			delta(
+				json!({"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]}),
+			),
+			finish("tool_calls"),
+			usage(),
+		],
+		true,
+	);
+	let details = json!([
+		{"type":"reasoning.text","text":"Let me check.","signature":"sig-text","format":"google-gemini-v1","index":0},
+		{"type":"reasoning.encrypted","data":"gemini-thought-signature","id":"call_1","format":"google-gemini-v1","index":1},
+		{"type":"reasoning.encrypted","data":"opaque","id":null,"format":"openai-responses-v1","index":2}
+	]);
+
+	// Act
+	let (response, progress) = assemble(&body, split, 1_048_576);
+
+	// Assert
+	let response = response.unwrap();
+	assert_eq!(
+		response.reasoning,
+		Some(aidash_domain::provider::reasoning::Reasoning::ChatDetails {
+			details: details.as_array().unwrap().clone(),
+		})
+	);
+	same_outcome(
+		Ok(response),
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","reasoning":"Let me check.","reasoning_details":details,
+			"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]}}],
+			"usage":{"prompt_tokens":12,"completion_tokens":7}}),
+	);
+	assert!(!format!("{progress:?}").contains("check"));
+	assert!(!format!("{progress:?}").contains("signature"));
+}
+
+/// A route that streams only plain reasoning text keeps it under the key it
+/// used, so it goes back the way it came.
+#[test]
+fn streamed_plain_reasoning_content_is_kept_under_its_key() {
+	let body = sse(
+		&[
+			delta(json!({"reasoning_content":"first "})),
+			delta(json!({"reasoning_content":"second"})),
+			delta(json!({"content":"Done."})),
+			finish("stop"),
+			usage(),
+		],
+		true,
+	);
+	let (response, _) = assemble(&body, 4096, 1_048_576);
+	assert_eq!(
+		response.unwrap().reasoning,
+		Some(aidash_domain::provider::reasoning::Reasoning::ChatText {
+			field: aidash_domain::provider::reasoning::ChatTextField::ReasoningContent,
+			text: "first second".into(),
+		})
+	);
+}
+
+/// Assembled reasoning counts toward the response limit like text does.
+#[test]
+fn streamed_reasoning_counts_toward_the_assembled_limit() {
+	let body = sse(
+		&[
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.text","text":"x".repeat(200),"index":0}]}),
+			),
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.text","text":"x".repeat(200),"index":0}]}),
+			),
+			delta(json!({"content":"Done."})),
+			finish("stop"),
+		],
+		true,
+	);
+	// Each line fits; only the assembled entry, 200 + 200 bytes of text plus
+	// its fields, passes the limit.
+	let (result, _) = assemble(&body, 4096, 400);
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "response exceeds 400 bytes")
+	);
+}
+
+/// A reused `index` with another type starts a new entry instead of
+/// overwriting the signed one before it.
+#[test]
+fn a_reused_reasoning_index_with_another_type_is_a_new_entry() {
+	let body = sse(
+		&[
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.text","text":"a","signature":"sig","index":0}]}),
+			),
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"enc","index":0}]}),
+			),
+			delta(
+				json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"-more","index":0}]}),
+			),
+			delta(json!({"content":"Done."})),
+			finish("stop"),
+		],
+		true,
+	);
+	let (response, _) = assemble(&body, 4096, 1_048_576);
+	assert_eq!(
+		response.unwrap().reasoning,
+		Some(aidash_domain::provider::reasoning::Reasoning::ChatDetails {
+			details: vec![
+				json!({"type":"reasoning.text","text":"a","signature":"sig","index":0}),
+				json!({"type":"reasoning.encrypted","data":"enc-more","index":0}),
+			],
+		})
+	);
 }

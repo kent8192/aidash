@@ -63,6 +63,7 @@ fn model() -> ModelConfig {
 		cache_mode: None,
 		request_estimator: None,
 		estimate_diagnostics: None,
+		reasoning_passback: None,
 	}
 }
 

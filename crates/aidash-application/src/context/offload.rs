@@ -326,6 +326,7 @@ mod tests {
 			epoch: 1,
 			text: String::new(),
 			calls: vec![id.into()],
+			reasoning: None,
 		});
 		context.push(ContextEvent::tool(call(id), json!("x".repeat(bytes))));
 	}
@@ -591,6 +592,7 @@ mod tests {
 			epoch: 1,
 			text: String::new(),
 			calls: ids.clone(),
+			reasoning: None,
 		});
 		for id in &ids {
 			context.push(ContextEvent::tool(call(id), json!("x".repeat(4000))));

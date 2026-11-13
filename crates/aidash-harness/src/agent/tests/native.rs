@@ -22,6 +22,7 @@ fn turn(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	}
 }
 
@@ -419,6 +420,7 @@ fn turn_event(epoch: i64, ids: &[String]) -> ContextEvent {
 		epoch,
 		text: "Reading.".into(),
 		calls: ids.to_vec(),
+		reasoning: None,
 	}
 }
 
@@ -667,4 +669,50 @@ async fn structured_usage_records_carry_the_pinned_contract_version(mut canonica
 		dispatch.harness_contract,
 		aidash_domain::harness_contract::HarnessContract::Structured3.number()
 	);
+}
+
+/// A Native Run records the accepted response's reasoning with its Model
+/// Turn, and a route whose `reasoning_passback` is off records none, so the
+/// Run never resends any (#942).
+#[rstest]
+#[case::default_on(None, true)]
+#[case::switched_off(Some(false), false)]
+#[tokio::test]
+async fn a_native_turn_records_reasoning_unless_the_route_turns_it_off(
+	mut fixture: Fixture,
+	#[case] passback: Option<bool>,
+	#[case] recorded: bool,
+) {
+	// Arrange
+	native(&mut fixture);
+	let reasoning = aidash_domain::provider::reasoning::Reasoning::ChatDetails {
+		details: vec![
+			json!({"type":"reasoning.encrypted","data":"opaque","format":"google-gemini-v1","index":0}),
+		],
+	};
+	{
+		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+		state.reasoning_passback = passback;
+		state.response_reasoning = Some(reasoning.clone());
+	}
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	for _ in 0..3 {
+		if fixture.run.phase() == RunPhase::Completed {
+			break;
+		}
+		advance_sources(&mut fixture).await.unwrap();
+	}
+	// Assert
+	let turns = fixture
+		.run
+		.context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Assistant { reasoning, .. } => Some(reasoning.clone()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(turns.len(), 1);
+	assert_eq!(turns[0], recorded.then_some(reasoning));
 }

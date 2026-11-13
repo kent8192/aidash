@@ -129,6 +129,11 @@ pub enum NativeMessage {
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		text: Option<String>,
 		tool_calls: Vec<ToolCall>,
+		/// The response's recorded reasoning, resent unchanged on every later
+		/// request (#942). Omitted when absent, so requests without reasoning
+		/// keep their bytes and digests.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		reasoning: Option<crate::provider::reasoning::Reasoning>,
 	},
 	/// One call's result, paired with its call by `tool_call_id`.
 	Tool {
@@ -187,6 +192,19 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
 	let entries = &context.history;
+	// Reasoning may copy evidence verbatim and encrypted reasoning cannot be
+	// inspected, so no turn after a withheld result resends its reasoning.
+	// The stored mark decides even once a Summary or offload absorbed the
+	// placeholder; a placeholder still in history is a second guard.
+	let placeholder = entries.iter().position(|entry| {
+		matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result))
+	});
+	let withholds = |start: usize| {
+		context
+			.reasoning_withheld_from_seq
+			.is_some_and(|seq| entries[start].seq >= seq)
+			|| placeholder.is_some_and(|placeholder| start > placeholder)
+	};
 	let mut index = 0;
 	while index < entries.len() {
 		let Some(turn) = Turn::at(entries, index) else {
@@ -221,6 +239,18 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 					turn.text.map(str::to_owned)
 				},
 				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
+				// The reasoning that produced the response, whatever part of it
+				// renders: calls that never ran and withheld text leave it whole.
+				// Turns after a withheld result send only what a route
+				// requires in place of their reasoning (#942).
+				reasoning: match &entries[turn.start].event {
+					ContextEvent::Assistant {
+						reasoning: Some(reasoning),
+						..
+					} if withholds(turn.start) => reasoning.withheld(),
+					ContextEvent::Assistant { reasoning, .. } => reasoning.clone(),
+					_ => None,
+				},
 			});
 			for (seq, call, result) in results {
 				history.push(NativeMessage::Tool {
@@ -586,8 +616,15 @@ impl NativeMessage {
 				json!({"role":"assistant","content":null,"_provider_activity":items})
 			}
 			Self::Data { envelope } => json!({"role": "user", "content": envelope.text()}),
-			Self::Assistant { text, tool_calls } => {
+			Self::Assistant {
+				text,
+				tool_calls,
+				reasoning,
+			} => {
 				let mut message = json!({"role": "assistant", "content": text});
+				if let Some(reasoning) = reasoning {
+					reasoning.render_chat(&mut message);
+				}
 				if !tool_calls.is_empty() {
 					message["tool_calls"] = tool_calls
 						.iter()

@@ -287,6 +287,7 @@ async fn a_native_model_turn_records_no_text_the_citation_gate_withheld(mut fixt
 			epoch: 4,
 			text: String::new(),
 			calls: vec!["call-0".into()],
+			reasoning: None,
 		})
 	);
 }
@@ -367,6 +368,21 @@ async fn revoked_research_results_never_reach_a_model_request_again(fixture: Fix
 			if call.id == "call-page" && ContextEvent::is_revoked_result(result)
 	)));
 	assert!(fixture.run.context.research_revoked);
+	// Reasoning from the revoked result on is no longer resent (#942).
+	let revoked = fixture
+		.run
+		.context
+		.history
+		.iter()
+		.find(
+			|entry| matches!(&entry.event, ContextEvent::Tool { call, .. } if call.id == "call-page"),
+		)
+		.unwrap()
+		.seq;
+	assert_eq!(
+		fixture.run.context.reasoning_withheld_from_seq,
+		Some(revoked)
+	);
 }
 
 #[rstest]
