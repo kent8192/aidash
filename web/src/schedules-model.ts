@@ -323,24 +323,29 @@ export function scheduleNoticeEntries(
   const scope = JSON.stringify([node, "schedules"]);
   return {
     scope,
-    entries: notices.stopped.map((notice) => ({
-      key: JSON.stringify([node, "schedule", notice.id]),
-      scope,
-      signature: `${notice.halt}:${notice.halted_at ?? ""}`,
-      kind: "schedule_stopped",
-      detail:
-        `${notice.title} — ${haltText(notice.halt, notice.halt_reason, ja)}`.slice(
-          0,
-          180,
-        ),
-      workspaceTitle: workspaceTitle(notice.workspace_id),
-      target: {
-        kind: "schedule",
-        id: notice.id,
-        node,
-        workspace: notice.workspace_id,
-      },
-    })),
+    // Read defensively: a Node without Schedules (or a test double) may
+    // answer with something other than a ScheduleNotices object, and a throw
+    // here would take the whole dashboard down with the bell.
+    entries: (Array.isArray(notices?.stopped) ? notices.stopped : []).map(
+      (notice) => ({
+        key: JSON.stringify([node, "schedule", notice.id]),
+        scope,
+        signature: `${notice.halt}:${notice.halted_at ?? ""}`,
+        kind: "schedule_stopped",
+        detail:
+          `${notice.title} — ${haltText(notice.halt, notice.halt_reason, ja)}`.slice(
+            0,
+            180,
+          ),
+        workspaceTitle: workspaceTitle(notice.workspace_id),
+        target: {
+          kind: "schedule",
+          id: notice.id,
+          node,
+          workspace: notice.workspace_id,
+        },
+      }),
+    ),
   };
 }
 

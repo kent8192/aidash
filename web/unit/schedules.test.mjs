@@ -150,6 +150,13 @@ test("stopped Schedules become pending bell entries in their own scope", () => {
   assert.match(entries[0].detail, /Waiting for a successor/);
 });
 
+test("a notices answer without a stopped list yields no entries instead of throwing", () => {
+  for (const answer of [[], {}, null]) {
+    const { entries } = scheduleNoticeEntries("home", answer, () => "", false);
+    assert.deepEqual(entries, []);
+  }
+});
+
 test("only a scheduled Task's completion is quiet", () => {
   const scheduled = new Set(["t1"]);
   assert.equal(quietCompletion("completed", "t1", scheduled), true);
