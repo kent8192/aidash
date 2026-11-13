@@ -43,6 +43,11 @@ pub trait CatalogScope: Send {
 	fn admit(&mut self, _reference: &EntityRef, _action: &str, _entry: &Entry) {}
 	async fn distribution_lock(&mut self) -> Result<()>;
 	async fn document(&mut self, reference: &EntityRef) -> Result<Option<Value>>;
+	/// Whether the caller's Tenant has this exact Registry definition, regardless of approval.
+	/// Scopes without a registry lookup conservatively retain the approval refusal.
+	async fn registered(&mut self, _reference: &EntityRef) -> Result<bool> {
+		Ok(true)
+	}
 	async fn documents(&mut self) -> Result<Vec<Value>>;
 	fn resource(&self, entry: &Entry) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

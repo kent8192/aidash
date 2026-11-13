@@ -434,6 +434,26 @@ impl CatalogScope for NativeCatalog<'_> {
 	) -> aidash_application::Result<Option<Value>> {
 		document(self.0, reference).await.map_err(Into::into)
 	}
+	async fn registered(&mut self, reference: &EntityRef) -> aidash_application::Result<bool> {
+		let query = Query::select()
+			.expr(Expr::exists(
+				Query::select()
+					.expr(Expr::cust("1"))
+					.from(Alias::new("registry"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$3")))
+					.to_owned(),
+			))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query_scalar(&query)
+			.bind(&self.0.identity.tenant)
+			.bind(&reference.id)
+			.bind(&reference.version)
+			.scalar_one(&mut **self.0.tx)
+			.await
+			.map_err(Into::into)
+	}
 	async fn documents(&mut self) -> aidash_application::Result<Vec<Value>> {
 		documents(self.0).await.map_err(Into::into)
 	}

@@ -1255,6 +1255,31 @@ export function Workbench({
       setError(String(cause));
     }
   };
+  const answerTestApproval = async (
+    session: TestSession,
+    approvalId: string,
+    choice: "allow_once" | "deny",
+  ) => {
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await apiFetch<TestSession>(
+        `/api/workbench/tests/${session.id}/approval`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ approval_id: approvalId, choice }),
+        },
+      );
+      setTestSessions((previous) =>
+        previous.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const createIncident = async () => {
     if (!selectedAgent) return;
     setBusy(true);
@@ -1642,6 +1667,67 @@ export function Workbench({
                     )}
                   </span>
                 </header>
+                {(() => {
+                  const pending = session.scenario.pending_approval;
+                  if (
+                    !pending ||
+                    typeof pending !== "object" ||
+                    Array.isArray(pending)
+                  )
+                    return null;
+                  const approval = pending as Record<string, unknown>;
+                  if (
+                    session.status !== "running" ||
+                    approval.state !== "pending" ||
+                    typeof approval.id !== "string"
+                  )
+                    return null;
+                  const approvalId = approval.id;
+                  return (
+                    <div
+                      className="grid gap-2 rounded border border-border p-3"
+                      role="group"
+                      aria-label={ja ? "テストの承認" : "Test approval"}
+                    >
+                      <p>
+                        {ja
+                          ? "このテストの呼び出しを承認しますか？"
+                          : "Allow this call in the test?"}
+                      </p>
+                      <JsonView
+                        value={{
+                          call: approval.call,
+                          resource: approval.resource,
+                        }}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void answerTestApproval(
+                              session,
+                              approvalId,
+                              "allow_once",
+                            )
+                          }
+                        >
+                          {ja ? "今回のみ許可" : "Allow once"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() =>
+                            void answerTestApproval(session, approvalId, "deny")
+                          }
+                        >
+                          {ja ? "拒否" : "Deny"}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })()}
                 {session.expired_at ? (
                   <p className="text-xs text-muted-foreground">
                     {ja

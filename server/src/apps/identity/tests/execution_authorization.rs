@@ -688,6 +688,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			.iter()
 			.all(|entry| { entry["tags"].as_array().unwrap().contains(&json!("system")) })
 	);
+	// `research` is registered only in acme, so the other Tenant finds no such
+	// definition rather than an unapproved one (#813).
 	assert_eq!(
 		request(
 			&app,
@@ -698,7 +700,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		)
 		.await
 		.0,
-		403
+		404
 	);
 	let catalog = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1});
 	assert_eq!(
@@ -2158,6 +2160,63 @@ async fn run_with_pending_call(
 		.await
 		.unwrap();
 	run
+}
+
+#[rstest::rstest]
+#[case::missing(false)]
+#[case::unapproved(true)]
+#[tokio::test]
+async fn delegation_distinguishes_missing_and_unapproved_agents(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] registered: bool,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	if registered {
+		let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+		agent.id = "missing-agent".into();
+		agent.binding_normalization = None;
+		f.registry.register(&tenant, agent).await.unwrap();
+	}
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f, &app, &token, task, &harness,
+		aidash_server::provider::ToolCall {
+			id: "missing-agent".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"missing-agent","version":"1.0.0"}}),
+		}, false,
+	).await;
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	if registered {
+		assert_eq!(run.control.as_str(), "PAUSED", "{:?}", run.error);
+		assert!(
+			run.error
+				.as_deref()
+				.unwrap_or_default()
+				.contains("Catalog Approval"),
+			"{:?}",
+			run.error
+		);
+		cleanup(f, &url, &schema).await;
+		return;
+	}
+	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	let history = json!(run.context);
+	let error = history["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap();
+	assert!(error.contains("not found"), "{error}");
+	cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]

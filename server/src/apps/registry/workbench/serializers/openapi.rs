@@ -20,6 +20,7 @@ use crate::apps::registry::workbench::serializers::incident::UpdateIncident;
 use crate::apps::registry::workbench::serializers::profile::ProfileInput;
 use crate::apps::registry::workbench::serializers::profile::ProfileSummary;
 use crate::apps::registry::workbench::serializers::profile::TestProfile;
+use crate::apps::registry::workbench::serializers::test::TestApprovalAnswer;
 use crate::apps::registry::workbench::serializers::test::TestInput;
 use crate::apps::registry::workbench::serializers::test::TestLimits;
 use crate::apps::registry::workbench::serializers::test::TestSession;
@@ -164,6 +165,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(document, views::test::sessions, &["Uuid"])?;
 	contracts.response::<_, TestSession>(document, views::test::stop, 200, "application/json")?;
 	contracts.path(document, views::test::stop, &["Uuid"])?;
+	contracts.response::<_, TestSession>(
+		document,
+		views::test::answer_approval,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, TestApprovalAnswer>(document, views::test::answer_approval)?;
+	contracts.path(document, views::test::answer_approval, &["Uuid"])?;
 	contracts.response::<_, TestSession>(document, views::test::start, 200, "application/json")?;
 	contracts.request::<_, TestInput>(document, views::test::start)?;
 	contracts.path(document, views::test::start, &["Uuid"])?;
