@@ -3819,6 +3819,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 				"1.0.0",
 			),
 		])
+		.scheduled(false)
 		.finish();
 	// The authorization row holds a row-level policy; seed it in a scope.
 	store
