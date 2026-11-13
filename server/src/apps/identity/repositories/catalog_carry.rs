@@ -75,6 +75,24 @@ pub(crate) async fn carry_best_effort(
 	scope: &mut TenantCarry<'_>,
 	entry: &Entry,
 ) -> Result<Vec<aidash_application::authorization::catalog::carry_over::CarryResult>> {
+	// Without a source nothing can carry, and the Node inventory lock is left
+	// alone: a caller holding the policy only shared must not take it out of
+	// the policy-then-Nodes order other work follows.
+	if !has_source(&mut *scope.tx, scope.tenant, entry).await? {
+		return Ok(nodes::list_live(&mut **scope.tx, scope.tenant)
+			.await?
+			.into_iter()
+			.map(
+				|node| aidash_application::authorization::catalog::carry_over::CarryResult {
+					node: scope.deployment.node(node.name),
+					source_version: None,
+					changed: vec!["no earlier carrying approval".into()],
+					unapproved_dependencies: vec![],
+					carried: false,
+				},
+			)
+			.collect());
+	}
 	let snapshot = scope.snapshot.clone();
 	scope
 		.tx
