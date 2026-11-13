@@ -442,7 +442,18 @@ impl Authentication {
 				expected_source_epoch
 			},
 		};
-		let result = durable_validity(&origin, account.as_ref(), &identity, Utc::now());
+		let mut result = durable_validity(&origin, account.as_ref(), &identity, Utc::now());
+		// `account_suspended` tells the product a Run may wait for a resume (#876
+		// decisions 15–16). Once the Account is restored without authorizing
+		// resume of this epoch, the stale binding stays a plain refusal; only the
+		// owner's manual resume rebinds it.
+		if result == Validity::Denied(Denial::AccountSuspended)
+			&& let Some(account) = account.as_ref()
+			&& account.status != AccountStatus::Suspended
+			&& !resumable.contains(&account.suspension_epoch)
+		{
+			result = Validity::Denied(Denial::ProvenanceMismatch);
+		}
 		Ok((result, Some(identity), epoch, resumable))
 	}
 	pub(crate) fn resource_client(&self, id: &str, raw: &str) -> Result<String> {

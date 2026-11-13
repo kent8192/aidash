@@ -1268,6 +1268,10 @@ def render():
                             "remote_runs_may_create": False})
                 if method == "PUT" and path.endswith("/subnode-limits")
                 else
+                # One day, within any Deployment maximum, so only the caller is refused.
+                json.dumps({"seconds": 86400})
+                if method == "PUT" and path.endswith("/credential-maximum")
+                else
                 json.dumps({"groups": [], "expected_policy_revision": 1})
                 if method == "PUT"
                 else json.dumps({"subject": "carol", "groups": []})

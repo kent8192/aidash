@@ -42898,6 +42898,64 @@
   {
     "json": false,
     "method": "GET",
+    "name": "tenant-credential-maximum",
+    "path": "/api/tenants/{tenant}/credential-maximum",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CredentialMaximum": {
+            "additionalProperties": false,
+            "properties": {
+              "seconds": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": ["seconds"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CredentialMaximum"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "tenant-credential-maximum-update",
+    "path": "/api/tenants/{tenant}/credential-maximum",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CredentialMaximum": {
+            "additionalProperties": false,
+            "properties": {
+              "seconds": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": ["seconds"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CredentialMaximum"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
     "name": "tenant-registrations",
     "path": "/api/tenants/{tenant}/registrations",
     "query_parameters": ["offset"],
