@@ -361,6 +361,8 @@ def consistency_errors(result, corpus, memory_corpus):
         usage = run["usage"]
         try:
             expected_usage = summarize_usage(None if usage["source"] == "unavailable" else usage["records"])
+            if "cache_reuse" not in usage:
+                expected_usage.pop("cache_reuse")  # Older saved manifests predate this measurement.
         except (KeyError, TypeError, AttributeError):
             expected_usage = None
         if not json_equal(usage, expected_usage):
@@ -1428,6 +1430,32 @@ def long_context(observation, outcome):
 # --------------------------------------------------------------- usage
 
 
+def cache_reuse(records):
+    """Compute ratios only when the required provider counts are known."""
+    def hit(items):
+        if not items or any(r.get("input_tokens") is None or r.get("cache_read_tokens") is None for r in items):
+            return None
+        total = sum(r["input_tokens"] for r in items)
+        return sum(r["cache_read_tokens"] for r in items) / total if total else None
+
+    main = [r for r in records or [] if r.get("purpose") == "main"]
+    calls = []
+    previous = None
+    for record in main:
+        denominator = None if previous is None or previous.get("input_tokens") is None or previous.get("output_tokens") is None else previous["input_tokens"] + previous["output_tokens"]
+        read = record.get("cache_read_tokens")
+        reuse = read / denominator if read is not None and denominator else None
+        calls.append({"attempt_id": record.get("attempt_id"), "reuse": reuse,
+                      "after_compaction": record.get("after_compaction")})
+        previous = record
+    eligible = [c for c in calls if c["reuse"] is not None and c["after_compaction"] is False]
+    return {"overall_hit": hit(records or []), "summary_hit": hit([r for r in records or [] if r.get("purpose") == "summary"]),
+            "main_calls": calls, "eligible_calls": len(eligible),
+            "unknown_compaction_calls": sum(c["after_compaction"] is None for c in calls[1:]),
+            "unknown_reuse_calls": sum(c["reuse"] is None for c in calls[1:]),
+            "reuse_at_least_999_share": sum(c["reuse"] >= 0.999 for c in eligible) / len(eligible) if eligible else None}
+
+
 def summarize_usage(records):
     """Summarize Usage Records without turning unknown values into zero (ADR 0018)."""
     if records is None:
@@ -1435,7 +1463,7 @@ def summarize_usage(records):
         return {"source": "unavailable", "attempts": 0, "outcomes": {}, "input_tokens": dict(empty),
                 "output_tokens": dict(empty), "estimated_tokens": dict(empty), "cache_read_tokens": dict(empty),
                 "cache_write_tokens": dict(empty), "cost_known_nanocredits": 0, "cost_uncertain_attempts": 0,
-                "records": []}
+                "records": [], "cache_reuse": cache_reuse(None)}
 
     def known_sum(field):
         values = [record.get(field) for record in records]
@@ -1450,7 +1478,7 @@ def summarize_usage(records):
             "cache_write_tokens": known_sum("cache_write_tokens"),
             "cost_known_nanocredits": sum(record.get("cost_nanocredits") or 0 for record in records),
             "cost_uncertain_attempts": sum(record.get("cost_nanocredits") is None for record in records),
-            "records": records}
+            "records": records, "cache_reuse": cache_reuse(records)}
 
 
 # ------------------------------------------------------------- run results

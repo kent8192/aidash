@@ -466,7 +466,7 @@ class Fixture:
         if alias == "reference_lookup":
             page = int(arguments.get("page", 0))
             correction = (task.get("reference_corrections") or {}).get(str(page), "")
-            size = task.get("reference_page_bytes", 400)
+            size = (task.get("reference_page_sizes") or {}).get(str(page), task.get("reference_page_bytes", 400))
             filler = (f"Archive page {page}: vendor catalogue entries, delivery terms and historical quotes. "
                       * (size // 80 + 1))[:size]
             offset = task.get("reference_correction_offset")
