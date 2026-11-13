@@ -260,6 +260,12 @@ def local_usage_reader_for(database_url, container=None):
     if parsed.scheme not in ("postgres", "postgresql") or parsed.hostname not in ("localhost", "127.0.0.1", "::1") or parsed.query or parsed.fragment:
         raise ValueError("usage database must be a loopback PostgreSQL URL without query parameters")
     command = ["psql", "--no-psqlrc", "--tuples-only", "--no-align", "--set", "ON_ERROR_STOP=1"]
+    # psql reads PGDATABASE as a bare database name and does not expand a URL there, so pass each part separately.
+    # Credentials stay in the environment and never appear in an argument list.
+    connection = {"PGHOST": parsed.hostname, "PGPORT": str(parsed.port or 5432),
+                  "PGUSER": urllib.parse.unquote(parsed.username or ""),
+                  "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
+                  "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/"))}
     if container:
         try:
             port = subprocess.run(["docker", "port", container, "5432/tcp"], text=True, capture_output=True,
@@ -268,9 +274,10 @@ def local_usage_reader_for(database_url, container=None):
             raise ValueError("cannot inspect bench PostgreSQL container port") from None
         if not any(line.rsplit(":", 1)[-1] == str(parsed.port or 5432) for line in port.splitlines()):
             raise ValueError("bench container port does not match the database URL")
-        credentials = parsed.netloc.rpartition("@")[0]
-        database_url = urllib.parse.urlunsplit((parsed.scheme, (credentials + "@" if credentials else "") + "127.0.0.1:5432", parsed.path, "", ""))
-        command = ["docker", "exec", "-i", "-e", "PGDATABASE", "-e", "PGOPTIONS", container, *command]
+        # Inside the container the server listens on its own loopback port.
+        connection.update(PGHOST="127.0.0.1", PGPORT="5432")
+        names = [*connection, "PGOPTIONS"]
+        command = ["docker", "exec", "-i", *[part for name in names for part in ("-e", name)], container, *command]
 
     def read(run_id):
         run_id = str(uuid.UUID(run_id))
@@ -278,7 +285,7 @@ def local_usage_reader_for(database_url, container=None):
                  "input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, "
                  "estimated_tokens, cost_nanocredits FROM inference_usage "
                  f"WHERE run_id = '{run_id}'::uuid ORDER BY created_at, attempt_id) u;\n")
-        env = {"PATH": os.environ.get("PATH", ""), "PGDATABASE": database_url,
+        env = {"PATH": os.environ.get("PATH", ""), **connection,
                "PGOPTIONS": "-c default_transaction_read_only=on -c statement_timeout=30000"}
         try:
             result = subprocess.run(command,

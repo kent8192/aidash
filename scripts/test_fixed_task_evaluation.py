@@ -1000,7 +1000,11 @@ class CacheReuseTest(unittest.TestCase):
         self.assertNotIn(url, args[0])
         self.assertIn(run_id, kwargs["input"])
         self.assertIn("WHERE run_id", kwargs["input"])
-        self.assertEqual(kwargs["env"]["PGDATABASE"], url)
+        # psql does not expand a URL given through PGDATABASE, so the parts travel separately.
+        self.assertEqual({k: kwargs["env"][k] for k in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")},
+                         {"PGHOST": "127.0.0.1", "PGPORT": "54391", "PGUSER": "reader", "PGPASSWORD": "secret",
+                          "PGDATABASE": "bench"})
+        self.assertNotIn("secret", " ".join(args[0]))
         with self.assertRaises(ValueError):
             cli.local_usage_reader_for("postgresql://remote.example/db")
 
@@ -1013,7 +1017,12 @@ class CacheReuseTest(unittest.TestCase):
         args, kwargs = execute.call_args
         self.assertEqual(args[0][:3], ["docker", "exec", "-i"])
         self.assertNotIn(url, args[0])
-        self.assertEqual(kwargs["env"]["PGDATABASE"], "postgresql://reader:secret@127.0.0.1:5432/bench")
+        self.assertEqual({k: kwargs["env"][k] for k in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")},
+                         {"PGHOST": "127.0.0.1", "PGPORT": "5432", "PGUSER": "reader", "PGPASSWORD": "secret",
+                          "PGDATABASE": "bench"})
+        for name in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"):
+            self.assertIn(name, args[0])
+        self.assertNotIn("secret", " ".join(args[0]))
 
     def test_reuse_excludes_compaction_and_separates_summary(self):
         records = [
