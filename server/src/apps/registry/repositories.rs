@@ -104,15 +104,21 @@ impl Registry {
 		for tenant in tenants {
 			self.pool
 				.scoped(&scope(&tenant), async |tx| {
-					let snapshot = match crate::apps::identity::models::AuthorizationBundle::lock_frozen_for_maintenance(
-						&mut **tx,
-						tenant.as_str(),
-					)
-					.await {
-						Ok(snapshot) => Some(snapshot),
-						Err(crate::Error::NotFound(_)) => None,
-						Err(error) => return Err(error),
-					};
+					// Built-in definitions are never agents, so carrying them changes
+					// no policy: the shared hold keeps approvals from changing while
+					// sources are read, and never waits on the Tenant's running work.
+					let snapshot =
+						match crate::apps::identity::models::AuthorizationBundle::lock_frozen(
+							&mut **tx,
+							tenant.as_str(),
+							false,
+						)
+						.await
+						{
+							Ok(snapshot) => Some(snapshot),
+							Err(crate::Error::NotFound(_)) => None,
+							Err(error) => return Err(error),
+						};
 					// A deleted Tenant's policy stays frozen. Restore seeds and carries
 					// any missed definitions atomically before making it available again.
 					if crate::apps::identity::repositories::tenant_deletions::is_deleted(
@@ -247,7 +253,7 @@ impl Registry {
 	}
 }
 
-/// Startup holds the Tenant's maintenance lock while seeding and carrying.
+/// Startup holds the Tenant's policy shared while seeding and carrying.
 struct CarryingSeed<'a> {
 	tx: &'a mut crate::database::native::Transaction,
 	snapshot: &'a mut aidash_application::authorization::Snapshot,
