@@ -27,4 +27,7 @@ pub struct SearchResult {
 	pub matches: Vec<Match>,
 	pub estimated_tokens: usize,
 	pub truncated: bool,
+	/// Entries this search left out because a Node did not answer (#770).
+	#[serde(default)]
+	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 }

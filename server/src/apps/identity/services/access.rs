@@ -282,6 +282,17 @@ pub(crate) struct Access {
 	/// Nodes that did not answer a check within this authority (#751). They
 	/// are not asked again, and no negative verdict is kept while any is set.
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
+	/// The Node the row being checked gave up on, if any (#770). A list loop
+	/// clears it when a row starts and takes it when the row is not visible, so a
+	/// refusal is never counted and a silent Node is, once per row.
+	pub(crate) row_silence: Option<String>,
+	/// Whether this authority serves a list, search or event read, which leaves
+	/// a Node alone for a while after it did not answer (#770). A single read, a
+	/// Read Recheck and an inference stream always ask.
+	pub(crate) lists: bool,
+	/// Items a native read loop left out because a Node did not answer, until its
+	/// caller takes them (#770). Loops in the application crate count their own.
+	pub(crate) unconfirmed: aidash_domain::unconfirmed::Tally,
 	/// Whether a `require` of this authority has denied. Such a denial is a
 	/// real refusal, so it is never reported as a Node that could not answer.
 	pub(super) denied: bool,
@@ -369,6 +380,7 @@ pub(crate) struct PublicationContext {
 	/// The reader's silent Nodes and its own denial (#751): a mark made under
 	/// the publisher's identity must never name a Node to the reader.
 	unavailable_peers: std::collections::BTreeSet<String>,
+	row_silence: Option<String>,
 	denied: bool,
 	silent_events: u64,
 	silent_last: Option<String>,
@@ -640,6 +652,9 @@ impl Access {
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
+			row_silence: None,
+			lists: false,
+			unconfirmed: Default::default(),
 			denied: false,
 			silent_events: 0,
 			silent_last: None,
@@ -730,6 +745,7 @@ impl Access {
 			cached_humans: std::mem::take(&mut self.cached_humans),
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
 			unavailable_peers: std::mem::take(&mut self.unavailable_peers),
+			row_silence: self.row_silence.take(),
 			denied: std::mem::take(&mut self.denied),
 			silent_events: std::mem::take(&mut self.silent_events),
 			silent_last: self.silent_last.take(),
@@ -769,6 +785,7 @@ impl Access {
 		self.cached_humans = old.cached_humans;
 		self.remote_read_cache = old.remote_read_cache;
 		self.unavailable_peers = old.unavailable_peers;
+		self.row_silence = old.row_silence;
 		self.denied = old.denied;
 		self.silent_events = old.silent_events;
 		self.silent_last = old.silent_last;
@@ -796,6 +813,9 @@ impl Access {
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
+			row_silence: None,
+			lists: false,
+			unconfirmed: Default::default(),
 			denied: false,
 			silent_events: 0,
 			silent_last: None,
@@ -891,6 +911,7 @@ impl Access {
 		self.tx.admissions.clear();
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
+		self.row_silence = None;
 		self.denied = false;
 		self.checking_reads.clear();
 		self.read_verdicts.clear();
@@ -1380,17 +1401,26 @@ impl Access {
 		std::mem::take(&mut self.unavailable_peers)
 	}
 
-	/// Mark Nodes that another identity of this authority found silent, but
-	/// only those this reader may discover: to any other reader a silent Node
-	/// is the plain refusal it always was.
+	/// Preserve discoverable peer marks from the publisher for retries. Only
+	/// its final row outcome may identify an unconfirmed row to the reader.
 	pub(crate) async fn adopt_silent_peers(
 		&mut self,
 		nodes: impl IntoIterator<Item = String>,
+		row_silence: Option<String>,
 	) -> Result<()> {
+		let mut nodes: std::collections::BTreeSet<String> = nodes.into_iter().collect();
+		if let Some(node) = &row_silence {
+			nodes.insert(node.clone());
+		}
 		for node in nodes {
 			let resource = self.resource("node", &node, json!({"remote_node":node}));
 			if self.decide(&resource, "federation.discover").await? {
-				self.mark_peer_unavailable(&node);
+				let earlier = self.row_silence.take();
+				self.skip_peer(&node);
+				self.row_silence = earlier;
+				if row_silence.as_deref() == Some(node.as_str()) {
+					self.row_silence.get_or_insert(node);
+				}
 			}
 		}
 		Ok(())
@@ -1661,6 +1691,12 @@ impl NativeAccess {
 	pub(crate) fn mark_peer_unavailable(&mut self, node: &str) {
 		self.access.mark_peer_unavailable(node);
 	}
+	pub(crate) fn skip_peer(&mut self, node: &str) {
+		self.access.skip_peer(node);
+	}
+	pub(crate) fn peer_answered(&mut self, node: &str) {
+		self.access.peer_answered(node);
+	}
 }
 
 impl Access {
@@ -1696,15 +1732,87 @@ impl Access {
 		self.remote_read_cache
 			.insert((run, self.authority_context()), reads);
 	}
+	pub(crate) fn has_silent_peers(&self) -> bool {
+		!self.unavailable_peers.is_empty()
+	}
 	pub(crate) fn peer_unavailable(&self, node: &str) -> bool {
-		self.unavailable_peers.contains(node)
+		self.unavailable_peers.contains(node) || self.recently_silent(node)
 	}
 	/// A check met a Node that did not answer: now, or earlier in this authority,
 	/// when it was not asked again. Each meeting counts for the call that made it.
 	pub(crate) fn mark_peer_unavailable(&mut self, node: &str) {
+		self.skip_peer(node);
+		if let Some(silent) = self.silence_memory() {
+			silent.note(&self.identity.tenant, node);
+		}
+	}
+	/// The row being checked stops at a Node known to be silent, without asking
+	/// it again. Unlike a mark, this does not extend the process's memory.
+	pub(crate) fn skip_peer(&mut self, node: &str) {
 		self.unavailable_peers.insert(node.into());
 		self.silent_events += 1;
 		self.silent_last = Some(node.into());
+		self.row_silence.get_or_insert_with(|| node.into());
+	}
+	/// A Node answered, with a verdict or a refusal.
+	pub(crate) fn peer_answered(&mut self, node: &str) {
+		if let Some(silent) = self.wire.as_ref().map(|wire| &wire.silent) {
+			silent.clear(&self.identity.tenant, node);
+		}
+	}
+	/// The process's memory of silent Nodes, only for an authority that can ask
+	/// another Node at all: one built without peers asks nobody, so it neither
+	/// reads the memory nor blames a Node nobody asked (#751).
+	fn silence_memory(
+		&self,
+	) -> Option<&crate::apps::federation::remote::services::wire::SilentNodes> {
+		self.wire
+			.as_ref()
+			.filter(|wire| wire.runtime.is_some())
+			.map(|wire| wire.silent.as_ref())
+	}
+	fn recently_silent(&self, node: &str) -> bool {
+		self.lists
+			&& self
+				.silence_memory()
+				.is_some_and(|silent| silent.recent(&self.identity.tenant, node))
+	}
+	/// A native read loop leaves one item out because `node` did not answer.
+	pub(crate) fn leave_out(
+		&mut self,
+		node: &str,
+		kind: aidash_domain::unconfirmed::Kind,
+		workspace: Uuid,
+	) {
+		self.unconfirmed.record(node, kind, workspace);
+	}
+	/// What native read loops have left out since the last call.
+	pub(crate) fn take_unconfirmed(&mut self) -> aidash_domain::unconfirmed::Tally {
+		std::mem::take(&mut self.unconfirmed)
+	}
+	/// A list loop's row begins.
+	pub(crate) fn begin_row(&mut self) {
+		// A prior row may have cached a partial pass before a peer fell silent.
+		// Recheck each following row under the same authority; the silence memory
+		// avoids another network wait, but cannot authorize its dependencies.
+		if !self.unavailable_peers.is_empty() {
+			self.read_verdicts.clear();
+			self.read_lookups.forget_passes();
+			self.remote_read_cache.clear();
+		}
+		self.row_silence = None;
+	}
+	/// The Node the row being checked gave up on, if any.
+	pub(crate) fn row_silence(&self) -> Option<String> {
+		self.row_silence.clone()
+	}
+	/// The Node the row gave up on, after its check.
+	pub(crate) fn take_row_silence(&mut self) -> Option<String> {
+		self.row_silence.take()
+	}
+	/// Put back, or clear, the Node the row gave up on.
+	pub(crate) fn set_row_silence(&mut self, node: Option<String>) {
+		self.row_silence = node;
 	}
 }
 

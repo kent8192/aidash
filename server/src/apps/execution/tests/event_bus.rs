@@ -103,7 +103,7 @@ async fn oversized_payload_uses_an_http_replay_reference_without_blocking_later_
 	assert!(!refused.text().contains("xxxxxxxx"));
 	let replay = assert_json(member.get(&reference).await.unwrap(), 200);
 	assert_eq!(
-		replay
+		replay["events"]
 			.as_array()
 			.unwrap()
 			.iter()

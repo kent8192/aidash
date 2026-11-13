@@ -175,7 +175,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect
-      .poll(async () => (await api(`${root}/entries`))[0].state)
+      .poll(async () => (await api(`${root}/entries`)).entries[0]?.state)
       .toBe("READY");
     await page
       .getByRole("button", { name: "Semantic search", exact: true })

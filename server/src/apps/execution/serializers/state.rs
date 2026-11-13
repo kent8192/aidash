@@ -21,4 +21,7 @@ pub struct StateResponse {
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
 	pub artifacts: Vec<Artifact>,
+	/// Rows this read scanned and could not confirm because a Node did not
+	/// answer, for each Node, kind and Workspace. `[]` when none.
+	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
 }

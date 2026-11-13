@@ -2,6 +2,7 @@
 use super::super::views;
 use crate::apps::execution::serializers::human_requests::HumanRequest;
 use crate::apps::execution::serializers::management::ClaimInput;
+use crate::apps::execution::serializers::management::EventPage;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::management::{ControlInput, DeclineCallInput};
@@ -12,7 +13,6 @@ use crate::apps::execution::serializers::research::{
 use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::StateResponse;
 use crate::apps::federation::remote::serializers::actions::SentResponse;
-use crate::apps::workspaces::serializers::entities::Event;
 use crate::apps::workspaces::serializers::entities::Task;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
@@ -177,7 +177,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, Value>(document, views::management::human_answer)?;
 	contracts.path(document, views::management::human_answer, &["Uuid"])?;
-	contracts.response::<_, Vec<Event>>(
+	contracts.response::<_, EventPage>(
 		document,
 		views::management::events,
 		200,

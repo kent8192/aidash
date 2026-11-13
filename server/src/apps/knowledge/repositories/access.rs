@@ -122,6 +122,50 @@ impl Lease<'_> {
 			Self::Inherited(a) => Some(a),
 		}
 	}
+	/// This lease serves a list or a search, which leaves a silent Node alone for
+	/// a while (#770).
+	pub(crate) fn lists(&mut self) {
+		if let Some(access) = self.access() {
+			access.lists = true;
+		}
+	}
+	pub(crate) fn begin_row(&mut self) {
+		if let Some(access) = self.access() {
+			access.begin_row();
+		}
+	}
+	pub(crate) fn row_silence(&self) -> Option<String> {
+		match self {
+			Self::Scoped(access) => access.row_silence(),
+			Self::Inherited(access) => access.row_silence(),
+			_ => None,
+		}
+	}
+	pub(crate) fn set_row_silence(&mut self, node: Option<String>) {
+		if let Some(access) = self.access() {
+			access.set_row_silence(node);
+		}
+	}
+	pub(crate) fn take_row_silence(&mut self) -> Option<String> {
+		self.access().and_then(|access| access.take_row_silence())
+	}
+	/// A native read loop leaves one item out because a Node did not answer.
+	pub(crate) fn leave_out(
+		&mut self,
+		node: &str,
+		kind: aidash_domain::unconfirmed::Kind,
+		workspace: Uuid,
+	) {
+		if let Some(access) = self.access() {
+			access.leave_out(node, kind, workspace);
+		}
+	}
+	/// What native read loops left out since the last call.
+	pub(crate) fn take_unconfirmed(&mut self) -> aidash_domain::unconfirmed::Tally {
+		self.access()
+			.map(|access| access.take_unconfirmed())
+			.unwrap_or_default()
+	}
 	pub(crate) fn proof(&self) -> bool {
 		match self {
 			Self::ProofWithoutSubject(_) | Self::BorrowedProofWithoutSubject(_) => true,

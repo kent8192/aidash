@@ -288,11 +288,13 @@ fn cached_receipt(candidate_digest: &str) -> Receipt {
 			matches: vec![],
 			estimated_tokens: 1,
 			truncated: false,
+			unconfirmed: vec![],
 		},
 		estimated_tokens: 2,
 	}
 }
 struct EmptyRetrieval;
+impl crate::ports::authorization::visibility::RowOutcome for EmptyRetrieval {}
 #[async_trait]
 impl SemanticRetrievalSession for EmptyRetrieval {
 	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {

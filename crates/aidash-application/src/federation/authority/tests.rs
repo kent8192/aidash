@@ -1,4 +1,5 @@
 use super::*;
+use crate::ports::federation::authority::Unreachable;
 use aidash_domain::{federation::route::Route, semantic::Failure};
 use async_trait::async_trait;
 use rstest::rstest;
@@ -10,6 +11,7 @@ fn reply(status: u16) -> Reply {
 		semantic_reason: None,
 		execution_refusal: None,
 		transaction_pending: false,
+		unreachable: None,
 		policy_busy: None,
 		body: Ok(serde_json::to_vec(&json!({"ok":true})).unwrap()),
 	}
@@ -325,4 +327,38 @@ async fn personal_call_preserves_peer_result_and_delivery_failure() {
 			.await,
 		Err(Error::ToolNotDelivered { .. })
 	));
+}
+
+#[rstest]
+#[case::before_effect(false)]
+#[case::after_effect(true)]
+fn a_peer_that_could_not_reach_another_node_is_a_typed_unreachable_error(
+	#[case] after_effect: bool,
+) {
+	let found = Unreachable::of(&json!({
+		"error": "Node could not be reached", "code": "node_unreachable",
+		"node": "aidash://other/sibling", "after_effect": after_effect
+	}))
+	.unwrap();
+	let result = classify(Reply {
+		unreachable: Some(found),
+		..reply(503)
+	});
+	assert!(matches!(
+		result,
+		Err(Error::NodeUnreachable { ref node, after_effect: seen })
+			if node == "aidash://other/sibling" && seen == after_effect
+	));
+}
+
+#[rstest]
+fn an_envelope_without_a_node_or_another_code_is_not_unreachable() {
+	assert!(Unreachable::of(&json!({"code": "node_unreachable"})).is_none());
+	assert!(Unreachable::of(&json!({"code": "other", "node": "aidash://x/y"})).is_none());
+	// Without the flag the call is assumed to have taken effect.
+	assert!(
+		Unreachable::of(&json!({"code": "node_unreachable", "node": "aidash://x/y"}))
+			.unwrap()
+			.after_effect
+	);
 }

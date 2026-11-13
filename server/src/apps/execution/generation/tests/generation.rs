@@ -1127,7 +1127,7 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 	);
 	let (_, events) = request(&app, &token, "GET", "/api/events", Value::Null).await;
 	assert!(
-		events
+		events["events"]
 			.as_array()
 			.unwrap()
 			.iter()
@@ -2263,11 +2263,11 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	.await;
 	assert_eq!(status, 200, "{events}");
 	assert_eq!(
-		events.as_array().unwrap().len(),
+		events["events"].as_array().unwrap().len(),
 		1,
 		"the preceding generation context must not overwrite the next run's owner"
 	);
-	assert_eq!(events[0]["kind"], "generation.changed");
+	assert_eq!(events["events"][0]["kind"], "generation.changed");
 	cleanup(f, &url, &schema).await;
 }
 

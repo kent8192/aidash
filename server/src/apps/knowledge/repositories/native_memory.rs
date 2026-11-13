@@ -963,6 +963,7 @@ async fn load_snapshot(
 ) -> Result<Vec<Unit>> {
 	let mut result = Vec::new();
 	for &id in ids {
+		lease.begin_row();
 		let unit = units::load(lease, id, false)
 			.await?
 			.ok_or(Error::Forbidden)?;
@@ -978,7 +979,28 @@ async fn load_snapshot(
 		}
 		.await;
 		match current {
-			Err(Error::Conflict(_) | Error::Forbidden) => continue,
+			Err(Error::Conflict(_) | Error::Forbidden) => {
+				// A unit whose support a Node did not confirm is left out and
+				// counted; one that was refused or has changed is not (#770).
+				if let Some(node) = lease.take_row_silence() {
+					lease.leave_out(
+						&node,
+						aidash_domain::unconfirmed::Kind::MemoryUnit,
+						bank.workspace,
+					);
+				}
+				continue;
+			}
+			// A source read that names the silent Node as an error is the same
+			// silence, and must not fail the whole list (#751).
+			Err(Error::NodeUnreachable { node, .. }) => {
+				lease.leave_out(
+					&node,
+					aidash_domain::unconfirmed::Kind::MemoryUnit,
+					bank.workspace,
+				);
+				continue;
+			}
 			result => result?,
 		}
 		result.push(unit);

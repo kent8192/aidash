@@ -690,7 +690,7 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
         name = action.get("label") or f"{index}:{op}"
         if op == "query":
             listed = api.post(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank},
-                              token)
+                              token)["units"]
             visible = {}
             for unit in listed:
                 symbol = next((key for key, value in units.items() if value == unit["id"]), unit["id"])

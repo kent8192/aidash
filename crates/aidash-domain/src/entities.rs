@@ -434,6 +434,10 @@ pub struct WorkspaceSnapshot {
 	pub artifacts: Vec<Artifact>,
 	pub events: Vec<Event>,
 	pub messages: Vec<Message>,
+	/// Rows this read scanned and could not confirm because a Node did not
+	/// answer (#770). Peers on an older build omit it.
+	#[serde(default)]
+	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 }
 
 /// A keyset page of one workspace collection. Pages stay below the peer

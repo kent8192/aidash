@@ -220,6 +220,7 @@ pub(crate) fn current_in<'a>(
 			.map(|e| (e, std::collections::BTreeSet::<(u8, Uuid)>::new()))
 			.collect();
 		let mut seen = std::collections::BTreeSet::new();
+		let mut held: Option<String> = None;
 		while let Some((source, mut ancestry)) = pending.pop_front() {
 			*visits = visits
 				.checked_add(1)
@@ -242,186 +243,209 @@ pub(crate) fn current_in<'a>(
 			if !seen.insert(source.clone()) && !matches!(source, Evidence::Unit { .. }) {
 				continue;
 			}
-			match source {
-				Evidence::Publication { id, revision } => {
-					Box::pin(super::publications::check(
-						lease, workspace, id, revision, max_visits, visits,
-					))
-					.await?;
-				}
-				Evidence::Unit { bank, id, revision } => {
-					if bank.workspace != workspace {
-						return Err(Error::Forbidden);
+			// A silent Node stops one piece of evidence, not the walk: the rest is
+			// judged too, so a unit another check refuses is not counted (#770).
+			let step: Result<()> = async {
+				match source {
+					Evidence::Publication { id, revision } => {
+						Box::pin(super::publications::check(
+							lease, workspace, id, revision, max_visits, visits,
+						))
+						.await?;
 					}
-					let unit = load(lease, id, false)
+					Evidence::Unit { bank, id, revision } => {
+						if bank.workspace != workspace {
+							return Err(Error::Forbidden);
+						}
+						let unit = load(lease, id, false)
+							.await?
+							.ok_or_else(|| Error::Conflict("memory support removed".into()))?;
+						if unit.bank != bank || unit.revision != revision || !unit.visible() {
+							return Err(Error::Conflict("memory support changed".into()));
+						}
+						authorize(lease, &bank, "memory.read").await?;
+						unexpired(lease, &unit).await?;
+						pending.extend(
+							unit.content
+								.evidence
+								.into_iter()
+								.map(|e| (e, ancestry.clone())),
+						);
+					}
+					Evidence::Message {
+						id,
+						revision,
+						digest,
+					} => {
+						let mut disclosure = super::disclosure::Disclosure { lease };
+						let message =
+							disclosure.message(id, workspace).await?.ok_or_else(|| {
+								Error::Conflict("memory message source removed".into())
+							})?;
+						if disclosure.scoped() && !disclosure.message_visible(&message).await? {
+							return Err(Error::Forbidden);
+						}
+						// Message bodies are immutable version 1; Run input sequence is tracked separately.
+						if revision != 1
+							|| aidash_domain::semantic::indexing::content_digest(&message.content)
+								!= digest
+						{
+							return Err(Error::Conflict("memory message source changed".into()));
+						}
+					}
+					Evidence::Artifact {
+						id,
+						revision,
+						digest,
+					} => {
+						let mut disclosure = super::disclosure::Disclosure { lease };
+						let artifact =
+							disclosure.artifact(id, workspace).await?.ok_or_else(|| {
+								Error::Conflict("memory artifact source removed".into())
+							})?;
+						if disclosure.scoped() && !disclosure.artifact_visible(&artifact).await? {
+							return Err(Error::Forbidden);
+						}
+						// Current Artifact bodies are immutable version 1; no invented update version is accepted.
+						if revision != 1
+							|| aidash_domain::semantic::indexing::content_digest(
+								&serde_json::to_string(&artifact.content)?,
+							) != digest
+						{
+							return Err(Error::Conflict("memory artifact source changed".into()));
+						}
+					}
+					Evidence::Run {
+						id,
+						revision,
+						digest,
+					} => {
+						let row = native::query(
+							&Query::select()
+								.column(ColumnRef::Asterisk)
+								.from(Alias::new("runs"))
+								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+								.lock(LockType::Share)
+								.to_string(PostgresQueryBuilder),
+						)
+						.fetch_optional(&mut **lease.tx())
 						.await?
-						.ok_or_else(|| Error::Conflict("memory support removed".into()))?;
-					if unit.bank != bank || unit.revision != revision || !unit.visible() {
-						return Err(Error::Conflict("memory support changed".into()));
-					}
-					authorize(lease, &bank, "memory.read").await?;
-					unexpired(lease, &unit).await?;
-					pending.extend(
-						unit.content
-							.evidence
-							.into_iter()
-							.map(|e| (e, ancestry.clone())),
-					);
-				}
-				Evidence::Message {
-					id,
-					revision,
-					digest,
-				} => {
-					let mut disclosure = super::disclosure::Disclosure { lease };
-					let message = disclosure
-						.message(id, workspace)
-						.await?
-						.ok_or_else(|| Error::Conflict("memory message source removed".into()))?;
-					if disclosure.scoped() && !disclosure.message_visible(&message).await? {
-						return Err(Error::Forbidden);
-					}
-					// Message bodies are immutable version 1; Run input sequence is tracked separately.
-					if revision != 1
-						|| aidash_domain::semantic::indexing::content_digest(&message.content)
-							!= digest
-					{
-						return Err(Error::Conflict("memory message source changed".into()));
-					}
-				}
-				Evidence::Artifact {
-					id,
-					revision,
-					digest,
-				} => {
-					let mut disclosure = super::disclosure::Disclosure { lease };
-					let artifact = disclosure
-						.artifact(id, workspace)
-						.await?
-						.ok_or_else(|| Error::Conflict("memory artifact source removed".into()))?;
-					if disclosure.scoped() && !disclosure.artifact_visible(&artifact).await? {
-						return Err(Error::Forbidden);
-					}
-					// Current Artifact bodies are immutable version 1; no invented update version is accepted.
-					if revision != 1
-						|| aidash_domain::semantic::indexing::content_digest(
-							&serde_json::to_string(&artifact.content)?,
+						.ok_or_else(|| Error::Conflict("memory Run evidence removed".into()))?;
+						if row.try_get::<Uuid>("workspace_id")? != workspace
+							|| row.try_get::<i64>("revision")? != revision
+							|| row.try_get::<String>("phase")? != "COMPLETED"
+						{
+							return Err(Error::Conflict(
+								"memory Run evidence is incomplete or changed".into(),
+							));
+						}
+						let run: aidash_domain::Run = crate::database::query_as(
+							&Query::select()
+								.column(ColumnRef::Asterisk)
+								.from(Alias::new("runs"))
+								.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+								.to_string(PostgresQueryBuilder),
+						)
+						.fetch_one(&mut **lease.tx())
+						.await?;
+						if run.error.is_some() {
+							return Err(Error::Conflict(
+								"memory Run evidence has a failed outcome".into(),
+							));
+						}
+						// A Run can carry an admitted unit into extracted candidates or
+						// later memory. Preserve this exact dependency for Deployment Administrator
+						// maintenance as well as subject disclosure, within the same
+						// traversal budget and ancestry (no recursive budget reset).
+						let reads = native::query(
+							&Query::select()
+								.columns(["unit_id", "revision"].map(Alias::new))
+								.from(Alias::new("memory_run_reads"))
+								.and_where(Expr::col("run_id").eq(Expr::value(id)))
+								.limit(max_visits as u64 + 1)
+								.lock(LockType::Share)
+								.to_string(PostgresQueryBuilder),
+						)
+						.fetch_all(&mut **lease.tx())
+						.await?;
+						if reads.len() > max_visits {
+							return Err(Error::Invalid(
+								"Run memory support exceeds its bound".into(),
+							));
+						}
+						if !reads.is_empty() {
+							let binding = super::bindings::load(&mut **lease.tx(), &run.metadata())
+								.await?
+								.ok_or(Error::Forbidden)?;
+							authorize(lease, &binding.bank, "memory.read").await?;
+						}
+						for read in reads {
+							let unit = load(lease, read.try_get("unit_id")?, false)
+								.await?
+								.ok_or(Error::Forbidden)?;
+							pending.push_back((
+								Evidence::Unit {
+									bank: unit.bank,
+									id: unit.id,
+									revision: read.try_get("revision")?,
+								},
+								ancestry.clone(),
+							));
+						}
+						let effects = native::query(
+							&Query::select()
+								.column(Alias::new("status"))
+								.from(Alias::new("invocations"))
+								.and_where(Expr::col("run_id").eq(Expr::value(id)))
+								.limit(max_visits as u64 + 1)
+								.lock(LockType::Share)
+								.to_string(PostgresQueryBuilder),
+						)
+						.fetch_all(&mut **lease.tx())
+						.await?;
+						if effects.len() > max_visits
+							|| effects.iter().any(|effect| {
+								effect
+									.try_get::<String>("status")
+									.map_or(true, |state| state != "COMPLETED")
+							}) {
+							return Err(Error::Conflict(
+								"memory Run evidence contains incomplete or uncertain effects"
+									.into(),
+							));
+						}
+						if let Some(access) = lease.access()
+							&& !access.run_visible(&run).await?
+						{
+							return Err(Error::Forbidden);
+						}
+						if aidash_domain::semantic::indexing::content_digest(
+							&serde_json::to_string(&run)?,
 						) != digest
-					{
-						return Err(Error::Conflict("memory artifact source changed".into()));
+						{
+							return Err(Error::Conflict(
+								"memory Run evidence digest changed".into(),
+							));
+						}
 					}
 				}
-				Evidence::Run {
-					id,
-					revision,
-					digest,
-				} => {
-					let row = native::query(
-						&Query::select()
-							.column(ColumnRef::Asterisk)
-							.from(Alias::new("runs"))
-							.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-							.lock(LockType::Share)
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_optional(&mut **lease.tx())
-					.await?
-					.ok_or_else(|| Error::Conflict("memory Run evidence removed".into()))?;
-					if row.try_get::<Uuid>("workspace_id")? != workspace
-						|| row.try_get::<i64>("revision")? != revision
-						|| row.try_get::<String>("phase")? != "COMPLETED"
-					{
-						return Err(Error::Conflict(
-							"memory Run evidence is incomplete or changed".into(),
-						));
-					}
-					let run: aidash_domain::Run = crate::database::query_as(
-						&Query::select()
-							.column(ColumnRef::Asterisk)
-							.from(Alias::new("runs"))
-							.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_one(&mut **lease.tx())
-					.await?;
-					if run.error.is_some() {
-						return Err(Error::Conflict(
-							"memory Run evidence has a failed outcome".into(),
-						));
-					}
-					// A Run can carry an admitted unit into extracted candidates or
-					// later memory. Preserve this exact dependency for Deployment Administrator
-					// maintenance as well as subject disclosure, within the same
-					// traversal budget and ancestry (no recursive budget reset).
-					let reads = native::query(
-						&Query::select()
-							.columns(["unit_id", "revision"].map(Alias::new))
-							.from(Alias::new("memory_run_reads"))
-							.and_where(Expr::col("run_id").eq(Expr::value(id)))
-							.limit(max_visits as u64 + 1)
-							.lock(LockType::Share)
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_all(&mut **lease.tx())
-					.await?;
-					if reads.len() > max_visits {
-						return Err(Error::Invalid(
-							"Run memory support exceeds its bound".into(),
-						));
-					}
-					if !reads.is_empty() {
-						let binding = super::bindings::load(&mut **lease.tx(), &run.metadata())
-							.await?
-							.ok_or(Error::Forbidden)?;
-						authorize(lease, &binding.bank, "memory.read").await?;
-					}
-					for read in reads {
-						let unit = load(lease, read.try_get("unit_id")?, false)
-							.await?
-							.ok_or(Error::Forbidden)?;
-						pending.push_back((
-							Evidence::Unit {
-								bank: unit.bank,
-								id: unit.id,
-								revision: read.try_get("revision")?,
-							},
-							ancestry.clone(),
-						));
-					}
-					let effects = native::query(
-						&Query::select()
-							.column(Alias::new("status"))
-							.from(Alias::new("invocations"))
-							.and_where(Expr::col("run_id").eq(Expr::value(id)))
-							.limit(max_visits as u64 + 1)
-							.lock(LockType::Share)
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_all(&mut **lease.tx())
-					.await?;
-					if effects.len() > max_visits
-						|| effects.iter().any(|effect| {
-							effect
-								.try_get::<String>("status")
-								.map_or(true, |state| state != "COMPLETED")
-						}) {
-						return Err(Error::Conflict(
-							"memory Run evidence contains incomplete or uncertain effects".into(),
-						));
-					}
-					if let Some(access) = lease.access()
-						&& !access.run_visible(&run).await?
-					{
-						return Err(Error::Forbidden);
-					}
-					if aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(
-						&run,
-					)?) != digest
-					{
-						return Err(Error::Conflict("memory Run evidence digest changed".into()));
-					}
-				}
+				Ok(())
 			}
+			.await;
+			match step {
+				Ok(()) => {}
+				Err(Error::Forbidden) => match lease.take_row_silence() {
+					Some(node) => {
+						held.get_or_insert(node);
+					}
+					None => return Err(Error::Forbidden),
+				},
+				Err(error) => return Err(error),
+			}
+		}
+		if let Some(node) = held {
+			lease.set_row_silence(Some(node));
+			return Err(Error::Forbidden);
 		}
 		Ok(())
 	})

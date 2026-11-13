@@ -126,6 +126,10 @@ impl LocalRunVisibilityScope for Reads<'_> {
 			.flatten()
 	}
 	fn remember(&mut self, run: &RunMetadata, allowed: bool) {
+		// A refusal reached while a Node did not answer is not a verdict (#770).
+		if !allowed && self.access.has_silent_peers() {
+			return;
+		}
 		if self.access.dependency_frontier.is_none() {
 			self.access
 				.cached_runs
@@ -323,6 +327,34 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 	}
 	async fn run_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access.run_reads_visible(run).await.map_err(Into::into)
+	}
+}
+impl aidash_application::ports::authorization::visibility::RowOutcome for Reads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
+	}
+}
+impl aidash_application::ports::authorization::visibility::RowOutcome for NativeReads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
 	}
 }
 #[async_trait]

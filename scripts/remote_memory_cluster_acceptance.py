@@ -204,7 +204,7 @@ class RemoteMemory(Cluster):
                                  ("other-node", f"{self.nodes[0]['address']}/agents/research@1.0.0", "DO NOT DISCLOSE: Home Agent scope."),
                                  ("other-version", f"{self.nodes[1]['address']}/agents/research@1.0.1", "DO NOT DISCLOSE: other definition version.")]:
             entries.append(self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries", {"key": key, "expected_revision": 0, "source": {"kind": "memory", "text": text}, "agent": owner, "metadata": {}})))
-        self.until(lambda: all(e["state"] == "READY" for e in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))), "Home index ready")
+        self.until(lambda: all(e["state"] == "READY" for e in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))["entries"]), "Home index ready")
         return workspace, entries[0]
 
     def activate(self, task, agent):

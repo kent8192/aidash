@@ -54,13 +54,29 @@ pub async fn put(store: &Store, actor: &Actor, workspace: Uuid, input: PutEntry)
 }
 
 pub async fn entries(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Vec<Entry>> {
+	entries_counted(store, actor, workspace)
+		.await
+		.map(|list| list.entries)
+}
+/// The entries a reader may see, and those a silent Node left out (#770).
+pub async fn entries_counted(
+	store: &Store,
+	actor: &Actor,
+	workspace: Uuid,
+) -> Result<crate::apps::knowledge::serializers::contracts::EntryList> {
 	let mut lease = Lease::begin(store, actor, workspace).await?;
+	lease.lists();
 	let result = aidash_application::semantic::mutations::entries(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,
 	)
 	.await
-	.map(|rows| rows.into_iter().map(Into::into).collect())
+	.map(
+		|(rows, unconfirmed)| crate::apps::knowledge::serializers::contracts::EntryList {
+			entries: rows.into_iter().map(Into::into).collect(),
+			unconfirmed,
+		},
+	)
 	.map_err(Into::into);
 	lease.finish(result).await
 }
@@ -94,6 +110,7 @@ pub async fn search(
 ) -> Result<SearchResult> {
 	let mut lease = Lease::begin(store, actor, workspace).await?;
 	lease.durable();
+	lease.lists();
 	let result = search_in(store, &mut lease, workspace, input, None, None).await;
 	lease.finish(result).await
 }

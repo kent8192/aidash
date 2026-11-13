@@ -100,6 +100,9 @@ struct Scope {
 	configured_exists: bool,
 	embedded: Option<(Uuid, EmbeddingConfig, String, Option<Uuid>)>,
 	embed_failure: Option<Failure>,
+	/// The next source reads stop at a Node that did not answer (#770).
+	silent_sources: usize,
+	silence: Option<String>,
 }
 impl Scope {
 	fn new(calls: Calls) -> Self {
@@ -118,10 +121,23 @@ impl Scope {
 			configured_exists: true,
 			embedded: None,
 			embed_failure: None,
+			silent_sources: 0,
+			silence: None,
 		}
 	}
 	fn touch(&self, name: &'static str) {
 		self.calls.lock().unwrap().push(name);
+	}
+}
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
 	}
 }
 #[async_trait]
@@ -159,6 +175,11 @@ impl SemanticRetrievalSession for Scope {
 	async fn source(&mut self, workspace: Uuid, _: &Source) -> Result<Option<String>> {
 		self.touch("source");
 		assert_eq!(workspace, index().workspace_id);
+		if self.silent_sources > 0 {
+			self.silent_sources -= 1;
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(None);
+		}
 		Ok(self
 			.texts
 			.pop_front()
@@ -1269,4 +1290,56 @@ async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
 		(Err(Error::RemoteSemantic(_)), None) => {}
 		(other, _) => panic!("unexpected {other:?}"),
 	}
+}
+
+fn silent_entry() -> aidash_domain::unconfirmed::Unconfirmed {
+	aidash_domain::unconfirmed::Unconfirmed {
+		node: "aidash://other/silent".into(),
+		kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
+		workspace_id: index().workspace_id,
+		count: 2,
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn candidates_whose_source_stops_at_a_silent_node_are_counted_and_refusals_are_not() {
+	// Arrange: five entries, two stop at a silent Node, one is refused, two read.
+	let (_, mut scope, _) = fixture();
+	scope.rows = (0..5)
+		.map(|n| Entry {
+			id: Uuid::from_u128(20 + n),
+			..entry()
+		})
+		.collect();
+	scope.silent_sources = 2;
+	scope.permitted = VecDeque::from([true, true, false]);
+	// Act
+	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(prepared.result.unconfirmed, vec![silent_entry()]);
+	// The two that read share the fixture's point, so they are one candidate.
+	assert_eq!(prepared.allowed.len(), 1);
+}
+#[rstest]
+#[tokio::test]
+async fn a_source_that_a_node_stops_confirming_before_delivery_is_counted() {
+	let (_, mut scope, vector) = fixture();
+	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+		.await
+		.unwrap();
+	assert!(prepared.result.unconfirmed.is_empty());
+	scope.silent_sources = 1;
+	let result = finish(&vector, &mut scope, prepared, &[0.25, 0.75], false)
+		.await
+		.unwrap();
+	assert!(result.matches.is_empty());
+	assert_eq!(
+		result.unconfirmed,
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			count: 1,
+			..silent_entry()
+		}]
+	);
 }

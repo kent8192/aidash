@@ -1,8 +1,11 @@
 //! Mutations apply the same authority and replay rules for HTTP and worker callers.
 use crate::{Error, Result, ports::semantic::mutations::*};
-use aidash_domain::semantic::{
-	indexing::{IndexingSpec, validate_text},
-	mutations::{self, Entry, History, Index, Put},
+use aidash_domain::{
+	semantic::{
+		indexing::{IndexingSpec, validate_text},
+		mutations::{self, Entry, History, Index, Put},
+	},
+	unconfirmed::{Kind, Tally, Unconfirmed},
 };
 use chrono::Utc;
 use uuid::Uuid;
@@ -167,15 +170,21 @@ pub async fn put(
 	Ok(entry)
 }
 
+/// The entries the reader may see, and how many were left out because a Node
+/// did not answer (#770).
 pub async fn entries(
 	scope: &mut dyn SemanticEntriesSession,
 	workspace: Uuid,
-) -> Result<Vec<Entry>> {
+) -> Result<(Vec<Entry>, Vec<Unconfirmed>)> {
 	scope.workspace(workspace, "semantic.read").await?;
 	scope.index(workspace, false).await?;
 	let mut visible = vec![];
+	let mut unconfirmed = Tally::new();
 	for entry in scope.list(workspace).await? {
+		scope.begin_row();
 		if !scope.permits(&entry, "semantic.read").await? {
+			let silence = scope.take_row_silence();
+			unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
 			continue;
 		}
 		let source = serde_json::from_value(entry.source.clone())?;
@@ -187,11 +196,12 @@ pub async fn entries(
 			} else {
 				scope.source(workspace, &source).await?.is_some()
 			};
-		if source_visible {
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::SemanticEntry, workspace, source_visible) {
 			visible.push(entry);
 		}
 	}
-	Ok(visible)
+	Ok((visible, unconfirmed.into_entries()))
 }
 
 pub async fn change(

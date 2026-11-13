@@ -3,6 +3,7 @@ use crate::{
 	Result,
 	ports::authorization::visibility::{
 		EventVisibilityScope, LocalRunVisibilityScope, RunVerdicts, RunVisibilityScope,
+		conclude_chain,
 	},
 };
 use aidash_domain::{Event, RunMetadata};
@@ -40,9 +41,23 @@ pub async fn local_base_visible(
 		Some(task) => scope.task_visible(&task).await?,
 		None => false,
 	};
-	let allowed = task_visible
-		&& scope.decide(&resource, "run.read").await?
-		&& scope.decide(&memory, "memory.read").await?;
+	if !task_visible {
+		// A silent Node may have stopped the Task's check. The rest of the chain
+		// is judged too, so a Run this reader is refused anyway is not counted;
+		// nothing is cached, because the Task's answer is not known (#770).
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope.decide(&resource, "run.read").await?
+				&& scope.decide(&memory, "memory.read").await?
+				&& scope.human_reads(run.workspace_id, run.id).await?;
+			conclude_chain(scope, held, rest);
+		} else {
+			scope.remember(run, false);
+		}
+		return Ok(false);
+	}
+	let allowed =
+		scope.decide(&resource, "run.read").await? && scope.decide(&memory, "memory.read").await?;
 	scope.remember(run, allowed);
 	Ok(allowed && scope.human_reads(run.workspace_id, run.id).await?)
 }
@@ -51,7 +66,15 @@ pub async fn local_run_visible(
 	scope: &mut dyn LocalRunVisibilityScope,
 	run: &RunMetadata,
 ) -> Result<bool> {
-	Ok(local_base_visible(scope, run).await? && scope.run_reads(run.id).await?)
+	if !local_base_visible(scope, run).await? {
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope.run_reads(run.id).await?;
+			conclude_chain(scope, held, rest);
+		}
+		return Ok(false);
+	}
+	scope.run_reads(run.id).await
 }
 
 /// A source Run with no native memory reads has no private memory dependency.
@@ -77,9 +100,19 @@ pub async fn local_dependency_without_memory_visible(
 pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
 	if !run.is_local(scope.node_id()) {
 		if scope.scoped_admission(run.id).await? {
-			return Ok(scope.core_area_visible(run.id).await?
-				&& scope.foreign_base_visible(run).await?
-				&& scope.human_reads(run.workspace_id, run.id).await?);
+			if !scope.core_area_visible(run.id).await? {
+				return Ok(false);
+			}
+			if !scope.foreign_base_visible(run).await? {
+				// Same chain rule as a local Run (#770).
+				let held = scope.take_row_silence();
+				if held.is_some() {
+					let rest = scope.human_reads(run.workspace_id, run.id).await?;
+					conclude_chain(scope, held, rest);
+				}
+				return Ok(false);
+			}
+			return scope.human_reads(run.workspace_id, run.id).await;
 		}
 		// Missing scoped admission is not a legacy grant; only an exact local record qualifies.
 		if !scope.legacy_execution(run).await? {
@@ -157,7 +190,15 @@ where
 }
 
 pub async fn run_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
-	Ok(base_visible(scope, run).await? && scope.run_reads(run.id).await?)
+	if !base_visible(scope, run).await? {
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope.run_reads(run.id).await?;
+			conclude_chain(scope, held, rest);
+		}
+		return Ok(false);
+	}
+	scope.run_reads(run.id).await
 }
 
 pub async fn event_visible(scope: &mut dyn EventVisibilityScope, event: &Event) -> Result<bool> {
@@ -239,7 +280,11 @@ pub async fn event_visible_in(
 		Some(run) => scope.run_visible(&run).await?,
 		None => false,
 	};
-	runs.remember(id, event.workspace_id, visible);
+	// A refusal reached while a Node did not answer may be that Node's silence,
+	// so it is checked again for the next event and counted with it (#770).
+	if visible || scope.row_silence().is_none() {
+		runs.remember(id, event.workspace_id, visible);
+	}
 	Ok(visible)
 }
 

@@ -65,6 +65,9 @@ struct Fixture {
 	reply: Option<Uuid>,
 	history: VecDeque<Vec<HistoryRow>>,
 	hidden: HashSet<Uuid>,
+	/// Messages whose check stops at a Node that did not answer (#770).
+	silent: HashSet<Uuid>,
+	silence: Option<String>,
 	positions: Vec<(Uuid, i32)>,
 	stored: Option<AttachmentState>,
 	key: Option<String>,
@@ -90,6 +93,17 @@ impl crate::ports::channels::AttachmentObjects for Fixture {
 		Ok(b"x".to_vec())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Fixture {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
+}
 #[async_trait]
 impl ChannelScope for Fixture {
 	fn sender(&self) -> String {
@@ -104,6 +118,10 @@ impl ChannelScope for Fixture {
 	}
 	async fn visible(&mut self, message: &Message) -> Result<bool> {
 		self.record("message.visible")?;
+		if self.silent.contains(&message.id) {
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(!self.hidden.contains(&message.id))
 	}
 	async fn thread_visible(&mut self, _: Uuid) -> Result<()> {
@@ -439,6 +457,88 @@ async fn history_cursor_uses_only_visible_messages_and_pages_are_chronological()
 	);
 	assert_eq!(page.next_before, Some(Uuid::from_u128(3)));
 	assert_eq!(page.messages[0].attachments[0].id, Uuid::from_u128(10));
+}
+#[rstest]
+#[tokio::test]
+async fn history_counts_the_messages_a_silent_node_left_out_and_not_the_refused_ones() {
+	let rows = (2..=9)
+		.rev()
+		.map(|id| HistoryRow {
+			message: message(id),
+			reply_thread_id: None,
+			root_thread_id: None,
+		})
+		.collect();
+	let mut scope = Fixture {
+		history: VecDeque::from([rows]),
+		hidden: HashSet::from([Uuid::from_u128(6), Uuid::from_u128(4)]),
+		silent: HashSet::from([Uuid::from_u128(3), Uuid::from_u128(8), Uuid::from_u128(9)]),
+		..Default::default()
+	};
+	let page = history(
+		&mut scope,
+		workspace(),
+		HistoryRequest {
+			thread_id: None,
+			before: None,
+			limit: 100,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		page.messages
+			.iter()
+			.map(|x| x.message.id)
+			.collect::<Vec<_>>(),
+		vec![Uuid::from_u128(2), Uuid::from_u128(5), Uuid::from_u128(7)]
+	);
+	assert_eq!(
+		page.unconfirmed,
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			node: "aidash://other/silent".into(),
+			kind: aidash_domain::unconfirmed::Kind::Message,
+			workspace_id: workspace(),
+			count: 3,
+		}]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn an_unconfirmed_message_is_counted_on_one_page_only() {
+	// Arrange: scanning newest first, 9 reads, 8 is silent, 7 reads, 6 is silent,
+	// 5 reads. The first page of two ends at 7; 6 and 5 belong to the next page.
+	let rows = |ids: &[u128]| {
+		ids.iter()
+			.map(|id| HistoryRow {
+				message: message(*id),
+				reply_thread_id: None,
+				root_thread_id: None,
+			})
+			.collect::<Vec<_>>()
+	};
+	let silent = HashSet::from([Uuid::from_u128(8), Uuid::from_u128(6)]);
+	let mut scope = Fixture {
+		history: VecDeque::from([rows(&[9, 8, 7, 6, 5]), rows(&[6, 5, 4])]),
+		silent,
+		..Default::default()
+	};
+	let request = |before| HistoryRequest {
+		thread_id: None,
+		before,
+		limit: 2,
+	};
+	// Act
+	let first = history(&mut scope, workspace(), request(None))
+		.await
+		.unwrap();
+	let second = history(&mut scope, workspace(), request(first.next_before))
+		.await
+		.unwrap();
+	// Assert: 8 on the first page, 6 on the second, never 6 twice.
+	assert_eq!(first.next_before, Some(Uuid::from_u128(7)));
+	assert_eq!(first.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
+	assert_eq!(second.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
 }
 #[rstest]
 #[tokio::test]

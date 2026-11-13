@@ -33,6 +33,7 @@ impl Transport for HttpTransport {
 			.headers()
 			.get("x-aidash-transaction-pending")
 			.is_some_and(|value| value == "1");
+		let mut unreachable = None;
 		let policy_busy = response
 			.headers()
 			.get("x-aidash-policy-busy")
@@ -46,6 +47,15 @@ impl Transport for HttpTransport {
 			};
 			crate::response::bytes(response, limit).await
 		} else {
+			if status.as_u16() == 503
+				&& !transaction_pending
+				&& let Ok(bytes) = crate::response::bytes(response, 4096).await
+			{
+				unreachable = serde_json::from_slice::<Value>(&bytes)
+					.ok()
+					.as_ref()
+					.and_then(aidash_application::ports::federation::authority::Unreachable::of);
+			}
 			Ok(Vec::new())
 		};
 		Ok(Reply {
@@ -53,6 +63,7 @@ impl Transport for HttpTransport {
 			semantic_reason,
 			execution_refusal,
 			transaction_pending,
+			unreachable,
 			policy_busy,
 			body,
 		})

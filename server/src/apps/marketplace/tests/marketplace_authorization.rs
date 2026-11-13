@@ -2073,7 +2073,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	drop(frames);
 	assert_eq!(
 		request(&app, &b, "GET", "/api/events", Value::Null).await.1,
-		json!([])
+		json!({"events": [], "unconfirmed": []})
 	);
 	assert_eq!(
 		request(
@@ -2846,7 +2846,10 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		denied_cursor.to_string()
 	);
 	let bytes = finite_body(response).await;
-	assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
+	assert_eq!(
+		serde_json::from_slice::<Value>(&bytes).unwrap(),
+		json!({"events": [], "unconfirmed": []})
+	);
 	let page = request(
 		&app,
 		&a,
@@ -2856,7 +2859,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	)
 	.await;
 	assert_eq!(page.0, 200, "{page:?}");
-	assert_eq!(page.1[0]["sequence"], visible.sequence);
+	assert_eq!(page.1["events"][0]["sequence"], visible.sequence);
 	let (events, cursor) = reader.poll_events(after, None, 1000).await.unwrap();
 	assert!(
 		events.is_empty(),
@@ -3350,7 +3353,7 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	.await
 	.expect("global polling must advance past a full page of old workspace events");
 	assert_eq!(result.0, 200);
-	let events = result.1.as_array().unwrap();
+	let events = result.1["events"].as_array().unwrap();
 	assert!(
 		events
 			.iter()

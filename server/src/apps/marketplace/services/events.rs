@@ -27,8 +27,10 @@ pub(crate) async fn response(
 	store: &Store,
 	identity: &SubjectIdentity,
 	events: Vec<Event>,
+	mut unconfirmed: aidash_domain::unconfirmed::Tally,
 ) -> Result<Response> {
 	let mut access = Access::begin(store, identity).await?;
+	access.lists = true;
 	// Distribution precedes catalog reads; repeat candidate filtering at handoff.
 	storage::lock(&mut access.tx, false).await?;
 	let result = aidash_application::marketplace::events::poll_events(
@@ -37,6 +39,15 @@ pub(crate) async fn response(
 		store.deployment.as_str(),
 	)
 	.await
+	.map(|(events, left_out)| {
+		// The second filter runs under a new authority and can meet a Node that
+		// has stopped answering since the first one passed the event.
+		unconfirmed.merge(left_out);
+		crate::apps::execution::serializers::management::EventPage {
+			events,
+			unconfirmed: unconfirmed.into_entries(),
+		}
+	})
 	.map_err(Into::into);
 	super::management::handoff(store, access, result).await
 }

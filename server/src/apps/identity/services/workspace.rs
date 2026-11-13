@@ -329,6 +329,7 @@ impl Workspaces {
 		offset: u64,
 	) -> Result<crate::apps::workspaces::serializers::tasks::TaskPage> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::state::task_page(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
 			offset,
@@ -399,12 +400,14 @@ impl Workspaces {
 
 	pub async fn snapshot(&self, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.lists = true;
 		let result = access.workspace_snapshot(id).await;
 		access.finish(result).await
 	}
 
 	pub async fn state(&self, deployment: DeploymentIdentity) -> Result<StateResponse> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::state::state(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
 		)
@@ -424,6 +427,7 @@ impl Workspaces {
 			human_requests: state.human_requests,
 			conversations: state.conversations,
 			events: state.events,
+			unconfirmed: state.unconfirmed,
 		})
 		.map_err(Into::into);
 		access.finish(result).await
@@ -437,15 +441,17 @@ impl Workspaces {
 	) -> Result<Vec<Event>> {
 		self.read_events(after, workspace, limit, true)
 			.await
-			.map(|(events, _)| events)
+			.map(|(events, _, _)| events)
 	}
 
+	/// The events, the cursor to continue from, and the rows left out because a
+	/// Node did not answer (#770).
 	pub(crate) async fn events_with_cursor(
 		&self,
 		after: i64,
 		workspace: Option<Uuid>,
 		limit: i64,
-	) -> Result<(Vec<Event>, i64)> {
+	) -> Result<(Vec<Event>, i64, aidash_domain::unconfirmed::Tally)> {
 		self.read_events(after, workspace, limit, true).await
 	}
 
@@ -457,7 +463,10 @@ impl Workspaces {
 		workspace: Option<Uuid>,
 		limit: i64,
 	) -> Result<(Vec<Event>, i64)> {
-		self.read_events(after, workspace, limit, false).await
+		// The stream says nothing about a skipped event (ADR 0133).
+		self.read_events(after, workspace, limit, false)
+			.await
+			.map(|(events, cursor, _)| (events, cursor))
 	}
 
 	/// Idle checks use one unlocked snapshot; each emitted frame still obtains a live lease.
@@ -477,6 +486,7 @@ impl Workspaces {
 		on_query: impl FnOnce(),
 	) -> Result<(Vec<Event>, i64, bool)> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.lists = true;
 		access.audit = false;
 		let result = aidash_application::authorization::stream::stream_page(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
@@ -495,8 +505,9 @@ impl Workspaces {
 		workspace: Option<Uuid>,
 		limit: i64,
 		audit: bool,
-	) -> Result<(Vec<Event>, i64)> {
+	) -> Result<(Vec<Event>, i64, aidash_domain::unconfirmed::Tally)> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.lists = true;
 		access.audit = audit;
 		let result = aidash_application::authorization::stream::read_events(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
@@ -524,8 +535,20 @@ impl Workspaces {
 		access.finish_deciding(result).await
 	}
 
+	/// [`Self::can_emit`] for the event stream, which leaves a Node alone for a
+	/// while after it did not answer. The inference stream shares `can_emit`
+	/// and always asks (ADR 0133).
+	pub async fn can_emit_listing(&self, event: &Event) -> Result<bool> {
+		self.can_emit_in(event, true).await
+	}
+
 	pub async fn can_emit(&self, event: &Event) -> Result<bool> {
+		self.can_emit_in(event, false).await
+	}
+
+	async fn can_emit_in(&self, event: &Event, lists: bool) -> Result<bool> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.lists = lists;
 		let result = aidash_application::authorization::stream::can_emit(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
 			event,

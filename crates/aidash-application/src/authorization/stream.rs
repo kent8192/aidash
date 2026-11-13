@@ -12,6 +12,7 @@ use aidash_domain::{
 	Event,
 	identity::authority::{DashboardStatusFailure, dashboard_status, enabled},
 	policy::{Evaluation, Resource},
+	unconfirmed::{Kind, Tally},
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -92,7 +93,7 @@ pub async fn read_events(
 	after: i64,
 	workspace: Option<Uuid>,
 	limit: i64,
-) -> Result<(Vec<Event>, i64)> {
+) -> Result<(Vec<Event>, i64, Tally)> {
 	let visible = if let Some(id) = workspace {
 		scope.require_workspace(id, "workspace.read").await?;
 		scope.require_workspace(id, "workspace.events").await?;
@@ -109,6 +110,7 @@ pub async fn read_events(
 	let limit = limit.clamp(1, 1000) as usize;
 	let mut cursor = after.max(0);
 	let mut result = vec![];
+	let mut unconfirmed = Tally::new();
 	let mut scanned = 0;
 	let mut runs = RunVerdicts::default();
 	while scanned < EVENT_SCAN_LIMIT {
@@ -120,18 +122,21 @@ pub async fn read_events(
 		scanned += batch.len();
 		for event in batch {
 			cursor = event.sequence;
-			if scope.event_visible(&event, &mut runs).await? {
+			scope.begin_row();
+			let visible = scope.event_visible(&event, &mut runs).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, visible) {
 				result.push(event);
 			}
 			if result.len() == limit {
-				return Ok((result, cursor));
+				return Ok((result, cursor, unconfirmed));
 			}
 		}
 		if exhausted {
 			break;
 		}
 	}
-	Ok((result, cursor))
+	Ok((result, cursor, unconfirmed))
 }
 
 pub async fn can_emit(scope: &mut dyn StreamSession, event: &Event) -> Result<bool> {

@@ -96,7 +96,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
         state["phase"] = case["id"] + ":indexing"
         deadline = time.monotonic() + 90
         while True:
-            entries = api(f"/api/workspaces/{workspace}/semantic/entries")
+            entries = api(f"/api/workspaces/{workspace}/semantic/entries")["entries"]
             states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in identities}
             if len(states) == len(identities) and all(value == "READY" for value in states.values()):
                 return
@@ -166,7 +166,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             state["phase"] = case["id"] + ":indexing"
             deadline = time.monotonic() + 90
             while True:
-                entries = api(f"/api/workspaces/{workspace}/semantic/entries")
+                entries = api(f"/api/workspaces/{workspace}/semantic/entries")["entries"]
                 states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in predicted}
                 if len(states) == len(predicted) and all(state == "READY" for state in states.values()):
                     break
@@ -182,7 +182,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             corrected = {**content, "text": "The source was withdrawn for correction / 訂正のため元資料を撤回。"}
             api(mutation_path, {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank,
                 "changes": [{"operation": "correct", "id": source, "expected_revision": admission["revision"], "content": corrected}]})
-            visible = api(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank})
+            visible = api(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank})["units"]
             still_visible = {unit["id"] for unit in visible}.intersection(predicted)
             state["phase"] = case["id"] + ":usage"
             charged = usage(bank)
