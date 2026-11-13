@@ -541,41 +541,11 @@ pub async fn resolve(
 		.map(|(r, e)| (r.clone(), e.clone()))
 		.collect::<Vec<_>>();
 	let mut visited = BTreeSet::new();
-	let mut foreign_agents = BTreeMap::new();
 	while let Some((identity, entry)) = queue.pop() {
 		if !visited.insert(identity.clone()) {
 			continue;
 		}
 		for (reference, kind) in definition_references(&identity, &entry)? {
-			if reference.registry_deployment != identity.registry_deployment
-				&& kind == "agent"
-				&& !foreign_agents.contains_key(&reference)
-			{
-				let snapshot = catalog.foreign_agent(&reference).await?;
-				snapshot.validate()?;
-				if snapshot.agent != reference {
-					return Err(Error::Invalid(
-						"foreign Agent closure returned a different root".into(),
-					));
-				}
-				for pinned in &snapshot.definitions {
-					if let Some(existing) = definitions.get(&pinned.identity) {
-						if existing != &pinned.definition {
-							return Err(Error::Conflict(
-								"foreign Agent closures disagree on an immutable definition".into(),
-							));
-						}
-					} else {
-						definitions.insert(pinned.identity.clone(), pinned.definition.clone());
-						if definitions.len() > MAX_BINDINGS {
-							return Err(Error::Invalid(
-								"Binding dependency closure exceeds 128 definitions".into(),
-							));
-						}
-					}
-				}
-				foreign_agents.insert(reference.clone(), snapshot);
-			}
 			let dependency = if let Some(entry) = definitions.get(&reference) {
 				entry.clone()
 			} else {
@@ -688,7 +658,6 @@ pub async fn resolve(
 		remote,
 		bindings: resolved.into_values().collect(),
 		definitions,
-		foreign_agents: foreign_agents.into_values().collect(),
 		agent_plugins,
 	};
 	snapshot.validate()?;

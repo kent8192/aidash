@@ -176,7 +176,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let federation = graph.get_leaf_nodes_for_app("federation");
 	assert_eq!(federation.len(), 1);
-	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
+	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0050_recovery_lifetime_merge");
@@ -191,7 +191,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		108
 	);
 	let tables = migrations
 		.iter()
@@ -972,7 +972,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		108
 	);
 }
 

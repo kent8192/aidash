@@ -43,7 +43,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	}
 	.unwrap();
 	assert_eq!(created["task"]["status"], "CLAIMED");
-	assert_eq!(created["delegation"]["delivered"], true);
+	assert_eq!(created["delegation"]["task_id"], created["task"]["id"]);
 	let chain: Vec<String> = {
 		let query_bind_1 = run.id;
 		sqlx::query_scalar(

@@ -451,9 +451,6 @@ async fn workspace_task_execution_and_artifact_commit_together_once(
 		.node_id(b.address.as_str())
 		.agent_id(&agent.id)
 		.agent_version(&agent.version)
-		.delivered(true)
-		.human_requests(json!([]).into())
-		.binding_snapshot(None)
 		.finish();
 	a.f.store
 		.pool

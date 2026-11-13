@@ -1,5 +1,14 @@
 # Aidash native migration history
 
+`federation/0022_delegation_unused_columns` (after
+`federation/0021_node_preview_origin_merge`) drops the `delegations_retry` index
+and the `binding_snapshot`, `human_requests`, `next_attempt_at` and `delivered`
+columns of `delegations`, which nothing writes or reads since outbound delivery
+and the foreign Agent closure import were removed (#373). A delegation row now
+records only the agent version that runs a locally delegated Task.
+`0023_delegation_unused_columns_state` records the model state. Both use typed
+operations; the reverse restores the columns empty.
+
 `identity/0068_decision_coalescing` adds `run_id`, `remote_grant_id` and
 `coalesced` to `authorization_decisions`. Existing rows name neither and stay as
 they are. `identity/0069_decision_coalescing_indexes` is database-only and adds

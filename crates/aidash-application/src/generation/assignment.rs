@@ -171,7 +171,6 @@ pub async fn assign_in_restricted(
 						node_id: node.to_string(),
 						agent_id: id,
 						agent_version: version,
-						delivered: true,
 					},
 				});
 			}

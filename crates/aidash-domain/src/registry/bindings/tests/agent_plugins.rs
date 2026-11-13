@@ -134,7 +134,6 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 		remote: false,
 		bindings,
 		definitions,
-		foreign_agents: vec![],
 		agent_plugins,
 	}
 }
@@ -465,25 +464,6 @@ fn a_remote_run_pins_no_plugins() {
 	snapshot.remote = true;
 
 	assert!(refusal(&snapshot).contains("unavailable remotely"));
-}
-
-#[test]
-fn a_foreign_agent_with_plugins_is_an_unsupported_dependency() {
-	let plugins = [("acme-tools", &["lint"][..])];
-	let snapshot = snapshot_of(&agent_with(&plugins), pinned_for(&plugins));
-	let foreign = ForeignAgentSnapshot {
-		schema_version: snapshot.schema_version,
-		agent: snapshot.agent,
-		bindings: snapshot.bindings,
-		definitions: snapshot.definitions,
-	};
-
-	let error = foreign.validate().unwrap_err().to_string();
-
-	assert!(
-		error.contains("unsupported private or cross-Node dependency"),
-		"{error}"
-	);
 }
 
 #[test]

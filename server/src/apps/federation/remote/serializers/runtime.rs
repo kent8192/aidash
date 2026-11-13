@@ -9,9 +9,8 @@ impl From<DelegationRecord> for Delegation {
 			node_id: record.node_id,
 			agent_id: record.agent_id,
 			agent_version: record.agent_version,
-			delivered: record.delivered,
 		}
 	}
 }
 
-pub use aidash_domain::federation::{Delegation, DiscoveredAgent, Discovery, Offer};
+pub use aidash_domain::federation::{Delegation, DiscoveredAgent, Discovery};

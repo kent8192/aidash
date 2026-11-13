@@ -88,7 +88,6 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		remote: true,
 		bindings,
 		definitions: definitions.clone(),
-		foreign_agents: vec![],
 		agent_plugins: vec![],
 	};
 	let mut inspection: Inspection = serde_json::from_value(json!({"node_id":host,"authority_digest":digest(&json!({})),"agent":entry,"binding_snapshot":snapshot,"definitions":definitions.iter().map(|d| json!({"entry":d.identity.local(),"kind":d.definition.kind,"digest":d.digest,"metadata":d.definition})).collect::<Vec<_>>()})).unwrap();

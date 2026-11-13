@@ -12930,9 +12930,6 @@
               "agent_version": {
                 "type": "string"
               },
-              "delivered": {
-                "type": "boolean"
-              },
               "node_id": {
                 "type": "string"
               },
@@ -12941,13 +12938,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "task_id",
-              "node_id",
-              "agent_id",
-              "agent_version",
-              "delivered"
-            ],
+            "required": ["task_id", "node_id", "agent_id", "agent_version"],
             "type": "object"
           },
           "NodeName": {
@@ -15281,9 +15272,6 @@
               "agent_version": {
                 "type": "string"
               },
-              "delivered": {
-                "type": "boolean"
-              },
               "node_id": {
                 "type": "string"
               },
@@ -15292,13 +15280,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "task_id",
-              "node_id",
-              "agent_id",
-              "agent_version",
-              "delivered"
-            ],
+            "required": ["task_id", "node_id", "agent_id", "agent_version"],
             "type": "object"
           },
           "Entry": {
@@ -24680,9 +24662,6 @@
               "agent_version": {
                 "type": "string"
               },
-              "delivered": {
-                "type": "boolean"
-              },
               "node_id": {
                 "type": "string"
               },
@@ -24691,13 +24670,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "task_id",
-              "node_id",
-              "agent_id",
-              "agent_version",
-              "delivered"
-            ],
+            "required": ["task_id", "node_id", "agent_id", "agent_version"],
             "type": "object"
           }
         },
@@ -30909,13 +30882,6 @@
                   "$ref": "#/components/schemas/ResolvedDefinition"
                 }
               },
-              "foreign_agents": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ForeignAgentSnapshot"
-                },
-                "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
-              },
               "remote": {
                 "type": "boolean",
                 "description": "Admission placement determines which implicit defaults must remain excluded."
@@ -32234,35 +32200,6 @@
                 "$ref": "#/components/schemas/Reason"
               }
             }
-          },
-          "ForeignAgentSnapshot": {
-            "type": "object",
-            "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
-            "required": ["schema_version", "agent", "bindings", "definitions"],
-            "properties": {
-              "agent": {
-                "$ref": "#/components/schemas/QualifiedRef"
-              },
-              "bindings": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedBinding"
-                }
-              },
-              "definitions": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedDefinition"
-                }
-              },
-              "schema_version": {
-                "type": "integer",
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0
-              }
-            },
-            "additionalProperties": false
           },
           "HistoryEntry": {
             "type": "object",
@@ -35335,13 +35272,6 @@
                   "$ref": "#/components/schemas/ResolvedDefinition"
                 }
               },
-              "foreign_agents": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ForeignAgentSnapshot"
-                },
-                "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
-              },
               "remote": {
                 "type": "boolean",
                 "description": "Admission placement determines which implicit defaults must remain excluded."
@@ -36489,35 +36419,6 @@
                 "$ref": "#/components/schemas/Reason"
               }
             }
-          },
-          "ForeignAgentSnapshot": {
-            "type": "object",
-            "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
-            "required": ["schema_version", "agent", "bindings", "definitions"],
-            "properties": {
-              "agent": {
-                "$ref": "#/components/schemas/QualifiedRef"
-              },
-              "bindings": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedBinding"
-                }
-              },
-              "definitions": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedDefinition"
-                }
-              },
-              "schema_version": {
-                "type": "integer",
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0
-              }
-            },
-            "additionalProperties": false
           },
           "HistoryEntry": {
             "type": "object",
@@ -51566,13 +51467,6 @@
                   "$ref": "#/components/schemas/ResolvedDefinition"
                 }
               },
-              "foreign_agents": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ForeignAgentSnapshot"
-                },
-                "description": "Public Deployment Administrator Agent transports retain the receiver's complete admitted closure."
-              },
               "remote": {
                 "type": "boolean",
                 "description": "Admission placement determines which implicit defaults must remain excluded."
@@ -52703,35 +52597,6 @@
                 "$ref": "#/components/schemas/Reason"
               }
             }
-          },
-          "ForeignAgentSnapshot": {
-            "type": "object",
-            "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
-            "required": ["schema_version", "agent", "bindings", "definitions"],
-            "properties": {
-              "agent": {
-                "$ref": "#/components/schemas/QualifiedRef"
-              },
-              "bindings": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedBinding"
-                }
-              },
-              "definitions": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedDefinition"
-                }
-              },
-              "schema_version": {
-                "type": "integer",
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0
-              }
-            },
-            "additionalProperties": false
           },
           "HistoryEntry": {
             "type": "object",
