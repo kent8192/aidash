@@ -12,6 +12,8 @@ An unclassified refusal goes to the model rather than pausing. A pause that no c
 
 `NotFound` becomes a call error everywhere, but `Conflict` only where the call caused it. `Conflict` also carries internal faults such as `admitted Binding definition changed`, and returning those to the model would let the Run go on with a stale definition.
 
+An exact definition absent from the caller's Tenant Registry is a `NotFound`, including when `task_delegate` names an unknown Agent at the gate. A registered version without Catalog Approval still pauses. A scope inheriting a lease does not check Registry existence outside its inherited approval frontier, so its refusal remains an Authority Pause.
+
 A paused refusal of a replay-safe tool ends with status `REFUSED`, and resuming runs it again. An `Unsafe` tool keeps the older path, in which resuming asks a person to reconcile the call, because running it again could repeat an effect. A person may sometimes be asked about a call that never ran. That is better than a second charge or a second Live preview.
 
 Checks record why they refused in a note scoped to the tool call, and the harness reads it when the call ends. `Forbidden` keeps its meaning for about 270 match arms that treat it as "skip" or "not visible".
