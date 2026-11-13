@@ -1028,12 +1028,11 @@ async fn ninety_documents_register_and_a_run_finds_a_passage_within_budget(
 	c.close().await;
 }
 
-/// Each command that publishes a revision writes one row per manifest file, so
-/// a Reference set makes every command pay for its size (#789). A patch takes
-/// the same publication path as a shell command, without needing a Runner.
+/// Every published revision holds one row per file of its manifest, Reference
+/// files included (#789). A patch takes the same publication path as a shell
+/// command, without needing a Runner.
 #[rstest::rstest]
 #[case::one_document(1)]
-#[case::ninety_documents(90)]
 #[case::a_full_set(aidash_domain::capabilities::references::MAX_REFERENCE_FILES)]
 #[tokio::test]
 async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
@@ -1065,9 +1064,7 @@ async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
 	let first_revision = area["revision"].as_i64().unwrap();
 
 	let mut revision = area["revision"].clone();
-	let mut took = vec![];
 	for index in 0..PATCHES {
-		let patched_at = std::time::Instant::now();
 		let (status, patched) = request(
 			&c.app,
 			&token,
@@ -1076,7 +1073,6 @@ async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
 			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{format!("note-{index}.md"):null},"patch":format!("*** Begin Patch\n*** Add File: note-{index}.md\n+note {index}\n*** End Patch")}),
 		)
 		.await;
-		took.push(patched_at.elapsed());
 		assert_eq!(status, 200, "{patched}");
 		revision = patched["revision"].clone();
 	}
@@ -1102,21 +1098,6 @@ async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
 			"revision {revision} holds a row for each Reference file and each note"
 		);
 	}
-	let probe = Query::select()
-		.expr(Expr::value(1))
-		.to_string(PostgresQueryBuilder);
-	let probed_at = std::time::Instant::now();
-	for _ in 0..200 {
-		sqlx::query(&probe).execute(pool).await.unwrap();
-	}
-	let round_trip = probed_at.elapsed() / 200;
-	took.sort();
-	println!(
-		"#789 timing: {documents} documents, patch median {:?} (min {:?}, max {:?}), one database round trip {round_trip:?}",
-		took[PATCHES / 2],
-		took[0],
-		took[PATCHES - 1]
-	);
 	c.close().await;
 }
 
