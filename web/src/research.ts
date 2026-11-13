@@ -444,27 +444,21 @@ export function exceedsCeiling(tenant: Periods | null, deployment: Periods) {
 
 /**
  * Who revoked evidence or changed Retention Rules, as recorded:
- * `subject:<tenant>/<subject>` shows the subject. A Deployment
- * Administrator's identity is shown only to Deployment Administrators.
+ * `subject:<tenant>/<subject>` shows the subject. Records written before
+ * #484 may name a Deployment Administrator; only Tenant subjects read them
+ * (ADR 0102), so that identity is never shown.
  */
-export function recordedActor(
-  recorded: string,
-  deploymentAdministrator: boolean,
-  ja: boolean,
-): string {
+export function recordedActor(recorded: string, ja: boolean): string {
   const administrator = ja
     ? "デプロイメント管理者"
     : "Deployment Administrator";
   if (recorded.startsWith("subject:"))
     return recorded.slice(recorded.indexOf("/") + 1) || recorded;
-  if (recorded.startsWith("deployment-administrator:"))
-    return deploymentAdministrator
-      ? `${administrator} (${recorded.slice("deployment-administrator:".length)})`
-      : administrator;
-  if (recorded === "deployment-administrator")
-    return deploymentAdministrator
-      ? `${administrator} (${ja ? "API トークン" : "API token"})`
-      : administrator;
+  if (
+    recorded === "deployment-administrator" ||
+    recorded.startsWith("deployment-administrator:")
+  )
+    return administrator;
   return recorded;
 }
 

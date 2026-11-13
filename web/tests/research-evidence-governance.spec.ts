@@ -104,6 +104,10 @@ test("a permitted reader revokes a Run's evidence with a reason and then sees th
     name: "Revoke this Run's research evidence",
   });
   await expect(dialog).toContainText("Revocation cannot be undone.");
+  // ADR 0083: the journal's copies go too; only the model's own text stays.
+  await expect(dialog).toContainText(
+    "What the model wrote itself is not removed and may still quote the revoked pages.",
+  );
   await expect(dialog).toContainText(
     "Do not paste URLs, page content or personal data",
   );
