@@ -615,14 +615,7 @@ function RunPanel({
       {!managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
       )}
-      {!managed && (
-        <RunResearchEvidence
-          run={id}
-          deploymentAdministrator={
-            data.access.kind === "deployment_administrator"
-          }
-        />
-      )}
+      {!managed && <RunResearchEvidence run={id} />}
       {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}

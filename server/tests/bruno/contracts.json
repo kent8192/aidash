@@ -44678,7 +44678,7 @@
                 "type": "string"
               },
               "revoked_by": {
-                "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token.",
+                "description": "`subject:<tenant>/<subject>`. A record written before #484 may instead\nhold `deployment-administrator:<identity>` or `deployment-administrator`\nfor the deployment's API token; no Deployment Administrator revokes now.",
                 "type": "string"
               },
               "run_id": {
@@ -44778,7 +44778,7 @@
                 "type": "string"
               },
               "revoked_by": {
-                "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token.",
+                "description": "`subject:<tenant>/<subject>`. A record written before #484 may instead\nhold `deployment-administrator:<identity>` or `deployment-administrator`\nfor the deployment's API token; no Deployment Administrator revokes now.",
                 "type": "string"
               },
               "run_id": {
@@ -44878,7 +44878,7 @@
                 "type": "string"
               },
               "revoked_by": {
-                "description": "`subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or\n`deployment-administrator` for the deployment's API token.",
+                "description": "`subject:<tenant>/<subject>`. A record written before #484 may instead\nhold `deployment-administrator:<identity>` or `deployment-administrator`\nfor the deployment's API token; no Deployment Administrator revokes now.",
                 "type": "string"
               },
               "run_id": {
