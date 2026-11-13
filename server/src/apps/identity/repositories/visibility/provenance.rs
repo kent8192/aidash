@@ -88,6 +88,9 @@ impl ReadProvenanceScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+		if let Some(row) = self.access.state_source_artifact(id, workspace) {
+			return Ok(row);
+		}
 		if let Some(artifact) = self.access.read_lookups.artifact(id, workspace) {
 			return Ok(artifact);
 		}
@@ -98,7 +101,7 @@ impl ReadProvenanceScope for Reads<'_> {
 	}
 	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
 		self.access
-			.prepare_read_sources(sources)
+			.prepare_walk_sources(sources)
 			.await
 			.map_err(Into::into)
 	}
@@ -156,37 +159,44 @@ impl ReadProvenanceScope for Reads<'_> {
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>> {
 		let result: NativeResult<Vec<EntityRef>> = async {
 			let this = &mut *self.access;
-			let mut entries: Vec<(String, String)> = {
-				let query_bind_1 = run;
-				crate::database::native::query_as(
-					&Query::select()
-						.columns([Alias::new("entry_id"), Alias::new("entry_version")])
-						.from(Alias::new("authorization_run_registry_reads"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.order_by(Alias::new("entry_id"), Order::Asc)
-						.order_by(Alias::new("entry_version"), Order::Asc)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["entry_id", "entry_version"])
-				.fetch_all(&mut **this.tx)
-				.await?
-			};
-			let snapshot: Option<serde_json::Value> = crate::database::native::query_scalar(
-				&Query::select()
-					.expr(Expr::cust("context -> 'binding_snapshot'"))
-					.from(Alias::new("runs"))
-					.and_where(Expr::col("id").eq(Expr::value(run)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **this.tx)
-			.await?;
+			let mut entries: Vec<(String, String)> =
+				if let Some(entries) = this.state_registry_reads(run) {
+					entries
+				} else {
+					let query_bind_1 = run;
+					crate::database::native::query_as(
+						&Query::select()
+							.columns([Alias::new("entry_id"), Alias::new("entry_version")])
+							.from(Alias::new("authorization_run_registry_reads"))
+							.and_where(
+								reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id")))
+									.eq(SimpleExpr::CustomWithExpr(
+										"(?)".to_owned(),
+										vec![Expr::value(query_bind_1.to_owned()).into()],
+									)),
+							)
+							.order_by(Alias::new("entry_id"), Order::Asc)
+							.order_by(Alias::new("entry_version"), Order::Asc)
+							.to_string(PostgresQueryBuilder),
+					)
+					.columns(&["entry_id", "entry_version"])
+					.fetch_all(&mut **this.tx)
+					.await?
+				};
+			let snapshot: Option<serde_json::Value> =
+				if let Some(snapshot) = this.state_snapshot(run) {
+					snapshot
+				} else {
+					crate::database::native::query_scalar(
+						&Query::select()
+							.expr(Expr::cust("context -> 'binding_snapshot'"))
+							.from(Alias::new("runs"))
+							.and_where(Expr::col("id").eq(Expr::value(run)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.scalar_optional(&mut **this.tx)
+					.await?
+				};
 			if let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.is_null()) {
 				let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
 					serde_json::from_value(snapshot)?;
@@ -229,6 +239,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn sources(&mut self, run: Uuid) -> Result<Vec<RecordedRead>> {
+		if let Some(sources) = self.access.state_sources(run) {
+			return Ok(sources);
+		}
 		let result: NativeResult<Vec<RecordedRead>> = async {
 			let this = &mut *self.access;
 			let sources: Vec<(Uuid, String, Uuid)> = {
@@ -261,6 +274,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
+		if let Some(row) = self.access.state_source_task(id, workspace) {
+			return Ok(row);
+		}
 		if let Some(task) = self.access.read_lookups.task(id, workspace) {
 			return Ok(task);
 		}
@@ -303,6 +319,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+		if let Some(row) = self.access.state_source_message(id, workspace) {
+			return Ok(row);
+		}
 		if let Some(message) = self.access.read_lookups.message(id, workspace) {
 			return Ok(message);
 		}
@@ -349,6 +368,12 @@ impl ReadProvenanceScope for Reads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Message>> {
+		if let Some(message) = self.access.state_source_attachment(id, workspace) {
+			return match message {
+				Some(id) => self.source_message(id, workspace).await,
+				None => Ok(None),
+			};
+		}
 		if let Some(message) = self.access.read_lookups.attachment(id, workspace) {
 			return match message {
 				Some(id) => self.source_message(id, workspace).await,
@@ -417,6 +442,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Conversation>> {
+		if let Some(row) = self.access.state_source_conversation(id, workspace) {
+			return Ok(row);
+		}
 		if let Some(conversation) = self.access.read_lookups.conversation(id, workspace) {
 			return Ok(conversation);
 		}
@@ -571,7 +599,7 @@ impl ReadProvenanceScope for NativeReads<'_> {
 	}
 	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
 		self.access
-			.prepare_read_sources(sources)
+			.prepare_walk_sources(sources)
 			.await
 			.map_err(Into::into)
 	}

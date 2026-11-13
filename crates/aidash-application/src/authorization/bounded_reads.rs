@@ -1,7 +1,7 @@
 //! Bounded candidate pages retain current disclosure decisions.
 pub use crate::ports::authorization::bounded_reads::HumanState;
 use crate::{Result, ports::authorization::bounded_reads::Scope};
-use aidash_domain::{HumanRequest, RunInspection};
+use aidash_domain::{HumanRequest, RunSummary};
 use serde::Serialize;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -10,7 +10,7 @@ pub const PAGE_SIZE: usize = 50;
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct RunPage {
-	pub items: Vec<RunInspection>,
+	pub items: Vec<RunSummary>,
 	/// Opaque continuation cursor.
 	pub next_cursor: Option<String>,
 }
@@ -34,7 +34,7 @@ pub async fn workspace_runs(
 	let mut items = Vec::new();
 	for row in rows {
 		if let Some(run) = scope.visible_run(row.metadata.id).await? {
-			items.push(run);
+			items.push(run.into());
 		}
 	}
 	Ok(RunPage { items, next_cursor })
@@ -50,7 +50,7 @@ pub async fn runs(scope: &mut dyn Scope, task: Uuid, cursor: Option<Uuid>) -> Re
 	let mut items = Vec::new();
 	for row in rows {
 		if let Some(run) = scope.visible_run(row.metadata.id).await? {
-			items.push(run);
+			items.push(run.into());
 		}
 	}
 	Ok(RunPage { items, next_cursor })
@@ -100,7 +100,9 @@ pub async fn humans(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use aidash_domain::{RawRun, RunControl, RunMetadata, RunPhase, policy::Resource};
+	use aidash_domain::{
+		RawRun, RunControl, RunInspection, RunMetadata, RunPhase, policy::Resource,
+	};
 	use async_trait::async_trait;
 	use serde_json::json;
 

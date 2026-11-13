@@ -611,6 +611,12 @@ export async function setup(
       return route.fulfill({
         json: {
           ...data,
+          runs: data.runs.map(({ context, ...run }) => ({
+            ...run,
+            input_tokens: null,
+            output_tokens: null,
+            tool_calls: context == null ? null : 0,
+          })),
           human_requests: data.human_requests.filter(
             (request) => request.response === null,
           ),
@@ -864,11 +870,18 @@ export async function setup(
     if (runsWorkspace)
       return route.fulfill({
         json: {
-          items: data.runs.filter(
-            (run) =>
-              run.workspace_id === runsWorkspace &&
-              !["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase),
-          ),
+          items: data.runs
+            .filter(
+              (run) =>
+                run.workspace_id === runsWorkspace &&
+                !["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase),
+            )
+            .map(({ context, ...run }) => ({
+              ...run,
+              input_tokens: null,
+              output_tokens: null,
+              tool_calls: context == null ? null : 0,
+            })),
           next_cursor: null,
         },
       });

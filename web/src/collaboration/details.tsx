@@ -481,7 +481,7 @@ export function OperationsDialog({
  * Steps that went without optional Workspace semantic context (ADR 0059). Only a
  * Run local to its executing node degrades, which need not be the viewer's node.
  */
-function DegradedContext({ run }: { run: Run }) {
+function DegradedContext({ run }: { run: Pick<Run, "recovery"> }) {
   const { t } = useI18n();
   const degraded = run.recovery?.degraded;
   if (!degraded?.count) return null;

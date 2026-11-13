@@ -3,7 +3,9 @@ import type { Run } from "../types";
 export type LocatedRun = { run: Run; node: string };
 export const terminalRun = (run: Run) =>
   ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
-export const resumableRun = (run: Run) =>
+export const resumableRun = (
+  run: Pick<Run, "recovery" | "state_error" | "phase" | "state">,
+) =>
   !["invalidated", "context_budget", "durable_memory_budget"].includes(
     run.recovery?.semantic_reason ?? "",
   ) &&

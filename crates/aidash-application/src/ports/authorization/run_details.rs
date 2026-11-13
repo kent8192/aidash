@@ -25,6 +25,10 @@ pub trait RunDetailsScope: Send {
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>>;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	/// State can preload under the exact authority used by this visibility check.
+	async fn prepare_visible(&mut self, _run: &RunInspection) -> Result<()> {
+		Ok(())
+	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool>;
 	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
 	/// this reader may see. `None` when the reader's own policy hides the Run.

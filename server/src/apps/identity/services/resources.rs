@@ -102,9 +102,12 @@ impl Access {
 			&run,
 			workspace.attributes,
 		);
-		let id = if let Some(binding) =
+		let binding = if self.state_binding_exists(run.id) == Some(false) {
+			None
+		} else {
 			crate::apps::knowledge::repositories::bindings::load(&mut **self.tx, &run).await?
-		{
+		};
+		let id = if let Some(binding) = binding {
 			attributes["participant_id"] = serde_json::json!(binding.bank.participant);
 			attributes["participant_revision"] = serde_json::json!(binding.participant_revision);
 			attributes["shared"] = serde_json::json!(false);

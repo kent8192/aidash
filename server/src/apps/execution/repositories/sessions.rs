@@ -80,6 +80,9 @@ pub(crate) async fn run_area(
 	access: &mut Access,
 	run: Uuid,
 ) -> NativeResult<Option<Option<NativeArea>>> {
+	if let Some(area) = access.state_core_area(run) {
+		return Ok(area);
+	}
 	let area_id: Option<Uuid> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("area_id"))

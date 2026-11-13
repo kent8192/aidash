@@ -83,6 +83,10 @@ pub(crate) async fn state_response(
 	let mut access = Access::begin(store, identity).await?;
 	storage::lock(&mut access.tx, false).await?;
 	let result = async {
+		access.begin_state_registry_preload();
+		access.prepare_state_builtin_definitions().await?;
+		let mut catalog = crate::bootstrap::catalog_scope(&mut access);
+		aidash_application::ports::catalog::CatalogScope::documents(&mut catalog).await?;
 		let mut scope = crate::bootstrap::marketplace_distribution_scope(&mut access);
 		state.registry = aidash_application::marketplace::events::state_registry(
 			&mut scope,

@@ -128,6 +128,12 @@ test("renders mesh groups and navigates node details, tasks and the existing rel
   await expect(
     inspector.getByRole("heading", { name: "Planner Agent", exact: true }),
   ).toBeVisible();
+  await expect(inspector).toContainText("Input tokens");
+  await expect(inspector).toContainText("1,234");
+  await expect(inspector).toContainText("Output tokens");
+  await expect(inspector).toContainText("432");
+  await expect(inspector).toContainText("Tool calls");
+  await expect(inspector).toContainText("5");
   await inspector.getByRole("tab", { name: "Tasks 3", exact: true }).click();
   await inspector
     .getByRole("button", { name: "Build Prototype Running", exact: true })

@@ -54,11 +54,17 @@ impl<Events: Send> DefinitionScope for NativeDefinitions<'_, Events> {
 			.map_err(Into::into)
 	}
 	async fn installation(&mut self, id: &str) -> Result<Option<Installation>> {
+		if let Some(result) = self.access.state_installation(id) {
+			return result.map_err(Into::into);
+		}
 		super::storage::get(&mut self.access.tx, "marketplace_installations", id)
 			.await
 			.map_err(Into::into)
 	}
 	async fn revision(&mut self, id: &str, revision: i64) -> Result<Revision> {
+		if let Some(result) = self.access.state_revision(id, revision) {
+			return result.map_err(Into::into);
+		}
 		crate::marketplace::installations::revision(&mut self.access.tx, id, revision)
 			.await
 			.map_err(Into::into)

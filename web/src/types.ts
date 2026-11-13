@@ -5,7 +5,7 @@ export type {
   Entry,
   Task,
   Workspace,
-  RunInspection as Run,
+  RunSummary as Run,
   HumanRequest,
   Artifact,
   Conversation,

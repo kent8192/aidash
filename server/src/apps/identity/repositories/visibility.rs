@@ -165,6 +165,9 @@ impl LocalRunVisibilityScope for Reads<'_> {
 		self.access.run_reads_visible(run).await.map_err(Into::into)
 	}
 	async fn task(&mut self, run: &RunMetadata) -> Result<Option<Task>> {
+		if let Some(task) = self.access.state_task(run.task_id, run.workspace_id) {
+			return Ok(Some(task));
+		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let task: Option<Task> = {
@@ -526,6 +529,9 @@ impl EventVisibilityScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn run(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<RunMetadata>> {
+		if let Some(run) = workspace.and_then(|workspace| self.access.state_run(id, workspace)) {
+			return Ok(Some(run));
+		}
 		let result: NativeResult<Option<RunMetadata>> = async {
 			let this = &mut *self.access;
 			let run: Option<crate::domain::RunMetadata> = {
