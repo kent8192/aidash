@@ -21,8 +21,9 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody()).to.have.all.keys("error", "reason");
     expect(res.getBody().error).to.be.a("string");
+    expect(res.getBody().reason).to.equal("revoked");
 
   });
 }
