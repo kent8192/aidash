@@ -31,8 +31,14 @@ pub enum Listing {
 pub trait ScheduleScope: Send {
 	/// The person acting.
 	fn subject(&self) -> &str;
-	/// The credential a Schedule they register is admitted with later.
-	fn credential(&self) -> Uuid;
+	/// The credential the person's Schedules are admitted with: their
+	/// Mapping's own long-lived credential, whichever credential they act
+	/// with now, so a Schedule outlives an API token and stops only when the
+	/// Mapping does (ADR 0134). A subject without a Mapping keeps the
+	/// credential it acts with.
+	async fn registrant_credential(&mut self) -> Result<Uuid>;
+	/// The Schedule an Agent's tool call with this key already registered.
+	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Schedule>>;
 	fn now(&self) -> DateTime<Utc>;
 	/// Refuses unless the Tenant's policy allows `action` on the Workspace.
 	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
@@ -70,12 +76,14 @@ pub trait ScheduleScope: Send {
 }
 
 /// Who registers a Schedule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
 	/// A person in the dashboard.
 	Person,
-	/// An Agent, for the person at the root of this Run's chain (#557 decision 6).
-	Agent { run_id: Uuid },
+	/// An Agent, for the person at the root of this Run's chain (#557 decision
+	/// 6), in the tool call with this invocation key; a retried call returns
+	/// the Schedule the first one registered.
+	Agent { run_id: Uuid, key: String },
 }
 
 /// A Schedule with what its page shows beside it.
@@ -135,6 +143,11 @@ pub async fn register(
 	origin: Origin,
 ) -> Result<Schedule> {
 	scope.require_workspace(workspace, "workspace.read").await?;
+	if let Origin::Agent { run_id, key } = &origin
+		&& let Some(existing) = scope.created_by(*run_id, key).await?
+	{
+		return Ok(existing);
+	}
 	scope
 		.require_workspace(workspace, schedules::CREATE)
 		.await?;
@@ -147,17 +160,22 @@ pub async fn register(
 		id: Uuid::new_v4(),
 		workspace_id: workspace,
 		registrant,
-		credential_id: scope.credential(),
+		credential_id: scope.registrant_credential().await?,
 		definition,
 		anchor: now,
 		next_scheduled_at: None,
 		halt: None,
 		halted_at: None,
+		halt_reason: None,
 		successor: None,
 		consecutive_failures: 0,
-		created_by_run_id: match origin {
+		created_by_run_id: match &origin {
 			Origin::Person => None,
-			Origin::Agent { run_id } => Some(run_id),
+			Origin::Agent { run_id, .. } => Some(*run_id),
+		},
+		creation_key: match origin {
+			Origin::Person => None,
+			Origin::Agent { key, .. } => Some(key),
 		},
 		revision: 0,
 		created_at: now,
@@ -267,13 +285,13 @@ pub async fn resume(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<Schedule>
 		// The Schedule is already counted in the Tenant's total.
 		effective_limits(scope).await?.admit(total - 1, mine)?;
 		schedule.registrant = subject;
-		schedule.credential_id = scope.credential();
 		schedule.created_by_run_id = None;
 	}
 	let now = scope.now();
-	schedule.halt = None;
-	schedule.halted_at = None;
-	schedule.successor = None;
+	// The person resumes it as their own action, with their Mapping's
+	// credential as it stands now (ADR 0134).
+	schedule.credential_id = scope.registrant_credential().await?;
+	schedule.clear_halt();
 	schedule.consecutive_failures = 0;
 	schedule.restart(now)?;
 	schedule.updated_at = now;
@@ -346,10 +364,11 @@ pub async fn detail(scope: &mut dyn ScheduleScope, id: Uuid) -> Result<Detail> {
 	})
 }
 
-/// The Tenant's limits as set, and the ceilings they must stay within.
-pub async fn limits(scope: &mut dyn ScheduleScope) -> Result<(Limits, Ceilings)> {
-	let (limits, ceilings, _) = scope.limits().await?;
-	Ok((limits, ceilings))
+/// The Tenant's limits as set, the ceilings they must stay within, and the
+/// limits that apply now as well: after the ceilings and any Tier.
+pub async fn limits(scope: &mut dyn ScheduleScope) -> Result<(Limits, Ceilings, Limits)> {
+	let (limits, ceilings, tier) = scope.limits().await?;
+	Ok((limits, ceilings, ceilings.effective(limits, tier)))
 }
 
 pub async fn set_limits(scope: &mut dyn ScheduleScope, limits: Limits) -> Result<Limits> {

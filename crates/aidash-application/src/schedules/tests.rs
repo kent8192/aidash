@@ -57,8 +57,18 @@ impl ScheduleScope for Fake {
 	fn subject(&self) -> &str {
 		&self.subject
 	}
-	fn credential(&self) -> Uuid {
-		self.credential
+	async fn registrant_credential(&mut self) -> Result<Uuid> {
+		Ok(self.credential)
+	}
+	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Schedule>> {
+		Ok(self
+			.schedules
+			.values()
+			.find(|schedule| {
+				schedule.created_by_run_id == Some(run)
+					&& schedule.creation_key.as_deref() == Some(key)
+			})
+			.cloned())
 	}
 	fn now(&self) -> DateTime<Utc> {
 		self.now
@@ -330,7 +340,10 @@ async fn an_agent_registers_for_the_person_at_its_root_and_the_run_is_kept() {
 		&mut scope,
 		workspace,
 		definition(),
-		Origin::Agent { run_id },
+		Origin::Agent {
+			run_id,
+			key: "call-1".into(),
+		},
 	)
 	.await
 	.unwrap();
@@ -383,7 +396,9 @@ async fn an_administrator_pauses_but_only_the_registrant_resumes() {
 	let schedule = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
-	let mut admin = Fake::new("admin");
+	// The administrator can see the Workspace and register there too, so
+	// nothing but the resume rule refuses them.
+	let mut admin = alice_in(workspace).acting_as("admin");
 	admin.administers = true;
 	admin.schedules = alice.schedules.clone();
 	// Act
@@ -393,7 +408,11 @@ async fn an_administrator_pauses_but_only_the_registrant_resumes() {
 	let resumed = resume(&mut alice, schedule.id).await.unwrap();
 	// Assert
 	assert_eq!(paused.halt, Some(Halt::Paused));
-	assert!(refused.is_err());
+	assert!(
+		matches!(&refused, Err(Error::Domain(aidash_domain::Error::Invalid(message)))
+			if message.starts_with("only the Schedule's Registrant, or the successor named for it")),
+		"{refused:?}"
+	);
 	assert_eq!(resumed.halt, None);
 	assert_eq!(resumed.registrant, "alice");
 }
@@ -458,4 +477,39 @@ async fn others_see_a_schedule_only_through_its_workspace() {
 		list(&mut outsider, Listing::Tenant).await,
 		Err(Error::Forbidden)
 	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_retried_agent_call_returns_the_schedule_it_registered() {
+	// Arrange
+	let workspace = Uuid::new_v4();
+	let run_id = Uuid::new_v4();
+	let mut scope = alice_in(workspace);
+	let origin = Origin::Agent {
+		run_id,
+		key: "call-7".into(),
+	};
+	// Act
+	let first = register(&mut scope, workspace, definition(), origin.clone())
+		.await
+		.unwrap();
+	let again = register(&mut scope, workspace, definition(), origin)
+		.await
+		.unwrap();
+	let another = register(
+		&mut scope,
+		workspace,
+		definition(),
+		Origin::Agent {
+			run_id,
+			key: "call-8".into(),
+		},
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert_eq!(again.id, first.id);
+	assert_ne!(another.id, first.id);
+	assert_eq!(scope.schedules.len(), 2);
 }
