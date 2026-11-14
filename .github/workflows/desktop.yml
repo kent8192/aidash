@@ -107,6 +107,31 @@ jobs:
       - name: Install Windows native driver
         if: runner.os == 'Windows'
         run: cargo install tauri-driver --version 2.1.0 --locked
+      # The app renders with the WebView2 runtime, not with Edge. Since image
+      # 20261112 the Evergreen registry key that @wdio/tauri-service reads gives
+      # no version, so it skipped the check and used the image's Edge driver,
+      # which refuses the older runtime (#948). Read the runtime from its files
+      # and pin the driver to it; the service then downloads that exact driver.
+      - name: Match the Edge WebDriver to the WebView2 runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $client = 'Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          foreach ($key in "HKLM:\SOFTWARE\WOW6432Node\$client", "HKLM:\SOFTWARE\$client") {
+            $pv = (Get-ItemProperty -Path $key -Name pv -ErrorAction SilentlyContinue).pv
+            Write-Host "Registry ${key}: pv=$pv"
+          }
+          Get-Command msedgedriver.exe -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "Driver on PATH: $($_.Source) $(& $_.Source --version)" }
+          $roots = "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application",
+            "$env:ProgramFiles\Microsoft\EdgeWebView\Application"
+          $runtimes = Get-ChildItem -Path $roots -Filter msedgewebview2.exe -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "Runtime: $($_.FullName) $($_.VersionInfo.FileVersion)"; [version]$_.VersionInfo.FileVersion } |
+            Sort-Object -Descending
+          if (-not $runtimes) { throw "No WebView2 runtime under $($roots -join ', ')" }
+          # The loader picks the highest installed Evergreen version.
+          Add-Content -Path $env:GITHUB_ENV -Value "EDGEDRIVER_VERSION=$($runtimes[0])"
+          Write-Host "EDGEDRIVER_VERSION=$($runtimes[0])"
       - name: Check normal build and native unit tests
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
       - name: Build instrumented debug app with shared production assets
