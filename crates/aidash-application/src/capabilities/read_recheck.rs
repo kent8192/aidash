@@ -21,12 +21,12 @@ pub const UNCONFIRMED_LIMIT: u32 = 5;
 /// failure. Each failure in a row doubles the wait, up to one period.
 pub const RETRY_FROM: Duration = Duration::from_secs(5);
 
-/// When each target was last checked. Losing this only adds one check.
+/// When each target was last checked, and refused stops awaiting retry.
 #[derive(Default)]
 pub struct Schedule {
 	checked: BTreeMap<Target, Instant>,
 	/// Refused targets whose stop failed: when to try again, and how many failures
-	/// in a row. Every try is a check, which records a denial.
+	/// in a row. A retry carries forward the original refusal.
 	failed: BTreeMap<Target, (Instant, u32)>,
 	unconfirmed: BTreeMap<Uuid, u32>,
 }
@@ -78,8 +78,7 @@ pub async fn pass(
 			continue;
 		}
 		schedule.checked.insert(target, now);
-		// This try replaces the scheduled retry: if the check itself fails, the next
-		// one waits a period.
+		// A scheduled stop retry carries forward the original refusal.
 		let failures = schedule.failed.remove(&target).map_or(0, |(_, n)| n);
 		let result = if failures > 0 {
 			let stopped = repository.stop_refused(target).await;
