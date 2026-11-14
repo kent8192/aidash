@@ -107,6 +107,51 @@ jobs:
       - name: Install Windows native driver
         if: runner.os == 'Windows'
         run: cargo install tauri-driver --version 2.1.0 --locked
+      # The app renders with the WebView2 runtime, not with Edge. Image 20261112
+      # ships an Edge 157 driver on PATH next to a WebView2 131 runtime, and
+      # tauri-driver used that driver despite the service's own check (#948).
+      # Download the driver for the installed runtime and hand tauri-driver its
+      # path through AIDASH_E2E_NATIVE_DRIVER (wdio.conf.mjs: nativeDriverPath).
+      - name: Match the Edge WebDriver to the WebView2 runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $client = 'Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          foreach ($key in "HKLM:\SOFTWARE\WOW6432Node\$client", "HKLM:\SOFTWARE\$client") {
+            $pv = (Get-ItemProperty -Path $key -Name pv -ErrorAction SilentlyContinue).pv
+            Write-Host "Registry ${key}: pv=$pv"
+          }
+          Get-Command msedgedriver.exe -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "Driver on PATH: $($_.Source) $(& $_.Source --version)" }
+          $roots = "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application",
+            "$env:ProgramFiles\Microsoft\EdgeWebView\Application"
+          $runtimes = Get-ChildItem -Path $roots -Filter msedgewebview2.exe -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "Runtime: $($_.FullName) $($_.VersionInfo.FileVersion)"; [version]$_.VersionInfo.FileVersion } |
+            Sort-Object -Descending
+          if (-not $runtimes) { throw "No WebView2 runtime under $($roots -join ', ')" }
+          # The loader picks the highest installed Evergreen version.
+          $runtime = "$($runtimes[0])"
+          $dir = Join-Path $env:RUNNER_TEMP 'msedgedriver'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir 'edgedriver.zip'
+          try {
+            Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$runtime/edgedriver_win64.zip" -OutFile $zip -UseBasicParsing
+          } catch {
+            # No driver build for this exact runtime: take the latest of its major.
+            $major = $runtime.Split('.')[0]
+            $latest = (Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/LATEST_RELEASE_$major" -UseBasicParsing).Content
+            if ($latest -is [byte[]]) { $latest = [Text.Encoding]::Unicode.GetString($latest) }
+            $latest = ($latest -replace '[^0-9.]', '')
+            Write-Host "No driver for $runtime; using $latest"
+            Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$latest/edgedriver_win64.zip" -OutFile $zip -UseBasicParsing
+          }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $driver = Join-Path $dir 'msedgedriver.exe'
+          $version = & $driver --version
+          Write-Host "Using $driver $version for WebView2 $runtime"
+          if ($version -notmatch " $($runtime.Split('.')[0])\.") { throw "Driver $version does not match WebView2 $runtime" }
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+          Add-Content -Path $env:GITHUB_ENV -Value "AIDASH_E2E_NATIVE_DRIVER=$driver"
       - name: Check normal build and native unit tests
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
       - name: Build instrumented debug app with shared production assets
