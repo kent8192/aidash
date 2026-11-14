@@ -119,7 +119,7 @@ fn decider_host_and_retention_expansion_require_approval() {
 		AnswerType, DeciderConfig, DeciderRoute, Hook, Mode, policy::StateRetention,
 	};
 	let config = DeciderConfig {
-		hook: Hook::Compaction,
+		hook: Hook::Approval,
 		answer_type: AnswerType::Noul,
 		description: "x".into(),
 		provider_credential: "openrouter".into(),
