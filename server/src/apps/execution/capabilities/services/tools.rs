@@ -35,6 +35,13 @@ impl Tool for CoreTool {
 				.invoke(ctx, input, key)
 				.await;
 		}
+		if self.name == "mcp_stdio" {
+			// The group only carries the Tenant's approval (ADR 0073).
+			return Err(Error::Invalid(
+				"mcp_stdio has no call of its own: call the stdio servers' tools by their names"
+					.into(),
+			));
+		}
 		let Some(authority) = &ctx.home.authority else {
 			return Err(Error::Forbidden);
 		};
@@ -136,6 +143,11 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 			"live_preview_stop",
 			"Stop this Run's Live preview and release the File versions it kept.",
 			schema::<LivePreviewStop>(),
+		),
+		(
+			"mcp_stdio",
+			"Lets the stdio MCP servers of this Agent's plugins run in the Run's Execution Pod. Call their tools by the names they were given; this tool does nothing itself.",
+			json!({"type":"object","properties":{},"additionalProperties":false}),
 		),
 		(
 			"skill_list",

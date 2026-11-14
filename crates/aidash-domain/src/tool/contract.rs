@@ -662,6 +662,14 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			contract.disclosure = DisclosureBoundary::External;
 		}
+		// The Catalog Approval of the `mcp_stdio` group lets the stdio MCP servers of
+		// Agent Plugins run in the Run's Execution Pod (ADR 0073). Their tools are
+		// called by their pinned names; this operation does nothing of its own.
+		"mcp_stdio" => {
+			auth.core = Some(CorePermission::Shell);
+			behavior.effect = ToolEffect::Unsafe;
+			contract.disclosure = DisclosureBoundary::Local;
+		}
 		_ => return None,
 	}
 	Some(contract)
