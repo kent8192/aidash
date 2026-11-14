@@ -51,6 +51,25 @@ fn policy(store: &Store) -> NativeResult<ScratchOperatorPolicy> {
 		})
 }
 
+/// Whether the Read Recheck has marked this Run revoked (ADR 0136). A marked
+/// Run starts nothing new in the Pod, so a call after the stop cannot slip in.
+async fn run_revoked(
+	executor: impl crate::database::native::Executor,
+	tenant: &str,
+	run: Uuid,
+) -> NativeResult<bool> {
+	let sql = Query::select()
+		.column(Alias::new("run_id"))
+		.from(Alias::new("egress_run_revocations"))
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("run_id").eq(Expr::value(run)))
+		.to_string(PostgresQueryBuilder);
+	Ok(crate::database::native::query_scalar::<Uuid>(&sql)
+		.scalar_optional(executor)
+		.await?
+		.is_some())
+}
+
 fn context(
 	store: &Store,
 	policy: &ScratchOperatorPolicy,
@@ -91,6 +110,9 @@ pub(crate) async fn tool_context(
 	let mut services = scratch::NativeScratchServices { policy: &policy };
 	let (space_id, _) = services.run_binding_metadata(access, run).await?;
 	let tenant = access.identity.tenant.clone();
+	if run_revoked(&mut **access.tx, &tenant, run.id).await? {
+		return Err(NativeError::Forbidden.into());
+	}
 	let space = scratch::read(&mut **access.tx, &tenant, space_id)
 		.await?
 		.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;
@@ -181,6 +203,9 @@ impl PodOperationRepository for Repository<'_> {
 			.begin(&TenancyScope::tenant(&operation.tenant)?)
 			.await
 			.map_err(NativeError::from)?;
+		if run_revoked(&mut *tx, &operation.tenant, operation.run_id).await? {
+			return Err(NativeError::Forbidden.into());
+		}
 		let space = scratch::read(&mut *tx, &operation.tenant, space_id).await?;
 		tx.commit().await.map_err(NativeError::from)?;
 		let space = space.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;

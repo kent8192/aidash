@@ -406,7 +406,7 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 					&refused(
 						&operation,
 						"SCRATCH_SPACE_UNAVAILABLE",
-						"The Run's Scratch Space cannot run commands now.",
+						"The Run's Scratch Space cannot run commands now, or the Run's authority was revoked.",
 					),
 				)
 				.await?;
