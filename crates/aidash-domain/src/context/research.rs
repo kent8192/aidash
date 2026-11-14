@@ -6,6 +6,60 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub const CONTRACT: &str = "aidash.research.reference/1";
+pub const JOURNAL_QUERY_CONTRACT: &str = "aidash.journal.query/1";
+pub const JOURNAL_RETRIEVAL_CONTRACT: &str = "aidash.journal.retrieval/1";
+
+/// Research inputs whose contents can have reached a Journal result or heap.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalDependencies {
+	pub sources: std::collections::BTreeSet<Uuid>,
+	pub documents: std::collections::BTreeSet<Uuid>,
+	/// Other Runs whose Research these inputs came from. A copy read from
+	/// another Run's Journal stays withdrawable by that Run's Evidence
+	/// Revocation and account-terms expiry; the holder's own Run is implied.
+	#[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+	pub runs: std::collections::BTreeSet<Uuid>,
+}
+
+impl JournalDependencies {
+	pub fn from_lines(lines: &[super::journal_export::JournalLine]) -> Self {
+		let mut dependencies = Self::default();
+		for line in lines {
+			if let Some(reference) = line
+				.result
+				.as_ref()
+				.and_then(|result| ResearchReference::from_result("journal", result))
+			{
+				dependencies.sources.extend(reference.sources);
+				dependencies.documents.extend(reference.documents);
+				dependencies.runs.extend(reference.runs);
+			}
+		}
+		dependencies
+	}
+	/// Lines read from `target` by `reader`: a read of another Run keeps
+	/// that Run as a source.
+	pub fn read_by(
+		lines: &[super::journal_export::JournalLine],
+		reader: Uuid,
+		target: Uuid,
+	) -> Self {
+		let mut dependencies = Self::from_lines(lines);
+		dependencies.add_source_run(reader, target);
+		dependencies
+	}
+	/// Name `target` as a source Run when `reader` copied its Research.
+	pub fn add_source_run(&mut self, reader: Uuid, target: Uuid) {
+		if reader != target && !self.is_empty() {
+			self.runs.insert(target);
+		}
+	}
+	/// Whether no Research input reached the result. Source Runs alone never
+	/// make a result research-derived.
+	pub fn is_empty(&self) -> bool {
+		self.sources.is_empty() && self.documents.is_empty()
+	}
+}
 
 /// The exact delivered variant, with the provenance needed to remove every
 /// variant when its Provider result expires. No provider content is retained.
@@ -18,10 +72,36 @@ pub struct ResearchReference {
 	pub operation: Operation,
 	pub sources: Vec<Uuid>,
 	pub documents: Vec<Uuid>,
+	/// Other Runs whose Research a Journal copy came from; see
+	/// [`JournalDependencies::runs`]. Absent for every other reference.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub runs: Vec<Uuid>,
 }
 
 impl ResearchReference {
 	pub fn from_result(invocation: &str, value: &Value) -> Option<Self> {
+		if matches!(
+			value["contract"].as_str(),
+			Some(JOURNAL_QUERY_CONTRACT | JOURNAL_RETRIEVAL_CONTRACT)
+		) {
+			if value["research_derived"] != true {
+				return None;
+			}
+			let dependencies: JournalDependencies =
+				serde_json::from_value(value["dependencies"].clone()).ok()?;
+			if dependencies.is_empty() {
+				return None;
+			}
+			return Some(Self {
+				contract: CONTRACT.into(),
+				invocation: invocation.into(),
+				digest: crate::registry::rules::digest(value),
+				operation: Operation::Search,
+				sources: dependencies.sources.into_iter().collect(),
+				documents: dependencies.documents.into_iter().collect(),
+				runs: dependencies.runs.into_iter().collect(),
+			});
+		}
 		if value["contract"] != crate::research::RESULT_CONTRACT {
 			return None;
 		}
@@ -47,6 +127,7 @@ impl ResearchReference {
 			} else {
 				uuid(&value["data"]["document_id"]).into_iter().collect()
 			},
+			runs: Vec::new(),
 		})
 	}
 	pub fn parse(value: &Value) -> Option<Self> {

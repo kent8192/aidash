@@ -362,7 +362,13 @@ pub(super) fn validate_dependencies(snapshot: &super::BindingSnapshot) -> Result
 			continue;
 		};
 		declaration.validate()?;
+		// Built-in Memory is optional recall at Run start, not a required-Home
+		// semantic contribution. Exact definition equality prevents a tenant's
+		// explicitly bound provider from inheriting this exception.
+		let builtin_memory = super::memory_defaults::definitions()
+			.is_ok_and(|entries| entries.contains(&source.definition));
 		if snapshot.remote
+			&& !builtin_memory
 			&& matches!(
 				baseline.operation.as_str(),
 				"semantic_memory" | "workspace_retrieval" | "conversation_memory"
