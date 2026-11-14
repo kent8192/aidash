@@ -1934,7 +1934,7 @@ class Handler(BaseHTTPRequestHandler):
                     'error': getattr(runner.execution_pods, 'admission_error', None)}
         if self.command == 'POST' and path in (
                 '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
-                '/v2/commands/submit', '/v2/commands/result', '/v2/runs/cancel',
+                '/v2/commands/submit', '/v2/commands/result', '/v2/runs/cancel', '/v2/runs/stop',
                 '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):
             size = int(self.headers.get('Content-Length', '0'))
@@ -1957,6 +1957,8 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.command_result(request['operation_id'])
             if path == '/v2/runs/cancel':
                 return runner.execution_pods.cancel_run(request['scratch_space_id'], request['run_id'])
+            if path == '/v2/runs/stop':
+                return runner.execution_pods.stop_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/background/list':
                 return runner.execution_pods.background_processes(request['scratch_space_id'])
             if path == '/v2/background/stop':

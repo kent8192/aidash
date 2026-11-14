@@ -1990,6 +1990,36 @@ print(json.dumps(r))'''
                 raise ExecutionPodError('stop_failed', '; '.join(failures))
         return {'cancelled_waiting': True}
 
+    def stop_run(self, scratch_space_id, run_id):
+        import json
+        from control import scratch_resource_name
+        scratch_resource_name(scratch_space_id)
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
+            raise ValueError('invalid run_id')
+        stopped, failures = [], []
+        with self._space_lock(scratch_space_id):
+            with self.lock:
+                queue = self.queues.get(scratch_space_id)
+            if queue:
+                queue.cancel_waiting(run_id)
+            for path in self._space_journal_paths(scratch_space_id):
+                try:
+                    record = json.loads(path.read_bytes())
+                except FileNotFoundError:
+                    continue
+                if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
+                        or (record.get('status') not in ('queued', 'running') and not
+                            (record.get('status') == 'interrupted' and record.get('docker_enabled')))):
+                    continue
+                try:
+                    self._stop_command(record['operation_id'])
+                    stopped.append(record['operation_id'])
+                except Exception as error:
+                    failures.append(str(error) or type(error).__name__)
+            if failures:
+                raise ExecutionPodError('stop_failed', '; '.join(failures))
+        return {'stopped': sorted(stopped)}
+
     def background_processes(self, scratch_space_id):
         import json
         import time
