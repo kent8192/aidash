@@ -34,6 +34,23 @@ fn output_file() -> Value {
 	json!({"file_id":Uuid::new_v4(),"path":"output.txt","digest":"digest","size":6,"media_type":"text/plain","scope":"working","provenance":null})
 }
 #[tokio::test]
+async fn completed_command_reports_adopted_background_process() {
+	let input = json!({});
+	let data = json!({"left_running":"abc.left"});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view("completed", &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(
+		serde_json::to_value(page).unwrap()["left_running"],
+		"abc.left"
+	);
+}
+#[tokio::test]
 async fn polling_at_the_output_end_omits_unchanged_output_and_keeps_the_cursor() {
 	let data = json!({"output_file": output_file()});
 	let input = json!({});

@@ -197,6 +197,9 @@ pub struct RuntimeResult {
 	/// True when the command was still running at its time limit. Absent otherwise.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub deadline_expired: Option<bool>,
+	/// Background process adopted when the foreground command exited.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub left_running: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -480,6 +483,9 @@ pub struct OperationResult {
 	/// True when the command was still running at its time limit. Absent otherwise.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub deadline_expired: Option<bool>,
+	/// Background process adopted when the foreground command exited.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub left_running: Option<String>,
 }
 
 use uuid::Uuid;
