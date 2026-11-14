@@ -222,7 +222,7 @@ def test_preview_waits_for_port_and_returns_pod_address(tmp_path):
     operation = '00000000-0000-4000-8000-000000000001'
     backend = SimpleNamespace(root=tmp_path, kube=Mock(return_value=SimpleNamespace(returncode=0,
         stdout=b'{"ready":true}')))
-    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller = ExecutionPodController(backend, {'preview_port': 8080}, admitted=True)
     controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running',
                               'podIP': '10.2.3.4'}})
     controller.submit_command = Mock(return_value={'status': 'queued'})
@@ -389,7 +389,7 @@ def test_preview_and_mcp_http_routes(tmp_path):
         if 'call' in args:
             return SimpleNamespace(returncode=0, stdout=b'{"message":{"jsonrpc":"2.0","id":1,"result":"ok"}}')
         raise AssertionError(args)
-    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {'preview_port': 1234}, admitted=True)
     controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running', 'podIP': '10.1.2.3'}})
     controller.submit_command = Mock(return_value={'status': 'queued'})
     controller.command_result = Mock(return_value={'status': 'running'})

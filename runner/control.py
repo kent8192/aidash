@@ -29,7 +29,8 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from allocation_usage import AllocationJournal, FINALIZER
 from runner_journal import Rejected, identity, save, sync_directory
-from execution_pod import ExecutionPodController, ExecutionPodError, v2_network_policy
+from execution_pod import (ExecutionPodController, ExecutionPodError, preview_ingress_from_legacy,
+                           v2_network_policy, v2_preview_ingress)
 
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.
@@ -448,15 +449,26 @@ class Runner(AllocationJournal):
         self.kube(["apply", "-f", "-"], json.dumps(policy).encode())
 
     def ensure_v2_network_policy(self):
-        config = self.execution_pods.config
-        if config.get('proxy_endpoint'):
-            policy = v2_network_policy(config)
-        else:
-            policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
-                      'metadata': {'name': 'aidash-v2-egress', 'namespace': self.config['namespace']},
-                      'spec': {'podSelector': {'matchLabels': {'aidash-sandbox': 'true', 'aidash-v2': 'true'}},
-                               'policyTypes': ['Ingress', 'Egress'], 'ingress': [], 'egress': []}}
-        self.kube(['apply', '-f', '-'], json.dumps(policy).encode())
+        with self.lock:
+            config = dict(self.execution_pods.config)
+            for key in ('preview_port', 'preview_namespace', 'preview_selector'):
+                config.pop(key, None)
+            observed = self.kube(['get', 'networkpolicies', '-o', 'json'])
+            preview = preview_ingress_from_legacy(json.loads(observed.stdout)['items'])
+            if preview:
+                config.update(preview)
+            if config.get('proxy_endpoint'):
+                policy = v2_network_policy(config)
+            else:
+                policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+                          'metadata': {'name': 'aidash-v2-egress', 'namespace': self.config['namespace']},
+                          'spec': {'podSelector': {'matchLabels': {'aidash-sandbox': 'true', 'aidash-v2': 'true'}},
+                                   'policyTypes': ['Ingress', 'Egress'], 'ingress': v2_preview_ingress(config), 'egress': []}}
+            self.kube(['apply', '-f', '-'], json.dumps(policy).encode())
+            for key in ('preview_port', 'preview_namespace', 'preview_selector'):
+                self.execution_pods.config.pop(key, None)
+                if key in config:
+                    self.execution_pods.config[key] = config[key]
 
     def activate_execution_pods(self):
         """Enable v2 only after a disposable Pod passes its complete admission."""
@@ -1934,7 +1946,7 @@ class Handler(BaseHTTPRequestHandler):
                     'error': getattr(runner.execution_pods, 'admission_error', None)}
         if self.command == 'POST' and path in (
                 '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
-                '/v2/commands/submit', '/v2/commands/result', '/v2/runs/cancel', '/v2/runs/stop',
+                '/v2/commands/submit', '/v2/commands/result', '/v2/commands/refuse', '/v2/runs/cancel', '/v2/runs/stop',
                 '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
                 '/v2/previews/start', '/v2/previews/stop',
@@ -1958,6 +1970,8 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.submit_command(request)
             if path == '/v2/commands/result':
                 return runner.execution_pods.command_result(request['operation_id'])
+            if path == '/v2/commands/refuse':
+                return runner.execution_pods.refuse_command(request['operation_id'], request['scratch_space_id'], request['run_id'])
             if path == '/v2/runs/cancel':
                 return runner.execution_pods.cancel_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/runs/stop':

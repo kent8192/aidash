@@ -9,6 +9,7 @@ OUTPUT_RETRY_SECONDS = 60
 # margin. RunnerHttp's v2 command calls time out after 30s and its execution_pod
 # adapter does not retry requests itself (crates/aidash-integrations/src/runner).
 JOURNAL_RETENTION_SECONDS = max(LATE_RESULT_SECONDS, STOP_RETRY_SECONDS) + STOP_RETRY_SECONDS
+REFUSAL_RETENTION_SECONDS = 7 * 86400
 JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
 # stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
@@ -575,8 +576,9 @@ class ExecutionPodController:
                 if metadata is None:
                     continue
                 status, terminal_at, stop_pending = metadata
-                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
-                        or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                retention = REFUSAL_RETENTION_SECONDS if status == 'refused' else JOURNAL_RETENTION_SECONDS
+                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
+                        or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
                         or stop_pending):
                     continue
                 expired.append((terminal_at, path))
@@ -586,8 +588,9 @@ class ExecutionPodController:
                         continue
                     record = json.loads(path.read_bytes())
                     terminal_at = record.get('terminal_at')
-                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
-                            or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                    retention = REFUSAL_RETENTION_SECONDS if record.get('status') == 'refused' else JOURNAL_RETENTION_SECONDS
+                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
+                            or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
                             or record.get('stop_pending') or record.get('operation_id') in self.futures):
                         continue
                     # A Python session pointer cannot outlive the record it names.
@@ -1490,6 +1493,35 @@ print(json.dumps(r))'''
                                                'message': 'Python result was unavailable or truncated'}
             return result
 
+    def refuse_command(self, operation_id, scratch_space_id, run_id):
+        import time
+        from control import save, scratch_resource_name
+        scratch_resource_name(scratch_space_id)
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
+            raise ValueError('invalid run_id')
+        if not isinstance(operation_id, str) or operation_id.endswith('.left'):
+            raise ValueError('canonical operation UUID required')
+        path = self._command_path(operation_id)
+        with self._space_lock(scratch_space_id):
+            self.prune_space(scratch_space_id)
+            with self.lock:
+                if path.exists():
+                    prior = self._read_command(operation_id)
+                    if prior.get('status') == 'refused':
+                        if prior.get('scratch_space_id') != scratch_space_id or prior.get('run_id') != run_id:
+                            raise ExecutionPodError('command_conflict', 'Operation ID belongs to another Run')
+                        return {'refused': True}
+                    return {'refused': False, 'status': prior['status']}
+                record = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
+                          'run_id': run_id, 'status': 'refused', 'terminal_at': time.time()}
+                save(path, record)
+                self.journal_index.setdefault(scratch_space_id, set()).add(path.name)
+                self.journal_metadata[path.name] = self._prune_metadata(record)
+                space_path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+                if not space_path.exists():
+                    self.touch_space(scratch_space_id)
+                return {'refused': True}
+
     def submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None, session_replaced=False):
         with self._space_lock(request['scratch_space_id']):
             return self._submit_command(request, kind=kind, session_operation_id=session_operation_id, client_digest=client_digest, session_replaced=session_replaced)
@@ -1500,13 +1532,18 @@ print(json.dumps(r))'''
         import time
         from control import save, scratch_resource_name
 
-        if not self.admitted:
-            raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         operation_id = request['operation_id']
         if not isinstance(operation_id, str) or operation_id.endswith('.left'):
             raise ValueError('canonical operation UUID required')
         path = self._command_path(operation_id)
         scratch_id, run_id, code = request['scratch_space_id'], request['run_id'], request['code']
+        if path.exists():
+            self.prune_space(scratch_id)
+        with self.lock:
+            if path.exists() and self._read_command(operation_id).get('status') == 'refused':
+                raise ExecutionPodError('command_refused', 'Command operation was refused')
+        if not self.admitted:
+            raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         name = scratch_resource_name(scratch_id)
         if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
             raise ValueError('run_id must be a nonempty string without NUL')
@@ -1536,6 +1573,8 @@ print(json.dumps(r))'''
             self._require_space_termination_confirmed(scratch_id)
             if path.exists():
                 prior = self._read_command(operation_id)
+                if prior.get('status') == 'refused':
+                    raise ExecutionPodError('command_refused', 'Command operation was refused')
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
@@ -1548,6 +1587,8 @@ print(json.dumps(r))'''
             # may have claimed this operation while the Pod lookup was running.
             if path.exists():
                 prior = self._read_command(operation_id)
+                if prior.get('status') == 'refused':
+                    raise ExecutionPodError('command_refused', 'Command operation was refused')
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
@@ -2294,6 +2335,11 @@ print(json.dumps(r))'''
         operation, scratch, port = request['operation_id'], request['scratch_space_id'], request['port']
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('invalid preview port')
+        refresh = getattr(self.backend, 'ensure_v2_network_policy', None)
+        if refresh is not None:
+            refresh()
+        if port != self.config.get('preview_port'):
+            raise ValueError('preview port not allowed')
         command = {key: request[key] for key in ('operation_id', 'scratch_space_id', 'run_id', 'code', 'proxy_credential')
                    if key in request}
         command.update(background=True, cwd=request.get('cwd') or '.')
@@ -2545,6 +2591,15 @@ print(json.dumps(r))'''
         import time
         from control import scratch_resource_name
         current = time.time() if now is None else now
+        self._ensure_journal_index()
+        with self.lock:
+            spaces_with_records = tuple(self.journal_index)
+        for scratch_id in spaces_with_records:
+            try:
+                self.prune_space(scratch_id, now=current)
+            except Exception as error:
+                import sys
+                print('Execution Pod journal cleanup failed: ' + str(error), file=sys.stderr, flush=True)
         directory = self.backend.root / 'execution-v2-spaces'
         if not directory.exists():
             return
@@ -2552,7 +2607,6 @@ print(json.dumps(r))'''
             try:
                 scratch_id = json.loads(path.read_bytes())['scratch_space_id']
                 with self._space_lock(scratch_id):
-                    self.prune_space(scratch_id, now=current)
                     with self.lock:
                         space = json.loads(path.read_bytes())
                         unconfirmed = space.get('termination_unconfirmed', False)
@@ -2901,6 +2955,61 @@ def verify_network_probe(report, *, docker, spoof_seen):
         raise ValueError('spoofed packet isolation is unverified')
 
 
+def preview_ingress_from_legacy(policies):
+    """Read the gateway identity and port from the deployed v1 Preview policy."""
+    candidates = [policy for policy in policies if policy.get('metadata', {}).get('name', '').endswith('-preview-sandbox')]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise ValueError('multiple Preview gateway policies')
+    policy = candidates[0]
+    release = policy['metadata']['name'][:-len('-preview-sandbox')]
+    spec = policy.get('spec', {})
+    selector = spec.get('podSelector', {})
+    expressions = selector.get('matchExpressions', [])
+    if (not release or spec.get('policyTypes') != ['Ingress'] or spec.get('egress') or
+            selector.get('matchLabels') != {'aidash-sandbox': 'true'} or
+            len(expressions) != 2 or
+            {(item.get('key'), item.get('operator')) for item in expressions} !=
+            {('aidash-v2', 'DoesNotExist'), ('aidash-journal', 'DoesNotExist')} or
+            any(set(item) != {'key', 'operator'} for item in expressions)):
+        raise ValueError('invalid Preview gateway policy selector')
+    rules = spec.get('ingress')
+    if not isinstance(rules, list) or len(rules) != 1:
+        raise ValueError('invalid Preview gateway ingress')
+    rule = rules[0]
+    peers, ports = rule.get('from'), rule.get('ports')
+    if set(rule) != {'from', 'ports'} or not isinstance(peers, list) or len(peers) != 1 or not isinstance(ports, list) or len(ports) != 1:
+        raise ValueError('invalid Preview gateway ingress')
+    peer, port = peers[0], ports[0]
+    namespace = peer.get('namespaceSelector', {}).get('matchLabels', {})
+    selector = peer.get('podSelector', {}).get('matchLabels', {})
+    if (set(peer) != {'namespaceSelector', 'podSelector'} or
+            set(peer['namespaceSelector']) != {'matchLabels'} or set(peer['podSelector']) != {'matchLabels'} or
+            set(namespace) != {'kubernetes.io/metadata.name'} or not isinstance(namespace['kubernetes.io/metadata.name'], str) or
+            not namespace['kubernetes.io/metadata.name'] or
+            set(selector) != {'app.kubernetes.io/instance', 'app.kubernetes.io/component'} or
+            selector['app.kubernetes.io/instance'] != release or selector['app.kubernetes.io/component'] not in ('server', 'preview') or
+            set(port) - {'protocol', 'port'} or port.get('protocol', 'TCP') != 'TCP' or
+            type(port.get('port')) is not int or not 1 <= port['port'] <= 65535):
+        raise ValueError('invalid Preview gateway identity or port')
+    return {'preview_namespace': namespace['kubernetes.io/metadata.name'],
+            'preview_selector': selector, 'preview_port': port['port']}
+
+
+def v2_preview_ingress(config):
+    port, namespace, selector = (config.get(key) for key in ('preview_port', 'preview_namespace', 'preview_selector'))
+    if port is None and namespace is None and selector is None:
+        return []
+    if (type(port) is not int or not 1 <= port <= 65535 or not isinstance(namespace, str) or not namespace or
+            not isinstance(selector, dict) or set(selector) != {'app.kubernetes.io/instance', 'app.kubernetes.io/component'} or
+            not isinstance(selector['app.kubernetes.io/instance'], str) or not selector['app.kubernetes.io/instance'] or
+            selector['app.kubernetes.io/component'] not in ('server', 'preview')):
+        raise ValueError('invalid Preview gateway configuration')
+    return [{'from': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': namespace}},
+                      'podSelector': {'matchLabels': selector}}], 'ports': [{'protocol': 'TCP', 'port': port}]}]
+
+
 def v2_network_policy(config):
     """Restrict v2 Pods to the configured, internal Egress gateway."""
     import ipaddress
@@ -2924,7 +3033,7 @@ def v2_network_policy(config):
     return {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
             'metadata': {'name': 'aidash-v2-egress', 'namespace': config['namespace']},
             'spec': {'podSelector': {'matchLabels': {'aidash-sandbox': 'true', 'aidash-v2': 'true'}},
-                     'policyTypes': ['Ingress', 'Egress'], 'ingress': [],
+                     'policyTypes': ['Ingress', 'Egress'], 'ingress': v2_preview_ingress(config),
                      'egress': [{'to': [{'namespaceSelector': {'matchLabels': {
                          'kubernetes.io/metadata.name': namespace}}, 'podSelector': {'matchLabels': selector}}],
                          'ports': [{'protocol': 'TCP', 'port': port}]}]}}
@@ -2999,7 +3108,9 @@ def verify_network_policies(policies, labels, expected):
     allowed = expected['spec']['egress'][0]
     allowed_peer = allowed['to'][0]
     allowed_port = allowed['ports'][0]['port']
+    allowed_ingress = expected['spec'].get('ingress', [])
     found = False
+    found_ingress = []
     for policy in policies:
         spec = policy['spec']
         if not _selector_matches(spec.get('podSelector', {}), labels):
@@ -3007,8 +3118,10 @@ def verify_network_policies(policies, labels, expected):
         types = spec.get('policyTypes')
         ingress = types is None or 'Ingress' in types
         egress = ('Egress' in types) if types is not None else 'egress' in spec
-        if ingress and spec.get('ingress'):
+        if ingress and any(rule not in allowed_ingress for rule in spec.get('ingress', [])):
             raise ValueError('network policy admits unexpected ingress')
+        if ingress:
+            found_ingress.extend(spec.get('ingress', []))
         if not egress:
             continue
         for rule in spec.get('egress', []):
@@ -3021,3 +3134,5 @@ def verify_network_policies(policies, labels, expected):
             found = True
     if not found:
         raise ValueError('network policy does not admit the Egress gateway')
+    if any(rule not in found_ingress for rule in allowed_ingress):
+        raise ValueError('network policy does not admit Preview gateway ingress')
