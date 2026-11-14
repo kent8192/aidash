@@ -1,7 +1,7 @@
 //! How a stdio MCP server of an Agent Plugin starts in the Execution Pod of its Run's Scratch
 //! Space, and which `${PLUGIN_DATA}` content may replace the saved version (ADR 0073 and its
 //! 2026-11-14 amendment). Pure: the application writes the files and talks to the Pod.
-use super::{Command, Cwd, Executable, PluginName, StdioServer, expand};
+use super::{Command, Cwd, Executable, PluginFile, PluginName, StdioServer, expand};
 use crate::registry::EntityRef;
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -27,6 +27,15 @@ pub const DATA_INVALID_PATH: &str = "plugin_data_invalid_path";
 /// Starts argv in the working directory given as `$1`. The directory is passed as an argument,
 /// never spliced into the script, so no plugin text is parsed by the shell.
 const IN_DIRECTORY: &str = r#"mkdir -p "$1" && cd "$1" || exit 127; shift; exec "$@""#;
+
+/// The `mcp_stdio` group's operation. A stdio call needs `tool.invoke` on it, as a bound shell
+/// call needs it on the shell's definition.
+pub fn mcp_stdio_operation() -> EntityRef {
+	EntityRef {
+		id: "aidash.mcp_stdio".into(),
+		version: "1.0.0".into(),
+	}
+}
 
 /// The `mcp_stdio` group's bundle, whose Catalog Approval lets stdio servers run. It is read at
 /// every session start and every call.
@@ -158,4 +167,44 @@ fn data_path(path: &str) -> bool {
 		&& path
 			.split('/')
 			.all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// Packs checked plugin data into one value to save: per file a big-endian `u32` path length,
+/// the path, a big-endian `u64` length and the bytes.
+pub fn pack_data(files: &[PluginFile]) -> Vec<u8> {
+	let mut packed = Vec::new();
+	for file in files {
+		packed.extend_from_slice(&(file.path.len() as u32).to_be_bytes());
+		packed.extend_from_slice(file.path.as_bytes());
+		packed.extend_from_slice(&(file.bytes.len() as u64).to_be_bytes());
+		packed.extend_from_slice(&file.bytes);
+	}
+	packed
+}
+
+/// The files [`pack_data`] packed, if `packed` is well formed and they pass [`check_data`].
+pub fn unpack_data(packed: &[u8]) -> Option<Vec<PluginFile>> {
+	let mut files = Vec::new();
+	let mut rest = packed;
+	while !rest.is_empty() {
+		let (length, tail) = rest.split_at_checked(4)?;
+		let length = u32::from_be_bytes(length.try_into().ok()?) as usize;
+		let (path, tail) = tail.split_at_checked(length)?;
+		let (size, tail) = tail.split_at_checked(8)?;
+		let size = usize::try_from(u64::from_be_bytes(size.try_into().ok()?)).ok()?;
+		let (bytes, tail) = tail.split_at_checked(size)?;
+		files.push(PluginFile {
+			path: String::from_utf8(path.to_vec()).ok()?,
+			bytes: bytes.to_vec(),
+		});
+		rest = tail;
+	}
+	check_data(
+		files
+			.iter()
+			.map(|file| (file.path.as_str(), file.bytes.len() as u64)),
+		false,
+	)
+	.ok()?;
+	Some(files)
 }

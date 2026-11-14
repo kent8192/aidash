@@ -224,6 +224,7 @@ struct Host {
 	saves: Mutex<u32>,
 	not_saved: Mutex<Vec<String>>,
 	refusal: Mutex<Option<String>>,
+	forbidden: Mutex<bool>,
 }
 
 impl Host {
@@ -235,6 +236,7 @@ impl Host {
 			saves: Mutex::new(0),
 			not_saved: Mutex::new(Vec::new()),
 			refusal: Mutex::new(None),
+			forbidden: Mutex::new(false),
 		})
 	}
 }
@@ -260,6 +262,9 @@ impl StdioPluginHost for Host {
 		Ok(*self.approved.lock().unwrap())
 	}
 	async fn admit_call(&self) -> Result<()> {
+		if *self.forbidden.lock().unwrap() {
+			return Err(Error::Forbidden);
+		}
 		match self.refusal.lock().unwrap().clone() {
 			Some(code) => Err(Error::Refused(code)),
 			None => Ok(()),
@@ -615,7 +620,8 @@ async fn closing_stops_the_sessions_and_saves_checked_plugin_data_for_the_next_r
 	);
 	let restored = stdio_session::plugin_data(next, &server().plugin);
 	let commands = pod.commands.lock().unwrap().clone();
-	assert!(commands[1].contains(&format!("'{restored}'")));
+	assert_eq!(commands[1], format!("rm -rf -- '{data}'"));
+	assert!(commands[2].contains(&format!("'{restored}'")));
 	assert_eq!(
 		pod.files.lock().unwrap()[&format!("{restored}/cache/state.json")].0,
 		b"{\"n\":1}"
@@ -639,6 +645,7 @@ async fn data_over_the_cap_keeps_the_previous_version() {
 	sessions.close(run()).await;
 
 	// Assert
+	assert_eq!(pod.commands.lock().unwrap().len(), 1, "the live area stays");
 	assert_eq!(*host.saves.lock().unwrap(), 0);
 	assert_eq!(
 		host.not_saved.lock().unwrap().clone(),
@@ -668,4 +675,29 @@ async fn a_call_the_shell_gates_refuse_never_reaches_the_server() {
 	// Assert
 	assert!(matches!(result, Err(Error::Refused(code)) if code == "CAPABILITIES_DISABLED"));
 	assert!(pod.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_principal_refused_tool_invoke_cannot_make_a_stdio_call() {
+	// Arrange: the host's `tool.invoke` decision for the Run's principals refuses.
+	let (pod, host, _, sessions) = setup();
+	sessions.list(run(), &server(), &node()).await.unwrap();
+	*host.forbidden.lock().unwrap() = true;
+
+	// Act
+	let result = sessions
+		.call(
+			run(),
+			&server(),
+			&node(),
+			"search",
+			&digest(),
+			json!({}),
+			"k1",
+		)
+		.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!pod.methods().contains(&"tools/call".to_owned()));
 }

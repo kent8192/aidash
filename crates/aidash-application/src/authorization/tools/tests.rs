@@ -2100,6 +2100,10 @@ mod agent_plugin_tools {
 		mut agent: AgentConfig,
 	) {
 		let (contract, input) = stdio_setup(&mut repository, &mut agent);
+		// `core_capabilities.shell` is derived from a shell Binding (agent_settings.rs
+		// `operation`). An Agent that attaches a plugin without binding the shell keeps it off,
+		// so requiring it would refuse every stdio call of such an Agent.
+		agent.core_capabilities.shell = false;
 
 		super::super::authorize(&repository, &run, &agent, &input, &contract)
 			.await

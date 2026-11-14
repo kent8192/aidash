@@ -1,7 +1,8 @@
 use super::*;
 use crate::agent_plugin::stdio_session::{
 	DATA_INVALID_PATH, DATA_TOO_LARGE, DATA_TOO_MANY_FILES, DEPENDENCIES_NOT_PINNED,
-	MAX_PLUGIN_DATA_BYTES, MAX_PLUGIN_DATA_FILES, check_data, launch, plugin_data, plugin_root,
+	MAX_PLUGIN_DATA_BYTES, MAX_PLUGIN_DATA_FILES, check_data, launch, pack_data, plugin_data,
+	plugin_root, unpack_data,
 };
 use rstest::rstest;
 use std::collections::BTreeMap;
@@ -113,4 +114,30 @@ fn saved_data_holds_a_bounded_number_of_files() {
 	let checked = check_data(names.iter().map(|name| (name.as_str(), 0)), false);
 
 	assert_eq!(checked, Err(DATA_TOO_MANY_FILES));
+}
+
+#[test]
+fn packed_data_unpacks_to_the_same_files_and_refuses_damage() {
+	let files = vec![
+		PluginFile {
+			path: "cache/state.json".into(),
+			bytes: b"{}".to_vec(),
+		},
+		PluginFile {
+			path: "empty".into(),
+			bytes: Vec::new(),
+		},
+	];
+
+	let packed = pack_data(&files);
+
+	assert_eq!(unpack_data(&packed), Some(files));
+	assert_eq!(unpack_data(&packed[..packed.len() - 1]), None);
+	assert_eq!(
+		unpack_data(&pack_data(&[PluginFile {
+			path: "../escape".into(),
+			bytes: vec![1],
+		}])),
+		None
+	);
 }

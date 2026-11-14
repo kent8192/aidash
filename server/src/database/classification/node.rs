@@ -289,6 +289,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "tenant_data_protection"
 		| "agent_knowledge"
 		| "agent_plugin_copies"
+		| "agent_plugin_data"
 		| "agent_test_limits"
 		| "agent_test_profiles"
 		| "agent_test_sessions"

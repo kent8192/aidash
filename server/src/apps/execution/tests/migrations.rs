@@ -132,6 +132,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0128_remove_generated_summary_state"),
 	("execution", "0129_egress_run_revocations"),
 	("execution", "0130_egress_run_revocations_rls"),
+	("execution", "0131_agent_plugin_data"),
+	("execution", "0132_agent_plugin_data_rls"),
+	("execution", "0133_agent_plugin_data_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -158,6 +161,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0128_remove_generated_summary_state"),
 	("execution", "0129_egress_run_revocations"),
 	("execution", "0130_egress_run_revocations_rls"),
+	("execution", "0131_agent_plugin_data"),
+	("execution", "0132_agent_plugin_data_rls"),
+	("execution", "0133_agent_plugin_data_state"),
 ];
 
 async fn history_size() -> usize {
@@ -203,7 +209,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(registry[0].name, "0068_reject_new_compaction_deciders");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0130_egress_run_revocations_rls");
+	assert_eq!(execution[0].name, "0133_agent_plugin_data_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
@@ -484,14 +490,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0131_policy_probe")
+		.get_migration("execution", "0134_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0130_egress_run_revocations_rls".to_owned()
+			"0133_agent_plugin_data_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -551,6 +557,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0128_remove_generated_summary_state"),
 			("execution", "0129_egress_run_revocations"),
 			("execution", "0130_egress_run_revocations_rls"),
+			("execution", "0131_agent_plugin_data"),
+			("execution", "0132_agent_plugin_data_rls"),
+			("execution", "0133_agent_plugin_data_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;

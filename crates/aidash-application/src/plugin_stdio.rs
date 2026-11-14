@@ -156,6 +156,15 @@ impl StdioSessions {
 			if let Err(cause) = save_data(&state.host, &pod, run, &plugin).await {
 				tracing::warn!(%run, plugin = plugin.as_str(), cause, "plugin data not saved");
 				state.host.data_not_saved(&plugin, &cause).await;
+				continue;
+			}
+			// The saved version is restored at the next start, so the live area goes.
+			let live = stdio_session::plugin_data(run, &plugin);
+			if command(&pod, run, format!("rm -rf -- {}", quote(&live)))
+				.await
+				.is_err()
+			{
+				tracing::info!(%run, plugin = plugin.as_str(), "live plugin data not removed");
 			}
 		}
 	}

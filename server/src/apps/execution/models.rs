@@ -49,5 +49,6 @@ pub(crate) mod url_intents;
 
 pub(crate) mod runner_allocation_journal;
 
+pub(crate) mod agent_plugin_data;
 pub(crate) mod node_cancellation_jobs;
 pub(crate) mod subnodes;
