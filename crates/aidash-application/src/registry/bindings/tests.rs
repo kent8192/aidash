@@ -2746,3 +2746,42 @@ async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() 
 		assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	}
 }
+
+/// An Agent version pinned before #745 may bind the removed `core.npm`
+/// package index. Its registered definition stays, so Run start resolves the
+/// Binding as before: it is inert, because the gateway no longer rewrites
+/// package indexes and the migration removed its Catalog Approvals.
+#[tokio::test]
+async fn a_pinned_agent_that_bound_a_removed_package_index_still_starts() {
+	let mut catalog = Catalog::new();
+	catalog.insert(entry(
+		"core.npm",
+		"external_service",
+		json!({"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}),
+	));
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(aidash_domain::registry::bindings::Binding {
+			kind: aidash_domain::registry::bindings::BindingKind::ExternalService,
+			target: reference("core.npm"),
+			alias: None,
+			narrow: Default::default(),
+			members: vec![],
+			exposure: None,
+		});
+	let resolved = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert!(
+		resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.identity.id == "core.npm")
+	);
+	// Had the definition itself been deleted, Run start would refuse with a
+	// plain NotFound naming it, which is why the migration keeps definitions.
+	let mut without = Catalog::new();
+	assert!(matches!(
+		snapshot(&mut without, &config, false).await,
+		Err(Error::NotFound(id)) if id == "core.npm"
+	));
+}
