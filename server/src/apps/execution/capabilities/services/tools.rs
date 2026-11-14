@@ -78,16 +78,47 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		sharing::Share,
 		skills::{SkillList, SkillLoad, SkillRead},
 	};
+	use crate::apps::execution::capabilities::serializers::contracts as pod;
 	for (name, description, mut parameters) in [
 		(
 			"file_search",
-			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope.",
-			schema::<FileSearch>(),
+			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
+			schema::<pod::ToolFileSearch>(),
 		),
 		(
 			"file_read",
-			"Read authorized text or metadata. Set workspace_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
-			schema::<FileRead>(),
+			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set workspace_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			schema::<pod::ToolFileRead>(),
+		),
+		(
+			"file_save",
+			"Save files from the Scratch Space into the Working Area so they outlast it and can be shared, attached or read by others. paths are files or directories (\".\" is everything); ignore_files defaults to [\".gitignore\"], exclude beats it and include beats both. Do not save what can be regenerated, such as build output or installed dependencies (node_modules, .venv, target). sync also removes saved files under paths that are gone. A save over a limit is refused whole and names the first file over it.",
+			schema::<pod::FileSave>(),
+		),
+		(
+			"file_remove",
+			"Remove saved files, or every saved file under a directory, from the Working Area. The Scratch Space is not changed.",
+			schema::<pod::FileRemove>(),
+		),
+		(
+			"file_copy",
+			"Copy saved Working Area files (deliverables, attachments, references) into the Scratch Space at their paths, or under destination. Files already there are replaced.",
+			schema::<pod::FileCopy>(),
+		),
+		(
+			"process_list",
+			"List this Run's Background processes in the Execution Pod: what a command left running when it ended (its result names it in left_running) and Live previews.",
+			schema::<pod::ProcessList>(),
+		),
+		(
+			"process_log",
+			"Read a Background process's stdout or stderr. Without offset it returns the last limit bytes; continue with next_offset.",
+			schema::<pod::ProcessLog>(),
+		),
+		(
+			"process_stop",
+			"Stop one of this Run's Background processes.",
+			schema::<pod::ProcessStop>(),
 		),
 		(
 			"shell",
@@ -126,7 +157,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"apply_patch",
-			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1. Where commands run in an Execution Pod, the patch applies to the Scratch Space, all or nothing, and the preconditions are checked against the patch's own context instead.",
 			schema::<Patch>(),
 		),
 		(

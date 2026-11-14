@@ -81,6 +81,8 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"outbound_get" => "core.egress@1",
 		"file_share" => "core.sharing@1",
 		"live_preview_start" | "live_preview_stop" => "core.preview@1",
+		"file_save" | "file_remove" | "file_copy" => "core.scratch@1",
+		"process_list" | "process_log" | "process_stop" => "core.processes@1",
 		"mcp_stdio" => "core.mcp_stdio@1",
 		_ => return None,
 	})
@@ -189,6 +191,12 @@ pub fn requires_runner(operation: &str) -> bool {
 			| "python_cancel"
 			| "live_preview_start"
 			| "live_preview_stop"
+			| "file_save"
+			| "file_remove"
+			| "file_copy"
+			| "process_list"
+			| "process_log"
+			| "process_stop"
 			| "mcp_stdio"
 	)
 }
@@ -208,6 +216,12 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "file_share"
 				| "live_preview_start"
 				| "live_preview_stop"
+				| "file_save"
+				| "file_remove"
+				| "file_copy"
+				| "process_list"
+				| "process_log"
+				| "process_stop"
 				| "mcp_stdio"
 		) {
 			ToolTier::Sandboxed

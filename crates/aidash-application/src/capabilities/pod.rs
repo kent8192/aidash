@@ -26,6 +26,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+pub mod files;
+pub mod processes;
+pub mod save;
+
 pub const SHELL: &str = "shell";
 pub const PYTHON: &str = "code_interpreter";
 

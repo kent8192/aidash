@@ -129,6 +129,9 @@ pub enum CapabilityResult {
 	Skill(SkillReadResult),
 	Share(ShareResult),
 	Outbound(OutboundResult),
+	/// Scratch Space reads and searches, saves, copies and Background
+	/// processes (#745). Last, so it only takes what no other result shape fits.
+	Pod(serde_json::Map<String, Value>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -489,3 +492,113 @@ pub struct OperationResult {
 }
 
 use uuid::Uuid;
+
+/// `file_read` as Agents call it: a Working Area or Reference file by
+/// `file_id`, or a Scratch Space file by `path` (#745).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolFileRead {
+	/// A Working Area or Reference file. Leave it out to read `path`.
+	pub file_id: Option<Uuid>,
+	/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
+	pub path: Option<String>,
+	pub workspace_id: Option<Uuid>,
+	pub area_id: Option<Uuid>,
+	pub representation: Option<Representation>,
+	pub offset: Option<usize>,
+	pub max_bytes: Option<usize>,
+	pub expected_digest: Option<String>,
+}
+
+/// Where `file_search` looks; `scratch` is the Run's Scratch Space (#745).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFileScope {
+	Working,
+	References,
+	Received,
+	Scratch,
+}
+
+/// `file_search` as Agents call it (#745).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolFileSearch {
+	/// May be empty in `path` mode, which then lists every path in the scope.
+	pub query: String,
+	pub mode: SearchMode,
+	pub scope: ToolFileScope,
+	pub path: Option<String>,
+	/// Scratch Space only: a glob such as `src/*.rs` the whole path must match.
+	pub glob: Option<String>,
+	pub cursor: Option<String>,
+	pub limit: Option<usize>,
+}
+
+/// Register Scratch Space files in the Working Area (#745).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileSave {
+	pub idempotency_key: Uuid,
+	/// Files or directories relative to the Scratch Space root; `.` is all of it.
+	pub paths: Vec<String>,
+	/// Files whose gitignore rules apply in each directory. Defaults to `.gitignore`.
+	pub ignore_files: Option<Vec<String>>,
+	/// Patterns to leave out, beating `ignore_files`.
+	pub exclude: Option<Vec<String>>,
+	/// Patterns to save even when excluded or ignored.
+	pub include: Option<Vec<String>>,
+	/// Also remove registered files under `paths` that the selection no longer holds.
+	pub sync: Option<bool>,
+	/// The working area revision from the previous result, to refuse a save over a newer one.
+	pub expected_revision: Option<i64>,
+}
+
+/// Remove registered files, or everything under a directory, from the Working Area.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileRemove {
+	pub idempotency_key: Uuid,
+	pub paths: Vec<String>,
+	/// The working area revision from the previous result.
+	pub expected_revision: Option<i64>,
+}
+
+/// Copy registered Working Area files into the Scratch Space (#745).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileCopy {
+	pub idempotency_key: Uuid,
+	/// Registered files or directories.
+	pub paths: Vec<String>,
+	/// A Scratch Space directory to copy under; by default each file keeps its path.
+	pub destination: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessList {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessStream {
+	Stdout,
+	Stderr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessLog {
+	pub operation_id: String,
+	pub stream: Option<ProcessStream>,
+	/// Byte offset to read from; without it the last `limit` bytes are returned.
+	pub offset: Option<u64>,
+	/// At most 262144 bytes; 65536 by default.
+	pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessStop {
+	pub operation_id: String,
+}

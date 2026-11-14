@@ -19,6 +19,13 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	("apply_patch", &["apply_patch"]),
 	("file_share", &["file_share"]),
 	("live_preview", &["live_preview_start", "live_preview_stop"]),
+	// Execution Pod groups (#745): their own groups, so adding them changes no
+	// existing group's definitions.
+	("scratch_files", &["file_save", "file_remove", "file_copy"]),
+	(
+		"background_processes",
+		&["process_list", "process_log", "process_stop"],
+	),
 	// Approving this group lets Agent Plugins' stdio MCP servers run in the
 	// Run's Execution Pod (ADR 0073).
 	("mcp_stdio", &["mcp_stdio"]),

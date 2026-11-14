@@ -647,6 +647,19 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Patch);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
+		// Save, remove and copy between the Scratch Space and the Working Area (#745).
+		"file_save" | "file_remove" | "file_copy" => {
+			auth.core = Some(CorePermission::Files);
+			contract.disclosure = DisclosureBoundary::Local;
+		}
+		// A Run's Background processes in its Execution Pod (#745).
+		"process_list" | "process_log" | "process_stop" => {
+			auth.core = Some(CorePermission::Shell);
+			if name != "process_stop" {
+				behavior.effect = ToolEffect::ReadOnly;
+			}
+			contract.disclosure = DisclosureBoundary::Local;
+		}
 		"file_share" => {
 			auth.core = Some(CorePermission::Sharing);
 		}

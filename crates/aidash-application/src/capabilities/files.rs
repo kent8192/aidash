@@ -177,9 +177,29 @@ pub async fn invoke(
 		scope.serialize_sharing().await?;
 	}
 	let mut area = scope.for_run(run).await?;
+	// Tools on the Scratch Space reach the Run's Execution Pod (#745).
+	let scratch = scratch_call(name, &input);
+	let pod = if scratch || POD_TOOLS.contains(&name) || name == "apply_patch" {
+		scope.pod(run).await?
+	} else {
+		None
+	};
+	if pod.is_none() && (scratch || (POD_TOOLS.contains(&name) && name != "file_remove")) {
+		return Err(Error::Conflict(
+			"RUNTIME_UNAVAILABLE: this Deployment runs no Execution Pods".into(),
+		));
+	}
 	// A running writer has not published its changes; this manifest is the last saved revision.
 	let saved_read = area.state == "running" && matches!(name, "file_read" | "file_search");
+	// Only tools that publish a Working Area revision need it free.
+	let scratch_only = scratch
+		|| (pod.is_some() && name == "apply_patch")
+		|| matches!(
+			name,
+			"file_copy" | "process_list" | "process_log" | "process_stop"
+		);
 	if !saved_read
+		&& !scratch_only
 		&& !matches!(
 			name,
 			"shell"
@@ -195,12 +215,128 @@ pub async fn invoke(
 	if matches!(name, "file_read" | "file_search") {
 		scope.require_current(&area, run).await?;
 	}
-	let mut result = match name {
-		"python_install" => {
-			scope
-				.execute(Action::Package, &mut area, input, key)
-				.await?
+	let result = match (name, pod.as_ref()) {
+		("file_read", Some(pod)) if scratch => {
+			scope.authorize(&area, "file.read").await?;
+			super::pod::files::read(pod, scratch_read(input)?, scope.limits()?.read_bytes).await?
 		}
+		("file_search", Some(pod)) if scratch => {
+			scope.authorize(&area, "file.read").await?;
+			let search: ScratchSearch = parse(input)?;
+			tokio::time::timeout(
+				std::time::Duration::from_secs(scope.limits()?.search_seconds),
+				super::pod::files::search(pod, search, scope.limits()?.search_matches),
+			)
+			.await
+			.map_err(|_| Error::Invalid("SEARCH_TIME_LIMIT".into()))??
+		}
+		("apply_patch", Some(pod)) => scratch_patch(scope, run, &area, pod, input).await?,
+		("file_save", Some(pod)) => {
+			super::pod::save::save(scope, run, &mut area, pod, parse(input)?).await?
+		}
+		("file_remove", _) => {
+			super::pod::save::remove(scope, run, &mut area, parse(input)?).await?
+		}
+		("file_copy", Some(pod)) => {
+			super::pod::save::copy(scope, run, &area, pod, parse(input)?).await?
+		}
+		("process_list", Some(pod)) => {
+			super::pod::processes::list(pod, &run.id.to_string()).await?
+		}
+		("process_log", Some(pod)) => {
+			super::pod::processes::log(pod, &run.id.to_string(), parse(input)?).await?
+		}
+		("process_stop", Some(pod)) => {
+			super::pod::processes::stop(pod, &run.id.to_string(), parse(input)?).await?
+		}
+		_ => legacy(scope, run, name, &mut area, input, key).await?,
+	};
+	envelope(scope, &area, key, result)
+}
+/// Tools that exist only with Execution Pods (#745).
+const POD_TOOLS: &[&str] = &[
+	"file_save",
+	"file_remove",
+	"file_copy",
+	"process_list",
+	"process_log",
+	"process_stop",
+];
+/// A `file_read` of a Scratch Space path, or a `file_search` of the Scratch Space.
+fn scratch_call(name: &str, input: &Value) -> bool {
+	let given = |field: &str| input.get(field).is_some_and(|value| !value.is_null());
+	match name {
+		"file_read" => given("path") && !given("file_id"),
+		"file_search" => input["scope"] == "scratch",
+		_ => false,
+	}
+}
+/// The fields a caller left null are absent.
+fn without_nulls(mut input: Value) -> Value {
+	if let Some(object) = input.as_object_mut() {
+		object.retain(|_, value| !value.is_null());
+	}
+	input
+}
+fn parse<T: serde::de::DeserializeOwned>(input: Value) -> Result<T> {
+	serde_json::from_value(without_nulls(input)).map_err(|e| Error::Invalid(e.to_string()))
+}
+fn scratch_read(input: Value) -> Result<ScratchRead> {
+	let mut input = without_nulls(input);
+	if let Some(object) = input.as_object_mut() {
+		match object
+			.remove("representation")
+			.as_ref()
+			.and_then(Value::as_str)
+		{
+			None | Some("text") => {}
+			Some(_) => {
+				return Err(Error::Invalid(
+					"a Scratch Space file is read as text; save it to the Working Area for other representations".into(),
+				));
+			}
+		}
+	}
+	parse(input)
+}
+/// Apply a patch to the Scratch Space. The idempotency key answers a repeat
+/// from the first result, because a patch applied twice would not match.
+async fn scratch_patch(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	area: &Area,
+	pod: &crate::ports::capabilities::pod_operations::PodContext,
+	input: Value,
+) -> Result<Value> {
+	let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
+		.map_err(|_| Error::Invalid("idempotency_key must be a UUID".into()))?;
+	let patch = input["patch"]
+		.as_str()
+		.ok_or_else(|| Error::Invalid("patch must be a string".into()))?
+		.to_owned();
+	let digest = aidash_domain::registry::rules::digest(&json!(["scratch_patch", run.id, patch]));
+	if let Some(cached) = scope.cached(key, &digest).await? {
+		return Ok(cached);
+	}
+	scope.authorize(area, "file.write").await?;
+	if scope.current_run(area).await? != Some(run.id) {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
+	let result = super::pod::files::patch(pod, &run.id.to_string(), patch).await?;
+	scope.cache(key, &digest, &result).await?;
+	Ok(result)
+}
+/// The tools of the Working Area and the Runner's per-command path.
+async fn legacy(
+	scope: &mut dyn FileScopePort,
+	run: &RunMetadata,
+	name: &str,
+	area: &mut Area,
+	input: Value,
+	key: &str,
+) -> Result<Value> {
+	Ok(match name {
+		"python_install" => scope.execute(Action::Package, area, input, key).await?,
 		"code_interpreter" | "shell" => {
 			let kind = if name == "shell" {
 				super::pod::SHELL
@@ -215,20 +351,14 @@ pub async fn invoke(
 				None if name == "shell" => Action::Shell,
 				None => Action::Python,
 			};
-			scope.execute(action, &mut area, input, key).await?
+			scope.execute(action, area, input, key).await?
 		}
-		"outbound_get" => {
-			scope
-				.execute(Action::Outbound, &mut area, input, key)
-				.await?
-		}
-		"file_share" => scope.execute(Action::Share, &mut area, input, key).await?,
+		"outbound_get" => scope.execute(Action::Outbound, area, input, key).await?,
+		"file_share" => scope.execute(Action::Share, area, input, key).await?,
 		"skill_list" | "skill_load" | "skill_read" => {
-			scope
-				.execute(Action::Skill(name), &mut area, input, key)
-				.await?
+			scope.execute(Action::Skill(name), area, input, key).await?
 		}
-		"apply_patch" => scope.execute(Action::Patch, &mut area, input, key).await?,
+		"apply_patch" => scope.execute(Action::Patch, area, input, key).await?,
 		"shell_poll" | "shell_cancel" | "python_poll" | "python_cancel" => {
 			scope
 				.execute(
@@ -240,7 +370,7 @@ pub async fn invoke(
 						},
 						cancel: matches!(name, "shell_cancel" | "python_cancel"),
 					},
-					&mut area,
+					area,
 					input,
 					key,
 				)
@@ -251,10 +381,10 @@ pub async fn invoke(
 				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
 			match (selection.workspace_id, selection.area_id) {
 				(Some(workspace), Some(target)) => {
-					area = scope.subnode_area(run, workspace, target).await?;
+					*area = scope.subnode_area(run, workspace, target).await?;
 					// A member's Reference set is read only inside the member's own Run,
 					// whose Agent version binds it; a copy the member made is readable (ADR 0114).
-					if files(&area)?
+					if files(area)?
 						.iter()
 						.any(|file| file.file_id == selection.file_id && file.is_reference_file())
 					{
@@ -269,7 +399,7 @@ pub async fn invoke(
 				}
 			}
 			if matches!(selection.representation, Representation::ModelInput) {
-				let file = files(&area)?
+				let file = files(area)?
 					.into_iter()
 					.find(|file| file.file_id == selection.file_id)
 					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
@@ -291,20 +421,28 @@ pub async fn invoke(
 				let model: ModelConfig = serde_json::from_value(effective.config)?;
 				model.require_media_types([file.media_type.as_str()])?;
 			}
-			read(scope, &area, selection).await?
+			read(scope, area, selection).await?
 		}
 		"file_search" => tokio::time::timeout(
 			std::time::Duration::from_secs(scope.limits()?.search_seconds),
 			search(
 				scope,
-				&area,
+				area,
 				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?,
 			),
 		)
 		.await
 		.map_err(|_| Error::Invalid("SEARCH_TIME_LIMIT".into()))??,
 		_ => return Err(Error::Forbidden),
-	};
+	})
+}
+/// Shape a tool result as the Envelope Agents read.
+fn envelope(
+	scope: &mut dyn FileScopePort,
+	area: &Area,
+	key: &str,
+	mut result: Value,
+) -> Result<Envelope> {
 	let operation_id = result
 		.get_mut("operation_id")
 		.map(Value::take)
@@ -823,6 +961,32 @@ pub async fn copy_thread_attachment(
 ) -> Result<Value> {
 	if !settings(scope, run).await?.core_capabilities.files {
 		return Err(Error::Forbidden);
+	}
+	// Where commands run in an Execution Pod, the attachment lands in the
+	// Scratch Space they read (#745).
+	if let Some(pod) = scope.pod(run).await? {
+		let area = scope.for_run(run).await?;
+		scope.authorize(&area, "file.write").await?;
+		let operation_digest = aidash_domain::registry::rules::digest(&json!([
+			"copy_thread_attachment_scratch",
+			run.id,
+			path,
+			message_id,
+			attachment_id,
+			expected_digest
+		]));
+		if let Some(cached) = scope.cached(key, &operation_digest).await? {
+			return Ok(cached);
+		}
+		if scope.current_run(&area).await? != Some(run.id) {
+			return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+		}
+		let size = super::pod::files::write(&pod, &run.id.to_string(), &path, bytes, None).await?;
+		let result = json!({"path": path, "size": size, "digest": expected_digest,
+			"media_type": media_type, "location": "scratch",
+			"source": {"message_id": message_id, "attachment_id": attachment_id}});
+		scope.cache(key, &operation_digest, &result).await?;
+		return Ok(result);
 	}
 	let mut area = scope.for_run(run).await?;
 	available(&area.state)?;

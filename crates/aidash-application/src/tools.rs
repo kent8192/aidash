@@ -985,7 +985,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "attachment_copy",
 			contract: aidash_domain::tool::builtin_contract("attachment_copy")
 				.expect("declared builtin"),
-			description: "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
+			description: "Copy a visible Thread Attachment into the Working Area, or, where commands run in an Execution Pod, into the Scratch Space at path. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
 			schema: json!({"type":"object","required":["id","path","expected_revision","idempotency_key"],"properties":{"id":string,"path":string,"expected_revision":{"type":"integer"},"idempotency_key":string},"additionalProperties":false}),
 		},
 		Builtin {
