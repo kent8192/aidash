@@ -15,6 +15,20 @@ pub mod impact;
 pub mod recall;
 pub mod recovery;
 
+/// Where built-in memory may be recalled across Runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SharingScope {
+	#[default]
+	Workspace,
+	TenantAgent,
+}
+impl SharingScope {
+	pub fn permits(self, same_tenant: bool, same_workspace: bool, same_agent: bool) -> bool {
+		same_tenant && (same_workspace || self == Self::TenantAgent && same_agent)
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
@@ -60,6 +74,57 @@ pub enum RerankerConfig {
 pub enum TokenizerConfig {
 	/// Conservative UTF-8 upper bound; the entire serialized envelope is counted.
 	Utf8UpperBound,
+}
+
+/// Selects the calling Agent's model or an explicitly registered role model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "RoleModelWire", into = "RoleModelWire")]
+#[schemars(with = "RoleModelWire")]
+pub enum RoleModel {
+	Entry(EntityRef),
+	AgentModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum RoleModelWire {
+	Entry(EntityRef),
+	Named(RoleModelName),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RoleModelName {
+	AgentModel,
+}
+
+impl From<RoleModelWire> for RoleModel {
+	fn from(value: RoleModelWire) -> Self {
+		match value {
+			RoleModelWire::Entry(entry) => Self::Entry(entry),
+			RoleModelWire::Named(RoleModelName::AgentModel) => Self::AgentModel,
+		}
+	}
+}
+impl From<RoleModel> for RoleModelWire {
+	fn from(value: RoleModel) -> Self {
+		match value {
+			RoleModel::Entry(entry) => Self::Entry(entry),
+			RoleModel::AgentModel => Self::Named(RoleModelName::AgentModel),
+		}
+	}
+}
+impl RoleModel {
+	pub fn validate(&self) -> Result<()> {
+		if let Self::Entry(entry) = self
+			&& (entry.id.trim().is_empty() || entry.version.trim().is_empty())
+		{
+			return Err(Error::Invalid(
+				"memory model role requires a pinned entry".into(),
+			));
+		}
+		Ok(())
+	}
 }
 
 /// Issued by the Home authority for a participant, independently of a definition version.
@@ -109,10 +174,13 @@ impl Kind {
 }
 
 /// Verification is separate from admission and model confidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Verification {
+	#[default]
 	Unverified,
+	/// Automatically recorded with provenance, without an assertion of truth.
+	Recorded,
 	Supported,
 	Contradicted,
 }
@@ -153,6 +221,12 @@ pub enum Evidence {
 		id: Uuid,
 		revision: i64,
 		digest: String,
+	},
+	/// Inclusive positions in the originating Run's Context Journal.
+	JournalRange {
+		run_id: Uuid,
+		from_seq: u64,
+		through_seq: u64,
 	},
 }
 
@@ -230,6 +304,7 @@ pub struct Content {
 	pub text: String,
 	pub kind: Kind,
 	pub learning: Learning,
+	#[serde(default)]
 	pub verification: Verification,
 	pub occurred: Option<TimeRange>,
 	pub entities: Vec<Entity>,
@@ -304,14 +379,25 @@ impl Content {
 					revision,
 					digest,
 				} => !id.is_nil() && *revision > 0 && !digest.is_empty(),
+				Evidence::JournalRange {
+					run_id,
+					from_seq,
+					through_seq,
+				} => {
+					!run_id.is_nil()
+						&& *from_seq > 0 && from_seq <= through_seq
+						&& *through_seq <= i64::MAX as u64
+				}
 			};
 			if !valid {
 				return Err(Error::Invalid("invalid memory evidence revision".into()));
 			}
 		}
 		if self.kind.derived()
-			&& (self.verification != Verification::Unverified
-				|| self.evidence.is_empty()
+			&& (!matches!(
+				self.verification,
+				Verification::Unverified | Verification::Recorded
+			) || self.evidence.is_empty()
 				|| self
 					.evidence
 					.iter()
@@ -409,10 +495,10 @@ impl Bounds {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-	pub extraction: EntityRef,
-	pub derivation: EntityRef,
-	pub reflection: EntityRef,
-	pub embedding: EntityRef,
+	pub extraction: RoleModel,
+	pub derivation: RoleModel,
+	pub reflection: RoleModel,
+	pub embedding: Option<EntityRef>,
 	pub reranker: EntityRef,
 	pub tokenizer: EntityRef,
 	/// Explicit cosine cutoff for derived graph edges, in millionths (1..=1_000_000).
@@ -526,6 +612,21 @@ impl Rate {
 	}
 }
 impl Policy {
+	/// Registry dependencies; AgentModel is supplied by the Run itself.
+	pub fn role_references(&self) -> Vec<(&EntityRef, &'static str)> {
+		let mut references = Vec::new();
+		for role in [&self.extraction, &self.derivation, &self.reflection] {
+			if let RoleModel::Entry(reference) = role {
+				references.push((reference, "model"));
+			}
+		}
+		if let Some(reference) = &self.embedding {
+			references.push((reference, "embedding"));
+		}
+		references.push((&self.reranker, "reranker"));
+		references.push((&self.tokenizer, "tokenizer"));
+		references
+	}
 	pub fn validate(&self) -> Result<()> {
 		self.bounds.validate()?;
 		if !(1..=1_000_000).contains(&self.semantic_link_min_similarity_millionths) {
@@ -554,14 +655,14 @@ impl Policy {
 				"invalid memory decay or dormancy bounds".into(),
 			));
 		}
-		for role in [
-			&self.extraction,
-			&self.derivation,
-			&self.reflection,
-			&self.embedding,
-			&self.reranker,
-			&self.tokenizer,
-		] {
+		for role in [&self.extraction, &self.derivation, &self.reflection] {
+			role.validate()?;
+		}
+		for role in self
+			.embedding
+			.iter()
+			.chain([&self.reranker, &self.tokenizer])
+		{
 			if role.id.trim().is_empty() || role.version.trim().is_empty() {
 				return Err(Error::Invalid(
 					"every memory role needs a versioned Registry reference".into(),

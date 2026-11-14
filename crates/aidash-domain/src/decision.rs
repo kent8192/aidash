@@ -13,7 +13,6 @@ pub mod observation;
 pub mod policy;
 pub mod probability;
 pub mod provider_report;
-pub mod pruning;
 pub use approval::*;
 pub use evidence::*;
 pub use probability::Probability;
@@ -24,16 +23,6 @@ pub const PROVIDER: &str = "typesafe.jev/1";
 /// OpenRouter's Decisions API, which asks every decision model the same typed
 /// questions on the hosts a Route names (ADR 0066).
 pub const DECISIONS: &str = "openrouter.decisions/1";
-pub const BUILDER: &str = "aidash.compaction/3";
-pub const OPTION_SOURCE: &str = "history_event/1";
-pub const RULE: &str = "compaction.keep/1";
-/// Opt-in compaction rule (#611). It starts from `RULE`'s per-candidate branches
-/// and, while the projection does not fit, truncates the results of the kept
-/// candidates in ascending keep probability (`fit_order`). Only a Decider version
-/// that names it uses it, so `RULE` versions and their evidence are unchanged.
-pub const FIT_RULE: &str = "compaction.fit/1";
-/// `FIT_RULE` never truncates a result whose keep probability reaches this.
-pub const FIT_CEILING: f64 = 0.7;
 pub const APPROVAL_BUILDER: &str = "aidash.approval/1";
 pub const APPROVAL_OPTION_SOURCE: &str = "approval_call/1";
 pub const APPROVAL_RULE: &str = "approval.block/1";
@@ -57,7 +46,6 @@ pub const STATE_READ: &str = "decision.state.read";
 #[serde(rename_all = "snake_case")]
 pub enum Hook {
 	ContextSelection,
-	Compaction,
 	/// Whether a pending Tool call may run without a person approving it
 	/// (the Auto Approval Mode, ADR 0077).
 	Approval,
@@ -74,11 +62,6 @@ impl Hook {
 				option_source: SOURCE_OPTION,
 				rule: SOURCE_RULE,
 			},
-			Self::Compaction => HookContract {
-				builder: BUILDER,
-				option_source: OPTION_SOURCE,
-				rule: RULE,
-			},
 			Self::ApprovalObservation => HookContract {
 				builder: observation::BUILDER,
 				option_source: observation::OPTION_SOURCE,
@@ -94,9 +77,9 @@ impl Hook {
 }
 impl Hook {
 	/// Whether a Decider of this hook may name `rule`: the contract's rule, or
-	/// for compaction also the opt-in `FIT_RULE`.
+	/// the contract’s rule.
 	pub fn allows_rule(self, rule: &str) -> bool {
-		rule == self.contract().rule || self == Self::Compaction && rule == FIT_RULE
+		rule == self.contract().rule
 	}
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,8 +141,7 @@ pub struct DeciderRoute {
 	#[serde(default)]
 	pub hosts: Vec<String>,
 	/// The probability at which this Route's answer takes the conservative
-	/// action: keep content for compaction, block the call for approval. Lower
-	/// is stricter for both. A Binding's stricter threshold still applies.
+	/// action, such as blocking a call for approval. Lower is stricter. A Binding's stricter threshold still applies.
 	pub threshold: Probability,
 	/// How much state this Route sends and how it abridges it.
 	#[serde(default)]
@@ -481,9 +463,8 @@ pub fn served_by(pinned: &str, served: &str) -> bool {
 }
 
 /// What a Binding may tighten. A lower threshold takes the conservative action
-/// at a lower probability: it keeps more content for compaction and blocks more
-/// calls for approval. `preserve_recent` and `forbid_apply` apply to compaction
-/// only; an approval Decider reads `threshold` and `max_calls_per_run`.
+/// at a lower probability. Approval reads `threshold` and `max_calls_per_run`;
+/// source selection also uses `forbid_apply`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Restrictions {
@@ -651,50 +632,6 @@ pub struct Question {
 	pub answer_type: AnswerType,
 }
 pub type Questions = BTreeMap<String, Question>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Branch {
-	Keep,
-	TruncateResult,
-	Drop,
-}
-/// One candidate as `fit_order` ranks it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FitCandidate {
-	pub history_index: usize,
-	pub keep_result: Probability,
-	/// The branch `branch` chose, or Keep for a protected candidate.
-	pub branch: Branch,
-	pub protected: bool,
-}
-/// The history indexes `FIT_RULE` may truncate, in the order it truncates them:
-/// unprotected candidates the threshold kept whose keep-result probability is
-/// below `FIT_CEILING`, lowest first and older history first on ties. Jev's
-/// probabilities cluster near the threshold, but their order still separates the
-/// history a Run needs from the rest (#611).
-pub fn fit_order(candidates: &[FitCandidate]) -> Vec<usize> {
-	let mut eligible: Vec<_> = candidates
-		.iter()
-		.filter(|c| !c.protected && c.branch == Branch::Keep && c.keep_result.value() < FIT_CEILING)
-		.collect();
-	eligible.sort_by(|a, b| {
-		a.keep_result
-			.value()
-			.total_cmp(&b.keep_result.value())
-			.then(a.history_index.cmp(&b.history_index))
-	});
-	eligible.into_iter().map(|c| c.history_index).collect()
-}
-pub fn branch(keep_call: Probability, keep_result: Probability, threshold: Probability) -> Branch {
-	if keep_result.value() >= threshold.value() {
-		Branch::Keep
-	} else if keep_call.value() >= threshold.value() {
-		Branch::TruncateResult
-	} else {
-		Branch::Drop
-	}
-}
 
 #[cfg(test)]
 mod tests;

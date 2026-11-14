@@ -5,13 +5,16 @@ use aidash_domain::{entities::*, run_state::RawRun};
 
 impl Record for aidash_domain::run_input::RunInput {
 	fn decode(row: &PgRow) -> NativeResult<Self> {
+		let idempotency_key: String = row.try_get("idempotency_key")?;
+		let is_data = idempotency_key.starts_with(aidash_domain::run_input::SUBNODE_RESULT_PREFIX);
 		Ok(Self {
 			seq: row.try_get("seq")?,
 			sender: row.try_get("sender")?,
 			content: row.try_get("content")?,
-			idempotency_key: row.try_get("idempotency_key")?,
+			idempotency_key,
 			message_id: row.try_get("message_id")?,
 			reference_only: row.try_get("reference_only")?,
+			is_data,
 		})
 	}
 }

@@ -31,8 +31,12 @@ pub(crate) async fn reindex(
 			"observed memory index revision changed".into(),
 		));
 	}
+	let role = policy
+		.embedding
+		.as_ref()
+		.ok_or(Error::SemanticUnavailable)?;
 	let embedding: EmbeddingConfig = serde_json::from_value(
-		definition(lease, &input.bank.tenant, &policy.embedding, "embedding")
+		definition(lease, &input.bank.tenant, role, "embedding")
 			.await?
 			.config,
 	)?;

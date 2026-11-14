@@ -1579,29 +1579,17 @@ test("Tenant profile writers page to later profiles and keep the current revisio
   expect(cursors).toContain("profile-099");
 });
 
-test("Creator explicitly removes and restores the built-in compaction default", async ({
+test("Creator saves a draft without the removed compaction Decider", async ({
   page,
 }) => {
   const { saves } = await editableDrafts(page);
-  const compaction = page.getByLabel("Use the built-in compaction Decider");
-  await expect(compaction).toBeChecked();
   await expect(
-    page.getByText("aidash.compaction-decider@1.0.0", { exact: true }),
-  ).toBeVisible();
-  await compaction.uncheck();
+    page.getByLabel("Use the built-in compaction Decider"),
+  ).toHaveCount(0);
   await page
     .locator(".wb-actions")
     .getByRole("button", { name: "Save draft", exact: true })
     .click();
   await expect.poll(() => saves.length).toBe(1);
-  expect(saves[0]).toMatchObject({
-    entry: { config: { remove_default: ["compaction"] } },
-  });
-  await compaction.check();
-  await page
-    .locator(".wb-actions")
-    .getByRole("button", { name: "Save draft", exact: true })
-    .click();
-  await expect.poll(() => saves.length).toBe(2);
-  expect(saves[1]).toMatchObject({ entry: { config: { remove_default: [] } } });
+  expect(saves[0]).toMatchObject({ entry: { config: { remove_default: [] } } });
 });

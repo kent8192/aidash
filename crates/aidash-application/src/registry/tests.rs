@@ -262,9 +262,6 @@ impl DefinitionLookup for Scope {
 	}
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		self.trace.push(format!("read:{id}@{version}"));
-		if id == system::COMPACTION_DECIDER_ID && version == system::COMPACTION_DECIDER_VERSION {
-			return system::compaction_decider();
-		}
 		self.entries
 			.get(&identity(id, version))
 			.cloned()
@@ -1174,4 +1171,13 @@ fn wire_api_is_refused_without_a_provider_credential(
 			.unwrap_err();
 		assert!(error.to_string().contains(expected), "{error}");
 	}
+}
+
+#[test]
+fn removed_decider_hook_is_reported_as_invalid_registration() {
+	let mut entry = crate::registry::system::approval_decider().unwrap();
+	entry.config["hook"] = json!("compaction");
+	assert!(
+		matches!(validation().validate_in(&entry, true), Err(Error::Invalid(message)) if message.contains("invalid Decider config") && message.contains("compaction"))
+	);
 }

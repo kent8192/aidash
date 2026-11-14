@@ -398,13 +398,7 @@ pub(crate) async fn load(
 			.expr(SimpleExpr::from(Expr::col(Alias::new("generated_count"))))
 			.expr(SimpleExpr::from(Expr::col(Alias::new("allocated_tokens"))))
 			.expr(SimpleExpr::from(Expr::col(Alias::new(
-				"allocated_compaction_calls",
-			))))
-			.expr(SimpleExpr::from(Expr::col(Alias::new(
 				"allocated_embedding_calls",
-			))))
-			.expr(SimpleExpr::from(Expr::col(Alias::new(
-				"allocated_summary_calls",
 			))))
 			.from(Alias::new("generation_policies"))
 			.and_where(Expr::cust("tenant = $1 AND id = $2"))
@@ -417,43 +411,27 @@ pub(crate) async fn load(
 			.expr(SimpleExpr::from(Expr::col(Alias::new("generated_count"))))
 			.expr(SimpleExpr::from(Expr::col(Alias::new("allocated_tokens"))))
 			.expr(SimpleExpr::from(Expr::col(Alias::new(
-				"allocated_compaction_calls",
-			))))
-			.expr(SimpleExpr::from(Expr::col(Alias::new(
 				"allocated_embedding_calls",
-			))))
-			.expr(SimpleExpr::from(Expr::col(Alias::new(
-				"allocated_summary_calls",
 			))))
 			.from(Alias::new("generation_policies"))
 			.and_where(Expr::cust("tenant = $1 AND id = $2"))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder)
 	};
-	let row: Option<(i64, Value, i64, i64, i64, i64, i64)> =
-		crate::database::native::query_as(&query)
-			.columns(&[
-				"revision",
-				"spec",
-				"generated_count",
-				"allocated_tokens",
-				"allocated_compaction_calls",
-				"allocated_embedding_calls",
-				"allocated_summary_calls",
-			])
-			.bind(tenant)
-			.bind(id)
-			.fetch_optional(&mut **tx)
-			.await?;
-	let (
-		revision,
-		spec,
-		generated_count,
-		allocated_tokens,
-		allocated_compaction_calls,
-		allocated_embedding_calls,
-		allocated_summary_calls,
-	) = row.ok_or_else(|| Error::NotFound("generation policy".into()))?;
+	let row: Option<(i64, Value, i64, i64, i64)> = crate::database::native::query_as(&query)
+		.columns(&[
+			"revision",
+			"spec",
+			"generated_count",
+			"allocated_tokens",
+			"allocated_embedding_calls",
+		])
+		.bind(tenant)
+		.bind(id)
+		.fetch_optional(&mut **tx)
+		.await?;
+	let (revision, spec, generated_count, allocated_tokens, allocated_embedding_calls) =
+		row.ok_or_else(|| Error::NotFound("generation policy".into()))?;
 	Ok(Policy {
 		tenant: tenant.into(),
 		id: id.into(),
@@ -461,8 +439,6 @@ pub(crate) async fn load(
 		spec: serde_json::from_value(spec)?,
 		generated_count,
 		allocated_tokens,
-		allocated_compaction_calls,
 		allocated_embedding_calls,
-		allocated_summary_calls,
 	})
 }

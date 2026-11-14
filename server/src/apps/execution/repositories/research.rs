@@ -694,6 +694,78 @@ pub(crate) async fn run_research(
 	})
 }
 
+/// Withdrawals of the other Runs that Journal copies held by `holder` name as
+/// sources (#850): their account-terms expiry is merged into `expired`, and
+/// the Runs whose evidence was revoked are returned. Read without those Runs'
+/// research locks; their own revocation and expiry sweep the stored copies.
+pub(crate) async fn source_withdrawals(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	holder: Uuid,
+	references: impl IntoIterator<Item = aidash_domain::context::research::ResearchReference>,
+	expired: &mut aidash_domain::research::expiry::ExpiredResults,
+) -> crate::Result<std::collections::BTreeSet<Uuid>> {
+	let sources: std::collections::BTreeSet<Uuid> = references
+		.into_iter()
+		.flat_map(|reference| reference.runs)
+		.filter(|run| *run != holder)
+		.collect();
+	let mut revoked = std::collections::BTreeSet::new();
+	for source in sources {
+		if ResearchRevocation::exists(tx, source).await? {
+			revoked.insert(source);
+			continue;
+		}
+		let other = account_terms::expired(tx, source).await?;
+		expired.sources.extend(other.sources);
+		expired.documents.extend(other.documents);
+		expired.through = expired.through.max(other.through);
+	}
+	Ok(revoked)
+}
+
+/// Whether `reference` copies Research of a revoked source Run.
+pub(crate) fn from_revoked_source(
+	reference: &aidash_domain::context::research::ResearchReference,
+	revoked: &std::collections::BTreeSet<Uuid>,
+) -> bool {
+	reference.runs.iter().any(|run| revoked.contains(run))
+}
+
+/// The expiry a Run's worker applies to the history it holds, including its
+/// Journal copies of other Runs' Research (#850): their account-terms expiry,
+/// and, since this report has no per-copy revocation, the Research ids of
+/// copies from a revoked Run, so the worker replaces them before its next
+/// model request.
+pub(crate) async fn held_expiry(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	holder: Uuid,
+	entries: &[aidash_domain::context::HistoryEntry],
+) -> crate::Result<aidash_domain::research::expiry::ExpiredResults> {
+	let mut expired = account_terms::expired(tx, holder).await?;
+	let copied = references(entries);
+	let revoked = source_withdrawals(tx, holder, copied.clone(), &mut expired).await?;
+	for reference in copied
+		.iter()
+		.filter(|reference| from_revoked_source(reference, &revoked))
+	{
+		expired.sources.extend(reference.sources.iter().copied());
+		expired
+			.documents
+			.extend(reference.documents.iter().copied());
+	}
+	Ok(expired)
+}
+
+fn references(
+	entries: &[aidash_domain::context::HistoryEntry],
+) -> Vec<aidash_domain::context::research::ResearchReference> {
+	entries
+		.iter()
+		.filter_map(|entry| entry.research_reference())
+		.filter(|reference| !reference.runs.is_empty())
+		.collect()
+}
+
 /// Freeze exact materialized variants under the caller's Run row fence.
 pub(crate) async fn freeze_context(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
@@ -708,14 +780,17 @@ pub(crate) async fn freeze_context(
 		return Ok(());
 	}
 	lock(tx, &run_lock(run)).await?;
-	let expired = account_terms::expired(tx, run).await?;
+	let mut expired = account_terms::expired(tx, run).await?;
 	let revoked = ResearchRevocation::exists(tx, run).await?;
+	let revoked_sources =
+		source_withdrawals(tx, run, references(&context.history), &mut expired).await?;
 	crate::apps::execution::models::research::ResearchJournalResult::freeze(
 		tx,
 		run,
 		&context.history,
 		&expired,
 		revoked,
+		&revoked_sources,
 	)
 	.await
 }
@@ -729,25 +804,85 @@ pub(crate) async fn resolve_entries(
 	entries: &mut [aidash_domain::context::HistoryEntry],
 ) -> crate::Result<()> {
 	if !entries.iter().any(|entry| matches!(&entry.event, aidash_domain::context::ContextEvent::Tool { result, .. } if aidash_domain::context::research::ResearchReference::parse(result).is_some())) { return Ok(()); }
-	let expired = account_terms::expired(tx, run).await?;
+	// Copies of other Runs' Research are withdrawn with their source Run.
+	let copied = references(entries);
+	let mut expired = account_terms::expired(tx, run).await?;
 	let revoked = ResearchRevocation::exists(tx, run).await?;
+	let revoked_sources = source_withdrawals(tx, run, copied.clone(), &mut expired).await?;
 	crate::apps::execution::models::research::ResearchJournalResult::resolve(
-		tx, run, entries, &expired, revoked,
+		tx,
+		run,
+		entries,
+		&expired,
+		revoked,
+		&revoked_sources,
 	)
 	.await?;
-	let expired = account_terms::expired(tx, run).await?;
+	let mut expired = account_terms::expired(tx, run).await?;
 	let revoked = ResearchRevocation::exists(tx, run).await?;
-	if revoked {
-		for entry in entries {
-			if entry.research_reference().is_some()
-				&& let aidash_domain::context::ContextEvent::Tool { call, result } =
-					&mut entry.event
-			{
-				*result = aidash_domain::context::ContextEvent::revoked_result(&call.id);
-			}
+	let revoked_sources = source_withdrawals(tx, run, copied, &mut expired).await?;
+	for entry in entries.iter_mut() {
+		let withdrawn = entry
+			.research_reference()
+			.is_some_and(|reference| revoked || from_revoked_source(&reference, &revoked_sources));
+		if withdrawn
+			&& let aidash_domain::context::ContextEvent::Tool { call, result } = &mut entry.event
+		{
+			*result = aidash_domain::context::ContextEvent::revoked_result(&call.id);
 		}
-	} else {
+	}
+	if !revoked {
 		aidash_domain::research::expiry::expire(entries, &expired, &Default::default());
 	}
 	Ok(())
+}
+
+/// Recheck retained Research identities without requiring the Context Journal.
+pub(crate) async fn retained_references_current(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	references: &[aidash_domain::context::research::ResearchReference],
+) -> crate::Result<bool> {
+	if references.is_empty() {
+		return Ok(true);
+	}
+	if revoked_under_lock(tx, run).await? {
+		return Ok(false);
+	}
+	let mut expired = account_terms::expired(tx, run).await?;
+	if !source_withdrawals(tx, run, references.iter().cloned(), &mut expired)
+		.await?
+		.is_empty()
+	{
+		return Ok(false);
+	}
+	for reference in references {
+		if reference.covered_by(&expired)
+			|| ResearchAttempt::expired_tombstone(tx, run, &reference.invocation)
+				.await?
+				.is_some()
+		{
+			return Ok(false);
+		}
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let row = crate::database::native::query(
+			&Query::select()
+				.column(Alias::new("purge_reason"))
+				.from(Alias::new("research_journal_results"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("invocation_key").eq(reference.invocation.as_str()))
+				.and_where(Expr::col("digest").eq(reference.digest.as_str()))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some(row) = row
+			&& row.try_get::<Option<String>>("purge_reason")?.is_some()
+		{
+			return Ok(false);
+		}
+	}
+	Ok(true)
 }

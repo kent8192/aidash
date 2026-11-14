@@ -161,48 +161,6 @@ async function createGenerationScenario(
       },
       credential.token,
     );
-    const decider = `${id}-jev`;
-    await api(
-      "/api/registry",
-      {
-        id: decider,
-        version: "1.0.0",
-        kind: "decider",
-        name: { en: "Approved compaction", ja: "承認済み圧縮" },
-        description: {
-          en: "Approved Jev release (never called: contexts fit)",
-        },
-        config: {
-          hook: "compaction",
-          answer_type: "noul",
-          description: "Keep the history the task still needs",
-          provider_credential: "openrouter",
-          routes: [
-            {
-              provider_contract: "typesafe.jev/1",
-              model: "typesafe/jev-1.14",
-              threshold: "3fe0000000000000",
-            },
-          ],
-          builder: "aidash.compaction/3",
-          option_source: "history_event/1",
-          rule: "compaction.keep/1",
-          mode: "enforce",
-          max_calls_per_run: 20,
-        },
-      },
-      credential.token,
-    );
-    await api(
-      `/api/authorization/${tenant}/catalog`,
-      {
-        entry: { id: decider, version: "1.0.0" },
-        expected_revision: 0,
-        enabled: true,
-        node: node.name,
-      },
-      credential.token,
-    );
     const memoryDescriptor = `${id}-memory`;
     await api(
       "/api/registry",
@@ -372,13 +330,6 @@ async function createGenerationScenario(
       .getByLabel("権限属性（JSON）", { exact: true })
       .fill('{"team":"research"}');
     await dialog
-      .getByLabel("圧縮 Decider", { exact: true })
-      .selectOption(`${decider}@1.0.0`);
-    await dialog
-      .getByLabel("Agentごとの圧縮呼び出し上限", { exact: true })
-      .fill("2");
-    await dialog.getByLabel("圧縮呼び出しの総予算", { exact: true }).fill("8");
-    await dialog
       .getByLabel("埋め込みプロバイダー", { exact: true })
       .selectOption(`${embedder}@1.0.0`);
     await dialog
@@ -396,12 +347,6 @@ async function createGenerationScenario(
     await page
       .getByRole("button", { name: "ポリシーを編集", exact: true })
       .click();
-    await expect(
-      dialog.getByLabel("圧縮 Decider", { exact: true }),
-    ).toHaveValue(`${decider}@1.0.0`);
-    await expect(
-      dialog.getByLabel("Agentごとの圧縮呼び出し上限", { exact: true }),
-    ).toHaveValue("2");
     await dialog.getByLabel("最大同時Agent数", { exact: true }).fill("2");
     await expect(
       dialog.getByLabel("埋め込みプロバイダー", { exact: true }),
@@ -531,8 +476,6 @@ async function createGenerationScenario(
       await dialog
         .getByLabel("判断の理由", { exact: true })
         .fill("定義と上限を確認済み");
-      await expect(dialog).toContainText("承認済み圧縮 · 1.0.0");
-      await expect(dialog).toContainText("圧縮呼び出し消費数 / 上限");
       await expect(dialog).toContainText("Approved embedding · 1.0.0");
       await expect(dialog).toContainText("埋め込み試行数");
       await page.screenshot({

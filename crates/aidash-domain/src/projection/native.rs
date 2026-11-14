@@ -26,12 +26,15 @@ pub enum Trust {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
+	MemoryRecall,
 	Identity,
 	Task,
 	ReferenceDocuments,
 	/// One exact Registry-declared context candidate, always data.
 	ContextSource,
 	RunMessageSummary,
+	/// A result returned by a Subnode member.
+	SubnodeResult,
 	ExecutionSummary,
 	Tool,
 	ModelMediaObservation,
@@ -70,6 +73,15 @@ impl Envelope {
 			trust: Trust::Data,
 			content,
 		}
+	}
+
+	pub fn subnode_result(sender: &str, seq: i64, content: Value) -> Self {
+		Self::data(
+			Source::SubnodeResult,
+			json!({"sender":sender}),
+			u64::try_from(seq).ok(),
+			content,
+		)
 	}
 
 	/// Canonical text of the envelope: typed field order, sorted JSON maps.
@@ -393,6 +405,16 @@ fn single<'a>(
 	markers: &mut Vec<&'a ContextEvent>,
 ) {
 	match &entry.event {
+		ContextEvent::MemoryRecall { content, .. } => history.push(NativeMessage::Data {
+			envelope: Envelope::data(
+				Source::MemoryRecall,
+				json!({}),
+				Some(entry.seq),
+				content
+					.clone()
+					.unwrap_or_else(|| json!({"status":"unavailable"})),
+			),
+		}),
 		ContextEvent::Human {
 			request,
 			request_kind,

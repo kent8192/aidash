@@ -135,9 +135,6 @@ impl DecisionAuthority for Fixture {
 			state_retention: Default::default(),
 		})
 	}
-	async fn read(&self, _: &Evidence, _: bool) -> Result<()> {
-		Ok(())
-	}
 }
 #[async_trait]
 impl DecisionJournal for Fixture {
@@ -187,14 +184,6 @@ impl DecisionJournal for Fixture {
 			.insert(permit.record.attempt, (status, answers.cloned()));
 		Ok(())
 	}
-	async fn commit(
-		&self,
-		_: &Evidence,
-		_: Option<&Context>,
-		_: Option<&RetainedState>,
-	) -> Result<()> {
-		unreachable!("an approval decision commits no compaction evidence")
-	}
 	async fn commit_approval(&self, evidence: &ApprovalEvidence) -> Result<()> {
 		if self.fail_commit {
 			return Err(Error::Conflict("worker lease lost".into()));
@@ -207,12 +196,6 @@ impl DecisionJournal for Fixture {
 		{
 			saved.approvals.push(evidence.clone());
 		}
-		Ok(())
-	}
-	async fn expire_states(&self, _: DateTime<Utc>) -> Result<usize> {
-		Ok(0)
-	}
-	async fn append_outcome(&self, _: &OutcomeLink) -> Result<()> {
 		Ok(())
 	}
 }
@@ -332,6 +315,7 @@ fn person(seq: i64, content: &str) -> RunInput {
 		idempotency_key: format!("key-{seq}"),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	}
 }
 

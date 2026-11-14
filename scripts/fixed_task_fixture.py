@@ -19,11 +19,12 @@ import json
 import math
 import re
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # One token per byte. Reported prompt tokens then never fall below Aidash's byte
 # estimate, so a calibrated estimator (ADR 0017, capped at bytes) behaves exactly
-# like the conservative one and compaction decisions stay identical across
+# like the conservative one and fitting remains identical across
 # repeats and arms however many Usage Records accumulate.
 CHARS_PER_TOKEN = 1
 # Synthetic nanocredits per token, Anthropic-shaped: cache reads are cheaper and
@@ -121,6 +122,22 @@ def cache_boundaries(body):
     return boundaries
 
 
+
+def splice(filler, offset, correction):
+    """Replace whole filler words from `offset` with the correction, keeping the length.
+
+    The page length stays unchanged, so it does not reveal which page carries a
+    correction. The correction starts at a word boundary and is padded with spaces
+    to the next one, so no filler fragment joins it (an earlier splice turned
+    "Contoso." and "terms" into "Contoso.ms").
+    """
+    start = filler.find(" ", offset)
+    start = len(filler) if start < 0 else start
+    resume = filler.find(" ", start + len(correction) + 2)
+    resume = len(filler) if resume < 0 else resume
+    spliced = filler[:start] + " " + correction.ljust(resume - start - 1) + filler[resume:]
+    return spliced if len(spliced) == len(filler) else (filler[:start] + " " + correction + " ")[:len(filler)]
+
 class Probe:
     """Per-Task scripted Agent state. The evaluator registers each Task UUID."""
 
@@ -129,6 +146,7 @@ class Probe:
         self.run_key = run_key
         self.asked = 0
         self.pages = 0
+        self.recorded_pages = 0
         self.searched = False
         self.loaded = False
         self.called = False
@@ -143,6 +161,8 @@ class Fixture:
         self.probes = {}
         self.requests = {}
         self.tool_calls = {}
+        self.recorded_pages = {}
+        self.unattributed_records = 0
         self.cache = set()
         self.errors = []
 
@@ -165,6 +185,25 @@ class Fixture:
                 "overflow_rejections": sum(item["overflow"] for item in records),
                 "native_envelopes": [{"calls": item["native_tool_calls"], "results": item["native_tool_results"]}
                                      for item in records]}
+
+    def record_delivery(self, key, alias, arguments, status):
+        """Record successful side effects by the Run named in the idempotency key."""
+        if alias != "record_note" or status != 200:
+            return
+        try:
+            run_id = str(uuid.UUID((key or "").split(":", 1)[0]))
+        except (ValueError, AttributeError):
+            with self.lock:
+                self.unattributed_records += 1
+            return
+        with self.lock:
+            self.recorded_pages.setdefault(run_id, []).append(arguments.get("page"))
+
+    def ledger(self, run_id):
+        run_id = str(uuid.UUID(run_id))
+        with self.lock:
+            return {"run_id": run_id, "pages": list(self.recorded_pages.get(run_id, [])),
+                    "complete": self.unattributed_records == 0}
 
     # ------------------------------------------------------------- model
     def infer(self, body):
@@ -272,6 +311,14 @@ class Fixture:
                 probe.asked += 1
                 return {"tool_calls": [("human_request", {"kind": "INFORMATION_REQUEST",
                                                           "prompt": "Please confirm the shortlist constraints."})]}
+            if task.get("fixture_record_pages") and probe.recorded_pages < probe.pages:
+                probe.recorded_pages += 1
+                return {"tool_calls": [("record_note", {"page": probe.recorded_pages})]}
+            documents = task.get("fixture_documents", [])
+            if probe.pages < len(documents):
+                document = documents[probe.pages]
+                probe.pages += 1
+                return {"tool_calls": [("document_lookup", {"document": document})]}
             if probe.pages < task.get("reference_pages", 0):
                 probe.pages += 1
                 return {"tool_calls": [("reference_lookup", {"page": probe.pages})]}
@@ -422,7 +469,21 @@ class Fixture:
             size = task.get("reference_page_bytes", 400)
             filler = (f"Archive page {page}: vendor catalogue entries, delivery terms and historical quotes. "
                       * (size // 80 + 1))[:size]
+            offset = task.get("reference_correction_offset")
+            if correction and offset is not None:
+                return 200, {"page": page, "content": splice(filler, offset, correction)}
             return 200, {"page": page, "content": (correction + " " if correction else "") + filler}
+        if alias == "document_lookup":
+            name = str(arguments.get("document", ""))
+            correction = (task.get("document_corrections") or {}).get(name, "")
+            size = task.get("reference_page_bytes", 400)
+            filler = (f"Document {name}: routine notes, schedules and historical remarks. " * (size // 50 + 1))[:size]
+            offset = task.get("reference_correction_offset", 0)
+            if correction:
+                filler = splice(filler, offset, correction)
+            return 200, {"document": name, "content": filler}
+        if alias == "record_note":
+            return 200, {"recorded": True, "page": arguments.get("page")}
         if alias == "currency_convert":
             if arguments.get("from") != "USD" or arguments.get("to") != "EUR" or arguments.get("amount") != 155:
                 return 422, {"error": "the frozen fixture permits only 155 USD to EUR"}
@@ -453,7 +514,13 @@ class Fixture:
                     pass
 
             def do_GET(self):
-                self.reply(405, {"error": "method not allowed"})
+                match = re.fullmatch(r"/observations/([0-9a-fA-F-]{36})", self.path)
+                if match:
+                    try:
+                        return self.reply(200, fixture.ledger(match.group(1)))
+                    except ValueError:
+                        pass
+                self.reply(404, {"error": "unknown fixture path"})
 
             def do_POST(self):
                 try:
@@ -464,7 +531,9 @@ class Fixture:
                         return self.reply(*fixture.embed(body))
                     match = re.fullmatch(r"/tools/([a-z0-9-]+)/([a-z_]+)", self.path)
                     if match and match.group(1) in tasks_by_id:
-                        return self.reply(*fixture.tool(tasks_by_id[match.group(1)], match.group(2), body))
+                        status, result = fixture.tool(tasks_by_id[match.group(1)], match.group(2), body)
+                        fixture.record_delivery(self.headers.get("Idempotency-Key"), match.group(2), body, status)
+                        return self.reply(status, result)
                     self.reply(404, {"error": "unknown fixture path"})
                 except Exception as error:  # Report fixture faults; never hide them as model output.
                     with fixture.lock:

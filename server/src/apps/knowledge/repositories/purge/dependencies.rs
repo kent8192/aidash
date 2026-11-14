@@ -104,7 +104,9 @@ pub(super) async fn erase(
 					lease,
 					root,
 					bounds,
-					Condition::any().add(contains("run", run)),
+					Condition::any()
+						.add(contains("run", run))
+						.add(contains_journal_range(run)),
 					None,
 					&mut impact,
 				)
@@ -173,7 +175,9 @@ pub(super) async fn erase(
 			cleared.content.entities.clear();
 			cleared.content.links.clear();
 			cleared.stale = !cleared.deleted;
-			lease.tx().observe_memory(&cleared)?;
+			if !super::super::bank_settings::is_builtin(lease, &cleared.bank).await? {
+				lease.tx().observe_memory(&cleared)?;
+			}
 		}
 		super::super::remote_memory_reads::erase_receipts(lease, &unit, withdrawn).await?;
 		native::query(
@@ -335,6 +339,12 @@ fn contains(kind: &str, id: Uuid) -> reinhardt::query::SimpleExpr {
 	Expr::col("evidence").binary(
 		BinOper::PgOperator(PgBinOper::Contains),
 		Expr::value(serde_json::json!([{"kind":kind,"id":id}])),
+	)
+}
+fn contains_journal_range(run: Uuid) -> reinhardt::query::SimpleExpr {
+	Expr::col("evidence").binary(
+		BinOper::PgOperator(PgBinOper::Contains),
+		Expr::value(serde_json::json!([{"kind":"journal_range","run_id":run}])),
 	)
 }
 fn empty_body(table: &str) -> reinhardt::query::UpdateStatement {

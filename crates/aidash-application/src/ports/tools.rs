@@ -148,6 +148,24 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	/// Execute one cell in this Run's isolated Journal Query session.
+	async fn journal_query(
+		&self,
+		_code: &str,
+		_target_run: Option<Uuid>,
+		_range: Option<(u64, u64)>,
+		_key: &str,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
+	/// Read this Run's resolved Journal, under its execution authority.
+	async fn journal(
+		&self,
+		_target_run: Option<Uuid>,
+		_range: Option<(u64, u64)>,
+	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn subnode_command(&self, key: &str, command: &crate::subnodes::Command)
 	-> Result<Value>;
 	async fn subnode_create(
@@ -244,7 +262,9 @@ pub trait ToolOperations: Send + Sync {
 	/// Model-visible specifications of the Run's aliased tool Bindings, by alias,
 	/// exactly as dispatch advertises them (`bound_specification`).
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>>;
-	/// Intrinsic Subnode coordination tools present in this Run.
+	/// Intrinsic tools present in this Run: Subnode coordination tools, and
+	/// Journal retrieval tools once the Run has offloaded material or a
+	/// handed Journal range.
 	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
 		Ok(BTreeMap::new())
 	}

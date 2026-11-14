@@ -100,9 +100,12 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	);
 	let result = register_definition(&mut scope, &validation, &agent, "aidash://home").await;
 	if !private {
-		assert!(
-			matches!(result, Err(Error::Invalid(message)) if message == "Agent Sources require a primary memory provider")
-		);
+		let expected = if changed.starts_with("participant_") {
+			"participant Sources require the Agent's exact primary memory provider"
+		} else {
+			"workspace Sources require one exact memory provider version"
+		};
+		assert!(matches!(result, Err(Error::Invalid(message)) if message == expected));
 		assert!(!scope.entries.contains_key("agent@1.0.0"));
 	} else if changed == "workspace_foreign" || changed == "workspace_version" {
 		assert!(

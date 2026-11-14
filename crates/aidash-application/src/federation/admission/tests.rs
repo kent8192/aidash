@@ -61,7 +61,6 @@ fn inspection() -> Inspection {
 			})
 			.collect(),
 		semantic_memory: 0,
-		decider: None,
 	}
 }
 fn expected() -> EntityRef {
