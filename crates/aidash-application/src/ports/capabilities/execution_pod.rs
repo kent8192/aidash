@@ -304,6 +304,7 @@ pub struct PreviewStartRequest {
 	pub scratch_space_id: String,
 	pub run_id: String,
 	pub code: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub cwd: Option<String>,
 	pub port: u16,
 	pub proxy_credential: Option<EgressCredential>,

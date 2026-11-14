@@ -833,7 +833,8 @@ async fn a_real_listener_records_host_connections_in_the_database(
 		federation.config.scratch_policy.clone(),
 		KEY,
 	));
-	let credential = authority.credential("acme", space, Uuid::new_v4()).unwrap();
+	let run_id = Uuid::new_v4();
+	let credential = authority.credential("acme", space, run_id).unwrap();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let address = listener.local_addr().unwrap();
 	let (stop, receiver) = tokio::sync::watch::channel(false);
@@ -877,6 +878,16 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	.fetch_all(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	let attribution: Vec<(Option<Uuid>, Option<i64>)> = sqlx::query_as(
+		"SELECT run_id, admission_ms FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
+	).bind(space).fetch_all(federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(attribution.len(), 3);
+	assert!(
+		attribution
+			.iter()
+			.all(|(recorded_run, admission)| *recorded_run == Some(run_id)
+				&& admission.is_some_and(|ms| ms >= 0))
+	);
 	assert_eq!(
 		records,
 		vec![
