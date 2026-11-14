@@ -107,6 +107,9 @@ def serve(path, config):
                             if not written:
                                 raise EOFError('MCP process closed stdin')
                             outbound = outbound[written:]
+                        if 'id' not in message:
+                            connection.sendall(encode({'message': {}}))
+                            continue
                         while True:
                             newline = pending.find(b'\n')
                             if newline >= 0:

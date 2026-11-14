@@ -2090,29 +2090,90 @@ print(json.dumps(r))'''
 
     def stop_run(self, scratch_space_id, run_id):
         import json
+        import time
         from control import scratch_resource_name
         scratch_resource_name(scratch_space_id)
         if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
             raise ValueError('invalid run_id')
-        stopped, failures = [], []
-        with self._space_lock(scratch_space_id):
-            for path in self._space_journal_paths(scratch_space_id):
-                try:
-                    record = json.loads(path.read_bytes())
-                except FileNotFoundError:
+        stopped, resolved, first_seen = set(), set(), {}
+        deadline = time.monotonic() + 60
+        while True:
+            active, failures = [], []
+            with self._space_lock(scratch_space_id):
+                for path in self._space_journal_paths(scratch_space_id):
+                    try:
+                        record = json.loads(path.read_bytes())
+                    except FileNotFoundError:
+                        continue
+                    operation = record['operation_id']
+                    if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
+                            or operation in resolved or record.get('run_stop_confirmed') or
+                            record.get('status') not in ('queued', 'running', 'interrupted')):
+                        continue
+                    active.append(operation)
+                    if record.get('status') == 'interrupted' and not record.get('docker_enabled'):
+                        try:
+                            first_seen.setdefault(operation, time.monotonic())
+                            done, signaled = self._stop_interrupted_run_process(
+                                record, operation in stopped, time.monotonic() - first_seen[operation])
+                            if signaled:
+                                stopped.add(operation)
+                            if done:
+                                self._update_command(operation, status='interrupted', stop_pending=False,
+                                                     run_stop_confirmed=True)
+                                resolved.add(operation)
+                        except Exception as error:
+                            failures.append(str(error) or type(error).__name__)
+                        continue
+                    if operation in stopped and record.get('status') != 'interrupted':
+                        continue
+                    try:
+                        response = self._stop_command(operation)
+                        stopped.add(operation)
+                        if isinstance(response, dict) and response.get('status') in ('completed', 'stopped', 'cancelled', 'timed_out', 'interrupted'):
+                            resolved.add(operation)
+                    except Exception as error:
+                        failures.append(str(error) or type(error).__name__)
+                if failures:
+                    raise ExecutionPodError('stop_failed', '; '.join(failures))
+            if not active or all(operation in resolved for operation in active):
+                # Re-scan after a signal: a foreground process may have adopted
+                # descendants while its result was being published.
+                if active:
                     continue
-                if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
-                        or (record.get('status') not in ('queued', 'running') and not
-                            (record.get('status') == 'interrupted' and record.get('docker_enabled')))):
-                    continue
-                try:
-                    self._stop_command(record['operation_id'])
-                    stopped.append(record['operation_id'])
-                except Exception as error:
-                    failures.append(str(error) or type(error).__name__)
-            if failures:
-                raise ExecutionPodError('stop_failed', '; '.join(failures))
-        return {'stopped': sorted(stopped)}
+                return {'stopped': sorted(stopped)}
+            if time.monotonic() >= deadline:
+                raise ExecutionPodError('stop_failed', 'Run processes did not confirm termination')
+            time.sleep(.1)
+
+    def _stop_interrupted_run_process(self, record, signaled, elapsed):
+        import json
+        pod = self._get('pod', record['pod'])
+        if not pod or pod.get('metadata', {}).get('uid') != record.get('pod_uid'):
+            return True, signaled
+        operation = record['operation_id']
+        result = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                   helper_command('running', operation), check=False, timeout=5)
+        if result.returncode != 0:
+            raise RuntimeError('Could not confirm interrupted process state')
+        running = json.loads(result.stdout).get('running')
+        if type(running) is not bool:
+            raise ValueError('Invalid interrupted process state')
+        if running:
+            if not signaled:
+                self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                  helper_command('stop', operation), timeout=5)
+            return False, True
+        if signaled:
+            return True, True
+        claim = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                  helper_command('claim', operation), check=False, timeout=5)
+        if claim.returncode != 0:
+            raise RuntimeError('Could not fence interrupted process startup')
+        created = json.loads(claim.stdout).get('created')
+        if type(created) is not bool:
+            raise ValueError('Invalid interrupted process claim')
+        return created or elapsed >= 10, False
 
     def background_processes(self, scratch_space_id):
         import json
@@ -2159,7 +2220,9 @@ print(json.dumps(r))'''
                 or not isinstance(config['env'], dict)
                 or any(not isinstance(k, str) or not isinstance(v, str) or not k or '=' in k or '\x00' in k + v
                        for k, v in config['env'].items())
-                or not isinstance(config['plugin_data'], str) or config['plugin_data'].startswith('/')
+                or not isinstance(config['plugin_data'], str)
+                or (config['plugin_data'].startswith('/') and config['plugin_data'] != '/scratch'
+                    and not config['plugin_data'].startswith('/scratch/'))
                 or '..' in config['plugin_data'].split('/') or '\x00' in config['plugin_data']):
             raise ValueError('invalid MCP start request')
         socket_path = '/run/aidash/mcp-' + operation + '.sock'
@@ -2642,7 +2705,7 @@ print(json.dumps(r))'''
         if any(not isinstance(request.get(key, '.'), str) or '\x00' in request.get(key, '.') for key in ('cwd', 'run_id')):
             raise ValueError('Python request contains NUL')
         seconds = execution_timeout(request)
-        session = self.start_python(request['scratch_space_id'], request['run_id'])
+        session = self.start_python(request['scratch_space_id'], request['run_id'], request.get('proxy_credential'))
         output_limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         cell_limit = max(1, min(8388608, (output_limit - 4096) // 6))
         encoded = base64.b64encode(code.encode('utf-8')).decode('ascii')

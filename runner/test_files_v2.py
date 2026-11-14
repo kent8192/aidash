@@ -89,3 +89,31 @@ def test_search_reads_large_text_files_in_bounded_chunks_and_skips_binary(tmp_pa
     service = FileService(scratch, tmp_path / 'state')
     result = service.search({'pattern': 'target', 'regex': False, 'max_results': 10})
     assert result == {'matches': [{'path': 'large', 'line': 600001, 'text': 'target'}], 'truncated': False}
+
+
+def test_gitignore_parent_negation_and_character_classes(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / '.gitignore').write_text('blocked/\n!blocked/keep.txt\n[a-c].txt\n\\#literal\n')
+    (scratch / 'blocked').mkdir()
+    (scratch / 'blocked' / 'keep.txt').write_text('hidden')
+    (scratch / 'a.txt').write_text('hidden')
+    (scratch / 'd.txt').write_text('visible')
+    (scratch / '#literal').write_text('hidden')
+    service = FileService(scratch, tmp_path / 'state')
+    result = service.manifest({'root': '.', 'ignore_files': ['.gitignore'], 'include': [],
+                               'exclude': [], 'max_files': 20})
+    assert {item['path'] for item in result['files']} == {'.gitignore', 'd.txt'}
+
+
+def test_manifest_subdirectory_honors_ancestor_ignore_file(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / '.gitignore').write_text('*.log\n')
+    (scratch / 'nested').mkdir()
+    (scratch / 'nested' / 'hidden.log').write_text('hidden')
+    (scratch / 'nested' / 'shown.txt').write_text('shown')
+    service = FileService(scratch, tmp_path / 'state')
+    result = service.manifest({'root': 'nested', 'ignore_files': ['.gitignore'],
+                               'include': [], 'exclude': [], 'max_files': 20})
+    assert [item['path'] for item in result['files']] == ['nested/shown.txt']

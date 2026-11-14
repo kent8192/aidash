@@ -55,7 +55,7 @@ def open_file(fd, name, flags=os.O_RDONLY, mode=0o600):
     return result
 
 
-def pattern_matches(path, pattern):
+def pattern_matches(path, pattern, *, is_dir=False):
     """Match git-style wildcards without allowing a single star across directories."""
     directory_only = pattern.endswith('/')
     pattern = pattern.rstrip('/')
@@ -66,7 +66,10 @@ def pattern_matches(path, pattern):
     tokens = []
     i = 0
     while i < len(pattern):
-        if pattern[i:i + 2] == '**':
+        if pattern[i] == '\\' and i + 1 < len(pattern):
+            tokens.append(re.escape(pattern[i + 1]))
+            i += 2
+        elif pattern[i:i + 2] == '**':
             i += 2
             if i < len(pattern) and pattern[i] == '/':
                 tokens.append('(?:.*/)?')
@@ -79,11 +82,16 @@ def pattern_matches(path, pattern):
         elif pattern[i] == '?':
             tokens.append('[^/]')
             i += 1
+        elif pattern[i] == '[' and ']' in pattern[i + 1:]:
+            end = pattern.index(']', i + 1) + 1
+            translated = fnmatch.translate(pattern[i:end])
+            tokens.append(translated[4:-3])
+            i = end
         else:
             tokens.append(re.escape(pattern[i]))
             i += 1
     prefix = '' if anchored or '/' in pattern else '(?:.*/)?'
-    suffix = '/.*' if directory_only else ''
+    suffix = ('(?:/.*)?' if is_dir else '/.*') if directory_only else ''
     return re.fullmatch(prefix + ''.join(tokens) + suffix, path) is not None
 
 
@@ -125,7 +133,11 @@ class FileService:
             raise ValueError('invalid mode')
         self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
         state = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        parent = open_dir(self.root, path[:-1])
+        try:
+            parent = open_dir(self.root, path[:-1])
+        except BaseException:
+            os.close(state)
+            raise
         key = hashlib.sha256((run + '\0' + request['path']).encode()).hexdigest()
         lock = os.open(key + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=state)
         try:
@@ -240,8 +252,9 @@ class FileService:
     def manifest(self, request):
         root = request.get('root') or '.'
         limit = request['max_files']
-        if type(limit) is not int or not 1 <= limit <= 10000:
+        if type(limit) is not int or limit < 1:
             raise ValueError('invalid max_files')
+        limit = min(limit, 10000)
         include, exclude = request['include'], request['exclude']
         ignore_files = request['ignore_files']
         if (not isinstance(include, list) or not isinstance(exclude, list) or not isinstance(ignore_files, list)
@@ -250,7 +263,7 @@ class FileService:
         for name in ignore_files:
             if len(parts(name)) != 1:
                 raise ValueError('ignore file names must be single path components')
-        root_components = parts(root, allow_root=True)
+        parts(root, allow_root=True)
         rule_cache = {}
         def rules(directory):
             key = '/'.join(directory)
@@ -274,20 +287,24 @@ class FileService:
             return found
         def ignored(path):
             components = path.split('/')
-            result = False
-            for depth in range(len(root_components), len(components)):
-                directory = components[:depth]
-                relative = '/'.join(components[depth:])
-                for rule in rules(directory):
-                    if not rule or rule.startswith('#'):
-                        continue
-                    negate = rule.startswith('!')
-                    rule = rule[1:] if negate else rule
-                    if rule.startswith(('\\#', '\\!')):
-                        rule = rule[1:]
-                    if pattern_matches(relative, rule):
-                        result = not negate
-            return result
+            for end in range(1, len(components) + 1):
+                directory_target = end < len(components)
+                result = False
+                for depth in range(end):
+                    directory = components[:depth]
+                    relative = '/'.join(components[depth:end])
+                    for rule in rules(directory):
+                        while rule.endswith(' ') and not rule.endswith('\\ '):
+                            rule = rule[:-1]
+                        if not rule or rule.startswith('#'):
+                            continue
+                        negate = rule.startswith('!')
+                        rule = rule[1:] if negate else rule
+                        if pattern_matches(relative, rule, is_dir=directory_target):
+                            result = not negate
+                if result:
+                    return True
+            return False
         entries, skipped = [], []
         for path, fd, name, info in self._walk(root):
             if stat.S_ISLNK(info.st_mode):
@@ -424,13 +441,13 @@ class FileService:
                     change = (''.join(line + '\n' for line in source)).encode()
                 token = '.aidash-patch-' + uuid.uuid4().hex
                 temp, backup = token + '.new', token + '.old'
+                prepared.append((parent, name, temp, backup, mode))
                 if change is not None:
                     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, old_mode, dir_fd=parent)
                     with os.fdopen(fd, 'wb') as file:
                         file.write(change)
                         file.flush()
                         os.fsync(file.fileno())
-                prepared.append((parent, name, temp, backup, mode))
             for parent, name, temp, backup, mode in prepared:
                 if mode != 0:
                     os.rename(name, backup, src_dir_fd=parent, dst_dir_fd=parent)

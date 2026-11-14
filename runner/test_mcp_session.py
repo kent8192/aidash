@@ -13,7 +13,9 @@ from mcp_session import call
 def test_stdio_mcp_session_exchanges_newline_json_and_stops(tmp_path):
     server_script = tmp_path / 'server.py'
     server_script.write_text('import json,sys\nfor line in sys.stdin:\n'
-                             ' req=json.loads(line); print(json.dumps({"jsonrpc":"2.0","id":req["id"],'
+                             ' req=json.loads(line)\n'
+                             ' if "id" not in req: continue\n'
+                             ' print(json.dumps({"jsonrpc":"2.0","id":req["id"],'
                              '"result":req["params"]}),flush=True)\n')
     socket_dir = tempfile.TemporaryDirectory(dir='/tmp', prefix='mcp-')
     socket = Path(socket_dir.name) / 'session.sock'
@@ -25,6 +27,7 @@ def test_stdio_mcp_session_exchanges_newline_json_and_stops(tmp_path):
         deadline = time.monotonic() + 5
         while not socket.exists() and time.monotonic() < deadline:
             time.sleep(.01)
+        assert call(str(socket), {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, 3) == {}
         response = call(str(socket), {'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call',
                                       'params': {'name': 'hello'}}, 3)
         assert response == {'jsonrpc': '2.0', 'id': 7, 'result': {'name': 'hello'}}
