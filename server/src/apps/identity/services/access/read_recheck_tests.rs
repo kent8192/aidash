@@ -614,6 +614,44 @@ async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) {
 }
 
 #[rstest]
+#[case::with_session(true)]
+#[case::without_session(false)]
+#[tokio::test]
+async fn remote_preview_recheck_without_receiver_workspace(
+	#[future] database: DatabaseFixture,
+	#[case] with_session: bool,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, with_session).await;
+	let remote_workspace = Uuid::new_v4();
+	sqlx::query("UPDATE runs SET workspace_id = $1 WHERE id = $2")
+		.bind(remote_workspace)
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1)")
+		.bind(remote_workspace)
+		.fetch_one(fixture.driver())
+		.await
+		.unwrap();
+	assert!(!exists);
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::LivePreview(preview);
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	fixture
+		.set_policy(1, Some(("helper", "message.read")))
+		.await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+}
+
+#[rstest]
 #[tokio::test]
 async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 	#[future] database: DatabaseFixture,
@@ -682,7 +720,18 @@ async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
 		capabilities::read_recheck::{self, PERIOD, Schedule, UNCONFIRMED_LIMIT},
 		ports::capabilities::read_recheck::{Outcome, ReadRecheckRepository, Target},
 	};
-	let fixture = fixture(database.await, 1).await;
+	let mut fixture = fixture(database.await, 1).await;
+	std::sync::Arc::make_mut(&mut fixture.store.capabilities.0).egress = Some(
+		crate::apps::execution::capabilities::serializers::core::EgressSettings {
+			endpoint: "http://10.96.0.90:8950".into(),
+			namespace: None,
+			pod_selector: Default::default(),
+			listen: "127.0.0.1:0".parse().unwrap(),
+			proxy_global_tunnels: 1024,
+			proxy_tenant_tunnels: 32,
+			limits: Default::default(),
+		},
+	);
 	let (_, preview) = running_targets(&fixture).await;
 	remote_preview(&fixture, preview, false).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {

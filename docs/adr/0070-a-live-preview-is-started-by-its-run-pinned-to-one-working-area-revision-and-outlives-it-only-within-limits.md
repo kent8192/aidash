@@ -23,3 +23,5 @@ Decided on 2026-10-19 while grilling Live previews. An operation's Execution Pod
 ## Amendment (2026-11-07, #758)
 
 A Live preview now does stop when its Run's authority is revoked. Until this change nothing checked it after the start. A loop runs the Read Recheck every 30 seconds for everyone on the Run's chain, including after the Run has finished, and stops it as `run_authority_revoked`. A Node that does not answer five checks in a row is meant to stop it as `node_unreachable` (ADR 0116), but until #751 lands a Node that does not answer counts as a refusal and stops it as `run_authority_revoked`.
+
+For a Remote Grant Run, the receiver rechecks the admission subject chain and any Egress session viewer without requiring a local Workspace owner. When Egress is disabled, the admission credential and Tenant provide the recheck identity. When Egress is enabled, a missing session remains unconfirmed.
