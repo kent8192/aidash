@@ -154,6 +154,7 @@ impl OperationWithdrawalScope for Scope {
 			area_epoch: self.area.epoch,
 			area_generation: self.area.generation,
 			area_state: self.area.state.clone(),
+			pod: aidash_domain::capabilities::operations::runs_in_pod(&self.operation.input),
 		}
 	}
 	async fn commit(self: Box<Self>, change: Change) -> Result<()> {
