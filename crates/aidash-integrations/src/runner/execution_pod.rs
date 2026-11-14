@@ -15,6 +15,8 @@ fn pod_timeout(path: &str, body: &Value) -> Duration {
 			.unwrap_or(0)
 			.saturating_add(15),
 		"/v2/runs/stop" | "/v2/python/start" => 60,
+		// Ensuring a Pod waits for its admission and startup.
+		path if path.starts_with("/v2/pods/") => 1900,
 		_ => 30,
 	};
 	Duration::from_secs(seconds)
@@ -239,7 +241,7 @@ mod timeout_tests {
 			("/v2/runs/stop", json!({}), 60),
 			("/v2/python/start", json!({}), 60),
 			("/v2/commands/submit", json!({}), 30),
-			("/v2/pods/ensure", json!({}), 30),
+			("/v2/pods/ensure", json!({}), 1900),
 		] {
 			assert_eq!(
 				pod_timeout(path, &body),
