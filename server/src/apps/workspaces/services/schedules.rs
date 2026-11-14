@@ -584,7 +584,7 @@ enum Miss {
 }
 
 /// Whether a conflict names a refusal by its code, such as
-/// `COMPACTION_DECIDER_UNAPPROVED: <id>@<version>`, rather than a race that
+/// `RUNTIME_UNAVAILABLE: <detail>`, rather than a race that
 /// the same request can lose once and win next time.
 fn refusal_code(message: &str) -> bool {
 	let code = message.split(':').next().unwrap_or_default();
@@ -1178,7 +1178,7 @@ mod tests {
 	use rstest::rstest;
 
 	#[rstest]
-	#[case(Error::Conflict("COMPACTION_DECIDER_UNAPPROVED: aidash.compaction@1.0.0".into()), true)]
+	#[case(Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into()), true)]
 	#[case(Error::Forbidden, true)]
 	#[case(Error::NotFound("agent".into()), true)]
 	#[case(Error::Refused("Subnode has ended".into()), true)]

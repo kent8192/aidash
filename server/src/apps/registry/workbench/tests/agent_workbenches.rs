@@ -59,7 +59,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		(
 			"fixture-model",
 			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"fixture-tool",

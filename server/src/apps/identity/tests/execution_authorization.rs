@@ -7322,6 +7322,7 @@ impl SubnodeRig {
 				for name in narrow
 					.iter()
 					.chain(aidash_domain::registry::bindings::MEMORY_TOOLS)
+					.chain(aidash_domain::registry::bindings::SCHEDULE_TOOLS)
 				{
 					if !defaults.contains(&json!(name)) {
 						defaults.push(json!(name));

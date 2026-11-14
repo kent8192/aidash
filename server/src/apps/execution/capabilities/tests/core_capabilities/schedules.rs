@@ -357,17 +357,32 @@ async fn an_agent_registers_for_its_person_and_a_scheduled_run_cannot(
 async fn a_refused_start_is_a_failed_tick_with_its_reason_and_is_not_retried(
 	#[future] capability_fixture: CoreFixture,
 ) {
-	use aidash_domain::registry::bindings::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION};
-	// Arrange: the Agent's compaction Decider loses its Catalog Approval (#540).
+	// Arrange: the scheduled Agent's model loses its Catalog Approval (#540).
+	// The Agent itself stays approved, so the tick passes the Schedule's own
+	// checks and the Run start refuses it.
 	let c = capability_fixture.await;
 	let workspace = workspace(&c).await;
 	let schedule = register(&c, workspace, definition("Hourly digest", 3600)).await;
 	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	let agent =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
+	let model = &agent.config["model"];
+	let (model_id, model_version) = (
+		model["id"].as_str().unwrap(),
+		model["version"].as_str().unwrap(),
+	);
 	let withdrawn = sqlx::query(
 		"UPDATE authorization_catalog SET enabled = false WHERE tenant = 'acme' AND entry_id = $1 AND entry_version = $2",
 	)
-	.bind(COMPACTION_DECIDER_ID)
-	.bind(COMPACTION_DECIDER_VERSION)
+	.bind(model_id)
+	.bind(model_version)
 	.execute(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -376,7 +391,7 @@ async fn a_refused_start_is_a_failed_tick_with_its_reason_and_is_not_retried(
 	// Act
 	let now = Utc::now();
 	let report = pass(&c.f, now).await.unwrap();
-	// Assert: recorded as failed, naming the Decider, and moved on.
+	// Assert: recorded as failed, with its reason, and moved on.
 	assert!(report.started.is_empty(), "{report:?}");
 	assert_eq!(report.failed.len(), 1, "{report:?}");
 	let recorded = ticks(&c, id).await;
@@ -386,7 +401,7 @@ async fn a_refused_start_is_a_failed_tick_with_its_reason_and_is_not_retried(
 		recorded[0]
 			.1
 			.as_deref()
-			.is_some_and(|reason| reason.contains("COMPACTION_DECIDER_UNAPPROVED")),
+			.is_some_and(|reason| reason == aidash_server::Error::Forbidden.to_string()),
 		"{recorded:?}"
 	);
 	let (next, failures): (chrono::DateTime<Utc>, i32) = sqlx::query_as(
