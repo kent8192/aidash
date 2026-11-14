@@ -296,6 +296,20 @@ pub async fn authorize(
 					matches!(server, aidash_domain::agent_plugin::McpServer::Stdio(_))
 				});
 			current = if stdio {
+				// The shell's checks: the Use Recheck of the `mcp_stdio` group's operation
+				// (Catalog Approval and `tool.invoke`), then its core permission below.
+				named(
+					scope
+						.catalog(
+							&aidash_domain::agent_plugin::stdio_session::mcp_stdio_operation(),
+							"tool.invoke",
+							&call.name,
+						)
+						.await,
+					call,
+					RefusalCheck::Catalog,
+					Some("tool.invoke"),
+				)?;
 				ToolContract::agent_plugin_stdio(identity.clone())
 			} else {
 				ToolContract::agent_plugin(identity.clone(), pinned.read_only)
@@ -491,7 +505,10 @@ pub async fn authorize(
 	// `tool.call_unapproved` still refuses it. The capability approval path
 	// checks this on the Run's home Node; doing it with the contract authority
 	// also covers a Run executing for another Node.
-	if contract.behavior.read_only_operation
+	// A stdio plugin tool needs no approval either (ADR 0073), so the same deny refuses it.
+	let unapproved_plugin_call = matches!(contract.identity, ToolIdentity::AgentPlugin(_))
+		&& !contract.behavior.tool_call_approval;
+	if (contract.behavior.read_only_operation || unapproved_plugin_call)
 		&& let Some((id, version)) = approval_reference(contract)
 	{
 		let resource = scope.resource(

@@ -2,6 +2,7 @@
 //! Space, and which `${PLUGIN_DATA}` content may replace the saved version (ADR 0073 and its
 //! 2026-11-14 amendment). Pure: the application writes the files and talks to the Pod.
 use super::{Command, Cwd, Executable, PluginName, StdioServer, expand};
+use crate::registry::EntityRef;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -26,6 +27,15 @@ pub const DATA_INVALID_PATH: &str = "plugin_data_invalid_path";
 /// Starts argv in the working directory given as `$1`. The directory is passed as an argument,
 /// never spliced into the script, so no plugin text is parsed by the shell.
 const IN_DIRECTORY: &str = r#"mkdir -p "$1" && cd "$1" || exit 127; shift; exec "$@""#;
+
+/// The built-in operation of the `mcp_stdio` group. Its Catalog Approval and `tool.invoke`
+/// are checked at every stdio tool call, as a bound shell's are.
+pub fn mcp_stdio_operation() -> EntityRef {
+	EntityRef {
+		id: "aidash.mcp_stdio".into(),
+		version: "1.0.0".into(),
+	}
+}
 
 /// What the Runner's `mcp/start` needs from one stdio server.
 #[derive(Debug, Clone, PartialEq, Eq)]
