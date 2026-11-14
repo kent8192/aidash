@@ -64,6 +64,13 @@ pub(crate) fn answer(
 ) -> Result<Answer> {
 	validate_response(&response)?;
 	if let Some(existing) = &request.response {
+		if request.answered_by.as_deref() == Some("system")
+			&& existing.get("reason").and_then(Value::as_str) == Some("run_ended")
+		{
+			return Err(Error::Conflict(
+				"human request closed because the run ended".into(),
+			));
+		}
 		if existing == &response {
 			return Ok(Answer::Replay);
 		}

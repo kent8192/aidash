@@ -36,6 +36,8 @@ pub trait HomeScope: Send + Sized {
 		grant: Uuid,
 		admission: Uuid,
 	) -> Result<Vec<aidash_domain::HumanRequest>>;
+	/// Close Home-owned requests once the matching remote Run has ended.
+	async fn close_human_requests(&mut self, grant: Uuid, admission: Uuid) -> Result<()>;
 	async fn answer_human(
 		&mut self,
 		grant: Uuid,

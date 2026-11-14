@@ -10,11 +10,36 @@ use aidash_application::{
 use aidash_domain::{Message, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, ColumnRef::Asterisk, Expr, OnConflict, PostgresQueryBuilder, Query,
-	QueryStatementBuilder as _, SimpleExpr,
+	Alias, ColumnRef::Asterisk, Expr, ExprTrait as _, LockType, OnConflict, PostgresQueryBuilder,
+	Query, QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+impl Scope<'_> {
+	/// Match the Task-before-journal order used by Home cancellation.
+	async fn close_run_questions(
+		&mut self,
+		task: Uuid,
+		grant: Uuid,
+		admission: Uuid,
+	) -> NativeResult<()> {
+		let id: Option<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.lock(LockType::NoKeyUpdate)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		if id.is_none() {
+			return Err(crate::Error::Forbidden);
+		}
+		super::humans::close_for_run(&mut **self.access.tx, grant, admission).await
+	}
+}
+
 #[async_trait]
 impl RemoteCommandEffects for Scope<'_> {
 	async fn connection_target(
@@ -182,6 +207,13 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					next,
 					through,
 				} => {
+					if matches!(
+						next,
+						aidash_domain::TaskStatus::Cancelled | aidash_domain::TaskStatus::Failed
+					) {
+						let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
+						self.close_run_questions(task.id, grant, admission).await?;
+					}
 					let value = if let Some(seq) = through {
 						store
 							.transition_remote_terminal_in(
@@ -213,6 +245,8 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					abandon,
 				} => {
 					if let Some(through) = complete_through {
+						let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
+						self.close_run_questions(task.id, grant, admission).await?;
 						let value = store
 							.complete_in(
 								&mut self.access.tx,
