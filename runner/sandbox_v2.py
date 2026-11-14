@@ -115,10 +115,13 @@ def image_environment(root):
             or not k or '=' in k or '\x00' in k or '\x00' in v for k, v in values.items()):
         raise ValueError('invalid image environment')
     environment = {key: value for key, value in values.items()
-                   if not key.startswith(('AIDASH_', 'KUBERNETES_'))}
+                   if not key.startswith(('AIDASH_', 'KUBERNETES_')) and key not in
+                   ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY')}
     for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy'):
         if key in os.environ:
             environment[key] = os.environ[key]
+    if 'HTTPS_PROXY' in os.environ:
+        environment['NODE_USE_ENV_PROXY'] = '1'
     return environment
 
 
@@ -710,15 +713,26 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
-    if (len(sys.argv) == 11 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
+    if (len(sys.argv) in (11, 12) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
         token = None
+        for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY'):
+            os.environ.pop(key, None)
         if sys.argv[2] == 'docker':
             import re
             token = sys.stdin.buffer.readline(66).strip()
             if not re.fullmatch(b'[0-9a-f]{64}', token):
                 raise ValueError('invalid result nonce')
+        if len(sys.argv) == 12:
+            if sys.argv[11] != 'proxy-stdin':
+                raise ValueError('invalid supervisor input')
+            proxy = sys.stdin.buffer.readline(2049).decode('ascii').strip()
+            if not proxy.startswith('http://aidash:') or len(proxy) > 2048:
+                raise ValueError('invalid process proxy')
+            for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+                os.environ[key] = proxy
+        if sys.argv[2] == 'docker' or len(sys.argv) == 12:
             null = os.open('/dev/null', os.O_RDONLY)
             os.dup2(null, 0)
             os.close(null)

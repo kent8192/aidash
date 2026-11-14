@@ -440,9 +440,6 @@ def execution_manifests(settings, config):
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
         v2_network_policy(config)  # validate before passing the proxy to user processes
-        proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
-        podspec['containers'][0]['env'] += [
-            {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
         # Loopback (Live previews) and the gateway itself must not be sent through the proxy.
         bypass = 'localhost,127.0.0.1,::1,' + urlsplit(config['proxy_endpoint']).hostname
         podspec['containers'][0]['env'] += [{'name': key, 'value': bypass} for key in ('NO_PROXY', 'no_proxy')]
@@ -491,6 +488,7 @@ class ExecutionPodController:
         self.lock = RLock()
         self.queues = {}
         self.futures = {}
+        self.process_proxies = {}
         self.live_output = {}
         self.foreground_jobs = {}
         self.viewers = {}
@@ -1497,6 +1495,12 @@ print(json.dumps(r))'''
         if type(background) is not bool:
             raise ValueError('background must be a boolean')
         seconds = execution_timeout(request)
+        credential = request.get('proxy_credential')
+        proxy = None
+        if credential is not None:
+            if not self.config.get('proxy_endpoint'):
+                raise ValueError('proxy endpoint is unavailable')
+            proxy = pod_proxy_url(self.config['proxy_endpoint'], credential)
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self.lock:
             self._require_space_termination_confirmed(scratch_id)
@@ -1538,6 +1542,7 @@ print(json.dumps(r))'''
                       'code': code, 'cwd': cwd, 'timeout_seconds': seconds, 'background': background,
                       'pod': name, 'pod_uid': uid, 'docker_enabled': docker, 'status': 'queued',
                       'request_digest': digest, 'accepted_at': time.time(), 'kind': kind}
+            record['proxy_credential_given'] = credential is not None
             if session_replaced:
                 record['session_replaced'] = True
             if session_operation_id:
@@ -1545,6 +1550,8 @@ print(json.dumps(r))'''
             if client_digest:
                 record['client_digest'] = client_digest
             save(path, record)
+            if proxy is not None:
+                self.process_proxies[operation_id] = proxy
             self.journal_index.setdefault(scratch_id, set()).add(path.name)
             self.journal_metadata[path.name] = self._prune_metadata(record)
             self.touch_space(scratch_id)
@@ -1565,6 +1572,7 @@ print(json.dumps(r))'''
         with self.lock:
             try:
                 if future.cancelled():
+                    self.process_proxies.pop(operation_id, None)
                     self._update_command(operation_id, status='cancelled', outcome='not_started')
                 record = self._read_command(operation_id)
             except ExecutionPodError as error:
@@ -1634,6 +1642,7 @@ print(json.dumps(r))'''
         import time
         with self.lock:
             record = self._read_command(operation_id)
+            proxy = self.process_proxies.pop(operation_id, None)
             if record['status'] != 'queued':
                 return
             record = self._update_command(operation_id, status='running', running_at=time.time())
@@ -1642,8 +1651,10 @@ print(json.dumps(r))'''
         deadline = 'background' if record['background'] else str(record['timeout_seconds'])
         kind = 'session' if record.get('kind') == 'python_session' else 'command'
         limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
-        argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] else []) + [name, '-c', 'execution', '--'] + helper_command(
+        argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] or proxy else []) + [name, '-c', 'execution', '--'] + helper_command(
             'supervise', mode, kind, operation_id, record['run_id'], record['cwd'], deadline, uid, record['code'], str(limit))
+        if proxy:
+            argv.append('proxy-stdin')
 
         def publish(output):
             with self.lock:
@@ -1655,9 +1666,17 @@ print(json.dumps(r))'''
             if record['docker_enabled']:
                 import secrets
                 nonce = secrets.token_hex(32)
-                transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish, frame_token=nonce)
+                if proxy:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
+                                              frame_token=nonce, input_data=(proxy + '\n').encode())
+                else:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish, frame_token=nonce)
             else:
-                transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
+                if proxy:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
+                                              input_data=(proxy + '\n').encode())
+                else:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
             if record['docker_enabled']:
@@ -1998,10 +2017,6 @@ print(json.dumps(r))'''
             raise ValueError('invalid run_id')
         stopped, failures = [], []
         with self._space_lock(scratch_space_id):
-            with self.lock:
-                queue = self.queues.get(scratch_space_id)
-            if queue:
-                queue.cancel_waiting(run_id)
             for path in self._space_journal_paths(scratch_space_id):
                 try:
                     record = json.loads(path.read_bytes())
@@ -2451,7 +2466,7 @@ class _ResultFrameReader:
             self.pending = self.pending[1:]
 
 
-def drain_process(argv, environment, output_limit, timeout, on_output=None, *, frame_token=None):
+def drain_process(argv, environment, output_limit, timeout, on_output=None, *, frame_token=None, input_data=None):
     """Drain a trusted transport without buffering unbounded command output."""
     import os
     import selectors
@@ -2461,11 +2476,14 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None, *, f
 
     output = BoundedOutput(output_limit)
     frame = _ResultFrameReader(frame_token, output) if frame_token else None
-    process = subprocess.Popen(argv, stdin=subprocess.PIPE if frame else subprocess.DEVNULL, stdout=subprocess.PIPE,
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE if frame or input_data else subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment, start_new_session=True)
-    if frame:
+    if frame or input_data:
         try:
-            process.stdin.write((frame_token + '\n').encode('ascii'))
+            if frame:
+                process.stdin.write((frame_token + '\n').encode('ascii'))
+            if input_data:
+                process.stdin.write(input_data)
             process.stdin.close()
         except BrokenPipeError:
             pass
