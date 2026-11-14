@@ -670,11 +670,7 @@ impl Audit {
 		aidash_application::egress::ConnectionRecord {
 			run_id: self.run_id,
 			admission_ms: self.admission_ms,
-			settle_ms: if self.finished {
-				Some(self.settle_ms.load(Ordering::Relaxed))
-			} else {
-				None
-			},
+			settle_ms: None,
 			id: self.id,
 			scope: self.scope.clone(),
 			host: self.host.clone(),
@@ -710,10 +706,11 @@ impl Audit {
 		self.started_record
 	}
 	async fn finish(&mut self) {
-		self.finished = true;
+		let mut record = self.record();
+		record.settle_ms = Some(self.settle_ms.load(Ordering::Relaxed));
 		settle_record(
 			self.scopes.clone(),
-			self.record(),
+			record,
 			self.manager.stopping.clone(),
 			self.report(),
 		)
