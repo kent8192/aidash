@@ -966,7 +966,33 @@ pub struct BindingSnapshot {
 	pub agent_plugins: Vec<crate::agent_plugin::PinnedAgentPlugin>,
 }
 
+/// Why a Workbench test does not offer a Schedule tool (#557).
+pub const WORKBENCH_SCHEDULE_EXCLUSION: &str = "Schedules are not offered in Workbench tests";
+
 impl BindingSnapshot {
+	/// The Bindings a Workbench test offers. A sandboxed test cannot register a
+	/// real Schedule, and the four Schedule tools would take about a quarter of
+	/// the default test token limit, so the test excludes them (#557). Both the
+	/// admission and each step apply this, so their snapshots stay equal.
+	pub fn for_workbench_test(mut self) -> Self {
+		for binding in &mut self.bindings {
+			if binding.excluded_reason.is_none()
+				&& binding.definition.kind == "tool"
+				&& binding
+					.definition
+					.config
+					.get("provider")
+					.and_then(Value::as_str)
+					== Some("core.schedules@1")
+			{
+				binding.excluded_reason = Some(WORKBENCH_SCHEDULE_EXCLUSION.into());
+				// An excluded tool carries no Provider implementation.
+				binding.provider_implementation = None;
+			}
+		}
+		self
+	}
+
 	/// Whether the admitted, pinned Tools can select a Thread Attachment for model input.
 	pub fn supports_thread_attachment_selection(&self) -> bool {
 		self.bindings.iter().any(|binding| {

@@ -153,8 +153,9 @@ async fn one_worker_boundary_writes_the_registry_read_rows_it_wrote_before(
 	let total: i64 = written.iter().map(|(_, count)| count).sum();
 	println!("BOUNDARY_DECISIONS={total} PER_RESOURCE={written:?}");
 	// 48 on the commit before #769 (46 after: the Decider is decided once, not twice).
+	// 54 with the Schedule tools (#557): 46 plus four default tools, two rows each.
 	assert!(
-		total <= 48,
+		total <= 54,
 		"a boundary writes no more than before: {total} {written:?}"
 	);
 	assert!(total > 0, "the boundary decided nothing");

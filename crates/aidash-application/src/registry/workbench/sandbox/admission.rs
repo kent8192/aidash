@@ -174,7 +174,7 @@ async fn prepare(
 		));
 	}
 	let entry = scope.validate_content(&draft).await?;
-	let snapshot = scope.bindings(&draft, &entry).await?;
+	let snapshot = scope.bindings(&draft, &entry).await?.for_workbench_test();
 	let config = AgentConfig::from_snapshot(&snapshot)?;
 	let model = scope.effective(&config.model).await?;
 	let model_config: ModelConfig = serde_json::from_value(model.config)?;

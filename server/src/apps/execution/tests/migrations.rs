@@ -199,10 +199,10 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0068_reject_new_compaction_deciders");
+	assert_eq!(registry[0].name, "0069_schedule_tools");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0128_remove_generated_summary_state");
+	assert_eq!(execution[0].name, "0129_generation_scheduled");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
@@ -2120,6 +2120,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0066_native_context_recovery"),
 			("registry", "0067_optional_memory_roles"),
 			("registry", "0068_reject_new_compaction_deciders"),
+			// Depends on 0068 and replaces the descriptor contract it reads.
+			("registry", "0069_schedule_tools"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
