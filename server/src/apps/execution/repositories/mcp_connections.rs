@@ -149,6 +149,8 @@ pub(crate) struct Sessions {
 	pub home: crate::federation::Home,
 	pub run: Run,
 	pub scope: aidash_application::tenancy::TenancyScope,
+	/// The Run's stdio sessions in its Execution Pod, when the step holds its authority.
+	pub stdio: Option<Arc<dyn aidash_application::ports::tools::StdioPluginSessions>>,
 }
 impl Sessions {
 	#[allow(clippy::too_many_arguments)] // Mirrors the pinned server and complete logical wire round.
@@ -376,5 +378,9 @@ impl PluginSessions for Sessions {
 	}
 	async fn close(&self, run: Uuid) {
 		self.store.plugin_sessions.close(run).await;
+		self.store.stdio_sessions.close(run).await;
+	}
+	fn stdio(&self) -> Option<Arc<dyn aidash_application::ports::tools::StdioPluginSessions>> {
+		self.stdio.clone()
 	}
 }

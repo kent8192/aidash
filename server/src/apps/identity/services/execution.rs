@@ -2883,5 +2883,7 @@ pub(crate) mod management;
 #[path = "execution/safety_stop.rs"]
 pub(crate) mod safety_stop;
 
+#[path = "execution/plugin_stdio.rs"]
+mod plugin_stdio;
 #[path = "execution/subnodes.rs"]
 pub(crate) mod subnodes;

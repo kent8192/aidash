@@ -1171,6 +1171,19 @@ impl Environment<'_> {
 }
 
 impl<'a> Environment<'a> {
+	/// The Run's stdio MCP sessions under this step's authority (ADR 0073). None without it.
+	fn stdio_sessions(
+		&self,
+		run: &Run,
+	) -> Option<Arc<dyn aidash_application::ports::tools::StdioPluginSessions>> {
+		let authority = self.authority.as_ref()?;
+		let store = &self.federation.store;
+		Some(
+			store
+				.stdio_sessions
+				.bind(run.id, authority.guard.stdio_host(store)),
+		)
+	}
 	pub(crate) fn new(federation: &'a Federation, guard: Option<&'a Guard>, run: &Run) -> Self {
 		// A step runs after its Run's authority is admitted. Without it, no Tenant
 		// is usable, and the database refuses every statement.
@@ -1425,6 +1438,7 @@ impl ExecutionEnvironment for Environment<'_> {
 				store: self.federation.store.clone(),
 				run: run.clone(),
 				scope: self.run_store.scope.clone(),
+				stdio: self.stdio_sessions(run),
 			},
 			run.id,
 			snapshot,
@@ -1449,6 +1463,8 @@ impl ExecutionEnvironment for Environment<'_> {
 				store: self.federation.store.clone(),
 				run: run.clone(),
 				scope: self.run_store.scope.clone(),
+				// Reconnecting re-lists only remote servers.
+				stdio: None,
 			},
 			run.id,
 			snapshot,
@@ -1461,6 +1477,7 @@ impl ExecutionEnvironment for Environment<'_> {
 	async fn close_plugin_sessions(&self, run: Uuid) {
 		use aidash_application::ports::tools::PluginSessions;
 		self.federation.store.plugin_sessions.close(run).await;
+		self.federation.store.stdio_sessions.close(run).await;
 	}
 	async fn approval_decider(
 		&self,
@@ -1791,6 +1808,7 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 				store: self.federation.store.clone(),
 				run: run.clone(),
 				scope: self.run_store.scope.clone(),
+				stdio: self.stdio_sessions(run),
 			})),
 		}
 		.tools(run)
