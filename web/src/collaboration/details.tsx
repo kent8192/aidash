@@ -6,7 +6,11 @@ import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
-import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
+import {
+  RemoteMemoryProvenance,
+  RemoteRunManagement,
+  semanticReasons,
+} from "./remote-memory";
 import { ApiError, apiFetch } from "../transport";
 import { DeclineCall } from "./decline-call";
 import { offeredDecline } from "./decline-call-model";
@@ -540,6 +544,18 @@ function RunPanel({
           <ReferenceName id={node} />
         </p>
       </header>
+      {controllable &&
+        run.control === "PAUSED" &&
+        run.recovery?.semantic_reason && (
+          // The same cause and next step a Run on another Node reports (#127).
+          <Hint role="status">
+            {
+              semanticReasons[run.recovery.semantic_reason][
+                locale === "ja-JP" ? 1 : 0
+              ]
+            }
+          </Hint>
+        )}
       {(controllable || home) && (
         <div className="flex min-w-0 flex-wrap gap-2">
           {controllable && !administrator && (

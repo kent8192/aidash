@@ -91,7 +91,9 @@ export function RemoteRunManagement({
           </Hint>
         )}
       {state.may_control && state.semantic_reason && (
-        <Hint role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</Hint>
+        <Hint role="status">
+          {semanticReasons[state.semantic_reason][ja ? 1 : 0]}
+        </Hint>
       )}
       {state.may_control && state.memory_cleanup && (
         <CleanupMessage state={state.memory_cleanup.state} />
@@ -165,56 +167,58 @@ function CleanupMessage({ state }: { state: string }) {
   );
 }
 
-const reasons: Record<RemoteSemanticFailure, [string, string]> = {
-  configuration: [
-    "The approved Home index or provider is unavailable or changed.",
-    "承認済みの Home インデックスまたはプロバイダーが利用できないか、変更されています。",
-  ],
-  authority: [
-    "Current authority is required at both nodes. Restore it before an explicit retry.",
-    "両 Node の現在の権限が必要です。権限を復元してから明示的に再試行してください。",
-  ],
-  invalidated: [
-    "A consumed source changed. Create a follow-up task with new instructions.",
-    "参照済みのソースが変更されました。新しい指示で Follow-up Task を作成してください。",
-  ],
-  provider_contract: [
-    "The provider response did not meet the approved contract.",
-    "プロバイダーの応答が承認済みの仕様を満たしていません。",
-  ],
-  embedding_model_not_found: [
-    "The embedding model is unavailable. Register a new agent version.",
-    "埋め込みモデルを利用できません。新しい Agent バージョンを登録してください。",
-  ],
-  context_budget: [
-    "Semantic context does not fit the model's available context budget.",
-    "記憶の参照結果がモデルのコンテキスト上限に収まりません。",
-  ],
-  durable_memory_budget: [
-    "The memory operation has exhausted its cumulative budget. Create a follow-up task.",
-    "記憶処理の累積予算を使い切りました。Follow-up Task を作成してください。",
-  ],
-  allowance: [
-    "A generated ancestor has insufficient call or token allowance.",
-    "生成 Agent の祖先に必要な呼び出し回数またはトークン予算がありません。",
-  ],
-  unavailable: [
-    "Home or its semantic backend is temporarily unavailable.",
-    "Home または記憶バックエンドに一時的に接続できません。",
-  ],
-  retries_exhausted: [
-    "Automatic retries are exhausted. An authorized manual retry starts a new bounded cycle.",
-    "自動再試行が上限に達しました。権限を確認した手動再試行で新しい試行周期を開始できます。",
-  ],
-  pending: [
-    "The retrieval operation is in progress.",
-    "記憶を検索しています。",
-  ],
-  stale: [
-    "The Home memory changed since the reused retrieval. It is retrieved again.",
-    "再利用していた検索結果の後に Home の記憶が変更されました。もう一度検索します。",
-  ],
-};
+/** Why a Run's semantic context stopped it, and what to do next: [English, Japanese]. */
+export const semanticReasons: Record<RemoteSemanticFailure, [string, string]> =
+  {
+    configuration: [
+      "The approved Home index or provider is unavailable or changed.",
+      "承認済みの Home インデックスまたはプロバイダーが利用できないか、変更されています。",
+    ],
+    authority: [
+      "Current authority is required at both nodes. Restore it before an explicit retry.",
+      "両 Node の現在の権限が必要です。権限を復元してから明示的に再試行してください。",
+    ],
+    invalidated: [
+      "A consumed source changed. Create a follow-up task with new instructions.",
+      "参照済みのソースが変更されました。新しい指示で Follow-up Task を作成してください。",
+    ],
+    provider_contract: [
+      "The provider response did not meet the approved contract.",
+      "プロバイダーの応答が承認済みの仕様を満たしていません。",
+    ],
+    embedding_model_not_found: [
+      "The embedding model is unavailable. Register a new agent version.",
+      "埋め込みモデルを利用できません。新しい Agent バージョンを登録してください。",
+    ],
+    context_budget: [
+      "Semantic context does not fit the model's available context budget.",
+      "記憶の参照結果がモデルのコンテキスト上限に収まりません。",
+    ],
+    durable_memory_budget: [
+      "The memory operation has exhausted its cumulative budget. Create a follow-up task.",
+      "記憶処理の累積予算を使い切りました。Follow-up Task を作成してください。",
+    ],
+    allowance: [
+      "A generated ancestor has insufficient call or token allowance.",
+      "生成 Agent の祖先に必要な呼び出し回数またはトークン予算がありません。",
+    ],
+    unavailable: [
+      "Home or its semantic backend is temporarily unavailable.",
+      "Home または記憶バックエンドに一時的に接続できません。",
+    ],
+    retries_exhausted: [
+      "Automatic retries are exhausted. An authorized manual retry starts a new bounded cycle.",
+      "自動再試行が上限に達しました。権限を確認した手動再試行で新しい試行周期を開始できます。",
+    ],
+    pending: [
+      "The retrieval operation is in progress.",
+      "記憶を検索しています。",
+    ],
+    stale: [
+      "The Home memory changed since the reused retrieval. It is retrieved again.",
+      "再利用していた検索結果の後に Home の記憶が変更されました。もう一度検索します。",
+    ],
+  };
 const states: Record<string, [string, string]> = {
   disabled: ["Disabled", "無効"],
   pending: ["Pending", "待機中"],
@@ -272,7 +276,7 @@ export function RemoteMemoryStatus({
         </p>
       </div>
       {status.reason && (
-        <Hint role="status">{reasons[status.reason][language]}</Hint>
+        <Hint role="status">{semanticReasons[status.reason][language]}</Hint>
       )}
       {status.body_cleanup && <CleanupMessage state={status.body_cleanup} />}
       {details.length > 0 && <Facts items={details} />}

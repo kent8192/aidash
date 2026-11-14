@@ -702,6 +702,7 @@
   "runReadsNotUsable": "この Run が使っている定義を使う権限がありません。",
   "runReadsRemote": "この Run が別のノードから読んだものを確認できませんでした。",
   "runReadsSemantic": "この Run が読んだセマンティックインデックスは、現在利用できません。",
+  "runReadsSourceChanged": "この Run が読んだものがその後変わったため、再開できません。代わりに新しい Task を作成してください。",
   "runReadsSource": "この Run が読んだもの（{source}）は、現在閲覧できません。",
   "catalogWithdrawNoImpact": "このノードで承認済みのエージェントはこれを使っていません。",
   "catalogWithdrawImpactUnavailable": "影響を取得できませんでした。承認の取り下げはこのまま行えます。",

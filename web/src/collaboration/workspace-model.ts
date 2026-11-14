@@ -4,9 +4,12 @@ export type LocatedRun = { run: Run; node: string };
 export const terminalRun = (run: Run) =>
   ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
 export const resumableRun = (run: Run) =>
-  !["invalidated", "context_budget", "durable_memory_budget"].includes(
-    run.recovery?.semantic_reason ?? "",
-  ) &&
+  ![
+    "invalidated",
+    "context_budget",
+    "durable_memory_budget",
+    "embedding_model_not_found",
+  ].includes(run.recovery?.semantic_reason ?? "") &&
   (!run.state_error ||
     (run.phase === "WAITING" &&
       run.state?.phase === "WAITING" &&

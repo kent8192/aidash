@@ -230,12 +230,42 @@ pub(crate) async fn mutate_origin(
 	let mut retained =
 		usize::try_from(count).map_err(|_| Error::Invalid("corrupt memory count".into()))?;
 	let mut result = Vec::new();
+	// Units a write left exactly as they were (#127): returned and receipted,
+	// but never saved, fenced or reindexed.
+	let mut unchanged = Vec::new();
 	// PostgreSQL's timestamp input rounds nanoseconds. Canonicalize before
 	// admission so the pending fence, returned unit and persisted row agree.
 	let now = Utc::now().trunc_subsecs(6);
 	for change in &mutation.changes {
 		let id = change.id();
 		let existing = units::load(lease, id, true).await?;
+		if let Change::Correct {
+			expected_revision,
+			content,
+			..
+		} = change && let Some(current) = existing.as_ref()
+			&& current.bank == mutation.bank
+			&& current.revision == *expected_revision
+			&& !current.deleted
+			&& !current.stale
+			&& canonical(content) == current.content
+		{
+			// A write identical to the current revision is not a change: the
+			// revision stays, so no Run that read it stops. A stale Unit is
+			// refreshed by any correction, so it never takes this path. The
+			// body is returned only under the same checks as a changed one.
+			units::unexpired(lease, current).await?;
+			units::current(
+				lease,
+				current.bank.workspace,
+				&current.content.evidence,
+				bounds.max_graph_visits,
+			)
+			.await?;
+			unchanged.push(current.id);
+			result.push(current.clone());
+			continue;
+		}
 		let mut unit = match change {
 			Change::Add { content, .. } => {
 				if existing.is_some() {
@@ -467,21 +497,26 @@ pub(crate) async fn mutate_origin(
 		};
 		Box::pin(mutate_origin(lease, &eviction, bounds, origin)).await?;
 	}
+	let changed: Vec<Unit> = result
+		.iter()
+		.filter(|unit| !unchanged.contains(&unit.id))
+		.cloned()
+		.collect();
 	// Admission must leave every source correctable within its pinned impact cap.
-	for unit in result.iter().filter(|unit| !unit.deleted) {
+	for unit in changed.iter().filter(|unit| !unit.deleted) {
 		dependencies::validate_admission(lease, unit, bounds).await?;
 	}
 	// Impact discovery is bounded and complete before any result may leave the transaction.
 	fence_dependents(
 		lease,
 		mutation.bank.workspace,
-		&result,
+		&changed,
 		mutation.operation_id,
 		&actor,
 		bounds,
 	)
 	.await?;
-	for unit in &result {
+	for unit in &changed {
 		if !unit.deleted {
 			units::current_for_run(
 				lease,
@@ -493,16 +528,18 @@ pub(crate) async fn mutate_origin(
 			.await?;
 		}
 	}
-	bump_bank(lease, bank_id).await?;
-	super::engine_jobs::changed(
-		lease,
-		&mutation.bank,
-		&mutation.provider,
-		&policy,
-		&result,
-		origin,
-	)
-	.await?;
+	if !changed.is_empty() {
+		bump_bank(lease, bank_id).await?;
+		super::engine_jobs::changed(
+			lease,
+			&mutation.bank,
+			&mutation.provider,
+			&policy,
+			&changed,
+			origin,
+		)
+		.await?;
+	}
 	let outcome: Vec<_> = result.iter().map(Unit::evidence).collect();
 	super::memory_receipts::reserve(
 		lease,
@@ -514,6 +551,17 @@ pub(crate) async fn mutate_origin(
 	)
 	.await?;
 	Ok(result)
+}
+
+/// `content` as it would be stored: PostgreSQL keeps microseconds, so an
+/// incoming time with nanoseconds equals the stored one only once truncated.
+fn canonical(content: &aidash_domain::memory::Content) -> aidash_domain::memory::Content {
+	let mut content = content.clone();
+	if let Some(range) = content.occurred.as_mut() {
+		range.start = range.start.trunc_subsecs(6);
+		range.end = range.end.trunc_subsecs(6);
+	}
+	content
 }
 
 pub(crate) fn content_columns() -> Vec<Alias> {

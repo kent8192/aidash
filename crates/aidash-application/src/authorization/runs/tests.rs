@@ -313,6 +313,64 @@ async fn resume_says_what_blocks_it_and_changes_nothing(repository: Repository) 
 	assert!(!state.calls.contains(&"notify".into()));
 	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
 }
+fn invalidated(state: &mut State) {
+	state.raw.as_mut().unwrap().pending["recovery"]["semantic_reason"] = json!("invalidated");
+	// Its disclosure is withheld for the same change, and the read walk has
+	// nothing more to say about it.
+	state.visible = false;
+}
+#[rstest]
+#[tokio::test]
+async fn an_invalidated_run_is_refused_with_its_cause_to_the_person_who_could_resume_it(
+	repository: Repository,
+) {
+	invalidated(&mut repository.0.lock().unwrap());
+	let result = resume(&repository, id(1)).await;
+	assert!(
+		matches!(
+			result,
+			Err(Error::ResumeBlocked(RunReadsBlock::SourceChanged))
+		),
+		"{result:?}"
+	);
+	let state = repository.0.lock().unwrap();
+	assert!(!state.committed);
+	assert_eq!(state.credential, None);
+	assert!(!state.calls.contains(&"visible".into()));
+	assert!(!state.calls.contains(&"control".into()));
+	assert!(!state.calls.contains(&"notify".into()));
+}
+#[rstest]
+#[case::no_control("run.control")]
+#[case::not_the_root("subject")]
+#[tokio::test]
+async fn someone_who_may_not_resume_an_invalidated_run_never_learns_why(
+	repository: Repository,
+	#[case] boundary: &'static str,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		invalidated(&mut state);
+		match boundary {
+			"run.control" => state.deny = Some("run.control"),
+			"subject" => state.grant.as_mut().unwrap().root_subject = "other".into(),
+			_ => panic!("unexpected boundary"),
+		}
+	}
+	assert!(matches!(
+		resume(&repository, id(1)).await,
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+#[tokio::test]
+async fn another_semantic_pause_is_still_resumed_through_the_read_walk(repository: Repository) {
+	repository.0.lock().unwrap().raw.as_mut().unwrap().pending["recovery"]["semantic_reason"] =
+		json!("retries_exhausted");
+	let run = resume(&repository, id(1)).await.unwrap();
+	assert_eq!(run.control, RunControl::Active);
+	assert_eq!(repository.0.lock().unwrap().calls, expected());
+}
 #[rstest]
 #[case::completed(RunPhase::Completed, RunControl::Active)]
 #[case::failed(RunPhase::Failed, RunControl::Active)]

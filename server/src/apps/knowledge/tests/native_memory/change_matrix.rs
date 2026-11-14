@@ -5,9 +5,11 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 
 /// The shape a caller chooses for a change is not an exemption. A correction
-/// that keeps the text byte-identical and only edits metadata, or repeats the
-/// exact content, still creates a new revision and fences every Run that read
-/// the old one. Withdrawal (a contradicted claim) and deletion fence it too.
+/// that keeps the text byte-identical and only edits metadata still creates a
+/// new revision and fences every Run that read the old one. Withdrawal (a
+/// contradicted claim) and deletion fence it too. A write identical to the
+/// current revision is not a change (#127 decision 1): it keeps the revision
+/// and fences nothing.
 #[rstest]
 #[case::text("text")]
 #[case::metadata_only("metadata_only")]
@@ -83,7 +85,7 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 			}
 		}
 	};
-	memory::mutate(
+	let written = memory::mutate(
 		&store,
 		&administrator(&store).await,
 		mutation(&bank, change),
@@ -92,10 +94,22 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 	.unwrap();
 
 	// Assert
-	assert!(
-		!run_visible(&scope, &store, run).await,
-		"a {shape} change must fence the Run that consumed revision 1"
-	);
+	if shape == "identical" {
+		assert_eq!(
+			written.iter().map(|unit| unit.revision).collect::<Vec<_>>(),
+			vec![1],
+			"an identical write keeps the revision it was checked against"
+		);
+		assert!(
+			run_visible(&scope, &store, run).await,
+			"an identical write changes nothing the Run read"
+		);
+	} else {
+		assert!(
+			!run_visible(&scope, &store, run).await,
+			"a {shape} change must fence the Run that consumed revision 1"
+		);
+	}
 	let current = memory::list(
 		&store,
 		&administrator(&store).await,
@@ -110,6 +124,11 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 		"deletion" | "withdrawal" => assert!(
 			current.is_empty(),
 			"a {shape} excludes the Unit from listing immediately"
+		),
+		"identical" => assert_eq!(
+			current.iter().map(|unit| unit.revision).collect::<Vec<_>>(),
+			vec![1],
+			"an identical write creates no revision"
 		),
 		_ => assert_eq!(
 			current.iter().map(|unit| unit.revision).collect::<Vec<_>>(),
@@ -216,6 +235,117 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	.unwrap();
 	assert_eq!(current.len(), 1);
 	assert_eq!(current[0].revision, 2, "no third revision was created");
+}
+
+/// In a batch, only the Units a write changes gain a revision (#127 decision
+/// 2). The identical one keeps its revision, its readers and its history, and
+/// an identical write against a revision that has since moved on is still a
+/// compare-and-set conflict.
+#[rstest]
+#[tokio::test]
+async fn an_identical_write_changes_nothing_but_still_checks_its_revision(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	// Arrange
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let actor = administrator(&store).await;
+	let bank = memory::create_participant(
+		&store,
+		&actor,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let (kept, edited) = (Uuid::now_v7(), Uuid::now_v7());
+	let kept_content = content("Tag releases from main.");
+	let mut seed = mutation(
+		&bank,
+		Change::Add {
+			id: kept,
+			content: kept_content.clone(),
+		},
+	);
+	seed.changes.push(Change::Add {
+		id: edited,
+		content: content("Review every migration."),
+	});
+	memory::mutate(&store, &actor, seed).await.unwrap();
+	// Fencing the reader of a changed Unit is the case above; this reader read
+	// only the Unit the batch repeats.
+	let (scope, kept_reader) = recorded_run(&store, &bank, &[kept]).await;
+	let history = |unit: Uuid| {
+		let store = store.clone();
+		async move {
+			aidash_server::database::native::query_scalar::<i64>(
+				&Query::select()
+					.expr(reinhardt::query::Func::count(
+						Expr::col(reinhardt::query::ColumnRef::Asterisk).into(),
+					))
+					.from(Alias::new("memory_history"))
+					.and_where(Expr::col("unit_id").eq(Expr::value(unit)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
+			.await
+			.unwrap()
+		}
+	};
+	let kept_history = history(kept).await;
+
+	// Act
+	let mut batch = mutation(
+		&bank,
+		Change::Correct {
+			id: kept,
+			expected_revision: 1,
+			content: kept_content.clone(),
+		},
+	);
+	batch.changes.push(Change::Correct {
+		id: edited,
+		expected_revision: 1,
+		content: content("Review every migration twice."),
+	});
+	let written = memory::mutate(&store, &actor, batch).await.unwrap();
+	let late = memory::mutate(
+		&store,
+		&actor,
+		mutation(
+			&bank,
+			Change::Correct {
+				id: edited,
+				expected_revision: 1,
+				content: content("Review every migration twice."),
+			},
+		),
+	)
+	.await;
+
+	// Assert
+	let revisions: Vec<_> = written
+		.iter()
+		.map(|unit| (unit.id, unit.revision))
+		.collect();
+	assert_eq!(revisions, vec![(kept, 1), (edited, 2)]);
+	assert!(
+		run_visible(&scope, &store, kept_reader).await,
+		"the reader of the identical Unit goes on"
+	);
+	assert_eq!(
+		history(kept).await,
+		kept_history,
+		"an identical write records no history"
+	);
+	assert!(
+		matches!(late, Err(aidash_server::Error::Conflict(_))),
+		"identical content does not excuse a stale revision: {late:?}"
+	);
 }
 
 /// A second Run, for its own Task, with the same Binding and read journal as `run`.

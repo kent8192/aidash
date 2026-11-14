@@ -702,6 +702,7 @@
   "runReadsNotUsable": "Your permissions do not allow a definition this Run uses.",
   "runReadsRemote": "Something this Run read from another Node could not be confirmed.",
   "runReadsSemantic": "A semantic index this Run read is no longer available to you.",
+  "runReadsSourceChanged": "Something this Run read has changed since, so it cannot be resumed. Create a follow-up Task instead.",
   "runReadsSource": "Something this Run read ({source}) is no longer visible to you.",
   "catalogWithdrawNoImpact": "No approved agent on this Node uses it.",
   "catalogWithdrawImpactUnavailable": "The impact could not be read. You can still withdraw the approval.",
