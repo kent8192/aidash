@@ -23,3 +23,7 @@ Decided on 2026-10-19 while grilling Live previews. An operation's Execution Pod
 ## Amendment (2026-11-07, #758)
 
 A Live preview now does stop when its Run's authority is revoked. Until this change nothing checked it after the start. A loop runs the Read Recheck every 30 seconds for everyone on the Run's chain, including after the Run has finished, and stops it as `run_authority_revoked`. A Node that does not answer five checks in a row is meant to stop it as `node_unreachable` (ADR 0116), but until #751 lands a Node that does not answer counts as a refusal and stops it as `run_authority_revoked`.
+
+## Amendment (2026-11-14, #745)
+
+ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.

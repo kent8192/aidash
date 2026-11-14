@@ -39,3 +39,13 @@ At each completed logical stdio tool-call boundary, Aidash freezes the writers a
 Attachment-time dependency pinning targets the supported Linux amd64 and arm64 Runner environments and records CPU and Node/Python compatibility information with the fixed dependencies. An incompatible receiving environment skips the affected stdio server and reports the reason. Resolving dependencies again requires a new Agent version; Run start never silently replaces the approved lockfiles.
 
 A remote server's Tenant Secret binding explicitly selects raw or Bearer header form; Authorization defaults to Bearer and other header names to raw. That binding replaces a package header with the same case-insensitive name, while transport-owned header names remain invalid. Catalog Approval shows the effective header name and form, without revealing the Secret value. The origin restriction and current-Secret checks continue to apply.
+
+## Amendment (2026-11-14, #745)
+
+ADR 0111 removes the package-index Built-in External services and the per-command Working Area export that this decision relied on.
+
+- Lockfiles are still pinned when a plugin is attached. Resolution runs in a disposable preparation Pod under the attaching person's authority and the Tenant's allowed hosts, and installs at session start come from the Scratch Space's allowed hosts through the HTTPS proxy, not from `core.npm` or `core.pypi`.
+- A session runs in the Execution Pod of the Run's Scratch Space with the Run's credential (ADR 0136). The Pod reaches the allowed hosts as well as the External services available to the Scratch Space, so the reason calls need no Tool call approval is now the same as for the shell: the Catalog Approval of the `mcp_stdio` group and the Scratch Space's allowed hosts bound the outside, and a call adds nothing the shell in the same Pod could not do.
+- The writers are no longer frozen and published at each logical call boundary, because the Scratch Space persists between tools. A server's file changes are visible to the Run's next tool at once, and to other Runs using the Scratch Space. Only files an Agent registers reach the Working Area.
+- `${PLUGIN_DATA}` is still saved outside the Pod, restored at session start and validated before it replaces the saved version. Runs that share a Pod are not isolated from each other's `${PLUGIN_DATA}` while it is live.
+

@@ -28,3 +28,7 @@ The previous model recreated the Execution Pod for every command, copied and re-
 ## Amendment (2026-11-05, #719)
 
 An Agent's Reference set stays readable through `file_read` and `file_search` without being copied, because a copied file is visible to everyone using the Scratch Space. The file tools cover the Scratch Space and the Reference set. Copying remains for a command that needs a file on disk. "Reference files" replaces "Reference Documents" above, because a Reference Document is an Agent's private knowledge, which is sent with every request and is not copied.
+
+## Amendment (2026-11-14, #745)
+
+ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.
