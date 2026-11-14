@@ -295,12 +295,11 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 
 /// Reserved spelling alone is insufficient: persisted bytes must match Node composition.
 async fn system_document(access: &mut Access, reference: &EntityRef) -> Result<Value> {
-	let expected = aidash_application::registry::system::declarations(
+	let expected = aidash_application::registry::system::pinned_declaration(
 		&crate::bootstrap::registry_validation(),
 		&access.node_id,
+		reference,
 	)?
-	.into_iter()
-	.find(|entry| entry.id == reference.id && entry.version == reference.version)
 	.ok_or(crate::Error::Forbidden)?;
 	let stored = crate::apps::registry::models::transaction_records::definition(
 		&mut **access.tx,

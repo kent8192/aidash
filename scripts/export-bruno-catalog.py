@@ -29,6 +29,8 @@ ADDITIONS = {
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
+    ("GET", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope", "memory_scope"),
+    ("PUT", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope-update", "memory_scope"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.

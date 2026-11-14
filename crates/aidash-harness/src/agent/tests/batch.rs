@@ -294,6 +294,7 @@ impl Bench {
 				idempotency_key: format!("human:{seq}"),
 				message_id: None,
 				reference_only: false,
+				is_data: false,
 			});
 	}
 	fn refuse(&self, call: &str) {
@@ -768,7 +769,6 @@ impl ExecutionStore for Bench {
 		_token: Uuid,
 		_attempt: Uuid,
 		_settlement: &aidash_domain::context::recovery::Settlement,
-		_staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		unexpected("ExecutionStore.adopt_compaction")
 	}
@@ -958,25 +958,6 @@ impl ExecutionAuthority for Bench {
 	}
 	async fn resume(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.resume")
-	}
-	async fn reserve_summary(
-		&self,
-		_token: Uuid,
-		_summarizer: &aidash_domain::context::summary::SummaryProvider,
-		_window: usize,
-		_output: u32,
-		_request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		unexpected("ExecutionAuthority.reserve_summary")
-	}
-	async fn recheck_summary(
-		&self,
-		_summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		unexpected("ExecutionAuthority.recheck_summary")
-	}
-	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
-		unexpected("ExecutionAuthority.recheck_decider")
 	}
 }
 
@@ -2108,7 +2089,7 @@ async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted
 	let (error, _) = refusal_note::scoped(async {
 		refusal_note::set(refusal_note::Note::new(
 			aidash_domain::tool::RefusalCheck::Catalog,
-			Some("decision.invoke"),
+			Some("model.infer"),
 		));
 		at_stage("compaction")(Error::Forbidden)
 	})
@@ -2118,7 +2099,7 @@ async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted
 	};
 	assert_eq!(
 		refusal.to_string(),
-		"compaction: Catalog Approval refused decision.invoke"
+		"compaction: Catalog Approval refused model.infer"
 	);
 	// Without a note the check is Unnamed, and every other error passes through.
 	let (error, _) =

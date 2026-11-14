@@ -553,109 +553,23 @@ fn last_request(fixture: &Fixture) -> ModelRequest {
 
 #[rstest]
 #[tokio::test]
-async fn an_oversized_native_run_elides_old_results_and_keeps_every_turn_whole(
-	mut fixture: Fixture,
-) {
-	// Arrange: Jev drops every old result.
+async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture: Fixture) {
 	native_thinking_over_the_window(&mut fixture);
-	Arc::get_mut(&mut fixture.backend.0).unwrap().jev_retention = Some(0.0);
-	// Act: the decision saves the pruned context, which ends its step, and
-	// the next step infers from it.
+	let originals = fixture.run.context.history.clone();
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+	assert_eq!(events(&fixture).last().unwrap(), "context.offloaded");
+	let journal = fixture
+		.backend
+		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
+		.await
+		.unwrap();
+	assert_eq!(journal, originals);
 	advance_sources(&mut fixture).await.unwrap();
-	// Assert
 	let request = last_request(&fixture);
-	assert!(request.ensure_fits(128_000).is_ok());
 	let native = native_context(&request);
 	check_model_turns(&native.history).unwrap();
-	let tool_messages = native
-		.history
-		.iter()
-		.filter_map(|message| match message {
-			NativeMessage::Tool {
-				tool_call_id,
-				envelope,
-			} => Some((tool_call_id.as_str(), &envelope.content)),
-			_ => None,
-		})
-		.collect::<Vec<_>>();
-	assert_eq!(tool_messages.len(), 46);
-	for (id, content) in tool_messages {
-		if id.starts_with("old-") && id != "old-0" {
-			assert_eq!(content, &ContextEvent::elided_result(id));
-		} else {
-			assert!(content.is_string(), "{id} is protected");
-		}
-	}
-}
-
-#[rstest]
-#[tokio::test]
-async fn the_native_summary_stage_absorbs_whole_turns_before_inference(mut fixture: Fixture) {
-	// Arrange: Jev keeps everything, so only the Summary Stage can fit.
-	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.context_policy = Some(recovery_policy(true));
-	state.jev_retention = Some(1.0);
-	state.summary_estimate_diagnostics = Some(json!({
-		"calibrations": {
-			"legacy": {"ratio_ppm":250000,"samples":20},
-			"native": {"ratio_ppm":750000,"samples":20}
-		}
-	}));
-	*state.summary_text.lock().unwrap() = Some(
-		json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[],"resolved":[],"artifacts":[],"verification":[]})
-			.to_string(),
-	);
-	native_thinking_over_the_window(&mut fixture);
-	// Act
-	advance_sources(&mut fixture).await.unwrap();
-	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
-	advance_sources(&mut fixture).await.unwrap();
-	// Assert: the Human answer and the six recent turns stay verbatim.
-	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
-	assert_eq!(summary.source.through_seq, 81);
-	assert_eq!(fixture.run.context.history.len(), 13);
-	let request = last_request(&fixture);
-	assert!(request.response_format.is_none());
-	let native = native_context(&request);
-	check_model_turns(&native.history).unwrap();
-	assert!(
-		native.attachments.iter().any(|envelope| envelope.source
-			== aidash_domain::projection::native::Source::ExecutionSummary)
-	);
-	assert!(!request.input_body().to_string().contains("old-0"));
-	assert!(matches!(native.history[0], NativeMessage::Human { .. }));
-	// A Native parent still sends its summarizer a Legacy request. Usage and
-	// shadows must follow the actual call, including its distinct calibration.
-	let usage = fixture.backend.0.usage.lock().unwrap();
-	let (summary, _) = usage
-		.iter()
-		.find(|(dispatch, _)| dispatch.purpose == UsagePurpose::Summary)
-		.unwrap();
-	assert_eq!(
-		summary.projection_version,
-		ProjectionVersion::Legacy.number()
-	);
-	let calibrated = summary
-		.shadow_estimates
-		.iter()
-		.find(|shadow| shadow.estimate.estimator == "calibrated")
-		.unwrap();
-	assert_eq!(calibrated.estimate.ratio_ppm, Some(250000));
-	let requests = fixture.backend.0.requests.lock().unwrap();
-	let request = requests
-		.iter()
-		.find(|request| request.response_format.is_some())
-		.unwrap();
-	assert_eq!(
-		request.context.projection_version(),
-		ProjectionVersion::Legacy
-	);
-	assert_eq!(
-		request.request_estimate_with_snapshot(&calibrated.snapshot),
-		Some(calibrated.estimate.clone())
-	);
+	assert!(native.history.iter().any(|message| matches!(message,
+		NativeMessage::Tool { envelope, .. } if aidash_application::context::offload::is_marker(&envelope.content))));
 }
 
 fn structured(fixture: &mut Fixture, contract: aidash_domain::harness_contract::HarnessContract) {

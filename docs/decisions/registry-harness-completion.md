@@ -1,5 +1,7 @@
 # Complete the Registry-centric Harness in one PR
 
+The compaction Decider portions of this historical design are superseded by ADR 0125.
+
 Status: the owner approved this written design and authorized implementation and one PR on 2026-10-23, after independent builder review found no important unresolved decisions. This is not an implementation-completion claim. It lives in `docs/decisions/` because this repository explicitly ignores generated `docs/superpowers/` and `docs/plans/` paths.
 
 ## Intent and scope

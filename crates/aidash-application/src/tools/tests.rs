@@ -26,6 +26,44 @@ impl Operations {
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn journal_query(
+		&self,
+		code: &str,
+		target_run: Option<Uuid>,
+		range: Option<(u64, u64)>,
+		key: &str,
+	) -> Result<Value> {
+		self.record("journal_query");
+		Ok(json!({"code":code,"run_id":target_run,"range":range,"key":key}))
+	}
+	async fn journal(
+		&self,
+		_: Option<Uuid>,
+		range: Option<(u64, u64)>,
+	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
+		use aidash_domain::context::{ContextEvent, HistoryEntry};
+		self.record("journal");
+		Ok([
+			(1, "alpha secret".to_string()),
+			(2, "beta Needle".to_string()),
+			(3, "gamma needle".to_string()),
+			(4, "💡".repeat(10_000)),
+		]
+		.into_iter()
+		.chain((5..30).map(|seq| (seq, format!("repeated {seq}"))))
+		.filter(|(seq, _)| range.is_none_or(|(from, through)| *seq >= from && *seq <= through))
+		.map(|(seq, text)| {
+			aidash_domain::context::journal_export::JournalLine::from(&HistoryEntry::new(
+				seq,
+				ContextEvent::ModelMediaObservation {
+					text,
+					through_seq: None,
+					truncated: false,
+				},
+			))
+		})
+		.collect())
+	}
 	async fn subnode_command(&self, _: &str, _: &crate::subnodes::Command) -> Result<Value> {
 		panic!("unexpected Subnode effect")
 	}
@@ -141,10 +179,15 @@ impl ToolOperations for Operations {
 	}
 	async fn memory_mutate(
 		&self,
-		_key: &str,
-		_changes: &[aidash_domain::memory::Change],
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
 	) -> Result<Vec<aidash_domain::memory::Unit>> {
-		panic!("unexpected native mutation");
+		self.record("memory.mutate");
+		self.inputs
+			.lock()
+			.unwrap()
+			.push((key.into(), json!(changes)));
+		Ok(Vec::new())
 	}
 	async fn memory_recall(
 		&self,
@@ -152,7 +195,7 @@ impl ToolOperations for Operations {
 		_query: &aidash_domain::memory::RecallQuery,
 		_reflect: bool,
 	) -> Result<Value> {
-		panic!("unexpected native recall");
+		Err(Error::SemanticUnavailable)
 	}
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
 		self.record("human.request");
@@ -237,6 +280,235 @@ impl ToolOperations for Operations {
 			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
 		})
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_retention_records_a_fact_without_an_unreviewed_marker(mut fixture: Fixture) {
+	let node = "aidash://fixture";
+	let root = crate::test_support::agent("agent");
+	fixture.run.context.binding_snapshot = Some(Box::new(crate::test_support::resolve(
+		node,
+		&root,
+		false,
+		crate::test_support::builtin_entries(node),
+	)));
+	super::builtins()["memory_mutate"].invoke(&ToolContext { operations: &fixture.operations, run: &fixture.run }, json!({"changes":[{"operation":"add","id":Uuid::new_v4(),"content":{"text":"Recorded fact","kind":"world","learning":"fact","occurred":null,"entities":[],"evidence":[],"links":[]}}]}), "retain").await.unwrap();
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1[0]["content"]["verification"],
+		"recorded"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_memory_failures_are_tool_data_but_explicit_provider_errors_propagate(
+	mut fixture: Fixture,
+) {
+	let node = "aidash://fixture";
+	let root = crate::test_support::agent("agent");
+	let builtin = crate::test_support::resolve(
+		node,
+		&root,
+		false,
+		crate::test_support::builtin_entries(node),
+	);
+	fixture.run.context.binding_snapshot = Some(Box::new(builtin));
+	let tool = &super::builtins()["memory_recall"];
+	let query = json!({"text":"question","time":null,"kinds":[],"max_tokens":100});
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			query.clone(),
+			"recall",
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["kind"], "memory_unavailable");
+	let mut explicit_root = root;
+	explicit_root.config["bindings"] =
+		json!([crate::test_support::binding("memory", node, "native")]);
+	let mut entries = crate::test_support::builtin_entries(node);
+	entries.extend(crate::test_support::native_memory_entries());
+	fixture.run.context.binding_snapshot = Some(Box::new(crate::test_support::resolve(
+		node,
+		&explicit_root,
+		false,
+		entries,
+	)));
+	assert!(matches!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			query,
+			"recall"
+		)
+		.await,
+		Err(Error::SemanticUnavailable)
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn journal_query_forwards_the_requested_cell_and_bounded_range(fixture: Fixture) {
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let query = builtins().remove("journal_query").unwrap();
+	let result = query
+		.invoke(
+			&ctx,
+			json!({"code":"journal()","run_id":"00000000-0000-0000-0000-000000000001","journal_range":{"from_seq":4,"through_seq":9}}),
+			"cell-key",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		result,
+		json!({"code":"journal()","run_id":"00000000-0000-0000-0000-000000000001","range":[4,9],"key":"cell-key"})
+	);
+	assert!(
+		query
+			.invoke(
+				&ctx,
+				json!({"code":"journal()","journal_range":{"from_seq":9,"through_seq":4}}),
+				"bad"
+			)
+			.await
+			.is_err()
+	);
+	assert_eq!(
+		query.contract().behavior.effect,
+		aidash_domain::tool::ToolEffect::ReadOnly
+	);
+	assert_eq!(
+		query.contract().disclosure,
+		aidash_domain::tool::DisclosureBoundary::Local
+	);
+	assert!(!query.contract().behavior.tool_call_approval);
+}
+
+#[test]
+fn subnode_task_accepts_a_journal_range_and_rejects_malformed_ranges() {
+	let task = builtins().remove("subnode_task").unwrap();
+	let validator = jsonschema::validator_for(&task.schema).unwrap();
+	let base = json!({"subnode_id":"00000000-0000-0000-0000-000000000001","title":"Search","request":"Find evidence","journal_range":{"from_seq":1,"through_seq":4}});
+	assert!(validator.is_valid(&base));
+	let mut malformed = base.clone();
+	malformed["journal_range"] = json!({"from_seq":1});
+	assert!(!validator.is_valid(&malformed));
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_task_rejects_a_reversed_journal_range(fixture: Fixture) {
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let task = builtins().remove("subnode_task").unwrap();
+	assert!(task.invoke(&ctx, json!({
+		"subnode_id":"00000000-0000-0000-0000-000000000001", "title":"Search", "request":"Find evidence",
+		"journal_range":{"from_seq":9,"through_seq":4}
+	}), "reversed").await.is_err());
+}
+
+#[test]
+fn journal_tool_selection_uses_the_deployment_runner_configuration() {
+	assert_eq!(
+		crate::registry::system::journal_tools(true),
+		&["journal_query"]
+	);
+	assert_eq!(
+		crate::registry::system::journal_tools(false),
+		&["journal_search", "journal_read"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn journal_fallback_searches_and_reads_only_the_requested_range(fixture: Fixture) {
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let search = builtins().remove("journal_search").unwrap();
+	let result = search
+		.invoke(
+			&ctx,
+			json!({"query":"NEEDLE","from_seq":2,"through_seq":2}),
+			"",
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["results"].as_array().unwrap().len(), 1);
+	assert_eq!(result["results"][0]["seq"], 2);
+	assert!(
+		result["results"][0]["snippet"]
+			.as_str()
+			.unwrap()
+			.contains("Needle")
+	);
+	let read = builtins().remove("journal_read").unwrap();
+	let page = read
+		.invoke(
+			&ctx,
+			json!({"from_seq":2,"through_seq":2,"max_chars":12}),
+			"",
+		)
+		.await
+		.unwrap();
+	let next = page["next_offset"].as_u64().unwrap();
+	let rest = read
+		.invoke(
+			&ctx,
+			json!({"from_seq":2,"through_seq":2,"offset":next}),
+			"",
+		)
+		.await
+		.unwrap();
+	let text = format!(
+		"{}{}",
+		page["text"].as_str().unwrap(),
+		rest["text"].as_str().unwrap()
+	);
+	let line: Value = serde_json::from_str(text.trim()).unwrap();
+	assert_eq!(line["seq"], 2);
+	assert_eq!(line["text"], "beta Needle");
+	let bounded = read
+		.invoke(&ctx, json!({"from_seq":4,"through_seq":4}), "")
+		.await
+		.unwrap();
+	assert!(bounded["text"].as_str().unwrap().len() <= 16_000);
+	assert!(bounded["next_offset"].is_u64());
+	let first = search
+		.invoke(&ctx, json!({"query":"repeated"}), "")
+		.await
+		.unwrap();
+	assert_eq!(first["results"].as_array().unwrap().len(), 20);
+	assert_eq!(first["next_cursor"], "20");
+	let second = search
+		.invoke(
+			&ctx,
+			json!({"query":"repeated","cursor":first["next_cursor"]}),
+			"",
+		)
+		.await
+		.unwrap();
+	assert_eq!(second["results"].as_array().unwrap().len(), 5);
+	assert_eq!(second["results"][0]["seq"], 25);
+	assert!(second["next_cursor"].is_null());
+	assert!(
+		read.invoke(&ctx, json!({"from_seq":3,"through_seq":2}), "")
+			.await
+			.is_err()
+	);
 }
 #[async_trait]
 impl ToolTransport for Operations {

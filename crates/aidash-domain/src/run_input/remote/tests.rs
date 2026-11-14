@@ -120,3 +120,27 @@ fn legacy_history_includes_only_corrections_for_this_run(run: RunMetadata) {
 		.contains(item.idempotency_key.as_ref().unwrap())
 	}));
 }
+
+#[rstest]
+fn remote_history_preserves_subnode_result_identity_for_the_target_run(run: RunMetadata) {
+	let own = format!(
+		"{}{}:member-call",
+		crate::run_input::SUBNODE_RESULT_PREFIX,
+		run.id
+	);
+	let other = format!(
+		"{}{}:member-call",
+		crate::run_input::SUBNODE_RESULT_PREFIX,
+		Uuid::new_v4()
+	);
+	let history = legacy_history(
+		"executor",
+		&run,
+		vec![message(&run, &other), message(&run, &own)],
+	);
+	let [(key, _)] = historical_batch("executor", &run, history)
+		.unwrap()
+		.try_into()
+		.unwrap();
+	assert_eq!(key, own);
+}

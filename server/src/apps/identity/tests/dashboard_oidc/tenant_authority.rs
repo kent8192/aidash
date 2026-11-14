@@ -760,6 +760,80 @@ async fn overview_lists_item_scoped_credential_targets_without_policy_read(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn memory_scope_is_tenant_admin_only_and_revision_checked(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let team = Team::new(runtime).await;
+	let path = format!("/api/tenants/{}/memory-scope", team.tenant);
+	let (status, current) = team
+		.d
+		.as_person(
+			&team.alice,
+			"GET",
+			&path,
+			Some(&team.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{current}");
+	assert_eq!(current, json!({"scope":"workspace","revision":0}));
+	let update = json!({"scope":"tenant_agent","expected_revision":0});
+	let (status, denied) = team
+		.d
+		.as_person(
+			&team.bob,
+			"PUT",
+			&path,
+			Some(&team.bob_context),
+			update.clone(),
+		)
+		.await;
+	assert_eq!(status, 403, "{denied}");
+	let (status, saved) = team
+		.d
+		.as_person(
+			&team.alice,
+			"PUT",
+			&path,
+			Some(&team.alice_context),
+			update.clone(),
+		)
+		.await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(saved, json!({"scope":"tenant_agent","revision":1}));
+	let (status, _) = team
+		.d
+		.as_person(&team.alice, "PUT", &path, Some(&team.alice_context), update)
+		.await;
+	assert_eq!(status, 409);
+	let (status, restored) = team
+		.d
+		.as_person(
+			&team.alice,
+			"PUT",
+			&path,
+			Some(&team.alice_context),
+			json!({"scope":"workspace","expected_revision":1}),
+		)
+		.await;
+	assert_eq!(status, 200, "{restored}");
+	assert_eq!(restored, json!({"scope":"workspace","revision":2}));
+	let (status, _) = team
+		.d
+		.as_person(
+			&team.alice,
+			"GET",
+			"/api/tenants/other/memory-scope",
+			Some(&team.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 403);
+	team.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_next_send(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {

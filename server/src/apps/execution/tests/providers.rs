@@ -35,6 +35,7 @@ fn config(
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(65536),
+		provider_max_output_tokens: None,
 		modalities: vec!["text".into()],
 		media_routes: vec![],
 		cost: json!({}),
@@ -194,7 +195,10 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			assert_eq!(request["stream_options"], json!({"include_usage": true}));
 			assert_eq!(request["provider"]["zdr"], true);
 			assert_eq!(request["provider"]["require_parameters"], true);
-			if let Some(effort) = effort {
+			// OpenRouter disables reasoning with `enabled: false`, not effort "none".
+			if matches!(effort, Some(aidash_server::registry::ReasoningEffort::None)) {
+				assert_eq!(request["reasoning"], json!({"enabled": false}));
+			} else if let Some(effort) = effort {
 				assert_eq!(request["reasoning"]["effort"], json!(effort));
 			} else {
 				assert!(request.get("reasoning").is_none());

@@ -187,6 +187,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			reasoning_effort: None,
 			context_window: 32768,
 			max_output_tokens: Some(10),
+			provider_max_output_tokens: None,
 			modalities: vec!["text".into()],
 			media_routes: vec![],
 			cost: json!({}),

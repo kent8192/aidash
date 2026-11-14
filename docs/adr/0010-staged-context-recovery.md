@@ -1,5 +1,7 @@
 # Oversized context is recovered by a staged, opt-in pipeline over an authoritative Context Journal
 
+The pipeline, Summary model binding and allowance decisions below are superseded by [ADR 0125](0125-compaction-offloads-to-the-context-journal-and-no-model-decides-what-is-kept.md).
+
 Decided on 2026-10-09 for #113. A Run's provider context is a lossy Context Projection of an append-only Context Journal. When the projection does not fit, a versioned Context Policy, frozen into the Run's binding snapshot, runs a fixed pipeline: fit check, Jev pruning, an optional Summary Stage, and complete-request validation. If the request still cannot fit, the Run pauses with a typed reason. A provider-reported Context Overflow re-enters the same pipeline with a smaller effective window, a bounded number of times. Agent versions without a Context Policy keep today's prune-only behavior, and provider overflow then only pauses them.
 
 ## Considered Options

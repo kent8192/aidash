@@ -239,7 +239,9 @@ impl DefinitionValidation {
 			}
 			"decider" => {
 				let config: aidash_domain::decision::DeciderConfig =
-					serde_json::from_value(e.config.clone())?;
+					serde_json::from_value(e.config.clone()).map_err(|error| {
+						Error::Invalid(format!("invalid Decider config: {error}"))
+					})?;
 				config.validate()?;
 				if local && !self.provider_credentials_enabled {
 					return Err(Error::Invalid("Secret Store is not configured".into()));
@@ -302,6 +304,8 @@ impl DefinitionValidation {
 					|| m.context_window < 2048
 					|| (local && m.max_output_tokens.is_none())
 					|| m.max_output_tokens
+						.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
+					|| m.provider_max_output_tokens
 						.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
 					|| !m.modalities.iter().any(|m| m == "text")
 				{

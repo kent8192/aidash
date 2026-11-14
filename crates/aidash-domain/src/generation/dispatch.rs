@@ -23,7 +23,7 @@ pub struct Input {
 	pub boundary: Value,
 }
 
-/// The boundary of an inference or compaction admission. On a remote Ordered
+/// The boundary of an inference or Summary admission. On a remote Ordered
 /// Run's retrieval-reuse step it also names the semantic operation whose
 /// retrieval the step reuses (ADR 0020). Without a reuse it serializes as
 /// `{"step":n}`, the only shape older peers send or read.
