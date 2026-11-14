@@ -184,6 +184,10 @@ pub trait StdioPluginHost: Send + Sync {
 	async fn pod(&self) -> Result<Option<StdioPod>>;
 	/// Whether the Tenant approves the built-in `mcp_stdio` group on this Node.
 	async fn approved(&self) -> Result<bool>;
+	/// The gates a shell call passes at dispatch: capabilities admission, the Sandboxed tool
+	/// usage gate and a writable Subnode. A refusal is
+	/// [`Error::Refused`](crate::Error::Refused) or [`Error::Forbidden`](crate::Error::Forbidden).
+	async fn admit_call(&self) -> Result<()>;
 	/// The files of the Tenant's stored plugin copy.
 	async fn plugin_files(&self, digest: &str) -> Result<Vec<PluginFile>>;
 	/// The plugin's saved `${PLUGIN_DATA}`, paths relative to the data directory.

@@ -222,6 +222,7 @@ impl StdioPluginSessions for RunStdio {
 				"MCP_STDIO_NOT_APPROVED: the Tenant does not approve the mcp_stdio group ({NOT_APPROVED})"
 			)));
 		}
+		self.host.admit_call().await?;
 		let state = self.sessions.run(run, &self.host);
 		let mut state = state.lock().await;
 		state.host = self.host.clone();
@@ -510,12 +511,12 @@ async fn prepare(
 		&launch.plugin_root,
 		tree.iter().map(|file| file.path.as_str()),
 	);
-	made.extend(directories(
-		&launch.plugin_data,
-		data.unwrap_or_default()
-			.iter()
-			.map(|file| file.path.as_str()),
-	));
+	if let Some(data) = data {
+		made.extend(directories(
+			&launch.plugin_data,
+			data.iter().map(|file| file.path.as_str()),
+		));
+	}
 	script.push_str(" && mkdir -p --");
 	for directory in &made {
 		script.push(' ');

@@ -373,17 +373,13 @@ impl ToolContract {
 	/// A tool of an Agent Plugin's stdio server. It runs in the Run's Execution Pod, bounded by
 	/// the `mcp_stdio` group's Catalog Approval and the Scratch Space's allowed hosts like the
 	/// shell, so it needs no Tool call approval; it stays Unsafe, so an uncertain call is
-	/// reconciled and never replayed (ADR 0073). Like the shell it needs the Agent's shell
-	/// capability.
+	/// reconciled and never replayed (ADR 0073). Like a group-bound shell it carries no core
+	/// permission: the group's approval decides availability.
 	pub fn agent_plugin_stdio(identity: AgentPluginTool) -> Self {
 		Self {
 			provider_owned: false,
 			identity: ToolIdentity::AgentPlugin(identity),
-			authorization: ToolAuthorization {
-				flag: None,
-				core: Some(CorePermission::Shell),
-				requirements: vec![],
-			},
+			authorization: ToolAuthorization::none(),
 			behavior: external_behavior(ToolEffect::Unsafe, false),
 			disclosure: DisclosureBoundary::Local,
 			remote_exposure: false,

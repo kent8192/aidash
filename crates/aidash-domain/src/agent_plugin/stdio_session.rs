@@ -28,11 +28,11 @@ pub const DATA_INVALID_PATH: &str = "plugin_data_invalid_path";
 /// never spliced into the script, so no plugin text is parsed by the shell.
 const IN_DIRECTORY: &str = r#"mkdir -p "$1" && cd "$1" || exit 127; shift; exec "$@""#;
 
-/// The built-in operation of the `mcp_stdio` group. Its Catalog Approval and `tool.invoke`
-/// are checked at every stdio tool call, as a bound shell's are.
-pub fn mcp_stdio_operation() -> EntityRef {
+/// The `mcp_stdio` group's bundle, whose Catalog Approval lets stdio servers run. It is read at
+/// every session start and every call.
+pub fn mcp_stdio_bundle() -> EntityRef {
 	EntityRef {
-		id: "aidash.mcp_stdio".into(),
+		id: "aidash.bundle.mcp_stdio".into(),
 		version: "1.0.0".into(),
 	}
 }

@@ -12,22 +12,11 @@ use aidash_application::{
 	ports::tools::{StdioPluginHost, StdioPod},
 	tenancy::TenancyScope,
 };
-use aidash_domain::{
-	agent_plugin::{PluginFile, PluginName},
-	registry::EntityRef,
-};
+use aidash_domain::agent_plugin::{PluginFile, PluginName, stdio_session::mcp_stdio_bundle};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// The Catalog Approval that lets stdio servers run: the `mcp_stdio` group's bundle.
-pub(crate) fn mcp_stdio_bundle() -> EntityRef {
-	EntityRef {
-		id: "aidash.bundle.mcp_stdio".into(),
-		version: "1.0.0".into(),
-	}
-}
 
 pub(crate) const DATA_STORE_UNAVAILABLE: &str = "plugin_data_store_unavailable";
 
@@ -85,6 +74,27 @@ impl StdioPluginHost for StdioHost {
 		.await
 		.map_err(Into::into);
 		Ok(access.finish(result).await?)
+	}
+
+	async fn admit_call(&self) -> Result<()> {
+		if !self.store.capabilities.0.admission {
+			return Err(Error::Refused("CAPABILITIES_DISABLED".into()));
+		}
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = crate::apps::execution::repositories::subnodes::require_writable(
+			access.tx.native_mut(),
+			self.run.workspace_id,
+		)
+		.await;
+		let tenant = access.identity.tenant.clone();
+		access.finish(result).await?;
+		aidash_application::usage::require(
+			self.store.admission.as_ref(),
+			&tenant,
+			aidash_application::usage::Work::SandboxedTool,
+		)
+		.await
 	}
 
 	async fn plugin_files(&self, digest: &str) -> Result<Vec<PluginFile>> {

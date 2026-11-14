@@ -2063,7 +2063,7 @@ mod agent_plugin_tools {
 		assert!(matches!(own.identity, ToolIdentity::AgentPlugin(_)));
 	}
 
-	/// A Run that pinned `search` from the stdio server `docs`, by an Agent with the shell.
+	/// A Run that pinned `search` from the stdio server `docs`.
 	fn stdio_setup(
 		repository: &mut Repository,
 		agent: &mut AgentConfig,
@@ -2085,7 +2085,6 @@ mod agent_plugin_tools {
 			&BTreeSet::new(),
 		);
 		agent.agent_plugins = vec![reference.clone()];
-		agent.core_capabilities.shell = true;
 		repository.plugin_tools = Some(tools);
 		(
 			ToolContract::agent_plugin_stdio(identity(&reference)),
@@ -2095,7 +2094,7 @@ mod agent_plugin_tools {
 
 	#[rstest]
 	#[tokio::test]
-	async fn a_stdio_tool_gets_the_shells_checks_without_an_approval(
+	async fn a_stdio_tool_needs_no_approval_but_checks_the_unapproved_call_deny(
 		mut repository: Repository,
 		run: RunMetadata,
 		mut agent: AgentConfig,
@@ -2107,10 +2106,11 @@ mod agent_plugin_tools {
 			.unwrap();
 
 		assert!(!contract.behavior.tool_call_approval);
+		assert!(contract.authorization.core.is_none());
 		let calls = repository.calls();
-		assert_eq!(calls[1], "catalog:aidash.mcp_stdio:tool.invoke");
-		assert!(calls[2].starts_with("denied:agent-plugin:acme/docs/search:"));
-		assert!(calls[2].ends_with(CALL_UNAPPROVED));
+		assert_eq!(calls.len(), 3, "{calls:?}");
+		assert!(calls[1].starts_with("denied:agent-plugin:acme/docs/search:"));
+		assert!(calls[1].ends_with(CALL_UNAPPROVED));
 	}
 
 	#[rstest]
@@ -2132,28 +2132,6 @@ mod agent_plugin_tools {
 			matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::CallUnapprovedDeny),
 			"{result:?}"
 		);
-	}
-
-	#[rstest]
-	#[tokio::test]
-	async fn a_stdio_call_needs_the_mcp_stdio_approval_and_the_shell_capability(
-		mut repository: Repository,
-		run: RunMetadata,
-		mut agent: AgentConfig,
-	) {
-		let (contract, input) = stdio_setup(&mut repository, &mut agent);
-		agent.core_capabilities.shell = false;
-		let no_shell = super::super::authorize(&repository, &run, &agent, &input, &contract).await;
-		agent.core_capabilities.shell = true;
-		repository.catalog_denial = Some(Error::Forbidden);
-		let unapproved =
-			super::super::authorize(&repository, &run, &agent, &input, &contract).await;
-
-		assert!(
-			matches!(no_shell, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::CoreCapability),
-			"{no_shell:?}"
-		);
-		assert!(unapproved.is_err(), "{unapproved:?}");
 	}
 
 	#[rstest]

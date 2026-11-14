@@ -223,6 +223,7 @@ struct Host {
 	saved: Mutex<Option<Vec<PluginFile>>>,
 	saves: Mutex<u32>,
 	not_saved: Mutex<Vec<String>>,
+	refusal: Mutex<Option<String>>,
 }
 
 impl Host {
@@ -233,6 +234,7 @@ impl Host {
 			saved: Mutex::new(None),
 			saves: Mutex::new(0),
 			not_saved: Mutex::new(Vec::new()),
+			refusal: Mutex::new(None),
 		})
 	}
 }
@@ -256,6 +258,12 @@ impl StdioPluginHost for Host {
 	}
 	async fn approved(&self) -> Result<bool> {
 		Ok(*self.approved.lock().unwrap())
+	}
+	async fn admit_call(&self) -> Result<()> {
+		match self.refusal.lock().unwrap().clone() {
+			Some(code) => Err(Error::Refused(code)),
+			None => Ok(()),
+		}
 	}
 	async fn plugin_files(&self, _: &str) -> Result<Vec<PluginFile>> {
 		Ok(vec![
@@ -388,6 +396,7 @@ async fn calls_reuse_the_listed_session_and_map_error_results() {
 	// Arrange
 	let (pod, _, _, sessions) = setup();
 	sessions.list(run(), &server(), &node()).await.unwrap();
+	pod.answer(Ok(json!({"content": [{"type": "text", "text": "ok"}]})));
 	pod.answer(Ok(
 		json!({"isError": true, "content": [{"type": "text", "text": "no"}]}),
 	));
@@ -635,4 +644,28 @@ async fn data_over_the_cap_keeps_the_previous_version() {
 		host.not_saved.lock().unwrap().clone(),
 		[stdio_session::DATA_TOO_LARGE]
 	);
+}
+
+#[tokio::test]
+async fn a_call_the_shell_gates_refuse_never_reaches_the_server() {
+	// Arrange
+	let (pod, host, _, sessions) = setup();
+	*host.refusal.lock().unwrap() = Some("CAPABILITIES_DISABLED".into());
+
+	// Act
+	let result = sessions
+		.call(
+			run(),
+			&server(),
+			&node(),
+			"search",
+			&digest(),
+			json!({}),
+			"k1",
+		)
+		.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::Refused(code)) if code == "CAPABILITIES_DISABLED"));
+	assert!(pod.calls().is_empty());
 }
