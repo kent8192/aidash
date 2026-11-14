@@ -944,6 +944,8 @@ rewritten until the migration is reapplied.
 
 `registry/0069_remove_package_index_draft_bindings` removes draft Bindings to the removed package indexes `core.npm` and `core.pypi` (#745). Rewriting a JSON array inside `agent_drafts.entry` is a one-time data change Reinhardt has no typed operation for, so it is SQL; reversal leaves the drafts as they are. Registered Agent versions keep their Bindings.
 
+`registry/0070_execution_pod_tools` admits the built-in descriptors of the Execution Pod groups (#745): `file_save`, `file_remove` and `file_copy` of `core.scratch@1`, `process_list`, `process_log` and `process_stop` of `core.processes@1`, and `mcp_stdio` of `core.mcp_stdio@1`, all Sandboxed and without a lifecycle. Without it every Tenant creation fails the `registry_tool_config` check. Its SQL keeps the previous function body and delegates to it; PostgreSQL function bodies are DDL that Reinhardt migrations cannot express. Reversal refuses while definitions use these providers.
+
 `identity/0073_remove_package_index_approvals` deletes the Catalog Approvals of `core.npm` and `core.pypi` (#745). A one-time data deletion Reinhardt cannot express as a typed operation; reversal does not restore them.
 
 `execution/0129_egress_run_revocations` records revoked Runs and adds Run attribution and timing to scope connections. `0130_egress_run_revocations_rls` adds the forced Tenant policy; raw SQL is required because Reinhardt migrations do not express row-level policies.
