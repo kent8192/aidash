@@ -15,6 +15,7 @@ fn assistant(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	}
 }
 
@@ -36,6 +37,287 @@ fn context(events: Vec<ContextEvent>) -> Context {
 		context.push(event);
 	}
 	context
+}
+
+/// Messages of one step's request, recording its state first as the Harness
+/// does before each step.
+fn request_messages(context: &mut Context, pinned: &Value) -> Vec<Value> {
+	record_step_state(context, pinned);
+	let request = crate::provider::ModelRequest {
+		instructions: "Work on the task".into(),
+		context: crate::provider::ModelContext::Native(native_context(context, pinned)),
+		..Default::default()
+	};
+	request.input_body()["messages"].as_array().unwrap().clone()
+}
+
+#[test]
+fn native_turns_preserve_the_serialized_message_prefix() {
+	let pinned = json!({"identity": {"agent": "a"}, "agent_state": {"phase": "thinking"}});
+	let mut run = context(vec![]);
+	let first = request_messages(&mut run, &pinned);
+	run.push(assistant(1, "Reading", &["a"]));
+	run.push(tool("a"));
+	let next = request_messages(&mut run, &pinned);
+	for (before, after) in first.iter().zip(&next) {
+		assert_eq!(
+			serde_json::to_vec(before).unwrap(),
+			serde_json::to_vec(after).unwrap()
+		);
+	}
+	assert!(next.len() >= first.len());
+	let changed = request_messages(
+		&mut run,
+		&json!({"identity": {"agent": "a"}, "agent_state": {"phase": "waiting"}}),
+	);
+	assert_eq!(&changed[..next.len()], next.as_slice());
+	assert_eq!(changed.len(), next.len() + 1);
+}
+
+#[test]
+fn unchanged_step_state_does_not_add_another_message() {
+	let pinned = json!({"agent_state": {"phase": "thinking"}});
+	let mut run = context(vec![]);
+	let first = request_messages(&mut run, &pinned);
+	run.push(assistant(1, "Reading", &["a"]));
+	run.push(tool("a"));
+	let next = request_messages(&mut run, &pinned);
+	assert_eq!(next.len(), first.len() + 2);
+	assert_eq!(next.last().unwrap()["role"], "tool");
+}
+
+#[test]
+fn recording_an_unchanged_state_appends_nothing() {
+	let pinned = json!({"agent_state": {"phase": "thinking"}});
+	let mut run = context(vec![]);
+	assert!(record_step_state(&mut run, &pinned));
+	run.push(assistant(1, "Reading", &["a"]));
+	run.push(tool("a"));
+	assert!(!record_step_state(&mut run, &pinned));
+	assert!(!record_step_state(&mut run, &pinned));
+	assert_eq!(
+		run.events()
+			.filter(|event| matches!(event, ContextEvent::StepState { .. }))
+			.count(),
+		1
+	);
+	// Evidence keys never reach the state.
+	assert!(!record_step_state(
+		&mut run,
+		&json!({"agent_state": {"phase": "thinking"}, "workspace": {"id": "w"}})
+	));
+}
+
+#[test]
+fn a_pending_state_sends_the_bytes_it_is_recorded_with() {
+	let pinned = json!({
+		"agent_state": {"phase": "thinking"},
+		"turn_instructions": ["Read first."],
+		HARNESS_REQUIREMENTS: {"run_message_read_instruction": "Read m1."},
+	});
+	let mut run = context(vec![
+		assistant(1, "", &["a"]),
+		tool("a"),
+		ContextEvent::RunMessageReadRequired {
+			message_ids: vec![uuid::Uuid::from_u128(1)],
+		},
+	]);
+	let pending = request_messages_unrecorded(&run, &pinned);
+	assert!(record_step_state(&mut run, &pinned));
+	let recorded = request_messages_unrecorded(&run, &pinned);
+	assert_eq!(pending, recorded);
+	let state = recorded.last().unwrap();
+	assert_eq!(state["role"], "user");
+	let harness: Envelope =
+		serde_json::from_str(state["content"][1]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(harness.trust, Trust::Aidash);
+	assert_eq!(
+		harness.content["markers"][0]["kind"],
+		"run_message_read_required"
+	);
+	let data: Envelope =
+		serde_json::from_str(state["content"][0]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(data.trust, Trust::Data);
+	assert_eq!(data.content["turn_instructions"], json!(["Read first."]));
+	assert!(data.content.get("markers").is_none());
+}
+
+fn request_messages_unrecorded(context: &Context, pinned: &Value) -> Vec<Value> {
+	let request = crate::provider::ModelRequest {
+		instructions: "Work on the task".into(),
+		context: crate::provider::ModelContext::Native(native_context(context, pinned)),
+		..Default::default()
+	};
+	request.input_body()["messages"].as_array().unwrap().clone()
+}
+
+#[test]
+fn the_step_limit_notice_changes_only_at_80_and_90_percent() {
+	let notices = (0..20)
+		.map(|step| step_limit_notice(step, 20))
+		.collect::<Vec<_>>();
+	assert!(notices[..16].iter().all(Option::is_none));
+	assert!(
+		notices[16..18]
+			.iter()
+			.all(|notice| notice.is_some_and(|text| text.starts_with("80%")))
+	);
+	assert!(
+		notices[18..]
+			.iter()
+			.all(|notice| notice.is_some_and(|text| text.starts_with("90%")))
+	);
+	// The state changes, and so is recorded, exactly three times in 20 steps.
+	let mut run = context(vec![]);
+	let mut recorded = 0;
+	for step in 0..20 {
+		let mut state = json!({"phase": "thinking"});
+		if let Some(notice) = step_limit_notice(step, 20) {
+			state["step_limit"] = json!(notice);
+		}
+		recorded += usize::from(record_step_state(&mut run, &json!({"agent_state": state})));
+		run.push(assistant(i64::from(step), "", &["a"]));
+		run.push(tool("a"));
+	}
+	assert_eq!(recorded, 3);
+	assert_eq!(step_limit_notice(0, 0), None);
+}
+
+fn workspace(tasks: &[&str]) -> Value {
+	json!({
+		"view": "workspace_observation_v1",
+		"tasks": tasks.iter().map(|title| json!({"title": title})).collect::<Vec<_>>(),
+		"pages": {"tasks": {"total": tasks.len()}},
+	})
+}
+
+fn evidence(context: &Context) -> Vec<Vec<Value>> {
+	context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Evidence { items } => {
+				Some(items.iter().map(|item| item.content.clone()).collect())
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+#[test]
+fn a_delta_appends_only_new_evidence() {
+	let mut run = context(vec![]);
+	let mut first = json!({"workspace": workspace(&["a", "b"])});
+	assert_eq!(record_evidence(&mut run, &mut first, usize::MAX), 0);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut next = json!({"workspace": workspace(&["a", "b", "c"]), "run_messages": [{"seq": 1}]});
+	record_evidence(&mut run, &mut next, usize::MAX);
+	assert_eq!(
+		evidence(&run),
+		[
+			vec![
+				json!({"title": "a"}),
+				json!({"title": "b"}),
+				json!("workspace_observation_v1")
+			],
+			vec![json!({"title": "c"}), json!({"seq": 1})],
+		]
+	);
+	// The page counts travel in the step state, so nothing trails (#942).
+	let native = native_context(&run, &next);
+	assert_eq!(native.volatile, "{}");
+	assert_eq!(
+		shape(&native.history),
+		[
+			"data:Evidence",
+			"assistant[x]",
+			"tool:x",
+			"data:Evidence",
+			"state"
+		]
+	);
+}
+
+#[test]
+fn evidence_history_already_holds_is_not_appended_again() {
+	let mut run = context(vec![]);
+	let mut pinned = json!({"run_messages": [{"seq": 1}, {"seq": 1}]});
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	// Duplicates within one step are admitted once.
+	assert_eq!(evidence(&run), [vec![json!({"seq": 1})]]);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut again = json!({"run_messages": [{"seq": 1}], "workspace": workspace(&[])});
+	record_evidence(&mut run, &mut again, usize::MAX);
+	assert_eq!(evidence(&run).len(), 2);
+	assert_eq!(evidence(&run)[1], [json!("workspace_observation_v1")]);
+	let mut unchanged = again.clone();
+	record_evidence(&mut run, &mut unchanged, usize::MAX);
+	assert_eq!(evidence(&run).len(), 2);
+}
+
+#[test]
+fn evidence_refused_at_admission_never_reaches_history_or_the_request() {
+	let mut run = context(vec![]);
+	let large = "x".repeat(400);
+	let mut pinned = json!({
+		"workspace": workspace(&["small", &large]),
+		"run_messages": [{"content": "y".repeat(400)}],
+	});
+	let refused = record_evidence(&mut run, &mut pinned, 100);
+	assert_eq!(refused, 1);
+	let recorded = evidence(&run).concat();
+	assert!(recorded.contains(&json!({"title": "small"})));
+	// Run messages are admitted whatever the quota.
+	assert!(recorded.contains(&json!({"content": "y".repeat(400)})));
+	assert!(!serde_json::to_string(&run).unwrap().contains(&large));
+	let messages = request_messages_unrecorded(&run, &pinned);
+	assert!(!serde_json::to_string(&messages).unwrap().contains(&large));
+	// A later step with room admits it.
+	let mut later = json!({"workspace": workspace(&["small", &large])});
+	assert_eq!(record_evidence(&mut run, &mut later, usize::MAX), 0);
+	assert_eq!(evidence(&run).last().unwrap(), &[json!({"title": large})]);
+}
+
+#[test]
+fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
+	let mut run = context(vec![assistant(1, "", &["x"]), tool("x")]);
+	let mut pinned = json!({
+		"agent_state": {"phase": "thinking"},
+		"workspace": workspace(&["a"]),
+		"run_messages": [{"seq": 4, "content": "hi"}],
+	});
+	let pending = request_messages_unrecorded(&run, &pinned);
+	record_step_state(&mut run, &pinned);
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	assert_eq!(request_messages_unrecorded(&run, &pinned), pending);
+	// No trailing message: the evidence envelope ends the request (#942).
+	let envelope: Envelope =
+		serde_json::from_str(pending[pending.len() - 1]["content"].as_str().unwrap()).unwrap();
+	assert_eq!(envelope.source, Source::Evidence);
+	assert_eq!(envelope.trust, Trust::Data);
+	assert_eq!(
+		envelope.content,
+		json!({
+			"run_messages": [{"seq": 4, "content": "hi"}],
+			"workspace": {"tasks": [{"title": "a"}], "view": "workspace_observation_v1"},
+		})
+	);
+}
+
+#[test]
+fn delivered_evidence_leaves_out_offloaded_items() {
+	let mut run = context(vec![]);
+	let mut pinned = json!({"workspace": workspace(&["a", "b"])});
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	let ContextEvent::Evidence { items } = &mut run.history[0].event else {
+		panic!("expected evidence")
+	};
+	items[1].content = ContextEvent::elided_result("evidence");
+	assert_eq!(
+		delivered_evidence(&run, &pinned, "workspace").unwrap()["tasks"],
+		json!([{"title": "a"}, null])
+	);
 }
 
 #[test]
@@ -98,7 +380,9 @@ fn shape(history: &[NativeMessage]) -> Vec<String> {
 			NativeMessage::ProviderActivity { .. } => "provider_activity".into(),
 			NativeMessage::Human { .. } => "human".into(),
 			NativeMessage::Data { envelope } => format!("data:{:?}", envelope.source),
-			NativeMessage::Assistant { tool_calls, text } => format!(
+			NativeMessage::Assistant {
+				tool_calls, text, ..
+			} => format!(
 				"assistant[{}]{}",
 				tool_calls
 					.iter()
@@ -109,8 +393,23 @@ fn shape(history: &[NativeMessage]) -> Vec<String> {
 					.map_or(String::new(), |text| format!(":{text}"))
 			),
 			NativeMessage::Tool { tool_call_id, .. } => format!("tool:{tool_call_id}"),
+			NativeMessage::StepState { .. } => "state".into(),
 		})
 		.collect()
+}
+
+/// The content of the last step state in a projected history, `null` when
+/// there is none.
+fn last_state(native: &NativeContext) -> Value {
+	native
+		.history
+		.iter()
+		.rev()
+		.find_map(|message| match message {
+			NativeMessage::StepState { state, .. } => Some(state.content.clone()),
+			_ => None,
+		})
+		.unwrap_or(Value::Null)
 }
 
 #[test]
@@ -208,7 +507,7 @@ fn elided_results_keep_their_call_id() {
 }
 
 #[test]
-fn only_markers_since_the_last_turn_reach_the_volatile_part() {
+fn only_markers_since_the_last_turn_reach_the_step_state() {
 	// Arrange
 	let stale = ContextEvent::RunMessageReadRequired {
 		message_ids: vec![uuid::Uuid::from_u128(1)],
@@ -227,12 +526,12 @@ fn only_markers_since_the_last_turn_reach_the_volatile_part() {
 	// Act
 	let native = native_context(&context, &json!({"agent_state": {"step": 2}}));
 	// Assert
-	assert_eq!(shape(&native.history), ["assistant[a]", "tool:a"]);
-	let volatile: Value = serde_json::from_str(&native.volatile).unwrap();
+	assert_eq!(shape(&native.history), ["assistant[a]", "tool:a", "state"]);
 	assert_eq!(
-		volatile,
+		last_state(&native),
 		json!({"agent_state": {"step": 2}, "markers": [current]})
 	);
+	assert_eq!(native.volatile, "{}");
 }
 
 #[test]
@@ -255,18 +554,21 @@ fn a_citation_correction_is_a_marker_until_the_corrected_answer() {
 	let pending = native_context(&pending, &pinned);
 	let corrected = native_context(&corrected, &pinned);
 	// Assert
-	assert_eq!(shape(&pending.history), ["assistant[a]", "tool:a"]);
-	let volatile: Value = serde_json::from_str(&pending.volatile).unwrap();
+	assert_eq!(shape(&pending.history), ["assistant[a]", "tool:a", "state"]);
 	assert_eq!(
-		volatile,
+		last_state(&pending),
 		json!({"agent_state": {"step": 3}, "markers": [correction]})
 	);
 	assert_eq!(
 		shape(&corrected.history),
-		["assistant[a]", "tool:a", "assistant[]:Corrected answer"]
+		[
+			"assistant[a]",
+			"tool:a",
+			"assistant[]:Corrected answer",
+			"state"
+		]
 	);
-	let volatile: Value = serde_json::from_str(&corrected.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&corrected), pinned);
 }
 
 #[test]
@@ -294,13 +596,11 @@ fn a_citation_correction_survives_turns_that_gather_evidence() {
 	let answered = native_context(&answered, &pinned);
 	// Assert: the tool-call turn answers the read marker but not the
 	// correction; the answer without calls answers both.
-	let volatile: Value = serde_json::from_str(&gathering.volatile).unwrap();
 	assert_eq!(
-		volatile,
+		last_state(&gathering),
 		json!({"agent_state": {"step": 4}, "markers": [correction]})
 	);
-	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&answered), pinned);
 }
 
 #[test]
@@ -335,13 +635,11 @@ fn the_unassigned_notice_survives_turns_that_delegate_some_of_the_tasks() {
 	let answered = native_context(&answered, &pinned);
 	// Assert: the notice stays a marker, never history, until an answer
 	// without calls.
-	let volatile: Value = serde_json::from_str(&delegating.volatile).unwrap();
 	assert_eq!(
-		volatile,
+		last_state(&delegating),
 		json!({"agent_state": {"step": 4}, "markers": [notice]})
 	);
-	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&answered), pinned);
 }
 
 #[test]
@@ -379,16 +677,15 @@ fn a_completion_repair_survives_turns_that_repair_the_files() {
 			"assistant[a]",
 			"tool:a",
 			"assistant[b]:Fixing the failing test.",
-			"tool:b"
+			"tool:b",
+			"state"
 		]
 	);
-	let volatile: Value = serde_json::from_str(&repairing.volatile).unwrap();
 	assert_eq!(
-		volatile,
+		last_state(&repairing),
 		json!({"agent_state": {"step": 5}, "markers": [repair]})
 	);
-	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
-	assert_eq!(volatile, pinned);
+	assert_eq!(last_state(&answered), pinned);
 }
 
 #[test]
@@ -404,10 +701,9 @@ fn a_turn_that_renders_nothing_answers_no_marker() {
 	// Act
 	let native = native_context(&context, &pinned);
 	// Assert
-	assert!(native.history.is_empty());
-	let volatile: Value = serde_json::from_str(&native.volatile).unwrap();
+	assert_eq!(shape(&native.history), ["state"]);
 	assert_eq!(
-		volatile,
+		last_state(&native),
 		json!({"agent_state": {"step": 2}, "markers": [marker]})
 	);
 }
@@ -486,7 +782,9 @@ fn stable_sources_become_enveloped_attachments_in_send_order() {
 	);
 	assert_eq!(native.attachments[1].revision, Some(7));
 	assert!(native.attachments.iter().all(|e| e.trust == Trust::Data));
-	assert_eq!(native.volatile, r#"{"workspace":{"workspace_id":"w"}}"#);
+	// The workspace is evidence, appended to history (#942).
+	assert_eq!(native.volatile, "{}");
+	assert_eq!(shape(&native.history), ["human", "data:Evidence"]);
 }
 
 #[test]
@@ -495,6 +793,7 @@ fn the_invariant_rejects_partial_turns_and_orphan_results() {
 		NativeMessage::Assistant {
 			text: None,
 			tool_calls: vec![call("a"), call("b")],
+			reasoning: None,
 		},
 		NativeMessage::Tool {
 			tool_call_id: "a".into(),
@@ -530,7 +829,7 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 	]);
 	let native = native_context(
 		&context,
-		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}}),
+		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}, "semantic_memory": {"id": "w"}}),
 	);
 	// Act
 	let body = request(native, false).input_body();
@@ -549,6 +848,7 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 			"tool",
 			"tool",
 			"user",
+			"user",
 			"user"
 		]
 	);
@@ -565,7 +865,11 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 	);
 	assert_eq!(
 		messages[6]["content"],
-		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"agent_state":{"step":1}}}"#
+		r#"{"source":"step","provenance":{"scope":"step"},"revision":null,"trust":"data","content":{"agent_state":{"step":1}}}"#
+	);
+	assert_eq!(
+		messages[7]["content"],
+		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"semantic_memory":{"id":"w"}}}"#
 	);
 	assert!(body.to_string().find("cache_control").is_none());
 }
@@ -574,7 +878,10 @@ fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
 fn breakpoints_mark_system_and_the_last_history_message_only() {
 	// Arrange
 	let context = context(vec![assistant(1, "", &["a"]), tool("a")]);
-	let native = native_context(&context, &json!({"task": {"id": "t"}}));
+	let native = native_context(
+		&context,
+		&json!({"task": {"id": "t"}, "semantic_memory": {"id": "w"}}),
+	);
 	// Act
 	let body = request(native, true).input_body();
 	// Assert
@@ -614,6 +921,7 @@ fn a_partial_turn_is_rejected_before_any_request_is_sent() {
 		history: vec![NativeMessage::Assistant {
 			text: None,
 			tool_calls: vec![call("a")],
+			reasoning: None,
 		}],
 		volatile: "{}".into(),
 		harness: None,
@@ -689,4 +997,468 @@ fn media_labels_are_enveloped_as_data() {
 	assert_eq!(envelope.source, Source::Step);
 	assert_eq!(envelope.content, json!(label));
 	assert_eq!(parts[2]["type"], "image_url");
+}
+
+fn reasoned(
+	epoch: i64,
+	calls: &[&str],
+	reasoning: crate::provider::reasoning::Reasoning,
+) -> ContextEvent {
+	let ContextEvent::Assistant {
+		provider_activity,
+		epoch,
+		text,
+		calls,
+		..
+	} = assistant(epoch, "", calls)
+	else {
+		unreachable!()
+	};
+	ContextEvent::Assistant {
+		provider_activity,
+		epoch,
+		text,
+		calls,
+		reasoning: Some(reasoning),
+	}
+}
+
+fn chat_details(text: &str) -> crate::provider::reasoning::Reasoning {
+	crate::provider::reasoning::Reasoning::ChatDetails {
+		details: vec![
+			json!({"type":"reasoning.text","text":text,"signature":null,"format":"google-gemini-v1","index":0}),
+			json!({"type":"reasoning.encrypted","data":format!("sig-{text}"),"id":"call","format":"google-gemini-v1","index":1}),
+		],
+	}
+}
+
+/// The Chat messages of a Native request for `context`, as sent.
+fn sent_messages(context: &Context) -> Vec<Value> {
+	// Every step reloads its Run, so render from a serde round trip.
+	let context: Context = serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+	crate::provider::ModelRequest {
+		context: crate::provider::ModelContext::Native(native_context(&context, &Value::Null)),
+		..Default::default()
+	}
+	.input_body()["messages"]
+		.as_array()
+		.unwrap()
+		.clone()
+}
+
+/// Recorded reasoning goes back on its assistant message unchanged, and every
+/// message before step N's volatile message is resent byte for byte at step
+/// N+1, reasoning included (#942).
+#[test]
+fn recorded_reasoning_is_resent_unchanged_and_each_step_extends_the_last() {
+	let mut context = context(vec![reasoned(1, &["a"], chat_details("first")), tool("a")]);
+	let step_one = sent_messages(&context);
+	context.push(reasoned(2, &["b"], chat_details("second")));
+	context.push(tool("b"));
+	let step_two = sent_messages(&context);
+
+	let assistants = step_two
+		.iter()
+		.filter(|message| message["role"] == "assistant")
+		.collect::<Vec<_>>();
+	let crate::provider::reasoning::Reasoning::ChatDetails { details } = chat_details("first")
+	else {
+		unreachable!()
+	};
+	assert_eq!(assistants[0]["reasoning_details"], json!(details));
+	assert_eq!(assistants.len(), 2);
+	let sent = |messages: &[Value]| serde_json::to_string(messages).unwrap();
+	// Everything step one sent through its last tool result is resent as is;
+	// the next turn follows with its own reasoning. Only a step state that
+	// was never recorded may trail step one.
+	let kept = step_one
+		.iter()
+		.rposition(|message| message["role"] == "tool")
+		.unwrap()
+		+ 1;
+	assert!(step_one.len() - kept <= 1);
+	assert_eq!(sent(&step_one[..kept]), sent(&step_two[..kept]));
+	assert_eq!(step_two[kept]["role"], "assistant");
+	assert!(step_two[kept]["reasoning_details"].is_array());
+}
+
+/// A turn whose calls did not all run still sends the reasoning that produced
+/// it whole: it is the provider's output, and only the provider may judge it.
+#[test]
+fn a_partly_rendered_turn_keeps_its_whole_reasoning() {
+	let context = context(vec![
+		reasoned(1, &["a", "deferred"], chat_details("both")),
+		tool("a"),
+	]);
+	let messages = sent_messages(&context);
+	let assistant = messages
+		.iter()
+		.find(|message| message["role"] == "assistant")
+		.unwrap();
+	assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 1);
+	assert_eq!(assistant["reasoning_details"].as_array().unwrap().len(), 2);
+}
+
+/// Responses reasoning items precede the turn's output in a Responses body
+/// and never reach a Chat body.
+#[test]
+fn responses_reasoning_items_lead_their_turn_and_stay_off_chat() {
+	let items = vec![
+		json!({"type":"reasoning","id":"rs_1","encrypted_content":"enc-1","summary":[]}),
+		json!({"type":"reasoning","id":"rs_2","encrypted_content":"enc-2","summary":[]}),
+	];
+	let mut first = assistant(1, "Reading", &["a"]);
+	if let ContextEvent::Assistant { reasoning, .. } = &mut first {
+		*reasoning = Some(crate::provider::reasoning::Reasoning::Responses {
+			items: items.clone(),
+		});
+	}
+	let context = context(vec![first, tool("a")]);
+	let request = crate::provider::ModelRequest {
+		input_format: crate::provider::InputFormat::Responses,
+		context: crate::provider::ModelContext::Native(native_context(&context, &Value::Null)),
+		..Default::default()
+	};
+	let body = crate::provider::responses::input_body(&request, std::iter::empty()).unwrap();
+	let input = body["input"].as_array().unwrap();
+	assert_eq!(input[0..2], items[..]);
+	assert_eq!(input[2]["role"], "assistant");
+	assert_eq!(input[3]["type"], "function_call");
+	assert!(!request.input_body().to_string().contains("enc-1"));
+	// The request estimate counts the replayed items.
+	let mut without = request.clone();
+	if let crate::provider::ModelContext::Native(native) = &mut without.context
+		&& let NativeMessage::Assistant { reasoning, .. } = &mut native.history[0]
+	{
+		*reasoning = None;
+	}
+	assert!(request.byte_estimate().basis > without.byte_estimate().basis + 60);
+}
+
+/// Contexts recorded before #942 have no reasoning field and still load;
+/// turns without reasoning keep their stored and sent bytes.
+#[test]
+fn assistant_events_without_reasoning_load_and_keep_their_shape() {
+	let stored = json!({"kind":"assistant","epoch":1,"text":"Hi","calls":[]});
+	let event: ContextEvent = serde_json::from_value(stored.clone()).unwrap();
+	assert!(matches!(
+		event,
+		ContextEvent::Assistant {
+			reasoning: None,
+			..
+		}
+	));
+	assert_eq!(serde_json::to_value(&event).unwrap(), stored);
+	let messages = sent_messages(&context(vec![event]));
+	assert_eq!(messages[1], json!({"role":"assistant","content":"Hi"}));
+}
+
+/// Once a result is replaced because its content was revoked or expired, no
+/// later turn resends its reasoning, which may quote that content; earlier
+/// turns keep theirs (#942). Signatures and encrypted reasoning are left out,
+/// while plain reasoning text becomes an empty string so routes that require
+/// the field, such as DeepSeek's, still accept the request.
+#[rstest::rstest]
+#[case::revoked(ContextEvent::revoked_result("a"))]
+#[case::expired(ContextEvent::expired_result("a"))]
+fn reasoning_after_a_withheld_result_is_not_resent(#[case] placeholder: Value) {
+	use crate::provider::reasoning::{ChatTextField, Reasoning};
+	let deepseek = |text: &str| Reasoning::ChatText {
+		field: ChatTextField::ReasoningContent,
+		text: text.into(),
+	};
+	let context = context(vec![
+		reasoned(1, &["a"], chat_details("before")),
+		ContextEvent::tool(call("a"), placeholder),
+		reasoned(2, &["b"], chat_details("quotes the evidence")),
+		tool("b"),
+		reasoned(3, &["c"], deepseek("also quotes it")),
+		tool("c"),
+	]);
+	let messages = sent_messages(&context);
+	let assistants = messages
+		.iter()
+		.filter(|message| message["role"] == "assistant")
+		.collect::<Vec<_>>();
+	assert_eq!(assistants.len(), 3);
+	assert!(assistants[0]["reasoning_details"].is_array());
+	assert!(assistants[1].get("reasoning_details").is_none());
+	assert!(assistants[1].get("reasoning").is_none());
+	assert_eq!(assistants[2]["reasoning_content"], "");
+	let sent = serde_json::to_string(&messages).unwrap();
+	assert!(!sent.contains("quotes"));
+	assert!(!sent.contains("sig-quotes"));
+
+	// The same turns resend everything while nothing is withheld.
+	let mut kept = context.clone();
+	kept.history[1].event = tool("a");
+	let sent = serde_json::to_string(&sent_messages(&kept)).unwrap();
+	assert!(sent.contains("sig-quotes the evidence") && sent.contains("also quotes it"));
+}
+
+/// Plain-text `reasoning_details` become an empty `reasoning` string when
+/// withheld, as plain text does.
+#[test]
+fn withheld_plain_text_details_keep_an_empty_reasoning_field() {
+	use crate::provider::reasoning::{ChatTextField, Reasoning};
+	let plain = Reasoning::ChatDetails {
+		details: vec![json!({"type":"reasoning.text","text":"x","format":"unknown","index":0})],
+	};
+	assert_eq!(
+		plain.withheld(),
+		Some(Reasoning::ChatText {
+			field: ChatTextField::Reasoning,
+			text: String::new(),
+		})
+	);
+	assert_eq!(chat_details("signed").withheld(), None);
+	assert_eq!(
+		Reasoning::Responses {
+			items: vec![json!({"type":"reasoning"})]
+		}
+		.withheld(),
+		None
+	);
+}
+
+/// The stored mark withholds reasoning even with no placeholder left in
+/// history, survives serialization, and only ever lowers.
+#[test]
+fn the_withheld_reasoning_mark_persists_and_only_lowers() {
+	let mut context = context(vec![
+		reasoned(1, &["a"], chat_details("before")),
+		tool("a"),
+		reasoned(2, &["b"], chat_details("after")),
+		tool("b"),
+	]);
+	context.reasoning_withheld_from_seq = Some(3);
+	let restored: Context =
+		serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();
+	assert_eq!(restored.reasoning_withheld_from_seq, Some(3));
+	let sent = serde_json::to_string(&sent_messages(&restored)).unwrap();
+	assert!(sent.contains("sig-before") && !sent.contains("sig-after"));
+
+	context.history[1].event = ContextEvent::tool(call("a"), ContextEvent::revoked_result("a"));
+	context.withhold_reasoning_after_withheld_results();
+	assert_eq!(context.reasoning_withheld_from_seq, Some(2));
+	context.history[1].event = tool("a");
+	context.history[3].event = ContextEvent::tool(call("b"), ContextEvent::expired_result("b"));
+	context.withhold_reasoning_after_withheld_results();
+	assert_eq!(context.reasoning_withheld_from_seq, Some(2));
+	let unmarked = serde_json::to_value(crate::context::Context::default()).unwrap();
+	assert!(unmarked.get("reasoning_withheld_from_seq").is_none());
+}
+
+/// Marking also replaces the projection's copy of later reasoning with its
+/// withheld form, so inspection never shows it; earlier turns keep theirs.
+#[test]
+fn marking_replaces_later_reasoning_in_the_projection() {
+	use crate::provider::reasoning::{ChatTextField, Reasoning};
+	let mut context = context(vec![
+		reasoned(1, &["a"], chat_details("before")),
+		ContextEvent::tool(call("a"), ContextEvent::revoked_result("a")),
+		reasoned(2, &["b"], chat_details("after")),
+		tool("b"),
+		reasoned(
+			3,
+			&["c"],
+			Reasoning::ChatText {
+				field: ChatTextField::ReasoningContent,
+				text: "quoted".into(),
+			},
+		),
+		tool("c"),
+	]);
+	context.withhold_reasoning_after_withheld_results();
+	let stored = serde_json::to_string(&context).unwrap();
+	assert!(stored.contains("sig-before"));
+	assert!(!stored.contains("sig-after") && !stored.contains("quoted"));
+	assert!(matches!(
+		&context.history[4].event,
+		ContextEvent::Assistant { reasoning: Some(Reasoning::ChatText { text, .. }), .. } if text.is_empty()
+	));
+}
+
+/// Readers other than the Run's own requests, such as memory extraction of a
+/// Journal range, get events without recorded reasoning.
+#[test]
+fn events_for_other_readers_carry_no_reasoning() {
+	let event = reasoned(1, &["a"], chat_details("private")).without_reasoning();
+	assert!(!serde_json::to_string(&event).unwrap().contains("private"));
+	assert!(matches!(
+		event,
+		ContextEvent::Assistant {
+			reasoning: None,
+			..
+		}
+	));
+}
+
+/// A Workspace whose events are the observing Run's own telemetry plus one
+/// foreign and one run-less event, which stay identical from step to step.
+fn workspace_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::WorkspaceSnapshot {
+	let at = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
+	let event = |sequence: u128, kind: &str, data: Value| crate::Event {
+		sequence: sequence as i64,
+		id: uuid::Uuid::from_u128(1000 + sequence),
+		node: None,
+		workspace_id: None,
+		kind: kind.into(),
+		data,
+		created_at: at,
+	};
+	let mut events = vec![
+		event(
+			1,
+			"task.created",
+			json!({"run_id": uuid::Uuid::from_u128(9)}),
+		),
+		event(2, "workspace.updated", json!({})),
+	];
+	events.extend((0..own_events).map(|n| event(3 + n, "run.thinking", json!({"run_id": own}))));
+	crate::WorkspaceSnapshot {
+		workspace: crate::Workspace {
+			scratch_space_id: uuid::Uuid::nil(),
+			id: uuid::Uuid::from_u128(5),
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
+			title: "title".into(),
+			goal: "goal".into(),
+			state: json!({}),
+			revision: 1,
+			created_at: at,
+		},
+		tasks: vec![],
+		artifacts: vec![],
+		events,
+		messages: vec![],
+	}
+}
+
+fn step_workspace(snapshot: &crate::WorkspaceSnapshot, own: Option<uuid::Uuid>) -> Value {
+	let mut snapshot = snapshot.clone();
+	if let Some(own) = own {
+		crate::context::observation::without_run_events(&mut snapshot, own);
+	}
+	json!({"workspace": crate::context::observation::project(
+		&snapshot,
+		0,
+		crate::context::observation::DEFAULT_LIMIT,
+	)})
+}
+
+#[test]
+fn a_runs_own_workspace_events_never_become_evidence() {
+	// Arrange: each step the Run mints new telemetry of its own (#942).
+	let own = uuid::Uuid::from_u128(1);
+	let first = workspace_with_own_events(own, 3);
+	let second = workspace_with_own_events(own, 6);
+	let mut run = context(vec![]);
+
+	// Act: two steps with the per-step view.
+	let mut pinned = step_workspace(&first, Some(own));
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	let first_volatile = native_context(&run, &pinned).volatile;
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut next = step_workspace(&second, Some(own));
+	let appended = pending_evidence(&run, &next).len();
+	record_evidence(&mut run, &mut next, usize::MAX);
+
+	// Assert: no own event is recorded, the second step appends nothing and
+	// its volatile tail matches the first step's.
+	let recorded = evidence(&run).concat();
+	assert!(
+		recorded.iter().all(|item| item["kind"] != "run.thinking"),
+		"{recorded:?}"
+	);
+	assert_eq!(appended, 0);
+	assert_eq!(evidence(&run).len(), 1);
+	assert_eq!(native_context(&run, &next).volatile, first_volatile);
+
+	// Control: the unfiltered view appends the new own events every step.
+	let mut unfiltered = context(vec![]);
+	let mut pinned = step_workspace(&first, None);
+	record_evidence(&mut unfiltered, &mut pinned, usize::MAX);
+	unfiltered.push(assistant(1, "", &["x"]));
+	unfiltered.push(tool("x"));
+	assert_eq!(
+		pending_evidence(&unfiltered, &step_workspace(&second, None)).len(),
+		3
+	);
+}
+
+#[test]
+fn an_unchanged_step_sends_no_trailing_message() {
+	// Arrange: the per-step view's page counts and an absent memory source.
+	// Any trailing message drops out of the cached prefix at the next step,
+	// because the step's assistant turn takes its place (#942).
+	let own = uuid::Uuid::from_u128(1);
+	let workspace = workspace_with_own_events(own, 3);
+	let mut run = context(vec![]);
+	let mut pinned = step_workspace(&workspace, Some(own));
+	pinned["memory"] = Value::Null;
+
+	// Act: one step, then the next with the same counts.
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	record_step_state(&mut run, &pinned);
+	let first = native_context(&run, &pinned);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut next = pinned.clone();
+	record_evidence(&mut run, &mut next, usize::MAX);
+	let recorded = record_step_state(&mut run, &next);
+	let second = native_context(&run, &next);
+
+	// Assert: the counts travel in the recorded step state, nothing trails,
+	// and the second step records no new state.
+	assert_eq!(first.volatile, "{}");
+	assert_eq!(second.volatile, "{}");
+	assert!(!recorded);
+	let states = run
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::StepState { state, .. } => Some(state.clone()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(states.len(), 1);
+	assert_eq!(
+		states[0]["workspace_pages"]["events"]["total"],
+		json!(2),
+		"{states:?}"
+	);
+}
+
+#[test]
+fn changed_page_counts_record_a_new_step_state() {
+	// Arrange: a foreign event arrives between two steps.
+	let own = uuid::Uuid::from_u128(1);
+	let mut run = context(vec![]);
+	let mut pinned = step_workspace(&workspace_with_own_events(own, 3), Some(own));
+	record_evidence(&mut run, &mut pinned, usize::MAX);
+	record_step_state(&mut run, &pinned);
+	run.push(assistant(1, "", &["x"]));
+	run.push(tool("x"));
+	let mut changed = workspace_with_own_events(own, 3);
+	let mut arrived = changed.events[0].clone();
+	arrived.sequence = 99;
+	arrived.id = uuid::Uuid::from_u128(1099);
+	changed.events.push(arrived);
+	let mut next = step_workspace(&changed, Some(own));
+
+	// Act
+	record_evidence(&mut run, &mut next, usize::MAX);
+	let recorded = record_step_state(&mut run, &next);
+
+	// Assert: the new counts are recorded once, as a new step state.
+	assert!(recorded);
+	let last = run
+		.events()
+		.rev()
+		.find_map(|event| match event {
+			ContextEvent::StepState { state, .. } => Some(state.clone()),
+			_ => None,
+		})
+		.expect("a step state");
+	assert_eq!(last["workspace_pages"]["events"]["total"], json!(3));
 }

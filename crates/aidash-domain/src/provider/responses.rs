@@ -2,7 +2,8 @@
 //!
 //! This contains only model-visible input: adapters add model selection,
 //! transport controls and the Tenant Cache Salt. The Native IR keeps complete
-//! observable turns; provider reasoning is never retained or replayed (ADR 0083).
+//! observable turns, and each turn's recorded reasoning items are replayed
+//! unchanged before its output (#942, amending ADR 0083).
 use super::{ContentPart, ModelRequest};
 use crate::{Error, Result};
 use serde_json::{Map, Value, json};
@@ -84,6 +85,15 @@ fn build(
 		}
 		match message["role"].as_str() {
 			Some(role @ ("user" | "assistant")) => {
+				// Recorded reasoning items precede the output of their turn,
+				// in the order the provider returned them.
+				input.extend(
+					message[super::reasoning::RESPONSES_ITEMS_KEY]
+						.as_array()
+						.into_iter()
+						.flatten()
+						.cloned(),
+				);
 				// A call-only assistant turn has no text message. Each call is
 				// still an independent input item, followed by its result.
 				if !message["content"].is_null() {
@@ -195,6 +205,7 @@ mod tests {
 						name: "search".into(),
 						arguments: json!({"q":"x"}),
 					}],
+					reasoning: None,
 				}],
 				volatile: String::new(),
 				harness: None,

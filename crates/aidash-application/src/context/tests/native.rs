@@ -34,6 +34,7 @@ fn turns(turns: usize) -> Context {
 				String::new()
 			},
 			calls: ids.to_vec(),
+			reasoning: None,
 		});
 		for id in &ids {
 			context.push(ContextEvent::tool(call(id), json!("r".repeat(600))));
@@ -129,6 +130,7 @@ fn a_turn_that_renders_nothing_takes_no_protected_slot() {
 		epoch: 10,
 		text: String::new(),
 		calls: vec!["deferred".into()],
+		reasoning: None,
 	});
 	context.journal.inferred_through = context.journal.head;
 	// Act
@@ -222,4 +224,354 @@ fn a_turn_with_a_verbatim_result_is_never_absorbed_in_part() {
 		absorbed.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
 		[2, 3, 4, 8, 9, 10]
 	);
+}
+
+/// `turns(count)` with each turn's reasoning recorded (#942).
+fn turns_with_reasoning(count: usize) -> Context {
+	let mut context = turns(count);
+	for entry in &mut context.history {
+		if let ContextEvent::Assistant {
+			epoch, reasoning, ..
+		} = &mut entry.event
+		{
+			*reasoning = Some(provider::reasoning::Reasoning::ChatDetails {
+				details: vec![
+					json!({"type":"reasoning.text","text":format!("thinking {epoch}"),"index":0}),
+				],
+			});
+		}
+	}
+	context
+}
+
+/// Whether each rendered Model Turn, oldest first, still carries reasoning.
+fn reasoning_by_turn(context: &Context) -> Vec<bool> {
+	native_context(context, &json!({}))
+		.history
+		.iter()
+		.filter_map(|message| match message {
+			NativeMessage::Assistant { reasoning, .. } => Some(reasoning.is_some()),
+			_ => None,
+		})
+		.collect()
+}
+
+#[test]
+fn an_ordinary_step_keeps_every_turns_reasoning() {
+	let context = turns_with_reasoning(10);
+	let pinned = json!({});
+	let budget = budget(1_000_000);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	assert!(matches!(
+		super::super::compact(&context, &fitting, 0).unwrap(),
+		Compaction::Fits
+	));
+	assert!(reasoning_by_turn(&context).iter().all(|kept| *kept));
+}
+
+#[test]
+fn a_compaction_step_drops_reasoning_only_before_the_protected_tail() {
+	// Arrange: a request just over the window must be reduced.
+	let context = turns_with_reasoning(10);
+	let pinned = json!({});
+	let full = budget(usize::MAX)
+		.request(&context, &pinned)
+		.estimated_total_tokens();
+	let budget = budget(full - 1);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	// Act
+	let compacted = match super::super::compact(&context, &fitting, 0).unwrap() {
+		Compaction::Offloaded { context, .. } => *context,
+		Compaction::NeedsSummary(plan, _) => plan.pruned,
+		Compaction::Fits => panic!("the request does not fit"),
+	};
+	// Assert: older turns lost their reasoning, the protected tail and the
+	// newest turn kept theirs, and the journal-backed original is untouched.
+	let kept = reasoning_by_turn(&compacted);
+	assert_eq!(kept.len(), 10);
+	assert!(!kept[0], "the oldest turn's reasoning is dropped");
+	assert!(kept[9], "the newest turn keeps its reasoning");
+	let first_kept = kept.iter().position(|kept| *kept).unwrap();
+	assert!(kept[first_kept..].iter().all(|kept| *kept));
+	assert!(compacted.compactions > context.compactions);
+	assert!(reasoning_by_turn(&context).iter().all(|kept| *kept));
+}
+
+#[test]
+fn turns_a_summary_absorbs_carry_no_reasoning_into_it() {
+	let context = turns_with_reasoning(3);
+	let pinned = json!({"task": {"description": "x".repeat(500_000)}});
+	let budget = budget(100_000);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let Compaction::NeedsSummary(plan, _) = super::super::compact(&context, &fitting, 0).unwrap()
+	else {
+		panic!("older turns remain reducible")
+	};
+	assert!(!plan.absorbed.is_empty());
+	assert!(plan.absorbed.iter().all(|entry| !matches!(
+		&entry.event,
+		ContextEvent::Assistant {
+			reasoning: Some(_),
+			..
+		}
+	)));
+	assert_eq!(reasoning_by_turn(&plan.pruned).last(), Some(&true));
+}
+
+/// Whether each rendered Model Turn still resends its recorded reasoning in
+/// full, rather than nothing or an empty stand-in.
+fn full_reasoning_by_turn(context: &Context) -> Vec<bool> {
+	native_context(context, &json!({}))
+		.history
+		.iter()
+		.filter_map(|message| match message {
+			NativeMessage::Assistant { reasoning, .. } => Some(matches!(
+				reasoning,
+				Some(provider::reasoning::Reasoning::ChatDetails { .. })
+			)),
+			_ => None,
+		})
+		.collect()
+}
+
+/// `turns_with_reasoning(count)` whose second turn's first result was revoked.
+fn revoked_in_second_turn(count: usize) -> Context {
+	let mut context = turns_with_reasoning(count);
+	for entry in &mut context.history {
+		if let ContextEvent::Tool { call, result } = &mut entry.event
+			&& call.id == "t1-a"
+		{
+			*result = ContextEvent::revoked_result(&call.id);
+		}
+	}
+	context.withhold_reasoning_after_withheld_results();
+	context
+}
+
+/// Absorbing a revoked result's placeholder into a summary does not bring
+/// back the reasoning of the turns after it: the mark outlives the placeholder.
+#[rstest::rstest]
+#[tokio::test]
+async fn reasoning_stays_withheld_after_a_summary_absorbs_the_revoked_result() {
+	// Arrange
+	let context = revoked_in_second_turn(12);
+	let mark = context.reasoning_withheld_from_seq;
+	assert_eq!(mark, Some(6), "the first result of the second turn");
+	assert_eq!(
+		full_reasoning_by_turn(&context),
+		[true, true]
+			.into_iter()
+			.chain([false; 10])
+			.collect::<Vec<_>>()
+	);
+	let pinned = json!({"task": {"description": "Ship the release"}});
+	let mut retained = context.clone();
+	let candidates = native_summary_candidates(&context, 6);
+	retained.history.retain(|entry| {
+		!candidates
+			.iter()
+			.any(|candidate| candidate.seq == entry.seq)
+	});
+	let window = budget(usize::MAX)
+		.request(&retained, &pinned)
+		.estimated_total_tokens()
+		+ 2_000;
+	let budget = budget(window);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	// Act
+	let plan = *super::super::summary_plan(context.clone(), &fitting).unwrap();
+	let (adopted, _) = summary_candidate(
+		&plan,
+		&summary_text(&[], &[], &[]),
+		Default::default(),
+		summarizer(),
+		1024,
+		&fitting,
+	)
+	.unwrap();
+	let adopted: Context = serde_json::from_value(serde_json::to_value(&adopted).unwrap()).unwrap();
+	// Assert: the placeholder is gone, the mark is not, and no later turn
+	// resends its reasoning.
+	assert!(!adopted.history.iter().any(|entry| matches!(
+		&entry.event,
+		ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result)
+	)));
+	assert_eq!(adopted.reasoning_withheld_from_seq, mark);
+	let kept = full_reasoning_by_turn(&adopted);
+	assert!(!kept.is_empty());
+	assert!(kept.iter().all(|full| !full));
+}
+
+/// Offloading at a compaction step keeps the mark, and later turns still
+/// withhold their reasoning.
+#[test]
+fn reasoning_stays_withheld_after_offloading() {
+	let context = revoked_in_second_turn(10);
+	let pinned = json!({});
+	let full = budget(usize::MAX)
+		.request(&context, &pinned)
+		.estimated_total_tokens();
+	let budget = budget(full - 1);
+	let policy = recovery_policy(false);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let Compaction::Offloaded {
+		context: offloaded,
+		batch,
+	} = super::super::compact(&context, &fitting, 0).unwrap()
+	else {
+		panic!("offloading fits the request")
+	};
+	assert!(!batch.ranges.is_empty());
+	assert_eq!(offloaded.reasoning_withheld_from_seq, Some(6));
+	assert!(
+		full_reasoning_by_turn(&offloaded)[2..]
+			.iter()
+			.all(|full| !full)
+	);
+}
+
+#[test]
+fn a_native_summary_request_continues_the_main_request() {
+	// Arrange: a recorded step state and evidence, then four turns; the plan
+	// folds the two oldest.
+	let mut context = Context::default();
+	let mut pinned = json!({
+		"identity": {"agent_id": "agent"},
+		"task": {"id": "t", "title": "Task"},
+		"agent_state": {"phase": "THINKING"},
+		"workspace": {"tasks": [{"title": "Task"}]},
+		"semantic_memory": {"fact": "observed"},
+	});
+	aidash_domain::projection::native::record_step_state(&mut context, &pinned);
+	aidash_domain::projection::native::record_evidence(&mut context, &mut pinned, usize::MAX);
+	for event in turns(4).history.into_iter().map(|entry| entry.event) {
+		context.push(event);
+	}
+	context.journal.inferred_through = context.journal.head;
+	let tools = [provider::ToolSpec {
+		name: "read".into(),
+		description: "Read a file".into(),
+		parameters: json!({"type": "object"}),
+	}];
+	let budget = RequestBudget {
+		tools: &tools,
+		..budget(usize::MAX)
+	};
+	let policy = policy::Effective::of(None);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let absorbed = native_summary_candidates(&context, 2);
+	let through = absorbed.last().unwrap().seq;
+	let plan = SummaryPlan {
+		pruned: context.clone(),
+		absorbed,
+		people: vec![],
+		before_tokens: 0,
+	};
+	// Act
+	let main = budget.request(&context, &pinned);
+	let summary = summary_continuation(&plan, &fitting, 2048).unwrap();
+	// Assert: the same instructions and tools, the main messages through the
+	// last folded turn, then only the summary instruction.
+	assert_eq!(summary.instructions, main.instructions);
+	assert_eq!(json!(summary.tools), json!(main.tools));
+	assert_eq!(summary.cache_scope, main.cache_scope);
+	assert_eq!(
+		summary.response_format,
+		Some(aidash_domain::context::summary::SummaryContent::response_format())
+	);
+	assert_eq!(summary.max_output_tokens, 2048);
+	let main = main.input_body()["messages"].as_array().unwrap().clone();
+	let sent = summary.input_body()["messages"].as_array().unwrap().clone();
+	let (last, prefix) = sent.split_last().unwrap();
+	assert_eq!(prefix, &main[..prefix.len()]);
+	// System, attachments, the step state, the evidence, the Human answer and
+	// two turns of three messages each.
+	assert_eq!(prefix.len(), 5 + 2 * 3);
+	assert!(
+		prefix.last().unwrap()["content"]
+			.as_str()
+			.unwrap()
+			.contains(&format!("\"revision\":{through}"))
+	);
+	let parts = last["content"].as_array().unwrap();
+	let fold: aidash_domain::projection::native::Envelope =
+		serde_json::from_str(parts[0]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(fold.trust, aidash_domain::projection::native::Trust::Data);
+	assert_eq!(
+		fold.content["summary_request"]["call_ids"],
+		json!(["t0-a", "t0-b", "t1-a", "t1-b"])
+	);
+	assert!(!parts[0]["text"].as_str().unwrap().contains("observed"));
+	let instruction: aidash_domain::projection::native::Envelope =
+		serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+	assert_eq!(
+		instruction.trust,
+		aidash_domain::projection::native::Trust::Aidash
+	);
+	assert!(
+		instruction.content["instruction"]
+			.as_str()
+			.unwrap()
+			.contains("Do not call tools")
+	);
+	// Other Projection Versions keep the standalone request.
+	let legacy = super::Scenario::budget(usize::MAX);
+	let legacy_fitting = Fitting {
+		budget: &legacy,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	assert!(summary_continuation(&plan, &legacy_fitting, 2048).is_none());
+}
+
+#[test]
+fn a_main_request_with_provider_tools_is_never_continued() {
+	let context = turns(4);
+	let absorbed = native_summary_candidates(&context, 2);
+	let plan = SummaryPlan {
+		pruned: context.clone(),
+		absorbed,
+		people: vec![],
+		before_tokens: 0,
+	};
+	let pinned = json!({"task": {"id": "t"}});
+	let main = budget(usize::MAX).request(&context, &pinned);
+	assert!(super::super::continue_request(main.clone(), &plan, &pinned, 2048).is_some());
+	let mut with_provider_tools = main;
+	with_provider_tools.provider_tools = vec![aidash_domain::tool::provider_tools::PinnedTool {
+		tool_type: "openrouter:web_search".into(),
+		binding: aidash_domain::tool::provider_tools::Parameters {
+			max_tool_calls: 1,
+			parameters: json!({}),
+		},
+	}];
+	assert!(super::super::continue_request(with_provider_tools, &plan, &pinned, 2048).is_none());
 }

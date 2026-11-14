@@ -16,12 +16,73 @@ fn native_context(request: &ModelRequest) -> &aidash_domain::projection::native:
 	}
 }
 
+/// Record the step state and evidence `request` sent at the end of its
+/// history, as saving its accepted inference does (#942).
+fn keep_step_state(run: &mut Run, request: &ModelRequest) {
+	use aidash_domain::context::EvidenceItem;
+	let history = &native_context(request).history;
+	let pending = history
+		.iter()
+		.rev()
+		.take_while(|message| match message {
+			NativeMessage::StepState { .. } => true,
+			NativeMessage::Data { envelope } => {
+				envelope.source == aidash_domain::projection::native::Source::Evidence
+			}
+			_ => false,
+		})
+		.collect::<Vec<_>>();
+	for message in pending.into_iter().rev() {
+		match message {
+			NativeMessage::StepState { state, harness } => {
+				run.context.push(ContextEvent::StepState {
+					state: state.content.clone(),
+					harness: harness.as_ref().map(|harness| harness.content.clone()),
+				})
+			}
+			NativeMessage::Data { envelope } => {
+				let mut items = Vec::new();
+				for (key, value) in envelope.content.as_object().unwrap() {
+					match value {
+						Value::Array(entries) => items.extend(
+							entries
+								.iter()
+								.map(|entry| EvidenceItem::new(key, None, true, entry.clone())),
+						),
+						Value::Object(fields) => {
+							for (field, value) in fields {
+								match value {
+									Value::Array(entries) => {
+										items.extend(entries.iter().map(|entry| {
+											EvidenceItem::new(key, Some(field), true, entry.clone())
+										}))
+									}
+									value => items.push(EvidenceItem::new(
+										key,
+										Some(field),
+										false,
+										value.clone(),
+									)),
+								}
+							}
+						}
+						value => items.push(EvidenceItem::new(key, None, false, value.clone())),
+					}
+				}
+				run.context.push(ContextEvent::Evidence { items });
+			}
+			_ => unreachable!(),
+		}
+	}
+}
+
 fn turn(epoch: i64, text: &str, calls: &[&str]) -> ContextEvent {
 	ContextEvent::Assistant {
 		provider_activity: vec![],
 		epoch,
 		text: text.into(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	}
 }
 
@@ -110,6 +171,8 @@ async fn native_request_bytes_match_the_multi_round_golden_fixture(mut canonical
 			"tool",
 			"user",
 			"assistant",
+			"user",
+			"user",
 			"user"
 		]
 	);
@@ -138,6 +201,11 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 	canonical.run.context = multi_round_journal();
 	assert!(advance_sources(&mut canonical).await.is_err());
 	canonical.run.step += 1;
+	// An accepted inference saves the step state it recorded (#942).
+	keep_step_state(
+		&mut canonical.run,
+		&canonical.backend.0.requests.lock().unwrap()[0],
+	);
 	canonical.run.context.push(turn(4, "", &["call-4"]));
 	canonical.run.context.push(result(
 		"call-4",
@@ -186,9 +254,11 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 	let first = bodies[0][key].as_array().unwrap();
 	let second = bodies[1][key].as_array().unwrap();
 	assert_eq!(first[..first.len() - 1], second[..first.len() - 1]);
-	assert_eq!(second.len(), first.len() + 2);
+	// The call answered the open read marker, so the changed step state is
+	// appended after its turn (#942).
+	assert_eq!(second.len(), first.len() + 3);
 	assert_eq!(
-		second[second.len() - 2][if plan { "call_id" } else { "tool_call_id" }],
+		second[second.len() - 3][if plan { "call_id" } else { "tool_call_id" }],
 		"call-4"
 	);
 	let usage = canonical.backend.0.usage.lock().unwrap();
@@ -213,9 +283,24 @@ async fn explicit_native_requests_mark_system_and_the_last_history_message(mut c
 	let messages = body["messages"].as_array().unwrap();
 	assert_eq!(body.to_string().matches("cache_control").count(), 2);
 	assert!(messages[0]["content"][0].get("cache_control").is_some());
+	// This step's state and new evidence end the history (#942); the next
+	// step keeps them.
 	let last_history = &messages[messages.len() - 2];
-	assert_eq!(last_history["role"], "assistant");
+	assert_eq!(last_history["role"], "user");
+	assert!(
+		last_history["content"][0]["text"]
+			.as_str()
+			.unwrap()
+			.contains(r#""source":"evidence""#)
+	);
 	assert!(last_history["content"][0].get("cache_control").is_some());
+	assert!(
+		messages[messages.len() - 3]["content"]
+			.as_str()
+			.unwrap()
+			.contains(r#""source":"step","provenance":{"scope":"step"}"#)
+	);
+	assert_eq!(messages[messages.len() - 4]["role"], "assistant");
 	assert!(messages[messages.len() - 1]["content"].is_string());
 }
 
@@ -419,6 +504,7 @@ fn turn_event(epoch: i64, ids: &[String]) -> ContextEvent {
 		epoch,
 		text: "Reading.".into(),
 		calls: ids.to_vec(),
+		reasoning: None,
 	}
 }
 
@@ -563,7 +649,16 @@ async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture:
 		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
 		.await
 		.unwrap();
+	// The step state recorded before fitting is journaled after the originals (#942).
+	let (states, journal): (Vec<_>, Vec<_>) = journal.into_iter().partition(|entry| {
+		matches!(
+			entry.event,
+			ContextEvent::StepState { .. } | ContextEvent::Evidence { .. }
+		)
+	});
 	assert_eq!(journal, originals);
+	assert!(!states.is_empty());
+	assert!(states[0].seq > originals.last().unwrap().seq);
 	advance_sources(&mut fixture).await.unwrap();
 	let request = last_request(&fixture);
 	let native = native_context(&request);
@@ -622,7 +717,16 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	assert!(!request.instructions.contains("Media intake is continuing"));
 	let body = request.input_body();
 	let messages = body["messages"].as_array().unwrap();
-	let content = messages.last().unwrap()["content"]
+	// The step state, recorded in history (#942), carries the requirements.
+	let content = messages
+		.iter()
+		.rev()
+		.find(|message| {
+			message["content"][0]["text"]
+				.as_str()
+				.is_some_and(|text| text.contains(r#""provenance":{"scope":"step"}"#))
+		})
+		.unwrap()["content"]
 		.as_array()
 		.expect("the step data and the harness envelope are separate text parts");
 	let harness: Value = serde_json::from_str(
@@ -666,5 +770,189 @@ async fn structured_usage_records_carry_the_pinned_contract_version(mut canonica
 	assert_eq!(
 		dispatch.harness_contract,
 		aidash_domain::harness_contract::HarnessContract::Structured3.number()
+	);
+}
+
+/// A Native Run records the accepted response's reasoning with its Model
+/// Turn, and a route whose `reasoning_passback` is off records none, so the
+/// Run never resends any (#942).
+#[rstest]
+#[case::default_on(None, true)]
+#[case::switched_off(Some(false), false)]
+#[tokio::test]
+async fn a_native_turn_records_reasoning_unless_the_route_turns_it_off(
+	mut fixture: Fixture,
+	#[case] passback: Option<bool>,
+	#[case] recorded: bool,
+) {
+	// Arrange
+	native(&mut fixture);
+	let reasoning = aidash_domain::provider::reasoning::Reasoning::ChatDetails {
+		details: vec![
+			json!({"type":"reasoning.encrypted","data":"opaque","format":"google-gemini-v1","index":0}),
+		],
+	};
+	{
+		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+		state.reasoning_passback = passback;
+		state.response_reasoning = Some(reasoning.clone());
+	}
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	for _ in 0..3 {
+		if fixture.run.phase() == RunPhase::Completed {
+			break;
+		}
+		advance_sources(&mut fixture).await.unwrap();
+	}
+	// Assert
+	let turns = fixture
+		.run
+		.context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Assistant { reasoning, .. } => Some(reasoning.clone()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(turns.len(), 1);
+	assert_eq!(turns[0], recorded.then_some(reasoning));
+}
+
+/// A Native Run whose repeated Journal reads ask for a summary of older
+/// turns, with `prefix` journaled before them.
+fn native_summary_due(fixture: &mut Fixture, prefix: Vec<ContextEvent>) {
+	{
+		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+		state.scoped = true;
+		state.context_policy = Some(recovery_policy(true));
+		state.summarizer_output_tokens = 1024;
+		state.summarizer_window = 62_000;
+		state.model_reasoning = true;
+		*state.summary_text.lock().unwrap() = Some(valid_summary());
+	}
+	native(fixture);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for event in prefix {
+		fixture.run.context.push(event);
+	}
+	for i in 0..8 {
+		let id = format!("old-{i}");
+		fixture
+			.run
+			.context
+			.push(turn_event(i, std::slice::from_ref(&id)));
+		fixture.run.context.push(result(
+			&id,
+			"read",
+			json!({"path": id}),
+			json!("x".repeat(1000)),
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	fixture.run.context.offload_reads.summary_pending = true;
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_summaries_continue_the_main_request_with_its_reasoning(mut fixture: Fixture) {
+	// Arrange
+	native_summary_due(&mut fixture, vec![]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let summary = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	assert_eq!(summary.routing_run, Some(fixture.run.id));
+	let messages = summary.input_body()["messages"].as_array().unwrap().clone();
+	let last = messages.last().unwrap()["content"].as_array().unwrap();
+	assert!(
+		last.last().unwrap()["text"]
+			.as_str()
+			.unwrap()
+			.contains(r#""trust":"aidash""#)
+	);
+	assert!(
+		messages
+			.iter()
+			.any(|message| message["role"] == "tool" && message["tool_call_id"] == "old-0")
+	);
+	// The main request's reasoning settings, and room for reasoning on top
+	// of the summary.
+	let configs = fixture.backend.0.provider_configs.lock().unwrap();
+	assert_eq!(
+		serde_json::to_value(configs.last().unwrap().reasoning_effort).unwrap(),
+		json!("medium")
+	);
+	assert!(summary.max_output_tokens > 1024);
+	assert_eq!(
+		configs.last().unwrap().max_output_tokens,
+		Some(summary.max_output_tokens)
+	);
+}
+
+#[rstest]
+#[case::tool_call(true)]
+#[case::provider_activity(false)]
+#[tokio::test]
+async fn a_summary_that_acts_is_never_adopted(mut fixture: Fixture, #[case] tool_call: bool) {
+	// Arrange
+	native_summary_due(&mut fixture, vec![]);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.summary_extras = if tool_call {
+		(vec![call("acted", "read", json!({}))], vec![])
+	} else {
+		(vec![], vec![json!({"type": "web_search_call"})])
+	};
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the forced summary is skipped, never adopted.
+	assert!(calls(&fixture).contains(&"summarizer.infer"));
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_skipped");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
+		Some(Outcome::Invalid)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn withdrawing_a_source_only_the_continuation_rendered_discards_the_summary(
+	mut fixture: Fixture,
+) {
+	// Arrange: a Run message admitted as evidence before the folded turns;
+	// the summary folds no read of it.
+	let message = Uuid::from_u128(0x77);
+	native_summary_due(
+		&mut fixture,
+		vec![ContextEvent::Evidence {
+			items: vec![aidash_domain::context::EvidenceItem::new(
+				"run_messages",
+				None,
+				true,
+				json!({"seq": 1, "record": {"kind": "message", "id": message}}),
+			)],
+		}],
+	);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.summary_checks_before_revocation = Some(0);
+	state.revoked_message = Some(message);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert!(matches!(
+		result,
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
+	));
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert!(!calls(&fixture).contains(&"summarizer.infer"));
+	assert_eq!(
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
+		Some(Outcome::Unauthorized)
 	);
 }

@@ -160,8 +160,14 @@ struct State {
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
+	/// Tool calls and provider activity the summarizer answers with.
+	summary_extras: (Vec<ToolCall>, Vec<Value>),
 	summary_truncations: Mutex<u32>,
 	model_reasoning: bool,
+	/// The agent model's `reasoning_passback`, omitted when `None` (#942).
+	reasoning_passback: Option<bool>,
+	/// Reasoning each ordinary response carries (#942).
+	response_reasoning: Option<aidash_domain::provider::reasoning::Reasoning>,
 	provider_configs: Mutex<Vec<ModelConfig>>,
 	/// The summarizer is approved at reservation but revoked during its call.
 	revoke_summarizer: bool,
@@ -370,6 +376,11 @@ impl Backend {
 		});
 		if id == "model" && self.0.model_reasoning {
 			config["reasoning_effort"] = json!("medium");
+		}
+		if id == "model"
+			&& let Some(passback) = self.0.reasoning_passback
+		{
+			config["reasoning_passback"] = json!(passback);
 		}
 		if id == "model"
 			&& let Some(limit) = self.0.summarizer_provider_limit
@@ -1071,6 +1082,9 @@ impl ExecutionHome for Backend {
 		let _ = (offset, limit);
 		Ok(json!({"workspace_id":self.task_value().workspace_id}))
 	}
+	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		self.observation(offset, limit).await
+	}
 	async fn observation_fitted(
 		&self,
 		offset: usize,
@@ -1427,7 +1441,7 @@ impl ExecutionEnvironment for Backend {
 			}
 			"workspace" => self
 				.home(run)
-				.observation(0, context::observation::DEFAULT_LIMIT)
+				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
 			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),
@@ -1740,6 +1754,9 @@ impl ModelProvider for Backend {
 				.expect("summary fixture");
 			return Ok(ModelResponse {
 				text,
+				tool_calls: self.0.summary_extras.0.clone(),
+				provider_activity: self.0.summary_extras.1.clone(),
+				reasoning: None,
 				input_tokens: 100,
 				output_tokens: 50,
 				usage_complete: true,
@@ -1752,7 +1769,6 @@ impl ModelProvider for Backend {
 					}),
 					..Default::default()
 				},
-				..Default::default()
 			});
 		}
 		request.ensure_fits(128000).unwrap();
@@ -1815,6 +1831,7 @@ impl ModelProvider for Backend {
 				cache_read_tokens: Some(150),
 				..Default::default()
 			},
+			reasoning: self.0.response_reasoning.clone(),
 			..Default::default()
 		})
 	}
@@ -1923,8 +1940,11 @@ fn fixture() -> Fixture {
 		context_policy: None,
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
+		summary_extras: (vec![], vec![]),
 		summary_truncations: Mutex::new(0),
 		model_reasoning: false,
+		reasoning_passback: None,
+		response_reasoning: None,
 		provider_configs: Mutex::new(vec![]),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
@@ -3863,6 +3883,7 @@ async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fi
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		fixture.run.context.push(ContextEvent::tool(
 			call(&id, "read", json!({})),
@@ -3899,6 +3920,7 @@ async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		let result = if i == 0 {
 			json!("h".repeat(200_000))
@@ -4492,7 +4514,19 @@ async fn subnode_results_reach_the_model_inside_a_data_envelope(
 	let state = match &requests[0].context {
 		ModelContext::Legacy(value) => value["current"].clone(),
 		ModelContext::Ordered(value) => serde_json::from_str(&value.volatile).unwrap(),
-		ModelContext::Native(value) => serde_json::from_str(&value.volatile).unwrap(),
+		// Run messages are evidence in history (#942).
+		ModelContext::Native(value) => value
+			.history
+			.iter()
+			.find_map(|message| match message {
+				aidash_domain::projection::native::NativeMessage::Data { envelope }
+					if envelope.source == aidash_domain::projection::native::Source::Evidence =>
+				{
+					Some(envelope.content.clone())
+				}
+				_ => None,
+			})
+			.unwrap(),
 		_ => panic!("unexpected projection"),
 	};
 	assert_eq!(state["run_messages"][0]["trust"], "data");
@@ -7238,6 +7272,7 @@ async fn intake_keeps_parallel_results_in_the_journal_before_offloading(mut fixt
 		epoch: 1,
 		text: String::new(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	});
 	for id in calls {
 		fixture.run.context.push(ContextEvent::tool(

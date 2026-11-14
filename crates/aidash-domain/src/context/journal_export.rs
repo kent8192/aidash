@@ -32,6 +32,10 @@ impl From<&HistoryEntry> for JournalLine {
 		let text = fields
 			.remove("text")
 			.and_then(|v| v.as_str().map(str::to_owned));
+		// Recorded provider reasoning is resent to the Run's own model only
+		// (#942). Journal Query, search, reads and memory extraction never see
+		// it, so it is not part of the export.
+		fields.remove("reasoning");
 		let result = fields.remove("result");
 		let mut call = fields.remove("call");
 		if result
@@ -86,6 +90,9 @@ mod tests {
 					epoch: 2,
 					text: "answer".into(),
 					calls: vec![],
+					reasoning: Some(crate::provider::reasoning::Reasoning::ChatDetails {
+						details: vec![json!({"type":"reasoning.text","text":"private"})],
+					}),
 				},
 			),
 		];
@@ -102,6 +109,7 @@ mod tests {
 				json!({"seq":8,"kind":"assistant","epoch":2,"text":"answer","calls":[]})
 			]
 		);
+		assert!(!output.contains("private"), "reasoning is not exported");
 	}
 
 	#[test]

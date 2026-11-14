@@ -3,7 +3,8 @@
 //! Plan usage requires `stream: true` and `store: false` and keeps no
 //! conversation state, so every request carries the whole projected context
 //! in `input`. Legacy, Ordered and Native projections retain the observable
-//! messages and tool turns without provider reasoning (ADR 0083). Output is
+//! messages and tool turns; a Native Run also replays each turn's reasoning
+//! items as received (#942, amending ADR 0083). Output is
 //! accepted only from `response.completed`; truncated terminal responses retain
 //! text for bounded MCP sampling. Deltas feed sanitized Inference Progress.
 use super::{CacheSaltKeys, MAX_RESPONSE_BYTES, safe_upstream_reason};
@@ -1057,6 +1058,9 @@ fn completed_with_cost(
 	if openrouter {
 		result.provider_activity = super::provider_activity::responses(response);
 	}
+	// Reasoning items are kept as received, in order; the harness decides
+	// whether the Run records and replays them (#942).
+	result.reasoning = aidash_domain::provider::reasoning::Reasoning::from_responses_output(output);
 	let mut refused = false;
 	for item in output {
 		match item["type"].as_str() {
@@ -1101,7 +1105,7 @@ fn completed_with_cost(
 					})?,
 				});
 			}
-			// Provider reasoning is deliberately discarded (ADR 0083).
+			// Reasoning was captured above; other items carry no output.
 			_ => {}
 		}
 	}

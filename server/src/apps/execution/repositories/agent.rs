@@ -684,6 +684,11 @@ impl ExecutionHome for NativeHome {
 			.await
 			.map_err(Into::into)
 	}
+	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		Home::step_observation(&self.0, offset, limit)
+			.await
+			.map_err(Into::into)
+	}
 	async fn observation_fitted(
 		&self,
 		offset: usize,

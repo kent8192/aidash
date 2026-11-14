@@ -30848,6 +30848,40 @@
                 },
                 "required": ["kind", "checks", "instruction", "through_seq"],
                 "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The bookkeeping of a Native step (#942): the Agent's state, this\nstep's instructions and deferred reads, and open markers. It holds no\nevidence, so no authority change ever alters it. It is recorded only\nwhen it differs from the last one in history and is sent at its\nposition, so later requests keep the same prefix.",
+                "properties": {
+                  "harness": {
+                    "description": "The Harness requirements of a `structured@*` contract, sent with\ntrust `aidash` after the state."
+                  },
+                  "kind": {
+                    "enum": ["step_state"],
+                    "type": "string"
+                  },
+                  "state": {}
+                },
+                "required": ["kind", "state"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Evidence a Native step admitted that history did not hold yet (#942):\nworkspace observation entries and Run messages. Like a tool result it\nis appended once and sent at its position; only offloading or\ncompaction removes it.",
+                "properties": {
+                  "items": {
+                    "items": {
+                      "$ref": "#/components/schemas/EvidenceItem"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "enum": ["evidence"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "items"],
+                "type": "object"
               }
             ]
           },
@@ -31475,6 +31509,31 @@
                 "type": "object"
               }
             ]
+          },
+          "EvidenceItem": {
+            "additionalProperties": false,
+            "description": "One admitted piece of per-step evidence: an entry of a collection, or a\nwhole field, of one pinned key.",
+            "properties": {
+              "content": {},
+              "digest": {
+                "description": "Digest of the key, field and content. It identifies the item after\nits content was offloaded, so a later step never appends it again.",
+                "type": "string"
+              },
+              "field": {
+                "description": "The field of the key's object the item belongs to; absent when the key\nholds a list.",
+                "type": ["string", "null"]
+              },
+              "key": {
+                "description": "The pinned key, such as `workspace` or `run_messages`.",
+                "type": "string"
+              },
+              "listed": {
+                "description": "Whether the item is one entry of a list rather than a whole field.",
+                "type": "boolean"
+              }
+            },
+            "required": ["key", "digest", "content"],
+            "type": "object"
           },
           "ExecutionSummary": {
             "additionalProperties": false,
@@ -35418,6 +35477,40 @@
                 },
                 "required": ["kind", "checks", "instruction", "through_seq"],
                 "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The bookkeeping of a Native step (#942): the Agent's state, this\nstep's instructions and deferred reads, and open markers. It holds no\nevidence, so no authority change ever alters it. It is recorded only\nwhen it differs from the last one in history and is sent at its\nposition, so later requests keep the same prefix.",
+                "properties": {
+                  "harness": {
+                    "description": "The Harness requirements of a `structured@*` contract, sent with\ntrust `aidash` after the state."
+                  },
+                  "kind": {
+                    "enum": ["step_state"],
+                    "type": "string"
+                  },
+                  "state": {}
+                },
+                "required": ["kind", "state"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Evidence a Native step admitted that history did not hold yet (#942):\nworkspace observation entries and Run messages. Like a tool result it\nis appended once and sent at its position; only offloading or\ncompaction removes it.",
+                "properties": {
+                  "items": {
+                    "items": {
+                      "$ref": "#/components/schemas/EvidenceItem"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "enum": ["evidence"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "items"],
+                "type": "object"
               }
             ]
           },
@@ -35874,6 +35967,31 @@
                 "type": "object"
               }
             ]
+          },
+          "EvidenceItem": {
+            "additionalProperties": false,
+            "description": "One admitted piece of per-step evidence: an entry of a collection, or a\nwhole field, of one pinned key.",
+            "properties": {
+              "content": {},
+              "digest": {
+                "description": "Digest of the key, field and content. It identifies the item after\nits content was offloaded, so a later step never appends it again.",
+                "type": "string"
+              },
+              "field": {
+                "description": "The field of the key's object the item belongs to; absent when the key\nholds a list.",
+                "type": ["string", "null"]
+              },
+              "key": {
+                "description": "The pinned key, such as `workspace` or `run_messages`.",
+                "type": "string"
+              },
+              "listed": {
+                "description": "Whether the item is one entry of a list rather than a whole field.",
+                "type": "boolean"
+              }
+            },
+            "required": ["key", "digest", "content"],
+            "type": "object"
           },
           "ExecutionSummary": {
             "additionalProperties": false,
@@ -51921,6 +52039,40 @@
                 },
                 "required": ["kind", "checks", "instruction", "through_seq"],
                 "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The bookkeeping of a Native step (#942): the Agent's state, this\nstep's instructions and deferred reads, and open markers. It holds no\nevidence, so no authority change ever alters it. It is recorded only\nwhen it differs from the last one in history and is sent at its\nposition, so later requests keep the same prefix.",
+                "properties": {
+                  "harness": {
+                    "description": "The Harness requirements of a `structured@*` contract, sent with\ntrust `aidash` after the state."
+                  },
+                  "kind": {
+                    "enum": ["step_state"],
+                    "type": "string"
+                  },
+                  "state": {}
+                },
+                "required": ["kind", "state"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Evidence a Native step admitted that history did not hold yet (#942):\nworkspace observation entries and Run messages. Like a tool result it\nis appended once and sent at its position; only offloading or\ncompaction removes it.",
+                "properties": {
+                  "items": {
+                    "items": {
+                      "$ref": "#/components/schemas/EvidenceItem"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "enum": ["evidence"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "items"],
+                "type": "object"
               }
             ]
           },
@@ -52360,6 +52512,31 @@
                 "type": "object"
               }
             ]
+          },
+          "EvidenceItem": {
+            "additionalProperties": false,
+            "description": "One admitted piece of per-step evidence: an entry of a collection, or a\nwhole field, of one pinned key.",
+            "properties": {
+              "content": {},
+              "digest": {
+                "description": "Digest of the key, field and content. It identifies the item after\nits content was offloaded, so a later step never appends it again.",
+                "type": "string"
+              },
+              "field": {
+                "description": "The field of the key's object the item belongs to; absent when the key\nholds a list.",
+                "type": ["string", "null"]
+              },
+              "key": {
+                "description": "The pinned key, such as `workspace` or `run_messages`.",
+                "type": "string"
+              },
+              "listed": {
+                "description": "Whether the item is one entry of a list rather than a whole field.",
+                "type": "boolean"
+              }
+            },
+            "required": ["key", "digest", "content"],
+            "type": "object"
           },
           "ExecutionSummary": {
             "additionalProperties": false,

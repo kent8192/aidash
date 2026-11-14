@@ -631,6 +631,7 @@ async fn provider_tools_activity_remains_inspectable_after_projection_compaction
 		text: "Reported source".into(),
 		calls: vec![],
 		provider_activity: vec![activity.clone()],
+		reasoning: None,
 	});
 	run.context.push(event(2));
 	f.store

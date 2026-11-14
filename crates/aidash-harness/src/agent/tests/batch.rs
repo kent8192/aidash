@@ -823,6 +823,9 @@ impl ExecutionHome for Bench {
 	async fn observation(&self, _offset: usize, _limit: usize) -> Result<Value> {
 		unexpected("ExecutionHome.observation")
 	}
+	async fn step_observation(&self, _offset: usize, _limit: usize) -> Result<Value> {
+		unexpected("ExecutionHome.step_observation")
+	}
 	async fn observation_fitted(
 		&self,
 		_offset: usize,
@@ -993,7 +996,7 @@ impl ExecutionEnvironment for Bench {
 		let result = match source.as_str() {
 			"workspace" => self
 				.home(run)
-				.observation(0, context::observation::DEFAULT_LIMIT)
+				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
 			"semantic_memory" => {

@@ -52,6 +52,22 @@ pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Val
 	value
 }
 
+/// Drop the Workspace events that `run` produced itself (`data.run_id`) from
+/// a snapshot, before it is projected for that Run's per-step view (#942).
+/// They are the Run's own lifecycle telemetry, which its history already
+/// holds; every step mints new ones, so as evidence they would never repeat
+/// and history would grow each step. The model's observe tool keeps them.
+pub fn without_run_events(snapshot: &mut WorkspaceSnapshot, run: uuid::Uuid) {
+	snapshot.events.retain(|event| {
+		event
+			.data
+			.get("run_id")
+			.and_then(Value::as_str)
+			.and_then(|id| id.parse::<uuid::Uuid>().ok())
+			!= Some(run)
+	});
+}
+
 /// Select the largest observation page that fits without causing authorization
 /// tracking for pages that will be discarded. Callers may size each
 /// projection against the complete pending tool event, then track only the

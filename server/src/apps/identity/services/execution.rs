@@ -1920,16 +1920,18 @@ impl WorkerAuthority {
 			.await
 	}
 
+	/// `exclude_run` leaves that Run's own events out (#942).
 	pub async fn workspace_observation(
 		&self,
 		workspace: Uuid,
 		offset: usize,
 		limit: usize,
+		exclude_run: Option<Uuid>,
 	) -> Result<Value> {
 		self.access
 			.write()
 			.await
-			.workspace_observation(workspace, offset, limit)
+			.workspace_observation(workspace, offset, limit, exclude_run)
 			.await
 	}
 

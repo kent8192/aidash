@@ -151,7 +151,25 @@ pub async fn observation_fitted<F>(
 where
 	F: FnMut(usize, &Value) -> Result<bool>,
 {
-	let snapshot = snapshot_untracked(scope, id).await?;
+	fitted(scope, id, None, offset, limit, fits).await
+}
+/// `exclude_run` leaves that Run's own events out before the page is
+/// projected, counted and tracked, so all three describe the same rows.
+async fn fitted<F>(
+	scope: &mut dyn WorkspaceProjection,
+	id: Uuid,
+	exclude_run: Option<Uuid>,
+	offset: usize,
+	limit: usize,
+	fits: F,
+) -> Result<Option<(usize, Value)>>
+where
+	F: FnMut(usize, &Value) -> Result<bool>,
+{
+	let mut snapshot = snapshot_untracked(scope, id).await?;
+	if let Some(run) = exclude_run {
+		aidash_domain::context::observation::without_run_events(&mut snapshot, run);
+	}
 	let ids = snapshot
 		.messages
 		.iter()
@@ -229,13 +247,16 @@ where
 mod tests;
 
 /// An unconstrained observation still records only its selected page before disclosure.
+/// A Run's per-step Workspace view passes its own id as `exclude_run` (#942);
+/// the model's observe tool passes `None` and sees every event.
 pub async fn observation(
 	scope: &mut dyn WorkspaceProjection,
 	id: Uuid,
 	offset: usize,
 	limit: usize,
+	exclude_run: Option<Uuid>,
 ) -> Result<Value> {
-	observation_fitted(scope, id, offset, limit, |_, _| Ok(true))
+	fitted(scope, id, exclude_run, offset, limit, |_, _| Ok(true))
 		.await?
 		.map(|(_, output)| output)
 		.ok_or_else(|| crate::Error::Invalid("workspace observation could not be fitted".into()))

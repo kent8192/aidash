@@ -4,13 +4,13 @@
 //!
 //! The harness builds this IR; `ModelRequest::input_body` gives it its
 //! canonical chat serialization, which transport and request budgeting share.
-use crate::context::{Context, ContextEvent, HistoryEntry, ORDERED_STABLE_KEYS};
+use crate::context::{Context, ContextEvent, EvidenceItem, HistoryEntry, ORDERED_STABLE_KEYS};
 use crate::provider::ToolCall;
 use crate::{Error, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How enveloped content may be read. `Data` never instructs; `Aidash` states
 /// requirements from Aidash for this step under a `structured@*` Harness
@@ -45,6 +45,8 @@ pub enum Source {
 	Step,
 	/// The Harness requirements of this step under a `structured@*` contract.
 	Harness,
+	/// Evidence a step admitted into history (#942).
+	Evidence,
 }
 
 /// The provenance envelope around every piece of enveloped content in a Native
@@ -129,37 +131,294 @@ pub enum NativeMessage {
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		text: Option<String>,
 		tool_calls: Vec<ToolCall>,
+		/// The response's recorded reasoning, resent unchanged on every later
+		/// request (#942). Omitted when absent, so requests without reasoning
+		/// keep their bytes and digests.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		reasoning: Option<crate::provider::reasoning::Reasoning>,
 	},
 	/// One call's result, paired with its call by `tool_call_id`.
 	Tool {
 		tool_call_id: String,
 		envelope: Envelope,
 	},
+	/// A step's bookkeeping (#942), sent as a user message at the position it
+	/// was recorded: the state as data, then the Harness requirements of a
+	/// `structured@*` contract with trust `aidash`.
+	StepState {
+		state: Envelope,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		harness: Option<Envelope>,
+	},
 }
 
 /// A complete Native request context: Run-stable attachments, then history
-/// rendered as whole Model Turns, then this step's volatile content.
+/// rendered as whole Model Turns and recorded step states, then this step's
+/// volatile evidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NativeContext {
 	/// Run-stable sources, one envelope each, sent in one user message right
 	/// after `system`. They are part of the Stable Prefix.
 	pub attachments: Vec<Envelope>,
+	/// History, ending with this step's state when it differs from the last
+	/// recorded one and is not recorded yet ([`record_step_state`]); it
+	/// renders byte for byte as it will once recorded.
 	pub history: Vec<NativeMessage>,
-	/// Canonical JSON of this step's volatile content, sent enveloped as the
-	/// trailing user message. It is never stored in history.
+	/// Canonical JSON of this step's volatile evidence, sent enveloped as the
+	/// trailing user message. It is never stored in history; an empty object
+	/// without media sends no message.
 	pub volatile: String,
-	/// The Harness requirements envelope text of a `structured@*` contract, a
-	/// separate text part after the step data and this step's media. `None`
-	/// under `legacy@1`.
+	/// A Harness requirements envelope text sent after the volatile part.
+	/// [`native_context`] never sets it: since #942 the requirements travel
+	/// in the step state.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub harness: Option<String>,
 }
 
 /// The reserved pinned key that carries the Harness requirements envelope
 /// content of a `structured@*` contract. It is never part of the step's data
-/// envelope; the Harness builds it and [`native_context`] moves it out.
+/// envelope; the Harness builds it and the step state carries it.
 pub const HARNESS_REQUIREMENTS: &str = "harness_requirements";
+
+/// Pinned keys of a Native step's bookkeeping (#942): state and instructions
+/// that carry no evidence. They go to the step state, recorded in history
+/// only when it changes. Every other per-step key is evidence and stays in
+/// the volatile part.
+pub const STEP_STATE_KEYS: [&str; 8] = [
+	"agent_state",
+	"turn_instructions",
+	"run_message_read_instruction",
+	"deferred_run_message_reads",
+	"deferred_skill_read",
+	"deferred_workspace_observation",
+	"deferred_workspace_read",
+	"journal_read_notice",
+];
+
+/// Pinned keys whose evidence a Native step appends to history once, item by
+/// item (#942). Semantic memory stays in the volatile part: its content is
+/// never journaled, and its per-step recheck fails the step instead of
+/// marking a revoked hit.
+pub const EVIDENCE_KEYS: [&str; 2] = ["workspace", "run_messages"];
+
+/// Evidence keys admitted whatever the quota: the Run bounds its run-directed
+/// input when it accepts it, and its required reads depend on every entry.
+const MANDATORY_EVIDENCE: [&str; 1] = ["run_messages"];
+
+/// Fields of an evidence key that describe this step's page rather than any
+/// entry; they change with every count and stay in the volatile part.
+const PAGE_FIELDS: [&str; 1] = ["pages"];
+
+/// The evidence items of `pinned`, in send order: every entry of a list, and
+/// every entry of each list field or each other field of an object.
+fn evidence_items(pinned: &Value) -> Vec<EvidenceItem> {
+	let item = |key: &str, field: Option<&str>, listed: bool, content: &Value| {
+		EvidenceItem::new(key, field, listed, content.clone())
+	};
+	let mut items = Vec::new();
+	for key in EVIDENCE_KEYS {
+		match pinned.get(key) {
+			Some(Value::Array(entries)) => {
+				items.extend(entries.iter().map(|entry| item(key, None, true, entry)));
+			}
+			Some(Value::Object(fields)) => {
+				for (field, value) in fields {
+					if PAGE_FIELDS.contains(&field.as_str()) {
+						continue;
+					}
+					match value {
+						Value::Array(entries) => items.extend(
+							entries
+								.iter()
+								.map(|entry| item(key, Some(field), true, entry)),
+						),
+						value => items.push(item(key, Some(field), false, value)),
+					}
+				}
+			}
+			Some(Value::Null) | None => {}
+			Some(value) => items.push(item(key, None, false, value)),
+		}
+	}
+	items
+}
+
+/// Digests of every evidence item history holds, offloaded or not.
+fn recorded_evidence(context: &Context) -> BTreeSet<&str> {
+	context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Evidence { items } => Some(items),
+			_ => None,
+		})
+		.flatten()
+		.map(|item| item.digest.as_str())
+		.collect()
+}
+
+/// The evidence of `pinned` that history does not hold yet.
+fn pending_evidence(context: &Context, pinned: &Value) -> Vec<EvidenceItem> {
+	let recorded = recorded_evidence(context);
+	let mut seen = BTreeSet::new();
+	evidence_items(pinned)
+		.into_iter()
+		.filter(|item| !recorded.contains(item.digest.as_str()) && seen.insert(item.digest.clone()))
+		.collect()
+}
+
+/// Admit this step's new evidence into history (#942), in send order, while
+/// the encoded items stay within `quota` bytes; Run messages are always
+/// admitted and do not count against it. Admission is final: an
+/// admitted item is never trimmed later, and a refused one is removed from
+/// `pinned`, so this request never carries it; a later step may admit it.
+/// Returns how many items it refused. Only Native Runs record evidence.
+pub fn record_evidence(context: &mut Context, pinned: &mut Value, quota: usize) -> usize {
+	let mut admitted = Vec::new();
+	let mut refused = BTreeSet::new();
+	let mut used = 0_usize;
+	for item in pending_evidence(context, pinned) {
+		let size = item.content.to_string().len();
+		// The Harness's quota already leaves out the Run messages.
+		if MANDATORY_EVIDENCE.contains(&item.key.as_str()) {
+			admitted.push(item);
+		} else if used.saturating_add(size) <= quota {
+			used += size;
+			admitted.push(item);
+		} else {
+			refused.insert(item.digest);
+		}
+	}
+	if !refused.is_empty() {
+		for key in EVIDENCE_KEYS {
+			let Some(value) = pinned.get_mut(key) else {
+				continue;
+			};
+			let keep = |field: Option<&str>, entry: &Value| {
+				!refused.contains(&EvidenceItem::digest(key, field, entry))
+			};
+			match value {
+				Value::Array(entries) => entries.retain(|entry| keep(None, entry)),
+				Value::Object(fields) => fields.retain(|field, value| match value {
+					Value::Array(entries) => {
+						entries.retain(|entry| keep(Some(field), entry));
+						true
+					}
+					value => PAGE_FIELDS.contains(&field.as_str()) || keep(Some(field), value),
+				}),
+				_ => {}
+			}
+		}
+	}
+	if !admitted.is_empty() {
+		context.push(ContextEvent::Evidence { items: admitted });
+	}
+	refused.len()
+}
+
+/// The value of evidence `key` as this request delivers it: `pinned`'s value
+/// with every item whose content history no longer holds as admitted (it
+/// was offloaded) set to `null`. Source
+/// delivery receipts read it, so offloaded bytes never earn one.
+pub fn delivered_evidence(context: &Context, pinned: &Value, key: &str) -> Option<Value> {
+	let mut value = pinned.get(key)?.clone();
+	let offloaded: BTreeSet<&str> = context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::Evidence { items } => Some(items),
+			_ => None,
+		})
+		.flatten()
+		.filter(|item| {
+			item.digest != EvidenceItem::digest(&item.key, item.field.as_deref(), &item.content)
+		})
+		.map(|item| item.digest.as_str())
+		.collect();
+	let gone = |field: Option<&str>, entry: &Value| {
+		offloaded.contains(EvidenceItem::digest(key, field, entry).as_str())
+	};
+	match &mut value {
+		Value::Array(entries) => {
+			for entry in entries.iter_mut().filter(|entry| gone(None, entry)) {
+				*entry = Value::Null;
+			}
+		}
+		Value::Object(fields) => {
+			for (field, value) in fields.iter_mut() {
+				match value {
+					Value::Array(entries) => {
+						for entry in entries.iter_mut() {
+							if gone(Some(field), entry) {
+								*entry = Value::Null;
+							}
+						}
+					}
+					value => {
+						if gone(Some(field), value) {
+							*value = Value::Null;
+						}
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+	Some(value)
+}
+
+/// How admitted evidence renders: one data envelope whose content groups the
+/// items by key and field in admission order. Its revision stays `null`, so
+/// the pending and the recorded form are the same bytes.
+fn evidence_message(items: &[EvidenceItem]) -> NativeMessage {
+	let mut content = serde_json::Map::new();
+	for item in items {
+		let value = item.content.clone();
+		let slot = content
+			.entry(item.key.clone())
+			.or_insert_with(|| match item.field {
+				Some(_) => json!({}),
+				None => json!([]),
+			});
+		let target = match (&item.field, slot) {
+			(Some(field), Value::Object(fields)) => {
+				fields.entry(field.clone()).or_insert(Value::Null)
+			}
+			(_, slot) => slot,
+		};
+		match target {
+			Value::Array(entries) if item.listed => entries.push(value),
+			Value::Null if item.listed => *target = json!([value]),
+			// Items of one key are either listed or whole fields; a whole
+			// field replaces nothing else.
+			target => *target = value,
+		}
+	}
+	NativeMessage::Data {
+		envelope: Envelope::data(
+			Source::Evidence,
+			json!({"scope": "step"}),
+			None,
+			Value::Object(content),
+		),
+	}
+}
+
+/// The notice a Native step's `agent_state` carries instead of a step
+/// counter (#942), which would change the state, and so the request, every
+/// step. It changes once at 80 % and once at 90 % of `max_steps`.
+pub fn step_limit_notice(step: i32, max_steps: i32) -> Option<&'static str> {
+	let used = i64::from(step) * 10;
+	let max = i64::from(max_steps);
+	if max <= 0 {
+		None
+	} else if used >= max * 9 {
+		Some("90% of this Run's steps are used. Finish the task in the next few steps.")
+	} else if used >= max * 8 {
+		Some("80% of this Run's steps are used. Plan to finish within the remaining steps.")
+	} else {
+		None
+	}
+}
 
 /// Project a Run's context and this step's pinned snapshot into the Native IR.
 ///
@@ -171,22 +430,212 @@ pub const HARNESS_REQUIREMENTS: &str = "harness_requirements";
 /// Legacy leaves them out of history, so no request carries a partial Model
 /// Turn. A turn without text or an executed call renders nothing.
 ///
-/// Continuation markers move to the volatile part, or to the Harness
-/// requirements envelope under a `structured@*` contract, until a rendered
-/// Model Turn answers them. A citation correction or a Completion Gate repair
-/// asks for a corrected answer, so only a turn without calls answers it;
-/// tool-call turns that gather the missing evidence or repair the files keep it
-/// current. The notice of Unassigned Tasks is kept the same way: delegating one
-/// of two listed Tasks must not hide the warning about the other.
+/// Continuation markers move to the step state, or to its Harness
+/// requirements under a `structured@*` contract, until a rendered Model Turn
+/// answers them. A citation correction or a Completion Gate repair asks for a
+/// corrected answer, so only a turn without calls answers it; tool-call turns
+/// that gather the missing evidence or repair the files keep it current. The
+/// notice of Unassigned Tasks is kept the same way: delegating one of two
+/// listed Tasks must not hide the warning about the other.
+///
+/// Recorded step states render where they were recorded. This step's state
+/// ends the history when it differs from the last recorded one, exactly as
+/// [`record_step_state`] will record it, so a request built before recording
+/// measures and sends the same bytes.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let projected = crate::context::source::project(context, pinned);
 	let mut pinned = projected.snapshot;
 	if !projected.step.is_empty() {
 		pinned["context_sources"] = json!(projected.step);
 	}
+	let (mut history, markers) =
+		render_history(&context.history, context.reasoning_withheld_from_seq);
+	if let Some(state) = pending_step_state(context, &pinned, &markers) {
+		history.push(step_message(&state).expect("a step state event"));
+	}
+	let evidence = pending_evidence(context, &pinned);
+	if !evidence.is_empty() {
+		history.push(evidence_message(&evidence));
+	}
+	let attachments = run_attachments(context, &pinned, projected.run);
+	if let Some(fields) = pinned.as_object_mut() {
+		for key in STEP_STATE_KEYS.into_iter().chain([HARNESS_REQUIREMENTS]) {
+			fields.remove(key);
+		}
+		// Evidence travels as history items and its page counts in the step
+		// state, so no evidence key trails the request.
+		for key in EVIDENCE_KEYS {
+			fields.remove(key);
+		}
+		// An absent source (for example no memory provider) says nothing. A
+		// trailing message drops out of the cached prefix at the next step,
+		// so a step with nothing volatile must send none (#942).
+		fields.retain(|_, value| !value.is_null());
+	}
+	NativeContext {
+		attachments,
+		history,
+		volatile: crate::context::volatile_part(&pinned, None),
+		harness: None,
+	}
+}
+
+/// Run-stable attachments with the Run-volatility declared sources before
+/// the summaries, as every Native request sends them.
+fn run_attachments(context: &Context, pinned: &Value, run: Vec<Envelope>) -> Vec<Envelope> {
+	let mut attachments = attachments(context, pinned);
+	let source_position = attachments
+		.iter()
+		.position(|envelope| {
+			matches!(
+				envelope.source,
+				Source::RunMessageSummary | Source::ExecutionSummary
+			)
+		})
+		.unwrap_or(attachments.len());
+	attachments.splice(source_position..source_position, run);
+	attachments
+}
+
+/// The context of a Summary Stage merge that continues the main request
+/// (#942, ADR 0125): the main request's attachments and its history through
+/// `through_seq`, the last entry the merge folds, rendered exactly as the
+/// main request renders them so the provider reads them from the prompt
+/// cache. The fold request replaces this step's volatile part, and the
+/// summary instruction follows it as an `aidash` envelope.
+pub fn summary_continuation(
+	context: &Context,
+	pinned: &Value,
+	through_seq: u64,
+	fold: Value,
+	instruction: &str,
+) -> NativeContext {
+	let projected = crate::context::source::project(context, pinned);
+	let attachments = run_attachments(context, &projected.snapshot, projected.run);
+	let end = context
+		.history
+		.iter()
+		.position(|entry| entry.seq > through_seq)
+		.unwrap_or(context.history.len());
+	let (history, _) = render_history(&context.history[..end], context.reasoning_withheld_from_seq);
+	NativeContext {
+		attachments,
+		history,
+		volatile: serde_json::to_string(&json!({"summary_request": fold}))
+			.expect("serializable fold request"),
+		harness: Some(Envelope::harness(json!({"instruction": instruction})).text()),
+	}
+}
+
+/// This step's state when it differs from the last one recorded in history.
+fn pending_step_state(
+	context: &Context,
+	pinned: &Value,
+	markers: &[&ContextEvent],
+) -> Option<ContextEvent> {
+	let state = step_state(pinned, markers)?;
+	let last = context
+		.events()
+		.rev()
+		.find(|event| matches!(event, ContextEvent::StepState { .. }));
+	(last != Some(&state)).then_some(state)
+}
+
+/// Record this step's state in history when it differs from the last one,
+/// so it is journaled and later requests send it at the same position.
+/// Returns whether it recorded one. Only Native Runs record step states.
+pub fn record_step_state(context: &mut Context, pinned: &Value) -> bool {
+	let (_, markers) = render_history(&context.history, context.reasoning_withheld_from_seq);
+	let Some(state) = pending_step_state(context, pinned, &markers) else {
+		return false;
+	};
+	context.push(state);
+	true
+}
+
+/// The step state of `pinned` with the open `markers`, or `None` when it has
+/// nothing to say.
+fn step_state(pinned: &Value, markers: &[&ContextEvent]) -> Option<ContextEvent> {
+	let markers = markers
+		.iter()
+		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
+		.collect::<Vec<_>>();
+	let mut state = serde_json::Map::new();
+	for key in STEP_STATE_KEYS {
+		if let Some(value) = pinned.get(key) {
+			state.insert(key.into(), value.clone());
+		}
+	}
+	// An evidence key's page counts are bookkeeping: they name no entry and
+	// change only when entries arrive, so they travel in the step state
+	// instead of trailing every request (#942).
+	for key in EVIDENCE_KEYS {
+		let pages = pinned
+			.get(key)
+			.and_then(Value::as_object)
+			.into_iter()
+			.flatten()
+			.filter(|(field, _)| PAGE_FIELDS.contains(&field.as_str()))
+			.map(|(field, value)| (field.clone(), value.clone()))
+			.collect::<serde_json::Map<_, _>>();
+		for (field, value) in pages {
+			state.insert(format!("{key}_{field}"), value);
+		}
+	}
+	// A structured Harness Contract builds one requirements envelope; markers
+	// join it because only the projected history knows which are still open.
+	let harness = match pinned.get(HARNESS_REQUIREMENTS) {
+		Some(Value::Object(content)) => {
+			let mut content = content.clone();
+			if !markers.is_empty() {
+				content.insert("markers".into(), Value::Array(markers));
+			}
+			(!content.is_empty()).then_some(Value::Object(content))
+		}
+		_ => {
+			if !markers.is_empty() {
+				state.insert("markers".into(), Value::Array(markers));
+			}
+			None
+		}
+	};
+	(!state.is_empty() || harness.is_some()).then_some(ContextEvent::StepState {
+		state: Value::Object(state),
+		harness,
+	})
+}
+
+/// How a step state renders: its revision stays `null`, so the pending and
+/// the recorded form are the same bytes.
+fn step_message(event: &ContextEvent) -> Option<NativeMessage> {
+	let ContextEvent::StepState { state, harness } = event else {
+		return None;
+	};
+	Some(NativeMessage::StepState {
+		state: Envelope::data(Source::Step, json!({"scope": "step"}), None, state.clone()),
+		harness: harness.clone().map(Envelope::harness),
+	})
+}
+
+/// Render recorded history and collect the continuation markers no rendered
+/// Model Turn has answered yet.
+fn render_history(
+	entries: &[HistoryEntry],
+	withheld_from_seq: Option<u64>,
+) -> (Vec<NativeMessage>, Vec<&ContextEvent>) {
 	let mut history = Vec::new();
 	let mut markers = Vec::new();
-	let entries = &context.history;
+	// Reasoning may copy evidence verbatim and encrypted reasoning cannot be
+	// inspected, so no turn after a withheld result resends its reasoning.
+	// The stored mark decides even once a Summary or offload absorbed the
+	// placeholder; a placeholder still in history is a second guard.
+	let placeholder = entries.iter().position(|entry| {
+		matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result))
+	});
+	let withholds = |start: usize| {
+		withheld_from_seq.is_some_and(|seq| entries[start].seq >= seq)
+			|| placeholder.is_some_and(|placeholder| start > placeholder)
+	};
 	let mut index = 0;
 	while index < entries.len() {
 		let Some(turn) = Turn::at(entries, index) else {
@@ -221,6 +670,18 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 					turn.text.map(str::to_owned)
 				},
 				tool_calls: results.iter().map(|(_, call, _)| (*call).clone()).collect(),
+				// The reasoning that produced the response, whatever part of it
+				// renders: calls that never ran and withheld text leave it whole.
+				// Turns after a withheld result send only what a route
+				// requires in place of their reasoning (#942).
+				reasoning: match &entries[turn.start].event {
+					ContextEvent::Assistant {
+						reasoning: Some(reasoning),
+						..
+					} if withholds(turn.start) => reasoning.withheld(),
+					ContextEvent::Assistant { reasoning, .. } => reasoning.clone(),
+					_ => None,
+				},
 			});
 			for (seq, call, result) in results {
 				history.push(NativeMessage::Tool {
@@ -252,52 +713,7 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		}
 		index = turn.end;
 	}
-	let markers = markers
-		.into_iter()
-		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
-		.collect();
-	let markers = Value::Array(markers);
-	// A structured Harness Contract builds one requirements envelope. Its
-	// content leaves the step's data envelope; markers join it here because
-	// only the projected history knows which ones are still open.
-	let harness_content = pinned
-		.as_object_mut()
-		.and_then(|fields| fields.remove(HARNESS_REQUIREMENTS));
-	let structured = harness_content.is_some();
-	let harness = harness_content.and_then(|content| {
-		let Value::Object(mut content) = content else {
-			return None;
-		};
-		if markers
-			.as_array()
-			.is_some_and(|markers| !markers.is_empty())
-		{
-			content.insert("markers".into(), markers.clone());
-		}
-		(!content.is_empty()).then(|| Envelope::harness(Value::Object(content)).text())
-	});
-	let extra = (!structured
-		&& markers
-			.as_array()
-			.is_some_and(|markers| !markers.is_empty()))
-	.then_some(("markers", &markers));
-	let mut attachments = attachments(context, &pinned);
-	let source_position = attachments
-		.iter()
-		.position(|envelope| {
-			matches!(
-				envelope.source,
-				Source::RunMessageSummary | Source::ExecutionSummary
-			)
-		})
-		.unwrap_or(attachments.len());
-	attachments.splice(source_position..source_position, projected.run);
-	NativeContext {
-		attachments,
-		history,
-		volatile: crate::context::volatile_part(&pinned, extra),
-		harness,
-	}
+	(history, markers)
 }
 
 /// The Model Turn each history entry belongs to, by ordinal from the oldest:
@@ -450,6 +866,10 @@ fn single<'a>(
 		| ContextEvent::CitationCorrectionRequired { .. }
 		| ContextEvent::UnassignedTasksTold { .. }
 		| ContextEvent::CompletionRepairRequired { .. } => markers.push(&entry.event),
+		ContextEvent::StepState { .. } => {
+			history.extend(step_message(&entry.event));
+		}
+		ContextEvent::Evidence { items } => history.push(evidence_message(items)),
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}
 	}
@@ -502,7 +922,8 @@ fn attachments(context: &Context, pinned: &Value) -> Vec<Envelope> {
 impl NativeContext {
 	/// Canonical chat messages after `system`: the attachment message, the
 	/// history, then the volatile message with this step's media parts and,
-	/// last, the Harness requirements envelope.
+	/// last, any Harness requirements envelope. Without volatile evidence,
+	/// media or requirements there is no volatile message.
 	/// `breakpoint` marks the end of the Stable Prefix, the last history
 	/// message or, without history, the last attachment (ADR 0019); the
 	/// volatile message is never marked.
@@ -539,9 +960,12 @@ impl NativeContext {
 				part["cache_control"] = crate::provider::cache_control();
 			}
 		}
+		let mut media = media.map(media_part).peekable();
+		if self.volatile == "{}" && self.harness.is_none() && media.peek().is_none() {
+			return messages;
+		}
 		let volatile =
 			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
-		let mut media = media.map(media_part).peekable();
 		let content = if self.harness.is_none() && media.peek().is_none() {
 			Value::String(volatile)
 		} else {
@@ -586,8 +1010,15 @@ impl NativeMessage {
 				json!({"role":"assistant","content":null,"_provider_activity":items})
 			}
 			Self::Data { envelope } => json!({"role": "user", "content": envelope.text()}),
-			Self::Assistant { text, tool_calls } => {
+			Self::Assistant {
+				text,
+				tool_calls,
+				reasoning,
+			} => {
 				let mut message = json!({"role": "assistant", "content": text});
+				if let Some(reasoning) = reasoning {
+					reasoning.render_chat(&mut message);
+				}
 				if !tool_calls.is_empty() {
 					message["tool_calls"] = tool_calls
 						.iter()
@@ -605,6 +1036,17 @@ impl NativeMessage {
 				tool_call_id,
 				envelope,
 			} => json!({"role": "tool", "tool_call_id": tool_call_id, "content": envelope.text()}),
+			Self::StepState {
+				state,
+				harness: None,
+			} => json!({"role": "user", "content": state.text()}),
+			Self::StepState {
+				state,
+				harness: Some(harness),
+			} => json!({"role": "user", "content": [
+				{"type": "text", "text": state.text()},
+				{"type": "text", "text": harness.text()},
+			]}),
 		}
 	}
 }
@@ -638,6 +1080,7 @@ pub fn check_model_turns(history: &[NativeMessage]) -> Result<()> {
 			}
 			NativeMessage::Human { .. }
 			| NativeMessage::Data { .. }
+			| NativeMessage::StepState { .. }
 			| NativeMessage::ProviderActivity { .. } => index += 1,
 		}
 	}

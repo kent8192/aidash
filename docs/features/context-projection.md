@@ -86,7 +86,14 @@ reserves the enveloped size of media labels before it bounds the snapshot.
 Only `native` Runs record Model Turns: once per accepted response, the Context
 Journal gains an `assistant` event with the response text and the IDs of its
 tool calls, before the first result. A final answer is a Model Turn without
-calls. Reasoning output is never recorded. A call that never ran, because an
+calls. The provider's reasoning is recorded on the same event exactly as
+received, unless the model sets `reasoning_passback: false`, and every later
+request resends it unchanged: Chat `reasoning_details` (or plain reasoning text)
+on the assistant message, Responses reasoning items before the turn's output
+(#942). A turn recorded at or after a revoked or expired result does not resend
+its reasoning; routes that require the field get an empty reasoning string.
+Compaction steps drop the reasoning of turns older than the protected recent
+tail, and the Journal export leaves reasoning out. A call that never ran, because an
 earlier call of the same response waited for a human or deferred its result, is
 left out of the rendered assistant message, as `legacy` leaves it out of
 history. A response without text whose calls never ran renders nothing and is
