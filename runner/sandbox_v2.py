@@ -713,6 +713,26 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
+    if len(sys.argv) == 4 and sys.argv[1] == 'files':
+        import json
+        from pathlib import Path
+        if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
+            raise ValueError('Execution Pod identity changed')
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from files_v2 import FileService, InvalidPath
+        try:
+            request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
+            service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
+            operation = sys.argv[2]
+            if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+                raise ValueError('invalid file operation')
+            result = {'result': getattr(service, operation)(request)}
+        except InvalidPath as error:
+            result = {'error': {'code': 'invalid_path', 'message': str(error)}}
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            result = {'error': {'code': 'file_error', 'message': str(error)}}
+        print(json.dumps(result, separators=(',', ':')))
+        raise SystemExit(0)
     if len(sys.argv) == 4 and sys.argv[1] == 'python-check' and sys.argv[2] in ('docker', 'normal'):
         import json
         import subprocess

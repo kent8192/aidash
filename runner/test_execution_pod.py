@@ -1389,7 +1389,7 @@ class ReconnectedCommandRegressionTest(unittest.TestCase):
 class RestartResumeTest(unittest.TestCase):
     operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
 
-    def test_resume_result_reads_saved_output_and_forgets(self):
+    def test_resume_result_reads_and_retains_saved_background_output(self):
         import base64
         import json
         import tempfile
@@ -1423,7 +1423,7 @@ class RestartResumeTest(unittest.TestCase):
             self.assertEqual((result['status'], result['exit_code']), ('completed', 7))
             self.assertEqual(base64.b64decode(result['stdout']), b'hello')
             self.assertEqual(base64.b64decode(result['stderr']), b'err')
-            self.assertTrue(any('forget' in args for args in calls))
+            self.assertFalse(any('forget' in args for args in calls))
 
     def test_resume_keeps_available_output_if_other_stream_is_missing(self):
         import base64

@@ -578,6 +578,14 @@ class ExecutionPodController:
                         if session_path.exists() and json.loads(session_path.read_bytes()).get('operation_id') == record['operation_id']:
                             session_path.unlink()
                             self.session_index.get(scratch_space_id, set()).discard(session_path.name)
+                    if record.get('background') and record.get('pod'):
+                        try:
+                            pod = self._get('pod', record['pod'])
+                            if pod and pod.get('metadata', {}).get('uid') == record.get('pod_uid'):
+                                self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                                  helper_command('forget', record['operation_id']), check=False, timeout=5)
+                        except Exception:
+                            continue
                     path.unlink()
                     self.journal_index.get(scratch_space_id, set()).discard(path.name)
                     self.journal_metadata.pop(path.name, None)
@@ -1821,6 +1829,8 @@ print(json.dumps(r))'''
         if allow_late:
             fields['outcome'] = 'known'
         self._update_command(operation_id, allow_late=allow_late, status=outcome['status'], **fields, **output)
+        if record.get('background'):
+            return
         try:
             self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
                               helper_command('forget', operation_id), check=False, timeout=5)
@@ -2057,6 +2067,30 @@ print(json.dumps(r))'''
                               'status', 'background', 'outcome', 'exit_code', 'truncated',
                               'error_code', 'message') if key in record})
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
+
+    def file_operation(self, operation, request):
+        import json
+        from control import scratch_resource_name
+        if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+            raise ValueError('invalid file operation')
+        scratch = request['scratch_space_id']
+        name = scratch_resource_name(scratch)
+        with self._space_lock(scratch):
+            pod = self._get('pod', name)
+            if not pod or pod.get('status', {}).get('phase') != 'Running':
+                raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
+            uid = pod.get('metadata', {}).get('uid')
+            if not self.admitted or not uid or self._admitted_uid(scratch) != uid:
+                raise ExecutionPodError('admission_unverified', 'Execution Pod has not passed admission')
+            result = self.backend.kube(['exec', '-i', name, '-c', 'execution', '--'] +
+                                       helper_command('files', operation, uid),
+                                       data=json.dumps(request, separators=(',', ':')).encode(), check=False, timeout=45)
+            if result.returncode:
+                raise ExecutionPodError('pod_unavailable', 'File helper unavailable')
+            response = json.loads(result.stdout)
+            if 'error' in response:
+                raise ExecutionPodError(response['error']['code'], response['error']['message'])
+            return response['result']
 
     def background_log(self, request):
         import json

@@ -93,3 +93,86 @@ def test_python_start_uses_image_interpreter_and_passes_run_credential(tmp_path)
     assert request['proxy_credential'] == 'run-token'
     assert 'run-token' not in controller._python_session_path('s', 'r').read_text()
     assert session['run_id'] == 'r'
+
+
+def test_background_log_route_reads_tail_and_preserves_finished_output(tmp_path):
+    import base64
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    from types import SimpleNamespace
+    from control import Handler
+    from sandbox_v2 import operation_output
+    operation = '00000000-0000-4000-8000-000000000001'
+    (tmp_path / (operation + '.stdout')).write_bytes(b'0123456789')
+    def kube(args, **kwargs):
+        if 'output' in args:
+            result = operation_output(operation, args[-3], None if args[-2] == 'tail' else int(args[-2]),
+                                      int(args[-1]), directory=tmp_path)
+            return SimpleNamespace(returncode=0, stdout=json.dumps(result).encode())
+        if 'forget' in args:
+            (tmp_path / (operation + '.stdout')).unlink(missing_ok=True)
+        return SimpleNamespace(returncode=0, stdout=b'')
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
+    record = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+              'status': 'running', 'background': True}
+    controller._command_path(operation).write_text(json.dumps(record))
+    controller._finish_command(record, {'status': 'completed', 'exit_code': 0},
+                               {'stdout': '', 'stderr': '', 'truncated': False})
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server.runner = SimpleNamespace(token='x' * 32, execution_pods=controller)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection('127.0.0.1', server.server_port)
+        conn.request('POST', '/v2/background/log', json.dumps({'operation_id': operation,
+                     'stream': 'stdout', 'limit': 4}), {'Authorization': 'Bearer ' + 'x' * 32})
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        assert response.status == 200
+        assert base64.b64decode(body['data']) == b'6789'
+        assert (body['next_offset'], body['size'], body['eof']) == (10, 10, True)
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_file_read_http_route_returns_bounded_bytes(tmp_path):
+    import base64
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    from types import SimpleNamespace
+    from control import Handler
+    from files_v2 import FileService
+    root = tmp_path / 'scratch'
+    root.mkdir()
+    (root / 'file').write_bytes(b'abcdef')
+    service = FileService(root, tmp_path / 'state')
+    def kube(args, data=None, **kwargs):
+        result = service.read(json.loads(data))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'result': result}).encode())
+    backend = SimpleNamespace(root=tmp_path, kube=kube)
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'}})
+    controller._admitted_uid = Mock(return_value='uid')
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server.runner = SimpleNamespace(token='x' * 32, execution_pods=controller)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection('127.0.0.1', server.server_port)
+        conn.request('POST', '/v2/files/read', json.dumps({'scratch_space_id': 's', 'path': 'file',
+                     'offset': 2, 'limit': 3}), {'Authorization': 'Bearer ' + 'x' * 32})
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        assert response.status == 200
+        assert base64.b64decode(body['data']) == b'cde'
+        assert body['size'] == 6
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
