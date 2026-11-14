@@ -1046,6 +1046,18 @@ impl WorkerAuthority {
 					refused = true;
 					return Err(error);
 				}
+				// Where commands run in an Execution Pod, the preview runs there as a
+				// Background process of the Run, outside this transaction (#745).
+				if let Some(pod) =
+					crate::apps::execution::repositories::operations::pods::tool_context(
+						store,
+						&mut access,
+						&run.metadata(),
+					)
+					.await?
+				{
+					return Ok(Some(pod));
+				}
 				let area = crate::apps::execution::capabilities::services::sessions::load(
 					&mut access,
 					pending.area_id,
@@ -1053,7 +1065,9 @@ impl WorkerAuthority {
 				.await?;
 				let files =
 					crate::apps::execution::capabilities::services::operations::pod_files(&area)?;
-				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
+				previews::dispatch_accept(store, &mut access, &pending, files, &input.command)
+					.await
+					.map(|()| None)
 			}
 			.await;
 			access.finish(result).await
@@ -1075,10 +1089,28 @@ impl WorkerAuthority {
 			.await;
 			access.finish(result).await?;
 		}
-		accepted?;
-		let dispatched = previews::wait_ready(store, &pending)
+		let dispatched = match accepted? {
+			Some(pod) => match aidash_application::capabilities::pod::previews::start(
+				&pod,
+				pending.id,
+				run.id,
+				&input.command,
+				pending.port,
+			)
 			.await
-			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
+			{
+				Ok(host) => previews::Dispatch {
+					pod_host: Some(host),
+					startup_log: String::new(),
+					started_at: chrono::Utc::now(),
+					failure: None,
+				},
+				Err(error) => previews::Dispatch::failed(error.to_string()),
+			},
+			None => previews::wait_ready(store, &pending)
+				.await
+				.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string())),
+		};
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result =

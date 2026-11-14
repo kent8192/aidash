@@ -94,6 +94,23 @@ pub(crate) async fn tool_context(
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
+/// Stop a Live preview that runs as a Background process in an Execution Pod
+/// (#745). None where previews still run on the Runner's own Pods.
+pub(crate) async fn stop_preview(store: &Store, preview: Uuid) -> Option<NativeResult<bool>> {
+	if store.capabilities.0.runner.is_none() || policy(store).is_none() {
+		return None;
+	}
+	let runner = match crate::bootstrap::operation_runner(store) {
+		Ok(runner) => runner,
+		Err(error) => return Some(Err(error)),
+	};
+	Some(Ok(aidash_application::capabilities::pod::previews::stop(
+		&runner, preview,
+	)
+	.await
+	.is_ok()))
+}
+
 #[async_trait]
 impl PodOperationRepository for Repository<'_> {
 	async fn pending(&self) -> Result<Vec<Uuid>> {

@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub mod files;
+pub mod previews;
 pub mod processes;
 pub mod save;
 

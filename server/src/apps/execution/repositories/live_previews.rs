@@ -552,6 +552,9 @@ pub(crate) async fn settle(
 /// Ask the Runner to stop the Pod and wait for its termination proof.
 pub(crate) async fn terminate(store: &Store, preview: &LivePreview) -> NativeResult<bool> {
 	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
+	if let Some(stopped) = super::operations::pods::stop_preview(store, preview.id).await {
+		return stopped;
+	}
 	let runner = crate::bootstrap::operation_runner(store)?;
 	if runner
 		.request(
