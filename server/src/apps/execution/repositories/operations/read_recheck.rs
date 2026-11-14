@@ -122,7 +122,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 			.column(Alias::new("scratch_space_id"))
 			.from(Alias::new("workspaces"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(run.workspace_id))
+			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
 			.and_where(Expr::col("node").eq(run.node.clone()))
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query_scalar::<Uuid>(&sql)
@@ -177,7 +177,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 		.table(Alias::new("egress_run_revocations"))
 		.value(Alias::new("stopped_at"), chrono::Utc::now())
 		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-		.and_where(Expr::col("run_id").eq(run_id))
+		.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
 		.and_where(Expr::col("stopped_at").is_null())
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values))
@@ -256,7 +256,7 @@ impl ReadRecheckRepository for Repository<'_> {
 					&Query::select()
 						.column(Alias::new("tenant"))
 						.from(Alias::new("egress_run_revocations"))
-						.and_where(Expr::col("run_id").eq(id))
+						.and_where(Expr::col("run_id").eq(Expr::value(id)))
 						.and_where(Expr::col("stopped_at").is_null())
 						.to_string(PostgresQueryBuilder),
 				)
