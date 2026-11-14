@@ -3,7 +3,7 @@ use crate::Result;
 use crate::tenant_secrets::{CallSecret, SecretCall};
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
-	agent_plugin::{ListedTool, PluginName, RemoteServer, ServerName},
+	agent_plugin::{ListedTool, PluginFile, PluginName, RemoteServer, ServerName, StdioServer},
 	exposure::DirectSkill,
 	provider::ToolSpec,
 	registry::{EntityRef, Search, SkillFile},
@@ -131,6 +131,68 @@ pub trait PluginSessions: Send + Sync {
 	}
 	/// Ends every session of the Run.
 	async fn close(&self, run: Uuid);
+	/// The Run's sessions with the stdio servers of its Agent Plugins, when this host runs them
+	/// in Execution Pods (ADR 0073). Without them a stdio server stays unavailable.
+	fn stdio(&self) -> Option<Arc<dyn StdioPluginSessions>> {
+		None
+	}
+}
+
+/// One Run's sessions with the stdio servers of its Agent Plugins, each a process in the
+/// Execution Pod of the Run's Scratch Space, started on first use (ADR 0073).
+#[async_trait]
+pub trait StdioPluginSessions: Send + Sync {
+	/// `tools/list` over the server's session, starting it when needed. An ordinary failure is
+	/// [`Error::Invalid`](crate::Error::Invalid) carrying a cause code.
+	async fn list(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &StdioServer,
+	) -> Result<Vec<ListedTool>>;
+	/// `tools/call` over the server's session, with [`PluginSessions::call`]'s result shape. A
+	/// session started for this call first refuses with `Error::Invalid("CAPABILITY_CHANGED: …")`
+	/// when the tool's schema digest moved. A failure before the request reached the server is
+	/// [`Error::ToolNotDelivered`](crate::Error::ToolNotDelivered); a lost answer is
+	/// [`Error::External`](crate::Error::External) and is never sent again.
+	#[allow(clippy::too_many_arguments)]
+	async fn call(
+		&self,
+		run: Uuid,
+		server: &PluginServer,
+		config: &StdioServer,
+		tool: &str,
+		schema_digest: &str,
+		arguments: Value,
+		key: &str,
+	) -> Result<Value>;
+}
+
+/// The Execution Pod a Run's stdio sessions start in.
+#[derive(Clone)]
+pub struct StdioPod {
+	pub runtime: Arc<dyn crate::ports::capabilities::execution_pod::ExecutionPodRuntime>,
+	pub settings: crate::ports::capabilities::execution_pod::ExecutionPodSettings,
+	/// The Run credential of ADR 0136, never stored.
+	pub credential: Option<crate::ports::capabilities::execution_pod::EgressCredential>,
+}
+
+/// What a Run's stdio sessions need from the Deployment, under the Run's authority.
+#[async_trait]
+pub trait StdioPluginHost: Send + Sync {
+	/// The Execution Pod of the Run's Scratch Space. `None` when this Deployment runs none.
+	async fn pod(&self) -> Result<Option<StdioPod>>;
+	/// Whether the Tenant approves the built-in `mcp_stdio` group on this Node.
+	async fn approved(&self) -> Result<bool>;
+	/// The files of the Tenant's stored plugin copy.
+	async fn plugin_files(&self, digest: &str) -> Result<Vec<PluginFile>>;
+	/// The plugin's saved `${PLUGIN_DATA}`, paths relative to the data directory.
+	async fn load_data(&self, plugin: &PluginName) -> Result<Option<Vec<PluginFile>>>;
+	/// Replace the plugin's saved `${PLUGIN_DATA}` with checked content, all or nothing.
+	async fn save_data(&self, plugin: &PluginName, files: Vec<PluginFile>) -> Result<()>;
+	/// Record in the Run's events that the plugin's data was not saved; the previous version
+	/// stays.
+	async fn data_not_saved(&self, plugin: &PluginName, cause: &str);
 }
 
 /// A legacy server may ask only while its logical call is open. An adapter

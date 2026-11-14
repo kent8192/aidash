@@ -286,7 +286,20 @@ pub async fn authorize(
 				})
 				.flatten()
 				.ok_or_else(|| refused(call, RefusalCheck::PluginTool, None))?;
-			current = ToolContract::agent_plugin(identity.clone(), pinned.read_only);
+			// A stdio server's tools need no Tool call approval (ADR 0073).
+			let stdio = configuration
+				.agent_plugins
+				.iter()
+				.find(|plugin| plugin.name == identity.plugin && plugin.digest == identity.digest)
+				.and_then(|plugin| plugin.servers.get(&identity.server))
+				.is_some_and(|server| {
+					matches!(server, aidash_domain::agent_plugin::McpServer::Stdio(_))
+				});
+			current = if stdio {
+				ToolContract::agent_plugin_stdio(identity.clone())
+			} else {
+				ToolContract::agent_plugin(identity.clone(), pinned.read_only)
+			};
 			if current != *contract {
 				return Err(Error::Conflict(
 					"admitted plugin tool contract changed".into(),

@@ -13,6 +13,7 @@ pub mod lifecycle;
 pub mod memory;
 pub mod oauth_connections;
 pub mod plan_connections;
+pub mod plugin_stdio;
 pub mod plugin_tools;
 pub mod ports;
 pub mod preview;
