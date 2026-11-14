@@ -29,6 +29,9 @@ pub enum ExecutionPodErrorCode {
 	CommandInterrupted,
 	RequestRejected,
 	RunnerUnavailable,
+	PythonUnavailable,
+	InvalidPath,
+	PreviewStartFailed,
 	Unknown(String),
 }
 impl From<&str> for ExecutionPodErrorCode {
@@ -58,6 +61,9 @@ impl From<&str> for ExecutionPodErrorCode {
 			"command_interrupted" => Self::CommandInterrupted,
 			"request_rejected" => Self::RequestRejected,
 			"runner_unavailable" => Self::RunnerUnavailable,
+			"python_unavailable" => Self::PythonUnavailable,
+			"invalid_path" => Self::InvalidPath,
+			"preview_start_failed" => Self::PreviewStartFailed,
 			other => Self::Unknown(other.into()),
 		}
 	}
@@ -89,6 +95,9 @@ impl std::fmt::Display for ExecutionPodErrorCode {
 			Self::CommandInterrupted => "command_interrupted",
 			Self::RequestRejected => "request_rejected",
 			Self::RunnerUnavailable => "runner_unavailable",
+			Self::PythonUnavailable => "python_unavailable",
+			Self::InvalidPath => "invalid_path",
+			Self::PreviewStartFailed => "preview_start_failed",
 			Self::Unknown(value) => value,
 		};
 		f.write_str(value)
@@ -239,6 +248,21 @@ mod tests {
 			ExecutionPodErrorCode::from("termination_unconfirmed"),
 			ExecutionPodErrorCode::TerminationUnconfirmed
 		);
+		for (wire, expected) in [
+			(
+				"python_unavailable",
+				ExecutionPodErrorCode::PythonUnavailable,
+			),
+			("invalid_path", ExecutionPodErrorCode::InvalidPath),
+			(
+				"preview_start_failed",
+				ExecutionPodErrorCode::PreviewStartFailed,
+			),
+		] {
+			let code = ExecutionPodErrorCode::from(wire);
+			assert_eq!(code, expected);
+			assert_eq!(code.to_string(), wire);
+		}
 		assert_eq!(
 			ExecutionPodErrorCode::from("future_code"),
 			ExecutionPodErrorCode::Unknown("future_code".into())
