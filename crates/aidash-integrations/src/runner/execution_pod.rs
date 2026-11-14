@@ -1,13 +1,63 @@
-use super::RunnerHttp;
+use super::{MAX_RUNNER_RESPONSE_BYTES, RunnerHttp};
 use aidash_application::ports::capabilities::execution_pod::*;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use std::time::Duration;
+
+fn pod_timeout(path: &str, body: &Value) -> Duration {
+	let seconds = match path {
+		"/v2/previews/start" => 75,
+		"/v2/mcp/start" => 15 * 60,
+		"/v2/mcp/call" => body
+			.get("timeout_seconds")
+			.and_then(Value::as_u64)
+			.unwrap_or(0)
+			.saturating_add(15),
+		"/v2/runs/stop" | "/v2/python/start" => 60,
+		_ => 30,
+	};
+	Duration::from_secs(seconds)
+}
 
 impl RunnerHttp {
 	async fn pod_call<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
 		let body = serde_json::to_value(body).map_err(aidash_application::Error::from)?;
-		let (status, value) = self.raw_request("POST", path, Some(&body)).await?;
+		let url = reqwest::Url::parse(&self.endpoint)
+			.map_err(|_| aidash_application::Error::Invalid("invalid runner endpoint".into()))?;
+		if url.scheme() != "https"
+			&& !(url.scheme() == "http"
+				&& url.host_str().is_some_and(|host| {
+					matches!(host, "127.0.0.1" | "[::1]") || host.ends_with(".svc.cluster.local")
+				})) {
+			return Err(aidash_application::Error::Invalid(
+				"runner transport requires TLS, loopback or a cluster Service".into(),
+			)
+			.into());
+		}
+		let token = self
+			.credentials
+			.resolve(&self.credential_env)
+			.map_err(|_| {
+				aidash_application::Error::Conflict(
+					"RUNTIME_UNAVAILABLE: runner credential unavailable".into(),
+				)
+			})?;
+		let client = reqwest::Client::builder()
+			.no_proxy()
+			.timeout(pod_timeout(path, &body))
+			.redirect(reqwest::redirect::Policy::none())
+			.build()
+			.map_err(crate::http_error)?;
+		let response = client
+			.post(format!("{}{path}", self.endpoint.trim_end_matches('/')))
+			.bearer_auth(token)
+			.json(&body)
+			.send()
+			.await
+			.map_err(crate::http_error)?;
+		let status = response.status();
+		let value: Value = crate::response::json(response, MAX_RUNNER_RESPONSE_BYTES).await?;
 		if !status.is_success() {
 			let code = value
 				.get("code")
@@ -172,5 +222,30 @@ impl ExecutionPodRuntime for RunnerHttp {
 			"deleted",
 		)
 		.await
+	}
+}
+
+#[cfg(test)]
+mod timeout_tests {
+	use super::*;
+
+	#[test]
+	fn each_pod_route_uses_its_required_wait_limit() {
+		for (path, body, seconds) in [
+			("/v2/previews/start", json!({}), 75),
+			("/v2/mcp/start", json!({}), 900),
+			("/v2/mcp/call", json!({"timeout_seconds": 42}), 57),
+			("/v2/mcp/call", json!({"timeout_seconds": 0}), 15),
+			("/v2/runs/stop", json!({}), 60),
+			("/v2/python/start", json!({}), 60),
+			("/v2/commands/submit", json!({}), 30),
+			("/v2/pods/ensure", json!({}), 30),
+		] {
+			assert_eq!(
+				pod_timeout(path, &body),
+				Duration::from_secs(seconds),
+				"{path}"
+			);
+		}
 	}
 }
