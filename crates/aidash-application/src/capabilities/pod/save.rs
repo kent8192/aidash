@@ -321,7 +321,13 @@ pub async fn copy(
 	if let Some(cached) = scope.cached(input.idempotency_key, &request_digest).await? {
 		return Ok(cached);
 	}
+	// Reading the saved files and writing the Scratch Space share the rule of
+	// every tool that writes there: file.read, file.write and the active Run.
 	scope.authorize(area, "file.read").await?;
+	scope.authorize(area, "file.write").await?;
+	if scope.current_run(area).await? != Some(run.id) {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
 	let roots = roots(&input.paths)?;
 	let destination = input.destination.as_deref().map(root).transpose()?;
 	let entries = files(area)?;

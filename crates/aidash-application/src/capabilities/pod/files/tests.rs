@@ -156,9 +156,27 @@ async fn an_empty_file_is_written_with_one_final_chunk() {
 async fn a_patch_reaches_the_runner_with_the_run() {
 	let runtime = Arc::new(Runtime::default());
 	let context = context(runtime.clone());
-	let result = patch(&context, "run", "*** Begin Patch\n*** End Patch".into())
-		.await
-		.unwrap();
+	let result = patch(
+		&context,
+		"run",
+		"*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch".into(),
+	)
+	.await
+	.unwrap();
 	assert_eq!(result["changed"], json!(["a.txt"]));
 	assert_eq!(runtime.patches.lock().unwrap()[0].run_id, "run");
+}
+
+#[tokio::test]
+async fn a_patch_naming_a_path_outside_the_scratch_space_is_refused_before_the_runner() {
+	let runtime = Arc::new(Runtime::default());
+	let context = context(runtime.clone());
+	for text in [
+		"*** Begin Patch\n*** Add File: ok.txt\n+a\n*** Add File: ../escape.txt\n+b\n*** End Patch",
+		"*** Begin Patch\n*** Delete File: /etc/passwd\n*** End Patch",
+		"*** Begin Patch\n*** Update File: a//b\n@@\n-x\n+y\n*** End Patch",
+	] {
+		assert!(patch(&context, "run", text.into()).await.is_err(), "{text}");
+	}
+	assert!(runtime.calls().is_empty());
 }

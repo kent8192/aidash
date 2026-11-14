@@ -523,4 +523,4 @@ pub async fn sweep(repository: &dyn PodOperationRepository) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

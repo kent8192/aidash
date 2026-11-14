@@ -1176,3 +1176,54 @@ async fn a_completion_check_needs_a_bound_shell() {
 	));
 	assert!(scope.verified.is_empty());
 }
+
+fn working_copy(paths: &[&str]) -> WorkingCopy {
+	WorkingCopy {
+		idempotency_key: Uuid::new_v4(),
+		paths: paths.iter().map(|path| (*path).to_owned()).collect(),
+		destination: None,
+	}
+}
+
+#[tokio::test]
+async fn copying_saved_files_into_the_scratch_space_needs_the_active_run() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	let area = scope.area.as_ref().unwrap().clone();
+	let runtime = std::sync::Arc::new(crate::capabilities::pod::tests::Runtime::default());
+	let context = crate::capabilities::pod::tests::context(runtime.clone());
+	let refused = crate::capabilities::pod::save::copy(
+		&mut scope,
+		&run,
+		&area,
+		&context,
+		working_copy(&[&file.path]),
+	)
+	.await
+	.unwrap_err();
+	assert!(matches!(refused, Error::Conflict(message) if message == "RUN_NOT_ACTIVE"));
+	assert!(runtime.calls().is_empty());
+}
+
+#[tokio::test]
+async fn copying_saved_files_writes_them_at_their_paths() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	scope.active_run = Some(run.id);
+	let area = scope.area.as_ref().unwrap().clone();
+	let runtime = std::sync::Arc::new(crate::capabilities::pod::tests::Runtime::default());
+	let context = crate::capabilities::pod::tests::context(runtime.clone());
+	let copied = crate::capabilities::pod::save::copy(
+		&mut scope,
+		&run,
+		&area,
+		&context,
+		working_copy(&[&file.path]),
+	)
+	.await
+	.unwrap();
+	assert_eq!(copied["copied"][0]["path"], file.path);
+	let writes = runtime.writes.lock().unwrap().clone();
+	assert_eq!(writes.len(), 1);
+	assert_eq!(writes[0].path, file.path);
+	assert!(writes[0].final_chunk);
+	assert_eq!(writes[0].run_id, run.id.to_string());
+}
