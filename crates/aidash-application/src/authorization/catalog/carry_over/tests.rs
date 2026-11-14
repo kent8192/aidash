@@ -75,8 +75,10 @@ async fn a_backport_carries_only_from_the_highest_lower_opted_in_version() {
 }
 
 #[tokio::test]
-async fn compatible_builtin_compaction_decider_version_can_carry() {
-	let next = crate::registry::system::compaction_decider().unwrap();
+async fn compatible_builtin_approval_decider_version_can_carry() {
+	// The compaction Decider was removed by #853; the approval Decider is the
+	// remaining built-in Decider.
+	let next = crate::registry::system::approval_decider().unwrap();
 	let mut previous = next.clone();
 	previous.version = "0.9.0".into();
 	let mut fixture = Fixture {

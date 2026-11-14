@@ -40,6 +40,11 @@ impl ExpiredResults {
 		if let Some(reference) = crate::context::research::ResearchReference::parse(result) {
 			return reference.covered_by(self);
 		}
+		if let Some(reference) =
+			crate::context::research::ResearchReference::from_result("journal", result)
+		{
+			return reference.covered_by(self);
+		}
 		let uuid = |value: &Value| value.as_str().and_then(|id| id.parse::<Uuid>().ok());
 		match result_operation(result) {
 			Some(Operation::Search) => {

@@ -1,7 +1,6 @@
 import { ProviderToolActivity } from "../provider-tools";
 import { SafetyStopPanel } from "./safety-stop";
 import { ElicitationForm, elicitationMessage } from "./elicitation";
-import { RunCompactionDetails } from "../compaction-details";
 import { RunPlanUsage } from "../model-source";
 import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -63,8 +62,6 @@ import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
 import { ApprovalReviewPanel } from "../approval-review";
 import { RunSubnodes } from "./subnodes";
-import { DeciderStartRefusal } from "../catalog-approval";
-import { unapprovedCompactionDecider } from "../catalog-approval-model";
 import { ArtifactList } from "./channel";
 import {
   answeredAtDeadline,
@@ -148,7 +145,6 @@ export function OperationsDialog({
   const execution = ["workspace", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
-  const refusedDecider = unapprovedCompactionDecider(error);
   const taskRuns = task
     ? data.runs.filter(
         (run) => run.task_id === task.id && isLocalRun(run, data),
@@ -179,16 +175,7 @@ export function OperationsDialog({
       }
       close={close}
     >
-      {error &&
-        (refusedDecider ? (
-          <DeciderStartRefusal
-            decider={refusedDecider}
-            data={data}
-            openEntry={(entity) => open({ kind: "entityDetail", entity })}
-          />
-        ) : (
-          <Alert>{error}</Alert>
-        ))}
+      {error && <Alert>{error}</Alert>}
       <fieldset disabled={busy} className="m-0 grid min-w-0 gap-4 border-0 p-0">
         {unavailable ? (
           <Hint>{copy.unavailable}</Hint>
@@ -668,10 +655,6 @@ function RunPanel({
           {run.error}
         </p>
       )}
-      <RunCompactionDetails
-        bindings={run.context?.binding_snapshot?.bindings ?? []}
-        reason={run.recovery?.context_reason}
-      />
       <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
       {!managed && (

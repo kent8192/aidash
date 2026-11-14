@@ -1,0 +1,1938 @@
+[
+  {
+    "id": "aidash.workspace_read",
+    "version": "1.1.0",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_read"
+    },
+    "description": {
+      "en": "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset."
+    },
+    "capabilities": ["workspace_read"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "area_id": {
+          "type": "string"
+        },
+        "expected_digest": {
+          "type": "string"
+        },
+        "generation": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "workspace",
+            "task",
+            "artifact",
+            "message",
+            "event",
+            "file",
+            "attachment"
+          ]
+        },
+        "max_chars": {
+          "maximum": 16000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "representation": {
+          "enum": ["metadata", "model_input"]
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": ["kind", "id"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_read",
+      "narrow": {},
+      "operation": "workspace_read",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.human_request",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "human_request"
+    },
+    "description": {
+      "en": "Ask the human for input and wait for a response. Approval requests do not grant permission until answered."
+    },
+    "capabilities": ["human_request"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "QUESTION",
+            "APPROVAL_REQUIRED",
+            "CONFIRMATION",
+            "INFORMATION_REQUEST"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "required": ["kind", "prompt"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "human_request",
+      "narrow": {},
+      "operation": "human_request",
+      "provider": "core.human@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.connection_request",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "connection_request"
+    },
+    "description": {
+      "en": "Ask the person who started this Run to connect an MCP server. Available in every Approval Mode. Waits and returns {connected: bool}; connect missing plugin servers to make their tools available."
+    },
+    "capabilities": ["connection_request"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["resource", "reason"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "connection_request",
+      "narrow": {},
+      "operation": "connection_request",
+      "provider": "core.human@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_observe",
+    "version": "1.0.1",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_observe"
+    },
+    "description": {
+      "en": "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes."
+    },
+    "capabilities": ["workspace_observe"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_observe",
+      "narrow": {},
+      "operation": "workspace_observe",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_search",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_search"
+    },
+    "description": {
+      "en": "Search the Workspace index by text or by an image in your own Working Area. Image matches are File pointers; open a match with workspace_read."
+    },
+    "capabilities": ["workspace_search"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "additionalProperties": false,
+          "properties": {
+            "area_id": {
+              "type": "string"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string"
+            },
+            "generation": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "type": "object"
+        },
+        "limit": {
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_tokens": {
+          "maximum": 32768,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_search",
+      "narrow": {},
+      "operation": "workspace_search",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_wait",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_wait"
+    },
+    "description": {
+      "en": "Wait without inference for a Task you created or delegated to finish, block or fail, or for a message or person. The default is 60 minutes while your Tasks remain unfinished and 5 minutes otherwise; the maximum is 60 minutes. The result summarizes changes. For remote Tasks, use workspace_observe to read details after a change."
+    },
+    "capabilities": ["workspace_wait"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "seconds": {
+          "maximum": 3600,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_wait",
+      "narrow": {},
+      "operation": "workspace_wait",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.skill_list",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "skill_list"
+    },
+    "description": {
+      "en": "Native skill_list"
+    },
+    "capabilities": ["skill_list"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "skill_list",
+      "narrow": {},
+      "operation": "skill_list",
+      "provider": "core.skills@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.skill_load",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "skill_load"
+    },
+    "description": {
+      "en": "Native skill_load"
+    },
+    "capabilities": ["skill_load"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "skill_load",
+      "narrow": {},
+      "operation": "skill_load",
+      "provider": "core.skills@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.skill_read",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "skill_read"
+    },
+    "description": {
+      "en": "Native skill_read"
+    },
+    "capabilities": ["skill_read"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "skill_read",
+      "narrow": {},
+      "operation": "skill_read",
+      "provider": "core.skills@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.file_search",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "file_search"
+    },
+    "description": {
+      "en": "Native file_search"
+    },
+    "capabilities": ["file_search"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "file_search",
+      "narrow": {},
+      "operation": "file_search",
+      "provider": "core.files@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.file_read",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "file_read"
+    },
+    "description": {
+      "en": "Native file_read"
+    },
+    "capabilities": ["file_read"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "file_read",
+      "narrow": {},
+      "operation": "file_read",
+      "provider": "core.files@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.task_create",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "task_create"
+    },
+    "description": {
+      "en": "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next. A subtask nobody is given is abandoned when this Run finishes."
+    },
+    "capabilities": ["task_create"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parent_id": {
+          "type": "string"
+        },
+        "requirements": {
+          "type": "object"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": ["title", "description"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "task_create",
+      "narrow": {},
+      "operation": "task_create",
+      "provider": "core.tasks@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.task_delegate",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "task_delegate"
+    },
+    "description": {
+      "en": "Offer an existing workspace task to the explicitly selected local or remote agent."
+    },
+    "capabilities": ["task_delegate"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": ["id", "version"],
+          "type": "object"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": ["task_id", "node_id", "agent"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "task_delegate",
+      "narrow": {},
+      "operation": "task_delegate",
+      "provider": "core.tasks@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.agent_discover",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "agent_discover"
+    },
+    "description": {
+      "en": "Find local and federated agents by capability, skill, tag, language or model. Choose an exact node_id, entity id and version from these results."
+    },
+    "capabilities": ["agent_discover"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "capability": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "skill": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "agent_discover",
+      "narrow": {},
+      "operation": "agent_discover",
+      "provider": "core.tasks@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.artifact_publish",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "artifact_publish"
+    },
+    "description": {
+      "en": "Publish an intermediate artifact to the shared workspace."
+    },
+    "capabilities": ["artifact_publish"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {},
+        "kind": {
+          "enum": [
+            "text",
+            "json",
+            "file_reference",
+            "code",
+            "structured_result"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["kind", "name", "content"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "artifact_publish",
+      "narrow": {},
+      "operation": "artifact_publish",
+      "provider": "core.artifacts@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_message",
+    "version": "1.0.1",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_message"
+    },
+    "description": {
+      "en": "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total)."
+    },
+    "capabilities": ["workspace_message"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "type": "array"
+        }
+      },
+      "required": ["content"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_message",
+      "narrow": {},
+      "operation": "workspace_message",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.attachment_copy",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "attachment_copy"
+    },
+    "description": {
+      "en": "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment."
+    },
+    "capabilities": ["attachment_copy"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "path", "expected_revision", "idempotency_key"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "attachment_copy",
+      "narrow": {},
+      "operation": "attachment_copy",
+      "provider": "core.files@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.memory_mutate",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "memory_mutate"
+    },
+    "description": {
+      "en": "Explicitly add, correct, or delete individual unverified memory units in the host-bound private bank. Corrections and deletions require the caller-observed expected_revision. Preserve exact evidence. Never replace a bank."
+    },
+    "capabilities": ["memory_mutate"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "$defs": {
+        "Bank": {
+          "additionalProperties": false,
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "description": "`None` is the explicitly published Workspace bank.",
+              "format": "uuid",
+              "type": ["string", "null"]
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": ["home", "tenant", "workspace"],
+          "type": "object"
+        },
+        "Change": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "$ref": "#/$defs/Content"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "operation": {
+                  "const": "add",
+                  "type": "string"
+                }
+              },
+              "required": ["operation", "id", "content"],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "$ref": "#/$defs/Content"
+                },
+                "expected_revision": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "operation": {
+                  "const": "correct",
+                  "type": "string"
+                }
+              },
+              "required": ["operation", "id", "expected_revision", "content"],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expected_revision": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "operation": {
+                  "const": "delete",
+                  "type": "string"
+                }
+              },
+              "required": ["operation", "id", "expected_revision"],
+              "type": "object"
+            }
+          ]
+        },
+        "Content": {
+          "additionalProperties": false,
+          "properties": {
+            "entities": {
+              "items": {
+                "$ref": "#/$defs/Entity"
+              },
+              "type": "array"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/Evidence"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "$ref": "#/$defs/Kind"
+            },
+            "learning": {
+              "$ref": "#/$defs/Learning"
+            },
+            "links": {
+              "items": {
+                "$ref": "#/$defs/Link"
+              },
+              "type": "array"
+            },
+            "mental_model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MentalModel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "A recurring question, retained independently of the current generated answer."
+            },
+            "occurred": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TimeRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "verification": {
+              "$ref": "#/$defs/Verification"
+            }
+          },
+          "required": [
+            "text",
+            "kind",
+            "learning",
+            "verification",
+            "entities",
+            "evidence",
+            "links"
+          ],
+          "type": "object"
+        },
+        "Entity": {
+          "additionalProperties": false,
+          "properties": {
+            "aliases": {
+              "default": [],
+              "description": "Explicit source/model-resolved names, including cross-language aliases.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "category": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": ["name", "category"],
+          "type": "object"
+        },
+        "Evidence": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Exact selected disclosure grant; source lineage is resolved at the Home.",
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "publication",
+                  "type": "string"
+                },
+                "revision": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": ["kind", "id", "revision"],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "bank": {
+                  "$ref": "#/$defs/Bank"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "unit",
+                  "type": "string"
+                },
+                "revision": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": ["kind", "bank", "id", "revision"],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "message",
+                  "type": "string"
+                },
+                "revision": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": ["kind", "id", "revision", "digest"],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "artifact",
+                  "type": "string"
+                },
+                "revision": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": ["kind", "id", "revision", "digest"],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "run",
+                  "type": "string"
+                },
+                "revision": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": ["kind", "id", "revision", "digest"],
+              "type": "object"
+            }
+          ]
+        },
+        "Kind": {
+          "enum": ["world", "experience", "observation", "mental_model"],
+          "type": "string"
+        },
+        "Learning": {
+          "enum": ["fact", "preference", "procedure", "failure"],
+          "type": "string"
+        },
+        "Link": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/LinkKind"
+            },
+            "revision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "target": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "weight": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": ["target", "revision", "kind", "weight"],
+          "type": "object"
+        },
+        "LinkKind": {
+          "enum": ["entity", "semantic", "temporal", "causes", "caused_by"],
+          "type": "string"
+        },
+        "MentalModel": {
+          "additionalProperties": false,
+          "properties": {
+            "automatic_refresh": {
+              "type": "boolean"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": ["question", "automatic_refresh"],
+          "type": "object"
+        },
+        "TimeRange": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "start": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": ["start", "end"],
+          "type": "object"
+        },
+        "Verification": {
+          "description": "Verification is separate from admission and model confidence.",
+          "enum": ["unverified", "supported", "contradicted"],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/Change"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["changes"],
+      "title": "MemoryMutationInput",
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "memory_mutate",
+      "narrow": {},
+      "operation": "memory_mutate",
+      "provider": "core.memory@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.memory_recall",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "memory_recall"
+    },
+    "description": {
+      "en": "Recall bounded current memory from the Home's bound participant using semantic, keyword, graph and temporal search. Preserve provenance and uncertainty."
+    },
+    "capabilities": ["memory_recall"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "$defs": {
+        "Kind": {
+          "enum": ["world", "experience", "observation", "mental_model"],
+          "type": "string"
+        },
+        "TimeRange": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "start": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": ["start", "end"],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "kinds": {
+          "items": {
+            "$ref": "#/$defs/Kind"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["text", "kinds", "max_tokens"],
+      "title": "RecallQuery",
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "memory_recall",
+      "narrow": {},
+      "operation": "memory_recall",
+      "provider": "core.memory@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.memory_reflect",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "memory_reflect"
+    },
+    "description": {
+      "en": "Explicitly reflect over currently admitted memory with bounded exact-citation reads. This operation does not admit new learning."
+    },
+    "capabilities": ["memory_reflect"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "$defs": {
+        "Kind": {
+          "enum": ["world", "experience", "observation", "mental_model"],
+          "type": "string"
+        },
+        "TimeRange": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "start": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": ["start", "end"],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "kinds": {
+          "items": {
+            "$ref": "#/$defs/Kind"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["text", "kinds", "max_tokens"],
+      "title": "RecallQuery",
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "memory_reflect",
+      "narrow": {},
+      "operation": "memory_reflect",
+      "provider": "core.memory@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.capability_search",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "capability_search"
+    },
+    "description": {
+      "en": "Search this agent's Discoverable capabilities (tools and Skills) by keywords; an empty query lists all. Results give each alias, kind, summary, digest and whether it is loaded. Continue with next_cursor when truncated."
+    },
+    "capabilities": ["capability_search"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "capability_search",
+      "narrow": {},
+      "operation": "capability_search",
+      "provider": "core.exposure@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.capability_describe",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "capability_describe"
+    },
+    "description": {
+      "en": "Describe one Discoverable capability by alias: its exact identity and digest, the full tool definition or Skill file inventory, and the bytes it uses of its exposure budget."
+    },
+    "capabilities": ["capability_describe"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "type": "string"
+        }
+      },
+      "required": ["alias"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "capability_describe",
+      "narrow": {},
+      "operation": "capability_describe",
+      "provider": "core.exposure@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.capability_load",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "capability_load"
+    },
+    "description": {
+      "en": "Load a Discoverable capability by alias and digest. A loaded tool can be called and loaded Skill instructions appear from the next request. Loading never evicts anything; when the budget is exceeded, unload a capability first."
+    },
+    "capabilities": ["capability_load"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": ["alias", "digest"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "capability_load",
+      "narrow": {},
+      "operation": "capability_load",
+      "provider": "core.exposure@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.capability_unload",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "capability_unload"
+    },
+    "description": {
+      "en": "Unload a loaded or eager capability by alias to free its exposure budget from the next request. Mandatory capabilities cannot be unloaded."
+    },
+    "capabilities": ["capability_unload"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "type": "string"
+        }
+      },
+      "required": ["alias"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "capability_unload",
+      "narrow": {},
+      "operation": "capability_unload",
+      "provider": "core.exposure@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.skill_asset_read",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "skill_asset_read"
+    },
+    "description": {
+      "en": "Read a file packaged with a Skill by its capability alias, digest and relative path. Continue from next_offset when present. Binary files return metadata only."
+    },
+    "capabilities": ["skill_asset_read"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "max_chars": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": ["alias", "digest", "path"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "skill_asset_read",
+      "narrow": {},
+      "operation": "skill_asset_read",
+      "provider": "core.skills@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.task_assign",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "task_assign"
+    },
+    "description": {
+      "en": "Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity."
+    },
+    "capabilities": ["task_assign"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": ["task_id", "policy_id", "reason"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "task_assign",
+      "narrow": {},
+      "operation": "task_assign",
+      "provider": "core.tasks@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.subnode_create",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "subnode_create"
+    },
+    "description": {
+      "en": "Create a Run-scoped Subnode with approved members and a narrower allowance. Name built-in tools by operation and other tools as registry_deployment/tools/id@version."
+    },
+    "capabilities": ["subnode_create"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "allowance": {
+          "additionalProperties": false,
+          "properties": {
+            "secrets": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tools": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["tools", "secrets"],
+          "type": "object"
+        },
+        "leader": {
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": ["leader", "members", "allowance"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "subnode_create",
+      "narrow": {},
+      "operation": "subnode_create",
+      "provider": "core.subnodes@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.subnode_task",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "subnode_task"
+    },
+    "description": {
+      "en": "Give a task to a Subnode's leader."
+    },
+    "capabilities": ["subnode_task"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "subnode_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": ["subnode_id", "title", "request"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "subnode_task",
+      "narrow": {},
+      "operation": "subnode_task",
+      "provider": "core.subnodes@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.subnode_add_member",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "subnode_add_member"
+    },
+    "description": {
+      "en": "Add an approved agent version to a Subnode."
+    },
+    "capabilities": ["subnode_add_member"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "subnode_id": {
+          "type": "string"
+        }
+      },
+      "required": ["subnode_id", "agent"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "subnode_add_member",
+      "narrow": {},
+      "operation": "subnode_add_member",
+      "provider": "core.subnodes@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.subnode_remove_member",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "subnode_remove_member"
+    },
+    "description": {
+      "en": "Remove a member without unfinished work from a Subnode."
+    },
+    "capabilities": ["subnode_remove_member"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "subnode_id": {
+          "type": "string"
+        }
+      },
+      "required": ["subnode_id", "agent"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "subnode_remove_member",
+      "narrow": {},
+      "operation": "subnode_remove_member",
+      "provider": "core.subnodes@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.subnode_dissolve",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "subnode_dissolve"
+    },
+    "description": {
+      "en": "Dissolve a Subnode created by this Run and cancel its active Runs."
+    },
+    "capabilities": ["subnode_dissolve"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "subnode_id": {
+          "type": "string"
+        }
+      },
+      "required": ["subnode_id"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "subnode_dissolve",
+      "narrow": {},
+      "operation": "subnode_dissolve",
+      "provider": "core.subnodes@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.subnode_message",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "subnode_message"
+    },
+    "description": {
+      "en": "Send a message to the Run that created this Subnode."
+    },
+    "capabilities": ["subnode_message"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": ["content"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "subnode_message",
+      "narrow": {},
+      "operation": "subnode_message",
+      "provider": "core.subnodes@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_read",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_read"
+    },
+    "description": {
+      "en": "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn."
+    },
+    "capabilities": ["workspace_read"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": ["workspace", "task", "artifact", "message", "event"]
+        },
+        "max_chars": {
+          "maximum": 16000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["kind", "id"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_read",
+      "narrow": {},
+      "operation": "workspace_read",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_observe",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_observe"
+    },
+    "description": {
+      "en": "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes."
+    },
+    "capabilities": ["workspace_observe"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_observe",
+      "narrow": {},
+      "operation": "workspace_observe",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_message",
+    "version": "1.0.0",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_message"
+    },
+    "description": {
+      "en": "Send a message to the human and other agents sharing this workspace."
+    },
+    "capabilities": ["workspace_message"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": ["content"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_message",
+      "narrow": {},
+      "operation": "workspace_message",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.workspace_read",
+    "version": "1.0.1",
+    "kind": "tool",
+    "name": {
+      "en": "workspace_read"
+    },
+    "description": {
+      "en": "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn."
+    },
+    "capabilities": ["workspace_read"],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "workspace",
+            "task",
+            "artifact",
+            "message",
+            "event",
+            "attachment"
+          ]
+        },
+        "max_chars": {
+          "maximum": 16000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "representation": {
+          "enum": ["metadata", "model_input"]
+        }
+      },
+      "required": ["kind", "id"],
+      "type": "object"
+    },
+    "config": {
+      "default_alias": "workspace_read",
+      "narrow": {},
+      "operation": "workspace_read",
+      "provider": "core.workspace@1",
+      "registry_deployment": "aidash://local",
+      "tier": "builtin"
+    }
+  },
+  {
+    "id": "aidash.compaction-decider",
+    "version": "1.0.0",
+    "kind": "decider",
+    "name": {
+      "en": "Compaction Decider"
+    },
+    "description": {
+      "en": "Keep history needed to answer the current request while pruning unnecessary tool calls and results."
+    },
+    "capabilities": [],
+    "tags": ["system"],
+    "languages": [],
+    "skills": [],
+    "schema": {},
+    "config": {
+      "answer_type": "noul",
+      "builder": "aidash.compaction/3",
+      "description": "Keep history needed to answer the current request while pruning unnecessary tool calls and results.",
+      "hook": "compaction",
+      "max_calls_per_run": 100,
+      "mode": "enforce",
+      "option_source": "history_event/1",
+      "provider_credential": "openrouter",
+      "routes": [
+        {
+          "hosts": [],
+          "model": "typesafe/jev-1.14",
+          "provider_contract": "typesafe.jev/1",
+          "state_budget": {
+            "default_request_bytes": 32000,
+            "default_state_bytes": 24000,
+            "input_stages": [null, 200, 60],
+            "long_context_request_bytes": 600000,
+            "long_context_state_bytes": 560000
+          },
+          "threshold": "3fe0000000000000"
+        },
+        {
+          "hosts": ["cloudflare", "deepinfra", "primeintellect"],
+          "model": "cloudflare/clef",
+          "provider_contract": "openrouter.decisions/1",
+          "state_budget": {
+            "default_request_bytes": 16000,
+            "default_state_bytes": 12000,
+            "input_stages": [null, 200, 60],
+            "long_context_request_bytes": null,
+            "long_context_state_bytes": null
+          },
+          "threshold": "3fc3333333333333"
+        }
+      ],
+      "rule": "compaction.keep/1",
+      "state_retention": {
+        "days": 7,
+        "enabled": false
+      }
+    }
+  }
+]

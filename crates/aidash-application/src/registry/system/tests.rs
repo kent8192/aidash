@@ -15,6 +15,59 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const NODE: &str = "aidash://local";
 
+fn develop_seed() -> Vec<Entry> {
+	serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
+	))
+	.unwrap()
+}
+
+#[test]
+fn compare_develop_builtin_declarations() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let current = entries(&validation, NODE).unwrap();
+	let legacy = legacy_journal_entries(&validation, NODE).unwrap();
+	let mut seen = std::collections::BTreeSet::new();
+	let mut changed = vec![];
+	for old in develop_seed().iter().filter(|entry| entry.kind == "tool") {
+		if !seen.insert(old.id.clone()) {
+			continue;
+		}
+		let now = current
+			.iter()
+			.find(|entry| entry.id == old.id)
+			.expect("develop operation missing");
+		if now.description != old.description
+			|| now.schema != old.schema
+			|| now.config != old.config
+		{
+			println!(
+				"{}@{}: description={} schema={} config={}",
+				old.id,
+				old.version,
+				now.description != old.description,
+				now.schema != old.schema,
+				now.config != old.config
+			);
+			assert_ne!(
+				now.version, old.version,
+				"{} changed without a version bump",
+				old.id
+			);
+			assert_eq!(
+				legacy
+					.iter()
+					.find(|entry| entry.id == old.id && entry.version == old.version),
+				Some(old)
+			);
+			changed.push(old.id.clone());
+		} else {
+			assert_eq!(now, old);
+		}
+	}
+	assert_eq!(changed, ["aidash.memory_mutate", "aidash.subnode_task"]);
+}
+
 #[test]
 fn seed_orders_bundle_dependencies_before_the_bundle() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
@@ -111,7 +164,12 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 	let entries = entries(&validation, NODE).unwrap();
 	assert_eq!(
 		entries.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + SUBNODE_TOOLS.len() + 2
+		REQUIRED_TOOLS.len()
+			+ DEFAULT_TOOLS.len()
+			+ EXPOSURE_TOOLS.len()
+			+ SUBNODE_TOOLS.len()
+			+ JOURNAL_TOOLS.len()
+			+ 2
 	);
 	let specifications = validation.node_specifications();
 	for entry in &entries {
@@ -163,6 +221,18 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 		let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
 		assert_eq!(descriptor.provider, "core.subnodes@1");
 	}
+	for operation in JOURNAL_TOOLS {
+		let entry = entries
+			.iter()
+			.find(|entry| entry.id == format!("aidash.{operation}"))
+			.unwrap();
+		let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
+		assert_eq!(descriptor.provider, "core.journal@1");
+		assert_eq!(
+			descriptor.tier,
+			aidash_domain::tool::providers::ToolTier::Builtin
+		);
+	}
 	assert!(!builtin_reference(&EntityRef {
 		id: "aidash.capability_load".into(),
 		version: "2.0.0".into(),
@@ -176,17 +246,20 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	let declared = declarations(&validation, NODE).unwrap();
 
-	assert_eq!(declared.len(), builtins.len() + 3);
+	assert_eq!(declared.len(), builtins.len() + 5);
 	assert_eq!(declared[..builtins.len()], builtins);
 	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
 	assert_eq!(
 		declared[builtins.len() + 1],
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap()
 	);
-	assert_eq!(declared.last(), Some(&compaction_decider().unwrap()));
+	assert_eq!(
+		&declared[builtins.len() + 2..],
+		aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
+	);
 	assert!(
 		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
-		"only a built-in tool is admitted without a Catalog Approval"
+		"the approval Decider is separate from built-in tools"
 	);
 }
 
@@ -232,6 +305,33 @@ fn the_approval_decider_is_a_valid_immutable_deployment_definition() {
 #[derive(Default)]
 struct Writer {
 	entries: BTreeMap<(String, String), Entry>,
+}
+
+#[tokio::test]
+async fn seeding_a_develop_registry_preserves_every_existing_declaration() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let mut writer = Writer::default();
+	let original = develop_seed();
+	for entry in &original {
+		writer.insert_definition(entry).await.unwrap();
+	}
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	for entry in original {
+		assert_eq!(
+			writer.definition(&entry.id, &entry.version).await.unwrap(),
+			entry
+		);
+		if entry.kind == "tool" {
+			let reference = EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			assert_eq!(
+				pinned_declaration(&validation, NODE, &reference).unwrap(),
+				Some(entry)
+			);
+		}
+	}
 }
 #[async_trait::async_trait]
 impl DefinitionLookup for Writer {
@@ -290,13 +390,6 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 			.await
 			.unwrap(),
 		source
-	);
-	assert_eq!(
-		writer
-			.definition(COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION)
-			.await
-			.unwrap(),
-		compaction_decider().unwrap()
 	);
 	// The tools stay as they were: the Decider is one definition beyond them.
 	assert!(seeded > entries(&validation, NODE).unwrap().len());
@@ -405,36 +498,6 @@ async fn adding_page_views_preserves_existing_immutable_research_bundle_bytes(
 }
 
 #[test]
-fn compaction_declaration_pins_the_evaluated_routes_without_granting_authority() {
-	let entry = compaction_decider().unwrap();
-	DefinitionValidation::new(Arc::new(Contracts))
-		.validate_in(&entry, false)
-		.unwrap();
-	assert!(!is_builtin(&entry));
-	assert!(is_deployment_definition(&entry));
-	assert!(matches!(
-		reject_owner_definition(&entry),
-		Err(crate::Error::Forbidden)
-	));
-	let config: DeciderConfig = serde_json::from_value(entry.config).unwrap();
-	assert_eq!(config.hook, Hook::Compaction);
-	assert_eq!(config.mode, Mode::Enforce);
-	assert_eq!(config.max_calls_per_run, 100);
-	assert_eq!(config.routes[0], DeciderRoute::jev("typesafe/jev-1.14"));
-	let fallback = &config.routes[1];
-	assert_eq!(fallback.model, "cloudflare/clef");
-	assert_eq!(fallback.threshold.value(), 0.15);
-	assert_eq!(
-		fallback.hosts,
-		["cloudflare", "deepinfra", "primeintellect"]
-	);
-	assert_eq!(fallback.state_budget.default_request_bytes, 16_000);
-	assert_eq!(fallback.state_budget.default_state_bytes, 12_000);
-	assert!(fallback.state_budget.long_context_request_bytes.is_none());
-	assert!(!config.state_retention.enabled);
-}
-
-#[test]
 fn required_workspace_source_is_builtin_only_at_its_exact_canonical_definition() {
 	let mut source =
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap();
@@ -458,4 +521,47 @@ fn required_workspace_source_is_builtin_only_at_its_exact_canonical_definition()
 		id: source.id,
 		version: "2.0.0".into()
 	}));
+}
+
+#[test]
+fn builtin_memory_definitions_pin_agent_roles_and_no_embedding() {
+	use aidash_domain::{
+		memory::{ProviderConfig, RoleModel},
+		registry::bindings::memory_defaults,
+	};
+	let definitions = memory_defaults::definitions().unwrap();
+	assert_eq!(definitions.len(), 3);
+	assert_eq!(
+		serde_json::from_value::<aidash_domain::memory::RerankerConfig>(
+			definitions[0].config.clone()
+		)
+		.unwrap(),
+		aidash_domain::memory::RerankerConfig::Rrf
+	);
+	assert_eq!(
+		serde_json::from_value::<aidash_domain::memory::TokenizerConfig>(
+			definitions[1].config.clone()
+		)
+		.unwrap(),
+		aidash_domain::memory::TokenizerConfig::Utf8UpperBound
+	);
+	for entry in &definitions {
+		assert!(is_builtin(entry));
+		assert!(builtin_reference(&EntityRef {
+			id: entry.id.clone(),
+			version: entry.version.clone()
+		}));
+		let mut modified = entry.clone();
+		modified.config["unexpected"] = json!(true);
+		assert!(!is_builtin(&modified));
+	}
+	let provider: ProviderConfig =
+		serde_json::from_value(definitions.last().unwrap().config.clone()).unwrap();
+	assert_eq!(provider.policy.extraction, RoleModel::AgentModel);
+	assert_eq!(provider.policy.derivation, RoleModel::AgentModel);
+	assert_eq!(provider.policy.reflection, RoleModel::AgentModel);
+	assert!(provider.policy.embedding.is_none());
+	assert_eq!(provider.policy.bounds.max_units, 64);
+	assert!(provider.policy.learn_from_runs);
+	assert!(provider.policy.maintain_observations);
 }

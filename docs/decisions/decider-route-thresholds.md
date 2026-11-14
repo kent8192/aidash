@@ -1,5 +1,7 @@
 # Decider Route thresholds (2026-10-19)
 
+The scripts described here were removed with the compaction Decider (ADR 0125); this report is historical.
+
 Decided for #153 under ADR 0066: the `cloudflare/clef` Decisions Route keeps
 content at a threshold of **0.15**. Jev's System One Route keeps 0.5.
 

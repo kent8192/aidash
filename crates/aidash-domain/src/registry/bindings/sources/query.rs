@@ -10,6 +10,7 @@ pub fn semantic_query_policy(snapshot: &super::super::BindingSnapshot) -> Result
 	let mut selected = None;
 	for binding in snapshot.bindings.iter().filter(|binding| {
 		binding.excluded_reason.is_none()
+			&& binding.identity.id != crate::registry::bindings::memory_defaults::MEMORY_ID
 			&& matches!(binding.definition.kind.as_str(), "memory" | "source")
 	}) {
 		let query = if binding.definition.config.get("schema_version").is_some() {

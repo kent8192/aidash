@@ -67,13 +67,7 @@ impl Workbench {
 	}
 
 	async fn approve(&self, references: &[Value]) {
-		use aidash_application::registry::system::{
-			COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION,
-		};
-		// Agents depend on the compaction Decider bound by default (ADR 0102).
-		let decider = json!({"id":COMPACTION_DECIDER_ID,"version":COMPACTION_DECIDER_VERSION});
-		let approvals: Vec<Value> = std::iter::once(&decider)
-			.chain(references)
+		let approvals: Vec<Value> = references.iter()
 			.map(|reference| json!({"entry":{"id":reference["id"],"version":reference["version"]},"enabled":true,"expected_revision":0}))
 			.collect();
 		self.call(

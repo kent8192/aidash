@@ -15,10 +15,12 @@ import sys
 import time
 import threading
 import socketserver
+import uuid
 
 CONTROL = Path("/tmp/control.json")
 REQUEST = Path("/request/request.json")
-ROOTS = {"working": Path("/work"), "references": Path("/references"), "received": Path("/received")}
+JOURNAL = Path("/journal")
+ROOTS = {"working": Path("/work"), "references": Path("/references"), "received": Path("/received"), "journal": JOURNAL}
 OUTPUT = Path("/tmp/output.bin")
 OUTPUT_STATE = Path("/tmp/output.state")
 OUTPUT_LIMIT = int(os.environ["AIDASH_OUTPUT_BYTES"])
@@ -31,6 +33,66 @@ TAIL_LIMIT = 16384
 # runtime, says whether a Check timed out. The probe records it, and so does the
 # deadline watcher when no probe came between the deadline and the command's exit.
 EXPIRED = Path("/tmp/deadline.expired")
+
+
+def journal_stage_path(token):
+    return JOURNAL / (".stage-" + str(uuid.UUID(token)))
+
+
+def stage_journal(token, offset, data):
+    if type(offset) is not int or offset < 0 or len(data) > 4194304:
+        raise ValueError("invalid journal chunk")
+    path = journal_stage_path(token)
+    with (JOURNAL / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if offset == 0:
+            # The Run has a single frozen heap, so no other operation may be
+            # staging here. Never leave an old export visible to the next cell.
+            for obsolete in JOURNAL.glob(".stage-*"):
+                if obsolete != path:
+                    obsolete.unlink()
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "r+b") as staged:
+            st = os.fstat(staged.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise ValueError("invalid journal staging file")
+            if offset < st.st_size:
+                staged.seek(offset)
+                if staged.read(len(data)) != data:
+                    raise ValueError("journal chunk conflict")
+            elif offset == st.st_size:
+                staged.seek(offset)
+                staged.write(data)
+                staged.flush()
+                os.fsync(staged.fileno())
+            else:
+                raise ValueError("missing journal chunk")
+
+
+def commit_journal(token, size, digest):
+    if type(size) is not int or size < 0 or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+        raise ValueError("invalid journal identity")
+    path = journal_stage_path(token)
+    destination = JOURNAL / "journal.jsonl"
+    with (JOURNAL / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # A retry after rename verifies the installed bytes before succeeding.
+        candidate = path if path.exists() else destination
+        fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as source:
+            st = os.fstat(source.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size != size:
+                raise ValueError("invalid journal staging file")
+            actual = hashlib.file_digest(source, "sha256").hexdigest()
+        if actual != digest:
+            raise ValueError("journal digest mismatch")
+        if candidate == path:
+            os.replace(path, destination)
+            directory = os.open(JOURNAL, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
 
 
 def save(path, value):
@@ -91,7 +153,7 @@ def hydrate():
     started_at = time.time()
     save(CONTROL, {"deadline": time.monotonic() + incoming["seconds"], "cancelled": False,
                    "started_at": started_at})
-    if incoming["kind"] == "python":
+    if incoming["kind"] in ("python", "journal"):
         from jupyter_client.connect import write_connection_file
         write_connection_file('/request/kernel.json', ip='127.0.0.1', shell_port=7080,
                               iopub_port=7081, stdin_port=7082, hb_port=7083, control_port=7084,
@@ -251,7 +313,7 @@ def deadline_state():
         kind = json.loads(REQUEST.read_bytes())["kind"]
     except FileNotFoundError:
         return None
-    return None if state["cancelled"] or kind == "python" else state["deadline"]
+    return None if state["cancelled"] or kind in ("python", "journal") else state["deadline"]
 
 
 def expire_if_running():
@@ -325,6 +387,10 @@ if __name__ == "__main__":
     mode = sys.argv[1]
     if mode == "hydrate":
         hydrate()
+    elif mode == "journal-stage":
+        stage_journal(sys.argv[2], int(sys.argv[3]), sys.stdin.buffer.read(4194305))
+    elif mode == "journal-commit":
+        commit_journal(sys.argv[2], int(sys.argv[3]), sys.argv[4])
     elif mode == "export":
         export()
     elif mode == "write":

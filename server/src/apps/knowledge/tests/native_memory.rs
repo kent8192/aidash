@@ -4467,34 +4467,44 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 
 #[rstest]
 #[tokio::test]
-async fn participant_memory_requires_an_enabled_provider_initially_and_after_upgrade(
+async fn participant_upgrade_to_builtin_preserves_indexed_bank_until_cleared(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 ) {
 	let database = database.await;
 	let (store, registry, workspace) = setup(&database, bounds).await;
-	let disabled =
-		json!({"model":reference("m"),"instructions":"Memory is disabled","tools":[],"skills":[]});
+	let default_agent =
+		json!({"model":reference("m"),"instructions":"Default memory","tools":[],"skills":[]});
 	registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			entry("agent", "disabled", disabled.clone()),
+			entry("agent", "default-memory", default_agent.clone()),
 		)
 		.await
 		.unwrap();
+	let actor = administrator(&store).await;
 	let initial = memory::create_participant(
 		&store,
-		&administrator(&store).await,
+		&actor,
 		workspace,
 		memory::CreateParticipant {
-			agent: reference("disabled"),
+			agent: reference("default-memory"),
 		},
 	)
 	.await
 	.unwrap();
-	let enabled = memory::create_participant(
+	let builtin = reference("aidash.memory");
+	let read = |bank: Bank, provider: EntityRef| memory::ReadBank { provider, bank };
+	assert!(
+		memory::list(&store, &actor, read(initial.bank.clone(), builtin.clone()))
+			.await
+			.unwrap()
+			.is_empty()
+	);
+
+	let participant = memory::create_participant(
 		&store,
-		&administrator(&store).await,
+		&actor,
 		workspace,
 		memory::CreateParticipant {
 			agent: reference("a"),
@@ -4502,20 +4512,21 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 	)
 	.await
 	.unwrap();
+	let id = Uuid::now_v7();
 	memory::mutate(
 		&store,
-		&administrator(&store).await,
+		&actor,
 		mutation(
-			&enabled.bank,
+			&participant.bank,
 			Change::Add {
-				id: Uuid::now_v7(),
+				id,
 				content: content("Previously enabled memory"),
 			},
 		),
 	)
 	.await
 	.unwrap();
-	let mut version = entry("agent", "a", disabled);
+	let mut version = entry("agent", "a", default_agent);
 	version.version = "1.1.0".into();
 	registry
 		.register(
@@ -4524,66 +4535,96 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 		)
 		.await
 		.unwrap();
-	let upgraded = memory::upgrade_participant(
-		&store,
-		&administrator(&store).await,
-		enabled.bank,
-		memory::UpgradeParticipant {
-			agent: EntityRef {
-				id: "a".into(),
-				version: "1.1.0".into(),
-			},
-			expected_revision: 1,
+	// The fixture approves catalog entries when issuing the Subject. The new
+	// Agent version must be approved before the participant can upgrade to it.
+	let actor = administrator(&store).await;
+	let upgrade = || memory::UpgradeParticipant {
+		agent: EntityRef {
+			id: "a".into(),
+			version: "1.1.0".into(),
 		},
+		expected_revision: 1,
+	};
+	let result =
+		memory::upgrade_participant(&store, &actor, participant.bank.clone(), upgrade()).await;
+	assert!(
+		matches!(&result, Err(aidash_server::Error::Conflict(message)) if message == "clear the bank before removing its indexed embedding"),
+		"unexpected upgrade result: {result:?}"
+	);
+	let retained = memory::list(
+		&store,
+		&actor,
+		read(participant.bank.clone(), reference("p")),
 	)
 	.await
 	.unwrap();
+	assert!(retained.iter().any(|unit| unit.id == id));
+	// Removing live facts is required before replacing an indexed provider by
+	// the default keyword-only provider; a rejected upgrade is atomic.
+	memory::mutate(
+		&store,
+		&actor,
+		mutation(
+			&participant.bank,
+			Change::Delete {
+				id,
+				expected_revision: 1,
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let upgraded = memory::upgrade_participant(&store, &actor, participant.bank, upgrade())
+		.await
+		.unwrap();
+	assert_eq!(upgraded.revision, 2);
+	assert!(
+		memory::list(&store, &actor, read(upgraded.bank.clone(), builtin))
+			.await
+			.unwrap()
+			.is_empty()
+	);
 	for bank in [initial.bank, upgraded.bank] {
-		let read = memory::list(
-			&store,
-			&administrator(&store).await,
-			memory::ReadBank {
-				provider: reference("p"),
-				bank: bank.clone(),
-			},
-		)
-		.await;
-		assert!(matches!(read, Err(aidash_server::Error::Conflict(_))));
-		let write = memory::mutate(
-			&store,
-			&administrator(&store).await,
-			mutation(
-				&bank,
-				Change::Add {
-					id: Uuid::now_v7(),
-					content: content("Must not be accepted"),
-				},
-			),
-		)
-		.await;
-		assert!(matches!(write, Err(aidash_server::Error::Conflict(_))));
-		let recall = memory::operate(
-			&store,
-			&administrator(&store).await,
-			memory::Operation {
-				operation_id: Uuid::now_v7(),
-				provider: reference("p"),
-				bank,
-				action: memory::Action::Recall {
-					query: RecallQuery {
-						text: "Memory".into(),
-						time: None,
-						kinds: vec![],
-						max_tokens: 1024,
+		assert!(matches!(
+			memory::list(&store, &actor, read(bank.clone(), reference("p"))).await,
+			Err(aidash_server::Error::Conflict(_))
+		));
+		assert!(matches!(
+			memory::mutate(
+				&store,
+				&actor,
+				mutation(
+					&bank,
+					Change::Add {
+						id: Uuid::now_v7(),
+						content: content("Must not be accepted"),
+					}
+				)
+			)
+			.await,
+			Err(aidash_server::Error::Conflict(_))
+		));
+		assert!(matches!(
+			memory::operate(
+				&store,
+				&actor,
+				memory::Operation {
+					operation_id: Uuid::now_v7(),
+					provider: reference("p"),
+					bank,
+					action: memory::Action::Recall {
+						query: RecallQuery {
+							text: "Memory".into(),
+							time: None,
+							kinds: vec![],
+							max_tokens: 1024,
+						}
 					},
-				},
-			},
-		)
-		.await;
-		assert!(
-			matches!(recall, Err(aidash_server::Error::Conflict(_))),
-			"disabled participants cannot call model roles"
-		);
+				}
+			)
+			.await,
+			Err(aidash_server::Error::Conflict(_))
+		));
 	}
 }
 

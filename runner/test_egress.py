@@ -9,6 +9,17 @@ from egress import environment
 
 
 class EgressIsolationTest(unittest.TestCase):
+    def test_journal_pods_are_excluded_from_the_gateway_policy(self):
+        runner = self.runner()
+        runner.ensure_network_policy()
+        policies = [json.loads(call.args[1]) for call in runner.kube.call_args_list]
+        ordinary = next(policy for policy in policies if policy['metadata']['name'] == 'aidash-deny')
+        journal = next(policy for policy in policies if policy['metadata']['name'] == 'aidash-journal-deny')
+        self.assertIn({'key': 'aidash-journal', 'operator': 'DoesNotExist'}, ordinary['spec']['podSelector']['matchExpressions'])
+        self.assertEqual(journal['spec']['podSelector']['matchLabels']['aidash-journal'], 'true')
+        self.assertEqual(journal['spec']['ingress'], [])
+        self.assertEqual(journal['spec']['egress'], [])
+
     def runner(self):
         runner = object.__new__(Runner)
         runner.proven = True

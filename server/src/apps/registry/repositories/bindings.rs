@@ -227,11 +227,8 @@ async fn authorized_mode(
 		if definition.identity.registry_deployment != node {
 			return Err(Error::Forbidden);
 		}
-		if aidash_domain::registry::bindings::defaults::is_compaction_decider(
-			&definition.definition,
-		) || aidash_domain::registry::bindings::sources::is_selection_decider(
-			&definition.definition,
-		) {
+		if aidash_domain::registry::bindings::sources::is_selection_decider(&definition.definition)
+		{
 			// Metadata disclosure remains policy-controlled. Catalog Approval
 			// for sending classification state is checked only when needed.
 			let resource = crate::authorization::catalog::resource(access, &definition.definition);
@@ -349,19 +346,11 @@ pub(crate) async fn system_definition(
 	node: &str,
 	reference: &aidash_domain::registry::EntityRef,
 ) -> crate::Result<aidash_domain::registry::Entry> {
-	let expected = aidash_application::registry::system::entries(
+	let expected = aidash_application::registry::system::pinned_declaration(
 		&crate::bootstrap::registry_validation(),
 		node,
+		reference,
 	)?
-	.into_iter()
-	.chain(
-		aidash_application::registry::system::legacy_workspace_entries(
-			&crate::bootstrap::registry_validation(),
-			node,
-		)?,
-	)
-	.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
-	.find(|entry| entry.id == reference.id && entry.version == reference.version)
 	.ok_or(crate::Error::Forbidden)?;
 	let saved = crate::apps::registry::models::transaction_records::definition(
 		tx,

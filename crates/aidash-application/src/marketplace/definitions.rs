@@ -493,13 +493,6 @@ impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
 		if reference.registry_deployment != self.node {
 			return Err(Error::Forbidden);
 		}
-		// The implicit system default is metadata until compaction is needed.
-		// Explicit package dependency authorization remains in local_graph.
-		if reference
-			== &aidash_domain::registry::bindings::defaults::compaction_reference(self.node)
-		{
-			return self.scope.raw(&reference.local()).await;
-		}
 		local(self.scope, &reference.local()).await
 	}
 	async fn installation(

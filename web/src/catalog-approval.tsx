@@ -1,4 +1,3 @@
-import { RegisteredCompactionDetails } from "./compaction-details";
 import { SecretDisclosure } from "./tenant-secrets";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,7 +8,7 @@ import {
   registryVersions,
 } from "./generated/aidash";
 import type { RegistryVersion, WithdrawalImpact } from "./generated/models";
-import type { EntityRef, Entry, State } from "./types";
+import type { State } from "./types";
 import { ApiError } from "./transport";
 import { useBusyRetry } from "./policy-busy";
 import { keylessOrigin } from "./keyless";
@@ -77,44 +76,6 @@ const approvalBadges: Record<ApprovalState, [string, StatusTone]> = {
   withdrawn: ["catalogWithdrawn", "neutral"],
   unapproved: ["catalogUnapproved", "warning"],
 };
-
-/** A Run start refused because the agent's compaction Decider is not
- *  approved on this Node (ADR 0102). It names the Decider and opens it, where
- *  it can be approved or its approval requested (ADR 0096). */
-export function DeciderStartRefusal({
-  decider,
-  data,
-  openEntry,
-}: {
-  decider: EntityRef;
-  data: State;
-  openEntry: (entry: Entry) => void;
-}) {
-  const { t, entityLabel } = useI18n();
-  const versions = useRegistryVersions(data.access);
-  const entry = versions.data?.find(
-    (value) =>
-      value.entry.id === decider.id && value.entry.version === decider.version,
-  )?.entry;
-  return (
-    <Alert>
-      <p>{t("catalogDeciderUnapproved")}</p>
-      <p>{entry ? entityLabel(entry) : `${decider.id}@${decider.version}`}</p>
-      <p>{t("catalogDeciderUnapprovedHelp")}</p>
-      {entry && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="justify-self-start"
-          onClick={() => openEntry(entry)}
-        >
-          {t("catalogOpenDecider")}
-        </Button>
-      )}
-    </Alert>
-  );
-}
 
 export function ApprovalBadge({ version }: { version: RegistryVersion }) {
   const [label, tone] = approvalBadges[approvalState(version)];
@@ -487,12 +448,6 @@ export function CatalogApprovalSection({
         ))}
       <SecretDisclosure entry={entry} tenant={tenant} />
       {recipients && <DeciderRecipients recipients={recipients} />}
-      {entry.kind === "agent" && (
-        <RegisteredCompactionDetails
-          normalization={entry.binding_normalization}
-          definitions={versions.map(({ entry }) => entry)}
-        />
-      )}
       {readOnly && decides && state !== "approved" && (
         <Notice tone="warning" role="status" className="read-only-notice">
           {t("catalogReadOnlyNotice")}
