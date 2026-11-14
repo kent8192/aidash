@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_RUN_TOOLS: usize = 128;
 pub const MAX_SCHEMA_BYTES: usize = 16_384;
 pub const MAX_DESCRIPTION_BYTES: usize = 8_192;
+/// The cause of a stdio server no session listed: no Execution Pod, or no host for stdio sessions.
+pub const STDIO_UNAVAILABLE: &str = "stdio_session_unavailable";
 
 /// A tool as an MCP server listed it (`tools/list`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -146,9 +148,10 @@ pub fn schema_digest(schema: &Value) -> String {
 	crate::registry::rules::digest(schema)
 }
 
-/// Decides the Run's plugin tools from what each remote server listed, in plugin order, then
-/// server key order, then tool name order. Stdio servers are not pinned here. `taken` holds the
-/// aliases the Run's Bindings and the reserved names already use.
+/// Decides the Run's plugin tools from what each server listed, in plugin order, then server key
+/// order, then tool name order. A stdio server is pinned like a remote one once its session in
+/// the Run's Execution Pod listed it (ADR 0073); unlisted, it is left out as unavailable. `taken`
+/// holds the aliases the Run's Bindings and the reserved names already use.
 pub fn pin(
 	plugins: &[AgentPluginRef],
 	settings: &PluginSettings,
@@ -175,16 +178,6 @@ pub fn pin_additional(
 	let unchosen = ServerSettings::default();
 	for plugin in plugins {
 		for (server, kind) in &plugin.servers {
-			if !matches!(kind, McpServer::Remote(_)) {
-				pinner.note(
-					plugin,
-					server,
-					Outcome::Skipped,
-					Reason::ServerUnavailable,
-					"stdio_session_unavailable".into(),
-				);
-				continue;
-			}
 			let choice = settings
 				.get(&plugin.name)
 				.and_then(|servers| servers.get(server))
@@ -214,7 +207,11 @@ pub fn pin_additional(
 					server,
 					Outcome::Skipped,
 					Reason::ServerUnavailable,
-					"not listed".into(),
+					match kind {
+						McpServer::Remote(_) => "not listed",
+						McpServer::Stdio(_) => STDIO_UNAVAILABLE,
+					}
+					.into(),
 				),
 			}
 		}
