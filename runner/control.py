@@ -1938,9 +1938,10 @@ class Handler(BaseHTTPRequestHandler):
                 '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
                 '/v2/previews/start', '/v2/previews/stop',
+                '/v2/mcp/start', '/v2/mcp/call', '/v2/mcp/stop',
                 '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):
             size = int(self.headers.get('Content-Length', '0'))
-            if not 0 < size <= 2 * 1048576:
+            if not 0 < size <= (6 if path == '/v2/mcp/call' else 2) * 1048576:
                 raise Rejected(413, 'runner request limit')
             request = json.loads(self.rfile.read(size))
             if not isinstance(request, dict):
@@ -1973,6 +1974,12 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.start_preview(request)
             if path == '/v2/previews/stop':
                 return runner.execution_pods.stop_background(request['operation_id'])
+            if path == '/v2/mcp/start':
+                return runner.execution_pods.start_mcp(request)
+            if path == '/v2/mcp/call':
+                return runner.execution_pods.call_mcp(request)
+            if path == '/v2/mcp/stop':
+                return runner.execution_pods.stop_mcp(request['operation_id'])
             if path == '/v2/viewers/heartbeat':
                 return runner.execution_pods.viewer_heartbeat(request['scratch_space_id'], request['viewer_id'])
             if path == '/v2/python/start':

@@ -195,3 +195,28 @@ def test_preview_waits_for_port_and_returns_pod_address(tmp_path):
     command = controller.submit_command.call_args.args[0]
     assert command['background'] is True
     assert command['proxy_credential'] == 'run-token'
+
+
+def test_mcp_routes_start_call_and_stop_a_run_owned_session(tmp_path):
+    from types import SimpleNamespace
+    operation = '00000000-0000-4000-8000-000000000001'
+    def kube(args, data=None, **kwargs):
+        if 'ping' in args:
+            return SimpleNamespace(returncode=0, stdout=b'{"ready":true}')
+        if 'call' in args:
+            message = json.loads(data)
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'message': {
+                'jsonrpc': '2.0', 'id': message['id'], 'result': 'ok'}}).encode())
+        raise AssertionError(args)
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
+    controller.submit_command = Mock(return_value={'status': 'queued'})
+    controller.command_result = Mock(return_value={'status': 'running'})
+    controller._read_command = Mock(return_value={'pod_uid': 'uid', 'pod': 'pod', 'docker_enabled': False,
+                                                   'kind': 'mcp_session', 'background': True, 'status': 'running'})
+    request = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'install': '',
+               'command': ['example'], 'env': {}, 'plugin_data': '.', 'proxy_credential': 'token'}
+    assert controller.start_mcp(request) == {'operation_id': operation}
+    result = controller.call_mcp({'operation_id': operation, 'timeout_seconds': 3,
+                                  'message': {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'}})
+    assert result == {'message': {'jsonrpc': '2.0', 'id': 1, 'result': 'ok'}}
+    assert controller.submit_command.call_args.args[0]['proxy_credential'] == 'token'

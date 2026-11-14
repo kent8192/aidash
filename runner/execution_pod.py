@@ -32,6 +32,12 @@ def python_helper_command(*args):
             '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/python_session.py', *args]
 
 
+def mcp_helper_command(*args):
+    return ['/.aidash-helpers/loader', '--library-path',
+            '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
+            '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/mcp_session.py', *args]
+
+
 class CommandQueue:
     """Bound active commands and allow a Run's queued foreground work to stop."""
 
@@ -489,6 +495,7 @@ class ExecutionPodController:
         self.queues = {}
         self.futures = {}
         self.process_proxies = {}
+        self.mcp_locks = {}
         self.live_output = {}
         self.foreground_jobs = {}
         self.viewers = {}
@@ -2067,6 +2074,88 @@ print(json.dumps(r))'''
                               'status', 'background', 'outcome', 'exit_code', 'truncated',
                               'error_code', 'message') if key in record})
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
+
+    def _mcp_exec(self, record, action, *args, data=None, timeout=10):
+        mode = 'docker' if record.get('docker_enabled') else 'normal'
+        return self.backend.kube(['exec', '-i', record['pod'], '-c', 'execution', '--'] +
+            helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.',
+                           *mcp_helper_command(action, *args)), data=data, check=False, timeout=timeout)
+
+    def start_mcp(self, request):
+        import json
+        import shlex
+        import time
+        operation = request['operation_id']
+        self._command_path(operation)
+        config = {key: request[key] for key in ('install', 'command', 'env', 'plugin_data')}
+        if (not isinstance(config['install'], str) or '\x00' in config['install']
+                or not isinstance(config['command'], list) or not config['command']
+                or any(not isinstance(value, str) or not value or '\x00' in value for value in config['command'])
+                or not isinstance(config['env'], dict)
+                or any(not isinstance(k, str) or not isinstance(v, str) or not k or '=' in k or '\x00' in k + v
+                       for k, v in config['env'].items())
+                or not isinstance(config['plugin_data'], str) or config['plugin_data'].startswith('/')
+                or '..' in config['plugin_data'].split('/') or '\x00' in config['plugin_data']):
+            raise ValueError('invalid MCP start request')
+        socket_path = '/run/aidash/mcp-' + operation + '.sock'
+        script = shlex.join(mcp_helper_command('serve', socket_path, json.dumps(config, separators=(',', ':'))))
+        command = {'operation_id': operation, 'scratch_space_id': request['scratch_space_id'],
+                   'run_id': request['run_id'], 'background': True, 'code': 'exec ' + script,
+                   'proxy_credential': request.get('proxy_credential')}
+        self.submit_command(command, kind='mcp_session')
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            status = self.command_result(operation)
+            if status.get('status') not in ('queued', 'running'):
+                break
+            record = self._read_command(operation)
+            try:
+                result = self._mcp_exec(record, 'ping', socket_path, timeout=5)
+                if result.returncode == 0 and json.loads(result.stdout).get('ready') is True:
+                    return {'operation_id': operation}
+            except Exception:
+                pass
+            time.sleep(.5)
+        try:
+            self.stop_background(operation)
+        except Exception:
+            pass
+        raise ExecutionPodError('mcp_start_failed', 'MCP process did not become ready')
+
+    def call_mcp(self, request):
+        import json
+        operation, message, timeout = request['operation_id'], request['message'], request['timeout_seconds']
+        if not isinstance(message, dict) or type(timeout) is not int or not 1 <= timeout <= 3600:
+            raise ValueError('invalid MCP call')
+        data = json.dumps(message, separators=(',', ':'), ensure_ascii=False).encode()
+        if len(data) > 4 * 1048576:
+            raise ValueError('MCP message exceeds 4 MiB')
+        record = self._read_command(operation)
+        if record.get('kind') != 'mcp_session' or record.get('status') not in ('running', 'queued'):
+            raise ExecutionPodError('mcp_unavailable', 'MCP session is not running')
+        with self.lock:
+            lock = self.mcp_locks.setdefault(operation, Lock())
+        if not lock.acquire(blocking=False):
+            raise ExecutionPodError('mcp_busy', 'An MCP call is already in flight')
+        try:
+            socket_path = '/run/aidash/mcp-' + operation + '.sock'
+            try:
+                result = self._mcp_exec(record, 'call', socket_path, str(timeout), data=data + b'\n', timeout=timeout + 10)
+            except Exception:
+                raise ExecutionPodError('mcp_call_failed', 'MCP call outcome is unknown') from None
+            if result.returncode:
+                raise ExecutionPodError('mcp_call_failed', 'MCP call outcome is unknown')
+            response = json.loads(result.stdout)
+            if not isinstance(response.get('message'), dict):
+                raise ExecutionPodError('mcp_call_failed', 'Invalid MCP response')
+            return response
+        finally:
+            lock.release()
+
+    def stop_mcp(self, operation_id):
+        if self._read_command(operation_id).get('kind') != 'mcp_session':
+            raise ExecutionPodError('mcp_unavailable', 'MCP session does not exist')
+        return self.stop_background(operation_id)
 
     def start_preview(self, request):
         import base64
