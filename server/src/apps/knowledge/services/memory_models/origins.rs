@@ -138,7 +138,7 @@ impl Models {
 					)
 					.await?,
 				);
-				parent.track_registry(&dependencies).await?;
+				parent.track_memory_registry(&dependencies).await?;
 				let mut child = Access::under_lease_on(&parent, &self.store.control_pool).await?;
 				child.suspend().await?;
 				Ok(child)

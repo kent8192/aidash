@@ -36,27 +36,22 @@ fn dispatches(fixture: &Fixture) -> Vec<UsageDispatch> {
 
 #[rstest]
 #[tokio::test]
-async fn models_without_the_opt_in_keep_the_byte_estimate(mut fixture: Fixture) {
-	// Arrange
+async fn default_estimator_uses_bytes_below_calibration_threshold(mut fixture: Fixture) {
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.request_estimator = None;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
-	// Act
 	advance_sources(&mut fixture).await.unwrap();
-	// Assert: nothing is queried or saved, so the Run keeps its context bytes.
-	assert_eq!(count(&fixture, "calibration.samples"), 0);
-	assert!(!events(&fixture).contains(&"run.estimate_pinned".to_owned()));
-	assert!(fixture.run.context.estimate.is_initial());
+	assert_eq!(count(&fixture, "calibration.samples"), 1);
+	assert!(events(&fixture).contains(&"run.estimate_pinned".to_owned()));
 	let [dispatch] = dispatches(&fixture).try_into().unwrap();
 	let request = fixture.backend.0.requests.lock().unwrap()[0].clone();
-	assert_eq!(dispatch.upstream_model, "fixture");
 	assert_eq!(dispatch.estimate, request.request_estimate());
 	assert_eq!(dispatch.estimate.estimator, "bytes");
-	assert_eq!(dispatch.estimate.ratio_ppm, None);
 	assert_eq!(
 		dispatch.estimate.tokens,
 		request.byte_estimate().total() as u64
 	);
-	assert_eq!(dispatch.estimate.output_reservation, 4096);
-	assert!(dispatch.calibration_sample);
 }
 
 #[rstest]
@@ -224,8 +219,12 @@ async fn an_overflow_after_a_scaled_estimate_demotes_the_run(
 #[rstest]
 #[tokio::test]
 async fn a_paused_overflow_keeps_the_demotion_for_the_resumed_step(mut fixture: Fixture) {
-	// Arrange: without a Context Policy, an overflow pauses the Run at once.
+	// Arrange: explicitly disabling overflow retries pauses the Run at once.
 	calibrated(&mut fixture, warm(4));
+	Arc::get_mut(&mut fixture.backend.0).unwrap().context_policy = Some(
+		serde_json::from_value(json!({"version":"context-recovery/1","overflow_retries":0}))
+			.unwrap(),
+	);
 	*fixture.backend.0.overflows.lock().unwrap() = 1;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	// Act

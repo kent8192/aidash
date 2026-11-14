@@ -36,6 +36,8 @@ use uuid::Uuid;
 pub struct RunStore {
 	pub store: Store,
 	pub scope: TenancyScope,
+	pub(crate) offloaded:
+		std::sync::Arc<std::sync::Mutex<Vec<aidash_application::context::offload::JournalRange>>>,
 }
 
 pub(crate) struct WorkspaceInsert<'a> {
@@ -463,6 +465,7 @@ impl Store {
 		RunStore {
 			store: self.clone(),
 			scope,
+			offloaded: Default::default(),
 		}
 	}
 
@@ -2760,16 +2763,20 @@ impl Store {
 		max_input_tokens: usize,
 	) -> Result<Option<(Uuid, Uuid)>> {
 		let deployment = self.deployment.as_str();
+		let result_key = format!(
+			"{}{creator}:{key}",
+			aidash_domain::run_input::SUBNODE_RESULT_PREFIX
+		);
 		InputRecord::admit_from_run(
 			tx,
 			deployment,
 			creator,
 			member.id,
-			(&member.executor_subject(deployment), content, key),
+			(&member.executor_subject(deployment), content, &result_key),
 			max_input_tokens,
 		)
 		.await?;
-		InputRecord::local_message_of(tx, creator, key).await
+		InputRecord::local_message_of(tx, creator, &result_key).await
 	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(
@@ -4757,6 +4764,8 @@ impl Store {
 		}
 		// A research result whose Provider result account terms expired
 		// meanwhile is stored as its tombstone (ADR 0058).
+		let journal_query =
+			result["contract"] == aidash_domain::context::research::JOURNAL_QUERY_CONTRACT;
 		let expired = crate::apps::execution::models::research::ResearchAttempt::expired_result(
 			tx.as_mut(),
 			run.id,
@@ -4786,6 +4795,9 @@ impl Store {
 		}
 		tx.commit().await?;
 		// The caller carries on with what was stored, never the expired copy.
+		if journal_query && let Err(error) = super::journal_query::acknowledge(self, run).await {
+			tracing::warn!(%error, run = %run.id, "Journal Query receipt remains pending");
+		}
 		Ok(result.clone())
 	}
 	/// Durable before provider I/O. Like other worker writes, a lost lease

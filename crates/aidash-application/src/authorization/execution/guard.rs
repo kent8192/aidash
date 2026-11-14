@@ -97,28 +97,26 @@ pub async fn recheck(
 		{
 			return Ok(UseRecheck::EmbeddingUnavailable(saved.identity.local()));
 		}
-		let current =
-			if aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
-				|| aidash_domain::registry::bindings::defaults::is_compaction_decider(
-					&saved.definition,
-				) {
-				// Dispatch approval may be deferred; readable immutable metadata may not.
-				scope.metadata(&saved.identity.local()).await
-			} else {
-				match delegated.get(&saved.identity) {
-					Some(users) => {
-						let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
-						scope
-							.closure_catalog(&saved.identity.local(), "registry.read", &users)
-							.await
-					}
-					None => {
-						scope
-							.catalog(&saved.identity.local(), "registry.read")
-							.await
-					}
+		let current = if aidash_domain::registry::bindings::sources::is_selection_decider(
+			&saved.definition,
+		) {
+			// Dispatch approval may be deferred; readable immutable metadata may not.
+			scope.metadata(&saved.identity.local()).await
+		} else {
+			match delegated.get(&saved.identity) {
+				Some(users) => {
+					let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
+					scope
+						.closure_catalog(&saved.identity.local(), "registry.read", &users)
+						.await
 				}
-			};
+				None => {
+					scope
+						.catalog(&saved.identity.local(), "registry.read")
+						.await
+				}
+			}
+		};
 		let current = match current {
 			Ok(current) => current,
 			Err(Error::Forbidden) => return Ok(UseRecheck::Blocked(saved.identity.local())),

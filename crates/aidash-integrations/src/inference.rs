@@ -748,7 +748,11 @@ fn request_body(
 	}
 	body["provider"] = provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
-		body["reasoning"] = json!({"effort": effort});
+		body["reasoning"] = if matches!(effort, aidash_domain::model::ReasoningEffort::None) {
+			json!({"enabled": false})
+		} else {
+			json!({"effort": effort})
+		};
 	}
 	if let Some(session) = session {
 		body["session_id"] = json!(session);

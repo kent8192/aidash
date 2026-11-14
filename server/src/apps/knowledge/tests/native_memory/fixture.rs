@@ -57,7 +57,7 @@ pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entr
 		{
 			bindings.push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
 		}
-		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read","compaction"]});
+		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
 	}
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"fixture"},
 		"capabilities":[],"languages":["en","ja"],"config":config})).unwrap()
@@ -241,10 +241,10 @@ async fn setup_endpoint_policy_with_window(
 				context_source: None,
 				engine: EngineKind::HindsightRust,
 				policy: Policy {
-					extraction: reference("m"),
-					derivation: reference("m"),
-					reflection: reference("m"),
-					embedding: reference("e"),
+					extraction: RoleModel::Entry(reference("m")),
+					derivation: RoleModel::Entry(reference("m")),
+					reflection: RoleModel::Entry(reference("m")),
+					embedding: Some(reference("e")),
 					reranker: reference("r"),
 					tokenizer: reference("t"),
 					semantic_link_min_similarity_millionths: 700_000,
