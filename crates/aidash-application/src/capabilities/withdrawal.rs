@@ -86,11 +86,16 @@ pub async fn stop_captured_writer(
 			)
 			.await?
 	};
-	let change = if snapshot.active() {
+	let mut change = if snapshot.active() {
 		snapshot.change(stop)
 	} else {
 		snapshot.confirm_terminal_stop(stop != WriterStop::Unconfirmed)
 	};
+	// A Pod operation has no `/v1` receipt to acknowledge: the Pod runtime's
+	// confirmed stop is the whole proof, so the row becomes erasable (#745).
+	if snapshot.pod && stop != WriterStop::Unconfirmed {
+		change.result["runner_acknowledged"] = serde_json::json!(true);
+	}
 	scope.commit(change).await
 }
 #[cfg(test)]

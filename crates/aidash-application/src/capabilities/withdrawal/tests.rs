@@ -446,7 +446,8 @@ async fn a_captured_pod_writer_is_stopped_through_the_pod(
 		state.snapshot.runner_instance = None;
 		state.snapshot.epoch = -1;
 		state.snapshot.state = status.into();
-		state.snapshot.result = json!({"runner_acknowledged":true,"termination_confirmed":false});
+		// An uncertain row the sweep left behind carries no ACK flag.
+		state.snapshot.result = json!({"termination_confirmed":false});
 		state.stopped = stopped;
 	}
 	stop_captured_writer(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
@@ -457,6 +458,8 @@ async fn a_captured_pod_writer_is_stopped_through_the_pod(
 	assert_eq!(state.refusals, vec![None]);
 	let change = state.committed.last().unwrap();
 	assert_eq!(change.result["termination_confirmed"], json!(stopped));
+	// A confirmed stop leaves the row erasable; an unconfirmed one does not.
+	assert_eq!(change.result["runner_acknowledged"], json!(stopped));
 	// The Area's writer epoch is never a Pod operation's.
 	assert!(change.area_state.is_none());
 }

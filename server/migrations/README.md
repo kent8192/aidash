@@ -942,4 +942,8 @@ rewritten until the migration is reapplied.
 
 `registry/0068_reject_new_compaction_deciders` adds a `NOT VALID` check that preserves existing compaction Decider rows while rejecting new or updated ones. PostgreSQL `NOT VALID` constraint DDL is expressed as raw SQL because Reinhardt does not provide it.
 
+`registry/0069_remove_package_index_draft_bindings` removes draft Bindings to the removed package indexes `core.npm` and `core.pypi` (#745). Rewriting a JSON array inside `agent_drafts.entry` is a one-time data change Reinhardt has no typed operation for, so it is SQL; reversal leaves the drafts as they are. Registered Agent versions keep their Bindings.
+
+`identity/0073_remove_package_index_approvals` deletes the Catalog Approvals of `core.npm` and `core.pypi` (#745). A one-time data deletion Reinhardt cannot express as a typed operation; reversal does not restore them.
+
 `execution/0129_egress_run_revocations` records revoked Runs and adds Run attribution and timing to scope connections. `0130_egress_run_revocations_rls` adds the forced Tenant policy; raw SQL is required because Reinhardt migrations do not express row-level policies.
