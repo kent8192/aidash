@@ -50,7 +50,6 @@ impl Schedule {
 	fn forget_ended(&mut self, targets: &[Target]) {
 		let live: BTreeSet<Target> = targets.iter().copied().collect();
 		self.checked.retain(|target, _| live.contains(target));
-		self.failed.retain(|target, _| live.contains(target));
 		self.unconfirmed
 			.retain(|preview, _| live.contains(&Target::LivePreview(*preview)));
 	}
@@ -63,7 +62,18 @@ pub async fn pass(
 ) -> Result<()> {
 	let targets = repository.targets().await?;
 	schedule.forget_ended(&targets);
-	for target in targets {
+	let live: BTreeSet<_> = targets.iter().copied().collect();
+	// A successful legacy withdrawal can remove a target even when stopping its
+	// Pod failed. Keep retrying the already-decided refusal in that case.
+	let mut pending = targets;
+	pending.extend(
+		schedule
+			.failed
+			.keys()
+			.filter(|target| !live.contains(target))
+			.copied(),
+	);
+	for target in pending {
 		if !schedule.due(target, now) {
 			continue;
 		}
@@ -71,7 +81,16 @@ pub async fn pass(
 		// This try replaces the scheduled retry: if the check itself fails, the next
 		// one waits a period.
 		let failures = schedule.failed.remove(&target).map_or(0, |(_, n)| n);
-		if let Err(error) = check(repository, schedule, target, now, failures).await {
+		let result = if !live.contains(&target) {
+			let stopped = repository.stop_refused(target).await;
+			if stopped.is_err() {
+				schedule.stop_failed(target, now, failures + 1);
+			}
+			stopped
+		} else {
+			check(repository, schedule, target, now, failures).await
+		};
+		if let Err(error) = result {
 			// Nothing was decided: try again at the next period. A refused target
 			// whose stop failed is tried again sooner, because it should not run.
 			tracing::warn!(?target, %error, "read recheck pending");

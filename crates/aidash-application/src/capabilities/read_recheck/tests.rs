@@ -294,3 +294,23 @@ async fn an_ended_target_is_forgotten() {
 	assert!(schedule.checked.is_empty());
 	assert!(schedule.unconfirmed.is_empty());
 }
+
+#[tokio::test]
+async fn a_failed_stop_is_retried_after_legacy_withdrawal_ends_the_target() {
+	let target = operation();
+	let mut repository = Repository {
+		stop_fails: true,
+		..Repository::with(target, Outcome::Refused)
+	};
+	let mut schedule = Schedule::default();
+	let start = Instant::now();
+	pass(&repository, &mut schedule, start).await.unwrap();
+	repository.targets.clear();
+	repository.stop_fails = false;
+	pass(&repository, &mut schedule, start + RETRY_FROM)
+		.await
+		.unwrap();
+	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
+	assert_eq!(repository.checks(), 1);
+	assert!(schedule.failed.is_empty());
+}
