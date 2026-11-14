@@ -286,6 +286,9 @@ impl StdioPluginHost for Host {
 		Ok(self.saved.lock().unwrap().clone())
 	}
 	async fn save_data(&self, _: &PluginName, files: Vec<PluginFile>) -> Result<()> {
+		if *self.forbidden.lock().unwrap() {
+			return Err(Error::Forbidden);
+		}
 		*self.saves.lock().unwrap() += 1;
 		*self.saved.lock().unwrap() = Some(files);
 		Ok(())
@@ -645,7 +648,12 @@ async fn data_over_the_cap_keeps_the_previous_version() {
 	sessions.close(run()).await;
 
 	// Assert
-	assert_eq!(pod.commands.lock().unwrap().len(), 1, "the live area stays");
+	let commands = pod.commands.lock().unwrap().clone();
+	assert_eq!(
+		commands[1],
+		format!("rm -rf -- '{data}'"),
+		"the live area goes"
+	);
 	assert_eq!(*host.saves.lock().unwrap(), 0);
 	assert_eq!(
 		host.not_saved.lock().unwrap().clone(),
@@ -700,4 +708,74 @@ async fn a_principal_refused_tool_invoke_cannot_make_a_stdio_call() {
 	// Assert
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 	assert!(!pod.methods().contains(&"tools/call".to_owned()));
+}
+
+#[tokio::test]
+async fn a_listing_the_gate_refuses_starts_no_process() {
+	// Arrange
+	let (pod, host, _, sessions) = setup();
+	*host.forbidden.lock().unwrap() = true;
+
+	// Act
+	let listed = sessions.list(run(), &server(), &node()).await;
+
+	// Assert
+	assert!(
+		matches!(&listed, Err(Error::Invalid(cause)) if cause == REFUSED),
+		"{listed:?}"
+	);
+	assert!(pod.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_listing_refused_by_the_usage_gate_starts_no_process() {
+	let (pod, host, _, sessions) = setup();
+	*host.refusal.lock().unwrap() = Some("SANDBOX_LIMIT".into());
+
+	let listed = sessions.list(run(), &server(), &node()).await;
+
+	assert!(
+		matches!(&listed, Err(Error::Invalid(cause)) if cause == "sandbox_limit"),
+		"{listed:?}"
+	);
+	assert!(pod.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_run_that_lost_its_authority_keeps_the_saved_version_and_its_live_area_goes() {
+	// Arrange
+	let (pod, host, sessions, bound) = setup();
+	bound.list(run(), &server(), &node()).await.unwrap();
+	let data = stdio_session::plugin_data(run(), &server().plugin);
+	pod.files
+		.lock()
+		.unwrap()
+		.insert(format!("{data}/state"), (b"new".to_vec(), None));
+	*host.saved.lock().unwrap() = Some(vec![PluginFile {
+		path: "state".into(),
+		bytes: b"old".to_vec(),
+	}]);
+	*host.forbidden.lock().unwrap() = true;
+
+	// Act
+	sessions.close(run()).await;
+
+	// Assert
+	assert_eq!(host.saved.lock().unwrap().clone().unwrap()[0].bytes, b"old");
+	assert_eq!(host.not_saved.lock().unwrap().len(), 1);
+	let commands = pod.commands.lock().unwrap().clone();
+	assert_eq!(commands.last().unwrap(), &format!("rm -rf -- '{data}'"));
+}
+
+#[tokio::test]
+async fn a_server_whose_session_never_passed_the_gate_saves_nothing() {
+	let (pod, host, sessions, bound) = setup();
+	*host.forbidden.lock().unwrap() = true;
+	let _ = bound.list(run(), &server(), &node()).await;
+
+	sessions.close(run()).await;
+
+	assert_eq!(*host.saves.lock().unwrap(), 0);
+	assert!(host.not_saved.lock().unwrap().is_empty());
+	assert!(pod.calls().is_empty());
 }

@@ -18,7 +18,6 @@ use aidash_domain::agent_plugin::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use reinhardt::db::backends::TransactionExecutor as _;
 use reinhardt::db::orm::{Model as _, execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
@@ -53,6 +52,37 @@ struct StdioHost {
 }
 
 impl StdioHost {
+	/// The bound shell's dispatch checks under the Run's lease: a writable Subnode and
+	/// `tool.invoke` for the Run's principals on the `mcp_stdio` operation
+	/// (capabilities/files.rs `admit`), recorded like any decision.
+	async fn gate(&self, access: &mut Access) -> crate::Result<()> {
+		if !self.store.capabilities.0.admission {
+			return Err(crate::Error::Conflict("CAPABILITIES_DISABLED".into()));
+		}
+		crate::apps::execution::repositories::subnodes::require_writable(
+			access.tx.native_mut(),
+			self.run.workspace_id,
+		)
+		.await?;
+		let operation = stdio_session::mcp_stdio_operation();
+		let entry = crate::apps::identity::repositories::catalog_approvals::definition(
+			&mut access.tx,
+			&operation,
+		)
+		.await?;
+		let resource = access.resource(
+			"tool",
+			format!(
+				"{}/tools/{}@{}",
+				self.store.deployment.as_str(),
+				operation.id,
+				operation.version
+			),
+			aidash_application::authorization::catalog::attributes(&entry),
+		);
+		access.require(&resource, "tool.invoke").await
+	}
+
 	fn tenant(&self) -> Result<String> {
 		Ok(self
 			.tenancy
@@ -106,33 +136,7 @@ impl StdioPluginHost for StdioHost {
 		}
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result = async {
-			crate::apps::execution::repositories::subnodes::require_writable(
-				access.tx.native_mut(),
-				self.run.workspace_id,
-			)
-			.await?;
-			// The bound shell's `tool.invoke` (capabilities/files.rs `admit`), decided for the
-			// Run's principals on the `mcp_stdio` operation and recorded like any decision.
-			let operation = stdio_session::mcp_stdio_operation();
-			let entry = crate::apps::identity::repositories::catalog_approvals::definition(
-				&mut access.tx,
-				&operation,
-			)
-			.await?;
-			let resource = access.resource(
-				"tool",
-				format!(
-					"{}/tools/{}@{}",
-					self.store.deployment.as_str(),
-					operation.id,
-					operation.version
-				),
-				aidash_application::authorization::catalog::attributes(&entry),
-			);
-			access.require(&resource, "tool.invoke").await
-		}
-		.await;
+		let result = self.gate(&mut access).await;
 		let tenant = access.identity.tenant.clone();
 		access.finish(result).await?;
 		aidash_application::usage::require(
@@ -156,17 +160,23 @@ impl StdioPluginHost for StdioHost {
 	}
 
 	async fn load_data(&self, plugin: &PluginName) -> Result<Option<Vec<PluginFile>>> {
-		let tenant = self.tenant()?;
-		let mut tx = self.store.pool.begin(&self.tenancy).await?;
-		let saved = AgentPluginData::objects()
-			.filter(AgentPluginData::field_tenant().eq(tenant))
-			.filter(AgentPluginData::field_agent_id().eq(self.run.agent_id.clone()))
-			.filter(AgentPluginData::field_plugin().eq(plugin.as_str().to_owned()))
-			.all_with_executor(&mut *tx)
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(crate::Error::from)?;
-		tx.commit().await?;
+		// Read under the Run's lease, after the same checks as a call.
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let tenant = access.identity.tenant.clone();
+		let result = async {
+			self.gate(&mut access).await?;
+			AgentPluginData::objects()
+				.filter(AgentPluginData::field_tenant().eq(tenant))
+				.filter(AgentPluginData::field_agent_id().eq(self.run.agent_id.clone()))
+				.filter(AgentPluginData::field_plugin().eq(plugin.as_str().to_owned()))
+				.all_with_executor(&mut **access.tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)
+		}
+		.await;
+		let saved = access.finish(result).await?;
 		let Some(saved) = saved.into_iter().next() else {
 			return Ok(None);
 		};
@@ -220,12 +230,20 @@ impl StdioPluginHost for StdioHost {
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);
-		let mut tx = self.store.pool.begin(&self.tenancy).await?;
-		tx.execute(&sql, convert_values(values))
-			.await
-			.map_err(crate::Error::from)?;
-		tx.commit().await?;
-		Ok(())
+		// Written under the Run's lease, after the same checks as a call: a Run that lost its
+		// lease or authority keeps the previous version.
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			self.gate(&mut access).await?;
+			let tx: &mut dyn reinhardt::db::backends::TransactionExecutor = &mut **access.tx;
+			tx.execute(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from)?;
+			crate::Result::Ok(())
+		}
+		.await;
+		Ok(access.finish(result).await?)
 	}
 
 	async fn data_not_saved(&self, plugin: &PluginName, cause: &str) {

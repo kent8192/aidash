@@ -44,6 +44,8 @@ const MAX_ERROR_MESSAGE: usize = 4096;
 /// Why a stdio server is not listed: Tenant has not approved the `mcp_stdio` group.
 pub const NOT_APPROVED: &str = "mcp_stdio_not_approved";
 pub const START_FAILED: &str = "start_failed";
+/// The Run's principals may not use the `mcp_stdio` group, or the Run lost its authority.
+pub const REFUSED: &str = "mcp_stdio_refused";
 pub const INITIALIZE_FAILED: &str = "initialize_failed";
 pub const INVALID_RESPONSE: &str = "invalid_response";
 
@@ -152,13 +154,15 @@ impl StdioSessions {
 				tracing::info!(%run, operation_id = session.operation_id, %error, "stdio session stop failed");
 			}
 		}
+		// Only plugins whose sessions passed the gate restored data; the host checks the gate
+		// again when it saves, so a Run that lost its lease or authority keeps the previous
+		// version.
 		for plugin in std::mem::take(&mut state.restored) {
 			if let Err(cause) = save_data(&state.host, &pod, run, &plugin).await {
 				tracing::warn!(%run, plugin = plugin.as_str(), cause, "plugin data not saved");
 				state.host.data_not_saved(&plugin, &cause).await;
-				continue;
 			}
-			// The saved version is restored at the next start, so the live area goes.
+			// The next start restores the saved version, so the live area goes either way.
 			let live = stdio_session::plugin_data(run, &plugin);
 			if command(&pod, run, format!("rm -rf -- {}", quote(&live)))
 				.await
@@ -202,7 +206,7 @@ impl StdioPluginSessions for RunStdio {
 		if let Some(session) = state.sessions.get(&key) {
 			return Ok(session.listed.clone());
 		}
-		let session = start(&mut state, run, server, config)
+		let session = start(&mut state, run, server, config, false)
 			.await
 			.map_err(|Setup(cause)| Error::Invalid(cause))?;
 		let listed = session.listed.clone();
@@ -237,7 +241,7 @@ impl StdioPluginSessions for RunStdio {
 		state.host = self.host.clone();
 		let key = key(server);
 		if !state.sessions.contains_key(&key) {
-			let session = start(&mut state, run, server, config)
+			let session = start(&mut state, run, server, config, true)
 				.await
 				.map_err(|Setup(cause)| not_delivered(&cause))?;
 			// A session started for this call checks the tool the Run pinned (ADR 0073).
@@ -337,14 +341,27 @@ fn call_result(message: Value) -> Result<Value> {
 }
 
 /// Starts the server's session: Pod, plugin tree, restored data, process, handshake, listing.
+/// `admitted` says the caller already passed [`StdioPluginHost::admit_call`] for this use.
 async fn start(
 	state: &mut RunSessions,
 	run: Uuid,
 	server: &PluginServer,
 	config: &StdioServer,
+	admitted: bool,
 ) -> std::result::Result<Session, Setup> {
 	if !state.host.approved().await? {
 		return Err(Setup::new(NOT_APPROVED));
+	}
+	// No process starts unless the Run passes the checks a call passes.
+	if !admitted {
+		match state.host.admit_call().await {
+			Ok(()) => {}
+			Err(Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_)) => {
+				return Err(Setup::new(REFUSED));
+			}
+			Err(Error::Refused(code)) => return Err(Setup(code.to_ascii_lowercase())),
+			Err(_) => return Err(Setup::new(START_FAILED)),
+		}
 	}
 	let launch =
 		stdio_session::launch(&server.digest, &server.plugin, run, config).map_err(Setup::new)?;
