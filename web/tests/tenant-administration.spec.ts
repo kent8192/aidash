@@ -87,7 +87,7 @@ test("a Tenant Administrator is not offered controls the server marks as its own
           tenant: "alpha",
           actions: [
             "registration.read",
-            "registration.approve",
+            "invitation.create",
             "registration.reject",
             "mapping.read",
             "mapping.disable",
@@ -96,6 +96,20 @@ test("a Tenant Administrator is not offered controls the server marks as its own
           assignable_groups: ["members"],
           policy_revision: 3,
         },
+      });
+    if (path === "/api/tenants/alpha/invitation-approvals")
+      return route.fulfill({
+        json: [
+          {
+            id: "join-1",
+            identity: {
+              display_name: "Guest One",
+              verified_email: "guest@example.com",
+            },
+            subject: "guest-1",
+            occurred_at: "2026-11-11T00:00:00Z",
+          },
+        ],
       });
     if (path === "/api/tenants/alpha/registrations")
       return route.fulfill({ json: [] });
@@ -142,6 +156,18 @@ test("a Tenant Administrator is not offered controls the server marks as its own
     await expect(disable(own)).toHaveCount(0);
     await expect(row(own).getByRole("checkbox")).toHaveCount(0);
   }
+  await expect(
+    page.getByRole("checkbox", { name: "Join directly" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("checkbox", { name: "Join directly" }),
+  ).not.toBeChecked();
+  await page
+    .getByRole("button", { name: "Notifications", exact: true })
+    .click();
+  await expect(
+    page.getByText("Guest One joined through an invitation"),
+  ).toBeVisible();
 });
 
 test("an approval submits only the proposed groups that are still assignable", async ({
@@ -359,6 +385,9 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
   await open.locator('input[name="tenant"]').fill("beta");
   await open.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "members" })).toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: "Join directly" }),
+  ).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "auditors" })).toHaveCount(0);
   await page.getByRole("checkbox", { name: "administrators" }).check();
   await page.getByRole("checkbox", { name: "members" }).uncheck();
@@ -369,7 +398,11 @@ test("a Deployment Administrator invites a Tenant's first administrator and appr
     page.getByText("http://127.0.0.1/invitations/beta#erin-secret"),
   ).toBeVisible();
   expect(issued).toEqual([
-    { groups: ["administrators"], expires_in_seconds: 604_800 },
+    {
+      groups: ["administrators"],
+      expires_in_seconds: 604_800,
+      join_directly: true,
+    },
   ]);
 });
 

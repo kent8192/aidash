@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "./components/ui/sonner";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
@@ -29,6 +30,11 @@ import {
   SheetTitle,
 } from "./components/ui/sheet";
 import type { TenantState } from "./types";
+import { apiFetch } from "./transport";
+import {
+  useTenantAdministration,
+  type TenantAdministration,
+} from "./tenant-administration";
 import type { ApprovalCard } from "./generated/models";
 import { approvalNotice } from "./research";
 import { connect } from "./connections/connect";
@@ -59,6 +65,7 @@ const copy = {
     input: "回答が必要です",
     completed: "タスクが完了しました",
     failed: "タスクが失敗しました",
+    joined: "招待による参加",
     updates: (count: number) => `${count}件の更新があります`,
     view: "通知を確認",
     close: "通知を閉じる",
@@ -74,6 +81,7 @@ const copy = {
     input: "Your response is needed",
     completed: "Task completed",
     failed: "Task failed",
+    joined: "Invitation accepted",
     updates: (count: number) => `${count} updates`,
     view: "View notifications",
     close: "Dismiss notification",
@@ -84,16 +92,26 @@ const icons = {
   input: CircleHelp,
   completed: CheckCircle2,
   failed: TriangleAlert,
+  joined: CheckCircle2,
 };
 const iconTone = {
   approval: "text-warning",
   input: "text-warning",
   completed: "text-success",
   failed: "text-destructive",
+  joined: "text-success",
+};
+type InvitationApprovalNotice = {
+  id: string;
+  identity: { display_name: string | null; verified_email: string | null };
+  subject: string;
+  occurred_at: string;
 };
 function frame(
   data: TenantState | undefined,
   approvals: ApprovalCard[] | undefined,
+  administration: TenantAdministration | undefined,
+  joins: InvitationApprovalNotice[] | undefined,
   ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
@@ -176,6 +194,36 @@ function frame(
         },
       });
   }
+  if (joins && administration?.actions?.includes("registration.read")) {
+    const scope = JSON.stringify([
+      data.deployment.id,
+      administration.tenant,
+      "invitation-approvals",
+    ]);
+    scopes.push(scope);
+    for (const approval of joins) {
+      const person =
+        approval.identity?.display_name ||
+        approval.identity?.verified_email ||
+        approval.subject;
+      entries.push({
+        key: JSON.stringify([scope, approval.id]),
+        scope,
+        signature: approval.id,
+        kind: "joined",
+        detail: ja
+          ? `${person} が招待で参加しました`
+          : `${person} joined through an invitation`,
+        workspaceTitle: administration.label ?? administration.tenant,
+        target: {
+          kind: "administration",
+          id: approval.id,
+          node: data.deployment.id,
+          workspace: "",
+        },
+      });
+    }
+  }
   return { scopes, entries };
 }
 const NotificationContext = createContext<{
@@ -229,6 +277,20 @@ export function NotificationProvider({
   children: ReactNode;
 }) {
   const words = copy[locale];
+  const tenant = data?.access.kind === "subject" ? data.access.tenant : null;
+  const administration = useTenantAdministration(tenant);
+  const joins = useQuery({
+    queryKey: ["invitation-approvals", tenant],
+    queryFn: () =>
+      apiFetch<InvitationApprovalNotice[]>(
+        `/api/tenants/${encodeURIComponent(tenant!)}/invitation-approvals`,
+      ),
+    enabled:
+      tenant !== null &&
+      !administration.isError &&
+      !!administration.data?.actions?.includes("registration.read"),
+    refetchInterval: 60_000,
+  });
   const [store] = useState(() => new NoticeStore());
   const [centerOpen, setCenterOpen] = useState(false);
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
@@ -258,7 +320,15 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, approvals, locale === "ja-JP"));
+    store.observe(
+      frame(
+        data,
+        approvals,
+        administration.isError ? undefined : administration.data,
+        joins.isError ? undefined : joins.data,
+        locale === "ja-JP",
+      ),
+    );
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -331,7 +401,20 @@ export function NotificationProvider({
         },
       );
     }, delay);
-  }, [data, approvals, locale, store, toastId, show, visit, centerOpen]);
+  }, [
+    data,
+    approvals,
+    administration.data,
+    administration.isError,
+    joins.data,
+    joins.isError,
+    locale,
+    store,
+    toastId,
+    show,
+    visit,
+    centerOpen,
+  ]);
   useEffect(
     () => () => {
       clearTimeout(timer.current);
@@ -339,7 +422,7 @@ export function NotificationProvider({
     },
     [toastId],
   );
-  const recent = view.recent.filter((item) => item.target.kind === "task");
+  const recent = view.recent;
   return (
     <NotificationContext value={{ store, show, label: words.notifications }}>
       {children}

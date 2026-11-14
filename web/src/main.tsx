@@ -826,6 +826,8 @@ function Dashboard({
   const visit = (target: NoticeTarget) => {
     // An approval is decided in the decision queue, where its card lives.
     if (target.kind === "approval") return setQueueOpen(true);
+    if (target.kind === "administration")
+      return window.location.assign("/trust?view=authorization");
     const item =
       target.kind === "human"
         ? requests.find(

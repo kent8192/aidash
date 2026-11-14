@@ -8,8 +8,8 @@ use crate::apps::identity::serializers::oidc::{
 	Approval, ApprovedMapping, MappingRevision, Registration,
 };
 use crate::apps::identity::serializers::tenant_administration::{
-	Membership, MembershipUpdate, TenantAdministration, TenantApproval, TenantMapping,
-	TenantRegistration,
+	InvitationApprovalNotice, Membership, MembershipUpdate, TenantAdministration, TenantApproval,
+	TenantMapping, TenantRegistration,
 };
 use crate::authorization::identity::Actor;
 use crate::federation::Federation;
@@ -101,6 +101,19 @@ impl TenantAdministrations {
 			});
 		}
 		Ok(overview)
+	}
+
+	pub(crate) async fn invitation_approvals(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<Vec<InvitationApprovalNotice>> {
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let result = administrator
+			.invitation_approvals(&self.runtime.store.pool)
+			.await;
+		self.finish(&administrator, result).await
 	}
 
 	pub(crate) async fn subnode_limits(

@@ -556,8 +556,8 @@ export function TenantIdentityAdministration({
     >
       <Hint>
         {english
-          ? "Manage the people mapped into this Tenant. Invite people with a link, then approve their requests into new user subjects. You can assign only groups marked as assignable."
-          : "このテナントに mapping された人を管理します。招待リンクで人を招き、届いた申請を新しい user subject として承認します。付与できるのは、割り当て可能な group だけです。"}
+          ? "Manage the people mapped into this Tenant. Invitation links can join people directly or leave their requests for approval. You can assign only groups marked as assignable."
+          : "このテナントに mapping された人を管理します。招待リンクでは直接参加または承認待ちを選べます。付与できるのは、割り当て可能な group だけです。"}
       </Hint>
       {error && <Alert>{error}</Alert>}
       <p className="font-mono text-[11px] text-faint">{tenant}</p>
@@ -573,6 +573,7 @@ export function TenantIdentityAdministration({
           tenant={tenant}
           assignable={assignable}
           canCreate={can("invitation.create")}
+          canApprove={can("registration.approve")}
           canRead={can("invitation.read")}
           canRevoke={can("invitation.revoke")}
         />

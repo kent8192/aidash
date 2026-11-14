@@ -941,3 +941,5 @@ rewritten until the migration is reapplied.
 `registry/0066_native_context_recovery` replaces the Agent bindings validation function so a `context_policy` may carry the native recovery fields and a `summary` object that names no model of its own (it is validated with the Agent's model). Its SQL keeps the previous function body and delegates to it; PostgreSQL function bodies are DDL that Reinhardt migrations cannot express. Reversal refuses while definitions use the new policy fields.
 
 `registry/0068_reject_new_compaction_deciders` adds a `NOT VALID` check that preserves existing compaction Decider rows while rejecting new or updated ones. PostgreSQL `NOT VALID` constraint DDL is expressed as raw SQL because Reinhardt does not provide it.
+
+`identity/0073_invitation_direct_join` stores the issuer Mapping or bearer fingerprint and direct-join choice on Invitations and records approved groups in administration history. Existing Invitations retain the pending-request behavior. `identity/0074_invitation_notification_index` indexes the Tenant and action with the event time for the bounded notification feed.

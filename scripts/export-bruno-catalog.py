@@ -22,6 +22,7 @@ REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
+    ("GET", "/api/tenants/{tenant}/invitation-approvals"): ("tenant-invitation-approvals", "tenant_administration"),
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),
     ("POST", NODE_PATH + "/deletion"): ("tenant-node-deletion", "nodes"),
     ("POST", NODE_PATH + "/restore"): ("tenant-node-restore", "nodes"),

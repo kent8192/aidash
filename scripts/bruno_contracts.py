@@ -29,7 +29,7 @@ ADMIN_ADMITTED = {
     "session", "state", "run-management-get", "run-management-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
     "transaction_revocations", "transaction-participants",
-    "tenant-administration", "tenant-registrations", "tenant-registration-approve",
+    "tenant-administration", "tenant-invitation-approvals", "tenant-registrations", "tenant-registration-approve",
     "tenant-registration-reject", "tenant-mappings", "tenant-mapping-disable",
     "tenant-invitations-issue", "tenant-invitations", "tenant-invitations-revoke",
     "tenants-label", "tenants-delete", "tenants-list", "tenants-purge",

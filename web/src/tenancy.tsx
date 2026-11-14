@@ -212,12 +212,14 @@ export function TenantInvitations({
   tenant,
   assignable,
   canCreate,
+  canApprove,
   canRead,
   canRevoke,
 }: {
   tenant: string;
   assignable: string[];
   canCreate: boolean;
+  canApprove: boolean;
   canRead: boolean;
   canRevoke: boolean;
 }) {
@@ -232,6 +234,7 @@ export function TenantInvitations({
   // assignable has no checkbox to clear, so it is never sent.
   const proposed = groups.filter((group) => assignable.includes(group));
   const [lifetime, setLifetime] = useState(604_800);
+  const [joinDirectly, setJoinDirectly] = useState(true);
   const [issued, setIssued] = useState<IssuedInvitation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -274,9 +277,16 @@ export function TenantInvitations({
       </h3>
       <Hint>
         {english
-          ? "An Invitation is a single-use link. Whoever opens it can ask to join; an administrator still approves the request. Share it only with the person you invite."
-          : "招待は 1 回だけ使えるリンクです。開いた人は参加を申請でき、管理者が承認して初めて参加します。招待する本人にだけ共有してください。"}
+          ? "An Invitation is a single-use link. Share it only with the person you invite."
+          : "招待は 1 回だけ使えるリンクです。招待する本人にだけ共有してください。"}
       </Hint>
+      {canCreate && !canApprove && (
+        <Hint>
+          {english
+            ? "Direct joining requires permission to approve registration requests."
+            : "直接参加を許可するには登録申請の承認権限が必要です。"}
+        </Hint>
+      )}
       {error && <Alert>{error}</Alert>}
       {canCreate && (
         <div className="grid gap-2">
@@ -302,6 +312,15 @@ export function TenantInvitations({
                 {group}
               </label>
             ))}
+            <label className="inline-flex items-center gap-1.5 text-xs">
+              <input
+                type="checkbox"
+                checked={canApprove && joinDirectly}
+                disabled={busy || !canApprove}
+                onChange={(event) => setJoinDirectly(event.target.checked)}
+              />
+              {english ? "Join directly" : "直接参加を許可"}
+            </label>
             <NativeSelect
               aria-label={english ? "Link lifetime" : "リンクの有効期間"}
               value={String(lifetime)}
@@ -325,6 +344,7 @@ export function TenantInvitations({
                       body: JSON.stringify({
                         groups: proposed,
                         expires_in_seconds: lifetime,
+                        join_directly: canApprove && joinDirectly,
                       }),
                     }),
                   );
@@ -444,7 +464,8 @@ type Stage =
   | { kind: "invalid" }
   | { kind: "refused"; message: string }
   | { kind: "ready"; label: string | null }
-  | { kind: "requested" };
+  | { kind: "requested" }
+  | { kind: "joined" };
 
 /** Opening an Invitation link: sign in, see the inviting Tenant, request to join. */
 export function InvitationLanding({ tenant }: { tenant: string }) {
@@ -531,8 +552,8 @@ export function InvitationLanding({ tenant }: { tenant: string }) {
           </p>
           <p className="text-xs text-muted-foreground">
             {english
-              ? "Requesting to join uses this link. An administrator of the Tenant approves the request before you can use it."
-              : "参加を申請するとこのリンクは使用済みになります。テナントの管理者が承認すると利用できるようになります。"}
+              ? "Joining uses this link. You may join immediately or wait for an administrator to approve your request."
+              : "参加するとリンクは使用済みになります。すぐに参加できる場合と、管理者の承認を待つ場合があります。"}
           </p>
           <Button
             type="button"
@@ -547,7 +568,15 @@ export function InvitationLanding({ tenant }: { tenant: string }) {
                 .then(async (response) => {
                   if (response.ok) {
                     sessionStorage.removeItem(SECRET_KEY);
-                    setStage({ kind: "requested" });
+                    const registration = (await response.json()) as {
+                      status: string;
+                    };
+                    setStage({
+                      kind:
+                        registration.status === "approved"
+                          ? "joined"
+                          : "requested",
+                    });
                   } else if (response.status === 409)
                     setStage({
                       kind: "refused",
@@ -564,12 +593,16 @@ export function InvitationLanding({ tenant }: { tenant: string }) {
           </Button>
         </div>
       )}
-      {stage.kind === "requested" && (
+      {(stage.kind === "requested" || stage.kind === "joined") && (
         <div className="grid gap-3">
           <p>
-            {english
-              ? "Your request was sent. You can use the Tenant once an administrator approves it."
-              : "申請を送信しました。管理者が承認するとテナントを利用できます。"}
+            {stage.kind === "joined"
+              ? english
+                ? "You joined the Tenant."
+                : "テナントに参加しました。"
+              : english
+                ? "Your request was sent. You can use the Tenant once an administrator approves it."
+                : "申請を送信しました。管理者が承認するとテナントを利用できます。"}
           </p>
           <Button
             type="button"

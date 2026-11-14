@@ -216,3 +216,18 @@ test("a deleted Personal Tenant can be replaced by a new one on request", async 
   await page.getByRole("button", { name: "New Personal Tenant" }).click();
   await expect.poll(() => created).toBe(1);
 });
+
+test("a directly approved Invitation confirms that the person joined", async ({
+  page,
+}) => {
+  await signedIn(page);
+  await page.route("**/auth/invitations/inspect", (route) =>
+    route.fulfill({ json: { tenant, label: "Research" } }),
+  );
+  await page.route("**/auth/invitations/redeem", (route) =>
+    route.fulfill({ json: { id: "request", status: "approved", tenant } }),
+  );
+  await page.goto(`/invitations/${tenant}#direct-secret`);
+  await page.getByRole("button", { name: "Request to join" }).click();
+  await expect(page.getByText("You joined the Tenant.")).toBeVisible();
+});

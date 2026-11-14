@@ -91,6 +91,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::tenant_administration::overview)
 			.with_route_middleware(AccessBoundary::administered())
+			.endpoint(super::views::tenant_administration::invitation_approvals)
+			.with_route_middleware(AccessBoundary::administered())
 			.endpoint(super::views::tenant_administration::registrations)
 			.with_route_middleware(AccessBoundary::administered())
 			.endpoint(super::views::tenant_administration::approve)
