@@ -176,11 +176,6 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 		)
 		.await
 	}
-	async fn release_python(&mut self, reason: &str) -> Result<()> {
-		crate::capabilities::python::release(self.store, self.access, self.area, reason)
-			.await
-			.map_err(Into::into)
-	}
 	fn operation_id(&self) -> Uuid {
 		Uuid::new_v4()
 	}
@@ -350,17 +345,6 @@ impl aidash_application::ports::capabilities::OperationControlScope for Control<
 		operations::set_area(self.access, self.area.id, "active", self.area.epoch)
 			.await
 			.map_err(Into::into)
-	}
-	async fn complete_python_without_writer(&mut self) -> Result<()> {
-		let operation = self.loaded()?.clone();
-		crate::capabilities::python::completed(
-			self.access,
-			self.area,
-			&operation,
-			&json!({"writer_frozen":false}),
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn persist(&mut self) -> Result<()> {
 		let operation = self.loaded()?.clone();

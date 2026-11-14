@@ -123,7 +123,6 @@ pub enum CapabilityResult {
 	Search(SearchResult),
 	Read(ReadResult),
 	Runtime(RuntimeResult),
-	Reset(PythonReset),
 	Patch(PatchResult),
 	Skills(SkillListResult),
 	Skill(SkillReadResult),
@@ -203,43 +202,6 @@ pub struct RuntimeResult {
 	/// Background process adopted when the foreground command exited.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub left_running: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct PythonReset {
-	pub session_id: Uuid,
-	pub session_reset: bool,
-	pub reset_reason: String,
-	pub packages: PythonEnvironment,
-	pub error: super::errors::CapabilityError,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct PythonEnvironment {
-	pub image: Option<String>,
-	pub overlay_manifest: Option<FileEntry>,
-	pub dependencies: Option<PackageManifest>,
-	pub automatic_reinstall: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct PackageManifest {
-	pub protocol: String,
-	pub image: String,
-	pub packages: Vec<InstalledPackage>,
-	pub outcome: String,
-	pub network: String,
-	pub automatic_reinstall: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct InstalledPackage {
-	pub path: String,
-	pub filename: String,
-	pub name: String,
-	pub version: String,
-	pub sha256: String,
-	pub outbound_operation_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

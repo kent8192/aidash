@@ -9,7 +9,6 @@ pub trait ReclamationRepository: Send + Sync {
 	async fn begin(&self) -> Result<Box<dyn ReclamationScope + '_>>;
 	async fn retained(&self, after: Uuid) -> Result<Vec<Uuid>>;
 	async fn working(&self, after: Uuid) -> Result<Vec<Uuid>>;
-	async fn python(&self, cursor: &mut Uuid) -> Result<()>;
 	/// Stops Run-owned Journal kernels after their Run ends.
 	async fn journal(&self, _cursor: &mut Uuid) -> Result<()> {
 		Ok(())

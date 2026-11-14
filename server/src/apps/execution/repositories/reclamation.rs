@@ -1,7 +1,6 @@
 //! Native maintenance transactions retain every object and quota ownership predicate.
 use super::capability_records::{domain, native};
 use crate::apps::execution::capabilities::services::{
-	python,
 	records::{self, Record as NativeRecord},
 	sessions,
 };
@@ -218,9 +217,6 @@ let ids: Vec<Uuid> = {
 		}
 		.await;
 		result.map_err(Into::into)
-	}
-	async fn python(&self, cursor: &mut Uuid) -> Result<()> {
-		python::reap(self.store, cursor).await.map_err(Into::into)
 	}
 	async fn journal(&self, cursor: &mut Uuid) -> Result<()> {
 		super::journal_query::reap(self.store, cursor).await

@@ -218,7 +218,6 @@ pub async fn prepare(
 				"AREA_BUSY: cancel and reconcile the active writer before cleanup".into(),
 			));
 		}
-		scope.release_python(&area, "cleanup").await?;
 	}
 	let operation = Uuid::new_v4();
 	let mut snapshot = vec![];

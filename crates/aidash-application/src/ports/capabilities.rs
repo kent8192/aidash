@@ -24,7 +24,6 @@ pub trait OperationAdmissionScope<O: Send>: Send {
 	async fn verified_health(&mut self, python: bool) -> Result<()>;
 	/// Whether the build admits another Sandboxed tool in the Run's Tenant.
 	async fn admit_sandboxed_tool(&mut self) -> Result<()>;
-	async fn release_python(&mut self, reason: &str) -> Result<()>;
 	fn operation_id(&self) -> Uuid;
 	async fn set_running(&mut self, epoch: i64) -> Result<()>;
 	async fn accept(&mut self, operation: AcceptedOperation) -> Result<O>;
@@ -45,7 +44,6 @@ pub trait OperationControlScope: Send {
 		change: aidash_domain::capabilities::operations::Cancellation,
 	) -> Result<()>;
 	async fn activate_area(&mut self) -> Result<()>;
-	async fn complete_python_without_writer(&mut self) -> Result<()>;
 	async fn persist(&mut self) -> Result<()>;
 	async fn project(&mut self, offset: usize) -> Result<Value>;
 }
@@ -77,7 +75,6 @@ pub mod sessions;
 pub mod cleanup;
 
 pub mod journal_query;
-pub mod python;
 
 pub mod files;
 

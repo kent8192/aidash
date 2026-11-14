@@ -50,7 +50,6 @@ pub trait CleanupScope: Send {
 	async fn update(&mut self, record: &mut Record) -> Result<()>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
-	async fn release_python(&mut self, area: &Area, reason: &str) -> Result<()>;
 	async fn copy_owned(
 		&mut self,
 		area: Uuid,

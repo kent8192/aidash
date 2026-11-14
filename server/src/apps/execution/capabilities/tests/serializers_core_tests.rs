@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 /// The application profile `deploy/helm/aidash` renders with its default limits.
 fn chart_profile() -> Value {
-	json!({"admission":true,"cpu":2,"idle_seconds":1800,"install_seconds":300,"maximum_seconds":600,"memory_bytes":2147483648_u64,"operation_seconds":120,"output_bytes":8388608,"processes":128,"runner":{"endpoint":"http://app-execution-runner:8949","image":"reg/sandbox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","namespace":"aidash-pr-1-sandbox","runtime_class":"aidash-gvisor-pr-1","token_env":"AIDASH_CORE_RUNNER_TOKEN"},"storage":"/var/lib/aidash/capabilities","temporary_bytes":268435456,"working_bytes":1073741824})
+	json!({"admission":true,"cpu":2,"idle_seconds":1800,"maximum_seconds":600,"memory_bytes":2147483648_u64,"operation_seconds":120,"output_bytes":8388608,"processes":128,"runner":{"endpoint":"http://app-execution-runner:8949","image":"reg/sandbox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","namespace":"aidash-pr-1-sandbox","runtime_class":"aidash-gvisor-pr-1","token_env":"AIDASH_CORE_RUNNER_TOKEN"},"storage":"/var/lib/aidash/capabilities","temporary_bytes":268435456,"working_bytes":1073741824})
 }
 
 #[test]

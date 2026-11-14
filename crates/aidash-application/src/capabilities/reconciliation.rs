@@ -6,15 +6,9 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	capabilities::{
-		errors::{CapabilityError, TimedOut, also_timed_out},
-		operations::{
-			ExportQuota, FileScope, MAX_AREA_FILES, MountedFile, VERIFICATION,
-			WORKING_EXPORT_REFUSED, capability_of, counted_files, export_quota_refusal,
-			lost_area_state,
-			reconciliation::{Area, Limits, Snapshot},
-			request_validation_failure, undelivered_refusal,
-		},
+	capabilities::operations::{
+		VERIFICATION, capability_of, lost_area_state, reconciliation::Snapshot,
+		request_validation_failure, undelivered_refusal,
 	},
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
@@ -46,7 +40,7 @@ async fn reconcile(
 ) -> Result<()> {
 	let Loaded {
 		run,
-		mut area,
+		area,
 		mut operation,
 	} = scope.load(id, snapshot.run_id).await?;
 	if !operation.active() {
@@ -70,16 +64,9 @@ async fn reconcile(
 		operation.state = "cancelled".into();
 		operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false});
 		scope.set_area("active").await?;
-		if operation.kind == "code_interpreter" {
-			scope
-				.complete_python(&operation, &json!({"writer_frozen":false}))
-				.await?;
-		}
 		return scope.persist(&operation).await;
 	}
-	let health = scope
-		.health(cancelling, operation.kind == "code_interpreter")
-		.await?;
+	let health = scope.health(cancelling, false).await?;
 	let instance = health["instance"]
 		.as_str()
 		.ok_or_else(|| Error::External("invalid runner identity".into()))?;
@@ -121,11 +108,6 @@ async fn reconcile(
 			operation.state = "failed".into();
 			operation.result = json!({"error":{"code":code,"message":message},"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":true});
 			scope.set_area("active").await?;
-			if operation.kind == "code_interpreter" {
-				scope
-					.complete_python(&operation, &json!({"writer_frozen":false}))
-					.await?;
-			}
 			return scope.persist(&operation).await;
 		}
 		let files = files.into_iter().map(|file| json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})).collect::<Vec<_>>();
@@ -160,10 +142,7 @@ async fn reconcile(
 				))
 				.await?;
 		}
-		Some("completed" | "cancelled" | "failed")
-			if observed["termination_confirmed"] == true
-				|| operation.kind == "code_interpreter" && observed["writer_frozen"] == true =>
-		{
+		Some("completed" | "cancelled" | "failed") if observed["termination_confirmed"] == true => {
 			if observed["executed"] == false {
 				operation.state = observed["status"].as_str().unwrap().into();
 				operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false});
@@ -171,11 +150,6 @@ async fn reconcile(
 					operation.result["error"] = observed["error"].clone();
 				}
 				scope.set_area("active").await?;
-				if operation.kind == "code_interpreter" {
-					scope
-						.complete_python(&operation, &json!({"writer_frozen":false}))
-						.await?;
-				}
 				return scope.persist(&operation).await;
 			}
 
@@ -215,155 +189,13 @@ async fn reconcile(
 					.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
 					.await;
 			}
-			// The runner refused to export `/work` (#682): only this operation
-			// fails, and the Area keeps its published revision.
-			if observed["error"]["code"] == WORKING_EXPORT_REFUSED {
-				let error = observed["error"].clone();
-				return Box::pin(refuse_export(scope, &area, operation, &observed, error)).await;
-			}
-			let previous = serde_json::from_value::<Vec<MountedFile>>(area.manifest.clone())?;
-			// A digest supplied by the runner is not authority to read an
-			// arbitrary Tenant blob. Only the Area or this operation's mounted
-			// inputs can authorize a download-free reuse.
-			let mut entries = previous
-				.iter()
-				.filter(|file| !matches!(file.scope, FileScope::Working))
-				.cloned()
-				.collect::<Vec<_>>();
-			let exported = observed["files"]
-				.as_array()
-				.ok_or_else(|| Error::External("invalid runner file manifest".into()))?;
-			// The runner counts only `/work`; mounted inputs share the manifest.
-			if let Some(error) = quota_refusal(&entries, exported, limits.working_bytes)? {
-				return Box::pin(refuse_export(scope, &area, operation, &observed, error)).await;
-			}
-			let mounted = if exported.is_empty() {
-				Vec::new()
-			} else {
-				scope.upload_files(&operation).await?
-			};
-			let mut size = counted_files(&entries).map(|file| file.size).sum::<u64>();
-			let mut seen = std::collections::BTreeSet::new();
-			for file in exported {
-				let path = file["path"].as_str().ok_or(Error::Forbidden)?;
-				aidash_domain::registry::rules::validate_path(path)?;
-				if !seen.insert(path) || counted_files(&entries).count() >= MAX_AREA_FILES {
-					return Err(Error::Invalid("invalid runner paths".into()));
-				}
-				let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
-				let object_id = file["object_id"]
-					.as_str()
-					.ok_or_else(|| Error::Invalid("invalid output id".into()))?;
-				if object_id.len() != 64 || !object_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-				{
-					return Err(Error::Invalid("invalid output id".into()));
-				}
-				let digest = file["digest"]
-					.as_str()
-					.ok_or_else(|| Error::Invalid("invalid output digest".into()))?;
-				digest
-					.parse::<aidash_domain::capabilities::Digest>()
-					.map_err(|_| Error::Invalid("invalid output digest".into()))?;
-				size = size.checked_add(file_size).ok_or(Error::Forbidden)?;
-				if size > limits.working_bytes {
-					return Err(Error::Conflict("runner file quota".into()));
-				}
-				if let Some(unchanged) = previous.iter().find(|old| {
-					matches!(old.scope, FileScope::Working)
-						&& old.path == path
-						&& old.size == file_size
-						&& file["digest"] == old.digest
-				}) {
-					scope.verified(unchanged).await?;
-					entries.push(unchanged.clone());
-					continue;
-				}
-				// Reuse an output blob only when this Area already held it, keeping
-				// the media type that was detected when it was first downloaded.
-				let authorized = previous
-					.iter()
-					.chain(mounted.iter())
-					.find(|file| file.digest == digest && file.size == file_size)
-					.map(|file| file.media_type.clone());
-				let reusable = match authorized {
-					Some(media_type) => scope
-						.reuse_output(digest, file_size)
-						.await?
-						.map(|file_id| (file_id, media_type)),
-					None => None,
-				};
-				let (file_id, digest, media_type) = match reusable {
-					Some((file_id, media_type)) => (file_id, digest.to_owned(), media_type),
-					None => Box::pin(download_output(scope, id, file)).await?,
-				};
-				entries.push(MountedFile {
-					file_id,
-					path: path.into(),
-					digest,
-					size: file_size,
-					media_type,
-					scope: FileScope::Working,
-					provenance: json!({"kind":"operation","operation_id":id}),
-				});
-			}
-			let output = store_output(scope, id, &observed, limits).await?;
-			let mut displays = vec![];
-			let mut display_bytes = 0;
-			for (index, display) in observed["displays"]
-				.as_array()
-				.map(Vec::as_slice)
-				.unwrap_or_default()
-				.iter()
-				.enumerate()
-			{
-				if index >= 16 || display["mime"] != "image/png" {
-					return Err(Error::Invalid("DISPLAY_LIMIT".into()));
-				}
-				let bytes = STANDARD
-					.decode(display["data"].as_str().ok_or(Error::Forbidden)?)
-					.map_err(|_| Error::Invalid("INVALID_DISPLAY".into()))?;
-				display_bytes += bytes.len();
-				if display_bytes as u64 > limits.output_bytes
-					|| !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-				{
-					return Err(Error::Invalid("DISPLAY_LIMIT".into()));
-				}
-				let (file_id, digest) = scope.put("display", &bytes).await?;
-				displays.push(MountedFile {
-					file_id,
-					path: format!("display-{id}-{index}.png"),
-					digest,
-					size: bytes.len() as u64,
-					media_type: "image/png".into(),
-					scope: FileScope::Working,
-					provenance: json!({"kind":"display","operation_id":id}),
-				});
-			}
-			area.revision = scope.publish(entries).await?;
+			// Agent commands and Python cells run in Execution Pods (#745); a
+			// Check is the only command left here, and nothing is published for
+			// anything else.
 			scope.set_area("active").await?;
-			operation.revision = area.revision;
-			operation.state = observed["status"].as_str().unwrap().into();
-			operation.result = json!({"displays":displays,"session_id":operation.input["session_id"],"writer_frozen":observed["writer_frozen"],"output_file":output,"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
-			// The limit decides, whatever exit code the command then gave and
-			// whoever stopped it. Its files are published by now, so the error
-			// can say they were saved.
-			if observed["deadline_expired"] == true {
-				operation.state = "failed".into();
-				operation.result["deadline_expired"] = json!(true);
-				operation.result["error"] =
-					serde_json::to_value(CapabilityError::command_timed_out(&TimedOut {
-						limit_seconds: time_limit(&operation),
-						maximum_seconds: scope
-							.timeout_ceiling(&operation.kind)
-							.unwrap_or(limits.maximum_seconds)
-							.min(limits.maximum_seconds),
-						revision: area.revision,
-						python: operation.kind == "code_interpreter",
-					}))?;
-			}
-			if operation.kind == "code_interpreter" {
-				scope.complete_python(&operation, &observed).await?;
-			}
+			operation.state = "failed".into();
+			operation.result = json!({"termination_confirmed":true,"runner_acknowledged":false,
+				"error":{"code":"EXECUTION_PATH_REMOVED","message":"This command ran on the Runner's per-command path, which no longer publishes files.","retryable":false}});
 		}
 		Some("uncertain") => {
 			// The runner refuses a successor while this writer is not confirmed
@@ -382,11 +214,6 @@ async fn reconcile(
 			scope
 				.set_area(lost_area_state(&operation.kind, held))
 				.await?;
-			if !held && operation.kind == "code_interpreter" {
-				scope
-					.complete_python(&operation, &json!({"writer_frozen":false}))
-					.await?;
-			}
 		}
 		// `cancelling` is the runner retrying a held writer's stop proof.
 		Some("accepted" | "starting" | "running" | "finishing" | "cancelling") => {
@@ -450,101 +277,6 @@ async fn reconcile(
 		.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
 		.await?;
 	Ok(())
-}
-/// Saves the operation's command output as its own object, outside the Area
-/// manifest.
-async fn store_output(
-	scope: &mut dyn OperationReconciliationScope,
-	id: Uuid,
-	observed: &Value,
-	limits: Limits,
-) -> Result<MountedFile> {
-	let stdout = STANDARD
-		.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?)
-		.map_err(|_| Error::Invalid("invalid runner output encoding".into()))?;
-	if stdout.len() as u64 > limits.output_bytes {
-		return Err(Error::Conflict("runner output quota".into()));
-	}
-	let (file_id, digest) = scope.put("output", &stdout).await?;
-	Ok(MountedFile {
-		file_id,
-		path: format!("operation-{id}.log"),
-		digest,
-		size: stdout.len() as u64,
-		media_type: "text/plain; charset=utf-8".into(),
-		scope: FileScope::Working,
-		provenance: json!({"kind":"operation","operation_id":id}),
-	})
-}
-/// The refusal of an export that would exceed the manifest's file ceiling or
-/// the byte quota, naming the first exported file over it.
-fn quota_refusal(
-	entries: &[MountedFile],
-	exported: &[Value],
-	working_bytes: u64,
-) -> Result<Option<Value>> {
-	let mounted = counted_files(entries).map(|file| file.size).sum::<u64>();
-	let counted = counted_files(entries).count();
-	let mut size = mounted;
-	for (index, file) in exported.iter().enumerate() {
-		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
-		if counted + index >= MAX_AREA_FILES {
-			return Ok(Some(export_quota_refusal(
-				ExportQuota::Files,
-				path,
-				MAX_AREA_FILES as u64,
-			)));
-		}
-		size = size.saturating_add(file["size"].as_u64().ok_or(Error::Forbidden)?);
-		if size > working_bytes {
-			return Ok(Some(export_quota_refusal(
-				ExportQuota::Bytes,
-				path,
-				working_bytes.saturating_sub(mounted),
-			)));
-		}
-	}
-	Ok(None)
-}
-/// The Time Limit the operation was started with.
-fn time_limit(operation: &Snapshot) -> u64 {
-	operation.input["seconds"].as_u64().unwrap_or_default()
-}
-/// Ends an operation whose export was refused as a failed tool call: nothing is
-/// published, the Area reopens at its previous revision and the Run continues.
-/// A Python session resets, since its memory no longer matches those files.
-/// A command past its limit keeps the refusal as its error, because what the
-/// Agent has to act on first is that nothing was saved, and adds the limit.
-async fn refuse_export(
-	scope: &mut dyn OperationReconciliationScope,
-	area: &Area,
-	mut operation: Snapshot,
-	observed: &Value,
-	mut error: Value,
-) -> Result<()> {
-	let id = operation.id;
-	let timed_out = observed["deadline_expired"] == true;
-	if timed_out && let Some(message) = error["message"].as_str() {
-		error["message"] = json!(also_timed_out(message, time_limit(&operation)));
-	}
-	let limits = scope.limits();
-	let output = store_output(scope, id, observed, limits).await?;
-	scope.set_area("active").await?;
-	operation.revision = area.revision;
-	operation.state = "failed".into();
-	operation.result = json!({"session_id":operation.input["session_id"],"writer_frozen":false,"output_file":output,"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":true,"runner_acknowledged":false,"error":error});
-	if timed_out {
-		operation.result["deadline_expired"] = json!(true);
-	}
-	if operation.kind == "code_interpreter" {
-		scope
-			.complete_python(&operation, &json!({"writer_frozen":false}))
-			.await?;
-	}
-	scope.persist(&operation).await?;
-	scope
-		.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
-		.await
 }
 async fn upload_inputs(
 	scope: &mut dyn OperationReconciliationScope,

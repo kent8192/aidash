@@ -74,9 +74,6 @@ impl crate::ports::capabilities::OperationControlScope for Control {
 	async fn activate_area(&mut self) -> Result<()> {
 		self.record("activate")
 	}
-	async fn complete_python_without_writer(&mut self) -> Result<()> {
-		self.record("python")
-	}
 	async fn persist(&mut self) -> Result<()> {
 		self.record("persist")
 	}
@@ -87,13 +84,12 @@ impl crate::ports::capabilities::OperationControlScope for Control {
 	}
 }
 #[rstest]
-#[case::python("code_interpreter", true)]
-#[case::shell("shell", false)]
+#[case::python("code_interpreter")]
+#[case::shell("shell")]
 #[tokio::test]
 async fn cancelling_prepared_operations_releases_the_area_before_persisting_a_safe_result(
 	mut control: Control,
 	#[case] kind: &str,
-	#[case] python: bool,
 ) {
 	control.operation.kind = kind.into();
 	let result = poll(&mut control, Uuid::from_u128(13), None, kind, true)
@@ -103,12 +99,10 @@ async fn cancelling_prepared_operations_releases_the_area_before_persisting_a_sa
 		result,
 		json!({"state":"cancelled","result":{"termination_confirmed":true,"effects_may_have_occurred":false}})
 	);
-	let mut expected = vec!["load", "change", "activate"];
-	if python {
-		expected.push("python");
-	}
-	expected.extend(["persist", "project"]);
-	assert_eq!(control.calls, expected);
+	assert_eq!(
+		control.calls,
+		["load", "change", "activate", "persist", "project"]
+	);
 	assert_eq!(control.offset, Some(0));
 }
 #[rstest]
@@ -185,8 +179,7 @@ async fn hidden_operations_never_project_or_cancel_foreign_rows(
 }
 #[rstest]
 #[case::area("activate", 2)]
-#[case::python("python", 3)]
-#[case::persist("persist", 4)]
+#[case::persist("persist", 3)]
 #[tokio::test]
 async fn cancelled_result_is_not_projected_before_every_transactional_effect_succeeds(
 	mut control: Control,
@@ -207,7 +200,7 @@ async fn cancelled_result_is_not_projected_before_every_transactional_effect_suc
 	));
 	assert_eq!(
 		control.calls,
-		vec!["load", "change", "activate", "python", "persist"][..=last]
+		vec!["load", "change", "activate", "persist"][..=last]
 	);
 	assert_eq!(control.offset, None);
 }
@@ -332,9 +325,6 @@ impl OperationAdmissionScope<Uuid> for Scope {
 	async fn admit_sandboxed_tool(&mut self) -> Result<()> {
 		self.record("admit")
 	}
-	async fn release_python(&mut self, reason: &str) -> Result<()> {
-		self.record(format!("release:{reason}"))
-	}
 	fn operation_id(&self) -> Uuid {
 		Uuid::from_u128(6)
 	}
@@ -352,7 +342,7 @@ impl OperationAdmissionScope<Uuid> for Scope {
 	}
 }
 #[rstest]
-#[case::shell("shell",vec!["health:shell","admit","release:shell_requested"])]
+#[case::shell("shell",vec!["health:shell","admit"])]
 #[case::python("code_interpreter",vec!["health:python","admit"])]
 #[tokio::test]
 async fn operation_admission_keeps_authorization_mount_probe_release_and_accept_order(
@@ -484,9 +474,8 @@ async fn stale_revision_returns_a_recovery_hint(
 #[case::mounts("files", 3)]
 #[case::health("health:shell", 4)]
 #[case::admission("admit", 5)]
-#[case::python_release("release:shell_requested", 6)]
-#[case::mark_running("running", 7)]
-#[case::accept("accept", 8)]
+#[case::mark_running("running", 6)]
+#[case::accept("accept", 7)]
 #[tokio::test]
 async fn faults_stop_before_later_admission_effects(
 	mut scope: Scope,
@@ -509,7 +498,6 @@ async fn faults_stop_before_later_admission_effects(
 			"files",
 			"health:shell",
 			"admit",
-			"release:shell_requested",
 			"running",
 			"accept"
 		][..=last]
@@ -536,7 +524,6 @@ async fn invalid_extra_shape_retains_the_original_rollback_boundary_after_runnin
 			"files",
 			"health:shell",
 			"admit",
-			"release:shell_requested",
 			"running"
 		]
 	);

@@ -2,7 +2,7 @@
 use super::Operation;
 use crate::apps::execution::capabilities::{
 	serializers::contracts::{Area as NativeArea, FileEntry},
-	services::{objects::PendingObject, operations, python, service, sessions, skills},
+	services::{objects::PendingObject, operations, service, sessions, skills},
 };
 use crate::{
 	Result as NativeResult,
@@ -246,12 +246,6 @@ impl OperationReconciliationScope for Scope<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn complete_python(&mut self, operation: &Snapshot, observed: &Value) -> Result<()> {
-		let area = self.area.as_ref().expect("reconciliation scope loaded");
-		python::completed(&mut self.access, area, &native(operation), observed)
-			.await
-			.map_err(Into::into)
-	}
 	async fn persist(&mut self, operation: &Snapshot) -> Result<()> {
 		super::persist(&mut self.access, &native(operation))
 			.await
@@ -373,12 +367,6 @@ impl OperationReconciliationScope for Scope<'_> {
 			)
 			.await
 			.map_err(Into::into)
-	}
-	async fn publish(&mut self, entries: Vec<MountedFile>) -> Result<i64> {
-		let area = self.area.as_mut().expect("reconciliation scope loaded");
-		area.manifest = json!(entries.into_iter().map(FileEntry::from).collect::<Vec<_>>());
-		service::publish(self.store, &mut self.access, area).await?;
-		Ok(area.revision)
 	}
 	async fn event(&mut self, data: Value) -> Result<()> {
 		self.store
