@@ -2068,6 +2068,63 @@ print(json.dumps(r))'''
                               'error_code', 'message') if key in record})
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
 
+    def start_preview(self, request):
+        import base64
+        import ipaddress
+        import json
+        import time
+        from control import scratch_resource_name
+        operation, scratch, port = request['operation_id'], request['scratch_space_id'], request['port']
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError('invalid preview port')
+        command = {key: request[key] for key in ('operation_id', 'scratch_space_id', 'run_id', 'code', 'proxy_credential')
+                   if key in request}
+        command.update(background=True, cwd=request.get('cwd') or '.')
+        self.submit_command(command, kind='preview')
+        original_uid = self._read_command(operation)['pod_uid']
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            record = self.command_result(operation)
+            pod = self._get('pod', scratch_resource_name(scratch))
+            if not pod or pod.get('status', {}).get('phase') != 'Running':
+                break
+            uid, address = pod.get('metadata', {}).get('uid'), pod.get('status', {}).get('podIP')
+            if uid != original_uid:
+                break
+            if record.get('status') not in ('queued', 'running'):
+                break
+            if record.get('status') == 'running' and uid and address:
+                try:
+                    probe = self.backend.kube(['exec', scratch_resource_name(scratch), '-c', 'execution', '--'] +
+                                              helper_command('port-check', uid, str(port)), check=False, timeout=5)
+                    ready = probe.returncode == 0 and json.loads(probe.stdout).get('ready') is True
+                except Exception:
+                    ready = False
+                if ready:
+                    parsed = ipaddress.ip_address(address)
+                    host = '[' + str(parsed) + ']' if parsed.version == 6 else str(parsed)
+                    return {'operation_id': operation, 'address': f'{host}:{port}'}
+            time.sleep(.5)
+        tail = []
+        for stream in ('stdout', 'stderr'):
+            try:
+                chunk = self.background_log({'operation_id': operation, 'stream': stream, 'limit': 4096})
+                tail.append(base64.b64decode(chunk['data'], validate=True).decode('utf-8', errors='replace'))
+            except Exception:
+                pass
+        stop_failed = False
+        try:
+            self.stop_background(operation)
+        except Exception:
+            stop_failed = True
+        message = ''.join(tail)[-8192:]
+        credential = request.get('proxy_credential')
+        if isinstance(credential, str) and credential:
+            message = message.replace(credential, '[redacted]')
+        if stop_failed:
+            message += '\nCould not stop the preview process.'
+        raise ExecutionPodError('preview_start_failed', message or 'Preview did not accept connections within 60 seconds')
+
     def file_operation(self, operation, request):
         import json
         from control import scratch_resource_name

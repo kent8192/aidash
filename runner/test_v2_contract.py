@@ -176,3 +176,22 @@ def test_file_read_http_route_returns_bounded_bytes(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_preview_waits_for_port_and_returns_pod_address(tmp_path):
+    from types import SimpleNamespace
+    operation = '00000000-0000-4000-8000-000000000001'
+    backend = SimpleNamespace(root=tmp_path, kube=Mock(return_value=SimpleNamespace(returncode=0,
+        stdout=b'{"ready":true}')))
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running',
+                              'podIP': '10.2.3.4'}})
+    controller.submit_command = Mock(return_value={'status': 'queued'})
+    controller.command_result = Mock(return_value={'status': 'running'})
+    controller._read_command = Mock(return_value={'pod_uid': 'uid'})
+    request = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r',
+               'code': 'serve', 'port': 8080, 'proxy_credential': 'run-token'}
+    assert controller.start_preview(request) == {'operation_id': operation, 'address': '10.2.3.4:8080'}
+    command = controller.submit_command.call_args.args[0]
+    assert command['background'] is True
+    assert command['proxy_credential'] == 'run-token'

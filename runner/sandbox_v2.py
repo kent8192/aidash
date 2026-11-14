@@ -713,6 +713,21 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
+    if len(sys.argv) == 4 and sys.argv[1] == 'port-check':
+        import json
+        import socket
+        if os.environ.get('AIDASH_POD_UID') != sys.argv[2]:
+            raise ValueError('Execution Pod identity changed')
+        port = int(sys.argv[3])
+        if not 1 <= port <= 65535:
+            raise ValueError('invalid port')
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=1):
+                ready = True
+        except OSError:
+            ready = False
+        print(json.dumps({'ready': ready}))
+        raise SystemExit(0)
     if len(sys.argv) == 4 and sys.argv[1] == 'files':
         import json
         from pathlib import Path
