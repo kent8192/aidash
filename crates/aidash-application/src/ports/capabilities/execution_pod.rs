@@ -423,6 +423,18 @@ mod tests {
 		);
 	}
 	#[test]
+	fn command_result_carries_adopted_background_operation() {
+		let result: CommandResult = serde_json::from_value(serde_json::json!({
+			"operation_id":"op", "status":"completed", "left_running":"op.left"
+		}))
+		.unwrap();
+		assert_eq!(result.left_running.as_deref(), Some("op.left"));
+		assert_eq!(
+			serde_json::to_value(result).unwrap()["left_running"],
+			"op.left"
+		);
+	}
+	#[test]
 	fn interrupted_command_preserves_unknown_outcome_and_binary_output() {
 		let result: CommandResult = serde_json::from_str(r#"{"operation_id":"op","status":"interrupted","outcome":"unknown","stdout":"AP8=","error_code":"command_interrupted","message":"node died"}"#).unwrap();
 		assert_eq!(result.outcome.as_deref(), Some("unknown"));
