@@ -670,7 +670,7 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 	);
 	assert_eq!(
 		admitted.session.scenario,
-		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect()),"plugin_tools":{"servers":[],"findings":[]}})
+		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect()).for_workbench_test(),"plugin_tools":{"servers":[],"findings":[]}})
 	);
 	let aidash_domain::provider::ModelContext::Legacy(context) = &admitted.job.request.context
 	else {
