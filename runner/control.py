@@ -1935,7 +1935,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == 'POST' and path in (
                 '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
                 '/v2/commands/submit', '/v2/commands/result', '/v2/runs/cancel',
-                '/v2/background/list', '/v2/background/stop', '/v2/changes', '/v2/viewers/heartbeat',
+                '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):
             size = int(self.headers.get('Content-Length', '0'))
             if not 0 < size <= 1048576:
@@ -1961,6 +1961,8 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.background_processes(request['scratch_space_id'])
             if path == '/v2/background/stop':
                 return runner.execution_pods.stop_background(request['operation_id'])
+            if path == '/v2/background/log':
+                return runner.execution_pods.background_log(request)
             if path == '/v2/viewers/heartbeat':
                 return runner.execution_pods.viewer_heartbeat(request['scratch_space_id'], request['viewer_id'])
             if path == '/v2/python/start':

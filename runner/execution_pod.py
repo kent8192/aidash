@@ -2013,6 +2013,23 @@ print(json.dumps(r))'''
                               'error_code', 'message') if key in record})
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
 
+    def background_log(self, request):
+        import json
+        operation_id = request['operation_id']
+        record = self._read_command(operation_id)
+        if not record.get('background'):
+            raise ExecutionPodError('not_background', 'Command is not a background process')
+        stream, offset, limit = request['stream'], request.get('offset'), request['limit']
+        if (stream not in ('stdout', 'stderr') or type(limit) is not int or not 1 <= limit <= 262144
+                or (offset is not None and (type(offset) is not int or offset < 0))):
+            raise ValueError('invalid log request')
+        result = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+            helper_command('output', operation_id, stream, 'tail' if offset is None else str(offset), str(limit)),
+            check=False, timeout=45)
+        if result.returncode != 0:
+            raise ExecutionPodError('log_unavailable', 'Background output unavailable')
+        return json.loads(result.stdout)
+
     def stop_background(self, operation_id):
         record = self._read_command(operation_id)
         if not record.get('background'):

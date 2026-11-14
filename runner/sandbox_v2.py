@@ -522,18 +522,21 @@ def stop_operation(operation_id):
 def log_chunk(path, offset, limit):
     import base64
     import fcntl
-    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 262144:
+    if (offset is not None and (type(offset) is not int or offset < 0)) or type(limit) is not int or not 1 <= limit <= 262144:
         raise ValueError('invalid log offset or limit')
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return {'data': '', 'next_offset': offset, 'eof': True}
+        return {'data': '', 'next_offset': offset or 0, 'eof': True, 'size': 0}
     with os.fdopen(fd, 'rb') as file:
         fcntl.flock(file, fcntl.LOCK_SH)
+        size = os.fstat(file.fileno()).st_size
+        if offset is None:
+            offset = max(0, size - limit)
         file.seek(offset)
         data = file.read(limit)
-        eof = file.tell() >= os.fstat(file.fileno()).st_size
-    return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof}
+        eof = file.tell() >= size
+    return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof, 'size': size}
 
 
 def claim_operation(operation_id, directory='/scratch-system/operations'):
@@ -733,7 +736,8 @@ if __name__ == '__main__':
         raise SystemExit(0)
     if len(sys.argv) == 6 and sys.argv[1] == 'output':
         import json
-        print(json.dumps(operation_output(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]))))
+        offset = None if sys.argv[4] == 'tail' else int(sys.argv[4])
+        print(json.dumps(operation_output(sys.argv[2], sys.argv[3], offset, int(sys.argv[5]))))
         raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])

@@ -2297,6 +2297,9 @@ class CommandJournalTest(unittest.TestCase):
             self.assertFalse(first['eof'])
             self.assertEqual(base64.b64decode(second['data']), b'defgh')
             self.assertTrue(second['eof'])
+            tail = log_chunk(path, None, 3)
+            self.assertEqual(base64.b64decode(tail['data']), b'fgh')
+            self.assertEqual((tail['next_offset'], tail['size'], tail['eof']), (8, 8, True))
 
 
 class AdmissionLifecycleRegressionTest(unittest.TestCase):
