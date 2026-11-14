@@ -1543,7 +1543,7 @@ async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_su
 		credentials: Arc::new(Keys),
 	};
 	let stop = || {
-		crate::apps::execution::repositories::operations::read_recheck::stop_pending_run_with_runner(
+		crate::apps::execution::repositories::operations::stop_pending_run_with_runner(
 			&fixture.store,
 			"acme",
 			fixture.run,

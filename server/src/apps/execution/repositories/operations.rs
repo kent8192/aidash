@@ -189,6 +189,8 @@ pub(crate) mod reconciliation;
 
 mod processing;
 mod read_recheck;
+#[cfg(test)]
+pub(crate) use read_recheck::stop_pending_run_with_runner;
 mod receipt_output;
 
 mod pod_usage;
