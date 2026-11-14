@@ -342,6 +342,22 @@ async fn submit(
 				.await?;
 			Ok(())
 		}
+		Err(ExecutionPodError::Remote {
+			code: ExecutionPodErrorCode::CommandRefused,
+			..
+		}) => {
+			// A cancel or withdrawal refused this id first; it never ran.
+			let mut result = refused(
+				operation,
+				"CANCELLED",
+				"The command was cancelled before it started.",
+			);
+			result["termination_confirmed"] = json!(true);
+			repository
+				.save(operation.id, &operation.state, "cancelled", &result)
+				.await?;
+			Ok(())
+		}
 		Err(ExecutionPodError::Remote { code, message }) => {
 			// The Runner answered, so it holds nothing for this operation.
 			repository
@@ -469,25 +485,7 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 					code: ExecutionPodErrorCode::CommandNotFound,
 					..
 				}) if dispatch_pending => {
-					// The Runner does not hold it yet, but a delayed send of the same
-					// request could still start it, and `/v2` has no durable refusal
-					// for an operation id. So nothing is proven: it ends uncertain,
-					// with no ACK claim, rather than as never run.
-					let mut result = operation.result.clone();
-					if let Some(object) = result.as_object_mut() {
-						object.remove("dispatch_pending");
-						object.remove("runner_acknowledged");
-					}
-					result["termination_confirmed"] = json!(false);
-					result["effects_may_have_occurred"] = json!(true);
-					result["error"] = error_value(
-						"EXECUTION_UNVERIFIED",
-						"The command may not have reached the Runner, and a delayed send could still start it; its effects are unknown.",
-					);
-					repository
-						.save(operation.id, &operation.state, "uncertain", &result)
-						.await
-						.map(|_| ())
+					Box::pin(refuse_unsent(repository, &operation, &context, stopping)).await
 				}
 				Err(ExecutionPodError::Remote {
 					code: ExecutionPodErrorCode::CommandNotFound,
@@ -508,6 +506,73 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 			}
 		}
 		_ => Ok(()),
+	}
+}
+
+/// A cancelled command whose send is unconfirmed and that the Runner does not
+/// hold. The Runner refuses its id, so a delayed send can never start it: then
+/// it never ran. If the Runner had accepted it meanwhile, its reported state
+/// is followed. Without an answer nothing is proven and it ends uncertain.
+async fn refuse_unsent(
+	repository: &dyn PodOperationRepository,
+	operation: &PodOperation,
+	context: &PodContext,
+	stopping: bool,
+) -> Result<()> {
+	let refusal = context
+		.runtime
+		.refuse_command(
+			&operation.id.to_string(),
+			context.scratch_space_id(),
+			&operation.run_id.to_string(),
+		)
+		.await;
+	match refusal {
+		Ok(refusal) if refusal.refused => {
+			let mut result = refused(
+				operation,
+				"CANCELLED",
+				"The command was cancelled before it started.",
+			);
+			result["termination_confirmed"] = json!(true);
+			repository
+				.save(operation.id, &operation.state, "cancelled", &result)
+				.await
+				.map(|_| ())
+		}
+		Ok(_) => {
+			// Accepted after all: the next answer about it decides.
+			let reply = context
+				.runtime
+				.result(&operation.id.to_string())
+				.await
+				.map_err(tool_error)?;
+			let (mut state, result) = observe(operation, &reply, now());
+			if stopping && active(&state) {
+				state = "cancelling".into();
+			}
+			repository
+				.save(operation.id, &operation.state, &state, &result)
+				.await
+				.map(|_| ())
+		}
+		Err(_) => {
+			let mut result = operation.result.clone();
+			if let Some(object) = result.as_object_mut() {
+				object.remove("dispatch_pending");
+				object.remove("runner_acknowledged");
+			}
+			result["termination_confirmed"] = json!(false);
+			result["effects_may_have_occurred"] = json!(true);
+			result["error"] = error_value(
+				"EXECUTION_UNVERIFIED",
+				"The command may not have reached the Runner, and a delayed send could still start it; its effects are unknown.",
+			);
+			repository
+				.save(operation.id, &operation.state, "uncertain", &result)
+				.await
+				.map(|_| ())
+		}
 	}
 }
 

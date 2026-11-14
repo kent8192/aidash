@@ -249,11 +249,24 @@ async fn pod_cancel(store: &Store, row: &Operation) -> Result<Value> {
 			// Queued, running or lost: the sweep keeps asking.
 			_ => unconfirmed,
 		}),
-		// The Runner never received it, but a delayed send could still start it.
+		// The Runner never received it: refusing its id means a delayed send
+		// can never start it, so it never ran. An accepted one is left to the sweep.
 		Err(ExecutionPodError::Remote {
 			code: ExecutionPodErrorCode::CommandNotFound,
 			..
-		}) => Ok(unconfirmed),
+		}) => Ok(
+			match runner
+				.refuse_command(&row.id.to_string(), space, &row.run_id.to_string())
+				.await
+			{
+				Ok(refusal) if refusal.refused => serde_json::json!({
+					"termination_confirmed": true,
+					"status": "cancelled",
+					"executed": false,
+				}),
+				_ => unconfirmed,
+			},
+		),
 		Err(error) => Err(tool_error(error)),
 	}
 }

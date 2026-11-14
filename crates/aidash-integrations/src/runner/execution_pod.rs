@@ -100,6 +100,18 @@ impl ExecutionPodRuntime for RunnerHttp {
 		self.pod_call("/v2/commands/result", &json!({"operation_id":operation_id}))
 			.await
 	}
+	async fn refuse_command(
+		&self,
+		operation_id: &str,
+		scratch_space_id: &str,
+		run_id: &str,
+	) -> Result<CommandRefusal> {
+		self.pod_call(
+			"/v2/commands/refuse",
+			&json!({"operation_id":operation_id,"scratch_space_id":scratch_space_id,"run_id":run_id}),
+		)
+		.await
+	}
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()> {
 		self.pod_effect(
 			"/v2/runs/cancel",
@@ -241,6 +253,7 @@ mod timeout_tests {
 			("/v2/runs/stop", json!({}), 60),
 			("/v2/python/start", json!({}), 60),
 			("/v2/commands/submit", json!({}), 30),
+			("/v2/commands/refuse", json!({}), 30),
 			("/v2/pods/ensure", json!({}), 1900),
 		] {
 			assert_eq!(

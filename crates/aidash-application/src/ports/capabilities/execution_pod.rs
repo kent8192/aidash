@@ -32,6 +32,8 @@ pub enum ExecutionPodErrorCode {
 	PythonUnavailable,
 	InvalidPath,
 	PreviewStartFailed,
+	/// The operation id was refused before the Runner accepted it.
+	CommandRefused,
 	Unknown(String),
 }
 impl From<&str> for ExecutionPodErrorCode {
@@ -64,6 +66,7 @@ impl From<&str> for ExecutionPodErrorCode {
 			"python_unavailable" => Self::PythonUnavailable,
 			"invalid_path" => Self::InvalidPath,
 			"preview_start_failed" => Self::PreviewStartFailed,
+			"command_refused" => Self::CommandRefused,
 			other => Self::Unknown(other.into()),
 		}
 	}
@@ -98,6 +101,7 @@ impl std::fmt::Display for ExecutionPodErrorCode {
 			Self::PythonUnavailable => "python_unavailable",
 			Self::InvalidPath => "invalid_path",
 			Self::PreviewStartFailed => "preview_start_failed",
+			Self::CommandRefused => "command_refused",
 			Self::Unknown(value) => value,
 		};
 		f.write_str(value)
@@ -340,6 +344,16 @@ pub struct McpCallResult {
 	pub message: Value,
 }
 
+/// The Runner's answer to refusing an operation id it may not have received.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandRefusal {
+	/// True when the id was never accepted: a later submit of it is refused.
+	pub refused: bool,
+	/// The accepted command's status when it was not refused.
+	#[serde(default)]
+	pub status: Option<String>,
+}
+
 /// Calls are idempotent only where the Runner's operation ID contract says so;
 /// an interrupted operation has an unknown outcome and must never be replayed.
 #[async_trait]
@@ -347,6 +361,18 @@ pub trait ExecutionPodRuntime: Send + Sync {
 	async fn ensure(&self, settings: &ExecutionPodSettings) -> Result<PodReceipt>;
 	async fn execute(&self, request: &CommandRequest) -> Result<CommandResult>;
 	async fn result(&self, operation_id: &str) -> Result<CommandResult>;
+	/// Refuse an operation id before the Runner accepts it, so a delayed submit
+	/// of it can never start (#745). Idempotent.
+	async fn refuse_command(
+		&self,
+		_operation_id: &str,
+		_scratch_space_id: &str,
+		_run_id: &str,
+	) -> Result<CommandRefusal> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot refuse a command".into(),
+		)))
+	}
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses>;
 	async fn stop_background(&self, operation_id: &str) -> Result<CommandResult>;
@@ -412,6 +438,7 @@ mod tests {
 				"preview_start_failed",
 				ExecutionPodErrorCode::PreviewStartFailed,
 			),
+			("command_refused", ExecutionPodErrorCode::CommandRefused),
 		] {
 			let code = ExecutionPodErrorCode::from(wire);
 			assert_eq!(code, expected);

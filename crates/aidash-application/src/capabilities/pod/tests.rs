@@ -1,6 +1,6 @@
 use super::*;
 use crate::ports::capabilities::execution_pod::{
-	BackgroundProcesses, ChangeLogChunk, EgressCredential, ExecutionPodRuntime,
+	BackgroundProcesses, ChangeLogChunk, CommandRefusal, EgressCredential, ExecutionPodRuntime,
 	ExecutionPodSettings, FileChunk, FileManifestRequest, FileManifestResult, FilePatchRequest,
 	FilePatchResult, FileReadRequest, FileSearchRequest, FileSearchResult, FileWriteRequest,
 	FileWriteResult, LogChunk, LogRequest, ManifestFile, McpCallRequest, McpCallResult, McpSession,
@@ -33,6 +33,8 @@ pub(crate) struct Runtime {
 	pub(crate) logs: Mutex<Vec<LogRequest>>,
 	pub(crate) stopped: Mutex<Vec<String>>,
 	pub(crate) previews: Mutex<Vec<PreviewStartRequest>>,
+	/// The answer to a refusal; none answers with a transport error.
+	pub(crate) refusal: Mutex<Option<CommandRefusal>>,
 }
 impl Runtime {
 	pub(crate) fn reply(&self, reply: PodResult<CommandResult>) {
@@ -92,6 +94,14 @@ impl ExecutionPodRuntime for Runtime {
 	async fn result(&self, _: &str) -> PodResult<CommandResult> {
 		self.call("result");
 		self.next()
+	}
+	async fn refuse_command(&self, _: &str, _: &str, _: &str) -> PodResult<CommandRefusal> {
+		self.call("refuse_command");
+		self.refusal
+			.lock()
+			.unwrap()
+			.clone()
+			.ok_or_else(|| ExecutionPodError::Transport(Error::External("unreachable".into())))
 	}
 	async fn cancel_waiting(&self, _: &str, _: &str) -> PodResult<()> {
 		self.call("cancel_waiting");
@@ -568,8 +578,7 @@ async fn a_finished_operation_is_left_alone() {
 	assert!(repository.saves.lock().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn a_cancelled_command_the_runner_never_received_stays_unproven() {
+fn unsent() -> (Repository, Arc<Runtime>) {
 	let mut cancelling = operation(SHELL, "cancelling");
 	cancelling.result = json!({"dispatch_pending": true, "runner_acknowledged": true});
 	let (repository, runtime) = repository(cancelling);
@@ -577,12 +586,72 @@ async fn a_cancelled_command_the_runner_never_received_stays_unproven() {
 		code: ExecutionPodErrorCode::CommandNotFound,
 		message: "unknown".into(),
 	}));
+	(repository, runtime)
+}
+
+#[tokio::test]
+async fn a_cancelled_command_the_runner_refused_never_ran() {
+	let (repository, runtime) = unsent();
+	*runtime.refusal.lock().unwrap() = Some(CommandRefusal {
+		refused: true,
+		status: None,
+	});
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert_eq!(
+		runtime.calls(),
+		["cancel_waiting", "result", "refuse_command"]
+	);
+	let saved = repository.operation.lock().unwrap().clone();
+	assert_eq!(saved.state, "cancelled");
+	assert_eq!(saved.result["termination_confirmed"], true);
+	assert_eq!(saved.result["effects_may_have_occurred"], false);
+	assert!(saved.result.get("dispatch_pending").is_none());
+}
+
+#[tokio::test]
+async fn a_cancelled_command_the_runner_had_accepted_follows_its_state() {
+	let (repository, runtime) = unsent();
+	*runtime.refusal.lock().unwrap() = Some(CommandRefusal {
+		refused: false,
+		status: Some("running".into()),
+	});
+	runtime.reply(Ok(reply("running")));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert_eq!(repository.operation.lock().unwrap().state, "cancelling");
+	let (repository, runtime) = unsent();
+	*runtime.refusal.lock().unwrap() = Some(CommandRefusal {
+		refused: false,
+		status: Some("stopped".into()),
+	});
+	runtime.reply(Ok(reply("stopped")));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert_eq!(repository.operation.lock().unwrap().state, "cancelled");
+}
+
+#[tokio::test]
+async fn a_cancelled_command_without_a_refusal_answer_stays_unproven() {
+	let (repository, runtime) = unsent();
 	drive(&repository, Uuid::from_u128(7)).await.unwrap();
 	let saved = repository.operation.lock().unwrap().clone();
 	assert_eq!(saved.state, "uncertain");
 	assert_eq!(saved.result["termination_confirmed"], false);
 	assert!(saved.result.get("runner_acknowledged").is_none());
 	assert!(saved.result.get("dispatch_pending").is_none());
+}
+
+#[tokio::test]
+async fn a_submit_of_a_refused_id_ends_cancelled_without_effects() {
+	let mut pending = operation(SHELL, "submitted");
+	pending.result = json!({"dispatch_pending": true});
+	let (repository, runtime) = repository(pending);
+	runtime.reply(Err(ExecutionPodError::Remote {
+		code: ExecutionPodErrorCode::CommandRefused,
+		message: "refused".into(),
+	}));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	let saved = repository.operation.lock().unwrap().clone();
+	assert_eq!(saved.state, "cancelled");
+	assert_eq!(saved.result["effects_may_have_occurred"], false);
 }
 
 #[tokio::test]

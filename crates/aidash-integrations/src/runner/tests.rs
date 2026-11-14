@@ -294,6 +294,7 @@ async fn execution_pod_routes_exchange_their_v2_wire_contracts() {
 	use axum::extract::OriginalUri;
 	let app = Router::new().route("/v2/{*tail}", post(|OriginalUri(uri): OriginalUri, Json(body): Json<Value>| async move {
 		let response = match uri.path() {
+			"/v2/commands/refuse" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r"})); json!({"refused":false,"status":"running"}) },
 			"/v2/background/log" => { assert_eq!(body, json!({"operation_id":"op","stream":"stderr","offset":null,"limit":4})); json!({"data":"AP8=","next_offset":2,"eof":true,"size":2}) },
 			"/v2/files/read" => { assert_eq!(body, json!({"scratch_space_id":"s","path":"a","offset":1,"limit":4})); json!({"data":"/w==","size":2,"next_offset":2,"eof":true}) },
 			"/v2/files/search" => { assert_eq!(body, json!({"scratch_space_id":"s","pattern":"needle","path":null,"glob":null,"regex":false,"max_results":5})); json!({"matches":[{"path":"a","line":2,"text":"needle"}],"truncated":false}) },
@@ -321,6 +322,13 @@ async fn execution_pod_routes_exchange_their_v2_wire_contracts() {
 	)
 	.unwrap();
 	assert_eq!(client.background_log(&log).await.unwrap().data, "AP8=");
+	assert_eq!(
+		client.refuse_command("op", "s", "r").await.unwrap(),
+		CommandRefusal {
+			refused: false,
+			status: Some("running".into()),
+		}
+	);
 	let read: FileReadRequest =
 		serde_json::from_value(json!({"scratch_space_id":"s","path":"a","offset":1,"limit":4}))
 			.unwrap();
