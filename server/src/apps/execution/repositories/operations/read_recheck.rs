@@ -9,6 +9,7 @@ use crate::{
 use aidash_application::{
 	Result,
 	ports::capabilities::{
+		execution_pod::ExecutionPodRuntime as _,
 		read_recheck::{Outcome, ReadRecheckRepository, Target},
 		reconciliation::OperationReconciliationRepository as _,
 	},
@@ -16,8 +17,10 @@ use aidash_application::{
 };
 use aidash_domain::preview::live::StopReason;
 use async_trait::async_trait;
+use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	Alias, Expr, ExprTrait as _, IntoValue, OnConflict, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _,
 };
 use uuid::Uuid;
 
@@ -54,6 +57,129 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 	.await
 }
 
+/// Persist the denial before contacting the Runner: traffic must remain refused
+/// even when the Runner is unavailable and stopping has to be retried.
+async fn stop_pod_run(store: &Store, tenant: &str, run_id: Uuid) -> Result<()> {
+	use crate::apps::execution::models::Run;
+	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
+	use crate::apps::identity::models::AuthorizationCredential;
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(tenant)?)
+		.await
+		.map_err(Error::from)?;
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("egress_run_revocations"))
+		.columns(["tenant", "run_id", "revoked_at", "reason"].map(Alias::new))
+		.values_panic([
+			tenant.to_owned().into_value(),
+			run_id.into_value(),
+			chrono::Utc::now().into_value(),
+			"read_refused".to_owned().into_value(),
+		])
+		.on_conflict(
+			OnConflict::column(Alias::new("run_id"))
+				.do_nothing()
+				.to_owned(),
+		)
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values))
+		.await
+		.map_err(Error::from)?;
+	tx.commit().await.map_err(Error::from)?;
+
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(tenant)?)
+		.await
+		.map_err(Error::from)?;
+	let run = Run::objects()
+		.filter(Run::field_tenant().eq(tenant.to_owned()))
+		.filter(Run::field_id().eq(run_id))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(Error::from)?
+		.pop()
+		.ok_or_else(|| Error::NotFound("Run".into()))?;
+	let space = if aidash_domain::nodes::is_home(
+		&run.home_node,
+		&store.deployment.to_string(),
+		&run.node,
+	) {
+		let sql = Query::select()
+			.column(Alias::new("scratch_space_id"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(run.workspace_id))
+			.and_where(Expr::col("node").eq(run.node.clone()))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query_scalar::<Uuid>(&sql)
+			.scalar_optional(&mut *tx)
+			.await
+			.map_err(Error::from)?
+			.ok_or_else(|| Error::NotFound("Run Scratch Space".into()))?
+	} else {
+		let admission = AuthorizationRemoteAdmission::objects()
+			.filter(AuthorizationRemoteAdmission::field_tenant().eq(tenant.to_owned()))
+			.filter(AuthorizationRemoteAdmission::field_id().eq(run_id))
+			.all_with_executor(&mut *tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(Error::from)?
+			.pop()
+			.ok_or_else(|| Error::NotFound("Run admission".into()))?;
+		let person = if admission.credential_id.is_nil() {
+			admission
+				.subject_chain
+				.first()
+				.cloned()
+				.ok_or_else(|| Error::NotFound("Run subject".into()))?
+		} else {
+			AuthorizationCredential::objects()
+				.filter(AuthorizationCredential::field_tenant().eq(tenant.to_owned()))
+				.filter(AuthorizationCredential::field_id().eq(admission.credential_id))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(Error::from)?
+				.pop()
+				.ok_or_else(|| Error::NotFound("Run credential".into()))?
+				.subject
+		};
+		remote_space_id(tenant, &run.node, &run.home_node, run.workspace_id, &person)
+	};
+	tx.commit().await.map_err(Error::from)?;
+	let runner =
+		crate::bootstrap::operation_runner(store).map_err(aidash_application::Error::from)?;
+	runner
+		.stop_run(&space.to_string(), &run_id.to_string())
+		.await
+		.map_err(|error| {
+			aidash_application::Error::External(format!("Run stop failed: {error}"))
+		})?;
+	Ok(())
+}
+
+// Same deterministic identity as remote Space allocation. It must be resolvable
+// after authorization has been revoked, without performing a new admission.
+fn remote_space_id(tenant: &str, node: &str, home: &str, workspace: Uuid, person: &str) -> Uuid {
+	use sha2::{Digest, Sha256};
+	let mut hash = Sha256::new();
+	hash.update(b"aidash:remote-scratch-space:v1");
+	for value in [tenant, node, home, person] {
+		hash.update((value.len() as u64).to_be_bytes());
+		hash.update(value.as_bytes());
+	}
+	hash.update(workspace.as_bytes());
+	let digest = hash.finalize();
+	let mut bytes = [0_u8; 16];
+	bytes.copy_from_slice(&digest[..16]);
+	bytes[6] = (bytes[6] & 0x0f) | 0x80;
+	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	Uuid::from_bytes(bytes)
+}
+
 #[async_trait]
 impl ReadRecheckRepository for Repository<'_> {
 	async fn targets(&self) -> Result<Vec<Target>> {
@@ -88,12 +214,37 @@ impl ReadRecheckRepository for Repository<'_> {
 		match target {
 			Target::Operation(id) => {
 				let snapshot = self.snapshot(id).await?;
-				self.withdraw(&snapshot).await
+				let pod_stop = stop_pod_run(self.store, &snapshot.tenant, snapshot.run_id).await;
+				let legacy_stop = self.withdraw(&snapshot).await;
+				pod_stop.and(legacy_stop)
 			}
 			Target::LivePreview(id) => {
-				live_previews::stop_serving(self.store, id, StopReason::RunAuthorityRevoked)
+				use crate::apps::execution::capabilities::models::CoreLivePreviews;
+				let mut tx = self
+					.store
+					.pool
+					.begin(&TenancyScope::Deployment(
+						DeploymentScopeReason::CapabilityMaintenance,
+					))
 					.await
-					.map_err(Into::into)
+					.map_err(Error::from)?;
+				let preview = CoreLivePreviews::objects()
+					.filter(CoreLivePreviews::field_id().eq(id))
+					.all_with_executor(&mut *tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(Error::from)?
+					.pop();
+				tx.commit().await.map_err(Error::from)?;
+				let Some(preview) = preview else {
+					return Ok(());
+				};
+				let pod_stop = stop_pod_run(self.store, &preview.tenant, preview.run_id).await;
+				let legacy_stop =
+					live_previews::stop_serving(self.store, id, StopReason::RunAuthorityRevoked)
+						.await
+						.map_err(Into::into);
+				pod_stop.and(legacy_stop)
 			}
 		}
 	}
@@ -101,5 +252,23 @@ impl ReadRecheckRepository for Repository<'_> {
 		live_previews::stop_serving(self.store, preview, StopReason::NodeUnreachable)
 			.await
 			.map_err(Into::into)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn remote_run_space_identity_survives_revocation() {
+		let workspace = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
+		assert_eq!(
+			remote_space_id("acme", "node", "aidash://home/node", workspace, "alice"),
+			Uuid::parse_str("9d8ef6c4-1f97-8300-ac32-d5431655fa0c").unwrap()
+		);
+		assert_ne!(
+			remote_space_id("acme", "node", "aidash://home/node", workspace, "bob"),
+			remote_space_id("acme", "node", "aidash://home/node", workspace, "alice")
+		);
 	}
 }
