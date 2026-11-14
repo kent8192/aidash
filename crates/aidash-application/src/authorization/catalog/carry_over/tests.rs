@@ -111,7 +111,7 @@ async fn a_changed_consent_surface_is_reported_without_writing_an_approval() {
 #[tokio::test]
 async fn an_unapproved_dependency_prevents_agent_carry() {
 	let agent = |version: &str| -> Entry {
-		serde_json::from_value(json!({"id":"writer","version":version,"kind":"agent","name":{},"description":{},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"help","remove_default":["compaction"]}})).unwrap()
+		serde_json::from_value(json!({"id":"writer","version":version,"kind":"agent","name":{},"description":{},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"help","remove_default":[]}})).unwrap()
 	};
 	let mut fixture = Fixture {
 		sources: vec![Source {
