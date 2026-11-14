@@ -2716,8 +2716,16 @@ async fn invalidated_remote_run_stays_paused_across_an_execution_node_restart(
 		&mut b_keys,
 	)
 	.await;
+	// `Pair::step` waits until the worker makes progress, and a paused Run
+	// offers none, so drive bounded worker passes directly.
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
 	for _ in 0..3 {
-		p.step().await;
+		tokio::time::timeout(std::time::Duration::from_secs(60), worker.worker_once())
+			.await
+			.expect("a worker pass over a paused Run returns")
+			.unwrap();
 	}
 
 	// Assert

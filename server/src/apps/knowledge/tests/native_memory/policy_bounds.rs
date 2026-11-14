@@ -250,7 +250,10 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	for last_revision in [6, 3] {
 		let id = Uuid::now_v7();
 		for revision in 0..last_revision {
-			let content = content("Revision retained until its pinned count expires");
+			// Each revision differs: an identical correction is not a change (#127).
+			let content = content(&format!(
+				"Revision {revision} retained until its pinned count expires"
+			));
 			let change = if revision == 0 {
 				Change::Add { id, content }
 			} else {
@@ -645,7 +648,8 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 					Change::Correct {
 						id,
 						expected_revision: revision,
-						content: content("Corrected capacity fixture"),
+						// Distinct text: an identical correction keeps the revision (#127).
+						content: content(&format!("Corrected capacity fixture {revision}")),
 					},
 				),
 			)
