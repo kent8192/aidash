@@ -63,16 +63,14 @@ class EgressIsolationTest(unittest.TestCase):
         runner.kube.assert_not_called()
 
 
-class PackageIndexEnvironmentTest(unittest.TestCase):
-    def test_npm_keeps_gateway_rewritten_package_links_intact(self):
-        # The gateway already rewrites npm tarball links onto its own
-        # `__asset` paths. `replace-registry-host=always` would prefix those
-        # links with the registry path a second time (#679); `npmjs` only
-        # redirects registry.npmjs.org links, such as lockfile URLs.
+class EgressEnvironmentTest(unittest.TestCase):
+    def test_only_the_external_service_route_is_exported(self):
+        # Package indexes are reached through the Execution Pod's proxy (#745).
         operation = str(uuid.uuid4())
         env = environment({'url': 'http://10.96.0.90:8950', 'token': operation + '.' + 'a' * 43})
-        self.assertEqual(env['NPM_CONFIG_REGISTRY'], env['AIDASH_EGRESS_URL'] + 'core.npm/')
-        self.assertEqual(env['NPM_CONFIG_REPLACE_REGISTRY_HOST'], 'npmjs')
+        self.assertEqual(env['AIDASH_EGRESS_URL'], 'http://10.96.0.90:8950/v1/' + operation + '.' + 'a' * 43 + '/')
+        for name in ('NPM_CONFIG_REGISTRY', 'NPM_CONFIG_REPLACE_REGISTRY_HOST', 'UV_INDEX_URL', 'UV_INSECURE_HOST'):
+            self.assertNotIn(name, env)
 
 
 if __name__ == '__main__':

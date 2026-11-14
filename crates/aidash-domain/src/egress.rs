@@ -301,15 +301,6 @@ impl ExternalService {
 		}
 		Ok(())
 	}
-	/// Package indexes alone have response rewriting; callers cannot declare an index.
-	pub fn builtin_index(&self, id: &str) -> bool {
-		self.secret.is_none()
-			&& self.methods == ["GET", "HEAD"]
-			&& matches!(
-				(id, self.base_url.as_str()),
-				("core.npm", "https://registry.npmjs.org/") | ("core.pypi", "https://pypi.org/")
-			)
-	}
 }
 
 pub fn definition(entry: &Entry) -> Result<ExternalService> {

@@ -321,25 +321,11 @@ Without egress settings, sandbox networking remains deny-all.
 
 ## Package indexes
 
-The Runner image includes Node.js 22 LTS, npm/npx and uv/uvx. Built-in
-External services `core.npm` and `core.pypi` need their own Tenant Catalog
-Approvals and Agent bindings. The operation points npm's registry and uv's
-index at the gateway. npm's `replace-registry-host` stays `npmjs`, so lockfile
-links on registry.npmjs.org go through the gateway while the gateway's own
-rewritten links are used unchanged. Python downloads are disabled with
-`UV_PYTHON_DOWNLOADS=never`.
-
-Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
-package file addresses onto the gateway. An index exceeding this limit is refused
-with HTTP 422 and the message `package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.` in both the error body and HTTP reason phrase. npm files remain on
-`registry.npmjs.org`; PyPI files may also use `files.pythonhosted.org`.
-Integrity fields and URL hash fragments remain intact, and package files
-stream unchanged under the operation's cumulative budget. `python_install`
-and its wheel-selection API/UI have been removed; use uv through the gateway.
-
-File previews, Retained versions and message citations are described in
-[File previews and Retained versions](file-previews-and-retained-versions.md).
-Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).
+Agents install packages from the shell of their Execution Pod. npm, pip and uv
+reach their public registries through the Pod's HTTPS proxy, limited by the
+Scratch Space's allowed hosts and named by the Run's proxy credential (ADR 0136).
+There are no built-in package index External services and no index rewriting
+(#745, #729).
 
 ## Scratch Space proxy integration
 
