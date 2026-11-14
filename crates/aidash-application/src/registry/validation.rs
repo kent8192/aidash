@@ -205,6 +205,12 @@ impl DefinitionValidation {
 		Ok(true)
 	}
 
+	/// The 1.0.0 declarations of native tools that changed for #745.
+	pub fn legacy_node_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		self.core_tools.legacy_specifications()
+	}
 	pub fn node_specifications(
 		&self,
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {

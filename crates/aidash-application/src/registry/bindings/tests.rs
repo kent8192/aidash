@@ -93,6 +93,12 @@ impl Catalog {
 			current.version = "1.0.1".into();
 			self.insert(current);
 		}
+		if matches!(operation, "file_read" | "file_search" | "attachment_copy") {
+			// The declarations from before #745 stay seeded for pinned Agents.
+			let mut previous = self.entries[&reference].clone();
+			previous.version = "1.0.0".into();
+			self.insert(previous);
+		}
 		reference
 	}
 	fn bundle(&mut self, id: &str, members: Vec<QualifiedRef>) -> QualifiedRef {
@@ -248,6 +254,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.file_read"
+				| "aidash.file_search"
 		) {
 			binding.binding.target.version = "1.0.0".into();
 		}
@@ -2336,11 +2344,8 @@ async fn sequential_narrowing_lowers_shared_read(#[case] descriptor: bool) {
 	let mut config = agent_config();
 	let target = QualifiedRef::builtin(NODE, "file_read");
 	if descriptor {
-		catalog
-			.entries
-			.get_mut(&reference(&target.id))
-			.unwrap()
-			.config["narrow"]["concurrency"] = json!("sequential");
+		catalog.entries.get_mut(&target).unwrap().config["narrow"]["concurrency"] =
+			json!("sequential");
 	} else {
 		let mut read = Binding::tool(target);
 		read.narrow = serde_json::from_value(json!({"concurrency":"sequential"})).unwrap();

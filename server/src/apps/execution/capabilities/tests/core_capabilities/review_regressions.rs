@@ -824,6 +824,9 @@ async fn cleanup_runner_with_discard(
 			}
 			let response = if path == "/v1/health" {
 				json!({"instance":*health_instance.lock().unwrap()})
+			} else if path == "/v2/runs/stop" {
+				// A refused Run's work in its Execution Pod is stopped too (ADR 0136).
+				json!({"stopped":[]})
 			} else if path.ends_with("/cancel") && body["instance"] == "cleanup-runner" {
 				json!({"operation_id":operation,"digest":body["digest"],"status":"cancelled","termination_confirmed":true,"executed":false})
 			} else if path.ends_with("/cancel") || path.ends_with("/stop") {
@@ -958,11 +961,12 @@ async fn withdrawn_dispatched_receipt_is_durably_acknowledged_after_retry(
 	worker.await.unwrap().unwrap();
 	if !dispatched {
 		let requests = requests.lock().unwrap();
-		// Independent allocation housekeeping does not dispatch an operation.
+		// Independent allocation housekeeping does not dispatch an operation, and
+		// the refused Run's Pod stop starts nothing.
 		assert!(
 			requests.iter().all(|request| matches!(
 				request["path"].as_str(),
-				Some("/v1/health" | "/v1/allocations/receipts")
+				Some("/v1/health" | "/v1/allocations/receipts" | "/v2/runs/stop")
 			)),
 			"never-dispatched cleanup must only perform housekeeping: {requests:?}"
 		);

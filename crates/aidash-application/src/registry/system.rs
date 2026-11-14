@@ -135,6 +135,37 @@ pub fn legacy_workspace_entries(
 	Ok(entries)
 }
 
+/// The declarations of the file tools before they reached the Scratch Space
+/// (#745). A database seeded with them keeps them; new Bindings use 1.0.1.
+pub fn legacy_file_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let legacy = validation.legacy_node_specifications();
+	let mut old: Vec<Entry> = entries(validation, node)?
+		.into_iter()
+		.filter(|entry| {
+			matches!(
+				entry.id.as_str(),
+				"aidash.file_read" | "aidash.file_search" | "aidash.attachment_copy"
+			)
+		})
+		.collect();
+	for entry in &mut old {
+		entry.version = "1.0.0".into();
+		let operation = entry.id.trim_start_matches("aidash.");
+		if operation == "attachment_copy" {
+			entry
+				.description
+				.insert("en".into(), ATTACHMENT_COPY_1_0_0.into());
+		} else if let Some(spec) = legacy.get(operation) {
+			entry
+				.description
+				.insert("en".into(), spec.description.clone());
+			entry.schema = spec.parameters.clone();
+		}
+	}
+	Ok(old)
+}
+const ATTACHMENT_COPY_1_0_0: &str = "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.";
+
 /// The declarations deployed before Journal ranges were added to these tools.
 pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut old = entries(validation, node)?
@@ -182,6 +213,7 @@ pub fn pinned_declaration(
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_file_entries(validation, node)?)
 		.find(|entry| entry.id == reference.id && entry.version == reference.version))
 }
 
@@ -267,6 +299,7 @@ pub async fn seed(
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
 		.chain(aidash_domain::registry::bindings::memory_defaults::definitions()?)
@@ -329,7 +362,12 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),
-				"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+				"aidash.workspace_read"
+					| "aidash.workspace_observe"
+					| "aidash.workspace_message"
+					| "aidash.file_read"
+					| "aidash.file_search"
+					| "aidash.attachment_copy"
 			))) && (reference.id
 		== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
 		|| reference

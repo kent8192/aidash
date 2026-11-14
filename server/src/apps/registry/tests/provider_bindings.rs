@@ -418,11 +418,15 @@ async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
 	// The snapshot uses a test catalog for native file and Skill tools. Their
 	// native declarations did not change since develop; use the real catalog
 	// so the database contains every deployed operation.
-	let native = aidash_application::registry::system::entries(
-		&aidash_server::bootstrap::registry_validation(),
-		"aidash://node",
-	)
-	.unwrap();
+	let validation = aidash_server::bootstrap::registry_validation();
+	let mut native =
+		aidash_application::registry::system::entries(&validation, "aidash://node").unwrap();
+	// The file tools' 1.0.0 declarations are the bytes deployed before #745:
+	// a database seeded with them must still start.
+	native.extend(
+		aidash_application::registry::system::legacy_file_entries(&validation, "aidash://node")
+			.unwrap(),
+	);
 	let entries = entries
 		.into_iter()
 		.map(|entry| {

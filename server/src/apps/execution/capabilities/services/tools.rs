@@ -68,6 +68,29 @@ pub(crate) fn add(tools: &mut BTreeMap<String, Arc<dyn Tool>>, config: &CoreCapa
 			.filter(|(name, _)| config.permits(name)),
 	);
 }
+/// The 1.0.0 declarations of `file_read` and `file_search`, before they read the
+/// Scratch Space (#745). Databases seeded with them keep these exact bytes.
+pub(crate) fn legacy_specifications() -> BTreeMap<String, ToolSpec> {
+	use super::contracts::{FileRead, FileSearch};
+	BTreeMap::from([
+		(
+			"file_search".to_owned(),
+			ToolSpec {
+				name: "file_search".into(),
+				description: "Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope.".into(),
+				parameters: schema::<FileSearch>(),
+			},
+		),
+		(
+			"file_read".to_owned(),
+			ToolSpec {
+				name: "file_read".into(),
+				description: "Read authorized text or metadata. Set workspace_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.".into(),
+				parameters: schema::<FileRead>(),
+			},
+		),
+	])
+}
 /// Provider implementation inventory; capability availability comes from Bindings.
 pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	let mut tools = BTreeMap::<String, Arc<dyn Tool>>::new();
@@ -157,7 +180,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"apply_patch",
-			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1. Where commands run in an Execution Pod, the patch applies to the Scratch Space, all or nothing, and the preconditions are checked against the patch's own context instead.",
+			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Patch>(),
 		),
 		(

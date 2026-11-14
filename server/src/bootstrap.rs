@@ -953,6 +953,11 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 		}
 		Ok(())
 	}
+	fn legacy_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		crate::capabilities::tools::legacy_specifications()
+	}
 	fn specifications(
 		&self,
 		config: &aidash_domain::capabilities::CoreCapabilities,

@@ -435,6 +435,15 @@ impl AgentBindings {
 						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
 				}) {
 				target = binding.target.clone();
+			} else if matches!(*operation, "file_read" | "file_search" | "attachment_copy")
+				&& let Some(binding) = self.bindings.iter().find(|b| {
+					b.target.id == target.id
+						&& b.target.registry_deployment == node
+						&& b.target.version == "1.0.0"
+				}) {
+				// An Agent that binds the declaration from before #745 keeps it as
+				// its default rather than gaining a second one under the same alias.
+				target = binding.target.clone();
 			}
 			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
 				target.version = "1.0.0".into();
@@ -608,7 +617,13 @@ impl QualifiedRef {
 				"workspace_read" | "memory_mutate" | "subnode_task"
 			) {
 				"1.1.0"
-			} else if matches!(operation, "workspace_observe" | "workspace_message") {
+			} else if matches!(
+				operation,
+				"workspace_observe"
+					| "workspace_message"
+					| "file_read" | "file_search"
+					| "attachment_copy"
+			) {
 				"1.0.1"
 			} else {
 				"1.0.0"

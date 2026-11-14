@@ -26,7 +26,8 @@ fn develop_seed() -> Vec<Entry> {
 fn compare_develop_builtin_declarations() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let current = entries(&validation, NODE).unwrap();
-	let legacy = legacy_journal_entries(&validation, NODE).unwrap();
+	let mut legacy = legacy_journal_entries(&validation, NODE).unwrap();
+	legacy.extend(legacy_file_entries(&validation, NODE).unwrap());
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
 	for old in develop_seed().iter().filter(|entry| entry.kind == "tool") {
@@ -61,11 +62,22 @@ fn compare_develop_builtin_declarations() {
 				Some(old)
 			);
 			changed.push(old.id.clone());
+		} else if now.version != old.version {
+			// Bumped for #745 where the test catalog cannot show the change; the
+			// old declaration must stay seeded byte for byte.
+			assert!(legacy.contains(old), "{}@{} not kept", old.id, old.version);
 		} else {
 			assert_eq!(now, old);
 		}
 	}
-	assert_eq!(changed, ["aidash.memory_mutate", "aidash.subnode_task"]);
+	assert_eq!(
+		changed,
+		[
+			"aidash.attachment_copy",
+			"aidash.memory_mutate",
+			"aidash.subnode_task"
+		]
+	);
 }
 
 #[test]

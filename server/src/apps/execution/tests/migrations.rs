@@ -225,7 +225,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		111
+		112
 	);
 	let tables = migrations
 		.iter()
@@ -1029,7 +1029,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		111
+		112
 	);
 }
 

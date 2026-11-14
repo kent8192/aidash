@@ -9,6 +9,12 @@ use uuid::Uuid;
 /// Input contracts advertised by the capability runner are shared with prompt budgeting.
 pub trait CoreToolCatalog: Send + Sync {
 	fn specifications(&self, config: &CoreCapabilities) -> BTreeMap<String, ToolSpec>;
+	/// The 1.0.0 declarations of native tools whose declaration changed since,
+	/// so databases seeded with them keep their exact bytes (#745). None here
+	/// keeps the current declaration as the 1.0.0 one.
+	fn legacy_specifications(&self) -> BTreeMap<String, ToolSpec> {
+		BTreeMap::new()
+	}
 	fn provider_available(
 		&self,
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
