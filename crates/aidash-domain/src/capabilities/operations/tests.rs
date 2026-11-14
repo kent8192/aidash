@@ -9,6 +9,7 @@ fn operation() -> OperationState {
 		principal: "saved-subject".into(),
 		kind: "code_interpreter".into(),
 		state: "prepared".into(),
+		pod: false,
 	}
 }
 #[rstest]
@@ -255,4 +256,11 @@ fn reference_files_use_none_of_the_working_area() {
 	];
 	assert!(files[0].is_reference_file());
 	assert_eq!(counted_files(&files).count(), 3);
+}
+
+#[test]
+fn only_a_recorded_pod_runtime_marks_a_pod_operation() {
+	assert!(runs_in_pod(&json!({"runtime": "pod", "command": "ls"})));
+	assert!(!runs_in_pod(&json!({"command": "ls"})));
+	assert!(!runs_in_pod(&json!({"runtime": "runner"})));
 }

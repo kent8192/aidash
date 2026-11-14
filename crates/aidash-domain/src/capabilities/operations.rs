@@ -200,7 +200,19 @@ pub struct OperationState {
 	pub principal: String,
 	pub kind: String,
 	pub state: String,
+	/// Runs in the Execution Pod of the Run's Scratch Space and holds no
+	/// Working Area writer, so its cancellation leaves the Area alone (#745).
+	pub pod: bool,
 }
+/// `input.runtime` of an operation that runs in an Execution Pod (#745).
+pub const POD_RUNTIME: &str = "pod";
+/// Whether an operation's recorded input says it runs in an Execution Pod.
+pub fn runs_in_pod(input: &Value) -> bool {
+	input["runtime"] == POD_RUNTIME
+}
+/// The epoch of a Pod operation. It holds no Working Area writer, so no Area
+/// epoch ever equals it and withdrawal or cancellation never reopens the Area.
+pub const POD_EPOCH: i64 = -1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancellation {
 	pub state: &'static str,

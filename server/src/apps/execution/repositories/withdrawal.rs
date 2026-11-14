@@ -115,6 +115,21 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		Ok(WriterStop::from_reply(&reply))
 	}
 	async fn cancel(&self, operation: Uuid, refusal: Option<Value>) -> Result<Value> {
+		// A Pod operation has no `/v1` record. The withdrawal marker is already
+		// committed, and the Pod sweep stops the command and records its end (#745).
+		let pod: Option<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("core_operations"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(operation)))
+				.and_where(Expr::cust("input->>'runtime' = 'pod'"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(self.store.pool.in_scope(&self.scope))
+		.await?;
+		if pod.is_some() {
+			return Ok(serde_json::json!({"termination_confirmed": false}));
+		}
 		operations::remote(
 			self.store,
 			reqwest::Method::POST,

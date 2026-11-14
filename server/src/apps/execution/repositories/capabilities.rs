@@ -205,7 +205,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			key,
 			digest,
 			kind,
-			epoch: _,
+			epoch,
 			input: value,
 		} = operation;
 
@@ -268,7 +268,9 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 		.bind(&digest)
 		.bind(kind)
 		.bind("prepared")
-		.bind(self.area.epoch)
+		// A Shell writer has already moved the Area to this epoch; a Pod
+		// operation records one no Area epoch can equal (#745).
+		.bind(epoch)
 		.bind(self.area.generation)
 		.bind(self.area.revision)
 		.bind(self.access.snapshot.revision)
@@ -337,6 +339,7 @@ impl aidash_application::ports::capabilities::OperationControlScope for Control<
 			principal: operation.principal.clone(),
 			kind: operation.kind.clone(),
 			state: operation.state.clone(),
+			pod: aidash_domain::capabilities::operations::runs_in_pod(&operation.input),
 		};
 		self.operation = Some(operation);
 		Ok(state)

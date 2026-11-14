@@ -95,7 +95,8 @@ pub async fn poll(
 	if cancel && let Some(change) = operation.cancellation() {
 		let never_dispatched = change.never_dispatched;
 		scope.apply_cancellation(change)?;
-		if never_dispatched {
+		// A Pod operation never took the Area's writer, so it has none to give back.
+		if never_dispatched && !operation.pod {
 			scope.activate_area().await?;
 			if operation.kind == "code_interpreter" {
 				scope.complete_python_without_writer().await?;
@@ -150,4 +151,5 @@ pub mod transfer;
 
 pub mod projection;
 
+pub mod pod;
 pub mod pod_usage;

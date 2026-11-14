@@ -101,7 +101,7 @@ async fn run(store: &Store, policy: &ScratchOperatorPolicy, id: Uuid) -> Result<
 	ensure_output(&runner, &settings).await
 }
 
-fn pod_settings(
+pub(crate) fn pod_settings(
 	space: &ScratchSpace,
 	tenant: &str,
 	policy: &ScratchOperatorPolicy,

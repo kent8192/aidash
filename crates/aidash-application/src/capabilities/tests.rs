@@ -24,6 +24,7 @@ fn control() -> Control {
 			principal: "subject".into(),
 			kind: "code_interpreter".into(),
 			state: "prepared".into(),
+			pod: false,
 		},
 		result: json!({"prior":"unchanged"}),
 		calls: vec![],

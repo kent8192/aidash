@@ -93,6 +93,48 @@ pub(crate) async fn prepare_kind(
 	.map_err(Into::into)
 }
 
+/// Admit a command or Python cell for the Execution Pod of the Run's Scratch
+/// Space (#745). The capability worker dispatches it.
+pub(crate) async fn prepare_pod(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	area: &mut Area,
+	input: Value,
+	kind: &str,
+	scratch_space_id: &str,
+) -> Result<Value> {
+	let request: aidash_domain::capabilities::operations::ShellRequest =
+		if kind == aidash_application::capabilities::pod::PYTHON {
+			let python: super::python::Python = serde_json::from_value(input)
+				.map_err(|error| crate::Error::Invalid(error.to_string()))?;
+			aidash_domain::capabilities::operations::ShellRequest {
+				idempotency_key: python.idempotency_key,
+				command: python.code,
+				timeout_seconds: python.timeout_seconds,
+				expected_revision: python.expected_revision,
+			}
+		} else {
+			serde_json::from_value::<Shell>(input)
+				.map_err(|error| crate::Error::Invalid(error.to_string()))?
+				.into()
+		};
+	crate::apps::execution::repositories::node_cancellations::require_area_open(
+		&mut **access.tx,
+		area.id,
+	)
+	.await?;
+	aidash_application::capabilities::pod::accept(
+		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
+		&run.metadata(),
+		request,
+		kind,
+		scratch_space_id,
+	)
+	.await
+	.map_err(Into::into)
+}
+
 pub(crate) async fn poll(
 	store: &Store,
 	access: &mut Access,

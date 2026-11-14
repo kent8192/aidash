@@ -34,6 +34,12 @@ pub enum Action<'a> {
 		kind: &'static str,
 		cancel: bool,
 	},
+	/// Admit a `shell` command or `code_interpreter` cell for the Execution Pod
+	/// of the Run's Scratch Space (#745).
+	PodCommand {
+		kind: &'static str,
+		scratch_space_id: String,
+	},
 }
 #[async_trait]
 pub trait VerifiedFile: Send {
@@ -70,6 +76,15 @@ pub trait FileScopePort: Send {
 		_area: Uuid,
 	) -> Result<Area> {
 		Err(crate::Error::Forbidden)
+	}
+	/// The Execution Pod of the Run's Scratch Space, when this Deployment runs
+	/// Agent tools there (#745). None keeps the tools on the Runner's
+	/// per-command path.
+	async fn pod(
+		&mut self,
+		_run: &RunMetadata,
+	) -> Result<Option<super::pod_operations::PodContext>> {
+		Ok(None)
 	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()>;
 	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;

@@ -19,7 +19,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use uuid::Uuid;
-fn files(area: &Area) -> Result<Vec<FileEntry>> {
+pub(crate) fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
 }
 /// The Reference record a Reference file of the Area was taken from. A malformed
@@ -34,7 +34,7 @@ fn reference_of(file: &FileEntry) -> Option<Uuid> {
 }
 /// An Area holds a Reference file only while its record can be used: the manifest
 /// keeps the entry after a revocation, so the file tools check the record (ADR 0114).
-async fn require_usable(scope: &mut dyn FileScopePort, file: &FileEntry) -> Result<()> {
+pub(crate) async fn require_usable(scope: &mut dyn FileScopePort, file: &FileEntry) -> Result<()> {
 	let Some(id) = reference_of(file) else {
 		return Ok(());
 	};
@@ -201,7 +201,22 @@ pub async fn invoke(
 				.execute(Action::Package, &mut area, input, key)
 				.await?
 		}
-		"code_interpreter" => scope.execute(Action::Python, &mut area, input, key).await?,
+		"code_interpreter" | "shell" => {
+			let kind = if name == "shell" {
+				super::pod::SHELL
+			} else {
+				super::pod::PYTHON
+			};
+			let action = match scope.pod(run).await? {
+				Some(pod) => Action::PodCommand {
+					kind,
+					scratch_space_id: pod.scratch_space_id().to_owned(),
+				},
+				None if name == "shell" => Action::Shell,
+				None => Action::Python,
+			};
+			scope.execute(action, &mut area, input, key).await?
+		}
 		"outbound_get" => {
 			scope
 				.execute(Action::Outbound, &mut area, input, key)
@@ -214,7 +229,6 @@ pub async fn invoke(
 				.await?
 		}
 		"apply_patch" => scope.execute(Action::Patch, &mut area, input, key).await?,
-		"shell" => scope.execute(Action::Shell, &mut area, input, key).await?,
 		"shell_poll" | "shell_cancel" | "python_poll" | "python_cancel" => {
 			scope
 				.execute(
