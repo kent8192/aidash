@@ -69,6 +69,26 @@ fn a_timed_out_command_says_what_was_saved_and_what_to_do_next() {
 }
 
 #[rstest]
+fn a_pod_timeout_says_scratch_space_files_remain() {
+	let error = CapabilityError::command_timed_out_in_pod(&TimedOut {
+		limit_seconds: 120,
+		maximum_seconds: 600,
+		revision: 22,
+		python: false,
+		install: false,
+	});
+	assert_eq!(error.code, COMMAND_TIMED_OUT);
+	assert!(!error.retryable);
+	assert_eq!(
+		error.details,
+		Some(json!({"limit_seconds": 120, "revision": 22}))
+	);
+	assert!(error.message.contains("Scratch Space"));
+	assert!(error.message.contains("keeps what the command wrote"));
+	assert!(!error.message.contains("anything outside /work"));
+}
+
+#[rstest]
 fn a_command_at_the_maximum_is_not_told_to_raise_its_limit() {
 	let error = CapabilityError::command_timed_out(&TimedOut {
 		limit_seconds: 600,
