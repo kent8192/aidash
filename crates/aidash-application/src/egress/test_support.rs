@@ -218,6 +218,7 @@ mod tests {
 	#[tokio::test]
 	async fn credential_budget_and_suspension_are_scoped() {
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "tenant".into(),
 				node: "node".into(),

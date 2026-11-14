@@ -17,7 +17,7 @@ use reinhardt::query::{
 use uuid::Uuid;
 
 use crate::apps::execution::capabilities::models::egress::{
-	ScopeConnection, ScopeDaily, ScopeEvent, ScopeState,
+	RunRevocation, ScopeConnection, ScopeDaily, ScopeEvent, ScopeState,
 };
 use crate::database::native::Transaction;
 use crate::{Error, Result, store::Store};
@@ -315,7 +315,9 @@ impl EgressScopes for DurableScopes {
 		self.initialize(&scope.id)
 			.await
 			.map_err(application_error)?;
-		self.live(&scope.id).await
+		let mut current = self.live(&scope.id).await?;
+		current.run_id = scope.run_id;
+		Ok(current)
 	}
 	async fn admit_external(
 		&self,
@@ -370,6 +372,17 @@ impl EgressScopes for DurableScopes {
 				.pool
 				.begin(&TenancyScope::tenant(&current.id.tenant)?)
 				.await?;
+			if let Some(run_id) = settings.run_id {
+				let revoked = RunRevocation::objects()
+					.filter(RunRevocation::field_tenant().eq(settings.id.tenant.clone()))
+					.filter(RunRevocation::field_run_id().eq(run_id))
+					.all_with_executor(&mut *tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				if !revoked.is_empty() {
+					return Err(Error::Forbidden);
+				}
+			}
 			let mut state = locked_state(&mut tx, &current.id).await?;
 			if state.suspended {
 				return Err(Error::Conflict("egress_suspended".into()));
@@ -424,10 +437,11 @@ impl EgressScopes for DurableScopes {
 		credential: &str,
 	) -> aidash_application::Result<ScopeSettings> {
 		let authenticated = self.authority.authenticate(credential).await?;
-		if authenticated.id != settings.id {
+		if authenticated.id != settings.id || authenticated.run_id != settings.run_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let current = self.live(&settings.id).await?;
+		let mut current = self.live(&settings.id).await?;
+		current.run_id = authenticated.run_id;
 		let result: Result<()> = async {
 			let mut tx = self
 				.store
@@ -485,6 +499,17 @@ impl EgressScopes for DurableScopes {
 				.tenant(record.scope.tenant)
 				.node(record.scope.node)
 				.scope_id(record.scope.scratch_space)
+				.run_id(record.run_id)
+				.admission_ms(
+					record
+						.admission_ms
+						.map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
+				)
+				.settle_ms(
+					record
+						.settle_ms
+						.map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
+				)
 				.host(record.host)
 				.port(i32::from(record.port))
 				.sent_bytes(i64::try_from(record.sent_bytes).map_err(|_| Error::Forbidden)?)

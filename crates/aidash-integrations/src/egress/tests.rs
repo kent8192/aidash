@@ -1244,6 +1244,7 @@ async fn external_service_accepts_scope_credential_without_forwarding_it() {
 		.unwrap();
 	});
 	let settings = ScopeSettings {
+		run_id: None,
 		id: ScopeId {
 			tenant: "tenant".into(),
 			node: "node".into(),

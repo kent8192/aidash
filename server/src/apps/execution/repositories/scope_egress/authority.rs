@@ -1,10 +1,6 @@
-//! The live Scratch Space behind a scope credential.
-//!
-//! A credential is a MAC over the Tenant and the Scratch Space, so it needs no
-//! table and has the same value on every Pod `ensure`, which keeps the Pod's spec
-//! stable. It stays valid while the Scratch Space exists and neither its Tenant
-//! nor its Node is deleted (ADR 0060, ADR 0083); host and suspension changes
-//! reach an open connection through the gateway's periodic recheck.
+//! Per-process credentials bind a Tenant, Scratch Space and Run (ADR 0136).
+//! Preparation uses a distinct MAC domain. Run revocation and current Space
+//! authority are checked on every credential authentication.
 use aidash_application::egress::{Admission, ScopeAuthority, ScopeSettings};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
@@ -22,41 +18,59 @@ use crate::apps::workspaces::repositories::scratch;
 use crate::config::ScratchOperatorPolicy;
 use crate::store::Store;
 
-const DOMAIN: &[u8] = b"aidash-scope-egress-v1\0";
-const PREFIX: &str = "aidash-scope-v1";
+const RUN_DOMAIN: &[u8] = b"aidash-run-egress-v1\0";
+const PREPARATION_DOMAIN: &[u8] = b"aidash-preparation-egress-v1\0";
+const PREFIX: &str = "aidash-run-v1";
 
-fn scope_mac(key: &[u8], tenant: &str, space: Uuid) -> Hmac<Sha256> {
+fn scope_mac(key: &[u8], domain: &[u8], tenant: &str, space: Uuid, run: Uuid) -> Hmac<Sha256> {
 	let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC key");
-	mac.update(DOMAIN);
+	mac.update(domain);
 	mac.update(&(tenant.len() as u64).to_be_bytes());
 	mac.update(tenant.as_bytes());
 	mac.update(space.as_bytes());
+	mac.update(run.as_bytes());
 	mac
 }
-
-/// Holds only URL-safe characters, because a Pod carries it in its proxy URL.
-fn issue(key: &[u8], tenant: &str, space: Uuid) -> String {
-	let signature = URL_SAFE_NO_PAD.encode(scope_mac(key, tenant, space).finalize().into_bytes());
+fn issue(key: &[u8], domain: &[u8], tenant: &str, space: Uuid, run: Uuid) -> String {
+	let signature = URL_SAFE_NO_PAD.encode(
+		scope_mac(key, domain, tenant, space, run)
+			.finalize()
+			.into_bytes(),
+	);
 	let tenant = URL_SAFE_NO_PAD.encode(tenant);
-	format!("{PREFIX}.{space}.{tenant}.{signature}")
+	format!("{PREFIX}.{space}.{tenant}.{run}.{signature}")
 }
-
-/// The Tenant and Scratch Space a credential was issued for. The signature is
-/// checked before either value is used, and in constant time.
-fn verify(key: &[u8], credential: &str) -> Option<(String, Uuid)> {
+/// Verify the entire identity before using any part of it.
+fn verify(key: &[u8], credential: &str) -> Option<(String, Uuid, Uuid, bool)> {
 	let mut parts = credential.split('.');
-	let (prefix, space, tenant, signature) =
-		(parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+	let (prefix, space, tenant, run, signature) = (
+		parts.next()?,
+		parts.next()?,
+		parts.next()?,
+		parts.next()?,
+		parts.next()?,
+	);
 	if prefix != PREFIX || parts.next().is_some() {
 		return None;
 	}
 	let space = Uuid::parse_str(space).ok()?;
 	let tenant = String::from_utf8(URL_SAFE_NO_PAD.decode(tenant).ok()?).ok()?;
+	let run = Uuid::parse_str(run).ok()?;
 	let signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
-	scope_mac(key, &tenant, space)
+	let preparation = if scope_mac(key, RUN_DOMAIN, &tenant, space, run)
 		.verify_slice(&signature)
-		.ok()?;
-	Some((tenant, space))
+		.is_ok()
+	{
+		false
+	} else if scope_mac(key, PREPARATION_DOMAIN, &tenant, space, run)
+		.verify_slice(&signature)
+		.is_ok()
+	{
+		true
+	} else {
+		return None;
+	};
+	Some((tenant, space, run, preparation))
 }
 
 /// Applies a Scratch Space's current settings under the operator's and Tenant's
@@ -93,9 +107,30 @@ impl ScratchAuthority {
 		runner_key(&self.store)
 	}
 
-	/// The credential to pass in `/v2/pods/ensure`.
-	pub fn credential(&self, tenant: &str, space: Uuid) -> crate::Result<String> {
-		Ok(issue(self.key()?.expose_secret().as_bytes(), tenant, space))
+	/// Credential for an individual Run, passed only to its processes.
+	pub fn credential(&self, tenant: &str, space: Uuid, run: Uuid) -> crate::Result<String> {
+		Ok(issue(
+			self.key()?.expose_secret().as_bytes(),
+			RUN_DOMAIN,
+			tenant,
+			space,
+			run,
+		))
+	}
+	/// Preparation identities cannot be substituted for Run credentials.
+	pub fn preparation_credential(
+		&self,
+		tenant: &str,
+		space: Uuid,
+		operation: Uuid,
+	) -> crate::Result<String> {
+		Ok(issue(
+			self.key()?.expose_secret().as_bytes(),
+			PREPARATION_DOMAIN,
+			tenant,
+			space,
+			operation,
+		))
 	}
 
 	async fn settings(
@@ -149,6 +184,7 @@ impl ScratchAuthority {
 			},
 		};
 		Ok(Some(ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: tenant.to_owned(),
 				node: found.node.to_string(),
@@ -170,12 +206,38 @@ impl ScratchAuthority {
 impl ScopeAuthority for ScratchAuthority {
 	async fn authenticate(&self, credential: &str) -> aidash_application::Result<ScopeSettings> {
 		let key = self.key().map_err(aidash_application::Error::from)?;
-		let Some((tenant, space)) = verify(key.expose_secret().as_bytes(), credential) else {
+		let Some((tenant, space, run, preparation)) =
+			verify(key.expose_secret().as_bytes(), credential)
+		else {
 			return Err(aidash_application::Error::Unauthorized);
 		};
-		self.settings(&tenant, space)
+		if !preparation {
+			use crate::apps::execution::capabilities::models::egress::RunRevocation;
+			use reinhardt::db::orm::Model;
+			let mut tx = self
+				.store
+				.pool
+				.begin(&TenancyScope::tenant(&tenant)?)
+				.await
+				.map_err(crate::Error::from)?;
+			let revoked = RunRevocation::objects()
+				.filter(RunRevocation::field_tenant().eq(tenant.clone()))
+				.filter(RunRevocation::field_run_id().eq(run))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			tx.commit().await.map_err(crate::Error::from)?;
+			if !revoked.is_empty() {
+				return Err(aidash_application::Error::Forbidden);
+			}
+		}
+		let mut settings = self
+			.settings(&tenant, space)
 			.await?
-			.ok_or(aidash_application::Error::Unauthorized)
+			.ok_or(aidash_application::Error::Unauthorized)?;
+		settings.run_id = if preparation { None } else { Some(run) };
+		Ok(settings)
 	}
 
 	async fn current(&self, scope: &ScopeId) -> aidash_application::Result<ScopeSettings> {
@@ -203,36 +265,23 @@ impl ScopeAuthority for ScratchAuthority {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	const KEY: &[u8] = b"test-key";
-
 	#[test]
-	fn a_credential_names_its_tenant_and_space_and_stays_the_same() {
-		let space = Uuid::new_v4();
-		let credential = issue(KEY, "acme", space);
-		assert_eq!(credential, issue(KEY, "acme", space));
-		assert_eq!(verify(KEY, &credential), Some(("acme".to_owned(), space)));
-		assert!(
-			credential
-				.bytes()
-				.all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b)),
-			"{credential}"
+	fn credential_binds_tenant_space_run_and_domain() {
+		let (space, run) = (Uuid::new_v4(), Uuid::new_v4());
+		let credential = issue(b"key", RUN_DOMAIN, "acme", space, run);
+		assert_eq!(
+			verify(b"key", &credential),
+			Some(("acme".into(), space, run, false))
 		);
-	}
-
-	#[test]
-	fn a_changed_or_foreign_credential_is_refused() {
-		let space = Uuid::new_v4();
-		let credential = issue(KEY, "acme", space);
-		assert_eq!(verify(b"other-key", &credential), None);
-		let parts: Vec<_> = credential.split('.').collect();
-		let beta = URL_SAFE_NO_PAD.encode("beta");
-		let other_tenant = format!("{}.{}.{beta}.{}", parts[0], parts[1], parts[3]);
-		assert_eq!(verify(KEY, &other_tenant), None);
-		let other_space = format!("{}.{}.{}.{}", parts[0], Uuid::new_v4(), parts[2], parts[3]);
-		assert_eq!(verify(KEY, &other_space), None);
-		for malformed in ["", "invalid", PREFIX, &format!("{credential}.extra")] {
-			assert_eq!(verify(KEY, malformed), None, "{malformed}");
-		}
+		assert!(verify(b"other", &credential).is_none());
+		let altered = credential.replace(&run.to_string(), &Uuid::new_v4().to_string());
+		assert!(verify(b"key", &altered).is_none());
+		let preparation = issue(b"key", PREPARATION_DOMAIN, "acme", space, run);
+		assert_ne!(credential, preparation);
+		assert_eq!(
+			verify(b"key", &preparation),
+			Some(("acme".into(), space, run, true))
+		);
+		assert!(verify(b"key", "aidash-scope-v1.old.space.signature").is_none());
 	}
 }

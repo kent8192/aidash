@@ -176,6 +176,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	tenant_roots::tenant_root(&federation, "acme").await;
 	tenant_roots::tenant_root(&federation, "beta").await;
 	let scope = ScopeSettings {
+		run_id: None,
 		id: ScopeId {
 			tenant: "acme".into(),
 			node: tenant_roots::fixture_node_name("acme").to_string(),
@@ -196,6 +197,9 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	assert!(durable.resolve("invalid").await.is_err());
 	durable.resolve("credential").await.unwrap();
 	let mut connection = ConnectionRecord {
+		run_id: None,
+		admission_ms: None,
+		settle_ms: None,
 		id: Uuid::new_v4(),
 		scope: scope.id.clone(),
 		host: "registry.npmjs.org".into(),
@@ -518,10 +522,12 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		policy,
 		KEY,
 	));
-	let credential = authority.credential("acme", space).unwrap();
+	let run_id = Uuid::new_v4();
+	let credential = authority.credential("acme", space, run_id).unwrap();
 	let durable = DurableScopes::new(federation.store.clone(), authority.clone());
 
 	let resolved = durable.resolve(&credential).await.unwrap();
+	assert_eq!(resolved.run_id, Some(run_id));
 	assert_eq!(resolved.id.tenant, "acme");
 	assert_eq!(resolved.id.scratch_space, space);
 	assert_eq!(
@@ -543,7 +549,7 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		federation.config.scratch_policy.clone(),
 		"another-key",
 	)
-	.credential("acme", space)
+	.credential("acme", space, Uuid::new_v4())
 	.unwrap();
 	assert!(matches!(
 		durable.resolve(&foreign).await,
@@ -556,9 +562,45 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		Err(aidash_application::Error::Forbidden)
 	));
 
-	delete_space(&federation, "acme", space).await;
+	let row = RunRevocation::build()
+		.tenant("acme".to_owned())
+		.run_id(run_id)
+		.revoked_at(Utc::now())
+		.reason("read_refused".to_owned())
+		.finish();
+	let mut tx = federation
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
+	RunRevocation::objects()
+		.insert_with_executor(&mut *tx, &row)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
 	assert!(matches!(
 		durable.resolve(&credential).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert!(matches!(
+		durable.admit_connection(&resolved).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert!(matches!(
+		durable.check_active(&resolved, &credential).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	let other = authority.credential("acme", space, Uuid::new_v4()).unwrap();
+	assert!(durable.resolve(&other).await.is_ok());
+	let preparation = authority
+		.preparation_credential("acme", space, run_id)
+		.unwrap();
+	assert_eq!(durable.resolve(&preparation).await.unwrap().run_id, None);
+
+	delete_space(&federation, "acme", space).await;
+	assert!(matches!(
+		durable.resolve(&other).await,
 		Err(aidash_application::Error::Unauthorized)
 	));
 }
@@ -584,7 +626,7 @@ async fn deleting_the_tenant_or_the_node_closes_the_scope_credential_until_it_is
 		federation.config.scratch_policy.clone(),
 		KEY,
 	));
-	let credential = authority.credential("acme", space).unwrap();
+	let credential = authority.credential("acme", space, Uuid::new_v4()).unwrap();
 	let durable = DurableScopes::new(federation.store.clone(), authority);
 	let open = durable.resolve(&credential).await.unwrap();
 	let node = tenant_roots::fixture_node_name("acme").to_string();
@@ -673,7 +715,7 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 		federation.config.scratch_policy.clone(),
 		KEY,
 	));
-	let credential = authority.credential("acme", space).unwrap();
+	let credential = authority.credential("acme", space, Uuid::new_v4()).unwrap();
 	let durable = DurableScopes::new(federation.store.clone(), authority);
 	let open = durable.resolve(&credential).await.unwrap();
 	let day = Utc::now().date_naive();
@@ -791,7 +833,7 @@ async fn a_real_listener_records_host_connections_in_the_database(
 		federation.config.scratch_policy.clone(),
 		KEY,
 	));
-	let credential = authority.credential("acme", space).unwrap();
+	let credential = authority.credential("acme", space, Uuid::new_v4()).unwrap();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let address = listener.local_addr().unwrap();
 	let (stop, receiver) = tokio::sync::watch::channel(false);

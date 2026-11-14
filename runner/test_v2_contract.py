@@ -60,3 +60,36 @@ def test_stop_run_stops_only_active_processes_of_that_run():
         assert controller.stop_run('space', 'run') == {'stopped': sorted(stopped)}
         assert set(stopped) == {records[0][0], records[1][0]}
         assert controller.stop_run('space', 'run') == {'stopped': []}
+
+
+def test_python_start_reports_missing_image_interpreter(tmp_path):
+    from types import SimpleNamespace
+    import pytest
+    from execution_pod import ExecutionPodError
+    backend = SimpleNamespace(root=tmp_path, kube=Mock(return_value=SimpleNamespace(
+        returncode=0, stdout=b'{"available":false}')))
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+        'spec': {'containers': [{'name': 'execution', 'securityContext': {}}]}})
+    controller.submit_command = Mock()
+    with pytest.raises(ExecutionPodError) as failure:
+        controller.start_python('s', 'r', 'secret')
+    assert failure.value.code == 'python_unavailable'
+    assert 'apt-get install -y python3' in failure.value.message
+    controller.submit_command.assert_not_called()
+
+
+def test_python_start_uses_image_interpreter_and_passes_run_credential(tmp_path):
+    from types import SimpleNamespace
+    backend = SimpleNamespace(root=tmp_path, kube=Mock(return_value=SimpleNamespace(
+        returncode=0, stdout=b'{"available":true}')))
+    controller = ExecutionPodController(backend, {}, admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+        'spec': {'containers': [{'name': 'execution', 'securityContext': {}}]}})
+    controller.submit_command = Mock(return_value={'status': 'queued'})
+    session = controller.start_python('s', 'r', 'run-token')
+    request = controller.submit_command.call_args.args[0]
+    assert request['code'].startswith('exec python3 -I /.aidash-helpers/python_session.py serve ')
+    assert request['proxy_credential'] == 'run-token'
+    assert 'run-token' not in controller._python_session_path('s', 'r').read_text()
+    assert session['run_id'] == 'r'

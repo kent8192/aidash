@@ -713,6 +713,19 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
+    if len(sys.argv) == 4 and sys.argv[1] == 'python-check' and sys.argv[2] in ('docker', 'normal'):
+        import json
+        import subprocess
+        from pathlib import Path
+        if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
+            raise ValueError('Execution Pod identity changed')
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from execution_pod import helper_command
+        probe = subprocess.run(helper_command('chroot', sys.argv[2], '/scratch-system/image-root/rootfs', '.',
+            'python3', '-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        print(json.dumps({'available': probe.returncode == 0}))
+        raise SystemExit(0)
     if (len(sys.argv) in (11, 12) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])

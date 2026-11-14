@@ -3121,6 +3121,13 @@ class PythonSessionTest(unittest.TestCase):
 
 
 class PythonSessionMappingTest(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        probe = patch.object(ExecutionPodController, '_check_python')
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def test_unknown_interrupted_session_is_not_restarted(self):
         import json
         import tempfile
@@ -4200,6 +4207,13 @@ class PythonInterpreterStopTest(unittest.TestCase):
     cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
     session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
 
+    def setUp(self):
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        probe = patch.object(ExecutionPodController, '_check_python')
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def _run(self, *, session_result, stop_fails=False, result_after=0, during=None, after=None):
         import json
         import tempfile
@@ -4485,6 +4499,13 @@ class DockerForwardedOutputTest(unittest.TestCase):
 class PythonSessionRefusalTest(unittest.TestCase):
     """A session is refused only while the Pod it ran in still exists (#722 decision 9)."""
     operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def setUp(self):
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        probe = patch.object(ExecutionPodController, '_check_python')
+        probe.start()
+        self.addCleanup(probe.stop)
 
     def test_a_pod_that_no_longer_exists_does_not_block_a_new_session(self):
         import json

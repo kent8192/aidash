@@ -120,7 +120,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "memory_banks"
 		| "memory_participants" => Link("workspace_id", Workspace),
 		"core_operations" => Link("area_id", Area),
-		"core_runs" => Link("run_id", Run),
+		"core_runs" | "egress_run_revocations" => Link("run_id", Run),
 		"core_task_sessions"
 		| "delegations"
 		| "memory_task_participants"

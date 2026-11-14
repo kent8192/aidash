@@ -1968,7 +1968,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/v2/viewers/heartbeat':
                 return runner.execution_pods.viewer_heartbeat(request['scratch_space_id'], request['viewer_id'])
             if path == '/v2/python/start':
-                return runner.execution_pods.start_python(request['scratch_space_id'], request['run_id'])
+                return runner.execution_pods.start_python(request['scratch_space_id'], request['run_id'], request.get('proxy_credential'))
             if path == '/v2/python/cell':
                 return runner.execution_pods.python_cell(request)
             if path == '/v2/python/stop':

@@ -2301,11 +2301,11 @@ print(json.dumps(r))'''
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         return directory / (key + '.json')
 
-    def start_python(self, scratch_space_id, run_id):
+    def start_python(self, scratch_space_id, run_id, proxy_credential=None):
         with self._space_lock(scratch_space_id):
-            return self._start_python(scratch_space_id, run_id)
+            return self._start_python(scratch_space_id, run_id, proxy_credential)
 
-    def _start_python(self, scratch_space_id, run_id):
+    def _start_python(self, scratch_space_id, run_id, proxy_credential=None):
         import json
         import shlex
         import uuid
@@ -2337,11 +2337,13 @@ print(json.dumps(r))'''
             replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
         else:
             replaced = False
+        self._check_python(scratch_space_id)
         operation_id = str(uuid.uuid4())
         socket_path = '/run/aidash/' + operation_id + '.sock'
-        code = 'exec ' + shlex.join(python_helper_command('serve', socket_path))
+        code = 'exec ' + shlex.join(['python3', '-I', '/.aidash-helpers/python_session.py', 'serve', socket_path])
         self.submit_command({'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
-                             'run_id': run_id, 'code': code, 'background': True}, kind='python_session')
+                             'run_id': run_id, 'code': code, 'background': True,
+                             'proxy_credential': proxy_credential}, kind='python_session')
         session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
                    'run_id': run_id, 'socket_path': socket_path}
         self._ensure_journal_index()
@@ -2349,6 +2351,24 @@ print(json.dumps(r))'''
         with self.lock:
             self.session_index.setdefault(scratch_space_id, set()).add(path.name)
         return dict(session, session_replaced=True) if replaced else session
+
+    def _check_python(self, scratch_space_id):
+        import json
+        from control import scratch_resource_name
+        pod = self._get('pod', scratch_resource_name(scratch_space_id))
+        if not pod or pod.get('status', {}).get('phase') != 'Running':
+            raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
+        uid = pod.get('metadata', {}).get('uid')
+        containers = pod.get('spec', {}).get('containers', [])
+        execution = next((item for item in containers if item.get('name') == 'execution'), {})
+        caps = execution.get('securityContext', {}).get('capabilities', {}).get('add', [])
+        mode = 'docker' if 'NET_ADMIN' in caps else 'normal'
+        probe = self.backend.kube(['exec', scratch_resource_name(scratch_space_id), '-c', 'execution', '--'] +
+                                  helper_command('python-check', mode, uid), check=False, timeout=20)
+        if probe.returncode != 0:
+            raise ExecutionPodError('pod_unavailable', 'Could not check the image Python interpreter')
+        if json.loads(probe.stdout).get('available') is not True:
+            raise ExecutionPodError('python_unavailable', 'This image has no python3. Install it with apt (for example `apt-get install -y python3`) and try again.')
 
     def python_cell(self, request):
         import base64
