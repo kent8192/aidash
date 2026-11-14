@@ -302,6 +302,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		registry,
 		config: Config {
 			scratch_policy: Default::default(),
+			credential_max_seconds: 90 * 24 * 60 * 60,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),

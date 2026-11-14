@@ -33,6 +33,7 @@ fn unlink_keeps_durable_origin_and_cannot_transfer(
 		status: AccountStatus::Active,
 		session_epoch: 4,
 		suspension_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
 	};
 	let origin = DurableOrigin {
 		source_disable_epoch: None,
@@ -163,6 +164,7 @@ fn interactive_session_uses_source_and_epoch(
 		status,
 		session_epoch: epoch,
 		suspension_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
 	};
 	let session = ProductSession {
 		id: Uuid::from_u128(5),

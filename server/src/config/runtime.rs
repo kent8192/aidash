@@ -13,6 +13,7 @@ pub struct Config {
 	pub web_dir: String,
 	pub lease_seconds: i32,
 	pub tenancy: aidash_domain::identity::tenancy::TenancyRules,
+	pub credential_max_seconds: i64,
 	/// `[deployment] federation`: whether this Deployment federates with other
 	/// Deployments. Exchange between Nodes of this Deployment never depends on it.
 	pub federation: bool,
@@ -175,6 +176,7 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			tenancy: settings.tenancy.rules(settings.deployment.offering),
+			credential_max_seconds: i64::from(settings.tenancy.credential_max_days) * 24 * 60 * 60,
 			federation: node.federation,
 			deployment_key: None,
 			demo_data: settings.demo_data.enabled,

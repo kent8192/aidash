@@ -32,6 +32,7 @@ import { ApiError, apiFetch } from "./transport";
 import { useBusyRetry } from "./policy-busy";
 import {
   Badge,
+  credentialEndReason,
   Empty,
   Field,
   JsonView,
@@ -67,6 +68,7 @@ const accessTones = {
   authDenied: "danger",
   authRevoked: "danger",
   authExpired: "warning",
+  authExpiringSoon: "warning",
   authDisabled: "neutral",
 } satisfies Record<string, StatusTone>;
 
@@ -456,6 +458,12 @@ function TenantAuthorization({
                               locale,
                             )}
                           </time>
+                          {credential.end_reason && (
+                            <>
+                              {" · "}
+                              {credentialEndReason(t, credential.end_reason)}
+                            </>
+                          )}
                         </span>
                       </div>
                       <AccessBadge
@@ -465,7 +473,11 @@ function TenantAuthorization({
                             : Date.parse(credential.expires_at) <=
                                 credentials.dataUpdatedAt
                               ? "authExpired"
-                              : "authActive"
+                              : Date.parse(credential.expires_at) <=
+                                  credentials.dataUpdatedAt +
+                                    7 * 24 * 60 * 60 * 1000
+                                ? "authExpiringSoon"
+                                : "authActive"
                         }
                       />
                       {!credential.revoked_at && canRevoke && (

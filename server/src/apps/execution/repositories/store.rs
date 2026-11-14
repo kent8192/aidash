@@ -3588,7 +3588,16 @@ impl Store {
 		event_kind: &str,
 		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
+		let suspension = reason
+			.strip_prefix("account_suspended:")
+			.and_then(|value| value.parse::<u64>().ok());
+		let recovery = suspension.map(|epoch| ("account_suspension_epoch", json!(epoch)));
+		let reason = if suspension.is_some() {
+			"account_suspended"
+		} else {
+			reason
+		};
+		self.pause_for_execution_reason(run, worker, reason, event_kind, recovery, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(

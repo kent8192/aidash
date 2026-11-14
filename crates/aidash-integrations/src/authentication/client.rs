@@ -12,7 +12,12 @@ use reinhardt::grpc::{
 	GrpcClientTlsConfig,
 	tonic::{self, transport::Channel},
 };
-use std::time::Duration;
+use std::{
+	collections::HashMap,
+	hash::Hash,
+	sync::{Arc, Mutex},
+	time::{Duration, Instant},
+};
 use uuid::Uuid;
 
 /// TLS material is loaded by the process composition boundary, never from a request.
@@ -25,12 +30,42 @@ pub struct Settings {
 	pub product_client_id: String,
 }
 
-/// Cloning shares the authenticated HTTP/2 channel. No active result is cached.
+type OriginKey = (Uuid, Option<Uuid>, Option<u64>, Option<u64>);
+type Entry = Arc<tokio::sync::Mutex<Option<Instant>>>;
+type Cache<K> = Arc<Mutex<HashMap<K, Entry>>>;
+
+fn entry<K: Eq + Hash>(cache: &Cache<K>, key: K, ttl: Duration) -> Entry {
+	let now = Instant::now();
+	let mut cache = cache.lock().expect("validity cache");
+	cache.retain(|_, value| {
+		Arc::strong_count(value) > 1
+			|| value
+				.try_lock()
+				.map_or(true, |at| at.is_some_and(|at| now.duration_since(at) < ttl))
+	});
+	cache
+		.entry(key)
+		.or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
+		.clone()
+}
+
+/// Clones share the channel and the cache for admitted work.
 #[derive(Clone)]
 pub struct Client {
 	channel: Channel,
 	product_client_id: String,
+	cache_ttl: Duration,
+	origin_cache: Cache<OriginKey>,
+	interactive_cache: Cache<(Uuid, Uuid)>,
+	/// The dashboard reads its session on every page load; the sign-in method
+	/// count is asked at most once per session per [`SIGN_IN_METHOD_COUNT_TTL`].
+	sign_in_method_counts: Arc<Mutex<SignInMethodCounts>>,
 }
+
+/// Per session `(identity, session)`: when the count was read, and the count.
+type SignInMethodCounts = HashMap<(Uuid, Uuid), (Instant, Option<u32>)>;
+
+const SIGN_IN_METHOD_COUNT_TTL: Duration = Duration::from_secs(60 * 60);
 fn rpc_error(status: tonic::Status) -> Error {
 	match status.code() {
 		tonic::Code::Unauthenticated => Error::Unauthorized,
@@ -121,14 +156,99 @@ impl Client {
 		Ok(Self {
 			channel,
 			product_client_id: settings.product_client_id,
+			cache_ttl: Duration::ZERO,
+			origin_cache: Arc::new(Mutex::new(HashMap::new())),
+			interactive_cache: Arc::new(Mutex::new(HashMap::new())),
+			sign_in_method_counts: Arc::new(Mutex::new(HashMap::new())),
 		})
 	}
+	pub fn with_validity_cache_seconds(mut self, seconds: u64) -> Self {
+		self.cache_ttl = Duration::from_secs(seconds);
+		self
+	}
 	pub async fn interactive(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
+		let entry = entry(&self.interactive_cache, (identity, session), self.cache_ttl);
+		let mut last = entry.lock().await;
+		let checked = Instant::now();
+		let response = match self.interactive_online(identity, session).await {
+			Ok(response) => response,
+			// A definite refusal ends the reuse at once, so open streams of the
+			// session stop at their next frame instead of up to T later.
+			Err(error @ (Error::Forbidden | Error::Unauthorized)) => {
+				*last = None;
+				return Err(error);
+			}
+			Err(error) => return Err(error),
+		};
+		if !self.cache_ttl.is_zero() {
+			*last = Some(checked);
+		}
+		Ok(response)
+	}
+	pub async fn forget_session(&self, identity: Uuid, session: Uuid) {
+		let removed = self
+			.interactive_cache
+			.lock()
+			.expect("validity cache")
+			.remove(&(identity, session));
+		if let Some(entry) = removed {
+			*entry.lock().await = None;
+		}
+	}
+	pub async fn forget_identity(&self, identity: Uuid) {
+		let removed = {
+			let mut cache = self.interactive_cache.lock().expect("validity cache");
+			let keys: Vec<_> = cache
+				.keys()
+				.copied()
+				.filter(|(id, _)| *id == identity)
+				.collect();
+			keys.into_iter()
+				.filter_map(|key| cache.remove(&key))
+				.collect::<Vec<_>>()
+		};
+		for entry in removed {
+			*entry.lock().await = None;
+		}
+	}
+	async fn interactive_online(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
+		self.interactive_read(identity, session, false).await
+	}
+	pub async fn sign_in_method_count(&self, identity: Uuid, session: Uuid) -> Result<Option<u32>> {
+		let now = Instant::now();
+		if let Some((at, count)) = self
+			.sign_in_method_counts
+			.lock()
+			.expect("sign-in method counts")
+			.get(&(identity, session))
+			&& now.duration_since(*at) < SIGN_IN_METHOD_COUNT_TTL
+		{
+			return Ok(*count);
+		}
+		let count = self
+			.interactive_read(identity, session, true)
+			.await?
+			.usable_sign_in_method_count;
+		let mut counts = self
+			.sign_in_method_counts
+			.lock()
+			.expect("sign-in method counts");
+		counts.retain(|_, (at, _)| now.duration_since(*at) < SIGN_IN_METHOD_COUNT_TTL);
+		counts.insert((identity, session), (now, count));
+		Ok(count)
+	}
+	async fn interactive_read(
+		&self,
+		identity: Uuid,
+		session: Uuid,
+		include_sign_in_method_count: bool,
+	) -> Result<ValidityResponse> {
 		let response = AuthenticationValidityClient::new(self.channel.clone())
 			.validate_interactive(ValidateInteractiveRequest {
 				external_identity_id: identity.to_string(),
 				product_session_id: session.to_string(),
 				product_client_id: self.product_client_id.clone(),
+				include_sign_in_method_count,
 			})
 			.await
 			.map_err(rpc_error)?
@@ -166,6 +286,32 @@ impl Authority for Client {
 		self.interactive(source_identity, product_session)
 			.await
 			.map(|_| ())
+	}
+	async fn validate_interactive_within_t(
+		&self,
+		source_identity: Uuid,
+		product_session: Uuid,
+	) -> Result<()> {
+		if self.cache_ttl.is_zero() {
+			return self
+				.interactive(source_identity, product_session)
+				.await
+				.map(|_| ());
+		}
+		let entry = entry(
+			&self.interactive_cache,
+			(source_identity, product_session),
+			self.cache_ttl,
+		);
+		let mut last = entry.lock().await;
+		let checked = Instant::now();
+		if last.is_some_and(|at| checked.duration_since(at) < self.cache_ttl) {
+			return Ok(());
+		}
+		self.interactive_online(source_identity, product_session)
+			.await?;
+		*last = Some(checked);
+		Ok(())
 	}
 	async fn validate_origin(&self, source_identity: Uuid) -> Result<()> {
 		self.origin_binding(source_identity).await.map(|_| ())
@@ -215,6 +361,17 @@ impl Authority for Client {
 			.await
 			.map_err(rpc_error)?
 			.into_inner();
+		if !response.active
+			&& response.reason == "account_suspended"
+			&& Uuid::parse_str(&response.source_identity_id).ok() == Some(origin.identity_id)
+			&& origin
+				.account_id
+				.is_none_or(|id| response.account_id == id.to_string())
+			&& origin.source_disable_epoch.unwrap_or(0) == response.source_disable_epoch
+			&& let Some(epoch) = response.suspension_epoch
+		{
+			return Err(Error::AccountSuspended { epoch });
+		}
 		require_validity(origin.identity_id, &response, false)?;
 		if origin
 			.account_id
@@ -225,5 +382,65 @@ impl Authority for Client {
 			return Err(Error::Forbidden);
 		}
 		Ok(())
+	}
+	async fn validate_bound_origin_within_t(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> Result<()> {
+		if self.cache_ttl.is_zero() {
+			return self.validate_bound_origin(origin).await;
+		}
+		let key = (
+			origin.identity_id,
+			origin.account_id,
+			origin.suspension_epoch,
+			origin.source_disable_epoch,
+		);
+		let entry = entry(&self.origin_cache, key, self.cache_ttl);
+		let mut last = entry.lock().await;
+		let now = Instant::now();
+		if last.is_some_and(|checked| now.duration_since(checked) < self.cache_ttl) {
+			return Ok(());
+		}
+		self.validate_bound_origin(origin).await?;
+		*last = Some(now);
+		Ok(())
+	}
+	async fn resume_suspended_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+		epoch: u64,
+	) -> Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		let response = AuthenticationValidityClient::new(self.channel.clone())
+			.validate_origin(ValidateOriginRequest {
+				external_identity_id: origin.identity_id.to_string(),
+				expected_account_id: origin
+					.account_id
+					.map(|id| id.to_string())
+					.unwrap_or_default(),
+				expected_suspension_epoch: origin.suspension_epoch,
+				expected_source_disable_epoch: origin.source_disable_epoch,
+				bind_current: true,
+			})
+			.await
+			.map_err(rpc_error)?
+			.into_inner();
+		require_validity(origin.identity_id, &response, false)?;
+		if response.suspension_epoch != Some(epoch)
+			|| !response.resumable_suspension_epochs.contains(&epoch)
+			|| origin
+				.account_id
+				.is_some_and(|id| response.account_id != id.to_string())
+			|| origin.source_disable_epoch.unwrap_or(0) != response.source_disable_epoch
+		{
+			return Ok(None);
+		}
+		let account_id = Uuid::parse_str(&response.account_id).map_err(|_| Error::Forbidden)?;
+		Ok(Some(aidash_domain::accounts::DurableOrigin {
+			identity_id: origin.identity_id,
+			account_id: Some(account_id),
+			suspension_epoch: Some(epoch),
+			source_disable_epoch: Some(response.source_disable_epoch),
+		}))
 	}
 }

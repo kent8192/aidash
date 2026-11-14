@@ -449,6 +449,9 @@ pub struct RecoveryState {
 	/// Typed context-recovery reason for a paused Run; cleared on resume.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
+	/// The common Account suspension that paused this Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub account_suspension_epoch: Option<u64>,
 	/// The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on
 	/// resume; people never read it, only whether they may decline.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

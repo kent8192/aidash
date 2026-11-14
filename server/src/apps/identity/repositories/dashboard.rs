@@ -208,8 +208,72 @@ impl StatusRecovery for Recovery {
 			return Ok(false);
 		};
 		let policy = pool.dashboard_policy();
-		match DashboardExecutionOrigin::require_current(&mut **access.tx, run, policy.as_ref())
-			.await
+		// A suspension requires a separate, explicit administrator authorization.
+		// Lock the Run and rebind its origin in the same transaction as resume.
+		{
+			use reinhardt::db::orm::Model;
+			let row = Run::objects()
+				.filter(Run::field_id().eq(run))
+				.filter(
+					Run::field_control()
+						.eq(crate::apps::execution::services::states::RunControl::Paused),
+				)
+				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+				.select_for_update()
+				.all_with_executor(access.tx.native_mut())
+				.await
+				.map_err(|error| {
+					crate::Error::from(reinhardt::core::exception::Error::from(error))
+				})?
+				.pop();
+			if let Some(mut row) = row {
+				let Some(epoch) = row
+					.pending
+					.0
+					.get("recovery")
+					.and_then(|v| v.get("account_suspension_epoch"))
+					.and_then(|v| v.as_u64())
+				else {
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				};
+				if !DashboardExecutionOrigin::rebind_suspended(
+					&mut **access.tx,
+					run,
+					epoch,
+					policy.as_ref(),
+				)
+				.await?
+				{
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				}
+				if let Some(recovery) = row
+					.pending
+					.0
+					.get_mut("recovery")
+					.and_then(|v| v.as_object_mut())
+				{
+					recovery.remove("account_suspension_epoch");
+				}
+				row.control = crate::apps::execution::services::states::RunControl::Active;
+				row.error = None;
+				row.revision += 1;
+				row.updated_at = Utc::now();
+				Run::objects()
+					.save_with_executor(access.tx.native_mut(), &row)
+					.await
+					.map_err(|error| {
+						crate::Error::from(reinhardt::core::exception::Error::from(error))
+					})?;
+				return access.finish(Ok(true)).await.map_err(Into::into);
+			}
+		}
+		match DashboardExecutionOrigin::require_current(
+			&mut **access.tx,
+			run,
+			policy.as_ref(),
+			aidash_application::ports::accounts::Recheck::Online,
+		)
+		.await
 		{
 			Ok(()) => {}
 			Err(crate::Error::Forbidden | crate::Error::Unauthorized) => {

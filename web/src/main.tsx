@@ -18,7 +18,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { state as getState, session as getSession } from "./generated/aidash";
+import {
+  state as getState,
+  session as getSession,
+  suspendedRunsResume,
+} from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
 import { AdministratorTenantNotice } from "./administrator-notice";
@@ -143,6 +147,7 @@ const queryClient = new QueryClient({
 type Search = { channel?: string; focus?: string; view?: string };
 type BrowserSession = {
   id: string;
+  sign_in_method_prompt?: { identity_id: string; account_url: string };
   deployment_administrator: boolean;
   personal_account?: boolean;
   /** Whether the Tenancy Rules let this identity create Tenants now. */
@@ -162,6 +167,121 @@ type BrowserSession = {
   /** Whether this identity's Personal Tenant is deleted and it may start a new one. */
   personal_tenant_deleted?: boolean;
 };
+
+function SignInMethodPrompt({
+  prompt,
+}: {
+  prompt: { identity_id: string; account_url: string };
+}) {
+  const { t } = useI18n();
+  const storageKey = `aidash.sign-in-method-prompt.${prompt.identity_id}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return Number(localStorage.getItem(storageKey) ?? 0) > Date.now();
+    } catch {
+      return false;
+    }
+  });
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
+    >
+      <span>
+        {t("signInMethodPrompt")}{" "}
+        <a className="underline" href={prompt.account_url}>
+          {t("signInMethodPromptAccount")}
+        </a>
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          try {
+            localStorage.setItem(
+              storageKey,
+              String(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            );
+          } catch {
+            /* Keep the prompt dismissed for this page. */
+          }
+          setDismissed(true);
+        }}
+      >
+        {t("signInMethodPromptDismiss")}
+      </button>
+    </div>
+  );
+}
+/**
+ * One action that resumes every Run of this person that an Account suspension
+ * paused (#876). State does not say who started a Run, and the server resumes
+ * only the caller's own, so a paused Run the answer leaves out belongs to
+ * someone else and stops showing the action.
+ */
+function SuspendedRunsPrompt({
+  runs,
+}: {
+  runs: readonly { id: string; control: string; error?: string | null }[];
+}) {
+  const { t } = useI18n();
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState("");
+  const [others, setOthers] = useState<ReadonlySet<string>>(() => new Set());
+  const paused = runs.filter(
+    (run) =>
+      run.control === "PAUSED" &&
+      run.error === "account_suspended" &&
+      !others.has(run.id),
+  );
+  if (paused.length === 0) return null;
+  async function resume() {
+    setBusy(true);
+    setOutcome("");
+    try {
+      const { runs: results } = await suspendedRunsResume();
+      const mine = new Set(results.map((result) => result.run_id));
+      setOthers(
+        (known) =>
+          new Set([
+            ...known,
+            ...paused.map((run) => run.id).filter((id) => !mine.has(id)),
+          ]),
+      );
+      const resumed = results.filter(
+        (result) => result.outcome === "resumed",
+      ).length;
+      if (results.length > 0)
+        setOutcome(
+          t("suspendedRunsResumed")
+            .replace("{resumed}", String(resumed))
+            .replace("{total}", String(results.length)),
+        );
+    } catch (reason) {
+      setOutcome(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      await client.invalidateQueries({ queryKey: ["state"] });
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
+    >
+      <span>{outcome || t("suspendedRunsPaused")}</span>
+      <Button
+        type="button"
+        size="sm"
+        disabled={busy}
+        onClick={() => void resume()}
+      >
+        {t("suspendedRunsResume")}
+      </Button>
+    </div>
+  );
+}
 type Registration = { status: string; expires_at: string } | null;
 function sessionContext(session: BrowserSession, selected: string | null) {
   // An inactive credential fails with 401 and ends the browser session, so
@@ -856,6 +976,15 @@ function Dashboard({
         theme={theme}
         onSelect={visit}
       >
+        {browserSession?.sign_in_method_prompt && (
+          <SignInMethodPrompt
+            key={browserSession.sign_in_method_prompt.identity_id}
+            prompt={browserSession.sign_in_method_prompt}
+          />
+        )}
+        {subjectTenant !== null && everything && (
+          <SuspendedRunsPrompt runs={everything.runs} />
+        )}
         <AppShell
           section={route.section}
           settings={route.settings}

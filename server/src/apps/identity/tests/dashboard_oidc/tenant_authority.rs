@@ -418,9 +418,10 @@ async fn a_member_issues_credentials_for_itself_that_end_with_its_mapping(
 		.await,
 		0
 	);
+	// A credential that ended with its Mapping answers 403 (#876 decision 12).
 	assert_eq!(
 		t.bearer(&token, "GET", "/api/state", Value::Null).await,
-		401
+		403
 	);
 	t.finish().await;
 }
@@ -460,6 +461,8 @@ async fn active_self_issued_credentials_are_bounded_independently_of_history(
 					})
 					.issued_by("history-fixture")
 					.mapping_id(Some(mapping))
+					.end_reason(None)
+					.parent_id(None)
 					.finish();
 				AuthorizationCredential::objects()
 					.create_with_conn(tx, &row)
@@ -490,6 +493,233 @@ async fn active_self_issued_credentials_are_bounded_independently_of_history(
 		.await;
 	assert_eq!(status, 200, "{page}");
 	assert_eq!(page.as_array().unwrap().len(), 2);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn tenant_owned_credential_may_issue_independent_credentials_under_policy(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, body) = t.replace(|bundle| {
+		bundle["subjects"]["ci"] = json!({"kind":"service", "node":t.node, "groups":["members"]});
+		bundle["subjects"]["other-ci"] = json!({"kind":"service", "node":t.node, "groups":["members"]});
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"ci-issue", "effect":"allow", "subjects":{"ids":["ci"]}, "actions":["credential.issue"], "resources":{"kinds":["*"], "ids":["other-ci"]}}));
+	}).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, issuer) = t
+		.alice("POST", "/credentials", json!({"subject":"ci"}))
+		.await;
+	assert_eq!(status, 200, "{issuer}");
+	let issuer_token = issuer["token"].as_str().unwrap();
+	let (status, issued, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(issuer_token),
+			json!({"subject":"other-ci"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let (status, child, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(issuer_token),
+			json!({"subject":"ci", "child":true, "expires_in_seconds":300}),
+		)
+		.await;
+	assert_eq!(status, 200, "{child}");
+	let (status, _, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			child["token"].as_str(),
+			json!({"subject":"other-ci"}),
+		)
+		.await;
+	assert_eq!(status, 403);
+	let (status, revoked) = t
+		.alice(
+			"POST",
+			&format!(
+				"/credentials/{}/revoke",
+				issuer["credential"]["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_eq!(
+		t.bearer(
+			issued["token"].as_str().unwrap(),
+			"GET",
+			"/api/state",
+			Value::Null
+		)
+		.await,
+		200
+	);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, parent) = t
+		.bob(
+			"POST",
+			"/credentials",
+			json!({"subject":"bob", "expires_in_seconds":3600}),
+		)
+		.await;
+	assert_eq!(status, 200, "{parent}");
+	let token = parent["token"].as_str().unwrap();
+	for invalid in [
+		json!({"subject":"alice", "child":true, "expires_in_seconds":300}),
+		json!({"subject":"bob", "child":true, "expires_in_seconds":7200}),
+	] {
+		let (status, _, _) =
+			t.d.send(
+				"POST",
+				&t.path("/credentials"),
+				None,
+				None,
+				Some(token),
+				invalid,
+			)
+			.await;
+		assert!(status == 400 || status == 403, "unexpected status {status}");
+	}
+	let (status, child, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(token),
+			json!({"subject":"bob", "child":true, "expires_in_seconds":1800}),
+		)
+		.await;
+	assert_eq!(status, 200, "{child}");
+	assert_eq!(child["credential"]["parent_id"], parent["credential"]["id"]);
+	let child_token = child["token"].as_str().unwrap();
+	let (status, _, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(child_token),
+			json!({"subject":"bob", "child":true, "expires_in_seconds":300}),
+		)
+		.await;
+	assert_eq!(status, 403);
+	let (status, body) = t
+		.bob(
+			"POST",
+			&format!(
+				"/credentials/{}/revoke",
+				parent["credential"]["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, parent_body, _) =
+		t.d.send("GET", "/api/state", None, None, Some(token), Value::Null)
+			.await;
+	assert_eq!(status, 401, "{parent_body}");
+	assert_eq!(parent_body["reason"], "revoked");
+	let (status, body, _) =
+		t.d.send(
+			"GET",
+			"/api/state",
+			None,
+			None,
+			Some(child_token),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 401, "{body}");
+	assert_eq!(body["reason"], "parent_ended");
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn tenant_credential_maximum_shortens_existing_credentials(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, body) = t
+		.replace(|bundle| {
+			bundle["subjects"]["ci"] =
+				json!({"kind":"service", "node": t.node,"groups":["members"]});
+		})
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, issued) = t
+		.alice(
+			"POST",
+			"/credentials",
+			json!({"subject":"ci", "expires_in_seconds": 60 * 86400}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let path = format!("/api/tenants/{}/credential-maximum", t.tenant);
+	let (status, body) =
+		t.d.as_person(
+			&t.bob,
+			"PUT",
+			&path,
+			Some(&t.bob_context),
+			json!({"seconds":86400}),
+		)
+		.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&path,
+			Some(&t.alice_context),
+			json!({"seconds":86400}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, listed) = t.alice("GET", "/credentials", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	let row = listed
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|row| row["id"] == issued["credential"]["id"])
+		.unwrap();
+	assert_eq!(row["end_reason"], "lowered_maximum");
+	let created =
+		chrono::DateTime::parse_from_rfc3339(row["created_at"].as_str().unwrap()).unwrap();
+	let expires =
+		chrono::DateTime::parse_from_rfc3339(row["expires_at"].as_str().unwrap()).unwrap();
+	assert_eq!((expires - created).num_seconds(), 86400);
+	let (status, body) = t
+		.alice(
+			"POST",
+			"/credentials",
+			json!({"subject":"ci", "expires_in_seconds":86401}),
+		)
+		.await;
+	assert_eq!(status, 400, "{body}");
 	t.finish().await;
 }
 

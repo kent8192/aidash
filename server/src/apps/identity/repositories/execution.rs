@@ -167,6 +167,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 				&mut **self.access.tx,
 				run,
 				policy.as_ref(),
+				aidash_application::ports::accounts::Recheck::Online,
 			)
 			.await?;
 			let current: Grant = {

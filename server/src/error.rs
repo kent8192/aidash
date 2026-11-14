@@ -14,6 +14,28 @@ fn tenant_creation_message(refusal: &CreationRefusal) -> &'static str {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A known Credential or its issuing identity is no longer usable.
+#[derive(Debug, Clone, Copy)]
+pub enum CredentialReason {
+	Expired,
+	Revoked,
+	ParentEnded,
+	MappingDisabled,
+	IdentityDisabled,
+}
+
+impl CredentialReason {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Expired => "expired",
+			Self::Revoked => "revoked",
+			Self::ParentEnded => "parent_ended",
+			Self::MappingDisabled => "mapping_disabled",
+			Self::IdentityDisabled => "identity_disabled",
+		}
+	}
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("{}", .0.code())]
@@ -34,8 +56,12 @@ pub enum Error {
 	Unprocessable(String),
 	#[error("unauthorized")]
 	Unauthorized,
+	#[error("unauthorized")]
+	CredentialUnauthorized(CredentialReason),
 	#[error("forbidden")]
 	Forbidden,
+	#[error("forbidden")]
+	CredentialForbidden(CredentialReason),
 	/// A tool call the Run's authority refused; the API answers it like [`Error::Forbidden`].
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
@@ -62,6 +88,8 @@ pub enum Error {
 	NodeLimitReached,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("account suspended")]
+	AccountSuspended { epoch: u64 },
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
 	#[error("verified model media route unavailable for {model}{}", aidash_application::route_refusal::CandidateRefusals(.candidates))]
@@ -138,11 +166,15 @@ impl Error {
 			}
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
-			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
-			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
-			Self::Forbidden | Self::AuthorityRefused(_) | Self::RunHidden(_) => {
-				(StatusCode::FORBIDDEN, "forbidden".into())
+			Self::Unauthorized | Self::CredentialUnauthorized(_) => {
+				(StatusCode::UNAUTHORIZED, "unauthorized".into())
 			}
+			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
+			Self::Forbidden
+			| Self::CredentialForbidden(_)
+			| Self::AuthorityRefused(_)
+			| Self::RunHidden(_)
+			| Self::AccountSuspended { .. } => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::ResumeBlocked(block) => (StatusCode::CONFLICT, block.to_string()),
 			Self::RemoteExecutionRefused(reason) => (StatusCode::FORBIDDEN, reason.to_string()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
@@ -260,6 +292,13 @@ impl Error {
 			}
 			_ => json!({"error": message}),
 		};
+		match &self {
+			Self::CredentialUnauthorized(reason) | Self::CredentialForbidden(reason) => {
+				envelope["reason"] = json!(reason.as_str())
+			}
+			Self::AccountSuspended { .. } => envelope["reason"] = json!("account_suspended"),
+			_ => {}
+		}
 		if let Self::RunHidden(block) | Self::ResumeBlocked(block) = &self {
 			envelope["run_reads"] = json!(block);
 		}
@@ -497,6 +536,7 @@ impl From<aidash_application::Error> for Error {
 			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			ApplicationError::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			ApplicationError::OAuthClientSecretsUnavailable => Self::OAuthClientSecretsUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
 				Self::ProviderRejected { status, reason }
@@ -530,6 +570,10 @@ impl From<Error> for aidash_application::Error {
 			Error::Unprocessable(message) => Self::Unprocessable(message),
 			Error::FederationDisabled => Self::FederationDisabled,
 			Error::Forbidden => Self::Forbidden,
+			// The reason is for the HTTP caller; work refused by a credential pauses
+			// like any other refused authority (ADR 0131).
+			Error::CredentialForbidden(_) => Self::Forbidden,
+			Error::CredentialUnauthorized(_) => Self::Unauthorized,
 			// Work stopped by a Tenant Deletion pauses like any refused authority. The note
 			// names the check where it reaches the application, so every source of the error
 			// (the Tenant's policy lock, its deletion record) is covered at once.
@@ -559,6 +603,7 @@ impl From<Error> for aidash_application::Error {
 			}
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			Error::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
 			Error::PolicyBusy { retry_after } => Self::PolicyBusy { retry_after },

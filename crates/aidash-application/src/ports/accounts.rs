@@ -4,7 +4,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// Every call is a new protected-operation boundary; no positive-result cache.
+#[derive(Clone, Copy)]
+pub enum Recheck {
+	Online,
+	WithinT,
+}
+
+/// New admissions require online checks. Explicitly selected checks of already
+/// admitted work may reuse a recent successful bound-origin check.
 /// Verify the returned original source/session provenance, not merely success.
 /// Unreachable authority maps to `IdentityStatusUnavailable`, never fallback.
 #[async_trait]
@@ -14,6 +21,26 @@ pub trait Authority: Send + Sync {
 		source_identity: Uuid,
 		product_session: Uuid,
 	) -> crate::Result<()>;
+	/// Only for the continued delivery of an already admitted stream.
+	async fn validate_interactive_within_t(
+		&self,
+		source_identity: Uuid,
+		product_session: Uuid,
+	) -> crate::Result<()> {
+		self.validate_interactive(source_identity, product_session)
+			.await
+	}
+	async fn check_interactive(
+		&self,
+		source: Uuid,
+		session: Uuid,
+		recheck: Recheck,
+	) -> crate::Result<()> {
+		match recheck {
+			Recheck::Online => self.validate_interactive(source, session).await,
+			Recheck::WithinT => self.validate_interactive_within_t(source, session).await,
+		}
+	}
 	async fn validate_origin(&self, source_identity: Uuid) -> crate::Result<()>;
 	/// Capture only for a newly admitted Run or explicit authorized manual resume.
 	async fn origin_binding(
@@ -25,6 +52,22 @@ pub trait Authority: Send + Sync {
 		&self,
 		origin: &aidash_domain::accounts::DurableOrigin,
 	) -> crate::Result<()>;
+	/// For an already admitted Run boundary only; adapters without caching check online.
+	async fn validate_bound_origin_within_t(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> crate::Result<()> {
+		self.validate_bound_origin(origin).await
+	}
+	/// An explicit administrator choice may authorize rebinding exactly one
+	/// suspension epoch. Implementations that cannot prove it refuse recovery.
+	async fn resume_suspended_origin(
+		&self,
+		_origin: &aidash_domain::accounts::DurableOrigin,
+		_epoch: u64,
+	) -> crate::Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		Ok(None)
+	}
 }
 
 /// Implementations serialize concurrent mutations affecting the same Account,

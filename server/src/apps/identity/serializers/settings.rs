@@ -32,6 +32,10 @@ pub struct CommonAuthSettings {
 	pub client_certificate_file: std::path::PathBuf,
 	#[setting(required)]
 	pub client_private_key_file: std::path::PathBuf,
+	/// Maximum age of a successful check reused for already admitted work.
+	#[setting(default = "30")]
+	#[serde(default = "default_validity_cache_seconds")]
+	pub validity_cache_seconds: u64,
 	/// The original upstream issuers, including any GCIP pool suffix. These
 	/// restrictions govern product-local Mapping selection after OIDC login.
 	/// Empty value means unrestricted; otherwise the value is the bound Tenant.
@@ -39,8 +43,17 @@ pub struct CommonAuthSettings {
 	pub source_issuers: std::collections::BTreeMap<String, String>,
 }
 
+fn default_validity_cache_seconds() -> u64 {
+	30
+}
+
 impl CommonAuthSettings {
 	pub fn client(&self, client_id: &str) -> Result<aidash_integrations::authentication::Client> {
+		if self.validity_cache_seconds > 300 {
+			return Err(Error::Invalid(
+				"dashboard.common_auth.validity_cache_seconds must be at most 300".into(),
+			));
+		}
 		if self.source_issuers.is_empty()
 			|| self.source_issuers.keys().any(|issuer| issuer.is_empty())
 		{
@@ -70,6 +83,7 @@ impl CommonAuthSettings {
 				product_client_id: client_id.to_owned(),
 			},
 		)
+		.map(|client| client.with_validity_cache_seconds(self.validity_cache_seconds))
 		.map_err(Into::into)
 	}
 }

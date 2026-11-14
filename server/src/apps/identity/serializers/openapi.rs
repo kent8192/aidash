@@ -32,6 +32,25 @@ use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	{
+		use super::tenant_administration::CredentialMaximum;
+		use views::tenant_administration::{credential_maximum, set_credential_maximum};
+		contracts.response::<_, CredentialMaximum>(
+			document,
+			credential_maximum,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, credential_maximum, &["String"])?;
+		contracts.request::<_, CredentialMaximum>(document, set_credential_maximum)?;
+		contracts.response::<_, CredentialMaximum>(
+			document,
+			set_credential_maximum,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, set_credential_maximum, &["String"])?;
+	}
+	{
 		use super::manual_keys as k;
 		use views::manual_keys as v;
 		contracts.query::<_, k::RegistrationKeySelector>(document, v::registration_status)?;

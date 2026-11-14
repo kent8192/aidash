@@ -76,6 +76,13 @@ impl AuthenticationValidity for Rpc {
 		}
 		let mut response = validity_response(validity, source);
 		response.account_id = session.account_id.to_string();
+		if input.include_sign_in_method_count && response.active {
+			response.usable_sign_in_method_count = self
+				.auth
+				.usable_sign_in_method_count(session.account_id)
+				.await
+				.map_err(status)?;
+		}
 		Ok(Response::new(response))
 	}
 	async fn validate_origin(
@@ -90,7 +97,7 @@ impl AuthenticationValidity for Rpc {
 		} else {
 			Some(uuid(&input.expected_account_id)?)
 		};
-		let (validity, source, epoch) = self
+		let (validity, source, epoch, resumable) = self
 			.auth
 			.check_origin(
 				source,
@@ -103,6 +110,7 @@ impl AuthenticationValidity for Rpc {
 			.map_err(status)?;
 		let mut response = validity_response(validity, source);
 		response.suspension_epoch = epoch;
+		response.resumable_suspension_epochs = resumable;
 		Ok(Response::new(response))
 	}
 }
@@ -210,7 +218,11 @@ impl AccountAdministration for Rpc {
 			.await
 			.map_err(status)?;
 		Accounts::new(self.auth.store.clone())
-			.restore(Administrator::Authentication, account)
+			.restore(
+				Administrator::Authentication,
+				account,
+				input.resume_paused_work,
+			)
 			.await
 			.map_err(|_| Status::unavailable("account restoration unavailable"))?;
 		Ok(Response::new(proto::RevocationResponse { completed: true }))
@@ -328,7 +340,16 @@ fn validity_response(
 	let (active, reason) = match validity {
 		Validity::Active => (true, String::new()),
 		Validity::Unavailable => (false, "unavailable".into()),
-		Validity::Denied(reason) => (false, format!("{reason:?}").to_ascii_lowercase()),
+		Validity::Denied(reason) => (
+			false,
+			match reason {
+				aidash_domain::accounts::Denial::IdentityDisabled => "identity_disabled",
+				aidash_domain::accounts::Denial::AccountSuspended => "account_suspended",
+				aidash_domain::accounts::Denial::SessionInvalid => "session_invalid",
+				aidash_domain::accounts::Denial::ProvenanceMismatch => "provenance_mismatch",
+			}
+			.into(),
+		),
 	};
 	let mut result = proto::ValidityResponse {
 		active,
@@ -339,6 +360,8 @@ fn validity_response(
 		source_subject: String::new(),
 		suspension_epoch: None,
 		source_disable_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
+		usable_sign_in_method_count: None,
 	};
 	if let Some(source) = source {
 		result.source_disable_epoch = source.disable_epoch;

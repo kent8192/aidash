@@ -99,6 +99,8 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		account_id: Uuid::new_v4().to_string(),
 		suspension_epoch: Some(0),
 		source_disable_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
+		usable_sign_in_method_count: None,
 		source_issuer: "upstream".into(),
 		source_subject: "source".into(),
 	}));
@@ -132,11 +134,36 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client_private_key: key.into_bytes(),
 		product_client_id: "cloud-client".into(),
 	})
-	.unwrap();
+	.unwrap()
+	.with_validity_cache_seconds(30);
 	client.validate_interactive(source, session).await.unwrap();
+	let before = calls.lock().unwrap().len();
+	client
+		.clone()
+		.validate_interactive_within_t(source, session)
+		.await
+		.unwrap();
+	assert_eq!(calls.lock().unwrap().len(), before);
+	client.forget_session(source, session).await;
+	client
+		.validate_interactive_within_t(source, session)
+		.await
+		.unwrap();
+	assert_eq!(calls.lock().unwrap().len(), before + 1);
 	client.validate_origin(source).await.unwrap();
 	let admitted = client.origin_binding(source).await.unwrap();
 	assert_eq!(admitted.suspension_epoch, Some(0));
+	let before = calls.lock().unwrap().len();
+	client
+		.validate_bound_origin_within_t(&admitted)
+		.await
+		.unwrap();
+	client
+		.clone()
+		.validate_bound_origin_within_t(&admitted)
+		.await
+		.unwrap();
+	assert_eq!(calls.lock().unwrap().len(), before + 1);
 	let legacy = aidash_domain::accounts::DurableOrigin {
 		identity_id: source,
 		account_id: None,
@@ -146,6 +173,25 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 	// First Account assignment may bind old work only before any stop epoch.
 	client.validate_bound_origin(&legacy).await.unwrap();
 	response.lock().unwrap().suspension_epoch = Some(1);
+	{
+		let mut response = response.lock().unwrap();
+		response.active = false;
+		response.reason = "account_suspended".into();
+	}
+	assert!(matches!(
+		client.validate_bound_origin(&admitted).await,
+		Err(Error::AccountSuspended { epoch: 1 })
+	));
+	{
+		let mut response = response.lock().unwrap();
+		response.active = true;
+		response.reason.clear();
+	}
+	// Only the explicitly selected already-admitted path can reuse the old result.
+	client
+		.validate_bound_origin_within_t(&admitted)
+		.await
+		.unwrap();
 	// Restoring an account never refreshes an old Run's saved admission epoch.
 	assert!(matches!(
 		client.validate_bound_origin(&admitted).await,
@@ -155,6 +201,41 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client.validate_bound_origin(&legacy).await,
 		Err(Error::Forbidden)
 	));
+	// A failed check is never cached.
+	assert!(matches!(
+		client.validate_bound_origin_within_t(&legacy).await,
+		Err(Error::Forbidden)
+	));
+	response.lock().unwrap().suspension_epoch = Some(0);
+	client
+		.validate_bound_origin_within_t(&legacy)
+		.await
+		.unwrap();
+	response.lock().unwrap().suspension_epoch = Some(1);
+	assert!(
+		client
+			.resume_suspended_origin(&admitted, 1)
+			.await
+			.unwrap()
+			.is_none()
+	);
+	response.lock().unwrap().resumable_suspension_epochs.push(1);
+	assert_eq!(
+		client
+			.resume_suspended_origin(&admitted, 1)
+			.await
+			.unwrap()
+			.unwrap()
+			.suspension_epoch,
+		Some(1)
+	);
+	assert!(
+		client
+			.resume_suspended_origin(&admitted, 2)
+			.await
+			.unwrap()
+			.is_none()
+	);
 	let manually_readmitted = client.origin_binding(source).await.unwrap();
 	client
 		.validate_bound_origin(&manually_readmitted)
@@ -164,6 +245,11 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 	response.lock().unwrap().active = false;
 	assert!(matches!(
 		client.validate_interactive(source, session).await,
+		Err(Error::Forbidden)
+	));
+	// A refusal seen online ends the reuse for admitted work at once (ADR 0130).
+	assert!(matches!(
+		client.validate_interactive_within_t(source, session).await,
 		Err(Error::Forbidden)
 	));
 	assert!(matches!(
@@ -202,13 +288,33 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
-		&calls.lock().unwrap()[..2],
-		&[
-			(source.to_string(), session.to_string()),
-			(source.to_string(), String::new()),
-		]
+		calls.lock().unwrap()[0],
+		(source.to_string(), session.to_string())
 	);
+	assert!(
+		calls
+			.lock()
+			.unwrap()
+			.contains(&(source.to_string(), String::new()))
+	);
+	{
+		let mut response = response.lock().unwrap();
+		response.source_identity_id = source.to_string();
+		response.account_id = Uuid::new_v4().to_string();
+		response.active = true;
+	}
+	let short = client.clone().with_validity_cache_seconds(1);
+	short.validate_interactive(source, session).await.unwrap();
 	running.shutdown().await;
+	short
+		.validate_interactive_within_t(source, session)
+		.await
+		.unwrap();
+	tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+	assert!(matches!(
+		short.validate_interactive_within_t(source, session).await,
+		Err(Error::IdentityStatusUnavailable)
+	));
 	assert!(matches!(
 		client.validate_origin(source).await,
 		Err(Error::IdentityStatusUnavailable)

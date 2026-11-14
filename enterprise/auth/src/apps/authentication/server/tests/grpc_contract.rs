@@ -112,6 +112,13 @@ async fn actual_auth_grpc_preserves_session_stop_and_administrator_boundaries() 
 		.unwrap();
 	assert_eq!(admitted.suspension_epoch, None);
 	assert_eq!(admitted.account_id, fixture.account.id.to_string());
+	assert_eq!(
+		client
+			.sign_in_method_count(fixture.identity.id, browser.id)
+			.await
+			.unwrap(),
+		Some(1)
+	);
 	assert!(matches!(
 		client
 			.validate_interactive(Uuid::new_v4(), browser.id)
@@ -128,6 +135,7 @@ async fn actual_auth_grpc_preserves_session_stop_and_administrator_boundaries() 
 	let command = AccountAdministrationRequest {
 		account_id: fixture.account.id.to_string(),
 		audit_reason: "Real RPC contract regression".into(),
+		resume_paused_work: false,
 	};
 	let forbidden = AccountAdministrationClient::new(cloud_channel.clone())
 		.suspend_account(command.clone())
@@ -185,9 +193,10 @@ async fn actual_auth_grpc_preserves_session_stop_and_administrator_boundaries() 
 			.await,
 		Err(ApplicationError::Forbidden)
 	));
+	// A suspended Account names its epoch so the Run can wait to resume (#876).
 	assert!(matches!(
 		client.validate_bound_origin(&original).await,
-		Err(ApplicationError::Forbidden)
+		Err(ApplicationError::AccountSuspended { .. })
 	));
 	assert!(
 		administrator

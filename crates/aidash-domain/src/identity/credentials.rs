@@ -21,15 +21,42 @@ pub const SUBJECT_MAX_LENGTH: usize = SUBJECT_PREFIX.len() + 3 * 256 + 1 + SECRE
 
 /// The longest a Subject Credential may last: 30 days.
 pub const MAX_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
+/// Default and absolute ceiling for Tenant-owned credentials.
+pub const DEFAULT_TENANT_LIFETIME_SECONDS: i64 = 90 * 24 * 60 * 60;
+pub const MAX_TENANT_LIFETIME_SECONDS: i64 = 365 * 24 * 60 * 60;
 /// The most Subject Credentials one Mapping may hold active for its own
 /// subject (ADR 0063).
 pub const MAX_ACTIVE_PER_MAPPING: usize = 20;
+pub const MAX_ACTIVE_CHILDREN: usize = 100;
 
 /// Lifetimes run from one second to 30 days.
 pub fn validate_lifetime(seconds: i64) -> crate::Result<()> {
 	if !(1..=MAX_LIFETIME_SECONDS).contains(&seconds) {
 		return Err(crate::Error::Invalid(format!(
 			"credential lifetime must be 1..{MAX_LIFETIME_SECONDS} seconds"
+		)));
+	}
+	Ok(())
+}
+
+/// A Tenant's maximum must fit inside the Deployment's configured maximum.
+pub fn validate_tenant_maximum(seconds: i64, deployment_maximum: i64) -> crate::Result<()> {
+	if !(1..=MAX_TENANT_LIFETIME_SECONDS).contains(&deployment_maximum)
+		|| !(1..=deployment_maximum).contains(&seconds)
+	{
+		return Err(crate::Error::Invalid(
+			"credential maximum must be positive and within the Deployment maximum".into(),
+		));
+	}
+	Ok(())
+}
+
+/// Validates the requested lifetime under the effective Tenant maximum.
+pub fn validate_tenant_lifetime(seconds: i64, maximum: i64) -> crate::Result<()> {
+	validate_tenant_maximum(maximum, MAX_TENANT_LIFETIME_SECONDS)?;
+	if !(1..=maximum).contains(&seconds) {
+		return Err(crate::Error::Invalid(format!(
+			"credential lifetime must be 1..{maximum} seconds"
 		)));
 	}
 	Ok(())
@@ -120,6 +147,41 @@ pub fn parse_mapping_selector(selector: &str) -> Option<(TenantName, Uuid)> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn tenant_and_self_issued_lifetimes_have_separate_boundaries() {
+		assert!(validate_lifetime(MAX_LIFETIME_SECONDS).is_ok());
+		assert!(validate_lifetime(MAX_LIFETIME_SECONDS + 1).is_err());
+		assert!(
+			validate_tenant_lifetime(
+				DEFAULT_TENANT_LIFETIME_SECONDS,
+				DEFAULT_TENANT_LIFETIME_SECONDS
+			)
+			.is_ok()
+		);
+		assert!(
+			validate_tenant_lifetime(
+				DEFAULT_TENANT_LIFETIME_SECONDS + 1,
+				DEFAULT_TENANT_LIFETIME_SECONDS
+			)
+			.is_err()
+		);
+		assert!(validate_tenant_maximum(0, DEFAULT_TENANT_LIFETIME_SECONDS).is_err());
+		assert!(
+			validate_tenant_maximum(
+				DEFAULT_TENANT_LIFETIME_SECONDS + 1,
+				DEFAULT_TENANT_LIFETIME_SECONDS
+			)
+			.is_err()
+		);
+		assert!(
+			validate_tenant_maximum(
+				MAX_TENANT_LIFETIME_SECONDS + 1,
+				MAX_TENANT_LIFETIME_SECONDS + 1
+			)
+			.is_err()
+		);
+	}
 
 	#[test]
 	fn a_subject_token_names_its_tenant_even_with_separators() {

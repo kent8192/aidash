@@ -15,6 +15,9 @@ pub struct Tenant {
 	pub label: Option<String>,
 	#[field(default = false)]
 	pub personal: bool,
+	/// An optional Tenant ceiling, in seconds, below the Deployment maximum.
+	#[field(null = true)]
+	pub credential_max_seconds: Option<i64>,
 	#[field]
 	pub created_at: DateTime<Utc>,
 	/// `identity` for a Tenant Creator, `deployment_administrator` for a Deployment Administrator.
@@ -35,6 +38,32 @@ use reinhardt::query::{
 };
 
 impl Tenant {
+	/// Serialize lifetime changes with issuance, including when no override exists.
+	pub(crate) async fn credential_maximum(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		deployment: i64,
+		exclusive: bool,
+	) -> Result<i64> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("credential_max_seconds"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("name").eq(tenant.to_owned()))
+			.lock(if exclusive {
+				LockType::Update
+			} else {
+				LockType::Share
+			})
+			.build(PostgresQueryBuilder);
+		let row = tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.ok_or(crate::Error::Forbidden)?;
+		// A NULL maximum reads as `None` through `QueryRow`: the Deployment's applies.
+		let configured: Option<i64> =
+			reinhardt::db::orm::QueryRow::from_backend_row(row).get("credential_max_seconds");
+		Ok(configured.unwrap_or(deployment).min(deployment))
+	}
 	/// The name of every Tenant, oldest first.
 	pub(crate) async fn names<E: reinhardt::db::orm::OrmExecutor>(
 		db: &mut E,

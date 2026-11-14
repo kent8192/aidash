@@ -9,7 +9,15 @@ import {
   authorizationRevokeCredential,
 } from "./generated/aidash";
 import type { Credential, IssuedCredential } from "./generated/models";
-import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
+import {
+  Badge,
+  credentialEndReason,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  useI18n,
+} from "./ui";
 import { Alert, Hint, Loading, Notice, RowList } from "./components/patterns";
 import { useBusyRetry } from "./policy-busy";
 
@@ -111,7 +119,11 @@ export function OwnCredentials({
               : Date.parse(credential.expires_at) <=
                   Math.max(credentials.dataUpdatedAt, active.dataUpdatedAt)
                 ? "authExpired"
-                : "authActive";
+                : Date.parse(credential.expires_at) <=
+                    Math.max(credentials.dataUpdatedAt, active.dataUpdatedAt) +
+                      7 * 24 * 60 * 60 * 1000
+                  ? "authExpiringSoon"
+                  : "authActive";
             return (
               <div
                 className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 py-2"
@@ -126,13 +138,19 @@ export function OwnCredentials({
                   <time className="font-mono" dateTime={credential.expires_at}>
                     {new Date(credential.expires_at).toLocaleString(locale)}
                   </time>
+                  {credential.end_reason && (
+                    <>
+                      {" · "}
+                      {credentialEndReason(t, credential.end_reason)}
+                    </>
+                  )}
                 </span>
                 <Badge
                   value={state}
                   tone={
                     state === "authActive"
                       ? "success"
-                      : state === "authExpired"
+                      : state === "authExpired" || state === "authExpiringSoon"
                         ? "warning"
                         : "danger"
                   }

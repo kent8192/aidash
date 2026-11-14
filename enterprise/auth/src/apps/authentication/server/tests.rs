@@ -314,6 +314,7 @@ pub(super) async fn fixture(configure: impl FnOnce(&mut Authentication)) -> Fixt
 		status: AccountStatus::Active,
 		session_epoch: 0,
 		suspension_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
 	};
 	let identity = ExternalIdentity {
 		id: Uuid::new_v4(),
@@ -943,7 +944,7 @@ async fn oidc_issuer_and_marketplace_bff_preserve_real_session_and_refresh_bound
 		401
 	);
 	Accounts::new(auth.store.clone())
-		.restore(Administrator::Authentication, account.id)
+		.restore(Administrator::Authentication, account.id, false)
 		.await
 		.unwrap();
 	assert_eq!(

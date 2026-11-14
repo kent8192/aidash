@@ -246,6 +246,7 @@ impl DashboardExecutionOrigin {
 		db: &mut dyn TransactionExecutor,
 		run: Uuid,
 		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+		recheck: aidash_application::ports::accounts::Recheck,
 	) -> Result<()> {
 		let Some(authority) = policy.and_then(|policy| policy.authority.as_ref()) else {
 			return Ok(());
@@ -263,15 +264,21 @@ impl DashboardExecutionOrigin {
 			.map(u64::try_from)
 			.transpose()
 			.map_err(|_| crate::Error::Forbidden)?;
-		authority
-			.validate_bound_origin(&aidash_domain::accounts::DurableOrigin {
-				identity_id: origin.identity_id(),
-				account_id: origin.account_id,
-				suspension_epoch: epoch,
-				source_disable_epoch: source_epoch,
-			})
-			.await
-			.map_err(Into::into)
+		let binding = aidash_domain::accounts::DurableOrigin {
+			identity_id: origin.identity_id(),
+			account_id: origin.account_id,
+			suspension_epoch: epoch,
+			source_disable_epoch: source_epoch,
+		};
+		match recheck {
+			aidash_application::ports::accounts::Recheck::Online => {
+				authority.validate_bound_origin(&binding).await
+			}
+			aidash_application::ports::accounts::Recheck::WithinT => {
+				authority.validate_bound_origin_within_t(&binding).await
+			}
+		}
+		.map_err(Into::into)
 	}
 
 	pub(crate) async fn renew_manual(
@@ -361,7 +368,10 @@ impl DashboardExecutionOrigin {
 			.filter(Self::field_identity_id().eq(identity))
 			.filter_in_subquery("run_id", |runs: QuerySet<Run>| {
 				runs.filter(Run::field_control().eq(RunControl::Paused))
-					.filter(Run::field_error().eq(Some("identity status unavailable".to_owned())))
+					.filter(Run::field_error().is_in([
+						Some("identity status unavailable".to_owned()),
+						Some("account_suspended".to_owned()),
+					]))
 					.values(&["id"])
 			})?
 			.all_with_db(db)
@@ -369,6 +379,58 @@ impl DashboardExecutionOrigin {
 			.into_iter()
 			.map(|row| row.run_id())
 			.collect())
+	}
+
+	/// Called only while the paused Run is locked and its original local authority
+	/// is held. The authority validates the administrator's exact epoch choice.
+	pub(crate) async fn rebind_suspended(
+		db: &mut dyn TransactionExecutor,
+		run: Uuid,
+		epoch: u64,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<bool> {
+		let Some(authority) = policy.and_then(|p| p.authority.as_ref()) else {
+			return Ok(false);
+		};
+		let Some((origin, true)) = Self::saved_or_legacy(db, run).await? else {
+			return Ok(false);
+		};
+		let bound = aidash_domain::accounts::DurableOrigin {
+			identity_id: origin.identity_id(),
+			account_id: origin.account_id,
+			suspension_epoch: origin
+				.suspension_epoch
+				.map(u64::try_from)
+				.transpose()
+				.map_err(|_| crate::Error::Forbidden)?,
+			source_disable_epoch: origin
+				.source_disable_epoch
+				.map(u64::try_from)
+				.transpose()
+				.map_err(|_| crate::Error::Forbidden)?,
+		};
+		let Some(fresh) = authority.resume_suspended_origin(&bound, epoch).await? else {
+			return Ok(false);
+		};
+		let suspension_epoch = fresh
+			.suspension_epoch
+			.map(i64::try_from)
+			.transpose()
+			.map_err(|_| crate::Error::Forbidden)?;
+		let source_epoch = fresh
+			.source_disable_epoch
+			.map(i64::try_from)
+			.transpose()
+			.map_err(|_| crate::Error::Forbidden)?;
+		let query = Query::update()
+			.table(Alias::new("dashboard_execution_origins"))
+			.value(Alias::new("account_id"), fresh.account_id)
+			.value(Alias::new("suspension_epoch"), suspension_epoch)
+			.value(Alias::new("source_disable_epoch"), source_epoch)
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query).execute(db).await?;
+		Ok(true)
 	}
 
 	pub(crate) async fn original_subject<E: OrmExecutor>(

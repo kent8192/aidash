@@ -48,6 +48,9 @@ pub fn url_patterns() -> UnifiedRouter {
 						.with_visibility()
 						.stops_work_unless(ControlInput::starts_work),
 				)
+				// Resuming starts work, so it waits at the entrance (ADR 0121).
+				.endpoint(management::suspended_runs_resume)
+				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::run_decline_call)
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::run_message)
