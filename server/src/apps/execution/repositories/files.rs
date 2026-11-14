@@ -4,10 +4,7 @@ use crate::apps::execution::capabilities::{
 		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
 		Materialize as NativeMaterialize, MaterializeSource as NativeMaterializeSource,
 	},
-	services::{
-		approvals, objects::PendingObject, operations, packages, patch, python, sessions, sharing,
-		skills,
-	},
+	services::{approvals, objects::PendingObject, operations, patch, sessions, sharing, skills},
 };
 use crate::{
 	Error as NativeError, Result as NativeResult,
@@ -357,36 +354,13 @@ impl FileScopePort for Scope<'_> {
 		action: Action<'_>,
 		area: &mut Area,
 		input: Value,
-		key: &str,
+		_key: &str,
 	) -> Result<Value> {
 		let store = self.store.ok_or_else(missing)?;
 		let run = self.run.ok_or_else(missing)?;
 		let mut native: NativeArea = area.clone().into();
 		let result: NativeResult<Value> = async {
 			Ok(match action {
-				Action::Package => {
-					packages::prepare(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
-				Action::Python => {
-					python::prepare(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-						key,
-					)
-					.await?
-				}
 				Action::Outbound => {
 					approvals::prepare(
 						store,
@@ -418,18 +392,6 @@ impl FileScopePort for Scope<'_> {
 						&mut native,
 						serde_json::from_value(input)
 							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
-				Action::Shell => {
-					operations::prepare(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-						key,
 					)
 					.await?
 				}

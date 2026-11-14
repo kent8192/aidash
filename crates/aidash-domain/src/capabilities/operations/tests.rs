@@ -32,31 +32,6 @@ fn operation_disclosure_requires_same_area_run_principal_and_kind(
 	);
 }
 #[rstest]
-fn python_poll_accepts_an_install_without_loosening_other_kind_checks(
-	mut operation: OperationState,
-) {
-	operation.kind = "python_install".into();
-	assert!(operation.visible_to(
-		operation.area_id,
-		operation.run_id,
-		&operation.principal,
-		"code_interpreter"
-	));
-	assert!(!operation.visible_to(
-		operation.area_id,
-		operation.run_id,
-		&operation.principal,
-		"shell"
-	));
-	operation.kind = "code_interpreter".into();
-	assert!(!operation.visible_to(
-		operation.area_id,
-		operation.run_id,
-		&operation.principal,
-		"python_install"
-	));
-}
-#[rstest]
 #[case::prepared("prepared", Some("cancelled"), true)]
 #[case::submitted("submitted", Some("cancelling"), false)]
 #[case::running("running", Some("cancelling"), false)]
@@ -209,16 +184,6 @@ fn mounted_inputs_preserve_quota_boundaries_and_collision_precedence(
 		request_validation_failure(16, &files).map(|failure| failure.0),
 		code
 	);
-}
-#[rstest]
-fn package_files_preserve_all_metadata_and_reject_incomplete_or_wrong_scope_input() {
-	let mounted = file(FileScope::References, "package.whl", 7);
-	let encoded = serde_json::to_value(&mounted).unwrap();
-	let decoded = package_files(&json!({"package_files":[encoded]})).unwrap();
-	assert_eq!(serde_json::to_value(&decoded[0]).unwrap(), encoded);
-	assert!(package_files(&json!({"package_files":[{"path":"missing"}]})).is_err());
-	assert!(package_files(&json!({"package_files":[{"scope":"unknown"}]})).is_err());
-	assert_eq!(package_files(&json!({})).unwrap().len(), 0);
 }
 #[rstest]
 #[case::active("active", None)]

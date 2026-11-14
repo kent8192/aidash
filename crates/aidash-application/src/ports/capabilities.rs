@@ -20,11 +20,7 @@ pub trait OperationAdmissionScope<O: Send>: Send {
 	async fn result(&mut self, operation: &O, offset: usize) -> Result<Value>;
 	async fn active_run(&mut self) -> Result<Option<Uuid>>;
 	async fn require_write(&mut self) -> Result<()>;
-	async fn request_files(
-		&mut self,
-		run: Uuid,
-		package_files: Vec<MountedFile>,
-	) -> Result<Vec<MountedFile>>;
+	async fn request_files(&mut self, run: Uuid) -> Result<Vec<MountedFile>>;
 	async fn verified_health(&mut self, python: bool) -> Result<()>;
 	/// Whether the build admits another Sandboxed tool in the Run's Tenant.
 	async fn admit_sandboxed_tool(&mut self) -> Result<()>;
@@ -81,7 +77,6 @@ pub mod sessions;
 pub mod cleanup;
 
 pub mod journal_query;
-pub mod packages;
 pub mod python;
 
 pub mod files;

@@ -63,9 +63,6 @@ impl ShellRequest {
 		format!("core:{run}:{}", self.idempotency_key)
 	}
 }
-pub fn package_files(extra: &Value) -> std::result::Result<Vec<MountedFile>, serde_json::Error> {
-	serde_json::from_value(extra.get("package_files").cloned().unwrap_or(json!([])))
-}
 pub fn has_input_path_collision(files: &[MountedFile]) -> bool {
 	let mut seen = std::collections::BTreeSet::new();
 	for file in files {
@@ -167,7 +164,6 @@ pub const VERIFICATION: &str = "verification";
 pub fn capability_of(kind: &str) -> &str {
 	match kind {
 		VERIFICATION => "shell",
-		"python_install" => "code_interpreter",
 		_ => kind,
 	}
 }
@@ -224,7 +220,7 @@ impl OperationState {
 		self.area_id == area
 			&& self.run_id == run
 			&& self.principal == principal
-			&& (self.kind == kind || (kind == "code_interpreter" && self.kind == "python_install"))
+			&& self.kind == kind
 	}
 	pub fn cancellation(&self) -> Option<Cancellation> {
 		if matches!(

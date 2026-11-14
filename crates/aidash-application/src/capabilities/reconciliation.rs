@@ -66,11 +66,6 @@ async fn reconcile(
 		}
 		scope.require_builtin(capability).await?;
 	}
-	if !cancelling && operation.kind == "python_install" {
-		scope
-			.authorize_packages(&operation.input["package_request"])
-			.await?;
-	}
 	if cancelling && operation.state == "prepared" {
 		operation.state = "cancelled".into();
 		operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false});
@@ -364,7 +359,6 @@ async fn reconcile(
 							.min(limits.maximum_seconds),
 						revision: area.revision,
 						python: operation.kind == "code_interpreter",
-						install: operation.kind == "python_install",
 					}))?;
 			}
 			if operation.kind == "code_interpreter" {

@@ -2,7 +2,7 @@
 use super::Operation;
 use crate::apps::execution::capabilities::{
 	serializers::contracts::{Area as NativeArea, FileEntry},
-	services::{objects::PendingObject, operations, packages, python, service, sessions, skills},
+	services::{objects::PendingObject, operations, python, service, sessions, skills},
 };
 use crate::{
 	Result as NativeResult,
@@ -236,15 +236,6 @@ impl OperationReconciliationScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn authorize_packages(&mut self, request: &Value) -> Result<()> {
-		let request: packages::Install = serde_json::from_value(request.clone())?;
-		let run = self.run.as_ref().expect("reconciliation scope loaded");
-		let area = self.area.as_ref().expect("reconciliation scope loaded");
-		packages::authorize(self.store, &mut self.access, run, area, &request.wheels)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
 	async fn set_area(&mut self, state: &str) -> Result<()> {
 		super::set_area(
 			&mut self.access,
@@ -288,25 +279,19 @@ impl OperationReconciliationScope for Scope<'_> {
 			.request(method, path, body.as_ref())
 			.await
 	}
-	async fn dispatch_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
+	async fn dispatch_files(&mut self, _operation: &Snapshot) -> Result<Vec<MountedFile>> {
 		let area = self.area.as_ref().expect("reconciliation scope loaded");
 		let run = self.run.as_ref().expect("reconciliation scope loaded").id;
-		operations::request_files(
-			&mut self.access,
-			run,
-			area,
-			packages::inputs(&native(operation))?,
-		)
-		.await
-		.map(|files| files.into_iter().map(Into::into).collect())
-		.map_err(Into::into)
+		operations::request_files(&mut self.access, run, area)
+			.await
+			.map(|files| files.into_iter().map(Into::into).collect())
+			.map_err(Into::into)
 	}
-	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
+	async fn upload_files(&mut self, _operation: &Snapshot) -> Result<Vec<MountedFile>> {
 		let result: NativeResult<Vec<FileEntry>> = async {
 			Ok(operations::pod_files(self.area())?
 				.into_iter()
 				.chain(skills::mounted(&mut self.access, self.run.as_ref().unwrap().id).await?)
-				.chain(packages::inputs(&native(operation))?)
 				.collect())
 		}
 		.await;

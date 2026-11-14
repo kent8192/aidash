@@ -1,19 +1,8 @@
 //! Durable operation admission and reconciliation. Workers never run host commands.
 use super::{contracts::*, service};
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
-
-pub(crate) async fn prepare(
-	store: &Store,
-	access: &mut Access,
-	run: &Run,
-	area: &mut Area,
-	input: Shell,
-	_key: &str,
-) -> Result<Value> {
-	prepare_kind(store, access, run, area, input, "shell", json!({})).await
-}
 
 /// What a Pod receives from an Area: Reference files stay with the file tools.
 pub(crate) fn pod_files(area: &Area) -> Result<Vec<FileEntry>> {
@@ -29,11 +18,9 @@ pub(in crate::apps::execution) async fn request_files(
 	access: &mut Access,
 	run: Uuid,
 	area: &Area,
-	package_files: Vec<FileEntry>,
 ) -> Result<Vec<FileEntry>> {
 	let mut files = pod_files(area)?;
 	files.extend(super::skills::mounted(access, run).await?);
-	files.extend(package_files);
 	Ok(files)
 }
 

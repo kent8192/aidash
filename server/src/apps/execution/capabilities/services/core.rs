@@ -23,8 +23,6 @@ pub(crate) mod network;
 pub mod objects;
 #[path = "operations.rs"]
 pub mod operations;
-#[path = "packages.rs"]
-pub(crate) mod packages;
 #[path = "patch.rs"]
 pub(crate) mod patch;
 #[path = "python.rs"]

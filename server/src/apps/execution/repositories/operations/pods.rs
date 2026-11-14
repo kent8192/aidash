@@ -36,14 +36,19 @@ const MAINTENANCE: TenancyScope =
 /// Selects operations whose recorded input says they run in a Pod.
 const POD_ROWS: &str = "input->>'runtime' = 'pod'";
 
-/// The operator policy Pod settings and Run credentials come from. A process
-/// that never built a Federation has none, and keeps tools on the Runner's
-/// per-command path.
-fn policy(store: &Store) -> Option<ScratchOperatorPolicy> {
+/// The operator policy Pod settings and Run credentials come from. A running
+/// server binds it with its Federation; a process without it cannot run tools.
+fn policy(store: &Store) -> NativeResult<ScratchOperatorPolicy> {
 	store
 		.in_process
 		.get()
 		.map(|bound| bound.config.scratch_policy.clone())
+		.ok_or_else(|| {
+			NativeError::Conflict(
+				"RUNTIME_UNAVAILABLE: this process has no Scratch Space policy for Execution Pods"
+					.into(),
+			)
+		})
 }
 
 fn context(
@@ -73,7 +78,7 @@ fn context(
 }
 
 /// The Pod a Run's tools reach, from the Scratch Space bound to the Run as it
-/// is now. None when this Deployment runs no Execution Pods.
+/// is now. None when this Deployment has no Runner.
 pub(crate) async fn tool_context(
 	store: &Store,
 	access: &mut Access,
@@ -82,9 +87,7 @@ pub(crate) async fn tool_context(
 	if store.capabilities.0.runner.is_none() {
 		return Ok(None);
 	}
-	let Some(policy) = policy(store) else {
-		return Ok(None);
-	};
+	let policy = policy(store)?;
 	let mut services = scratch::NativeScratchServices { policy: &policy };
 	let (space_id, _) = services.run_binding_metadata(access, run).await?;
 	let tenant = access.identity.tenant.clone();
@@ -94,21 +97,15 @@ pub(crate) async fn tool_context(
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
-/// Stop a Live preview that runs as a Background process in an Execution Pod
-/// (#745). None where previews still run on the Runner's own Pods.
-pub(crate) async fn stop_preview(store: &Store, preview: Uuid) -> Option<NativeResult<bool>> {
-	if store.capabilities.0.runner.is_none() || policy(store).is_none() {
-		return None;
-	}
-	let runner = match crate::bootstrap::operation_runner(store) {
-		Ok(runner) => runner,
-		Err(error) => return Some(Err(error)),
-	};
-	Some(Ok(aidash_application::capabilities::pod::previews::stop(
-		&runner, preview,
+/// Stop a Live preview, a Background process of its Run in the Execution Pod.
+/// Returns whether the Runner confirmed the stop.
+pub(crate) async fn stop_preview(store: &Store, preview: Uuid) -> NativeResult<bool> {
+	let runner = crate::bootstrap::operation_runner(store)?;
+	Ok(
+		aidash_application::capabilities::pod::previews::stop(&runner, preview)
+			.await
+			.is_ok(),
 	)
-	.await
-	.is_ok()))
 }
 
 #[async_trait]
@@ -171,9 +168,7 @@ impl PodOperationRepository for Repository<'_> {
 	}
 
 	async fn context(&self, operation: &PodOperation) -> Result<PodContext> {
-		let policy = policy(self.store).ok_or_else(|| {
-			NativeError::Conflict("RUNTIME_UNAVAILABLE: no Scratch Space policy".into())
-		})?;
+		let policy = policy(self.store)?;
 		// A Workspace never changes its Scratch Space (#697), and a deleted one
 		// fails `scratch::read`, so the recorded id stays the Run's space.
 		let space_id: Uuid = operation.input["scratch_space_id"]

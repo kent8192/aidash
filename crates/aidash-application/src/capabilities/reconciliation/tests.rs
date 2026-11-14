@@ -178,9 +178,6 @@ impl OperationReconciliationScope for Scope {
 	async fn require_builtin(&mut self, kind: &str) -> Result<()> {
 		self.0.call(&format!("require:{kind}"))
 	}
-	async fn authorize_packages(&mut self, _: &Value) -> Result<()> {
-		self.0.call("packages")
-	}
 	async fn set_area(&mut self, state: &str) -> Result<()> {
 		self.0.call(&format!("area:{state}"))
 	}
@@ -795,7 +792,6 @@ async fn a_resent_operation_the_runner_already_refused_ends_without_effects(
 #[rstest]
 #[case::shell("shell", None)]
 #[case::check(VERIFICATION, None)]
-#[case::package_install("python_install", None)]
 #[case::python_cell("code_interpreter", Some("python:false"))]
 #[tokio::test]
 async fn every_kind_of_pending_operation_ends_the_same_way(
@@ -1453,26 +1449,6 @@ async fn an_export_over_the_byte_quota_is_refused_before_any_download(repository
 	);
 	assert!(!trace.calls.contains(&"begin_output".into()));
 	assert!(!trace.calls.contains(&"publish".into()));
-}
-
-#[rstest]
-#[tokio::test]
-async fn a_timed_out_install_gets_install_advice(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = "python_install".into();
-		trace.observed = past_its_limit("failed", 143);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
-	assert!(message.contains("wheels"), "{message}");
-	assert!(message.contains("complete"), "{message}");
-	assert!(message.contains("dependencies"), "{message}");
-	assert!(!message.contains("at a time"), "{message}");
-	assert!(!message.contains("shorter commands"), "{message}");
-	assert!(trace.calls.contains(&"require:code_interpreter".into()));
-	assert!(trace.calls.contains(&"packages".into()));
 }
 
 #[rstest]

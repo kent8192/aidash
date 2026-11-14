@@ -1,30 +1,23 @@
 //! Heap row and authority guards preserve the original lock and positive-stop protocols.
 use super::capability_records::{domain, native};
-use crate::apps::execution::capabilities::{
-	serializers::{contracts::Area as NativeArea, python::Python as NativePython},
-	services::{
-		operations, packages,
-		records::{self, Record as NativeRecord},
-		sessions,
-	},
+use crate::apps::execution::capabilities::services::{
+	operations,
+	records::{self, Record as NativeRecord},
+	sessions,
 };
 use crate::{
 	Result as NativeResult,
 	authorization::{access::Access, identity::SubjectIdentity},
-	domain::Run,
 	store::Store,
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
 	ports::capabilities::python::{
-		HeapAuthority, HeapMaintenance, HeapOperation, Limits, PythonRepository, PythonScope,
+		HeapAuthority, HeapMaintenance, HeapOperation, PythonRepository, PythonScope,
 	},
 };
-use aidash_domain::{
-	RunMetadata,
-	capabilities::{operations::ShellRequest, python::Python, records::Record, sessions::Area},
-};
+use aidash_domain::{RunMetadata, capabilities::records::Record};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
@@ -39,7 +32,6 @@ const MAINTENANCE: TenancyScope =
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) access: &'a mut Access,
-	pub(crate) run: Option<&'a Run>,
 }
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
@@ -54,56 +46,13 @@ struct Maintenance<'a> {
 fn missing() -> Error {
 	Error::External("Python repository scope invariant".into())
 }
-impl From<NativePython> for Python {
-	fn from(v: NativePython) -> Self {
-		Self {
-			idempotency_key: v.idempotency_key,
-			code: v.code,
-			expected_revision: v.expected_revision,
-			expected_session_id: v.expected_session_id,
-			timeout_seconds: v.timeout_seconds,
-		}
-	}
-}
 #[async_trait]
 impl PythonScope for Scope<'_> {
-	fn subjects(&self) -> &[String] {
-		&self.access.subjects
-	}
-	fn credential(&self) -> Uuid {
-		self.access.identity.credential_id
-	}
-	fn policy_revision(&self) -> i64 {
-		self.access.snapshot.revision
-	}
-	fn limits(&self) -> Result<Limits> {
-		let p = &self.store.ok_or_else(missing)?.capabilities.0;
-		Ok(Limits {
-			admission: p.admission,
-			command_bytes: p.limits.command_bytes,
-			idle_seconds: p.idle_seconds,
-			image: p.runner.as_ref().map(|p| p.image.clone()),
-		})
-	}
 	async fn load(&mut self, area: Uuid) -> Result<Record> {
 		records::get(self.access, area, "python_session")
 			.await
 			.map(domain)
 			.map_err(Into::into)
-	}
-	async fn create(&mut self, area: Uuid, data: Value) -> Result<Record> {
-		records::insert(
-			self.access,
-			area,
-			Some(area),
-			"python_session",
-			"initial",
-			data,
-			None,
-		)
-		.await
-		.map(domain)
-		.map_err(Into::into)
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
 		let mut row = native(record);
@@ -114,80 +63,10 @@ impl PythonScope for Scope<'_> {
 	async fn confirm_stopped(&mut self, record: &Record) -> Result<()> {
 		confirm_stopped(self.store.ok_or_else(missing)?, &mut self.access.tx, record).await
 	}
-	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
-		sessions::cached(self.access, key, digest)
-			.await
-			.map_err(Into::into)
-	}
-	async fn cache(&mut self, key: Uuid, digest: &str, value: &Value) -> Result<()> {
-		sessions::cache(self.access, key, digest, value)
-			.await
-			.map_err(Into::into)
-	}
-	async fn previous_result(&mut self, id: Uuid) -> Result<Value> {
-		let store = self.store.ok_or_else(missing)?;
-		let operation = operations::get(self.access, id).await?;
-		Ok(json!(
-			operations::result(store, self.access, &operation, 0).await?
-		))
-	}
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
-		sessions::status(self.access, &area.clone().into())
-			.await
-			.map(|s| s.active_run_id)
-			.map_err(Into::into)
-	}
-	async fn require_write(&mut self, area: &Area) -> Result<()> {
-		sessions::authorize(self.access, &area.clone().into(), "file.write")
-			.await
-			.map_err(Into::into)
-	}
-	async fn health(&mut self) -> Result<Value> {
-		operations::verified_health(self.store.ok_or_else(missing)?, true)
-			.await
-			.map_err(Into::into)
-	}
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
 		let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| missing())?;
 		operations::remote(self.store.ok_or_else(missing)?, method, path, body)
 			.await
-			.map_err(Into::into)
-	}
-	async fn environment(&mut self, area: &Area) -> Result<Value> {
-		packages::environment(
-			self.store.ok_or_else(missing)?,
-			self.access,
-			&area.clone().into(),
-		)
-		.await
-		.map_err(Into::into)
-	}
-	async fn prepare(
-		&mut self,
-		area: &mut Area,
-		input: ShellRequest,
-		extra: Value,
-	) -> Result<Value> {
-		let mut row: NativeArea = area.clone().into();
-		let result = operations::prepare_kind(
-			self.store.ok_or_else(missing)?,
-			self.access,
-			self.run.ok_or_else(missing)?,
-			&mut row,
-			input.into(),
-			"code_interpreter",
-			extra,
-		)
-		.await;
-		*area = row.into();
-		result.map_err(Into::into)
-	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
-		self.store
-			.ok_or_else(missing)?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
-			.await
-			.map(|_| ())
 			.map_err(Into::into)
 	}
 }

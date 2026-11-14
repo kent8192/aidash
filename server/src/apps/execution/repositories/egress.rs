@@ -284,8 +284,10 @@ pub(super) fn runner_key(store: &Store) -> Result<secrecy::SecretString> {
 	Ok(secrecy::SecretString::from(key))
 }
 
-/// The Pod's session-lifetime token. It may attach a bound service's Tenant
-/// Secret, exactly like an operation token; it ends with the preview.
+/// A Pod session token. Live previews run in Execution Pods with their Run's
+/// proxy credential now (#745), so only the admission tests still mint one;
+/// the `session:` admission path is left for removal with the `/v1` Egress route (#738).
+#[cfg(test)]
 pub(crate) fn session_token(
 	preview: Uuid,
 	expires: DateTime<Utc>,

@@ -1,7 +1,7 @@
 use super::*;
 use aidash_domain::{
 	RunControl, RunPhase,
-	capabilities::operations::{AdmissionLimits, AreaSnapshot, FileScope, MountedFile},
+	capabilities::operations::{AdmissionLimits, AreaSnapshot, MountedFile},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -317,16 +317,10 @@ impl OperationAdmissionScope<Uuid> for Scope {
 	async fn require_write(&mut self) -> Result<()> {
 		self.record("file.write")
 	}
-	async fn request_files(
-		&mut self,
-		run: Uuid,
-		mut package_files: Vec<MountedFile>,
-	) -> Result<Vec<MountedFile>> {
+	async fn request_files(&mut self, run: Uuid) -> Result<Vec<MountedFile>> {
 		assert_eq!(run, Uuid::from_u128(2));
 		self.record("files")?;
-		let mut files = self.files.clone();
-		files.append(&mut package_files);
-		Ok(files)
+		Ok(self.files.clone())
 	}
 	async fn verified_health(&mut self, python: bool) -> Result<()> {
 		self.record(if python {
@@ -360,7 +354,6 @@ impl OperationAdmissionScope<Uuid> for Scope {
 #[rstest]
 #[case::shell("shell",vec!["health:shell","admit","release:shell_requested"])]
 #[case::python("code_interpreter",vec!["health:python","admit"])]
-#[case::install("python_install",vec!["health:shell","admit","release:packages_changed"])]
 #[tokio::test]
 async fn operation_admission_keeps_authorization_mount_probe_release_and_accept_order(
 	mut scope: Scope,
@@ -520,31 +513,6 @@ async fn faults_stop_before_later_admission_effects(
 			"running",
 			"accept"
 		][..=last]
-	);
-	assert!(scope.accepted.is_empty());
-}
-#[rstest]
-#[tokio::test]
-async fn package_mounts_cannot_consume_the_entire_writable_quota(
-	mut scope: Scope,
-	run: RunMetadata,
-	input: ShellRequest,
-) {
-	let file = MountedFile {
-		file_id: Uuid::from_u128(9),
-		path: "wheel.whl".into(),
-		digest: "digest".into(),
-		size: 16,
-		media_type: "application/octet-stream".into(),
-		scope: FileScope::References,
-		provenance: json!({}),
-	};
-	assert!(
-		matches!(prepare(&mut scope,&run,input,"shell",json!({"package_files":[file]})).await,Err(Error::Conflict(code)) if code=="WORKING_QUOTA_EXCEEDED")
-	);
-	assert_eq!(
-		scope.calls,
-		vec!["previous", "active", "file.write", "files"]
 	);
 	assert!(scope.accepted.is_empty());
 }

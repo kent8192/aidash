@@ -632,6 +632,7 @@ async fn a_cancelled_command_the_runner_had_accepted_follows_its_state() {
 async fn a_cancelled_command_without_a_refusal_answer_stays_unproven() {
 	let (repository, runtime) = unsent();
 	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert!(runtime.calls().contains(&"refuse_command".to_owned()));
 	let saved = repository.operation.lock().unwrap().clone();
 	assert_eq!(saved.state, "uncertain");
 	assert_eq!(saved.result["termination_confirmed"], false);

@@ -156,20 +156,11 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn request_files(
-		&mut self,
-		run: Uuid,
-		package_files: Vec<MountedFile>,
-	) -> Result<Vec<MountedFile>> {
-		operations::request_files(
-			self.access,
-			run,
-			self.area,
-			package_files.into_iter().map(Into::into).collect(),
-		)
-		.await
-		.map(|files| files.into_iter().map(Into::into).collect())
-		.map_err(Into::into)
+	async fn request_files(&mut self, run: Uuid) -> Result<Vec<MountedFile>> {
+		operations::request_files(self.access, run, self.area)
+			.await
+			.map(|files| files.into_iter().map(Into::into).collect())
+			.map_err(Into::into)
 	}
 	async fn verified_health(&mut self, python: bool) -> Result<()> {
 		operations::verified_health(self.store, python)

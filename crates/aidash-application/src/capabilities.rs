@@ -5,9 +5,7 @@ use crate::{
 };
 use aidash_domain::{
 	RunMetadata,
-	capabilities::operations::{
-		ShellRequest, VERIFICATION, available, package_files, request_validation_failure,
-	},
+	capabilities::operations::{ShellRequest, VERIFICATION, available, request_validation_failure},
 };
 use serde_json::{Value, json};
 pub async fn prepare<O: Send>(
@@ -41,21 +39,15 @@ pub async fn prepare<O: Send>(
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	scope.require_write().await?;
-	let files = scope.request_files(run.id, package_files(&extra)?).await?;
+	let files = scope.request_files(run.id).await?;
 	if let Some((code, _)) = request_validation_failure(limits.working_bytes, &files) {
 		return Err(Error::Conflict(code.into()));
 	}
 	scope.verified_health(kind == "code_interpreter").await?;
 	scope.admit_sandboxed_tool().await?;
 	// A Check needs the Area's pod slot just as the model's shell does.
-	if matches!(kind, "shell" | "python_install" | VERIFICATION) {
-		scope
-			.release_python(if kind == "python_install" {
-				"packages_changed"
-			} else {
-				"shell_requested"
-			})
-			.await?;
+	if matches!(kind, "shell" | VERIFICATION) {
+		scope.release_python("shell_requested").await?;
 	}
 	let id = scope.operation_id();
 	let epoch = area.epoch + 1;
@@ -133,7 +125,6 @@ pub mod sessions;
 pub mod cleanup;
 
 pub mod journal_query;
-pub mod packages;
 pub mod python;
 
 pub mod files;

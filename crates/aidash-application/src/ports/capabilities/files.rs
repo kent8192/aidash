@@ -21,13 +21,10 @@ pub struct Limits {
 	pub search_seconds: u64,
 }
 pub enum Action<'a> {
-	Package,
-	Python,
 	Outbound,
 	Share,
 	Skill(&'a str),
 	Patch,
-	Shell,
 	/// A Completion Gate Check: shell admission, no file publication (#112).
 	Verify,
 	Control {

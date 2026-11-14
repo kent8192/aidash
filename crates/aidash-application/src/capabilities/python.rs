@@ -3,14 +3,7 @@ use crate::{
 	Error, Result,
 	ports::capabilities::python::{PythonRepository, PythonScope},
 };
-use aidash_domain::{
-	RunMetadata,
-	capabilities::{
-		operations::{ShellRequest as Shell, available},
-		python::{Python, fingerprint},
-		sessions::Area,
-	},
-};
+use aidash_domain::capabilities::sessions::Area;
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -33,126 +26,6 @@ pub async fn release(scope: &mut dyn PythonScope, area: &Area, reason: &str) -> 
 	record.state = "reset".into();
 	record.data["reset_reason"] = json!(reason);
 	scope.update(&mut record).await
-}
-pub async fn prepare(
-	scope: &mut dyn PythonScope,
-	run: &RunMetadata,
-	area: &mut Area,
-	input: Python,
-	key: &str,
-) -> Result<Value> {
-	if input.code.is_empty() || input.code.len() > scope.limits()?.command_bytes {
-		return Err(Error::Invalid("PYTHON_CODE_LIMIT".into()));
-	}
-	let request_digest = aidash_domain::registry::rules::digest(&json!(["python", run.id, input]));
-	if let Some(cached) = scope.cached(input.idempotency_key, &request_digest).await? {
-		return scope
-			.previous_result(serde_json::from_value(cached["operation_id"].clone())?)
-			.await;
-	}
-	available(&area.state)?;
-	if !scope.limits()?.admission {
-		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
-	}
-	if input.expected_revision != area.revision {
-		return Err(Error::Conflict(
-			aidash_domain::capabilities::errors::area_revision_changed(area.revision),
-		));
-	}
-	if scope.current_run(area).await? != Some(run.id) || run.phase().is_terminal() {
-		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
-	}
-	scope.require_write(area).await?;
-	let health = scope.health().await?;
-	let image = scope.limits()?.image;
-	let current = fingerprint(
-		run,
-		scope.subjects(),
-		scope.credential(),
-		scope.policy_revision(),
-		area.generation,
-		image.as_deref(),
-	);
-	let mut record=match scope.load(area.id).await {
-        Ok(record)=>record,
-        Err(Error::NotFound(_))=>scope.create(area.id,json!({"session_id":Uuid::new_v4(),"fingerprint":current,"last_revision":area.revision,"last_used":Utc::now(),"instance":health["instance"]})).await?,
-        Err(e)=>return Err(e)
-    };
-	let mut reset = record.state == "reset";
-	let mut reason = record.data["reset_reason"]
-		.as_str()
-		.unwrap_or("environment_changed")
-		.to_owned();
-	if record.data["fingerprint"] != current
-		|| record.data["last_revision"] != area.revision
-		|| record.data["instance"] != health["instance"]
-	{
-		reset = true;
-		reason = "authority_version_mount_or_runtime_changed".into();
-	}
-	if record.state == "frozen" {
-		let sid = record.data["session_id"].as_str().ok_or(Error::Forbidden)?;
-		let live = scope
-			.request("GET", &format!("/v1/sessions/{sid}"), None)
-			.await?;
-		if live["live"] != true {
-			reset = true;
-			reason = "interpreter_lost_or_idle".into();
-		}
-		let last: chrono::DateTime<Utc> = serde_json::from_value(record.data["last_used"].clone())?;
-		if Utc::now() - last > Duration::seconds(scope.limits()?.idle_seconds as i64) {
-			reset = true;
-			reason = "idle_timeout".into();
-		}
-	}
-	if reset {
-		release(scope, area, &reason).await?;
-		record = scope.load(area.id).await?;
-		record.state = "needs_ack".into();
-		record.data = json!({"session_id":Uuid::new_v4(),"fingerprint":current,"last_revision":area.revision,"last_used":Utc::now(),"instance":health["instance"],"reset_reason":reason});
-		scope.update(&mut record).await?;
-		scope
-			.event(
-				area.workspace_id,
-				"capability.python_reset",
-				json!({"area_id":area.id,"session_id":record.data["session_id"],"reason":reason}),
-			)
-			.await?;
-	}
-	let sid: Uuid = serde_json::from_value(record.data["session_id"].clone())?;
-	if input
-		.expected_session_id
-		.is_some_and(|expected| expected != sid)
-		|| record.state != "initial" && input.expected_session_id != Some(sid)
-	{
-		return Ok(
-			json!({"operation_id":key,"status":"blocked","session_id":sid,"session_reset":true,"reset_reason":record.data["reset_reason"],"packages":scope.environment(area).await?,"error":{"code":"SESSION_RESET","message":"Acknowledge the new session identity before executing code; earlier Python was not replayed.","retryable":false}}),
-		);
-	}
-	let result = scope
-		.prepare(
-			area,
-			Shell {
-				idempotency_key: input.idempotency_key,
-				command: input.code,
-				timeout_seconds: input.timeout_seconds,
-				expected_revision: input.expected_revision,
-			},
-			json!({"session_id":sid}),
-		)
-		.await?;
-	record.state = "running".into();
-	record.data["last_used"] = json!(Utc::now());
-	record.data["operation_id"] = result["operation_id"].clone();
-	scope.update(&mut record).await?;
-	scope
-		.cache(
-			input.idempotency_key,
-			&request_digest,
-			&json!({"operation_id":result["operation_id"]}),
-		)
-		.await?;
-	Ok(result)
 }
 pub async fn completed(
 	scope: &mut dyn PythonScope,

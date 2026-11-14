@@ -206,7 +206,6 @@ pub async fn invoke(
 				| "shell_poll"
 				| "shell_cancel"
 				| "code_interpreter"
-				| "python_install"
 				| "python_poll"
 				| "python_cancel"
 		) {
@@ -336,20 +335,19 @@ async fn legacy(
 	key: &str,
 ) -> Result<Value> {
 	Ok(match name {
-		"python_install" => scope.execute(Action::Package, area, input, key).await?,
 		"code_interpreter" | "shell" => {
 			let kind = if name == "shell" {
 				super::pod::SHELL
 			} else {
 				super::pod::PYTHON
 			};
-			let action = match scope.pod(run).await? {
-				Some(pod) => Action::PodCommand {
-					kind,
-					scratch_space_id: pod.scratch_space_id().to_owned(),
-				},
-				None if name == "shell" => Action::Shell,
-				None => Action::Python,
+			// Commands run only in the Execution Pod of the Run's Scratch Space (#745).
+			let pod = scope.pod(run).await?.ok_or_else(|| {
+				Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into())
+			})?;
+			let action = Action::PodCommand {
+				kind,
+				scratch_space_id: pod.scratch_space_id().to_owned(),
 			};
 			scope.execute(action, area, input, key).await?
 		}

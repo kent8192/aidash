@@ -42,7 +42,6 @@ pub struct TimedOut {
 	pub maximum_seconds: u64,
 	pub revision: i64,
 	pub python: bool,
-	pub install: bool,
 }
 /// A refusal's message once the command had also reached its Time Limit.
 pub fn also_timed_out(message: &str, limit_seconds: u64) -> String {
@@ -100,7 +99,6 @@ impl CapabilityError {
 			maximum_seconds,
 			revision,
 			python,
-			install,
 		} = stop;
 		let (stopped, lost, pieces) = if python {
 			(
@@ -120,13 +118,7 @@ impl CapabilityError {
 		} else {
 			String::new()
 		};
-		let advice = if install {
-			format!(
-				"{longer}choose a smaller complete set of wheels, including its dependencies, for the replacement environment."
-			)
-		} else {
-			format!("{longer}split it into {pieces} or print progress.")
-		};
+		let advice = format!("{longer}split it into {pieces} or print progress.");
 		Self {
 			code: COMMAND_TIMED_OUT.into(),
 			message: format!(

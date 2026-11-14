@@ -8,7 +8,6 @@ use crate::{
 	Error as NativeError, Result as NativeResult,
 	apps::execution::capabilities::{
 		models::{CoreLivePreviews, CorePreviewLimits, EgressSession},
-		serializers::contracts::FileEntry,
 		services::retention,
 	},
 	authorization::{access::Access, identity::SubjectIdentity},
@@ -18,12 +17,11 @@ use crate::{
 use aidash_application::preview::live::{self as application, RunFacts, Start, Started, Status};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::capabilities::retention::Holder;
-use aidash_domain::preview::live::{Limits, LivePreview, START_SECONDS, State, StopReason};
+use aidash_domain::preview::live::{Limits, LivePreview, State, StopReason};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::db::orm::Model;
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
-use sha2::Digest as _;
 use uuid::Uuid;
 
 type Row = CoreLivePreviews;
@@ -301,160 +299,6 @@ impl Dispatch {
 	}
 }
 
-/// Accept the long-lived `serve` operation and stage its inputs in the
-/// caller's authority transaction. The Pod starts only after every File version
-/// of the pinned revision was written; the wait for readiness happens outside.
-pub(crate) async fn dispatch_accept(
-	store: &Store,
-	access: &mut Access,
-	preview: &LivePreview,
-	files: Vec<FileEntry>,
-	command: &str,
-) -> NativeResult<()> {
-	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	let wire = files
-		.iter()
-		.map(|file| {
-			serde_json::json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})
-		})
-		.collect::<Vec<_>>();
-	let mut input = serde_json::json!({
-		"operation_id": preview.id,
-		"area_id": preview.area_id,
-		"epoch": 1,
-		"digest": format!("{:x}", sha2::Sha256::digest(format!("{}\0{}\0{}", preview.area_id, preview.revision, preview.port).as_bytes())),
-		"kind": "serve",
-		"code": command,
-		"seconds": preview.limits.absolute_seconds,
-		"files": wire,
-		"port": preview.port,
-		"usage_tenant": access.identity.tenant,
-	});
-	if let Some(token) = egress_token(store, preview)? {
-		let settings = store
-			.capabilities
-			.0
-			.egress
-			.as_ref()
-			.expect("a token requires egress settings");
-		input["egress"] = serde_json::json!({"url": settings.endpoint, "token": token});
-	}
-	let runner = crate::bootstrap::operation_runner(store)?;
-	let observed = runner
-		.request("POST", "/v1/operations", Some(&input))
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
-	if observed["status"].as_str() != Some("awaiting_files") {
-		return Ok(());
-	}
-	for file in &files {
-		let mut offset = 0_u64;
-		loop {
-			let bytes = store.capabilities.read_chunk(access, file, offset).await?;
-			if bytes.is_empty() && offset < file.size {
-				return Err(NativeError::Conflict("OBJECT_INTEGRITY".into()));
-			}
-			use base64::Engine as _;
-			runner
-				.request(
-					"POST",
-					&format!(
-						"/v1/operations/{}/inputs/{}?offset={offset}",
-						preview.id, file.file_id
-					),
-					Some(
-						&serde_json::json!({"data": base64::engine::general_purpose::STANDARD.encode(&bytes)}),
-					),
-				)
-				.await
-				.map_err(|error| NativeError::External(error.to_string()))?;
-			offset += bytes.len() as u64;
-			if offset >= file.size {
-				break;
-			}
-		}
-	}
-	runner
-		.request(
-			"POST",
-			&format!("/v1/operations/{}/start", preview.id),
-			None,
-		)
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
-	Ok(())
-}
-
-/// Wait up to 120 seconds for the declared port to accept, reading only the
-/// status and the bounded startup log. Never returns a viewing address.
-pub(crate) async fn wait_ready(store: &Store, preview: &LivePreview) -> NativeResult<Dispatch> {
-	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	let runner = crate::bootstrap::operation_runner(store)?;
-	let deadline =
-		tokio::time::Instant::now() + std::time::Duration::from_secs(START_SECONDS as u64);
-	loop {
-		let observed = runner
-			.request("GET", &format!("/v1/operations/{}", preview.id), None)
-			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
-		let serve = &observed["serve"];
-		let log = serve["startup_log"].as_str().unwrap_or_default().to_owned();
-		match serve["status"].as_str() {
-			Some("running") => {
-				let Some(pod_host) = serve["pod_host"].as_str().filter(|host| !host.is_empty())
-				else {
-					return Ok(Dispatch {
-						pod_host: None,
-						startup_log: log,
-						started_at: Utc::now(),
-						failure: Some("the preview Pod reported no address".into()),
-					});
-				};
-				let started_at = observed["started_at"]
-					.as_f64()
-					.and_then(|seconds| {
-						DateTime::from_timestamp_micros((seconds * 1_000_000.0) as i64)
-					})
-					.unwrap_or_else(Utc::now);
-				return Ok(Dispatch {
-					pod_host: Some(pod_host.to_owned()),
-					startup_log: log,
-					started_at,
-					failure: None,
-				});
-			}
-			Some("stopped" | "failed")
-				if matches!(
-					observed["status"].as_str(),
-					Some("failed" | "cancelled" | "uncertain")
-				) =>
-			{
-				return Ok(Dispatch {
-					pod_host: None,
-					startup_log: log,
-					started_at: Utc::now(),
-					failure: Some(
-						serve["reason"]
-							.as_str()
-							.unwrap_or("the preview never started")
-							.to_owned(),
-					),
-				});
-			}
-			_ => {}
-		}
-		if tokio::time::Instant::now() >= deadline {
-			return Ok(Dispatch {
-				pod_host: None,
-				startup_log: log,
-				started_at: Utc::now(),
-				failure: Some("the preview port did not accept connections in time".into()),
-			});
-		}
-		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-	}
-}
-
 /// Record the Runner's answer: serving on success, or start-failed after the
 /// revision's holds are released.
 pub(crate) async fn finish_start(
@@ -551,36 +395,8 @@ pub(crate) async fn settle(
 
 /// Ask the Runner to stop the Pod and wait for its termination proof.
 pub(crate) async fn terminate(store: &Store, preview: &LivePreview) -> NativeResult<bool> {
-	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	if let Some(stopped) = super::operations::pods::stop_preview(store, preview.id).await {
-		return stopped;
-	}
-	let runner = crate::bootstrap::operation_runner(store)?;
-	if runner
-		.request(
-			"POST",
-			&format!("/v1/operations/{}/cancel", preview.id),
-			None,
-		)
-		.await
-		.is_err()
-	{
-		return Ok(false);
-	}
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		let observed = runner
-			.request("GET", &format!("/v1/operations/{}", preview.id), None)
-			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
-		if observed["termination_confirmed"] == true {
-			return Ok(true);
-		}
-		if tokio::time::Instant::now() >= deadline {
-			return Ok(false);
-		}
-		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-	}
+	// A Live preview is a Background process of its Run in the Execution Pod (#745).
+	super::operations::pods::stop_preview(store, preview.id).await
 }
 
 /// Mark every unsettled Live preview of `run` as stopping inside the caller's
@@ -635,16 +451,6 @@ pub(crate) async fn mark_stopped(
 		.await
 		.map_err(NativeError::from)?;
 	Ok(())
-}
-
-/// The session-lifetime Egress token for a Live preview: `session:<id>.<mac>`.
-pub(crate) fn egress_token(store: &Store, preview: &LivePreview) -> NativeResult<Option<String>> {
-	let Some(expires_at) = preview.egress_expires_at else {
-		return Ok(None);
-	};
-	Ok(Some(
-		crate::apps::execution::repositories::egress::session_token(preview.id, expires_at, store)?,
-	))
 }
 
 /// The Live previews a Read Recheck covers.

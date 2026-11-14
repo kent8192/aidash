@@ -1,5 +1,4 @@
 use super::*;
-use crate::ports::capabilities::python::Limits;
 use aidash_domain::capabilities::records::Record;
 use async_trait::async_trait;
 use rstest::rstest;
@@ -11,23 +10,8 @@ struct Scope {
 }
 #[async_trait]
 impl PythonScope for Scope {
-	fn subjects(&self) -> &[String] {
-		&[]
-	}
-	fn credential(&self) -> Uuid {
-		Uuid::nil()
-	}
-	fn policy_revision(&self) -> i64 {
-		0
-	}
-	fn limits(&self) -> Result<Limits> {
-		panic!("unexpected limits query")
-	}
 	async fn load(&mut self, _: Uuid) -> Result<Record> {
 		Ok(self.record.clone())
-	}
-	async fn create(&mut self, _: Uuid, _: Value) -> Result<Record> {
-		panic!("unexpected creation")
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
 		self.updates.push(record.clone());
@@ -37,37 +21,10 @@ impl PythonScope for Scope {
 		assert!(self.confirmed);
 		Ok(())
 	}
-	async fn cached(&mut self, _: Uuid, _: &str) -> Result<Option<Value>> {
-		panic!("unexpected replay lookup")
-	}
-	async fn cache(&mut self, _: Uuid, _: &str, _: &Value) -> Result<()> {
-		panic!("unexpected replay write")
-	}
-	async fn previous_result(&mut self, _: Uuid) -> Result<Value> {
-		panic!("unexpected operation lookup")
-	}
-	async fn current_run(&mut self, _: &Area) -> Result<Option<Uuid>> {
-		panic!("unexpected queue query")
-	}
-	async fn require_write(&mut self, _: &Area) -> Result<()> {
-		panic!("unexpected admission")
-	}
-	async fn health(&mut self) -> Result<Value> {
-		panic!("unexpected health probe")
-	}
 	async fn request(&mut self, method: &str, path: &str, _: Option<Value>) -> Result<Value> {
 		assert_eq!(method, "POST");
 		self.requests.push(path.into());
 		Ok(json!({"termination_confirmed":self.confirmed}))
-	}
-	async fn environment(&mut self, _: &Area) -> Result<Value> {
-		panic!("unexpected package query")
-	}
-	async fn prepare(&mut self, _: &mut Area, _: Shell, _: Value) -> Result<Value> {
-		panic!("unexpected code replay")
-	}
-	async fn event(&mut self, _: Uuid, _: &str, _: Value) -> Result<()> {
-		panic!("unexpected event")
 	}
 }
 fn fixture(state: &str, confirmed: bool) -> (Scope, Area) {

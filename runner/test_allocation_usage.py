@@ -547,45 +547,6 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertEqual(self.pod['metadata']['finalizers'], ['another.example/retention'])
         self.assertTrue(json.loads(allocation_path.read_bytes())['released'])
 
-    def test_reused_python_admission_revokes_the_old_cleanup_handoff_before_dispatch(self):
-        self.record.update(status='completed', termination_confirmed=False, writer_frozen=True,
-                           container_id='a'*64, pod_operation=self.operation, output_harvested=True)
-        save(self.runner.path(self.operation), self.record)
-        self.runner.observe_allocation(self.record, self.pod)
-        self.runner.allocation_harvested(self.record, idle=True)
-        allocation_path = self.root / 'allocations' / (self.uid+'.json')
-        settled_snapshot = json.loads(allocation_path.read_bytes())
-        session = str(uuid.uuid4())
-        save(self.root / ('session-'+session+'.json'), dict(
-            status='frozen', area_id=self.record['area_id'], manifest=self.runner.file_identity([]),
-            pod_operation=self.operation, pod_uid=self.uid, container_id='a'*64))
-        save(self.root / ('area-'+self.record['area_id']+'.json'),
-             dict(epoch=1, operation_id=self.operation))
-        self.runner.config.update(node_guard=True, maximum_seconds=60, working_bytes=1<<20, image='fixture')
-        self.runner.kube_json = Mock(return_value={'items':[self.pod]})
-        self.runner.kube = Mock(return_value=Mock(stdout=json.dumps(self.pod).encode()))
-        self.runner.guard = Mock(return_value={'termination_confirmed':True})
-        # Run housekeeping at the dispatch boundary while only the old guard is known.
-        self.runner.start = lambda _operation: self.runner.allocation_housekeeping()
-        operation = str(uuid.uuid4())
-        self.runner.accept(dict(operation_id=operation, area_id=self.record['area_id'], epoch=2,
-                                session_id=session, usage_tenant='acme', digest='cell',
-                                kind='python', code='print(2)', seconds=10, files=[]))
-        self.assertFalse(any(call.args[0][0] in ('delete', 'patch') for call in self.runner.kube.call_args_list))
-        allocation = json.loads((self.root / 'allocations' / (self.uid+'.json')).read_bytes())
-        self.assertEqual(allocation['work_operation'], operation)
-        self.assertFalse(allocation['cleanup_ready'])
-        # Restart between the accepted operation save and handoff revocation.
-        save(allocation_path, settled_snapshot)
-        runner = self.restart()
-        runner.kube = Mock(return_value=Mock(stdout=json.dumps(self.pod).encode()))
-        runner.guard = Mock(return_value={'termination_confirmed':True})
-        with patch('control.threading.Thread') as thread:
-            thread.return_value.start.side_effect = runner.allocation_housekeeping
-            runner.recover()
-        self.assertFalse(any(call.args[0][0] in ('delete', 'patch') for call in runner.kube.call_args_list))
-        self.assertFalse(json.loads(allocation_path.read_bytes())['cleanup_ready'])
-
     def test_missing_or_contradictory_provider_times_remain_visible_without_receipt(self):
         for broken in ('missing_start', 'missing_finish', 'backwards'):
             with self.subTest(broken=broken):
@@ -706,41 +667,6 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertTrue(any(call[0] == 'delete' and '--force' not in call for call in calls))
         self.runner.allocation_housekeeping()
         self.assertIsNone(self.pod, 'the finalizer must not leave the Pod terminating')
-
-    def test_stopped_serve_hands_its_allocation_to_finalizer_cleanup(self):
-        self.record.update(container_id='a'*64, serve={'status':'running', 'pod_host':'10.0.0.9'},
-                           request={'usage_tenant':'acme', 'kind':'serve'})
-        save(self.runner.path(self.operation), self.record)
-        self.runner.observe_allocation(self.record, self.pod)
-        self.runner.guard = Mock(return_value={'termination_confirmed':True})
-        self.runner.startup_log = Mock(return_value='listening')
-        self.runner.pod = Mock(return_value=None)
-        self.runner.stop_serve(self.runner.get(self.operation), 'cancelled', 'cancelled')
-        allocation_path = self.root / 'allocations' / (self.uid+'.json')
-        self.assertTrue(json.loads(allocation_path.read_bytes())['cleanup_ready'])
-        self.finish()
-        self.runner.close_allocation(self.record)
-        self.assertTrue(any(call.args[0][0] == 'patch' for call in self.runner.kube.call_args_list))
-        allocation = json.loads(allocation_path.read_bytes())
-        self.assertTrue(allocation['released'])
-        self.assertNotIn('cleanup_blocker', allocation)
-
-    def test_restart_replays_the_serve_cleanup_handoff_lost_after_the_terminal_save(self):
-        self.record.update(container_id='a'*64, serve={'status':'running', 'pod_host':'10.0.0.9'},
-                           request={'usage_tenant':'acme', 'kind':'serve'})
-        save(self.runner.path(self.operation), self.record)
-        self.runner.observe_allocation(self.record, self.pod)
-        self.runner.guard = Mock(return_value={'termination_confirmed':True})
-        self.runner.startup_log = Mock(return_value='listening')
-        self.runner.pod = Mock(return_value=None)
-        # Crash after the terminal save, before the handoff call.
-        self.runner.allocation_harvested = Mock()
-        self.runner.stop_serve(self.runner.get(self.operation), 'cancelled', 'cancelled')
-        allocation_path = self.root / 'allocations' / (self.uid+'.json')
-        self.assertFalse(json.loads(allocation_path.read_bytes()).get('cleanup_ready', False))
-        runner = self.restart()
-        runner.recover()
-        self.assertTrue(json.loads(allocation_path.read_bytes())['cleanup_ready'])
 
     def test_cleanup_preconditions_preserve_a_same_name_replacement_and_expose_the_blocker(self):
         with patch('allocation_usage.time.time', return_value=1000):

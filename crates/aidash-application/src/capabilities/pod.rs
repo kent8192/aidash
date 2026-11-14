@@ -216,7 +216,6 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 					.unwrap_or(seconds),
 				revision: operation.input["revision"].as_i64().unwrap_or_default(),
 				python,
-				install: false,
 			}))
 			.expect("serializable error");
 			object.insert("deadline_expired".into(), json!(true));

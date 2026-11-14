@@ -34,7 +34,6 @@ pub trait OperationReconciliationScope: Send {
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded>;
 	async fn configuration(&mut self) -> Result<CoreCapabilities>;
 	async fn require_builtin(&mut self, kind: &str) -> Result<()>;
-	async fn authorize_packages(&mut self, request: &Value) -> Result<()>;
 	async fn set_area(&mut self, state: &str) -> Result<()>;
 	async fn complete_python(&mut self, operation: &Snapshot, observed: &Value) -> Result<()>;
 	async fn persist(&mut self, operation: &Snapshot) -> Result<()>;

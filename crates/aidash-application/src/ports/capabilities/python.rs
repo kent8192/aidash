@@ -1,44 +1,18 @@
 //! Heap scopes preserve current authority and owned area-before-record maintenance transactions.
 use crate::Result;
-use aidash_domain::{
-	RunMetadata,
-	capabilities::{operations::ShellRequest, records::Record, sessions::Area},
-};
+use aidash_domain::{RunMetadata, capabilities::records::Record};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
-pub struct Limits {
-	pub admission: bool,
-	pub command_bytes: usize,
-	pub idle_seconds: u64,
-	pub image: Option<String>,
-}
+/// What stopping and settling a Run's former per-command Python session needs.
+/// New cells run in the Execution Pod (#745); these sessions are only ended.
 #[async_trait]
 pub trait PythonScope: Send {
-	fn subjects(&self) -> &[String];
-	fn credential(&self) -> Uuid;
-	fn policy_revision(&self) -> i64;
-	fn limits(&self) -> Result<Limits>;
 	async fn load(&mut self, area: Uuid) -> Result<Record>;
-	async fn create(&mut self, area: Uuid, data: Value) -> Result<Record>;
 	async fn update(&mut self, record: &mut Record) -> Result<()>;
 	/// Persist the exact session writer stop before its binding may be reset.
 	async fn confirm_stopped(&mut self, record: &Record) -> Result<()>;
-	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
-	async fn cache(&mut self, key: Uuid, digest: &str, value: &Value) -> Result<()>;
-	async fn previous_result(&mut self, id: Uuid) -> Result<Value>;
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
-	async fn require_write(&mut self, area: &Area) -> Result<()>;
-	async fn health(&mut self) -> Result<Value>;
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;
-	async fn environment(&mut self, area: &Area) -> Result<Value>;
-	async fn prepare(
-		&mut self,
-		area: &mut Area,
-		input: ShellRequest,
-		extra: Value,
-	) -> Result<Value>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 }
 pub struct HeapOperation {
 	/// The exact operation has durable stop and receipt settlement evidence,
