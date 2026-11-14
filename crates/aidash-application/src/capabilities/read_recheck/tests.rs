@@ -11,6 +11,7 @@ struct Repository {
 	outcomes: Mutex<BTreeMap<Target, Outcome>>,
 	checks: Mutex<Vec<Target>>,
 	refused: Mutex<Vec<Target>>,
+	stop_attempts: Mutex<Vec<Target>>,
 	unconfirmed: Mutex<Vec<Uuid>>,
 	stop_fails: bool,
 	check_fails: bool,
@@ -48,6 +49,7 @@ impl ReadRecheckRepository for Repository {
 			.unwrap_or(Outcome::Allowed))
 	}
 	async fn stop_refused(&self, target: Target) -> Result<()> {
+		self.stop_attempts.lock().unwrap().push(target);
 		if self.stop_fails {
 			return Err(Error::External("runner unavailable".into()));
 		}
@@ -130,10 +132,14 @@ async fn a_failed_stop_is_retried_after_a_growing_wait_that_never_passes_a_perio
 		(94, false),
 		(95, true),
 	] {
-		let before = repository.checks();
+		let before = repository.stop_attempts.lock().unwrap().len();
 		let now = start + Duration::from_secs(seconds);
 		pass(&repository, &mut schedule, now).await.unwrap();
-		assert_eq!(repository.checks() > before, retried, "at {seconds} s");
+		assert_eq!(
+			repository.stop_attempts.lock().unwrap().len() > before,
+			retried,
+			"at {seconds} s"
+		);
 	}
 }
 
@@ -164,7 +170,8 @@ async fn a_stop_that_works_ends_the_retries() {
 
 	// Assert: one stop, and then the ordinary period.
 	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
-	assert_eq!(repository.checks(), 2);
+	assert_eq!(repository.checks(), 1);
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

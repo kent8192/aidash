@@ -81,7 +81,7 @@ pub async fn pass(
 		// This try replaces the scheduled retry: if the check itself fails, the next
 		// one waits a period.
 		let failures = schedule.failed.remove(&target).map_or(0, |(_, n)| n);
-		let result = if !live.contains(&target) {
+		let result = if failures > 0 {
 			let stopped = repository.stop_refused(target).await;
 			if stopped.is_err() {
 				schedule.stop_failed(target, now, failures + 1);
