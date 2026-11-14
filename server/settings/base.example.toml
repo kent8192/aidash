@@ -85,11 +85,22 @@ federation = true
 # Enterprise build only: a Cloud KMS Ed25519 key version.
 # kms = "projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY/cryptoKeyVersions/1"
 
+# Optional Catalog Approval Request email. Without SMTP, the dashboard badge
+# remains available and startup does not require a mail server.
+# [deployment.smtp]
+# host = "smtp.example.com"
+# port = 587
+# from = "aidash@example.com"
+# username = "replace-me"
+# password = "replace-me"
+# starttls = true
+
 # Previews (ADR 0068): HTML and PDF File versions and Live previews are
 # served from one random subdomain each of a registrable domain separate from
 # the dashboard's. Leave `domain` unset to offer none. A local cluster uses
 # `localhost`, whose previews are served from `*.localhost`. The section may be
 # omitted; leaving every value unset makes previews unavailable.
+
 [preview]
 # domain = "aidashusercontent.app"
 # The gateway listener. In-process Self-hosted binds loopback; a Helm

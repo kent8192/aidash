@@ -60,6 +60,7 @@ import {
 import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
+import { ApprovalReviewPanel } from "../approval-review";
 import { RunSubnodes } from "./subnodes";
 import { ArtifactList } from "./channel";
 import {
@@ -88,6 +89,13 @@ export type Selection = {
   request?: HumanRequest;
   artifact?: Artifact;
   node?: string;
+  carryResults?: {
+    node: string;
+    source_version: string | null;
+    changed: string[];
+    unapproved_dependencies: { id: string; version: string }[];
+    carried: boolean;
+  }[];
 };
 export function OperationsDialog({
   selection,
@@ -114,6 +122,7 @@ export function OperationsDialog({
   const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const d = selection;
+  const [carryNode, setCarryNode] = useState<string>();
   const taskSnapshot = useQuery({
     queryKey: ["workspace", d.task?.workspace_id],
     queryFn: () => workspaceGet(d.task!.workspace_id),
@@ -159,6 +168,7 @@ export function OperationsDialog({
                   generate: "generationAssign",
                   entity: "register",
                   cluster: "register",
+                  registrationCarry: "register",
                 } as Record<string, string>
               )[d.kind] ?? d.kind,
             )
@@ -173,6 +183,41 @@ export function OperationsDialog({
           <Hint>{copy.deploymentAdministratorExecution}</Hint>
         ) : (
           <>
+            {d.kind === "registrationCarry" &&
+              d.entity &&
+              data.access.kind === "subject" &&
+              (carryNode ? (
+                <ApprovalReviewPanel
+                  tenant={data.access.tenant}
+                  node={carryNode}
+                  root={{ id: d.entity.id, version: d.entity.version }}
+                  onClose={() => setCarryNode(undefined)}
+                />
+              ) : (
+                <div className="grid gap-3">
+                  {d.carryResults
+                    ?.filter((result) => !result.carried)
+                    .map((result) => (
+                      <div key={result.node} className="grid gap-2">
+                        <span>
+                          {result.node}: {result.changed.join(", ")}
+                          {result.unapproved_dependencies
+                            .map(
+                              (dependency) =>
+                                ` ${dependency.id}@${dependency.version}`,
+                            )
+                            .join("")}
+                        </span>
+                        <Button
+                          type="button"
+                          onClick={() => setCarryNode(result.node)}
+                        >
+                          {t("approvalRequest")}
+                        </Button>
+                      </div>
+                    ))}
+                </div>
+              ))}
             {d.kind === "workspace" && (
               <>
                 <Hint>{copy.setupNotice}</Hint>

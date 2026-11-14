@@ -106,8 +106,30 @@ impl ApprovalReviewScope for Fixture {
 			.map(|(enabled, revision, restriction)| ApprovalSnapshot {
 				enabled: *enabled,
 				revision: *revision,
+				carry_over: false,
+				scope: aidash_domain::identity::catalog::ApprovalScope::Node,
 				restriction: restriction.clone(),
 			}))
+	}
+	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
+		let candidates: Vec<_> = self
+			.approvals
+			.iter()
+			.filter(|((id, _), _)| id == &entry.id)
+			.map(|((_, version), (enabled, _, _))| {
+				aidash_domain::catalog::carry_over::CarryCandidate {
+					version,
+					enabled: *enabled,
+					carry_over: true,
+				}
+			})
+			.collect();
+		let Some(version) =
+			aidash_domain::catalog::carry_over::source_version(&entry.version, &candidates)?
+		else {
+			return Ok(None);
+		};
+		Ok(self.definitions.get(&key(&entry.id, version)).cloned())
 	}
 	async fn installed(&mut self, projection: &Projection) -> Result<Option<InstalledRevision>> {
 		let Some(installed) = self.installed.get(&key(&projection.installation, "1.0.0")) else {
@@ -436,6 +458,9 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 					.find(|item| item.reference.id == *id)
 					.unwrap();
 				ReviewApproval {
+					expected_node_revisions: item.expected_node_revisions.clone(),
+					carry_over: Some(false),
+					scope: Some(aidash_domain::identity::catalog::ApprovalScope::Node),
 					provider_warning_acknowledged: false,
 					reference: item.reference.clone(),
 					digest: item.digest.clone().unwrap(),
@@ -446,6 +471,48 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 			.collect(),
 		installations: vec![],
 	}
+}
+
+#[tokio::test]
+async fn omitted_carry_options_keep_existing_values_and_default_new_approvals() {
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[]),
+		entry("model", "model", json!({})),
+	]);
+	fixture.approve(
+		"model",
+		Some(CatalogRestriction {
+			subjects: ["someone-else".into()].into(),
+			groups: BTreeSet::new(),
+		}),
+	);
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	let mut request = submission(&review, &["model", "writer"]);
+	for item in &mut request.items {
+		item.carry_over = None;
+		item.scope = None;
+	}
+	let plan = plan(&review, &request).unwrap();
+	let existing = plan
+		.approvals
+		.iter()
+		.find(|item| item.entry.id == "model")
+		.unwrap();
+	assert!(!existing.carry_over);
+	assert_eq!(
+		existing.scope,
+		aidash_domain::identity::catalog::ApprovalScope::Node
+	);
+	let new = plan
+		.approvals
+		.iter()
+		.find(|item| item.entry.id == "writer")
+		.unwrap();
+	assert!(new.carry_over);
+	assert_eq!(
+		new.scope,
+		aidash_domain::identity::catalog::ApprovalScope::Deployment
+	);
 }
 
 #[rstest]
@@ -564,6 +631,10 @@ async fn an_installation_plan_uses_the_review_node_and_restriction() {
 	let review = review(&mut fixture, &reference("writer")).await.unwrap();
 	let mut submission = submission(&review, &[]);
 	submission.installations.push(ReviewActivation {
+		expected_node_revisions: Default::default(),
+		carry_over: Some(true),
+		scope: Some(aidash_domain::identity::catalog::ApprovalScope::Deployment),
+		provider_warning_acknowledged: false,
 		installation: "package".into(),
 		revision: 2,
 		digest: "revision-digest".into(),
@@ -626,6 +697,10 @@ async fn widening_the_active_revision_skips_activation_while_a_newer_one_is_stag
 	// Act: widen it together with an unrelated local approval of the root.
 	let mut submission = submission(&review, &["writer"]);
 	submission.installations.push(ReviewActivation {
+		expected_node_revisions: Default::default(),
+		carry_over: Some(true),
+		scope: Some(aidash_domain::identity::catalog::ApprovalScope::Deployment),
+		provider_warning_acknowledged: false,
 		installation: "package".into(),
 		revision: 1,
 		digest: "revision-digest".into(),
@@ -868,5 +943,40 @@ async fn consumers_reach_children_of_an_already_expanded_shared_bundle() {
 			.unwrap()
 			.subjects,
 		BTreeSet::from([subject("a"), subject("b")])
+	);
+}
+
+#[tokio::test]
+async fn review_reports_changes_from_highest_lower_approved_version() {
+	let old = agent("model", &[]);
+	let mut later = old.clone();
+	later.version = "1.1.0".into();
+	let mut new = old.clone();
+	new.version = "1.2.0".into();
+	new.config["model"] = json!({"id":"other", "version":"1.0.0"});
+	let mut fixture = Fixture::new(vec![old, later, new, entry("model", "other", json!({}))]);
+	fixture
+		.approvals
+		.insert(key("writer", "1.0.0"), (true, 1, None));
+	fixture
+		.approvals
+		.insert(key("writer", "1.1.0"), (true, 1, None));
+	let review = review(
+		&mut fixture,
+		&EntityRef {
+			id: "writer".into(),
+			version: "1.2.0".into(),
+		},
+	)
+	.await
+	.unwrap();
+	let item = item(&review, "writer");
+	assert_eq!(item.previous_version.as_deref(), Some("1.1.0"));
+	assert!(
+		item.consent_changes
+			.iter()
+			.any(|change| change == "dependency"),
+		"{:?}",
+		item.consent_changes
 	);
 }

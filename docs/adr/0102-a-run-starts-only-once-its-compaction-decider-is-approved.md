@@ -44,3 +44,7 @@ Catalog Approval Request (ADR 0096). Scheduled starts record that refusal as a f
   Agents remove the default Binding instead, because its deterministic tier has no route to call.
 - Agent versions approved before this change have no recorded Decider approval; since Aidash is
   not deployed, they are approved again rather than migrated.
+
+## Amendment (2026-11-11, #873)
+
+Automatic approval at Tenant or Node creation stays rejected. The approval is made once, in the first Agent's Approval Review; with the Deployment-wide Approval Scope and Version Carry-over (ADR 0128) a new Node and a new Decider version whose Route hosts and retention are unchanged need no further approval.

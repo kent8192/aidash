@@ -103,8 +103,42 @@ impl Registry {
 			.await?;
 		for tenant in tenants {
 			self.pool
-				.atomic(&scope(&tenant), async |tx| {
-					seed_tenant(tx, self.deployment.as_str(), &tenant).await
+				.scoped(&scope(&tenant), async |tx| {
+					// Built-in definitions are never agents, so carrying them changes
+					// no policy: the shared hold keeps approvals from changing while
+					// sources are read, and never waits on the Tenant's running work.
+					let snapshot =
+						match crate::apps::identity::models::AuthorizationBundle::lock_frozen(
+							&mut **tx,
+							tenant.as_str(),
+							false,
+						)
+						.await
+						{
+							Ok(snapshot) => Some(snapshot),
+							Err(crate::Error::NotFound(_)) => None,
+							Err(error) => return Err(error),
+						};
+					// A deleted Tenant's policy stays frozen. Restore seeds and carries
+					// any missed definitions atomically before making it available again.
+					if crate::apps::identity::repositories::tenant_deletions::is_deleted(
+						&mut **tx,
+						tenant.as_str(),
+					)
+					.await?
+					{
+						return Ok(());
+					}
+					let Some(mut snapshot) = snapshot else {
+						// A Tenant without a policy has no approval to carry.
+						return Ok(aidash_application::registry::system::seed(
+							&mut NativeScope(&mut **tx),
+							&crate::bootstrap::registry_validation(),
+							self.deployment.as_str(),
+						)
+						.await?);
+					};
+					seed_with_carry(tx, &mut snapshot, tenant.as_str(), &self.deployment).await
 				})
 				.await?;
 		}
@@ -216,6 +250,60 @@ impl Registry {
 				.await?)
 			})
 			.await
+	}
+}
+
+/// Startup holds the Tenant's policy shared while seeding and carrying.
+struct CarryingSeed<'a> {
+	tx: &'a mut crate::database::native::Transaction,
+	snapshot: &'a mut aidash_application::authorization::Snapshot,
+	tenant: &'a str,
+	deployment: &'a aidash_domain::nodes::DeploymentId,
+}
+
+pub(crate) async fn seed_with_carry(
+	tx: &mut crate::database::native::Transaction,
+	snapshot: &mut aidash_application::authorization::Snapshot,
+	tenant: &str,
+	deployment: &aidash_domain::nodes::DeploymentId,
+) -> Result<()> {
+	Ok(aidash_application::registry::system::seed(
+		&mut CarryingSeed {
+			tx,
+			snapshot,
+			tenant,
+			deployment,
+		},
+		&crate::bootstrap::registry_validation(),
+		deployment.as_str(),
+	)
+	.await?)
+}
+
+#[async_trait]
+impl DefinitionLookup for CarryingSeed<'_> {
+	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
+		sql::SqlScope(self.tx).definition(id, version).await
+	}
+}
+
+#[async_trait]
+impl DefinitionWriter for CarryingSeed<'_> {
+	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		let inserted = sql::SqlScope(self.tx).insert_definition(entry).await?;
+		if inserted {
+			crate::apps::identity::repositories::catalog_carry::carry_best_effort(
+				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+					tx: self.tx,
+					snapshot: self.snapshot,
+					tenant: self.tenant,
+					deployment: self.deployment,
+				},
+				entry,
+			)
+			.await?;
+		}
+		Ok(inserted)
 	}
 }
 

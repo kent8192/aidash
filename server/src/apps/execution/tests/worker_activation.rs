@@ -1440,6 +1440,7 @@ async fn child_runtime(
 			.unwrap(),
 		store,
 		config: aidash_server::config::Config {
+			smtp: None,
 			scratch_policy: Default::default(),
 			deployment: aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
 			endpoint: "http://127.0.0.1:8080".into(),

@@ -37,7 +37,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		.await,
 		200,
 	);
-	let approvals: Vec<_> = bindings.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding| json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"expected_revision":0,"enabled":true})).collect();
+	let approvals: Vec<_> = bindings.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding| json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"expected_revision":0,"enabled":true,"scope":"node"})).collect();
 	let (status, approved) = common::post(
 		&c.app,
 		&c.token,
@@ -1144,7 +1144,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	)
 	.await;
 	assert_eq!(status, 200, "{catalog}");
-	let approvals:Vec<_> = catalog.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding|json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"enabled":true,"expected_revision":0})).collect();
+	let approvals:Vec<_> = catalog.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding|json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"enabled":true,"expected_revision":0,"scope":"node"})).collect();
 	let (status, body) = common::post(
 		&c.a.app,
 		&c.a.token,

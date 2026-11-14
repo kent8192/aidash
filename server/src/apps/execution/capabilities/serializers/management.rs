@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 pub struct ConfiguredAgent {
 	pub entry: crate::registry::Entry,
 	pub catalog_approval_required: bool,
+	#[serde(default)]
+	pub carry_results: Vec<crate::apps::registry::serializers::contracts::RegistrationCarryResult>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

@@ -258,16 +258,26 @@ impl TenantDeletions {
 			let result = f
 				.store
 				.pool
-				.atomic(&scope, async |tx| {
-					refuse_purged(tx, &tenant).await?;
-					steward.authorize(tx, &tenant, true, true).await?;
-					let deletion = tenant_deletions::current_locked(tx, &tenant)
+				.scoped(&scope, async |tx| {
+					refuse_purged(&mut **tx, &tenant).await?;
+					steward.authorize(&mut **tx, &tenant, true, true).await?;
+					let deletion = tenant_deletions::current_locked(&mut **tx, &tenant)
 						.await?
 						.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
-					tenant_deletions::restore(tx, &deletion, steward.actor()).await?;
+					tenant_deletions::restore(&mut **tx, &deletion, steward.actor()).await?;
+					let mut snapshot =
+						AuthorizationBundle::lock_frozen_for_maintenance(&mut **tx, &tenant)
+							.await?;
+					crate::apps::registry::repositories::seed_with_carry(
+						tx,
+						&mut snapshot,
+						&tenant,
+						&f.config.deployment,
+					)
+					.await?;
 					steward
 						.administration_actor()
-						.record(tx, event("tenant.restore", &tenant))
+						.record(&mut **tx, event("tenant.restore", &tenant))
 						.await?;
 					Ok(deletion)
 				})

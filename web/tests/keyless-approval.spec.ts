@@ -159,6 +159,8 @@ test("an approved Keyless definition keeps saying where it sends requests", asyn
       entry: { id: "pending-keyless-embedding", version: "1.0.0" },
       enabled: true,
       expected_revision: 0,
+      carry_over: true,
+      scope: "deployment",
       node: defaultNode.name,
     },
   ]);

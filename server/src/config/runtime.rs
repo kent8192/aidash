@@ -4,6 +4,7 @@ use std::env;
 
 #[derive(Clone)]
 pub struct Config {
+	pub smtp: Option<crate::apps::operations::serializers::deployment::SmtpSettings>,
 	pub scratch_policy: ScratchOperatorPolicy,
 	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub endpoint: String,
@@ -153,6 +154,7 @@ impl Config {
 		let node = &settings.deployment;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
+			smtp: node.smtp.clone(),
 			scratch_policy: ScratchOperatorPolicy {
 				ceilings: aidash_domain::scratch::ScratchCeilings {
 					capacity_bytes: node.scratch_capacity_bytes,

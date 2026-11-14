@@ -62,6 +62,10 @@ pub struct ReviewItem {
 	pub kind: String,
 	pub name: Localized,
 	pub description: Localized,
+	/// The earlier approved version used for the consent comparison, if visible.
+	pub previous_version: Option<String>,
+	/// Consent-relevant changes since the earlier approved version.
+	pub consent_changes: Vec<String>,
 	/// Disclosure required before approving this exact Provider tool.
 	pub provider_warning: Option<String>,
 	/// `digest(entry)`; absent only when the dependency is missing.
@@ -72,6 +76,10 @@ pub struct ReviewItem {
 	pub can_approve: bool,
 	/// The current Catalog Approval revision, `0` when none exists.
 	pub expected_revision: i64,
+	pub expected_node_revisions: BTreeMap<String, i64>,
+	/// Existing carry preferences, or absent for a new approval.
+	pub carry_over: Option<bool>,
+	pub scope: Option<aidash_domain::identity::catalog::ApprovalScope>,
 	/// The restriction already stored on this Node.
 	pub restriction: Option<CatalogRestriction>,
 	/// The restriction this Review proposes for the direct consumers.
@@ -107,6 +115,12 @@ pub struct ApprovalReview {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewApproval {
+	#[serde(default)]
+	pub expected_node_revisions: BTreeMap<String, i64>,
+	#[serde(default)]
+	pub carry_over: Option<bool>,
+	#[serde(default)]
+	pub scope: Option<aidash_domain::identity::catalog::ApprovalScope>,
 	pub reference: EntityRef,
 	#[serde(default)]
 	pub provider_warning_acknowledged: bool,
@@ -121,6 +135,14 @@ pub struct ReviewApproval {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewActivation {
+	#[serde(default)]
+	pub expected_node_revisions: BTreeMap<String, i64>,
+	#[serde(default)]
+	pub carry_over: Option<bool>,
+	#[serde(default)]
+	pub scope: Option<aidash_domain::identity::catalog::ApprovalScope>,
+	#[serde(default)]
+	pub provider_warning_acknowledged: bool,
 	pub installation: String,
 	pub revision: i64,
 	/// The immutable revision digest (`Revision.digest`, no `sha256:` prefix).
@@ -337,6 +359,8 @@ pub async fn review(
 			kind: String::new(),
 			name: Localized::new(),
 			description: Localized::new(),
+			previous_version: None,
+			consent_changes: Vec::new(),
 			provider_warning: None,
 			digest: None,
 			status: if hidden_consumer {
@@ -347,6 +371,9 @@ pub async fn review(
 			approved: false,
 			can_approve: false,
 			expected_revision: 0,
+			expected_node_revisions: BTreeMap::new(),
+			carry_over: None,
+			scope: None,
 			restriction: None,
 			proposed_restriction: None,
 			widen: false,
@@ -406,6 +433,12 @@ async fn review_item(
 			.as_ref()
 			.is_some_and(|restriction| !restriction.subjects.is_disjoint(hidden_subjects));
 	let expected_revision = approval.as_ref().map_or(0, |approval| approval.revision);
+	let expected_node_revisions = scope
+		.node_revisions(&EntityRef {
+			id: entry.id.clone(),
+			version: entry.version.clone(),
+		})
+		.await?;
 	let provider_available = scope.provider_available(entry).await?;
 	let source_available = scope.source_slot_available(entry).await?;
 	let can_approve = scope.can_approve(entry).await? && !hidden_consumer;
@@ -463,7 +496,21 @@ async fn review_item(
 			false,
 		)
 	};
+	let previous = if approved {
+		None
+	} else {
+		scope.previous_approved(entry).await?
+	};
+	let consent_changes = previous
+		.as_ref()
+		.map(|old| {
+			aidash_domain::catalog::carry_over::compare(old, entry)
+				.unwrap_or_else(|error| vec![format!("comparison unavailable: {error}")])
+		})
+		.unwrap_or_default();
 	Ok(ReviewItem {
+		previous_version: previous.map(|old| old.version),
+		consent_changes,
 		consumers: consumers
 			.iter()
 			.map(|(subject, _)| subject.clone())
@@ -484,6 +531,9 @@ async fn review_item(
 		approved,
 		can_approve,
 		expected_revision,
+		expected_node_revisions,
+		carry_over: approval.as_ref().map(|approval| approval.carry_over),
+		scope: approval.as_ref().map(|approval| approval.scope),
 		restriction: if hidden_consumer { None } else { current },
 		proposed_restriction,
 		widen,
@@ -571,6 +621,12 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 			return Err(Error::Invalid("APPROVAL_REVIEW_DUPLICATE".into()));
 		}
 		approvals.push(Approval {
+			expected_node_revisions: item.expected_node_revisions.clone(),
+			carry_over: item.carry_over.or(reviewed.carry_over).unwrap_or(true),
+			scope: item
+				.scope
+				.or(reviewed.scope)
+				.unwrap_or_else(approvals::default_scope),
 			entry: item.reference.clone(),
 			provider_warning_acknowledged: item.provider_warning_acknowledged,
 			enabled: true,

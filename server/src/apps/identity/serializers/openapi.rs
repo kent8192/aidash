@@ -14,8 +14,8 @@ use crate::apps::identity::serializers::policies::AuthorizationUpdate;
 use crate::apps::identity::serializers::policies::CredentialInput;
 use crate::apps::identity::serializers::policies::{
 	CatalogApprovalRequestPage, CatalogApprovalRequestView, CatalogApprovals, CatalogImpactQuery,
-	CatalogInput, CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage,
-	CatalogReviewQuery, CatalogReviewResult,
+	CatalogInput, CatalogMailPreference, CatalogPendingCount, CatalogRequestDecline,
+	CatalogRequestInput, CatalogRequestPage, CatalogReviewQuery, CatalogReviewResult,
 };
 use crate::apps::identity::serializers::remote::PrepareInput;
 use crate::apps::identity::serializers::remote::Prepared;
@@ -795,6 +795,44 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(
 		document,
 		views::policies::catalog_requests_pending,
+		&["String"],
+	)?;
+
+	contracts.response::<_, CatalogMailPreference>(
+		document,
+		views::policies::catalog_mail_preference,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::policies::catalog_mail_preference,
+		&["String"],
+	)?;
+	contracts.request::<_, CatalogMailPreference>(
+		document,
+		views::policies::set_catalog_mail_preference,
+	)?;
+	contracts.response::<_, CatalogMailPreference>(
+		document,
+		views::policies::set_catalog_mail_preference,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::policies::set_catalog_mail_preference,
+		&["String"],
+	)?;
+	contracts.response::<_, CatalogPendingCount>(
+		document,
+		views::policies::catalog_requests_pending_count,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::policies::catalog_requests_pending_count,
 		&["String"],
 	)?;
 	contracts.response::<_, IssuedCredential>(

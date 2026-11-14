@@ -573,7 +573,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	}]);
 	let (status, body) = common::post(&app, &token, "/api/registry", json!(model)).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true}))
+	// Later versions are approved explicitly below, so this approval opts out of
+	// Version Carry-over (ADR 0128); otherwise registering them carries it.
+	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true,"carry_over":false}))
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f
@@ -590,7 +592,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	agent.config["model"]["version"] = json!("1.0.1");
 	let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}))
+	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true,"carry_over":false}))
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Media input","goal":"Inspect media","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;

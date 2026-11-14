@@ -32,6 +32,39 @@ async fn personal(client: &APIClient, key: Uuid, value: Value) -> (u16, Value) {
 	(response.status_code(), response.json_value().unwrap())
 }
 
+/// Carry outcomes describe writes performed by this request; an idempotent
+/// replay returns the same Entry and has no new carry attempts.
+fn registered_entry(mut response: Value) -> Entry {
+	let results = response
+		.as_object_mut()
+		.unwrap()
+		.remove("carry_results")
+		.unwrap();
+	let _: Vec<aidash_server::apps::registry::serializers::contracts::RegistrationCarryResult> =
+		serde_json::from_value(results).unwrap();
+	serde_json::from_value(response).unwrap()
+}
+
+fn assert_replay(first: &(u16, Value), replay: (u16, Value)) {
+	assert_eq!(replay.0, first.0);
+	let outcomes = first.1["carry_results"].as_array().unwrap();
+	assert!(!outcomes.is_empty());
+	for outcome in outcomes {
+		assert_eq!(outcome["carried"], false);
+		assert_eq!(outcome["source_version"], Value::Null);
+		assert_eq!(outcome["changed"], json!(["no earlier carrying approval"]));
+		assert_eq!(outcome["unapproved_dependencies"], json!([]));
+		assert!(
+			outcome["node"]
+				.as_str()
+				.is_some_and(|node| !node.is_empty())
+		);
+	}
+	let mut expected = first.clone();
+	expected.1["carry_results"] = json!([]);
+	assert_eq!(replay, expected);
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn private_documents_are_atomic_idempotent_and_absent_from_registry(
@@ -118,7 +151,7 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 		record.sha256,
 		aidash_domain::semantic::indexing::content_digest_bytes(&record.bytes)
 	);
-	let entry: Entry = serde_json::from_value(first.1.clone()).unwrap();
+	let entry = registered_entry(first.1.clone());
 	assert_json(
 		execution
 			.subject
@@ -167,7 +200,7 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 	);
 	let calls = count.load(Ordering::SeqCst);
 	server.abort();
-	assert_eq!(personal(&execution.subject, key, input).await, first);
+	assert_replay(&first, personal(&execution.subject, key, input).await);
 	assert_eq!(count.load(Ordering::SeqCst), calls);
 }
 
@@ -230,8 +263,8 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	let first = personal(subject, key, input.clone()).await;
 	assert_eq!(first.0, 200, "{first:?}");
 	assert!(!first.1.to_string().contains("PRIVATE-REFERENCE"));
-	assert_eq!(first, personal(subject, key, input.clone()).await);
-	let entry: Entry = serde_json::from_value(first.1.clone()).unwrap();
+	assert_replay(&first, personal(subject, key, input.clone()).await);
+	let entry = registered_entry(first.1.clone());
 	let source = entry.config["bindings"]
 		.as_array()
 		.unwrap()

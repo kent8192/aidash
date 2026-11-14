@@ -1,6 +1,6 @@
 import type {
   RegistryVersion,
-  RequestApproval,
+  RequestCatalogApprovalInput,
   WithdrawalImpact,
 } from "./generated/models";
 import type { EntityRef } from "./types";
@@ -192,7 +192,7 @@ export function approvalRequest(
   groups?: string[],
   restriction?: Restriction | null,
   providerWarningAcknowledged = false,
-): RequestApproval {
+): RequestCatalogApprovalInput {
   const named = restrictionRequest(restriction);
   return {
     entry: { id: version.entry.id, version: version.entry.version },

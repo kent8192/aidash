@@ -1,3 +1,7 @@
+import {
+  CatalogCarryOptions,
+  type ApprovalScope,
+} from "./catalog-carry-options";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -179,6 +183,8 @@ export function ApprovalReviewPanel({
   requestId,
   rootGroups,
   rootRestriction,
+  initialCarryOver = true,
+  initialScope = "deployment",
   subject,
   onClose,
   onChanged,
@@ -191,6 +197,8 @@ export function ApprovalReviewPanel({
   /** The root's restriction chosen before falling back to this review;
    *  `undefined` keeps the server's proposal, `null` clears it. */
   rootRestriction?: CatalogRestriction | null;
+  initialCarryOver?: boolean;
+  initialScope?: ApprovalScope;
   subject?: string;
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
@@ -225,6 +233,10 @@ export function ApprovalReviewPanel({
       ? {}
       : { [itemKey({ reference: root })]: rootRestriction },
   );
+  const [carryOver, setCarryOver] = useState(initialCarryOver);
+  const [approvalScope, setApprovalScope] =
+    useState<ApprovalScope>(initialScope);
+  const [carryOptionsEdited, setCarryOptionsEdited] = useState(false);
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -232,6 +244,21 @@ export function ApprovalReviewPanel({
   const [message, setMessage] = useState("");
   const [stale, setStale] = useState(false);
   const current = review.data;
+  const rootPreferences = current?.items.find(
+    (item) =>
+      item.reference.id === root.id && item.reference.version === root.version,
+  ) as
+    | (ReviewItem & {
+        carry_over?: boolean | null;
+        scope?: ApprovalScope | null;
+      })
+    | undefined;
+  const displayedCarry = carryOptionsEdited
+    ? carryOver
+    : (rootPreferences?.carry_over ?? carryOver);
+  const displayedScope = carryOptionsEdited
+    ? approvalScope
+    : (rootPreferences?.scope ?? approvalScope);
   const selected =
     current === undefined
       ? []
@@ -274,8 +301,55 @@ export function ApprovalReviewPanel({
           ]),
         ),
       );
+      const optionsFor = (reference: { id: string; version: string }) => {
+        const item = current.items.find(
+          (candidate) =>
+            candidate.reference.id === reference.id &&
+            candidate.reference.version === reference.version,
+        ) as
+          | (ReviewItem & {
+              carry_over?: boolean | null;
+              scope?: ApprovalScope | null;
+              expected_node_revisions?: Record<string, number>;
+            })
+          | undefined;
+        return {
+          ...(item?.expected_node_revisions &&
+          Object.keys(item.expected_node_revisions).length > 0
+            ? { expected_node_revisions: item.expected_node_revisions }
+            : {}),
+          carry_over: !carryOptionsEdited
+            ? (item?.carry_over ?? carryOver)
+            : carryOver,
+          scope: !carryOptionsEdited
+            ? (item?.scope ?? approvalScope)
+            : approvalScope,
+        };
+      };
       await authorizationSubmitCatalogReview(tenant, {
         ...body,
+        items: (body.items ?? []).map((item) => ({
+          ...item,
+          ...optionsFor(item.reference),
+        })),
+        installations: (body.installations ?? []).map((item) => ({
+          ...item,
+          ...optionsFor(
+            current.items.find(
+              (reviewItem) =>
+                reviewItem.installation?.installation === item.installation &&
+                reviewItem.installation.revision === item.revision,
+            )?.reference ?? current.root,
+          ),
+          provider_warning_acknowledged: current.items.some(
+            (reviewItem) =>
+              reviewItem.installation?.installation === item.installation &&
+              reviewItem.installation.revision === item.revision &&
+              !!acknowledged[
+                `${current.closure_digest}:${itemKey(reviewItem)}`
+              ],
+          ),
+        })),
         ...(rootGroups !== undefined ? { root_groups: rootGroups } : {}),
       });
       // The refreshed review may keep the same closure digest; start from its
@@ -409,6 +483,10 @@ export function ApprovalReviewPanel({
       <ul className="divide-y divide-border rounded-md border border-border">
         {current.items.map((item) => {
           const key = itemKey(item);
+          const comparison = item as ReviewItem & {
+            previous_version?: string | null;
+            consent_changes?: string[];
+          };
           const checked = selected.includes(key);
           const restriction = restrictionFor(item, edits);
           const actionable = needsAction(item);
@@ -480,6 +558,29 @@ export function ApprovalReviewPanel({
               {local(item.description) && (
                 <Hint>{local(item.description)}</Hint>
               )}
+              {comparison.previous_version && (
+                <Notice tone="warning" className="approval-consent-changes">
+                  <span>
+                    {locale === "ja-JP"
+                      ? "前回承認したバージョンとの差分"
+                      : "Changes from previously approved version"}
+                    : {comparison.previous_version}
+                  </span>
+                  {comparison.consent_changes?.length ? (
+                    <ul>
+                      {comparison.consent_changes.map((change) => (
+                        <li key={change}>{change}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <span>
+                      {locale === "ja-JP"
+                        ? "同意に関わる変更はありません"
+                        : "No consent changes"}
+                    </span>
+                  )}
+                </Notice>
+              )}
               <Hint>{t(statusKeys[item.status][1])}</Hint>
               {item.consumers.length > 0 && (
                 <Hint>
@@ -537,6 +638,23 @@ export function ApprovalReviewPanel({
         })}
       </ul>
       {message && <Notice role="status">{message}</Notice>}
+      {canSubmit && (
+        <CatalogCarryOptions
+          carry={displayedCarry}
+          setCarry={(value) => {
+            if (!carryOptionsEdited) setApprovalScope(displayedScope);
+            setCarryOptionsEdited(true);
+            setCarryOver(value);
+          }}
+          scope={displayedScope}
+          setScope={(value) => {
+            if (!carryOptionsEdited) setCarryOver(displayedCarry);
+            setCarryOptionsEdited(true);
+            setApprovalScope(value);
+          }}
+          disabled={busy}
+        />
+      )}
       {canSubmit && (
         <div className="flex flex-wrap gap-2">
           <Button

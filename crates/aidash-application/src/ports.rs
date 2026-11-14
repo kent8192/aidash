@@ -196,6 +196,7 @@ pub mod channels;
 pub mod marketplace;
 
 pub mod catalog;
+pub mod catalog_mail;
 pub mod catalog_review;
 pub mod catalog_withdrawal;
 

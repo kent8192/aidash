@@ -59,6 +59,10 @@ pub trait DraftRepository: Send + Sync {
 	fn principal(&self) -> Principal;
 	fn node_id(&self) -> &str;
 	async fn begin(&self) -> Result<Self::Scope>;
+	/// Publication may carry approvals; the preview identifies a possible source.
+	async fn begin_publication(&self, _preview: &Entry) -> Result<Self::Scope> {
+		self.begin().await
+	}
 	/// Embed after the preflight scope is committed, before the write scope opens.
 	async fn embed_reference_images(
 		&self,
@@ -73,6 +77,9 @@ use aidash_domain::registry::workbench::{RegistrationEvidence, RegistrationRecor
 /// Publication holds the authored revision through evidence, immutable content and outbox writes.
 #[async_trait]
 pub trait PublicationScope: DraftScope + DefinitionWriter {
+	fn carry_results(&self) -> Vec<aidash_domain::registry::workbench::RegistrationCarryResult> {
+		Vec::new()
+	}
 	async fn registrations(&mut self, draft: Uuid, agent: &str) -> Result<Vec<RegistrationRecord>>;
 	async fn registered_evidence(&mut self, entry: &Entry) -> Result<Option<RegistrationEvidence>>;
 	async fn completed_test(&mut self, draft: &Draft) -> Result<bool>;

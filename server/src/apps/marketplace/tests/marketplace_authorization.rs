@@ -2418,7 +2418,9 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 			&f,
 			&schema,
 			if dependency {
-				"%authorization_catalog%"
+				// Installation may carry approvals, so it holds the Tenant policy
+				// before the catalog row; withdrawal waits at that earlier lock.
+				"%authorization_bundles%"
 			} else {
 				"%74003201%"
 			},

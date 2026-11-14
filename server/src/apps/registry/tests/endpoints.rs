@@ -119,8 +119,13 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 		.post("/api/registry", &conflict, "json")
 		.await
 		.unwrap();
-	// Assert: identity, definition and event commit exactly once.
-	assert_eq!(first, second);
+	// Assert: identity, definition and event commit exactly once. Carry
+	// outcomes describe only the request that registered (#873).
+	let without_carry = |mut response: serde_json::Value| {
+		response.as_object_mut().unwrap().remove("carry_results");
+		response
+	};
+	assert_eq!(without_carry(first.clone()), without_carry(second));
 	Uuid::parse_str(first["id"].as_str().unwrap()).unwrap();
 	assert_json(rejected, 409);
 	assert_eq!(
@@ -215,9 +220,13 @@ async fn personal_documents_commit_once_and_remain_private_on_public_registry_re
 		.post("/api/agents/personal", &changed, "json")
 		.await
 		.unwrap();
-	// Assert
-	assert_eq!(created, repeated);
-	assert_eq!(created, found);
+	// Assert: carry outcomes describe only the request that registered (#873).
+	let without_carry = |mut response: serde_json::Value| {
+		response.as_object_mut().unwrap().remove("carry_results");
+		response
+	};
+	assert_eq!(without_carry(created.clone()), without_carry(repeated));
+	assert_eq!(without_carry(created.clone()), found);
 	assert!(!found.to_string().contains("PRIVATE-REFERENCE-ONLY"));
 	assert!(!found.to_string().contains("private.txt"));
 	assert_json(conflict, 409);

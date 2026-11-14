@@ -153,6 +153,10 @@ test("subjects visiting authorization see their own API tokens without Deploymen
     // A member reads the API tokens it issued for itself (#363).
     if (url.searchParams.get("mine") === "true")
       return route.fulfill({ json: [] });
+    if (
+      url.pathname === "/api/authorization/acme/catalog/requests/pending/count"
+    )
+      return route.fulfill({ json: { count: 0 } });
     deploymentAdministratorRequests.push(url.toString());
     return route.fulfill({ status: 403, json: { error: "forbidden" } });
   });

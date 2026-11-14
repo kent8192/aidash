@@ -17,6 +17,7 @@ pub(crate) struct ReviewScope<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) node: NodeAddress,
 	pub(crate) validation: aidash_application::registry::DefinitionValidation,
+	pub(crate) include_node_revisions: bool,
 }
 
 #[async_trait]
@@ -54,10 +55,68 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			.map(|row| ApprovalSnapshot {
 				enabled: row.enabled,
 				revision: row.revision,
+				carry_over: row.carry_over,
+				scope: if row.scope == "deployment" {
+					aidash_domain::identity::catalog::ApprovalScope::Deployment
+				} else {
+					aidash_domain::identity::catalog::ApprovalScope::Node
+				},
 				restriction: row
 					.restriction
 					.and_then(|value| serde_json::from_value(value.0).ok()),
 			}))
+	}
+	async fn node_revisions(
+		&mut self,
+		reference: &EntityRef,
+	) -> Result<std::collections::BTreeMap<String, i64>> {
+		if !self.include_node_revisions {
+			return Ok(Default::default());
+		}
+		Ok(AuthorizationCatalog::objects()
+			.filter(AuthorizationCatalog::field_tenant().eq(self.tenant().to_owned()))
+			.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
+			.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?
+			.into_iter()
+			.map(|row| (row.node, row.revision))
+			.collect())
+	}
+	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
+		let rows = AuthorizationCatalog::objects()
+			.filter(AuthorizationCatalog::field_tenant().eq(self.tenant().to_owned()))
+			.filter(AuthorizationCatalog::field_node().eq(self.node.node.as_str().to_owned()))
+			.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		let candidates: Vec<_> = rows
+			.iter()
+			.map(|row| aidash_domain::catalog::carry_over::CarryCandidate {
+				version: &row.entry_version,
+				enabled: row.enabled,
+				carry_over: true,
+			})
+			.collect();
+		let Some(version) =
+			aidash_domain::catalog::carry_over::source_version(&entry.version, &candidates)?
+		else {
+			return Ok(None);
+		};
+		let previous = self
+			.definition(&EntityRef {
+				id: entry.id.clone(),
+				version: version.to_owned(),
+			})
+			.await?;
+		match previous {
+			Some(old) if self.can_read(&old).await? => Ok(Some(old)),
+			_ => Ok(None),
+		}
 	}
 	async fn installed(&mut self, projection: &Projection) -> Result<Option<InstalledRevision>> {
 		if projection.contract != 1 || projection.tenant != self.tenant() {

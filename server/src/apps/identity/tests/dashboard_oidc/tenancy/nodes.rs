@@ -412,7 +412,7 @@ async fn catalog_approvals_belong_to_one_node(
 	assert_eq!(status, 200, "{entry}");
 	let approve = |node: &str, enabled: bool, revision: i64| {
 		json!({"node":node,"approvals":[{"entry":{"id":"probe","version":"1.0.0"},
-			"enabled":enabled,"expected_revision":revision}]})
+			"enabled":enabled,"expected_revision":revision,"scope":"node"}]})
 	};
 	let catalog = async |node: &str| {
 		let (status, body) = send(

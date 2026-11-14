@@ -28,6 +28,9 @@ ADDITIONS = {
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
+    ("GET", "/api/authorization/{tenant}/catalog/requests/pending/count"): ("authorization-catalog-requests-pending-count", "policies"),
+    ("GET", "/api/tenants/{tenant}/approval-request-mail/mine"): ("catalog-mail-preference", "policies"),
+    ("POST", "/api/tenants/{tenant}/approval-request-mail/mine"): ("catalog-set-mail-preference", "policies"),
     ("GET", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope", "memory_scope"),
     ("PUT", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope-update", "memory_scope"),
 }
