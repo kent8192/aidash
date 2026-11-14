@@ -10,8 +10,7 @@ use crate::{
 use aidash_application::{
 	egress::ScopeAuthority,
 	ports::capabilities::execution_pod::{
-		EgressCredential, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime,
-		ExecutionPodSettings,
+		ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime, ExecutionPodSettings,
 	},
 	tenancy::TenancyScope,
 };
@@ -82,9 +81,14 @@ async fn run(store: &Store, policy: &ScratchOperatorPolicy, id: Uuid) -> Result<
 		.ok_or_else(|| Error::NotFound("Scratch Space".into()))?;
 	tx.commit().await?;
 	let authority = ScratchAuthority::new(store.clone(), policy.clone());
-	let credential = authority.credential(&tenant, id)?;
 	// Recheck current state and Tenant/Node deletion using the gateway's authority.
-	authority.authenticate(&credential).await?;
+	authority
+		.current(&aidash_domain::egress::ScopeId {
+			tenant: tenant.clone(),
+			node: space.node.to_string(),
+			scratch_space: id,
+		})
+		.await?;
 	let runner = crate::bootstrap::operation_runner(store)?;
 	let image = &store
 		.capabilities
@@ -93,7 +97,7 @@ async fn run(store: &Store, policy: &ScratchOperatorPolicy, id: Uuid) -> Result<
 		.as_ref()
 		.ok_or_else(|| Error::Invalid("Runner unavailable".into()))?
 		.image;
-	let settings = pod_settings(&space, &tenant, policy, image, credential)?;
+	let settings = pod_settings(&space, &tenant, policy, image)?;
 	ensure_output(&runner, &settings).await
 }
 
@@ -102,7 +106,6 @@ fn pod_settings(
 	tenant: &str,
 	policy: &ScratchOperatorPolicy,
 	default_image: &str,
-	credential: String,
 ) -> Result<ExecutionPodSettings> {
 	if space.state != ScratchState::Active {
 		return Err(Error::Forbidden);
@@ -137,7 +140,6 @@ fn pod_settings(
 		capacity_bytes: settings.capacity_bytes,
 		docker_enabled: settings.docker_enabled,
 		tenant_id: Some(tenant.to_owned()),
-		egress_credential: Some(EgressCredential(credential)),
 	})
 }
 
@@ -212,31 +214,14 @@ mod tests {
 		space.settings.cpu_millis = 2500;
 		space.settings.memory_bytes = 99;
 		let policy = ScratchOperatorPolicy::default();
-		let settings = pod_settings(
-			&space,
-			"acme",
-			&policy,
-			"default-image",
-			"secret-canary".into(),
-		)
-		.unwrap();
+		let settings = pod_settings(&space, "acme", &policy, "default-image").unwrap();
 		assert_eq!(settings.scratch_space_id, space.id.to_string());
 		assert_eq!(settings.tenant_id.as_deref(), Some("acme"));
 		assert_eq!(settings.cpu, 2);
 		assert_eq!(settings.memory_bytes, 99);
 		assert_eq!(settings.image, "default-image");
-		assert_eq!(settings.egress_credential.unwrap().0, "secret-canary");
 		space.settings.cpu_millis = 999;
-		assert!(
-			pod_settings(
-				&space,
-				"acme",
-				&policy,
-				"default-image",
-				"secret-canary".into()
-			)
-			.is_err()
-		);
+		assert!(pod_settings(&space, "acme", &policy, "default-image",).is_err());
 	}
 
 	#[tokio::test]
@@ -262,7 +247,7 @@ mod tests {
 			.and(path("/v2/pods/ensure"))
 			.respond_with(move |request: &Request| {
 				let body: Value = request.body_json().unwrap();
-				assert_eq!(body["egress_credential"], "secret-canary");
+				assert!(body.get("egress_credential").is_none());
 				match counter.fetch_add(1, Ordering::SeqCst) {
 					0 => ResponseTemplate::new(200).set_body_json(
 						json!({"protocol":"aidash-runner/2", "pod":"secret-canary", "claim":"secret-canary"}),
@@ -290,7 +275,6 @@ mod tests {
 			capacity_bytes: 2048,
 			docker_enabled: false,
 			tenant_id: Some("acme".into()),
-			egress_credential: Some(EgressCredential("secret-canary".into())),
 		};
 		let output = ensure_output(&runner, &settings).await.unwrap();
 		assert_eq!(output, "Execution Pod: ready");

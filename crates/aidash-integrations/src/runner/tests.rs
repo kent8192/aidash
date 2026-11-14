@@ -223,6 +223,7 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 		cwd: None,
 		timeout_seconds: None,
 		background: true,
+		proxy_credential: None,
 	};
 	let accepted = client.execute(&request).await.unwrap();
 	assert_eq!(accepted.status, "queued");
@@ -232,4 +233,57 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 		matches!(client.stop("space-a").await, Err(ExecutionPodError::Remote { code, message }) if code == ExecutionPodErrorCode::TerminationUnconfirmed && message == "guard unavailable")
 	);
 	assert!(client.delete("space-a").await.is_err());
+}
+
+#[tokio::test]
+async fn execution_pod_v2_transports_process_credentials_and_file_bytes() {
+	use aidash_application::ports::capabilities::execution_pod::{
+		EgressCredential, FileWriteRequest, PythonStartRequest,
+	};
+	let app = Router::new()
+		.route("/v2/python/start", post(|Json(body): Json<Value>| async move {
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","proxy_credential":"secret"}));
+			Json(json!({"operation_id":"p","scratch_space_id":"s","run_id":"r","socket_path":"/tmp/p"}))
+		}))
+		.route("/v2/files/write", post(|Json(body): Json<Value>| async move {
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","path":"x","data":"AP8=","offset":0,"final":true,"mode":null}));
+			Json(json!({"size":2}))
+		}))
+		.route("/v2/runs/stop", post(|Json(body): Json<Value>| async move {
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r"}));
+			Json(json!({"stopped":["p","left"]}))
+		}));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap()
+	}));
+	let client = RunnerHttp {
+		endpoint,
+		credential_env: "RUNNER_KEY".into(),
+		credentials: Arc::new(Keys(RwLock::new(Some("before-rotation".into())))),
+	};
+	let session = client
+		.python_start(&PythonStartRequest {
+			scratch_space_id: "s".into(),
+			run_id: "r".into(),
+			proxy_credential: Some(EgressCredential("secret".into())),
+		})
+		.await
+		.unwrap();
+	assert_eq!(session.operation_id, "p");
+	let written = client
+		.file_write(&FileWriteRequest {
+			scratch_space_id: "s".into(),
+			run_id: "r".into(),
+			path: "x".into(),
+			data: "AP8=".into(),
+			offset: 0,
+			final_chunk: true,
+			mode: None,
+		})
+		.await
+		.unwrap();
+	assert_eq!(written.size, 2);
+	assert_eq!(client.stop_run("s", "r").await.unwrap(), vec!["p", "left"]);
 }

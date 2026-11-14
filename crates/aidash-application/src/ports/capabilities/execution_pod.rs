@@ -126,9 +126,6 @@ pub struct ExecutionPodSettings {
 	pub docker_enabled: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub tenant_id: Option<String>,
-	/// The Pod's proof to the Egress gateway that it belongs to this Scratch Space.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub egress_credential: Option<EgressCredential>,
 }
 /// Serializes to the Runner as is, and never appears in `Debug` output.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,6 +159,8 @@ pub struct CommandRequest {
 	pub timeout_seconds: Option<u32>,
 	#[serde(default)]
 	pub background: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub proxy_credential: Option<EgressCredential>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CommandResult {
@@ -179,6 +178,7 @@ pub struct CommandResult {
 	pub error_code: Option<String>,
 	pub message: Option<String>,
 	pub python_result: Option<Value>,
+	pub left_running: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundProcesses {
@@ -198,6 +198,147 @@ pub struct ChangeLogChunk {
 	pub eof: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PythonStartRequest {
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub proxy_credential: Option<EgressCredential>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogRequest {
+	pub operation_id: String,
+	pub stream: String,
+	pub offset: Option<u64>,
+	pub limit: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogChunk {
+	pub data: String,
+	pub next_offset: u64,
+	pub eof: bool,
+	pub size: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileReadRequest {
+	pub scratch_space_id: String,
+	pub path: String,
+	pub offset: Option<u64>,
+	pub limit: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileChunk {
+	pub data: String,
+	pub size: u64,
+	pub next_offset: u64,
+	pub eof: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileSearchRequest {
+	pub scratch_space_id: String,
+	pub pattern: String,
+	pub path: Option<String>,
+	pub glob: Option<String>,
+	pub regex: bool,
+	pub max_results: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMatch {
+	pub path: String,
+	pub line: u64,
+	pub text: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileSearchResult {
+	pub matches: Vec<FileMatch>,
+	pub truncated: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilePatchRequest {
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub patch: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilePatchResult {
+	pub changed: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileWriteRequest {
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub path: String,
+	pub data: String,
+	pub offset: u64,
+	#[serde(rename = "final")]
+	pub final_chunk: bool,
+	pub mode: Option<u32>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileWriteResult {
+	pub size: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileManifestRequest {
+	pub scratch_space_id: String,
+	pub root: String,
+	pub ignore_files: Vec<String>,
+	pub exclude: Vec<String>,
+	pub include: Vec<String>,
+	pub max_files: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestFile {
+	pub path: String,
+	pub size: u64,
+	pub sha256: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileManifestResult {
+	pub files: Vec<ManifestFile>,
+	pub skipped_symlinks: Vec<String>,
+	pub truncated: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreviewStartRequest {
+	pub operation_id: String,
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub code: String,
+	pub cwd: Option<String>,
+	pub port: u16,
+	pub proxy_credential: Option<EgressCredential>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreviewTarget {
+	pub operation_id: String,
+	pub address: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpStartRequest {
+	pub operation_id: String,
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub install: String,
+	pub command: Vec<String>,
+	pub env: std::collections::BTreeMap<String, String>,
+	pub plugin_data: String,
+	pub proxy_credential: Option<EgressCredential>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSession {
+	pub operation_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct McpCallRequest {
+	pub operation_id: String,
+	pub message: Value,
+	pub timeout_seconds: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct McpCallResult {
+	pub message: Value,
+}
+
 /// Calls are idempotent only where the Runner's operation ID contract says so;
 /// an interrupted operation has an unknown outcome and must never be replayed.
 #[async_trait]
@@ -208,7 +349,19 @@ pub trait ExecutionPodRuntime: Send + Sync {
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses>;
 	async fn stop_background(&self, operation_id: &str) -> Result<CommandResult>;
-	async fn python_start(&self, scratch_space_id: &str, run_id: &str) -> Result<PythonSession>;
+	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession>;
+	async fn stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<Vec<String>>;
+	async fn background_log(&self, request: &LogRequest) -> Result<LogChunk>;
+	async fn file_read(&self, request: &FileReadRequest) -> Result<FileChunk>;
+	async fn file_search(&self, request: &FileSearchRequest) -> Result<FileSearchResult>;
+	async fn file_patch(&self, request: &FilePatchRequest) -> Result<FilePatchResult>;
+	async fn file_write(&self, request: &FileWriteRequest) -> Result<FileWriteResult>;
+	async fn file_manifest(&self, request: &FileManifestRequest) -> Result<FileManifestResult>;
+	async fn preview_start(&self, request: &PreviewStartRequest) -> Result<PreviewTarget>;
+	async fn preview_stop(&self, operation_id: &str) -> Result<()>;
+	async fn mcp_start(&self, request: &McpStartRequest) -> Result<McpSession>;
+	async fn mcp_call(&self, request: &McpCallRequest) -> Result<McpCallResult>;
+	async fn mcp_stop(&self, operation_id: &str) -> Result<()>;
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult>;
 	async fn python_stop(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
 	async fn change_log(
@@ -289,19 +442,14 @@ mod egress_credential_tests {
 	}
 
 	#[test]
-	fn the_runner_finds_it_under_the_name_it_reads() {
-		let settings = super::ExecutionPodSettings {
+	fn process_credential_uses_the_wire_name_and_is_redacted() {
+		let request = super::PythonStartRequest {
 			scratch_space_id: "s".into(),
-			image: "image".into(),
-			cpu: 1,
-			memory_bytes: 1,
-			capacity_bytes: 1,
-			docker_enabled: false,
-			tenant_id: None,
-			egress_credential: Some(EgressCredential("canary".into())),
+			run_id: "r".into(),
+			proxy_credential: Some(EgressCredential("canary".into())),
 		};
-		let value = serde_json::to_value(&settings).unwrap();
-		assert_eq!(value["egress_credential"], "canary");
-		assert!(!format!("{settings:?}").contains("canary"));
+		let value = serde_json::to_value(&request).unwrap();
+		assert_eq!(value["proxy_credential"], "canary");
+		assert!(!format!("{request:?}").contains("canary"));
 	}
 }

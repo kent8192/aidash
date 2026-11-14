@@ -1,8 +1,5 @@
 use super::RunnerHttp;
-use aidash_application::ports::capabilities::execution_pod::{
-	BackgroundProcesses, ChangeLogChunk, CommandRequest, CommandResult, ExecutionPodError,
-	ExecutionPodRuntime, ExecutionPodSettings, PodReceipt, PythonSession, Result,
-};
+use aidash_application::ports::capabilities::execution_pod::*;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -70,12 +67,60 @@ impl ExecutionPodRuntime for RunnerHttp {
 		self.pod_call("/v2/background/stop", &json!({"operation_id":operation_id}))
 			.await
 	}
-	async fn python_start(&self, scratch_space_id: &str, run_id: &str) -> Result<PythonSession> {
-		self.pod_call(
-			"/v2/python/start",
-			&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
-		)
-		.await
+	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession> {
+		self.pod_call("/v2/python/start", request).await
+	}
+	async fn stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<Vec<String>> {
+		#[derive(serde::Deserialize)]
+		struct Stopped {
+			stopped: Vec<String>,
+		}
+		let result: Stopped = self
+			.pod_call(
+				"/v2/runs/stop",
+				&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
+			)
+			.await?;
+		Ok(result.stopped)
+	}
+	async fn background_log(&self, request: &LogRequest) -> Result<LogChunk> {
+		self.pod_call("/v2/background/log", request).await
+	}
+	async fn file_read(&self, request: &FileReadRequest) -> Result<FileChunk> {
+		self.pod_call("/v2/files/read", request).await
+	}
+	async fn file_search(&self, request: &FileSearchRequest) -> Result<FileSearchResult> {
+		self.pod_call("/v2/files/search", request).await
+	}
+	async fn file_patch(&self, request: &FilePatchRequest) -> Result<FilePatchResult> {
+		self.pod_call("/v2/files/patch", request).await
+	}
+	async fn file_write(&self, request: &FileWriteRequest) -> Result<FileWriteResult> {
+		self.pod_call("/v2/files/write", request).await
+	}
+	async fn file_manifest(&self, request: &FileManifestRequest) -> Result<FileManifestResult> {
+		self.pod_call("/v2/files/manifest", request).await
+	}
+	async fn preview_start(&self, request: &PreviewStartRequest) -> Result<PreviewTarget> {
+		self.pod_call("/v2/previews/start", request).await
+	}
+	async fn mcp_start(&self, request: &McpStartRequest) -> Result<McpSession> {
+		self.pod_call("/v2/mcp/start", request).await
+	}
+	async fn mcp_call(&self, request: &McpCallRequest) -> Result<McpCallResult> {
+		self.pod_call("/v2/mcp/call", request).await
+	}
+	async fn preview_stop(&self, operation_id: &str) -> Result<()> {
+		let _: Value = self
+			.pod_call("/v2/previews/stop", &json!({"operation_id":operation_id}))
+			.await?;
+		Ok(())
+	}
+	async fn mcp_stop(&self, operation_id: &str) -> Result<()> {
+		let _: Value = self
+			.pod_call("/v2/mcp/stop", &json!({"operation_id":operation_id}))
+			.await?;
+		Ok(())
 	}
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult> {
 		self.pod_call("/v2/python/cell", request).await
