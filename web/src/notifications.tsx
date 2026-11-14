@@ -41,6 +41,7 @@ import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
   NoticeStore,
+  taskEventScope,
   type Notice,
   type NoticeEntry,
   type NoticeFrame,
@@ -93,6 +94,7 @@ const iconTone = {
 };
 function frame(
   data: TenantState | undefined,
+  node: string,
   approvals: ApprovalCard[] | undefined,
   ja: boolean,
 ): NoticeFrame | null {
@@ -100,7 +102,7 @@ function frame(
   const scopes = data.workspaces.map((workspace) =>
     JSON.stringify([data.deployment.id, workspace.id]),
   );
-  const eventScope = JSON.stringify([data.deployment.id, "task-events"]);
+  const eventScope = taskEventScope(data.deployment.id, node);
   scopes.push(eventScope);
   scopes.push(
     ...data.human_requests.map((request) =>
@@ -280,6 +282,7 @@ export function NotificationBell({ className }: { className?: string }) {
 
 export function NotificationProvider({
   data,
+  node,
   approvals,
   locale,
   theme,
@@ -287,6 +290,8 @@ export function NotificationProvider({
   children,
 }: {
   data: TenantState | undefined;
+  /** The Node `data` was read for; empty for the whole Tenant. */
+  node: string;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
   locale: Locale;
@@ -324,7 +329,7 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, approvals, locale === "ja-JP"));
+    store.observe(frame(data, node, approvals, locale === "ja-JP"));
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -397,7 +402,7 @@ export function NotificationProvider({
         },
       );
     }, delay);
-  }, [data, approvals, locale, store, toastId, show, visit, centerOpen]);
+  }, [data, node, approvals, locale, store, toastId, show, visit, centerOpen]);
   useEffect(
     () => () => {
       clearTimeout(timer.current);

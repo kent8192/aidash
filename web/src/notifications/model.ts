@@ -24,6 +24,15 @@ export type NoticeFrame = {
   entries: NoticeEntry[];
   eventWatermark?: { scope: string; sequence: number };
 };
+/**
+ * The baseline scope of a Node's task events. State events are scoped to the
+ * selected Node (#664), so each Node has its own: the first frame of a Node
+ * seeds its events silently instead of announcing earlier completions and
+ * failures under another Node's watermark.
+ */
+export function taskEventScope(deployment: string, node: string) {
+  return JSON.stringify([deployment, "task-events", node]);
+}
 export const NOTICE_INTERVAL = 30_000;
 export const NOTICE_BATCH_DELAY = 1500;
 export const NOTICE_HISTORY_LIMIT = 50;

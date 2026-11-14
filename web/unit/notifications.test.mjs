@@ -4,6 +4,7 @@ import {
   NoticeStore,
   NOTICE_INTERVAL,
   NOTICE_HISTORY_LIMIT,
+  taskEventScope,
 } from "../src/notifications/model.ts";
 
 function entry(id, kind = null, scope = "home:one", signature = String(kind)) {
@@ -326,5 +327,55 @@ test("connection notifications carry the complete resource and consent scopes in
       "acme",
     ),
     null,
+  );
+});
+
+test("each Node's task events have their own baseline, seeded silently", () => {
+  // Mirrors the frames notifications.tsx builds from Node-scoped State.
+  const nodeFrame = (node, events) => {
+    const eventScope = taskEventScope("home", node);
+    const workspace = `home:${node}-workspace`;
+    return {
+      scopes: [workspace, eventScope],
+      entries: events.map(([id, sequence]) => ({
+        ...entry(id, "completed", workspace),
+        eventId: `${node}-${id}`,
+        eventScope,
+        eventSequence: sequence,
+      })),
+      eventWatermark: {
+        scope: eventScope,
+        sequence: Math.max(0, ...events.map(([, sequence]) => sequence)),
+      },
+    };
+  };
+  const store = new NoticeStore();
+  store.observe(nodeFrame("a", [["a1", 10]]));
+  store.observe(
+    nodeFrame("a", [
+      ["a1", 10],
+      ["a2", 11],
+    ]),
+  );
+  assert.equal(store.takeBatch(0).length, 1);
+  // Switching to Node b: its earlier completions are history, even those
+  // with a sequence above Node a's watermark.
+  store.observe(
+    nodeFrame("b", [
+      ["b1", 5],
+      ["b2", 12],
+    ]),
+  );
+  assert.equal(store.takeBatch(NOTICE_INTERVAL).length, 0);
+  store.observe(
+    nodeFrame("b", [
+      ["b1", 5],
+      ["b2", 12],
+      ["b3", 13],
+    ]),
+  );
+  assert.deepEqual(
+    store.takeBatch(2 * NOTICE_INTERVAL).map((item) => item.detail),
+    ["b3"],
   );
 });
