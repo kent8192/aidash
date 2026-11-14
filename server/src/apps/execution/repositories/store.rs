@@ -100,6 +100,12 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
+	/// The Deployment's Schedule ceilings from `[schedules]` (#557).
+	pub schedule_ceilings: aidash_domain::schedules::Ceilings,
+	/// How often each replica looks for due Schedules.
+	pub schedule_poll: std::time::Duration,
+	/// The build's Tier limits, which may lower a Tenant's Schedule total.
+	pub schedule_tier: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
 	/// The Deployment's ceilings on Live preview lifetimes from
 	/// `[preview_limits]` (ADR 0070).
 	pub preview_limits: aidash_domain::preview::live::Limits,
@@ -524,6 +530,9 @@ impl Store {
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			data_protection_floor: Default::default(),
 			test_limit_ceilings: Default::default(),
+			schedule_ceilings: Default::default(),
+			schedule_poll: std::time::Duration::from_secs(15),
+			schedule_tier: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview_limits: aidash_domain::preview::live::Limits::default(),
 			preview_domain: None,
 			preview_pod_port: None,
@@ -589,6 +598,15 @@ impl Store {
 		self
 	}
 
+	pub fn with_schedules(
+		mut self,
+		ceilings: aidash_domain::schedules::Ceilings,
+		poll: std::time::Duration,
+	) -> Self {
+		self.schedule_ceilings = ceilings;
+		self.schedule_poll = poll;
+		self
+	}
 	pub fn with_test_limit_ceilings(
 		mut self,
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -671,6 +689,9 @@ impl Store {
 			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
+			schedule_ceilings: self.schedule_ceilings,
+			schedule_poll: self.schedule_poll,
+			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
 			preview_pod_port: self.preview_pod_port,
@@ -731,6 +752,9 @@ impl Store {
 			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
+			schedule_ceilings: self.schedule_ceilings,
+			schedule_poll: self.schedule_poll,
+			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
 			preview_pod_port: self.preview_pod_port,

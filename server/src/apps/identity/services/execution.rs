@@ -2138,6 +2138,28 @@ pub(crate) struct Guard {
 	tenancy: aidash_application::tenancy::TenancyScope,
 }
 
+/// A Run's step as a worker begins it, for integration tests outside this
+/// crate that call tools as the Run (#557). Production code holds the same
+/// `Guard` inside the worker.
+#[doc(hidden)]
+pub struct Step(Guard);
+
+impl Step {
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
+		Ok(Self(Guard::begin(f, run).await?))
+	}
+
+	/// The Run's Home carrying the step's authority, as the worker's tools see it.
+	pub fn home(&self, f: Federation) -> crate::federation::Home {
+		crate::federation::Home::new(f, self.0.run.clone()).with_authority(self.0.local_authority())
+	}
+
+	/// Commits what the step wrote, as the worker does when it waits.
+	pub async fn commit(&self) -> Result<()> {
+		self.0.suspend().await
+	}
+}
+
 pub(in crate::apps::identity) async fn authorize_guard(
 	f: &Federation,
 	run: &RunMetadata,

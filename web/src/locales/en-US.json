@@ -843,6 +843,7 @@
   "nodeRegistrationEnabled": "Enabled",
   "nodeRegistrationDisabled": "Disabled",
   "approvals": "Approvals",
+  "schedules": "Schedules",
   "bundle": "Bundle",
   "source": "Source",
   "decider": "Decider",

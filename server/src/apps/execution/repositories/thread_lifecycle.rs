@@ -157,6 +157,16 @@ impl ThreadScope for Scope<'_> {
 			.await?;
 		Ok(())
 	}
+	async fn stop_schedules(&mut self, thread: Uuid) -> Result<()> {
+		let tenant = self.access.identity.tenant.clone();
+		crate::apps::workspaces::services::schedules::stop_for_thread(
+			&mut **self.access.tx,
+			&tenant,
+			thread,
+		)
+		.await?;
+		Ok(())
+	}
 	async fn cancel_generation(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {
 			let access = &mut *self.access;

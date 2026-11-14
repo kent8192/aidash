@@ -96,7 +96,7 @@ fn session() -> TestSession {
 		tenant: "tenant".into(),
 		revision: 7,
 		status: "running".into(),
-		scenario: json!({"binding_snapshot":crate::test_support::resolve("aidash://local", &crate::test_support::agent("agent"), false, vec![])}),
+		scenario: json!({"binding_snapshot":crate::test_support::resolve("aidash://local", &crate::test_support::agent("agent"), false, vec![]).for_workbench_test()}),
 		conversation: Some(json!([{"role":"user","content":"original"}])),
 		tool_calls: Some(json!([])),
 		usage: json!({"input_tokens":0,"output_tokens":0,"usage_complete":true}),
@@ -573,7 +573,8 @@ async fn deferred_load_results_reshape_the_next_request() {
 	let mut repository = Repository::new();
 	repository.entry.config["exposure"] = json!({"version":"deferred@1"});
 	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
-	repository.state.get_mut().unwrap().session.scenario = json!({"binding_snapshot":snapshot});
+	repository.state.get_mut().unwrap().session.scenario =
+		json!({"binding_snapshot":snapshot.clone().for_workbench_test()});
 	let repository = Arc::new(repository);
 	let digest = snapshot
 		.bindings
@@ -670,7 +671,8 @@ async fn deferred_search_without_room_stops_instead_of_retaining_a_result() {
 	let mut repository = Repository::new();
 	repository.entry.config["exposure"] = json!({"version":"deferred@1"});
 	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
-	repository.state.get_mut().unwrap().session.scenario = json!({"binding_snapshot":snapshot});
+	repository.state.get_mut().unwrap().session.scenario =
+		json!({"binding_snapshot":snapshot.clone().for_workbench_test()});
 	let repository = Arc::new(repository);
 	let search = ModelResponse {
 		text: "step".into(),
@@ -996,7 +998,8 @@ async fn simulated_fixtures_obey_the_admitted_binding(
 	binding["narrow"] = narrow;
 	repository.entry.config["bindings"] = json!([binding]);
 	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
-	repository.state.get_mut().unwrap().session.scenario["binding_snapshot"] = json!(snapshot);
+	repository.state.get_mut().unwrap().session.scenario["binding_snapshot"] =
+		json!(snapshot.clone().for_workbench_test());
 	let repository = Arc::new(repository);
 	let mut answer = response(true);
 	answer.tool_calls[0].name = operation.into();
@@ -1090,7 +1093,8 @@ async fn plugin_repository(
 		vec![],
 		repository.plugins.clone(),
 	);
-	repository.state.get_mut().unwrap().session.scenario = json!({"binding_snapshot":snapshot});
+	repository.state.get_mut().unwrap().session.scenario =
+		json!({"binding_snapshot":snapshot.clone().for_workbench_test()});
 	let sessions = crate::test_support::FakeSessions::default();
 	sessions.script(
 		"docs",

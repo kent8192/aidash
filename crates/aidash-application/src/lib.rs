@@ -24,6 +24,7 @@ pub mod research;
 pub mod retention;
 pub mod route_refusal;
 pub mod safety_stop;
+pub mod schedules;
 pub mod scratch;
 pub mod tenancy;
 pub mod tenant_secrets;

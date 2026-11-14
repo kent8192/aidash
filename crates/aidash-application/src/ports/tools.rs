@@ -247,6 +247,14 @@ pub trait ToolOperations: Send + Sync {
 	async fn workspace_search(&self, _input: Value) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
+	/// A Schedule tool call (#557, ADR 0134). The Home acts for the person at
+	/// the root of the Run's chain and refuses a federated Run, a Run whose
+	/// chain starts at no person and, for changes, a Run a Schedule started.
+	async fn schedule(&self, _key: &str, _operation: &str, _input: Value) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"Schedules are unavailable to this Run".into(),
+		))
+	}
 	async fn memory_mutate(
 		&self,
 		key: &str,

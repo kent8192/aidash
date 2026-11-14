@@ -18,5 +18,9 @@ pub trait ThreadScope: CleanupScope {
 	async fn delete_attachments(&mut self, workspace: Uuid, thread: Uuid, root: Uuid)
 	-> Result<()>;
 	async fn cancel_generation(&mut self, area: &Area) -> Result<()>;
+	/// Stop the Schedules that always start their Runs in this Thread (#557).
+	async fn stop_schedules(&mut self, _thread: Uuid) -> Result<()> {
+		Ok(())
+	}
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 }

@@ -64,7 +64,8 @@ COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "ha
 # them against the Rust lists.
 DEFAULT_TOOLS = ("connection_request", "workspace_observe", "workspace_search", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
-                 "workspace_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect")
+                 "workspace_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect",
+                 "schedule_create", "schedule_list", "schedule_update", "schedule_delete")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
 # `Failure::label` (crates/aidash-domain/src/context/recovery.rs): why a Run's context pause was recorded.
 CONTEXT_REASONS = ("source_selection_unavailable", "source_selection_forbidden", "source_selection_unapproved",

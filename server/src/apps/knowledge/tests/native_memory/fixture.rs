@@ -93,6 +93,29 @@ pub(super) async fn setup_endpoint(
 ) -> (Store, Registry, Uuid) {
 	setup_endpoint_flags(database, bounds, endpoint, (false, false, false)).await
 }
+/// `setup_endpoint` with a larger model window: the default tools, including
+/// the Schedule tools (#557), outgrow the default window for a delegated member.
+pub(super) async fn setup_endpoint_window(
+	database: &DatabaseFixture,
+	bounds: Bounds,
+	endpoint: &str,
+	context_window: u32,
+) -> (Store, Registry, Uuid) {
+	setup_endpoint_policy_with_window(
+		database,
+		bounds,
+		endpoint,
+		(
+			(false, false, false),
+			context_window,
+			"deployment_administrator",
+		),
+		None,
+		None,
+		None,
+	)
+	.await
+}
 pub(super) async fn setup_endpoint_flags(
 	database: &DatabaseFixture,
 	bounds: Bounds,

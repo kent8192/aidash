@@ -55777,6 +55777,2952 @@
   {
     "json": false,
     "method": "GET",
+    "name": "workspace-schedules",
+    "path": "/api/workspaces/{workspace}/schedules",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/ScheduleView"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["workspace"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "schedule-create",
+    "path": "/api/workspaces/{workspace}/schedules",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScheduleView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["workspace"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "schedule-list",
+    "path": "/api/schedules",
+    "query_parameters": ["scope"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/ScheduleView"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "schedule-notices",
+    "path": "/api/schedules/notices",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "NoticesView": {
+            "properties": {
+              "scheduled_tasks": {
+                "description": "Tasks the viewer's Schedules started in the last week. The bell shows\ntheir completion without a toast (#557 decision 26).",
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "stopped": {
+                "items": {
+                  "$ref": "#/components/schemas/ScheduleNotice"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["stopped", "scheduled_tasks"],
+            "type": "object"
+          },
+          "ScheduleNotice": {
+            "description": "A Schedule that stopped without anyone choosing it (#557 decision 25).",
+            "properties": {
+              "halt": {
+                "$ref": "#/components/schemas/Halt"
+              },
+              "halt_reason": {
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "registrant": {
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "title": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "title",
+              "registrant",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/NoticesView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "schedule-limits",
+    "path": "/api/schedules/limits",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "Ceilings": {
+            "additionalProperties": false,
+            "description": "What a Deployment allows every Tenant: the most Schedules a Tenant and a\nperson may have, and the shortest interval, which a Tenant may only raise.",
+            "properties": {
+              "max_per_person": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "max_schedules": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "min_interval_seconds": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_schedules",
+              "max_per_person",
+              "min_interval_seconds"
+            ],
+            "type": "object"
+          },
+          "Limits": {
+            "additionalProperties": false,
+            "description": "The Tenant's Schedule limits as its administrators set them (#557\ndecision 16), always within the Deployment's ceilings.",
+            "properties": {
+              "max_per_person": {
+                "description": "Schedules one person is the Registrant of.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "max_schedules": {
+                "description": "Schedules in the whole Tenant.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "min_interval_seconds": {
+                "description": "The shortest gap between two fire times, at least the Deployment's.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_schedules",
+              "max_per_person",
+              "min_interval_seconds"
+            ],
+            "type": "object"
+          },
+          "LimitsView": {
+            "properties": {
+              "ceilings": {
+                "$ref": "#/components/schemas/Ceilings"
+              },
+              "effective": {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The limits that apply now, after the ceilings and any Tier."
+              },
+              "limits": {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The Tenant's limits as its administrators set them."
+              }
+            },
+            "required": ["limits", "ceilings", "effective"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/LimitsView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "schedule-limits-update",
+    "path": "/api/schedules/limits",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "Ceilings": {
+            "additionalProperties": false,
+            "description": "What a Deployment allows every Tenant: the most Schedules a Tenant and a\nperson may have, and the shortest interval, which a Tenant may only raise.",
+            "properties": {
+              "max_per_person": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "max_schedules": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "min_interval_seconds": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_schedules",
+              "max_per_person",
+              "min_interval_seconds"
+            ],
+            "type": "object"
+          },
+          "Limits": {
+            "additionalProperties": false,
+            "description": "The Tenant's Schedule limits as its administrators set them (#557\ndecision 16), always within the Deployment's ceilings.",
+            "properties": {
+              "max_per_person": {
+                "description": "Schedules one person is the Registrant of.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "max_schedules": {
+                "description": "Schedules in the whole Tenant.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "min_interval_seconds": {
+                "description": "The shortest gap between two fire times, at least the Deployment's.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_schedules",
+              "max_per_person",
+              "min_interval_seconds"
+            ],
+            "type": "object"
+          },
+          "LimitsView": {
+            "properties": {
+              "ceilings": {
+                "$ref": "#/components/schemas/Ceilings"
+              },
+              "effective": {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The limits that apply now, after the ceilings and any Tier."
+              },
+              "limits": {
+                "$ref": "#/components/schemas/Limits",
+                "description": "The Tenant's limits as its administrators set them."
+              }
+            },
+            "required": ["limits", "ceilings", "effective"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/LimitsView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "schedule-read",
+    "path": "/api/schedules/{id}",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "DetailView": {
+            "description": "A Schedule with its history and what the viewer may do.",
+            "properties": {
+              "may_administer": {
+                "type": "boolean"
+              },
+              "may_edit": {
+                "type": "boolean"
+              },
+              "newer_agent_version": {
+                "description": "A newer version of its Agent the Registrant could move it to.",
+                "type": ["string", "null"]
+              },
+              "schedule": {
+                "$ref": "#/components/schemas/ScheduleView"
+              },
+              "ticks": {
+                "description": "Started, skipped (with the reason) and failed ticks, newest first.",
+                "items": {
+                  "$ref": "#/components/schemas/Tick"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "schedule",
+              "ticks",
+              "newer_agent_version",
+              "may_edit",
+              "may_administer"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Tick": {
+            "description": "One tick of a Schedule, as its history shows it.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "reason": {
+                "description": "Why it was skipped or failed.",
+                "type": ["string", "null"]
+              },
+              "recorded_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "schedule_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "scheduled_at": {
+                "description": "The time it was scheduled for, without jitter. For \"Run now\", when it\nwas clicked.",
+                "format": "date-time",
+                "type": "string"
+              },
+              "started_by": {
+                "description": "The person who clicked \"Run now\"; None for a scheduled tick.",
+                "type": ["string", "null"]
+              },
+              "status": {
+                "$ref": "#/components/schemas/TickStatus"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "schedule_id",
+              "scheduled_at",
+              "recorded_at",
+              "status",
+              "reason",
+              "task_id",
+              "thread_id",
+              "started_by"
+            ],
+            "type": "object"
+          },
+          "TickStatus": {
+            "description": "What became of one tick.",
+            "oneOf": [
+              {
+                "enum": ["completed"],
+                "type": "string"
+              },
+              {
+                "description": "Its Run is under way.",
+                "enum": ["started"],
+                "type": "string"
+              },
+              {
+                "description": "Its Run failed, or it could not be started.",
+                "enum": ["failed"],
+                "type": "string"
+              },
+              {
+                "description": "Its Run was cancelled or abandoned; it counts neither way.",
+                "enum": ["cancelled"],
+                "type": "string"
+              },
+              {
+                "description": "It did not start; the reason says why.",
+                "enum": ["skipped"],
+                "type": "string"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DetailView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "PATCH",
+    "name": "schedule-update",
+    "path": "/api/schedules/{id}",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScheduleView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "schedule-pause",
+    "path": "/api/schedules/{id}/pause",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScheduleView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "schedule-resume",
+    "path": "/api/schedules/{id}/resume",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScheduleView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "schedule-successor",
+    "path": "/api/schedules/{id}/successor",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ApprovalMode": {
+            "description": "Who decides, for one person's Runs, an approval they would otherwise wait for.",
+            "oneOf": [
+              {
+                "description": "A Designated approver is asked.",
+                "enum": ["manual"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant's approval Decider decides.",
+                "enum": ["auto"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is refused, so the Run never waits.",
+                "enum": ["dont_ask"],
+                "type": "string"
+              },
+              {
+                "description": "The approval is given, within the ceiling.",
+                "enum": ["bypass"],
+                "type": "string"
+              }
+            ]
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "Halt": {
+            "description": "Why a Schedule does not run. Only its Registrant resumes it, except that a\nnamed successor resumes one whose Registrant left and so becomes its\nRegistrant (ADR 0134).",
+            "oneOf": [
+              {
+                "description": "Its Registrant or an administrator paused it.",
+                "enum": ["paused"],
+                "type": "string"
+              },
+              {
+                "description": "[`FAILURE_LIMIT`] Runs in a row failed.",
+                "enum": ["failures"],
+                "type": "string"
+              },
+              {
+                "description": "The Registrant left the Tenant or lost access; it waits for a successor.",
+                "enum": ["registrant_left"],
+                "type": "string"
+              },
+              {
+                "description": "The pinned Agent version can no longer be started.",
+                "enum": ["agent_version_unusable"],
+                "type": "string"
+              },
+              {
+                "description": "Its fixed Thread was deleted.",
+                "enum": ["thread_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant was deleted. A restore leaves it stopped.",
+                "enum": ["tenant_deleted"],
+                "type": "string"
+              },
+              {
+                "description": "The Tenant raised its minimum interval above the Schedule's; it runs\nagain once its Registrant changes the trigger and resumes it.",
+                "enum": ["interval_too_short"],
+                "type": "string"
+              }
+            ]
+          },
+          "ScheduleView": {
+            "description": "A Schedule as its list and page show it.",
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "approval_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "None follows the Registrant's own default mode."
+              },
+              "consecutive_failures": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by_run_id": {
+                "description": "The Run whose Agent registered it, if an Agent did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "halt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Halt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "halt_reason": {
+                "description": "Why it stopped, in words, when the halt alone does not say it all.",
+                "type": ["string", "null"]
+              },
+              "halted_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "max_lateness_seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "may_edit": {
+                "description": "What the viewer may do with it.",
+                "type": "boolean"
+              },
+              "may_manage": {
+                "description": "Pause and delete: its Registrant or a holder of `schedule.administer`.",
+                "type": "boolean"
+              },
+              "may_resume": {
+                "description": "Resume it: its Registrant, or the successor named for it.",
+                "type": "boolean"
+              },
+              "mine": {
+                "description": "The viewer is its Registrant.",
+                "type": "boolean"
+              },
+              "next_scheduled_at": {
+                "description": "The next scheduled time; the viewer's time zone renders it.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "registrant": {
+                "description": "The person every Run of the Schedule acts as.",
+                "type": "string"
+              },
+              "request": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "successor": {
+                "type": ["string", "null"]
+              },
+              "thread": {
+                "$ref": "#/components/schemas/ThreadMode"
+              },
+              "title": {
+                "type": "string"
+              },
+              "trigger": {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "registrant",
+              "mine",
+              "title",
+              "request",
+              "agent",
+              "trigger",
+              "thread",
+              "approval_mode",
+              "max_lateness_seconds",
+              "status",
+              "halt",
+              "halted_at",
+              "halt_reason",
+              "successor",
+              "next_scheduled_at",
+              "consecutive_failures",
+              "created_by_run_id",
+              "revision",
+              "created_at",
+              "updated_at",
+              "may_edit",
+              "may_manage",
+              "may_resume"
+            ],
+            "type": "object"
+          },
+          "ThreadMode": {
+            "description": "Which Thread a tick's Run is started in.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A new Thread on every tick.",
+                "properties": {
+                  "kind": {
+                    "enum": ["new"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Always the same Thread of the Schedule's Workspace.",
+                "properties": {
+                  "kind": {
+                    "enum": ["fixed"],
+                    "type": "string"
+                  },
+                  "thread_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "thread_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "Trigger": {
+            "description": "When a Schedule fires.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A five-field cron expression (minute, hour, day of month, month, day of\nweek) read in an IANA time zone.",
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["cron"],
+                    "type": "string"
+                  },
+                  "time_zone": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "expression", "time_zone"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A fixed gap, counted from when the Schedule was registered or resumed.",
+                "properties": {
+                  "every_seconds": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["interval"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "every_seconds"],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ScheduleView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "schedule-run-now",
+    "path": "/api/schedules/{id}/run-now",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "RunNowView": {
+            "properties": {
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["task_id", "thread_id"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/RunNowView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "DELETE",
+    "name": "schedule-delete",
+    "path": "/api/schedules/{id}",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DeletedView": {
+            "properties": {
+              "deleted": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["deleted"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DeletedView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/schedules.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
     "name": "run-subnodes",
     "path": "/api/runs/{id}/subnodes",
     "query_parameters": [],

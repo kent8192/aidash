@@ -108,6 +108,7 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"run.control",
 	"run.message",
 	"run.read",
+	crate::schedules::CREATE,
 	"scratch.create",
 	"semantic.index.manage",
 	"semantic.read",

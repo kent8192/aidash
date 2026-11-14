@@ -81,6 +81,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0066_native_context_recovery"),
 	("registry", "0067_optional_memory_roles"),
 	("registry", "0068_reject_new_compaction_deciders"),
+	("registry", "0069_schedule_tools"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -130,6 +131,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0126_remove_generated_compaction_state"),
 	("execution", "0127_remove_generated_summary"),
 	("execution", "0128_remove_generated_summary_state"),
+	("execution", "0129_generation_scheduled"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -154,6 +156,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0126_remove_generated_compaction_state"),
 	("execution", "0127_remove_generated_summary"),
 	("execution", "0128_remove_generated_summary_state"),
+	("execution", "0129_generation_scheduled"),
 ];
 
 async fn history_size() -> usize {
@@ -196,10 +199,10 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0068_reject_new_compaction_deciders");
+	assert_eq!(registry[0].name, "0069_schedule_tools");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0128_remove_generated_summary_state");
+	assert_eq!(execution[0].name, "0129_generation_scheduled");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
@@ -214,7 +217,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		111
+		112
 	);
 	let tables = migrations
 		.iter()
@@ -480,14 +483,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0129_policy_probe")
+		.get_migration("execution", "0130_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0128_remove_generated_summary_state".to_owned()
+			"0129_generation_scheduled".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -545,6 +548,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0126_remove_generated_compaction_state"),
 			("execution", "0127_remove_generated_summary"),
 			("execution", "0128_remove_generated_summary_state"),
+			("execution", "0129_generation_scheduled"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -715,14 +719,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0028_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0031_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0027_task_journal_range".to_owned()
+			"0030_schedules_model_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -1013,7 +1017,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		111
+		112
 	);
 }
 
@@ -2116,6 +2120,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0066_native_context_recovery"),
 			("registry", "0067_optional_memory_roles"),
 			("registry", "0068_reject_new_compaction_deciders"),
+			// Depends on 0068 and replaces the descriptor contract it reads.
+			("registry", "0069_schedule_tools"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5150,6 +5156,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
 			("workspaces", "0027_task_journal_range"),
+			("workspaces", "0028_schedules"),
+			("workspaces", "0029_schedules_row_level_security"),
+			("workspaces", "0030_schedules_model_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5207,6 +5216,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
 			("workspaces", "0027_task_journal_range"),
+			("workspaces", "0028_schedules"),
+			("workspaces", "0029_schedules_row_level_security"),
+			("workspaces", "0030_schedules_model_state"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5272,6 +5284,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
 			("workspaces", "0027_task_journal_range"),
+			("workspaces", "0028_schedules"),
+			("workspaces", "0029_schedules_row_level_security"),
+			("workspaces", "0030_schedules_model_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

@@ -33,6 +33,7 @@ pub(crate) struct NativeProvisioning {
 struct Activation {
 	runtime: Federation,
 	access: Access,
+	generation: Uuid,
 }
 struct Terminal {
 	runtime: Federation,
@@ -109,6 +110,7 @@ impl GenerationProvisioning for NativeProvisioning {
 		Ok(Box::new(Activation {
 			runtime: self.runtime.clone(),
 			access,
+			generation: job.id,
 		}))
 	}
 	async fn begin_terminal(
@@ -326,10 +328,15 @@ impl GenerationActivationScope for Activation {
 		.map_err(Into::into)
 	}
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> aidash_application::Result<()> {
-		execution::delegate_in(&self.runtime, &mut self.access, task, agent)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+		execution::delegate_in(&self.runtime, &mut self.access, task, agent).await?;
+		// The generated Agent's Run keeps the mark of the Run that asked for it.
+		crate::apps::workspaces::repositories::schedules::inherit_generation(
+			&mut **self.access.tx,
+			self.generation,
+			task,
+		)
+		.await?;
+		Ok(())
 	}
 }
 

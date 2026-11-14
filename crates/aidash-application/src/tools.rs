@@ -835,6 +835,9 @@ impl Builtin {
 			| "capability_load"
 			| "capability_unload"
 			| "skill_asset_read" => exposure::invoke(self.name, ctx, input).await,
+			"schedule_create" | "schedule_list" | "schedule_update" | "schedule_delete" => {
+				ctx.operations.schedule(key, self.name, input).await
+			}
 			_ => Err(Error::Invalid("unknown tool".into())),
 		}
 	}
@@ -1015,6 +1018,34 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Explicitly reflect over currently admitted memory with bounded exact-citation reads. This operation does not admit new learning.",
 			schema: json!(schemars::schema_for!(aidash_domain::memory::RecallQuery)),
+		},
+		Builtin {
+			name: "schedule_create",
+			contract: aidash_domain::tool::builtin_contract("schedule_create")
+				.expect("declared builtin"),
+			description: "Register a Schedule that starts a Task for an Agent on a recurring time, acting as the person who started this conversation, in this Workspace. Every Run it starts acts as that person and follows their approvals. There are no one-time Schedules. The person is asked to approve this call unless their Approval Mode or Approval Rules decide it.",
+			schema: json!(schemars::schema_for!(crate::schedules::tool::Create)),
+		},
+		Builtin {
+			name: "schedule_list",
+			contract: aidash_domain::tool::builtin_contract("schedule_list")
+				.expect("declared builtin"),
+			description: "List the Schedules of this Workspace with their next time, state and whether they act as the person who started this conversation.",
+			schema: json!(schemars::schema_for!(crate::schedules::tool::List)),
+		},
+		Builtin {
+			name: "schedule_update",
+			contract: aidash_domain::tool::builtin_contract("schedule_update")
+				.expect("declared builtin"),
+			description: "Change a Schedule that acts as the person who started this conversation. Only the fields given change. The person is asked to approve this call unless their Approval Mode or Approval Rules decide it.",
+			schema: json!(schemars::schema_for!(crate::schedules::tool::Update)),
+		},
+		Builtin {
+			name: "schedule_delete",
+			contract: aidash_domain::tool::builtin_contract("schedule_delete")
+				.expect("declared builtin"),
+			description: "Delete, or with action \"pause\" pause, a Schedule that acts as the person who started this conversation. The person is asked to approve this call unless their Approval Mode or Approval Rules decide it.",
+			schema: json!(schemars::schema_for!(crate::schedules::tool::Delete)),
 		},
 		Builtin {
 			name: "connection_request",

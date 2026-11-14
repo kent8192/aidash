@@ -14,6 +14,7 @@ export const settingsSections = [
   "planConnections",
   "marketplace",
   "approvals",
+  "schedules",
   "node",
   "nodes",
 ] as const;
@@ -29,12 +30,13 @@ export const visibleSettingsSections = [
   "planConnections",
   "marketplace",
   "approvals",
+  "schedules",
 ] as const;
 /** Settings sections about the signed-in person, not the Deployment: a
  *  Deployment Administrator acts as nobody in a Tenant and has none. */
 export const personalSettingsSections: Partial<
   Record<(typeof settingsSections)[number], true>
-> = { approvals: true, planConnections: true };
+> = { approvals: true, planConnections: true, schedules: true };
 /** Settings sections that edit a Tenant's content or settings. A Deployment
  *  Administrator's role grants no authority over them (ADR 0102): they stay
  *  hidden in that context and point at a Tenant Mapping instead. */

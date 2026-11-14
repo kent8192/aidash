@@ -99,7 +99,10 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			));
 		}
 		let entry = authority.validate_content(&job.pinned_draft).await?;
-		let snapshot = authority.bindings(&job.pinned_draft, &entry).await?;
+		let snapshot = authority
+			.bindings(&job.pinned_draft, &entry)
+			.await?
+			.for_workbench_test();
 		let saved = admitted_session.scenario["binding_snapshot"].clone();
 		if saved != serde_json::to_value(&snapshot)? {
 			return Err(Error::Conflict(

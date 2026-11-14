@@ -627,102 +627,112 @@ pub(crate) async fn readable_thread(
 	Ok(())
 }
 
+/// Starts an Agent's Run in a Thread inside `access`'s transaction, as its
+/// subject: the Task, its binding to the Thread and the delegation. Schedules
+/// start their ticks through it as their Registrant (#557). The Task is None
+/// when the idempotency key returned an earlier start.
+pub(crate) async fn start_in_thread(
+	f: &Federation,
+	access: &mut Access,
+	(workspace, thread, agent): (Uuid, Uuid, String),
+	input: Enqueue,
+) -> Result<(Area, Option<Uuid>)> {
+	let channel: crate::apps::workspaces::models::ChannelThread = {
+		let query_bind_1 = thread;
+		let query_bind_2 = workspace;
+		crate::database::query_as(
+			&sessions::select("channel_threads")
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						),
+					),
+				)
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_2.to_owned()).into()],
+						),
+					),
+				)
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **access.tx)
+		.await?
+	}
+	.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
+	let channel = crate::collaboration::ChannelThread::from(channel);
+	// Thread deletion takes this same row lock before writing its tombstone.
+	// Recheck visibility after acquiring it so a run cannot commit behind a
+	// delete that already passed its final area page.
+	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
+	let digest = crate::registry::digest(&json!(["thread_run", workspace, thread, agent, input]));
+	if let Some(previous) = sessions::cached(access, input.idempotency_key, &digest).await? {
+		let id = serde_json::from_value(previous["area_id"].clone())?;
+		return Ok((sessions::load(access, id).await?, None));
+	}
+	access
+		.workspace_record(workspace, "message", channel.root_message_id)
+		.await?;
+	check_url_intents(&input.read_pages)?;
+	let resource = access.workspace(workspace).await?;
+	access.require(&resource, "task.create").await?;
+	let creator = access.identity.subject.clone();
+	let task = f
+		.store
+		.create_task_in(
+			&mut access.tx,
+			workspace,
+			&NewTask {
+				title: input.title,
+				description: input.description,
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			&creator,
+			None,
+		)
+		.await?;
+	sessions::bind_task(access, task.id, thread).await?;
+	let delegation = execution::delegate_in(
+		f,
+		access,
+		task.id,
+		&EntityRef {
+			id: agent,
+			version: input.agent_version,
+		},
+	)
+	.await?;
+	let run = run_of_task(access, task.id).await?;
+	let _ = delegation;
+	record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
+	let area = sessions::for_run(access, &run).await?;
+	sessions::cache(
+		access,
+		input.idempotency_key,
+		&digest,
+		&json!({"area_id":area.id}),
+	)
+	.await?;
+	Ok((area, Some(task.id)))
+}
+
 pub(crate) async fn thread_run(
 	f: Federation,
 	actor: Actor,
-	(workspace, thread, agent): (Uuid, Uuid, String),
+	target: (Uuid, Uuid, String),
 	input: Enqueue,
 ) -> Result<Area> {
 	let mut access = access(&f, actor).await?;
-	let result = async {
-		let channel: crate::apps::workspaces::models::ChannelThread = {
-			let query_bind_1 = thread;
-			let query_bind_2 = workspace;
-			crate::database::query_as(
-				&sessions::select("channel_threads")
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-					)
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **access.tx)
-			.await?
-		}
-		.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
-		let channel = crate::collaboration::ChannelThread::from(channel);
-		// Thread deletion takes this same row lock before writing its tombstone.
-		// Recheck visibility after acquiring it so a run cannot commit behind a
-		// delete that already passed its final area page.
-		super::thread_lifecycle::visible(&mut access.tx, thread).await?;
-		let digest =
-			crate::registry::digest(&json!(["thread_run", workspace, thread, agent, input]));
-		if let Some(previous) =
-			sessions::cached(&mut access, input.idempotency_key, &digest).await?
-		{
-			let id = serde_json::from_value(previous["area_id"].clone())?;
-			return sessions::load(&mut access, id).await;
-		}
-		access
-			.workspace_record(workspace, "message", channel.root_message_id)
-			.await?;
-		check_url_intents(&input.read_pages)?;
-		let resource = access.workspace(workspace).await?;
-		access.require(&resource, "task.create").await?;
-		let creator = access.identity.subject.clone();
-		let task = f
-			.store
-			.create_task_in(
-				&mut access.tx,
-				workspace,
-				&NewTask {
-					title: input.title,
-					description: input.description,
-					requirements: json!({}),
-					dependencies: vec![],
-					parent_id: None,
-				},
-				&creator,
-				None,
-			)
-			.await?;
-		sessions::bind_task(&mut access, task.id, thread).await?;
-		let delegation = execution::delegate_in(
-			&f,
-			&mut access,
-			task.id,
-			&EntityRef {
-				id: agent,
-				version: input.agent_version,
-			},
-		)
-		.await?;
-		let run = run_of_task(&mut access, task.id).await?;
-		let _ = delegation;
-		record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
-		let area = sessions::for_run(&mut access, &run).await?;
-		sessions::cache(
-			&mut access,
-			input.idempotency_key,
-			&digest,
-			&json!({"area_id":area.id}),
-		)
-		.await?;
-		Ok(area)
-	}
-	.await;
+	let result = start_in_thread(&f, &mut access, target, input)
+		.await
+		.map(|(area, _)| area);
 	let result = access.finish(result).await?;
 	f.notify.notify_waiters();
 	Ok(result)

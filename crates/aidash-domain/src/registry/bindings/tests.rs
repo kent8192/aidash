@@ -694,3 +694,50 @@ fn legacy_harness_contract_accepts_every_projection_version() {
 		);
 	}
 }
+
+#[test]
+fn a_workbench_test_excludes_only_the_schedule_tools() {
+	// Arrange: one Schedule tool and one other default tool.
+	let bound = |operation: &str| {
+		let descriptor =
+			crate::tool::providers::core_descriptor("aidash://node-a", operation).unwrap();
+		let definition: Entry = serde_json::from_value(json!({"id":operation,"version":"1.0.0","kind":"tool","name":{"en":operation},"description":{"en":operation},"config":descriptor})).unwrap();
+		ResolvedBinding {
+			identity: QualifiedRef {
+				registry_deployment: "aidash://node-a".into(),
+				id: operation.into(),
+				version: "1.0.0".into(),
+			},
+			definition,
+			digest: String::new(),
+			origin: BindingOrigin::Default,
+			alias: Some(operation.into()),
+			narrow: Default::default(),
+			installation: None,
+			provider_contract_digest: None,
+			provider_implementation: None,
+			excluded_reason: None,
+		}
+	};
+	let snapshot = BindingSnapshot {
+		schema_version: 1,
+		agent: QualifiedRef {
+			registry_deployment: "aidash://node-a".into(),
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		},
+		remote: false,
+		bindings: vec![bound("schedule_create"), bound("task_create")],
+		definitions: vec![],
+		foreign_agents: vec![],
+		agent_plugins: vec![],
+	};
+	// Act
+	let tested = snapshot.for_workbench_test();
+	// Assert
+	assert_eq!(
+		tested.bindings[0].excluded_reason.as_deref(),
+		Some(WORKBENCH_SCHEDULE_EXCLUSION)
+	);
+	assert_eq!(tested.bindings[1].excluded_reason, None);
+}

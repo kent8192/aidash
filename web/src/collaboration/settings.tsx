@@ -4,6 +4,7 @@ import { selfHostedPlanConnections } from "@slots/plan-connections";
 import {
   Bot,
   Boxes,
+  CalendarClock,
   ChevronRight,
   Container,
   KeyRound,
@@ -61,6 +62,7 @@ import { ModelSource } from "../model-source";
 import { PlanConnectionsPage } from "../plan-connections";
 import { ProviderCredentialsPage } from "../provider-credentials";
 import { RecordView } from "../record-view";
+import { SchedulesPanel } from "../schedules";
 import { SemanticPage } from "../semantic";
 import type { State } from "../types";
 import { Badge, Empty, Panel, useEntityName, useI18n } from "../ui";
@@ -89,6 +91,7 @@ const sectionIcons: Partial<Record<SettingsSection, LucideIcon>> = {
   planConnections: KeyRound,
   marketplace: Store,
   approvals: ShieldCheck,
+  schedules: CalendarClock,
 };
 
 const listCopy = {
@@ -671,6 +674,16 @@ export function Configuration({
           {section === "marketplace" && deploymentAdministrator && (
             <MarketplaceAdministration />
           )}
+          {section === "schedules" &&
+            (data.access.kind === "subject" ? (
+              <SchedulesPanel
+                key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                scope={{ kind: "mine" }}
+                administrator={can("schedule.administer")}
+              />
+            ) : (
+              <Notice role="status">{approvalCopy[locale].personalOnly}</Notice>
+            ))}
           {section === "approvals" &&
             (data.access.kind === "subject" ? (
               <ApprovalSettingsPage

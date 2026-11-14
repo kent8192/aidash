@@ -323,19 +323,22 @@ Cross-Node atomic manifests have a narrower durable-admission contract: every ne
 
 Scoped workspace creation saves tenant and owner independently of editable workspace state, in the same transaction as the workspace, event and authorization decision. Resource kind is `workspace`, resource ID is its UUID, and trusted attributes are `owner` (the creating subject ID) and `workspace_id`. Environment attributes are `node_id` and `transport: "api"`. Setting `owner` or `tenant` inside workspace state never changes authority; extra creation fields are rejected.
 
-| Operation                                               | Required action                                                                                           |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Create a workspace                                      | `workspace.create`, and `node.use` on the chosen Node (the body's `node`, else the Tenant's default Node) |
-| Read a workspace snapshot or include it in `/api/state` | `workspace.read`                                                                                          |
-| Update workspace state                                  | Both `workspace.read` and `workspace.update` (the response includes the full workspace)                   |
-| Create a task in a workspace                            | `task.create`                                                                                             |
-| Append a workspace message                              | `message.create`                                                                                          |
-| Read or stream workspace events                         | Both `workspace.read` and `workspace.events`                                                              |
-| List a Task's Runs                                      | `workspace.read`, `task.read` on the Task and Run visibility for each returned Run                        |
-| List Human Requests                                     | `workspace.read`, Run visibility and `human.read` on each returned request                                |
-| Configure the workspace's semantic index                | Both `workspace.read` and `semantic.index.manage` (#360)                                                  |
-| Read the semantic index's cleanup state                 | Both `workspace.read` and `semantic.read`                                                                 |
-| Stream a Run's inference progress                       | The authority of a run-scoped event of that Run (below)                                                   |
+| Operation                                                | Required action                                                                                           |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Create a workspace                                       | `workspace.create`, and `node.use` on the chosen Node (the body's `node`, else the Tenant's default Node) |
+| Read a workspace snapshot or include it in `/api/state`  | `workspace.read`                                                                                          |
+| Update workspace state                                   | Both `workspace.read` and `workspace.update` (the response includes the full workspace)                   |
+| Create a task in a workspace                             | `task.create`                                                                                             |
+| Append a workspace message                               | `message.create`                                                                                          |
+| Read or stream workspace events                          | Both `workspace.read` and `workspace.events`                                                              |
+| List a Task's Runs                                       | `workspace.read`, `task.read` on the Task and Run visibility for each returned Run                        |
+| List Human Requests                                      | `workspace.read`, Run visibility and `human.read` on each returned request                                |
+| Configure the workspace's semantic index                 | Both `workspace.read` and `semantic.index.manage` (#360)                                                  |
+| Read the semantic index's cleanup state                  | Both `workspace.read` and `semantic.read`                                                                 |
+| Stream a Run's inference progress                        | The authority of a run-scoped event of that Run (below)                                                   |
+| Register a Schedule, or change, pause or delete your own | `workspace.read`, `schedule.create` and `task.create` on its Workspace; it acts as you (ADR 0134)         |
+| Pause or delete anyone's Schedule, name a successor      | `schedule.administer` on the Tenant; only the Registrant, or a named successor, resumes a Schedule        |
+| Set the Tenant's Schedule limits                         | `schedule.administer` on the Tenant, within the Deployment's `[schedules]` ceilings                       |
 
 For example, an allow policy with `subjects: {"ids":["alice"]}`, these actions, `resources: {"kinds":["workspace"]}` and a condition comparing resource `/owner` to literal `"alice"` grants Alice access to her workspaces in that tenant. Another tenant's Alice cannot access them. Workspace read opens the workspace. Its tasks, artifacts and messages additionally require `task.read`, `artifact.read` and `message.read` on each stored record. Artifact reads also require the producing task to be readable. Existing policies that only grant workspace actions must explicitly add these resource actions; no implicit content grant is retained.
 

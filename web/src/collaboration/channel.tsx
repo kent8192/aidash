@@ -59,6 +59,7 @@ import { FileCitationProvider } from "./file-citations";
 import { corePreviewAvailability } from "../generated/aidash";
 import type { PreviewAvailability } from "../generated/models";
 import { TimelineStrip } from "./request/timeline";
+import { SchedulesPanel } from "../schedules";
 import { Phase, SegmentedProgress } from "./request/progress";
 import { parseOwner, runDisplayStatus } from "./request/canvas-model";
 import { Button } from "../components/ui/button";
@@ -89,6 +90,7 @@ const requestCopy = {
     files: "ファイル",
     viewProgress: "進捗を見る",
     progressTitle: "依頼の進捗",
+    schedules: "スケジュール",
     overview: "概要",
     recovery: "整合性と復旧",
     details: "依頼の詳細",
@@ -123,6 +125,7 @@ const requestCopy = {
     files: "Files",
     viewProgress: "View progress",
     progressTitle: "Request progress",
+    schedules: "Schedules",
     overview: "Overview",
     recovery: "Consistency and recovery",
     details: "Request details",
@@ -285,7 +288,7 @@ export function Channel({
     null,
   );
   const [tab, setTab] = useState<
-    "conversation" | "canvas" | "tasks" | "results"
+    "conversation" | "canvas" | "tasks" | "results" | "schedules"
   >("conversation");
   const [dockOpen, setDockOpen] = useState(true);
   const [sheetTab, setSheetTab] = useState<
@@ -738,6 +741,7 @@ export function Channel({
                   {view.results}
                   {count(artifacts.length)}
                 </TabsTrigger>
+                <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
               </TabsList>
             )}
             {desktop ? (
@@ -794,6 +798,9 @@ export function Channel({
                       {view.results}
                       {count(artifacts.length)}
                     </TabsTrigger>
+                    <TabsTrigger value="schedules">
+                      {view.schedules}
+                    </TabsTrigger>
                   </TabsList>
                   <Button
                     variant="ghost"
@@ -826,6 +833,14 @@ export function Channel({
                 className="flex min-h-0 flex-1 flex-col"
               >
                 {resultPane}
+              </TabsContent>
+              <TabsContent
+                value="schedules"
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+              >
+                <SchedulesPanel
+                  scope={{ kind: "workspace", workspace: workspace.id }}
+                />
               </TabsContent>
             </aside>
           </Tabs>

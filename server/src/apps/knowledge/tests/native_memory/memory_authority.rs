@@ -67,7 +67,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 ) {
 	let database = database.await;
 	let endpoint = format!("{}/v1", provider.url);
-	let (store, registry, _) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, registry, _) = setup_endpoint_window(&database, bounds, &endpoint, 65_536).await;
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let coordinator = entry(
 		"agent",

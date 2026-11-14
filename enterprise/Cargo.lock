@@ -194,6 +194,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "chrono-tz 0.10.4",
  "getrandom 0.3.4",
  "http 1.5.0",
  "jsonschema",
