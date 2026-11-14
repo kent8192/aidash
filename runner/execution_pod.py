@@ -38,6 +38,17 @@ def mcp_helper_command(*args):
             '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/mcp_session.py', *args]
 
 
+def verify_adopted_result(result, key):
+    import hashlib
+    import hmac
+    import json
+    if not isinstance(result, dict) or not isinstance(key, bytes) or not isinstance(result.get('auth'), str):
+        return False
+    payload = {name: value for name, value in result.items() if name != 'auth'}
+    data = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+    return hmac.compare_digest(result['auth'], hmac.new(key, data, hashlib.sha256).hexdigest())
+
+
 class CommandQueue:
     """Bound active commands and allow a Run's queued foreground work to stop."""
 
@@ -496,6 +507,7 @@ class ExecutionPodController:
         self.futures = {}
         self.process_proxies = {}
         self.mcp_locks = {}
+        self.left_result_keys = {}
         self.live_output = {}
         self.foreground_jobs = {}
         self.viewers = {}
@@ -1397,7 +1409,8 @@ print(json.dumps(r))'''
 
     def _command_path(self, operation_id):
         import uuid
-        if not isinstance(operation_id, str) or str(uuid.UUID(operation_id)) != operation_id:
+        base = operation_id[:-5] if isinstance(operation_id, str) and operation_id.endswith('.left') else operation_id
+        if not isinstance(base, str) or str(uuid.UUID(base)) != base:
             raise ValueError('canonical operation UUID required')
         directory = self.backend.root / 'execution-v2'
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1466,7 +1479,7 @@ print(json.dumps(r))'''
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
                       'status', 'background', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
-                      'error_code', 'message', 'session_replaced', 'output_fetched_at') if key in record}
+                      'error_code', 'message', 'session_replaced', 'output_fetched_at', 'left_running') if key in record}
             if record['status'] == 'running' and operation_id in self.live_output:
                 result.update(self.live_output[operation_id])
             if record.get('kind') == 'python_cell' and record['status'] == 'completed' and record.get('exit_code') == 0:
@@ -1490,6 +1503,8 @@ print(json.dumps(r))'''
         if not self.admitted:
             raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         operation_id = request['operation_id']
+        if not isinstance(operation_id, str) or operation_id.endswith('.left'):
+            raise ValueError('canonical operation UUID required')
         path = self._command_path(operation_id)
         scratch_id, run_id, code = request['scratch_space_id'], request['run_id'], request['code']
         name = scratch_resource_name(scratch_id)
@@ -1585,6 +1600,8 @@ print(json.dumps(r))'''
 
     def _cancelled_command(self, operation_id, future):
         with self.lock:
+            if future.done():
+                self.left_result_keys.pop(operation_id, None)
             try:
                 if future.cancelled():
                     self.process_proxies.pop(operation_id, None)
@@ -1628,7 +1645,13 @@ print(json.dumps(r))'''
                 observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                              helper_command('result', operation_id), check=False)
                 if observed.returncode == 0:
-                    return json.loads(observed.stdout)
+                    outcome = json.loads(observed.stdout)
+                    if record.get('kind') == 'left' and record.get('docker_enabled'):
+                        with self.lock:
+                            key = self.left_result_keys.get(operation_id)
+                        if not verify_adopted_result(outcome, key):
+                            raise ValueError('unverified adopted result')
+                    return outcome
                 pod = self._get('pod', name)
                 if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                     if publish_saved:
@@ -1678,6 +1701,7 @@ print(json.dumps(r))'''
         try:
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
             result_deadline = None if transport_timeout is None else time.monotonic() + transport_timeout
+            nonce = None
             if record['docker_enabled']:
                 import secrets
                 nonce = secrets.token_hex(32)
@@ -1719,7 +1743,7 @@ print(json.dumps(r))'''
                                      **transport['output'])
                 self._stop_untracked_command(record)
             else:
-                self._finish_command(record, outcome, transport['output'])
+                self._finish_command(record, outcome, transport['output'], left_auth=nonce.encode('ascii') if nonce else None)
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
@@ -1820,7 +1844,7 @@ print(json.dumps(r))'''
         public['truncated'] |= outcome.get('output_incomplete', False) or outcome.get('output_truncated', False)
         return public
 
-    def _finish_command(self, record, outcome, output, *, allow_late=False):
+    def _finish_command(self, record, outcome, output, *, allow_late=False, left_auth=None):
         operation_id = record['operation_id']
         if (record.get('kind') == 'python_cell' and
             (outcome['status'] in ('timed_out', 'stopped') or
@@ -1830,7 +1854,12 @@ print(json.dumps(r))'''
             except Exception:
                 if not allow_late:
                     self._stop_matching_pod(record['scratch_space_id'], record['pod_uid'])
-        fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message') if key in outcome}
+        left = outcome.get('left_running')
+        if left is not None:
+            if record.get('background') or left != operation_id + '.left':
+                raise ValueError('invalid adopted operation ID')
+            self._adopt_left(record, left, left_auth)
+        fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message', 'left_running') if key in outcome}
         if output.get('truncated') and not fields.get('message') and outcome.get('output_incomplete'):
             fields['message'] = 'Output was lost to a Runner restart or a full disk'
         if allow_late:
@@ -1843,6 +1872,34 @@ print(json.dumps(r))'''
                               helper_command('forget', operation_id), check=False, timeout=5)
         except Exception:
             pass
+
+    def _adopt_left(self, record, operation_id, left_auth=None):
+        import time
+        from control import save
+        scratch = record['scratch_space_id']
+        if record.get('docker_enabled') and not left_auth:
+            raise ValueError('adopted Docker process requires authenticated result tracking')
+        with self._space_lock(scratch):
+            self._ensure_journal_index()
+            path = self._command_path(operation_id)
+            with self.lock:
+                if path.exists():
+                    return
+                adopted = {key: record[key] for key in ('scratch_space_id', 'run_id', 'pod', 'pod_uid',
+                           'docker_enabled', 'cwd') if key in record}
+                adopted.update(operation_id=operation_id, status='running', background=True,
+                               kind='left', accepted_at=time.time(), running_at=time.time())
+                save(path, adopted)
+                self.journal_index.setdefault(scratch, set()).add(path.name)
+                self.journal_metadata[path.name] = self._prune_metadata(adopted)
+                if left_auth:
+                    self.left_result_keys[operation_id] = left_auth
+                if scratch not in self.queues:
+                    self.queues[scratch] = CommandQueue()
+                future = self.queues[scratch].submit(record['run_id'], operation_id, self._resume_command,
+                                                     background=True)
+                self.futures[operation_id] = future
+                future.add_done_callback(lambda done: self._cancelled_command(operation_id, done))
 
     def _resume_command(self, operation_id):
         import json
@@ -1870,6 +1927,10 @@ print(json.dumps(r))'''
                     if type(created) is not bool:
                         raise ValueError('invalid claim response')
                     if created:
+                        if record.get('kind') == 'left' and record.get('docker_enabled'):
+                            self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True)
+                            self._stop_untracked_command(record)
+                            return
                         self._update_command(operation_id, status='cancelled', outcome='not_started')
                         return
                     break
@@ -1905,7 +1966,8 @@ print(json.dumps(r))'''
     def _stop_untracked_command(self, record):
         import uuid
         operation_id = record['operation_id']
-        gate = self.command_stop_locks[uuid.UUID(operation_id).int % len(self.command_stop_locks)]
+        base = operation_id[:-5] if operation_id.endswith('.left') else operation_id
+        gate = self.command_stop_locks[uuid.UUID(base).int % len(self.command_stop_locks)]
         with gate:
             current = self._read_command(operation_id)
             if current.get('status') != 'interrupted' or not current.get('stop_pending'):
@@ -2076,6 +2138,9 @@ print(json.dumps(r))'''
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
 
     def _mcp_exec(self, record, action, *args, data=None, timeout=10):
+        pod = self._get('pod', record['pod'])
+        if not pod or pod.get('metadata', {}).get('uid') != record.get('pod_uid'):
+            raise ExecutionPodError('pod_interrupted', 'The original Execution Pod is unavailable')
         mode = 'docker' if record.get('docker_enabled') else 'normal'
         return self.backend.kube(['exec', '-i', record['pod'], '-c', 'execution', '--'] +
             helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.',

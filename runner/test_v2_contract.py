@@ -211,6 +211,7 @@ def test_mcp_routes_start_call_and_stop_a_run_owned_session(tmp_path):
     controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
     controller.submit_command = Mock(return_value={'status': 'queued'})
     controller.command_result = Mock(return_value={'status': 'running'})
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
     controller._read_command = Mock(return_value={'pod_uid': 'uid', 'pod': 'pod', 'docker_enabled': False,
                                                    'kind': 'mcp_session', 'background': True, 'status': 'running'})
     request = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'install': '',
@@ -220,3 +221,70 @@ def test_mcp_routes_start_call_and_stop_a_run_owned_session(tmp_path):
                                   'message': {'jsonrpc': '2.0', 'id': 1, 'method': 'ping'}})
     assert result == {'message': {'jsonrpc': '2.0', 'id': 1, 'result': 'ok'}}
     assert controller.submit_command.call_args.args[0]['proxy_credential'] == 'token'
+
+
+def test_left_running_record_is_listed_and_its_log_is_readable(tmp_path):
+    import base64
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    from types import SimpleNamespace
+    from control import Handler
+    from sandbox_v2 import operation_output
+    operation = '00000000-0000-4000-8000-000000000001.left'
+    (tmp_path / (operation + '.stdout')).write_bytes(b'left output')
+    def kube(args, **kwargs):
+        chunk = operation_output(operation, args[-3], None if args[-2] == 'tail' else int(args[-2]),
+                                 int(args[-1]), directory=tmp_path)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(chunk).encode())
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {}, admitted=True)
+    controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+        'scratch_space_id': 's', 'run_id': 'r', 'status': 'running', 'background': True, 'pod': 'pod'}))
+    assert controller.background_processes('s')['processes'][0]['operation_id'] == operation
+    chunk = controller.background_log({'operation_id': operation, 'stream': 'stdout', 'limit': 6})
+    assert base64.b64decode(chunk['data']) == b'output'
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server.runner = SimpleNamespace(token='x' * 32, execution_pods=controller)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_port)
+        connection.request('POST', '/v2/background/log', json.dumps({'operation_id': operation,
+                           'stream': 'stdout', 'limit': 6}), {'Authorization': 'Bearer ' + 'x' * 32})
+        response = connection.getresponse()
+        assert response.status == 200
+        assert base64.b64decode(json.loads(response.read())['data']) == b'output'
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_foreground_completion_registers_adopted_process_for_its_run(tmp_path):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    operation = '00000000-0000-4000-8000-000000000001'
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=Mock()), {}, admitted=True)
+    record = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+              'pod_uid': 'uid', 'status': 'running', 'background': False, 'docker_enabled': False}
+    controller._command_path(operation).write_text(json.dumps(record))
+    controller.queues['s'] = SimpleNamespace(submit=Mock(return_value=Future()))
+    controller._finish_command(record, {'status': 'completed', 'exit_code': 0,
+        'left_running': operation + '.left'}, {'stdout': '', 'stderr': '', 'truncated': False})
+    result = controller.command_result(operation)
+    assert result['left_running'] == operation + '.left'
+    processes = controller.background_processes('s')['processes']
+    assert [(item['operation_id'], item['run_id'], item['status']) for item in processes] == [
+        (operation + '.left', 'r', 'running')]
+
+
+def test_docker_adopted_result_authentication_rejects_tampering():
+    from sandbox_v2 import sign_result
+    from execution_pod import verify_adopted_result
+    result = {'operation_id': '00000000-0000-4000-8000-000000000001.left',
+              'run_id': 'r', 'status': 'stopped'}
+    result['auth'] = sign_result(result, b'secret')
+    assert verify_adopted_result(result, b'secret')
+    assert not verify_adopted_result(dict(result, status='completed'), b'secret')
+    assert not verify_adopted_result(result, b'other')
