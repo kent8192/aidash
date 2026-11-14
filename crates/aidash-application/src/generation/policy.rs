@@ -87,10 +87,7 @@ pub fn validate(
 ) -> Result<AgentConfig> {
 	if let Some(remote) = &spec.remote {
 		remote.validate()?;
-		if (spec.embedding.is_some() && remote.embedding.is_some())
-			|| (spec.compaction.is_some() && remote.compaction.is_some())
-			|| (spec.summary.is_some() && remote.summary.is_some())
-		{
+		if spec.embedding.is_some() && remote.embedding.is_some() {
 			return Err(Error::Invalid(
 				"select one owning node for each generation provider allowance".into(),
 			));
@@ -102,23 +99,11 @@ pub fn validate(
 			"generation template must define an agent".into(),
 		));
 	}
-	if spec.compaction.as_ref().is_some_and(|c| {
-		!(1..=1_000_000).contains(&c.call_budget)
-			|| !(1..=c.call_budget).contains(&c.calls_per_agent)
-	}) {
-		return Err(Error::Invalid("invalid compaction call limits".into()));
-	}
 	if spec.embedding.as_ref().is_some_and(|c| {
 		!(1..=1_000_000).contains(&c.call_budget)
 			|| !(1..=c.call_budget).contains(&c.calls_per_agent)
 	}) {
 		return Err(Error::Invalid("invalid embedding call limits".into()));
-	}
-	if spec.summary.as_ref().is_some_and(|c| {
-		!(1..=1_000_000).contains(&c.call_budget)
-			|| !(1..=c.call_budget).contains(&c.calls_per_agent)
-	}) {
-		return Err(Error::Invalid("invalid summary call limits".into()));
 	}
 	let limits = &spec.limits;
 	if !(1..=512).contains(&limits.max_agents)
@@ -220,26 +205,13 @@ async fn write_in(
 		for (reference, kind) in snapshot
 			.definitions
 			.iter()
-			.filter(|d| {
-				d.identity != snapshot.agent
-					&& !aidash_domain::registry::bindings::defaults::is_implicit_compaction(
-						&snapshot,
-						&d.identity,
-					)
-			})
+			.filter(|d| d.identity != snapshot.agent)
 			.map(|d| (d.identity.local(), d.definition.kind.as_str()))
-			.chain(
-				spec.compaction
-					.iter()
-					.map(|c| (c.provider.clone(), "decider")),
-			)
 			.chain(
 				spec.embedding
 					.iter()
 					.map(|c| (c.provider.clone(), "embedding")),
-			)
-			.chain(spec.summary.iter().map(|c| (c.provider.clone(), "model")))
-		{
+			) {
 			let metadata = scope.approved(tenant, &reference).await?;
 			let entry: aidash_domain::registry::Entry =
 				serde_json::from_value(metadata.ok_or_else(|| {

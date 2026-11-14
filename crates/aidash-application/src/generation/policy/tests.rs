@@ -47,9 +47,7 @@ fn policy(id: &str, revision: i64, spec: Spec) -> Policy {
 		spec,
 		generated_count: 2,
 		allocated_tokens: 10000,
-		allocated_compaction_calls: 3,
 		allocated_embedding_calls: 4,
-		allocated_summary_calls: 0,
 	}
 }
 
@@ -565,10 +563,9 @@ async fn listing_keeps_order_and_shared_authority_while_filtering_subjects(spec:
 			(
 				policy.generated_count,
 				policy.allocated_tokens,
-				policy.allocated_compaction_calls,
 				policy.allocated_embedding_calls
 			),
-			(2, 10000, 3, 4)
+			(2, 10000, 4)
 		);
 	}
 }

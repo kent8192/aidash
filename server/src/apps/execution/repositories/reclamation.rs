@@ -222,6 +222,9 @@ let ids: Vec<Uuid> = {
 	async fn python(&self, cursor: &mut Uuid) -> Result<()> {
 		python::reap(self.store, cursor).await.map_err(Into::into)
 	}
+	async fn journal(&self, cursor: &mut Uuid) -> Result<()> {
+		super::journal_query::reap(self.store, cursor).await
+	}
 	async fn orphans(&self) -> Result<()> {
 		prune_revisions(self.store).await?;
 		let mut cursor = self.orphan_cursor.lock().await;

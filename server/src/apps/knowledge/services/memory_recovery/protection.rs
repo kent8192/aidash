@@ -122,6 +122,23 @@ async fn inventory(store: &Store, cut: DateTime<Utc>) -> Result<Vec<BankState>> 
 					"b.home",
 					store.deployment.as_str(),
 				))
+				.and_where(
+					reinhardt::query::Condition::any()
+						.add(
+							Expr::col((
+								Alias::new("memory_bank_settings"),
+								Alias::new("provider_id"),
+							))
+							.ne(aidash_domain::registry::bindings::memory_defaults::MEMORY_ID),
+						)
+						.add(
+							Expr::col((
+								Alias::new("memory_bank_settings"),
+								Alias::new("provider_version"),
+							))
+							.ne(aidash_domain::registry::bindings::memory_defaults::VERSION),
+						),
+				)
 				.and_where(Expr::col((Alias::new("b"), Alias::new("id"))).gt(Expr::value(after)))
 				.and_where(
 					Expr::col((

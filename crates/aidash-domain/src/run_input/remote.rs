@@ -52,6 +52,7 @@ pub fn legacy_history(node: &str, run: &RunMetadata, mut messages: Vec<Message>)
 	let prefix = full_key(node, run.task_id, "");
 	let run_id = run.id.to_string();
 	let human = format!("human:{run_id}:");
+	let subnode_result = format!("{}{run_id}:", super::SUBNODE_RESULT_PREFIX);
 	messages.retain(|message| {
 		message
 			.idempotency_key
@@ -59,6 +60,7 @@ pub fn legacy_history(node: &str, run: &RunMetadata, mut messages: Vec<Message>)
 			.and_then(|key| key.strip_prefix(&prefix))
 			.is_some_and(|key| {
 				key.starts_with(&human)
+					|| key.starts_with(&subnode_result)
 					|| (key.starts_with("subject-human:")
 						&& key.rsplit(':').nth(1) == Some(run_id.as_str()))
 			})

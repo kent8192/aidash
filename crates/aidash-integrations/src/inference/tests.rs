@@ -1,6 +1,22 @@
 use super::*;
 use aidash_domain::projection::{ProjectionVersion, native::NativeContext};
 
+#[rstest::rstest]
+#[case("none", json!({"enabled": false}))]
+#[case("medium", json!({"effort": "medium"}))]
+fn openrouter_reasoning_request_shape(#[case] effort: &str, #[case] expected: Value) {
+	let config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://openrouter.ai/api/v1","context_window":62000,"max_output_tokens":1024,"modalities":["text"],"cost":{},"reasoning_effort":effort})).unwrap();
+	let body = request_body(
+		&config,
+		&ModelRequest::default(),
+		vec![],
+		None,
+		None,
+		Default::default(),
+	);
+	assert_eq!(body["reasoning"], expected);
+}
+
 /// The adapter's clients with production-like deadlines.
 fn test_clients() -> crate::keyless::Clients {
 	crate::keyless::Clients::new(

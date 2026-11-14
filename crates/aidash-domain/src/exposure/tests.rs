@@ -1027,3 +1027,36 @@ fn the_agent_model_decides_whether_page_images_can_be_delivered(
 	}
 	assert_eq!(run.snapshot().model_reads_page_images(), reads_images);
 }
+
+#[test]
+fn intrinsic_journal_tools_are_mandatory_in_a_deferred_catalog() {
+	let mut run = Run::default();
+	run.mandatory();
+	for index in 0..30 {
+		run.tool(&format!("tool_{index:02}"), "Large tool", 2_000);
+	}
+	let snapshot = run.snapshot();
+	let mut catalog = catalog(&snapshot, &run.specs, &[], None).unwrap();
+	let spec = |name: &str| ToolSpec {
+		name: name.into(),
+		description: format!("Intrinsic {name}"),
+		parameters: json!({"type":"object"}),
+	};
+	let intrinsic: BTreeMap<String, ToolSpec> = ["journal_query", "subnode_message"]
+		.into_iter()
+		.filter(|name| is_intrinsic(name))
+		.map(|name| (name.to_owned(), spec(name)))
+		.collect();
+	assert!(intrinsic.contains_key("journal_query"));
+	include_subnode_intrinsics(&snapshot, &mut catalog, &intrinsic).unwrap();
+	assert!(capability(&catalog, "journal_query").mandatory);
+	let selection = select(
+		&DeferredBudgets::default(),
+		&catalog,
+		&ExposureState::default(),
+	)
+	.unwrap();
+	assert!(selection.tools.contains("journal_query"));
+	let unknown: BTreeMap<String, ToolSpec> = [("tool_00".to_owned(), spec("tool_00"))].into();
+	assert!(include_subnode_intrinsics(&snapshot, &mut catalog, &unknown).is_err());
+}

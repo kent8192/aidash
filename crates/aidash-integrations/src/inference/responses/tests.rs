@@ -42,6 +42,17 @@ fn request() -> ModelRequest {
 		..Default::default()
 	}
 }
+
+#[rstest::rstest]
+#[case("none", json!({"enabled": false}))]
+#[case("medium", json!({"effort": "medium"}))]
+fn openrouter_responses_reasoning_request_shape(#[case] effort: &str, #[case] expected: Value) {
+	let mut config = config();
+	config.reasoning_effort = serde_json::from_value(json!(effort)).unwrap();
+	let body = openrouter_request_body(&config, &request(), None, None, vec![], Default::default())
+		.unwrap();
+	assert_eq!(body["reasoning"], expected);
+}
 fn sse(events: &[Value]) -> String {
 	events
 		.iter()

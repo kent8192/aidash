@@ -53,10 +53,21 @@ async fn inspect<R: GrantRepository>(
 		));
 	}
 	let identity = scope.identity();
-	let inspection:Inspection=match repository.source_request(&scope.home_address(),node,"/scoped/execution/inspect",&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements,"decider":input.decider}),&identity).await {
+	let inspection: Inspection = match repository
+		.source_request(
+			&scope.home_address(),
+			node,
+			"/scoped/execution/inspect",
+			&json!({"task_id":input.task_id,"agent":input.agent,"requirements":input.requirements}),
+			&identity,
+		)
+		.await
+	{
 		Err(Error::External(message)) if message == "remote execution authority unavailable" => {
 			scope.record_refusal(&resource, "node_unreachable").await?;
-			return Err(Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::NodeUnreachable));
+			return Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::NodeUnreachable,
+			));
 		}
 		other => other?,
 	};
@@ -67,24 +78,13 @@ async fn inspect<R: GrantRepository>(
 		&input.agent,
 		&input.requirements,
 	)?;
-	if inspection.decider != input.decider {
-		return Err(Error::RemoteExecutionRefused(
-			aidash_domain::federation::execution::Refusal::DeciderMismatch,
-		));
-	}
 	Ok(inspection)
 }
-fn inspection_input(
-	task: Uuid,
-	agent: &EntityRef,
-	requirements: Search,
-	decider: Option<&EntityRef>,
-) -> InspectInput {
+fn inspection_input(task: Uuid, agent: &EntityRef, requirements: Search) -> InspectInput {
 	InspectInput {
 		task_id: Some(task),
 		agent: agent.clone(),
 		requirements,
-		decider: decider.cloned(),
 	}
 }
 /// Inspect under the same task, subject chain and peer authority as preparation,
@@ -134,7 +134,7 @@ pub async fn agent_inspection<R: GrantRepository>(
 		scope.require(&resource, "task.delegate").await?;
 		scope.require(&resource, "task.execute").await?;
 		let requirements: Search = serde_json::from_value(task.requirements.clone())?;
-		let request = inspection_input(task.id, &input.agent, requirements, None);
+		let request = inspection_input(task.id, &input.agent, requirements);
 		let inspection = inspect(repository, &mut scope, &input.node_id, request).await?;
 		scope.append_subject(executor);
 		crate::generation::foreign::check_preparation(&task, inspection.generation.as_ref())?;
@@ -172,7 +172,7 @@ pub async fn prepare<R: GrantRepository>(
   scope.require(&resource,"task.delegate").await?;
   scope.require(&resource,"task.execute").await?;
   let requirements:Search=serde_json::from_value(task.requirements.clone())?;
-  let request=inspection_input(task.id,&input.agent,requirements,input.semantic.decider());
+  let request=inspection_input(task.id,&input.agent,requirements);
   let inspection=inspect(repository,&mut scope,&input.node_id,request).await?;
   scope.append_subject(executor);
   crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
@@ -311,7 +311,7 @@ pub async fn description_mode<R: GrantRepository>(
 		let requirements = serde_json::from_value(task.requirements.clone())?;
 		let semantic: Binding = serde_json::from_value(current.semantic)?;
 		let request = semantic.request();
-		let input = inspection_input(task.id, &agent, requirements, request.decider());
+		let input = inspection_input(task.id, &agent, requirements);
 		let fresh = inspect(repository, &mut scope, node, input).await?;
 		if !fresh.satisfies(&inspection) {
 			return Err(Error::Forbidden);

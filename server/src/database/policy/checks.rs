@@ -46,10 +46,12 @@ fn enabled(sql: &str) -> Vec<String> {
 }
 
 /// Every policy migration runs the rendered template. Together they enable
-/// the `owned` tables and no other. Returns how many operations enable tables.
+/// the `owned` tables and the `retired` ones, which a later migration drops.
+/// Returns how many operations enable tables.
 pub fn assert_policy_migrations_run_the_rendered_template(
 	migrations: &[Migration],
 	owned: &BTreeSet<&str>,
+	retired: &[&str],
 ) -> usize {
 	let mut covered = BTreeSet::new();
 	let mut policies = 0;
@@ -83,6 +85,28 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 				}
 			}
 		}
+	}
+	// Retired tables were removed after their policy migration ran. Validate
+	// their historical templates above but do not require them in today's
+	// classification. State-only model removals do not prove physical removal.
+	for &table in retired {
+		assert!(
+			!owned.contains(table),
+			"retired table is still classified: {table}"
+		);
+		assert!(
+			migrations
+				.iter()
+				.flat_map(|migration| &migration.operations)
+				.any(
+					|operation| matches!(operation, Operation::DropTable { name } if name.as_str() == table)
+				),
+			"retired table has no migration state removal: {table}"
+		);
+		assert!(
+			covered.remove(table),
+			"retired table has no historical policy: {table}"
+		);
 	}
 	let expected: BTreeSet<String> = owned.iter().copied().map(str::to_owned).collect();
 	assert_eq!(

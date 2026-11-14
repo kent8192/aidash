@@ -627,6 +627,7 @@ fn judged(kind: ApprovalKind, target: &str) -> JudgeRequest {
 			idempotency_key: "key-1".into(),
 			message_id: None,
 			reference_only: false,
+			is_data: false,
 		}],
 	}
 }
