@@ -115,20 +115,19 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		Ok(WriterStop::from_reply(&reply))
 	}
 	async fn cancel(&self, operation: Uuid, refusal: Option<Value>) -> Result<Value> {
-		// A Pod operation has no `/v1` record. The withdrawal marker is already
-		// committed, and the Pod sweep stops the command and records its end (#745).
-		let pod: Option<Uuid> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("id"))
-				.from(Alias::new("core_operations"))
+		// A Pod operation has no `/v1` record: stop the Run's foreground work in
+		// its Pod, and report a stop only when the Runner shows it ended (#745).
+		let row: Option<Operation> = crate::database::native::query_as(
+			&sessions::select("core_operations")
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(operation)))
-				.and_where(Expr::cust("input->>'runtime' = 'pod'"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(self.store.pool.in_scope(&self.scope))
+		.fetch_optional(self.store.pool.in_scope(&self.scope))
 		.await?;
-		if pod.is_some() {
-			return Ok(serde_json::json!({"termination_confirmed": false}));
+		if let Some(row) =
+			row.filter(|row| aidash_domain::capabilities::operations::runs_in_pod(&row.input))
+		{
+			return pod_cancel(self.store, &row).await;
 		}
 		operations::remote(
 			self.store,
@@ -214,5 +213,47 @@ impl OperationWithdrawalScope for Scope {
 		}
 		tx.commit().await?;
 		Ok(())
+	}
+}
+
+/// Stop a Pod operation for a withdrawal. The Runner serializes a Run's
+/// foreground commands, so stopping the Run's foreground work stops this one.
+/// Confirmation comes only from the Runner's own answer for this operation.
+async fn pod_cancel(store: &Store, row: &Operation) -> Result<Value> {
+	use aidash_application::{
+		capabilities::pod::tool_error,
+		ports::capabilities::execution_pod::{
+			ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime as _,
+		},
+	};
+	let space = row.input["scratch_space_id"]
+		.as_str()
+		.ok_or(crate::Error::Forbidden)?;
+	let runner = crate::bootstrap::operation_runner(store)?;
+	runner
+		.cancel_waiting(space, &row.run_id.to_string())
+		.await
+		.map_err(tool_error)?;
+	let unconfirmed = serde_json::json!({"termination_confirmed": false});
+	match runner.result(&row.id.to_string()).await {
+		Ok(reply) => Ok(match reply.status.as_str() {
+			"completed" | "timed_out" | "stopped" | "cancelled" | "failed" => serde_json::json!({
+				"termination_confirmed": true,
+				"status": match reply.status.as_str() {
+					"completed" => "completed",
+					"stopped" | "cancelled" => "cancelled",
+					_ => "failed",
+				},
+				"executed": reply.outcome.as_deref() != Some("not_started"),
+			}),
+			// Queued, running or lost: the sweep keeps asking.
+			_ => unconfirmed,
+		}),
+		// The Runner never received it, but a delayed send could still start it.
+		Err(ExecutionPodError::Remote {
+			code: ExecutionPodErrorCode::CommandNotFound,
+			..
+		}) => Ok(unconfirmed),
+		Err(error) => Err(tool_error(error)),
 	}
 }

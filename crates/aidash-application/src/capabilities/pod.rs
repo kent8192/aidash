@@ -282,6 +282,10 @@ pub fn tool_error(error: ExecutionPodError) -> Error {
 				ExecutionPodErrorCode::CommandNotFound | ExecutionPodErrorCode::NotBackground => {
 					Error::NotFound(text)
 				}
+				// A file the Agent named is missing, or is not a regular file.
+				ExecutionPodErrorCode::Unknown(ref code) if code == "file_error" => {
+					Error::Invalid(text)
+				}
 				_ => Error::Conflict(text),
 			}
 		}
@@ -301,6 +305,12 @@ async fn submit(
 	context: &PodContext,
 ) -> Result<()> {
 	let request = command_request(operation, context)?;
+	// A withdrawal or cancel may have moved the row since it was read; such a
+	// row is never sent.
+	let current = repository.load(operation.id).await?;
+	if current.state != operation.state || current.result["dispatch_pending"] != true {
+		return Ok(());
+	}
 	let reply = if operation.kind == PYTHON {
 		// The cell would start a session without the Run credential, so the
 		// session is started first with it (ADR 0136).
@@ -454,18 +464,23 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 					code: ExecutionPodErrorCode::CommandNotFound,
 					..
 				}) if dispatch_pending => {
-					// The send never arrived; nothing ran.
+					// The Runner does not hold it yet, but a delayed send of the same
+					// request could still start it, and `/v2` has no durable refusal
+					// for an operation id. So nothing is proven: it ends uncertain,
+					// with no ACK claim, rather than as never run.
+					let mut result = operation.result.clone();
+					if let Some(object) = result.as_object_mut() {
+						object.remove("dispatch_pending");
+						object.remove("runner_acknowledged");
+					}
+					result["termination_confirmed"] = json!(false);
+					result["effects_may_have_occurred"] = json!(true);
+					result["error"] = error_value(
+						"EXECUTION_UNVERIFIED",
+						"The command may not have reached the Runner, and a delayed send could still start it; its effects are unknown.",
+					);
 					repository
-						.save(
-							operation.id,
-							&operation.state,
-							"cancelled",
-							&refused(
-								&operation,
-								"CANCELLED",
-								"The command was cancelled before it started.",
-							),
-						)
+						.save(operation.id, &operation.state, "uncertain", &result)
 						.await
 						.map(|_| ())
 				}

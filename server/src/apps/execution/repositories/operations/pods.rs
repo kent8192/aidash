@@ -157,6 +157,8 @@ impl PodOperationRepository for Repository<'_> {
 		let policy = policy(self.store).ok_or_else(|| {
 			NativeError::Conflict("RUNTIME_UNAVAILABLE: no Scratch Space policy".into())
 		})?;
+		// A Workspace never changes its Scratch Space (#697), and a deleted one
+		// fails `scratch::read`, so the recorded id stays the Run's space.
 		let space_id: Uuid = operation.input["scratch_space_id"]
 			.as_str()
 			.and_then(|id| id.parse().ok())

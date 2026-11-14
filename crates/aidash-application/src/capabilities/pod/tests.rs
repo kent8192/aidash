@@ -567,3 +567,31 @@ async fn a_finished_operation_is_left_alone() {
 	assert!(runtime.calls().is_empty());
 	assert!(repository.saves.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_cancelled_command_the_runner_never_received_stays_unproven() {
+	let mut cancelling = operation(SHELL, "cancelling");
+	cancelling.result = json!({"dispatch_pending": true, "runner_acknowledged": true});
+	let (repository, runtime) = repository(cancelling);
+	runtime.reply(Err(ExecutionPodError::Remote {
+		code: ExecutionPodErrorCode::CommandNotFound,
+		message: "unknown".into(),
+	}));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	let saved = repository.operation.lock().unwrap().clone();
+	assert_eq!(saved.state, "uncertain");
+	assert_eq!(saved.result["termination_confirmed"], false);
+	assert!(saved.result.get("runner_acknowledged").is_none());
+	assert!(saved.result.get("dispatch_pending").is_none());
+}
+
+#[tokio::test]
+async fn a_row_withdrawn_before_the_send_is_never_sent() {
+	let mut pending = operation(SHELL, "submitted");
+	pending.result = json!({"dispatch_pending": true});
+	let (repository, runtime) = repository(pending.clone());
+	repository.operation.lock().unwrap().state = "cancelling".into();
+	let context = context(runtime.clone());
+	submit(&repository, &pending, &context).await.unwrap();
+	assert!(runtime.requests.lock().unwrap().is_empty());
+}
