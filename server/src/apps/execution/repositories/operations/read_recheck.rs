@@ -9,7 +9,6 @@ use crate::{
 use aidash_application::{
 	Result,
 	ports::capabilities::{
-		execution_pod::ExecutionPodRuntime as _,
 		read_recheck::{Outcome, ReadRecheckRepository, Target},
 		reconciliation::OperationReconciliationRepository as _,
 	},
@@ -60,9 +59,6 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 /// Persist the denial before contacting the Runner: traffic must remain refused
 /// even when the Runner is unavailable and stopping has to be retried.
 async fn stop_pod_run(store: &Store, tenant: &str, run_id: Uuid) -> Result<()> {
-	use crate::apps::execution::models::Run;
-	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
-	use crate::apps::identity::models::AuthorizationCredential;
 	let mut tx = store
 		.pool
 		.begin(&TenancyScope::tenant(tenant)?)
@@ -88,6 +84,21 @@ async fn stop_pod_run(store: &Store, tenant: &str, run_id: Uuid) -> Result<()> {
 		.map_err(Error::from)?;
 	tx.commit().await.map_err(Error::from)?;
 
+	let runner =
+		crate::bootstrap::operation_runner(store).map_err(aidash_application::Error::from)?;
+	stop_pending_run_with_runner(store, tenant, run_id, &runner).await
+}
+
+/// Retry an already-recorded Run stop, acknowledging it only after the Runner confirms it.
+pub(crate) async fn stop_pending_run_with_runner(
+	store: &Store,
+	tenant: &str,
+	run_id: Uuid,
+	runner: &dyn aidash_application::ports::capabilities::execution_pod::ExecutionPodRuntime,
+) -> Result<()> {
+	use crate::apps::execution::models::Run;
+	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
+	use crate::apps::identity::models::AuthorizationCredential;
 	let mut tx = store
 		.pool
 		.begin(&TenancyScope::tenant(tenant)?)
@@ -150,14 +161,29 @@ async fn stop_pod_run(store: &Store, tenant: &str, run_id: Uuid) -> Result<()> {
 		remote_space_id(tenant, &run.node, &run.home_node, run.workspace_id, &person)
 	};
 	tx.commit().await.map_err(Error::from)?;
-	let runner =
-		crate::bootstrap::operation_runner(store).map_err(aidash_application::Error::from)?;
 	runner
 		.stop_run(&space.to_string(), &run_id.to_string())
 		.await
 		.map_err(|error| {
 			aidash_application::Error::External(format!("Run stop failed: {error}"))
 		})?;
+	// If this update fails, the next sweep repeats the idempotent Runner stop.
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(tenant)?)
+		.await
+		.map_err(Error::from)?;
+	let (sql, values) = Query::update()
+		.table(Alias::new("egress_run_revocations"))
+		.value(Alias::new("stopped_at"), chrono::Utc::now())
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("run_id").eq(run_id))
+		.and_where(Expr::col("stopped_at").is_null())
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values))
+		.await
+		.map_err(Error::from)?;
+	tx.commit().await.map_err(Error::from)?;
 	Ok(())
 }
 
@@ -194,12 +220,25 @@ impl ReadRecheckRepository for Repository<'_> {
 				.into_iter()
 				.map(Target::LivePreview),
 		);
+		let pending: Vec<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("run_id"))
+				.from(Alias::new("egress_run_revocations"))
+				.and_where(Expr::col("stopped_at").is_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(self.store.pool.in_scope(&TenancyScope::Deployment(
+			DeploymentScopeReason::CapabilityMaintenance,
+		)))
+		.await?;
+		targets.extend(pending.into_iter().map(Target::RevokedRun));
 		Ok(targets)
 	}
 	async fn check(&self, target: Target) -> Result<Outcome> {
 		let checked = match target {
 			Target::Operation(id) => check_operation(self, id).await.map(|()| true),
 			Target::LivePreview(id) => live_previews::read_recheck(self.store, id).await,
+			Target::RevokedRun(_) => return Ok(Outcome::Refused),
 		};
 		match checked {
 			Ok(true) => Ok(Outcome::Allowed),
@@ -212,6 +251,24 @@ impl ReadRecheckRepository for Repository<'_> {
 	}
 	async fn stop_refused(&self, target: Target) -> Result<()> {
 		match target {
+			Target::RevokedRun(id) => {
+				let tenant: Option<String> = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("tenant"))
+						.from(Alias::new("egress_run_revocations"))
+						.and_where(Expr::col("run_id").eq(id))
+						.and_where(Expr::col("stopped_at").is_null())
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_optional(self.store.pool.in_scope(&TenancyScope::Deployment(
+					DeploymentScopeReason::CapabilityMaintenance,
+				)))
+				.await?;
+				match tenant {
+					Some(tenant) => stop_pod_run(self.store, &tenant, id).await,
+					None => Ok(()),
+				}
+			}
 			Target::Operation(id) => {
 				let snapshot = self.snapshot(id).await?;
 				let pod_stop = stop_pod_run(self.store, &snapshot.tenant, snapshot.run_id).await;

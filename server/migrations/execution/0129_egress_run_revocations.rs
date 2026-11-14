@@ -14,6 +14,7 @@ pub(super) fn migration() -> Migration {
 					.with_primary_key(true),
 				ColumnDefinition::new("revoked_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("reason", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("stopped_at", FieldType::TimestampTz),
 			],
 			constraints: vec![],
 			without_rowid: None,

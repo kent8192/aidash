@@ -199,4 +199,6 @@ pub struct RunRevocation {
 	pub revoked_at: DateTime<Utc>,
 	#[field(field_type = "text")]
 	pub reason: String,
+	#[field(null = true)]
+	pub stopped_at: Option<DateTime<Utc>>,
 }

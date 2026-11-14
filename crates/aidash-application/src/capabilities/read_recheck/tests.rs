@@ -321,3 +321,35 @@ async fn a_failed_stop_is_retried_after_legacy_withdrawal_ends_the_target() {
 	assert_eq!(repository.checks(), 1);
 	assert!(schedule.failed.is_empty());
 }
+
+#[tokio::test]
+async fn durable_run_stop_is_retried_after_restart_with_backoff() {
+	let target = Target::RevokedRun(Uuid::from_u128(42));
+	let mut repository = Repository {
+		stop_fails: true,
+		..Repository::with(target, Outcome::Refused)
+	};
+	let start = Instant::now();
+	let mut schedule = Schedule::default();
+	pass(&repository, &mut schedule, start).await.unwrap();
+	pass(&repository, &mut schedule, start + Duration::from_secs(4))
+		.await
+		.unwrap();
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 1);
+	// A fresh schedule models a restarted process; the repository still lists
+	// the durable Run, so it is attempted again immediately.
+	let mut restarted = Schedule::default();
+	pass(&repository, &mut restarted, start + Duration::from_secs(4))
+		.await
+		.unwrap();
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 2);
+	pass(&repository, &mut restarted, start + Duration::from_secs(8))
+		.await
+		.unwrap();
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 2);
+	repository.stop_fails = false;
+	pass(&repository, &mut restarted, start + Duration::from_secs(9))
+		.await
+		.unwrap();
+	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
+}

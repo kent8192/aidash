@@ -567,6 +567,7 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		.run_id(run_id)
 		.revoked_at(Utc::now())
 		.reason("read_refused".to_owned())
+		.stopped_at(None)
 		.finish();
 	let mut tx = federation
 		.store

@@ -120,7 +120,7 @@ async fn check(
 			stopped
 		}
 		Outcome::Unconfirmed => match target {
-			Target::Operation(_) => {
+			Target::Operation(_) | Target::RevokedRun(_) => {
 				tracing::warn!(?target, "running command continues with unconfirmed reads");
 				Ok(())
 			}
