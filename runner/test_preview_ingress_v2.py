@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from control import Runner
-from execution_pod import ExecutionPodController, v2_network_policy, verify_network_policies
+from execution_pod import ExecutionPodController, verify_network_policies
 
 
 def legacy_policy(component='preview', port=3000):

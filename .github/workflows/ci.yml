@@ -510,14 +510,16 @@ jobs:
       # Matched projection campaign import, statistical gates and shared limits (#181).
       - run: python3 -m unittest discover -s scripts -p 'test_projection_*.py'
       - run: python3 -m unittest discover -s scripts -p test_evaluate_native_memory.py
-      - run: python3 -m unittest discover -s runner -p 'test_*.py'
+      # Runner contracts include both unittest classes and pytest fixture tests.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install pytest==8.3.5
+      - run: python3 -m pytest -q runner
       # Chart invariants render through Helm and parse the manifests with PyYAML.
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.1.4
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
       - run: python3 -m pip install PyYAML==6.0.3
       - run: python3 -m unittest discover -s scripts -p test_local_activation.py
       - run: python3 -m unittest discover -s scripts -p test_helm_execution.py

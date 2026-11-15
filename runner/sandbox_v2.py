@@ -615,7 +615,6 @@ def process_start_time(pid):
 def stop_operation(operation_id):
     import json
     import signal
-    import uuid
     from pathlib import Path
 
     validate_operation_id(operation_id)
@@ -656,7 +655,6 @@ def log_chunk(path, offset, limit):
 
 
 def claim_operation(operation_id, directory='/scratch-system/operations'):
-    import uuid
     from pathlib import Path
     validate_operation_id(operation_id)
     directory = Path(directory)
@@ -679,7 +677,6 @@ def claim_operation(operation_id, directory='/scratch-system/operations'):
 
 
 def operation_output(operation_id, stream, offset, limit, directory='/scratch-system/operation-output'):
-    import uuid
     from pathlib import Path
     validate_operation_id(operation_id)
     if stream not in ('stdout', 'stderr'):
@@ -691,7 +688,6 @@ def operation_output(operation_id, stream, offset, limit, directory='/scratch-sy
 
 
 def forget_operation(operation_id, directory='/scratch-system/operations', output_directory='/scratch-system/operation-output'):
-    import uuid
     from pathlib import Path
     validate_operation_id(operation_id)
     for suffix in ('.started', '.running', '.running.new', '.new', '.json'):
@@ -702,7 +698,6 @@ def forget_operation(operation_id, directory='/scratch-system/operations', outpu
 
 def operation_running(operation_id):
     import json
-    import uuid
     from pathlib import Path
     validate_operation_id(operation_id)
     path = Path(OPERATION_DIRECTORY) / (operation_id + '.running')
@@ -719,7 +714,6 @@ def operation_running(operation_id):
 
 def read_result(operation_id):
     import json
-    import uuid
     from pathlib import Path
     validate_operation_id(operation_id)
     path = Path(OPERATION_DIRECTORY) / (operation_id + '.json')

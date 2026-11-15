@@ -280,6 +280,11 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		"aidash://node",
 	)
 	.unwrap()
+	.len() + aidash_application::registry::system::legacy_file_entries(
+		&validation,
+		"aidash://node",
+	)
+	.unwrap()
 	.len();
 	assert_eq!(listed.len(), operations.len() + offered + legacy);
 	for operation in operations {

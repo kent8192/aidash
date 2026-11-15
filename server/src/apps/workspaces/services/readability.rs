@@ -48,7 +48,7 @@ impl Reader {
 				b.excluded_reason.is_none()
 					&& b.identity.registry_deployment == snapshot.agent.registry_deployment
 					&& b.identity.id == "aidash.attachment_copy"
-					&& b.identity.version == "1.0.0"
+					&& matches!(b.identity.version.as_str(), "1.0.0" | "1.0.1")
 					&& b.definition.kind == "tool"
 			});
 		let model_ref = snapshot
@@ -84,7 +84,7 @@ impl Reader {
 				b.binding.kind == BindingKind::Tool
 					&& b.binding.target.registry_deployment == node
 					&& b.binding.target.id == "aidash.attachment_copy"
-					&& b.binding.target.version == "1.0.0"
+					&& matches!(b.binding.target.version.as_str(), "1.0.0" | "1.0.1")
 			})
 		});
 		let model = agent

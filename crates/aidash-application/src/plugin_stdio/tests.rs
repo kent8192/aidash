@@ -9,13 +9,15 @@ use crate::ports::capabilities::execution_pod::{
 use aidash_domain::agent_plugin::{Command, Cwd, Executable};
 use std::collections::VecDeque;
 
+type PodFiles = BTreeMap<String, (Vec<u8>, Option<u32>)>;
+
 /// A Pod whose files live in a map, whose commands succeed, and whose MCP server answers from
 /// a script.
 #[derive(Default)]
 struct Pod {
 	calls: Mutex<Vec<String>>,
 	commands: Mutex<Vec<String>>,
-	files: Mutex<BTreeMap<String, (Vec<u8>, Option<u32>)>>,
+	files: Mutex<PodFiles>,
 	starts: Mutex<Vec<McpStartRequest>>,
 	messages: Mutex<Vec<Value>>,
 	/// Answers to `tools/call`, in order; anything else answers from `tools`.

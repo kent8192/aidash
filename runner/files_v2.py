@@ -459,7 +459,7 @@ class FileService:
                         os.rename(backup, name, src_dir_fd=parent, dst_dir_fd=parent)
                     raise
                 applied.append((parent, name, backup, mode))
-            for parent, name, backup, mode in applied:
+            for parent, _name, backup, mode in applied:
                 if mode != 0:
                     try:
                         os.unlink(backup, dir_fd=parent)

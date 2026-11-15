@@ -325,7 +325,7 @@ class ChartsTest(unittest.TestCase):
         # Exactly the Rust `Profile` fields (deny_unknown_fields): no Runner-only host_tasks.
         self.assertEqual(set(profile), {'admission', 'storage', 'cpu', 'memory_bytes', 'processes', 'working_bytes',
                                         'temporary_bytes', 'output_bytes', 'maximum_seconds', 'idle_seconds',
-                                        'operation_seconds', 'install_seconds', 'runner'})
+                                        'operation_seconds', 'runner'})
         self.assertIs(profile['admission'], True)
         for key in set(profile) & set(runner_profile) - {'runner'}:
             self.assertEqual(profile[key], runner_profile[key], key)
@@ -334,10 +334,10 @@ class ChartsTest(unittest.TestCase):
             'token_env': 'AIDASH_CORE_RUNNER_TOKEN', 'image': runner_profile['runner']['image'],
             'runtime_class': select(objects, 'RuntimeClass', '')['metadata']['name'],
             'namespace': select(objects, 'Namespace', '-sandbox')['metadata']['name']})
-        # Operation and install limits never exceed the operation time limit.
+        # The operation limit never exceeds the maximum time limit.
         short = render(self.aidash, dict(values, execution=dict(execution, limits={'maximum_seconds': 30})))
         profile = json.loads(self.mounted(short, 'server', 'AIDASH_CAPABILITY_PROFILE'))
-        self.assertEqual((profile['operation_seconds'], profile['install_seconds'], profile['maximum_seconds']), (30, 30, 30))
+        self.assertEqual((profile['operation_seconds'], profile['maximum_seconds']), (30, 30))
         # Admission without a retained object store would write to a read-only root.
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(values, capabilities={'storage': {'existingClaim': ''}}))

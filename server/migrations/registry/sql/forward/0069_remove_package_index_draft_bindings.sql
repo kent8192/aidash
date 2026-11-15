@@ -1,3 +1,4 @@
+SET LOCAL aidash.scope = 'deployment';
 UPDATE agent_drafts
 SET entry = jsonb_set(entry, '{config,bindings}', (
     SELECT COALESCE(jsonb_agg(item.binding ORDER BY item.ordinal), '[]'::jsonb)
