@@ -1,3 +1,4 @@
+import { useTaskPickerPages } from "./task-picker-pages";
 import { nativeMemoryProvider } from "./agent-bindings";
 import { useState } from "react";
 import {
@@ -133,6 +134,7 @@ export function MemoryWorkspace({
   const [observed, setObserved] = useState({ scope: "", units: "" });
   const [query, setQuery] = useState("");
   const [taskId, setTaskId] = useState("");
+  const taskPages = useTaskPickerPages(data, workspace);
   const [questionSource, setQuestionSource] = useState<Unit | null>(null);
   const [question, setQuestion] = useState("");
   const [questionTarget, setQuestionTarget] = useState<Unit | null>(null);
@@ -577,16 +579,29 @@ export function MemoryWorkspace({
                 onChange={(e) => setTaskId(e.target.value)}
               >
                 <option value="">{text("Choose a Task", "Taskを選択")}</option>
-                {data.tasks
-                  .filter((task) => task.workspace_id === workspace)
-                  .map((task) => (
-                    <option key={task.id} value={task.id}>
-                      {task.title}
-                    </option>
-                  ))}
+                {taskPages.tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
               </NativeSelect>
             </Field>
           </div>
+          {taskPages.more && (
+            <Button
+              variant="outline"
+              type="button"
+              disabled={taskPages.loading}
+              onClick={taskPages.load}
+            >
+              {text("Show more tasks", "タスクをさらに表示")}
+            </Button>
+          )}
+          {taskPages.error && (
+            <p role="alert">
+              {text("Unable to load tasks.", "タスクを読み込めませんでした。")}
+            </p>
+          )}
           <Button
             variant="outline"
             type="button"
