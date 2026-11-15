@@ -218,8 +218,7 @@ impl ScopeAuthority for ScratchAuthority {
 				.store
 				.pool
 				.begin(&TenancyScope::tenant(&tenant)?)
-				.await
-				.map_err(crate::Error::from)?;
+				.await?;
 			let revoked = RunRevocation::objects()
 				.filter(RunRevocation::field_tenant().eq(tenant.clone()))
 				.filter(RunRevocation::field_run_id().eq(run))
@@ -227,7 +226,7 @@ impl ScopeAuthority for ScratchAuthority {
 				.await
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
-			tx.commit().await.map_err(crate::Error::from)?;
+			tx.commit().await?;
 			if !revoked.is_empty() {
 				return Err(aidash_application::Error::Forbidden);
 			}

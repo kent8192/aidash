@@ -201,13 +201,12 @@ impl PodOperationRepository for Repository<'_> {
 			.store
 			.pool
 			.begin(&TenancyScope::tenant(&operation.tenant)?)
-			.await
-			.map_err(NativeError::from)?;
+			.await?;
 		if run_revoked(&mut *tx, &operation.tenant, operation.run_id).await? {
 			return Err(NativeError::Forbidden.into());
 		}
 		let space = scratch::read(&mut *tx, &operation.tenant, space_id).await?;
-		tx.commit().await.map_err(NativeError::from)?;
+		tx.commit().await?;
 		let space = space.ok_or_else(|| NativeError::NotFound("Scratch Space".into()))?;
 		Ok(context(
 			self.store,

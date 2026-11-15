@@ -59,11 +59,7 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 /// Persist the denial before contacting the Runner: traffic must remain refused
 /// even when the Runner is unavailable and stopping has to be retried.
 async fn stop_pod_run(store: &Store, tenant: &str, run_id: Uuid) -> Result<()> {
-	let mut tx = store
-		.pool
-		.begin(&TenancyScope::tenant(tenant)?)
-		.await
-		.map_err(Error::from)?;
+	let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new("egress_run_revocations"))
 		.columns(["tenant", "run_id", "revoked_at", "reason"].map(Alias::new))
@@ -82,7 +78,7 @@ async fn stop_pod_run(store: &Store, tenant: &str, run_id: Uuid) -> Result<()> {
 	tx.execute(&sql, convert_values(values))
 		.await
 		.map_err(Error::from)?;
-	tx.commit().await.map_err(Error::from)?;
+	tx.commit().await?;
 
 	let runner =
 		crate::bootstrap::operation_runner(store).map_err(aidash_application::Error::from)?;
@@ -99,11 +95,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 	use crate::apps::execution::models::Run;
 	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
 	use crate::apps::identity::models::AuthorizationCredential;
-	let mut tx = store
-		.pool
-		.begin(&TenancyScope::tenant(tenant)?)
-		.await
-		.map_err(Error::from)?;
+	let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 	let run = Run::objects()
 		.filter(Run::field_tenant().eq(tenant.to_owned()))
 		.filter(Run::field_id().eq(run_id))
@@ -113,54 +105,50 @@ pub(crate) async fn stop_pending_run_with_runner(
 		.map_err(Error::from)?
 		.pop()
 		.ok_or_else(|| Error::NotFound("Run".into()))?;
-	let space = if aidash_domain::nodes::is_home(
-		&run.home_node,
-		&store.deployment.to_string(),
-		&run.node,
-	) {
-		let sql = Query::select()
-			.column(Alias::new("scratch_space_id"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
-			.and_where(Expr::col("node").eq(run.node.clone()))
-			.to_string(PostgresQueryBuilder);
-		crate::database::native::query_scalar::<Uuid>(&sql)
-			.scalar_optional(&mut *tx)
-			.await
-			.map_err(Error::from)?
-			.ok_or_else(|| Error::NotFound("Run Scratch Space".into()))?
-	} else {
-		let admission = AuthorizationRemoteAdmission::objects()
-			.filter(AuthorizationRemoteAdmission::field_tenant().eq(tenant.to_owned()))
-			.filter(AuthorizationRemoteAdmission::field_id().eq(run_id))
-			.all_with_executor(&mut *tx)
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(Error::from)?
-			.pop()
-			.ok_or_else(|| Error::NotFound("Run admission".into()))?;
-		let person = if admission.credential_id.is_nil() {
-			admission
-				.subject_chain
-				.first()
-				.cloned()
-				.ok_or_else(|| Error::NotFound("Run subject".into()))?
+	let space =
+		if aidash_domain::nodes::is_home(&run.home_node, store.deployment.as_ref(), &run.node) {
+			let sql = Query::select()
+				.column(Alias::new("scratch_space_id"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+				.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
+				.and_where(Expr::col("node").eq(run.node.clone()))
+				.to_string(PostgresQueryBuilder);
+			crate::database::native::query_scalar::<Uuid>(&sql)
+				.scalar_optional(&mut *tx)
+				.await?
+				.ok_or_else(|| Error::NotFound("Run Scratch Space".into()))?
 		} else {
-			AuthorizationCredential::objects()
-				.filter(AuthorizationCredential::field_tenant().eq(tenant.to_owned()))
-				.filter(AuthorizationCredential::field_id().eq(admission.credential_id))
+			let admission = AuthorizationRemoteAdmission::objects()
+				.filter(AuthorizationRemoteAdmission::field_tenant().eq(tenant.to_owned()))
+				.filter(AuthorizationRemoteAdmission::field_id().eq(run_id))
 				.all_with_executor(&mut *tx)
 				.await
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(Error::from)?
 				.pop()
-				.ok_or_else(|| Error::NotFound("Run credential".into()))?
-				.subject
+				.ok_or_else(|| Error::NotFound("Run admission".into()))?;
+			let person = if admission.credential_id.is_nil() {
+				admission
+					.subject_chain
+					.first()
+					.cloned()
+					.ok_or_else(|| Error::NotFound("Run subject".into()))?
+			} else {
+				AuthorizationCredential::objects()
+					.filter(AuthorizationCredential::field_tenant().eq(tenant.to_owned()))
+					.filter(AuthorizationCredential::field_id().eq(admission.credential_id))
+					.all_with_executor(&mut *tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(Error::from)?
+					.pop()
+					.ok_or_else(|| Error::NotFound("Run credential".into()))?
+					.subject
+			};
+			remote_space_id(tenant, &run.node, &run.home_node, run.workspace_id, &person)
 		};
-		remote_space_id(tenant, &run.node, &run.home_node, run.workspace_id, &person)
-	};
-	tx.commit().await.map_err(Error::from)?;
+	tx.commit().await?;
 	runner
 		.stop_run(&space.to_string(), &run_id.to_string())
 		.await
@@ -168,11 +156,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 			aidash_application::Error::External(format!("Run stop failed: {error}"))
 		})?;
 	// If this update fails, the next sweep repeats the idempotent Runner stop.
-	let mut tx = store
-		.pool
-		.begin(&TenancyScope::tenant(tenant)?)
-		.await
-		.map_err(Error::from)?;
+	let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 	let (sql, values) = Query::update()
 		.table(Alias::new("egress_run_revocations"))
 		.value(Alias::new("stopped_at"), chrono::Utc::now())
@@ -183,7 +167,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 	tx.execute(&sql, convert_values(values))
 		.await
 		.map_err(Error::from)?;
-	tx.commit().await.map_err(Error::from)?;
+	tx.commit().await?;
 	Ok(())
 }
 
@@ -283,8 +267,7 @@ impl ReadRecheckRepository for Repository<'_> {
 					.begin(&TenancyScope::Deployment(
 						DeploymentScopeReason::CapabilityMaintenance,
 					))
-					.await
-					.map_err(Error::from)?;
+					.await?;
 				let preview = CoreLivePreviews::objects()
 					.filter(CoreLivePreviews::field_id().eq(id))
 					.all_with_executor(&mut *tx)
@@ -292,7 +275,7 @@ impl ReadRecheckRepository for Repository<'_> {
 					.map_err(reinhardt::core::exception::Error::from)
 					.map_err(Error::from)?
 					.pop();
-				tx.commit().await.map_err(Error::from)?;
+				tx.commit().await?;
 				let Some(preview) = preview else {
 					return Ok(());
 				};
