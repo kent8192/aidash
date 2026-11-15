@@ -9,7 +9,33 @@
       "200": {
         "definitions": {
           "CleanupStatus": {
-            "type": "object",
+            "properties": {
+              "attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "invalidated": {
+                "type": "boolean"
+              },
+              "last_error": {
+                "type": ["string", "null"]
+              },
+              "max_attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "next_attempt": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
             "required": [
               "state",
               "invalidated",
@@ -19,36 +45,9 @@
               "next_attempt",
               "last_error"
             ],
-            "properties": {
-              "attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "expires_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "invalidated": {
-                "type": "boolean"
-              },
-              "last_error": {
-                "type": ["string", "null"]
-              },
-              "max_attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "next_attempt": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "state": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "ContextRecoveryFailure": {
-            "type": "string",
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
               "source_selection_unavailable",
@@ -64,32 +63,32 @@
               "overflow_retries_exhausted",
               "output_truncated",
               "refused"
-            ]
+            ],
+            "type": "string"
           },
           "ControlSource": {
+            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "A Tenant Subject, or the Run's creation.",
-                "enum": ["tenant"]
+                "enum": ["tenant"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A Deployment Administrator's Safety Stop.",
-                "enum": ["deployment_administrator"]
+                "enum": ["deployment_administrator"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Aidash itself, such as the pause for an identity status outage.",
-                "enum": ["system"]
+                "enum": ["system"],
+                "type": "string"
               }
-            ],
-            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+            ]
           },
           "DeclinableCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "required": ["call", "tool", "kind"],
             "properties": {
               "call": {
                 "type": "string"
@@ -101,7 +100,8 @@
                 "type": "string"
               }
             },
-            "additionalProperties": false
+            "required": ["call", "tool", "kind"],
+            "type": "object"
           },
           "ManagementView": {
             "anyOf": [
@@ -115,34 +115,34 @@
             "description": "What `GET` returns: a Subject's diagnostics, or an administrator's metadata."
           },
           "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"]
+                "enum": ["policy"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"]
+                "enum": ["catalog_approval"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"]
+                "enum": ["agent_configuration"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"]
+                "enum": ["other_node"],
+                "type": "string"
               }
-            ],
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person."
+            ]
           },
           "RemoteSemanticFailure": {
+            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
-                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -155,23 +155,42 @@
                   "unavailable",
                   "retries_exhausted",
                   "pending"
-                ]
+                ],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
-            ],
-            "description": "Public reasons contain no query, source ID, upstream body, or credential."
+            ]
           },
           "RunControl": {
-            "type": "string",
-            "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+            "enum": ["ACTIVE", "PAUSED", "CANCELLED"],
+            "type": "string"
           },
           "RunControlFacts": {
-            "type": "object",
             "description": "The only facts a Deployment Administrator reads of a Run.",
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/RunControl"
+              },
+              "control_revision": {
+                "description": "Changes only when control changes; send it back with a stop.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "control_source": {
+                "$ref": "#/components/schemas/ControlSource"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RunPhase"
+              }
+            },
             "required": [
               "id",
               "phase",
@@ -179,38 +198,9 @@
               "control_revision",
               "control_source"
             ],
-            "properties": {
-              "control": {
-                "$ref": "#/components/schemas/RunControl"
-              },
-              "control_revision": {
-                "type": "integer",
-                "format": "int64",
-                "description": "Changes only when control changes; send it back with a stop."
-              },
-              "control_source": {
-                "$ref": "#/components/schemas/ControlSource"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "phase": {
-                "$ref": "#/components/schemas/RunPhase"
-              }
-            }
+            "type": "object"
           },
           "RunManagement": {
-            "type": "object",
-            "required": [
-              "id",
-              "may_control",
-              "phase",
-              "control",
-              "control_source",
-              "semantic_reason",
-              "context_reason"
-            ],
             "properties": {
               "context_reason": {
                 "anyOf": [
@@ -242,8 +232,12 @@
                 "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "format": "uuid",
+                "type": "string"
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               },
               "memory_cleanup": {
                 "anyOf": [
@@ -278,15 +272,20 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
-              },
-              "may_control": {
-                "description": "Whether this caller may change the Run's control state.",
-                "type": "boolean"
               }
-            }
+            },
+            "required": [
+              "id",
+              "may_control",
+              "phase",
+              "control",
+              "control_source",
+              "semantic_reason",
+              "context_reason"
+            ],
+            "type": "object"
           },
           "RunPhase": {
-            "type": "string",
             "enum": [
               "READY",
               "THINKING",
@@ -295,41 +294,42 @@
               "COMPLETED",
               "FAILED",
               "CANCELLED"
-            ]
+            ],
+            "type": "string"
           },
           "SemanticRecovery": {
-            "type": "object",
-            "required": ["cause", "actions"],
+            "additionalProperties": false,
             "properties": {
               "actions": {
-                "type": "array",
+                "description": "Authorized next steps, most preferred first. Never empty.",
                 "items": {
                   "$ref": "#/components/schemas/SemanticRecoveryAction"
                 },
-                "description": "Authorized next steps, most preferred first. Never empty."
+                "type": "array"
               },
               "cause": {
                 "$ref": "#/components/schemas/RemoteSemanticFailure"
               }
             },
-            "additionalProperties": false
+            "required": ["cause", "actions"],
+            "type": "object"
           },
           "SemanticRecoveryAction": {
             "oneOf": [
               {
-                "type": "string",
                 "description": "Indexing or the semantic backend is still working and the Run holds an\nautomatic retry; it retries on its own schedule and nobody needs to act.",
-                "enum": ["wait"]
+                "enum": ["wait"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "An authorized manual retry resumes the Run with its unchanged Binding. The\nretry passes only if every pinned revision and current authority hold.",
-                "enum": ["retry_unchanged_binding"]
+                "enum": ["retry_unchanged_binding"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Create a new Task whose instructions the requester supplies explicitly. It\nhas no parent or dependency link to the stopped Run, so no invalidated\ncontext, approval or verification is carried over.",
-                "enum": ["create_follow_up_task"]
+                "enum": ["create_follow_up_task"],
+                "type": "string"
               }
             ]
           }
@@ -352,7 +352,33 @@
       "200": {
         "definitions": {
           "CleanupStatus": {
-            "type": "object",
+            "properties": {
+              "attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "invalidated": {
+                "type": "boolean"
+              },
+              "last_error": {
+                "type": ["string", "null"]
+              },
+              "max_attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "next_attempt": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
             "required": [
               "state",
               "invalidated",
@@ -362,36 +388,9 @@
               "next_attempt",
               "last_error"
             ],
-            "properties": {
-              "attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "expires_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "invalidated": {
-                "type": "boolean"
-              },
-              "last_error": {
-                "type": ["string", "null"]
-              },
-              "max_attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "next_attempt": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "state": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "ContextRecoveryFailure": {
-            "type": "string",
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
               "source_selection_unavailable",
@@ -407,32 +406,32 @@
               "overflow_retries_exhausted",
               "output_truncated",
               "refused"
-            ]
+            ],
+            "type": "string"
           },
           "ControlSource": {
+            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "A Tenant Subject, or the Run's creation.",
-                "enum": ["tenant"]
+                "enum": ["tenant"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A Deployment Administrator's Safety Stop.",
-                "enum": ["deployment_administrator"]
+                "enum": ["deployment_administrator"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Aidash itself, such as the pause for an identity status outage.",
-                "enum": ["system"]
+                "enum": ["system"],
+                "type": "string"
               }
-            ],
-            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+            ]
           },
           "DeclinableCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "required": ["call", "tool", "kind"],
             "properties": {
               "call": {
                 "type": "string"
@@ -444,7 +443,8 @@
                 "type": "string"
               }
             },
-            "additionalProperties": false
+            "required": ["call", "tool", "kind"],
+            "type": "object"
           },
           "ManagementResult": {
             "anyOf": [
@@ -458,34 +458,34 @@
             "description": "What `POST` returns: the Run for a Subject, or the receipt for an administrator."
           },
           "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"]
+                "enum": ["policy"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"]
+                "enum": ["catalog_approval"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"]
+                "enum": ["agent_configuration"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"]
+                "enum": ["other_node"],
+                "type": "string"
               }
-            ],
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person."
+            ]
           },
           "RemoteSemanticFailure": {
+            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
-                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -498,31 +498,21 @@
                   "unavailable",
                   "retries_exhausted",
                   "pending"
-                ]
+                ],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
-            ],
-            "description": "Public reasons contain no query, source ID, upstream body, or credential."
+            ]
           },
           "RunControl": {
-            "type": "string",
-            "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+            "enum": ["ACTIVE", "PAUSED", "CANCELLED"],
+            "type": "string"
           },
           "RunManagement": {
-            "type": "object",
-            "required": [
-              "id",
-              "may_control",
-              "phase",
-              "control",
-              "control_source",
-              "semantic_reason",
-              "context_reason"
-            ],
             "properties": {
               "context_reason": {
                 "anyOf": [
@@ -554,8 +544,12 @@
                 "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "format": "uuid",
+                "type": "string"
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               },
               "memory_cleanup": {
                 "anyOf": [
@@ -590,15 +584,20 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
-              },
-              "may_control": {
-                "description": "Whether this caller may change the Run's control state.",
-                "type": "boolean"
               }
-            }
+            },
+            "required": [
+              "id",
+              "may_control",
+              "phase",
+              "control",
+              "control_source",
+              "semantic_reason",
+              "context_reason"
+            ],
+            "type": "object"
           },
           "RunPhase": {
-            "type": "string",
             "enum": [
               "READY",
               "THINKING",
@@ -607,31 +606,50 @@
               "COMPLETED",
               "FAILED",
               "CANCELLED"
-            ]
+            ],
+            "type": "string"
           },
           "SafetyStopAction": {
-            "type": "string",
             "description": "What a Safety Stop asks of the Run.",
-            "enum": ["pause", "cancel"]
+            "enum": ["pause", "cancel"],
+            "type": "string"
           },
           "SafetyStopOutcome": {
+            "description": "How a command ended.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "The control change was recorded.",
-                "enum": ["accepted"]
+                "enum": ["accepted"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The Run had already ended or its cancellation was already requested.",
-                "enum": ["no_op"]
+                "enum": ["no_op"],
+                "type": "string"
               }
-            ],
-            "description": "How a command ended."
+            ]
           },
           "SafetyStopReceipt": {
-            "type": "object",
             "description": "What the command acknowledges. It describes the operation, not the Run's\nstate after later commands, and does not claim that execution has stopped.",
+            "properties": {
+              "action": {
+                "$ref": "#/components/schemas/SafetyStopAction"
+              },
+              "operation_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/SafetyStopOutcome"
+              },
+              "run_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "required": [
               "operation_id",
               "run_id",
@@ -639,59 +657,41 @@
               "action",
               "outcome"
             ],
-            "properties": {
-              "action": {
-                "$ref": "#/components/schemas/SafetyStopAction"
-              },
-              "operation_id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "outcome": {
-                "$ref": "#/components/schemas/SafetyStopOutcome"
-              },
-              "run_id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "tenant": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "SemanticRecovery": {
-            "type": "object",
-            "required": ["cause", "actions"],
+            "additionalProperties": false,
             "properties": {
               "actions": {
-                "type": "array",
+                "description": "Authorized next steps, most preferred first. Never empty.",
                 "items": {
                   "$ref": "#/components/schemas/SemanticRecoveryAction"
                 },
-                "description": "Authorized next steps, most preferred first. Never empty."
+                "type": "array"
               },
               "cause": {
                 "$ref": "#/components/schemas/RemoteSemanticFailure"
               }
             },
-            "additionalProperties": false
+            "required": ["cause", "actions"],
+            "type": "object"
           },
           "SemanticRecoveryAction": {
             "oneOf": [
               {
-                "type": "string",
                 "description": "Indexing or the semantic backend is still working and the Run holds an\nautomatic retry; it retries on its own schedule and nobody needs to act.",
-                "enum": ["wait"]
+                "enum": ["wait"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "An authorized manual retry resumes the Run with its unchanged Binding. The\nretry passes only if every pinned revision and current authority hold.",
-                "enum": ["retry_unchanged_binding"]
+                "enum": ["retry_unchanged_binding"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Create a new Task whose instructions the requester supplies explicitly. It\nhas no parent or dependency link to the stopped Run, so no invalidated\ncontext, approval or verification is carried over.",
-                "enum": ["create_follow_up_task"]
+                "enum": ["create_follow_up_task"],
+                "type": "string"
               }
             ]
           }
@@ -2678,6 +2678,34 @@
               }
             ]
           },
+          "RemoteDeclineExecution": {
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/RemoteExecutionControlState"
+              },
+              "declinable_call": {
+                "$ref": "#/components/schemas/DeclinableCall"
+              }
+            },
+            "required": ["control", "declinable_call"],
+            "type": "object"
+          },
+          "RemoteDeclineGrant": {
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "node_id", "agent"],
+            "type": "object"
+          },
           "RemoteExecutionActivation": {
             "properties": {
               "admission_id": {
@@ -3046,34 +3074,6 @@
                 "type": "string"
               }
             ]
-          },
-          "RemoteDeclineExecution": {
-            "properties": {
-              "control": {
-                "$ref": "#/components/schemas/RemoteExecutionControlState"
-              },
-              "declinable_call": {
-                "$ref": "#/components/schemas/DeclinableCall"
-              }
-            },
-            "required": ["control", "declinable_call"],
-            "type": "object"
-          },
-          "RemoteDeclineGrant": {
-            "properties": {
-              "agent": {
-                "$ref": "#/components/schemas/EntityRef"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "node_id": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "node_id", "agent"],
-            "type": "object"
           }
         },
         "schema": {
@@ -10420,6 +10420,7 @@
       "200": {
         "definitions": {
           "ReferenceRevocation": {
+            "description": "What a subject holding `reference.delete` needs to revoke a Reference: the\nrevision to send back and its state. It carries no content or name (#826).",
             "properties": {
               "reference_id": {
                 "format": "uuid",
@@ -32143,6 +32144,37 @@
             },
             "type": "object"
           },
+          "NextCursors": {
+            "properties": {
+              "artifacts": {
+                "type": ["string", "null"]
+              },
+              "conversations": {
+                "type": ["string", "null"]
+              },
+              "human_requests": {
+                "type": ["string", "null"]
+              },
+              "runs": {
+                "type": ["string", "null"]
+              },
+              "tasks": {
+                "type": ["string", "null"]
+              },
+              "workspaces": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "workspaces",
+              "tasks",
+              "runs",
+              "artifacts",
+              "human_requests",
+              "conversations"
+            ],
+            "type": "object"
+          },
           "NodeName": {
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
             "type": "string"
@@ -32222,6 +32254,17 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -32547,6 +32590,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -32627,6 +32677,17 @@
                 "type": "string"
               }
             ]
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
+            "type": "object"
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -33240,6 +33301,9 @@
                 },
                 "type": "array"
               },
+              "next_cursors": {
+                "$ref": "#/components/schemas/NextCursors"
+              },
               "offering": {
                 "description": "The current configured Offering: self-hosted, cloud or dedicated.",
                 "type": "string"
@@ -33267,9 +33331,6 @@
                   "$ref": "#/components/schemas/Workspace"
                 },
                 "type": "array"
-              },
-              "next_cursors": {
-                "$ref": "#/components/schemas/NextCursors"
               }
             },
             "required": [
@@ -34212,37 +34273,6 @@
               "state",
               "revision",
               "created_at"
-            ],
-            "type": "object"
-          },
-          "NextCursors": {
-            "properties": {
-              "artifacts": {
-                "type": ["string", "null"]
-              },
-              "conversations": {
-                "type": ["string", "null"]
-              },
-              "human_requests": {
-                "type": ["string", "null"]
-              },
-              "runs": {
-                "type": ["string", "null"]
-              },
-              "tasks": {
-                "type": ["string", "null"]
-              },
-              "workspaces": {
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "workspaces",
-              "tasks",
-              "runs",
-              "artifacts",
-              "human_requests",
-              "conversations"
             ],
             "type": "object"
           }
@@ -36647,6 +36677,17 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -36996,6 +37037,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -37076,6 +37124,17 @@
                 "type": "string"
               }
             ]
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
+            "type": "object"
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -38651,7 +38710,33 @@
       "200": {
         "definitions": {
           "CleanupStatus": {
-            "type": "object",
+            "properties": {
+              "attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "invalidated": {
+                "type": "boolean"
+              },
+              "last_error": {
+                "type": ["string", "null"]
+              },
+              "max_attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "next_attempt": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
             "required": [
               "state",
               "invalidated",
@@ -38661,36 +38746,9 @@
               "next_attempt",
               "last_error"
             ],
-            "properties": {
-              "attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "expires_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "invalidated": {
-                "type": "boolean"
-              },
-              "last_error": {
-                "type": ["string", "null"]
-              },
-              "max_attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "next_attempt": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "state": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "ContextRecoveryFailure": {
-            "type": "string",
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
               "source_selection_unavailable",
@@ -38706,32 +38764,32 @@
               "overflow_retries_exhausted",
               "output_truncated",
               "refused"
-            ]
+            ],
+            "type": "string"
           },
           "ControlSource": {
+            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "A Tenant Subject, or the Run's creation.",
-                "enum": ["tenant"]
+                "enum": ["tenant"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A Deployment Administrator's Safety Stop.",
-                "enum": ["deployment_administrator"]
+                "enum": ["deployment_administrator"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Aidash itself, such as the pause for an identity status outage.",
-                "enum": ["system"]
+                "enum": ["system"],
+                "type": "string"
               }
-            ],
-            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+            ]
           },
           "DeclinableCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "required": ["call", "tool", "kind"],
             "properties": {
               "call": {
                 "type": "string"
@@ -38743,37 +38801,38 @@
                 "type": "string"
               }
             },
-            "additionalProperties": false
+            "required": ["call", "tool", "kind"],
+            "type": "object"
           },
           "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"]
+                "enum": ["policy"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"]
+                "enum": ["catalog_approval"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"]
+                "enum": ["agent_configuration"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"]
+                "enum": ["other_node"],
+                "type": "string"
               }
-            ],
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person."
+            ]
           },
           "RemoteSemanticFailure": {
+            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
-                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -38786,31 +38845,21 @@
                   "unavailable",
                   "retries_exhausted",
                   "pending"
-                ]
+                ],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
-            ],
-            "description": "Public reasons contain no query, source ID, upstream body, or credential."
+            ]
           },
           "RunControl": {
-            "type": "string",
-            "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+            "enum": ["ACTIVE", "PAUSED", "CANCELLED"],
+            "type": "string"
           },
           "RunManagement": {
-            "type": "object",
-            "required": [
-              "id",
-              "may_control",
-              "phase",
-              "control",
-              "control_source",
-              "semantic_reason",
-              "context_reason"
-            ],
             "properties": {
               "context_reason": {
                 "anyOf": [
@@ -38842,8 +38891,12 @@
                 "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "format": "uuid",
+                "type": "string"
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               },
               "memory_cleanup": {
                 "anyOf": [
@@ -38878,15 +38931,20 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
-              },
-              "may_control": {
-                "description": "Whether this caller may change the Run's control state.",
-                "type": "boolean"
               }
-            }
+            },
+            "required": [
+              "id",
+              "may_control",
+              "phase",
+              "control",
+              "control_source",
+              "semantic_reason",
+              "context_reason"
+            ],
+            "type": "object"
           },
           "RunPhase": {
-            "type": "string",
             "enum": [
               "READY",
               "THINKING",
@@ -38895,41 +38953,42 @@
               "COMPLETED",
               "FAILED",
               "CANCELLED"
-            ]
+            ],
+            "type": "string"
           },
           "SemanticRecovery": {
-            "type": "object",
-            "required": ["cause", "actions"],
+            "additionalProperties": false,
             "properties": {
               "actions": {
-                "type": "array",
+                "description": "Authorized next steps, most preferred first. Never empty.",
                 "items": {
                   "$ref": "#/components/schemas/SemanticRecoveryAction"
                 },
-                "description": "Authorized next steps, most preferred first. Never empty."
+                "type": "array"
               },
               "cause": {
                 "$ref": "#/components/schemas/RemoteSemanticFailure"
               }
             },
-            "additionalProperties": false
+            "required": ["cause", "actions"],
+            "type": "object"
           },
           "SemanticRecoveryAction": {
             "oneOf": [
               {
-                "type": "string",
                 "description": "Indexing or the semantic backend is still working and the Run holds an\nautomatic retry; it retries on its own schedule and nobody needs to act.",
-                "enum": ["wait"]
+                "enum": ["wait"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "An authorized manual retry resumes the Run with its unchanged Binding. The\nretry passes only if every pinned revision and current authority hold.",
-                "enum": ["retry_unchanged_binding"]
+                "enum": ["retry_unchanged_binding"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Create a new Task whose instructions the requester supplies explicitly. It\nhas no parent or dependency link to the stopped Run, so no invalidated\ncontext, approval or verification is carried over.",
-                "enum": ["create_follow_up_task"]
+                "enum": ["create_follow_up_task"],
+                "type": "string"
               }
             ]
           }
@@ -53096,6 +53155,17 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -53421,6 +53491,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -53501,6 +53578,17 @@
                 "type": "string"
               }
             ]
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
+            "type": "object"
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -56318,7 +56406,33 @@
       "200": {
         "definitions": {
           "CleanupStatus": {
-            "type": "object",
+            "properties": {
+              "attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "invalidated": {
+                "type": "boolean"
+              },
+              "last_error": {
+                "type": ["string", "null"]
+              },
+              "max_attempts": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "next_attempt": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
             "required": [
               "state",
               "invalidated",
@@ -56328,36 +56442,9 @@
               "next_attempt",
               "last_error"
             ],
-            "properties": {
-              "attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "expires_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "invalidated": {
-                "type": "boolean"
-              },
-              "last_error": {
-                "type": ["string", "null"]
-              },
-              "max_attempts": {
-                "type": "integer",
-                "format": "int32"
-              },
-              "next_attempt": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "state": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "ContextRecoveryFailure": {
-            "type": "string",
             "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
             "enum": [
               "source_selection_unavailable",
@@ -56373,32 +56460,32 @@
               "overflow_retries_exhausted",
               "output_truncated",
               "refused"
-            ]
+            ],
+            "type": "string"
           },
           "ControlSource": {
+            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "A Tenant Subject, or the Run's creation.",
-                "enum": ["tenant"]
+                "enum": ["tenant"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A Deployment Administrator's Safety Stop.",
-                "enum": ["deployment_administrator"]
+                "enum": ["deployment_administrator"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Aidash itself, such as the pause for an identity status outage.",
-                "enum": ["system"]
+                "enum": ["system"],
+                "type": "string"
               }
-            ],
-            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not."
+            ]
           },
           "DeclinableCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "required": ["call", "tool", "kind"],
             "properties": {
               "call": {
                 "type": "string"
@@ -56410,37 +56497,38 @@
                 "type": "string"
               }
             },
-            "additionalProperties": false
+            "required": ["call", "tool", "kind"],
+            "type": "object"
           },
           "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
             "oneOf": [
               {
-                "type": "string",
                 "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"]
+                "enum": ["policy"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"]
+                "enum": ["catalog_approval"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"]
+                "enum": ["agent_configuration"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"]
+                "enum": ["other_node"],
+                "type": "string"
               }
-            ],
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person."
+            ]
           },
           "RemoteSemanticFailure": {
+            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
-                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -56453,31 +56541,21 @@
                   "unavailable",
                   "retries_exhausted",
                   "pending"
-                ]
+                ],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
-            ],
-            "description": "Public reasons contain no query, source ID, upstream body, or credential."
+            ]
           },
           "RunControl": {
-            "type": "string",
-            "enum": ["ACTIVE", "PAUSED", "CANCELLED"]
+            "enum": ["ACTIVE", "PAUSED", "CANCELLED"],
+            "type": "string"
           },
           "RunManagement": {
-            "type": "object",
-            "required": [
-              "id",
-              "may_control",
-              "phase",
-              "control",
-              "control_source",
-              "semantic_reason",
-              "context_reason"
-            ],
             "properties": {
               "context_reason": {
                 "anyOf": [
@@ -56509,8 +56587,12 @@
                 "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "format": "uuid",
+                "type": "string"
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               },
               "memory_cleanup": {
                 "anyOf": [
@@ -56545,15 +56627,20 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
-              },
-              "may_control": {
-                "description": "Whether this caller may change the Run's control state.",
-                "type": "boolean"
               }
-            }
+            },
+            "required": [
+              "id",
+              "may_control",
+              "phase",
+              "control",
+              "control_source",
+              "semantic_reason",
+              "context_reason"
+            ],
+            "type": "object"
           },
           "RunPhase": {
-            "type": "string",
             "enum": [
               "READY",
               "THINKING",
@@ -56562,41 +56649,42 @@
               "COMPLETED",
               "FAILED",
               "CANCELLED"
-            ]
+            ],
+            "type": "string"
           },
           "SemanticRecovery": {
-            "type": "object",
-            "required": ["cause", "actions"],
+            "additionalProperties": false,
             "properties": {
               "actions": {
-                "type": "array",
+                "description": "Authorized next steps, most preferred first. Never empty.",
                 "items": {
                   "$ref": "#/components/schemas/SemanticRecoveryAction"
                 },
-                "description": "Authorized next steps, most preferred first. Never empty."
+                "type": "array"
               },
               "cause": {
                 "$ref": "#/components/schemas/RemoteSemanticFailure"
               }
             },
-            "additionalProperties": false
+            "required": ["cause", "actions"],
+            "type": "object"
           },
           "SemanticRecoveryAction": {
             "oneOf": [
               {
-                "type": "string",
                 "description": "Indexing or the semantic backend is still working and the Run holds an\nautomatic retry; it retries on its own schedule and nobody needs to act.",
-                "enum": ["wait"]
+                "enum": ["wait"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "An authorized manual retry resumes the Run with its unchanged Binding. The\nretry passes only if every pinned revision and current authority hold.",
-                "enum": ["retry_unchanged_binding"]
+                "enum": ["retry_unchanged_binding"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Create a new Task whose instructions the requester supplies explicitly. It\nhas no parent or dependency link to the stopped Run, so no invalidated\ncontext, approval or verification is carried over.",
-                "enum": ["create_follow_up_task"]
+                "enum": ["create_follow_up_task"],
+                "type": "string"
               }
             ]
           }
@@ -57259,17 +57347,6 @@
                 },
                 "type": "array"
               },
-              "compaction_override": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/QualifiedRef"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Exact explicit compaction replacement, resolved by trusted registration."
-              },
               "registry_deployment": {
                 "type": "string"
               },
@@ -57280,12 +57357,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "schema_version",
-              "registry_deployment",
-              "compaction_override",
-              "bindings"
-            ],
+            "required": ["schema_version", "registry_deployment", "bindings"],
             "type": "object"
           },
           "ApprovalRef": {
@@ -57354,6 +57426,29 @@
               }
             },
             "required": ["reference", "revision"],
+            "type": "object"
+          },
+          "Bank": {
+            "additionalProperties": false,
+            "description": "Issued by the Home authority for a participant, independently of a definition version.",
+            "properties": {
+              "home": {
+                "type": "string"
+              },
+              "participant": {
+                "description": "`None` is the explicitly published Workspace bank.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "tenant": {
+                "type": "string"
+              },
+              "workspace": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["home", "tenant", "workspace", "participant"],
             "type": "object"
           },
           "Binding3": {
@@ -57928,6 +58023,28 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Bounded cross-Run memory recalled from the Task at Run start.",
+                "properties": {
+                  "kind": {
+                    "enum": ["memory_recall"],
+                    "type": "string"
+                  },
+                  "sources": {
+                    "items": {
+                      "$ref": "#/components/schemas/Evidence"
+                    },
+                    "type": "array"
+                  },
+                  "unavailable": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": ["kind", "sources", "unavailable"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "call": {
                     "$ref": "#/components/schemas/ToolCall"
@@ -58421,6 +58538,144 @@
             },
             "required": ["step", "estimator", "version"],
             "type": "object"
+          },
+          "Evidence": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Exact selected disclosure grant; source lineage is resolved at the Home.",
+                "properties": {
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["publication"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bank": {
+                    "$ref": "#/components/schemas/Bank"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["unit"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "bank", "id", "revision"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["message"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision", "digest"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["artifact"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision", "digest"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["run"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision", "digest"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Inclusive positions in the originating Run's Context Journal.",
+                "properties": {
+                  "from_seq": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["journal_range"],
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "through_seq": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "run_id", "from_seq", "through_seq"],
+                "type": "object"
+              }
+            ]
           },
           "ExecutionSummary": {
             "additionalProperties": false,
@@ -59122,6 +59377,17 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -59425,13 +59691,13 @@
                 "description": "Typed context-recovery reason for a paused Run; cleared on resume."
               },
               "decider_retry": {
-                "description": "Outage retries of the current step's compaction decision after every\nDecider Route failed. A decision commits to it, so each retry asks the\nRoutes again; it is reset once the step saves anything else (ADR 0066).",
+                "description": "Outage retries of the current step's decision after every\nDecider Route failed. A decision commits to it, so each retry asks the\nRoutes again; it is reset once the step saves anything else (ADR 0066).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
               },
               "decision_cycle": {
-                "description": "How many times a person resumed this Run from a pause. A compaction\ndecision commits to it, so a resume starts a new decision while a\nrecovered lease continues the same one (#108).",
+                "description": "How many times a person resumed this Run from a pause. A decision\ncommits to it, so a resume starts a new decision while a\nrecovered lease continues the same one (#108).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -59446,6 +59712,13 @@
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
+              },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
               },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
@@ -59527,6 +59800,17 @@
                 "type": "string"
               }
             ]
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
+            "type": "object"
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -59678,7 +59962,7 @@
           },
           "Restrictions": {
             "additionalProperties": false,
-            "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
+            "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability. Approval reads `threshold` and `max_calls_per_run`;\nsource selection also uses `forbid_apply`.",
             "properties": {
               "forbid_apply": {
                 "default": false,
