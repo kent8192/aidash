@@ -12,6 +12,9 @@ export type NoticeTarget = {
   workspace: string;
 };
 export type NoticeEntry = {
+  eventId?: string;
+  eventScope?: string;
+  eventSequence?: number;
   key: string;
   scope: string;
   signature: string;
@@ -24,7 +27,20 @@ export type NoticeEntry = {
   quiet?: boolean;
 };
 export type Notice = NoticeEntry & { kind: NoticeKind; id: string };
-export type NoticeFrame = { scopes: string[]; entries: NoticeEntry[] };
+export type NoticeFrame = {
+  scopes: string[];
+  entries: NoticeEntry[];
+  eventWatermark?: { scope: string; sequence: number };
+};
+/**
+ * The baseline scope of a Node's task events. State events are scoped to the
+ * selected Node (#664), so each Node has its own: the first frame of a Node
+ * seeds its events silently instead of announcing earlier completions and
+ * failures under another Node's watermark.
+ */
+export function taskEventScope(deployment: string, node: string) {
+  return JSON.stringify([deployment, "task-events", node]);
+}
 export const NOTICE_INTERVAL = 30_000;
 export const NOTICE_BATCH_DELAY = 1500;
 export const NOTICE_HISTORY_LIMIT = 50;
@@ -40,6 +56,9 @@ function notice(entry: NoticeEntry): Notice | undefined {
 }
 
 export class NoticeStore {
+  private seenEvents = new Set<string>();
+  private seenTaskStatuses = new Set<string>();
+  private eventWatermarks = new Map<string, number>();
   private scopes = new Set<string>();
   private previous = new Map<string, NoticeEntry>();
   private current = new Map<string, Notice>();
@@ -82,15 +101,44 @@ export class NoticeStore {
         item.kind === "input" ||
         item.kind === "schedule_stopped";
       const newInput = input && !this.announcedInputs.has(entry.key);
+      const taskStatusRevision = JSON.stringify([item.id, entry.signature]);
       // First snapshots, newly granted workspaces and new remote nodes are quiet.
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
-        this.scopes.has(entry.scope) &&
-        (newInput || (!input && before && before.kind !== item.kind))
+        (this.scopes.has(entry.scope) ||
+          (entry.eventScope && this.scopes.has(entry.eventScope))) &&
+        (newInput ||
+          (!input &&
+            (!entry.eventId ||
+              !this.seenTaskStatuses.has(taskStatusRevision)) &&
+            ((before && before.kind !== item.kind) ||
+              (!before &&
+                entry.eventId &&
+                !this.seenEvents.has(entry.eventId) &&
+                (entry.eventSequence === undefined ||
+                  (entry.eventScope !== undefined &&
+                    entry.eventSequence >
+                      (this.eventWatermarks.get(entry.eventScope) ??
+                        Infinity))) &&
+                !this.seenTaskStatuses.has(taskStatusRevision)))))
       ) {
         fresh.push(item);
       }
       if (input) this.announcedInputs.set(entry.key, entry.scope);
+    }
+    for (const entry of frame.entries)
+      if (entry.eventId) {
+        this.seenEvents.add(entry.eventId);
+        const item = notice(entry);
+        if (item)
+          this.seenTaskStatuses.add(JSON.stringify([item.id, entry.signature]));
+      }
+    if (frame.eventWatermark) {
+      const { scope, sequence } = frame.eventWatermark;
+      this.eventWatermarks.set(
+        scope,
+        Math.max(sequence, this.eventWatermarks.get(scope) ?? 0),
+      );
     }
     this.scopes = scopes;
     this.previous = entries;

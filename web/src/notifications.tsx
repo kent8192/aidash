@@ -42,6 +42,7 @@ import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
   NoticeStore,
+  taskEventScope,
   type Notice,
   type NoticeEntry,
   type NoticeFrame,
@@ -103,6 +104,7 @@ const iconTone = {
 };
 function frame(
   data: TenantState | undefined,
+  node: string,
   approvals: ApprovalCard[] | undefined,
   schedules: ScheduleNotices | undefined,
   ja: boolean,
@@ -111,6 +113,8 @@ function frame(
   const scopes = data.workspaces.map((workspace) =>
     JSON.stringify([data.deployment.id, workspace.id]),
   );
+  const eventScope = taskEventScope(data.deployment.id, node);
+  scopes.push(eventScope);
   scopes.push(
     ...data.human_requests.map((request) =>
       JSON.stringify([data.deployment.id, request.workspace_id]),
@@ -142,6 +146,65 @@ function frame(
       },
     };
   });
+  for (const event of [...data.events].sort(
+    (a, b) => a.sequence - b.sequence,
+  )) {
+    if (
+      !event.workspace_id ||
+      !["task.updated", "task.completed"].includes(event.kind)
+    )
+      continue;
+    const payload = event.data;
+    if (!payload || typeof payload !== "object") continue;
+    const object = payload as Record<string, unknown>;
+    const value = (
+      object.task && typeof object.task === "object" ? object.task : object
+    ) as Record<string, unknown>;
+    if (
+      typeof value.id !== "string" ||
+      typeof value.status !== "string" ||
+      typeof value.title !== "string"
+    )
+      continue;
+    const windowed = data.tasks.find((task) => task.id === value.id);
+    if (
+      windowed &&
+      (typeof value.revision !== "number" || value.revision < windowed.revision)
+    )
+      continue;
+    const scope = JSON.stringify([data.deployment.id, event.workspace_id]);
+    if (!scopes.includes(scope)) scopes.push(scope);
+    const key = JSON.stringify([data.deployment.id, "task", value.id]);
+    const prior = entries.findIndex((entry) => entry.key === key);
+    const kind =
+      value.status === "FAILED"
+        ? "failed"
+        : value.status === "COMPLETED"
+          ? "completed"
+          : null;
+    const entry: NoticeEntry = {
+      key,
+      scope,
+      eventId: event.id,
+      eventScope,
+      eventSequence: event.sequence,
+      signature: `${value.revision}:${value.status}`,
+      kind,
+      quiet: quietCompletion(kind, value.id, scheduled),
+      detail: value.title.slice(0, 180),
+      workspaceTitle:
+        data.workspaces.find((workspace) => workspace.id === event.workspace_id)
+          ?.title ?? "",
+      target: {
+        kind: "task",
+        id: value.id,
+        node: data.deployment.id,
+        workspace: event.workspace_id,
+      },
+    };
+    if (prior < 0) entries.push(entry);
+    else entries[prior] = entry;
+  }
   const requests = data.human_requests.map((request) => ({
     request,
     node: data.deployment.id,
@@ -205,7 +268,14 @@ function frame(
     scopes.push(stopped.scope);
     entries.push(...stopped.entries);
   }
-  return { scopes, entries };
+  return {
+    scopes,
+    entries,
+    eventWatermark: {
+      scope: eventScope,
+      sequence: Math.max(0, ...data.events.map((event) => event.sequence)),
+    },
+  };
 }
 const NotificationContext = createContext<{
   store: NoticeStore;
@@ -243,6 +313,7 @@ export function NotificationBell({ className }: { className?: string }) {
 
 export function NotificationProvider({
   data,
+  node,
   approvals,
   schedules,
   locale,
@@ -251,6 +322,8 @@ export function NotificationProvider({
   children,
 }: {
   data: TenantState | undefined;
+  /** The Node `data` was read for; empty for the whole Tenant. */
+  node: string;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
   /** Stopped Schedules and the Tasks Schedules started (#557). */
@@ -290,7 +363,7 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, approvals, schedules, locale === "ja-JP"));
+    store.observe(frame(data, node, approvals, schedules, locale === "ja-JP"));
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -365,6 +438,7 @@ export function NotificationProvider({
     }, delay);
   }, [
     data,
+    node,
     approvals,
     schedules,
     locale,
