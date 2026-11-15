@@ -4,6 +4,9 @@ cd "$(dirname "$0")/.."
 export COMPOSE_FILE="${COMPOSE_FILE:-compose.yaml}:server/src/apps/execution/tests/fixtures/acceptance.compose.yaml"
 docker compose up -d --wait
 export RUSTC_WRAPPER=
+# Bound release compiler concurrency while PostgreSQL and NATS are running.
+# Local callers can choose another limit.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 # Two Nodes, their workers, PostgreSQL and Chromium share one CI runner. A
 # debug build spends most of a Tenant subject's request in unoptimized
 # authorization and serialization and misses the Golden Path's budgets (#404),
