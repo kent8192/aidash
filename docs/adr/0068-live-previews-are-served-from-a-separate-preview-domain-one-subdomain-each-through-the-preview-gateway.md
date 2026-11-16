@@ -32,4 +32,4 @@ Decided on 2026-10-19 while grilling Live previews. A Live preview runs code an 
 ## Amendment (2026-11-11, #877)
 
 - A Deployment without a preview domain still shows PDF and HTML File versions, in a reduced form. A PDF is rendered in the dashboard by a bundled viewer with PDF scripting disabled, from the bytes a person who may download the file already receives. An HTML file is shown as its source text, never rendered. Both can still be downloaded. Live previews still need a preview domain, as before.
-- When the dashboard's origin is `localhost` and no preview domain is configured, the preview domain defaults to `localhost`, so a local Deployment serves every preview from `*.localhost` subdomains without configuration.
+- When the dashboard's origin is `localhost`, no preview domain is configured and a preview `public_port` is set, the preview domain defaults to `localhost`, so a local Deployment serves every preview from `*.localhost` subdomains. Preview links are HTTPS, and the gateway itself serves plain HTTP, so without a public port (a TLS endpoint in front of the gateway) previews are reported unavailable and the PDF and HTML fallbacks apply.
