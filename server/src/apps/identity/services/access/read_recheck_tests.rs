@@ -662,7 +662,6 @@ fn admission_description(
 				remote: true,
 				bindings: vec![],
 				definitions: vec![],
-				foreign_agents: vec![],
 				agent_plugins: vec![],
 			},
 			generation: None,

@@ -15,7 +15,7 @@ use reinhardt::rest::openapi::OpenApiSchema;
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	use super::super::services::native_memory::{CreateParticipant, Participant, ReadBank};
 	use super::super::services::native_memory::{Operation, Outcome, UpgradeParticipant};
-	use aidash_domain::memory::{Mutation, Unit};
+	use aidash_domain::memory::Mutation;
 	contracts.response::<_, super::super::services::native_memory::ParticipantPage>(
 		document,
 		views::memory::participants,
