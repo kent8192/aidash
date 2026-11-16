@@ -348,6 +348,105 @@ async fn an_identical_write_changes_nothing_but_still_checks_its_revision(
 	);
 }
 
+/// A batch that repeats a Unit and then corrects the Unit it cites fences the
+/// repeated one, so its body is no longer current and the whole batch fails,
+/// as a changed write citing the old revision does.
+#[rstest]
+#[tokio::test]
+async fn an_identical_write_fails_when_its_batch_changes_what_it_cites(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	// Arrange
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let actor = administrator(&store).await;
+	let bank = memory::create_participant(
+		&store,
+		&actor,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let (source, dependent) = (Uuid::now_v7(), Uuid::now_v7());
+	memory::mutate(
+		&store,
+		&actor,
+		mutation(
+			&bank,
+			Change::Add {
+				id: source,
+				content: content("Releases ship on Fridays."),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let mut cited = content("Freeze merges on Friday mornings.");
+	cited.evidence = vec![Evidence::Unit {
+		bank: bank.clone(),
+		id: source,
+		revision: 1,
+	}];
+	memory::mutate(
+		&store,
+		&actor,
+		mutation(
+			&bank,
+			Change::Add {
+				id: dependent,
+				content: cited.clone(),
+			},
+		),
+	)
+	.await
+	.unwrap();
+
+	// Act
+	let mut batch = mutation(
+		&bank,
+		Change::Correct {
+			id: dependent,
+			expected_revision: 1,
+			content: cited,
+		},
+	);
+	batch.changes.push(Change::Correct {
+		id: source,
+		expected_revision: 1,
+		content: content("Releases ship on Thursdays."),
+	});
+	let written = memory::mutate(&store, &actor, batch).await;
+
+	// Assert
+	assert!(
+		matches!(written, Err(aidash_server::Error::Conflict(_))),
+		"a fenced repeat cannot be returned as current: {written:?}"
+	);
+	let current = memory::list(
+		&store,
+		&actor,
+		memory::ReadBank {
+			provider: reference("p"),
+			bank,
+		},
+	)
+	.await
+	.unwrap();
+	let mut revisions: Vec<_> = current
+		.iter()
+		.map(|unit| (unit.id, unit.revision, unit.stale))
+		.collect();
+	revisions.sort();
+	let mut expected = vec![(source, 1, false), (dependent, 1, false)];
+	expected.sort();
+	assert_eq!(revisions, expected, "the failed batch changed nothing");
+}
+
 /// A second Run, for its own Task, with the same Binding and read journal as `run`.
 async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 	use aidash_server::database::native;

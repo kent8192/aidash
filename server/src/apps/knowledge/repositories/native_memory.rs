@@ -510,6 +510,20 @@ pub(crate) async fn mutate_origin(
 		bounds,
 	)
 	.await?;
+	// A repeated Unit that cites one this batch changed was just fenced: its
+	// returned body is no longer current, so the batch fails as a changed
+	// write citing the old revision would.
+	for id in &unchanged {
+		let now = units::load(lease, *id, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let returned = result.iter().find(|unit| unit.id == *id);
+		if returned.is_none_or(|unit| unit.revision != now.revision) || now.stale {
+			return Err(Error::Conflict(
+				"memory unit changed by another change in this batch".into(),
+			));
+		}
+	}
 	for unit in &changed {
 		if !unit.deleted {
 			units::current_for_run(
