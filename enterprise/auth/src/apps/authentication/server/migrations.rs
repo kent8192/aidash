@@ -111,8 +111,23 @@ pub fn migrations() -> Vec<Migration> {
 				ColumnDefinition::new("display_name", FieldType::Text),
 			],
 		));
+	// The sign-in method prompt looks identities up by their first Account (#876).
+	let first_account = Migration::new("0003_identity_first_account_index", "authentication")
+		.add_dependency("authentication", "0002_ephemeral_source_profiles")
+		.add_operation(Operation::CreateNamedIndex {
+			table: "auth_identities".to_owned(),
+			name: "auth_identity_first_account".to_owned(),
+			columns: vec![],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: Some(vec![r#"((document ->> 'first_account'::text))"#.to_owned()]),
+			mysql_options: None,
+			operator_class: None,
+		});
 	[
-		vec![migration, profiles],
+		vec![migration, profiles, first_account],
 		PostgresOAuthStore::migrations(),
 		vec![PostgresOidcStore::migration()],
 	]

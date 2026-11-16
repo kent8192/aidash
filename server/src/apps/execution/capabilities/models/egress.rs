@@ -93,7 +93,8 @@ pub struct RequestRecord {
 	pub created_at: DateTime<Utc>,
 }
 
-/// Durable suspension and connection-rate state for a Scratch Space.
+/// One row per Scratch Space that has used the gateway. Locking it serializes
+/// the scope's budget charges, and the scope's other rows hang off it.
 #[model(app_label = "execution", table_name = "egress_scope_state")]
 #[derive(Serialize, Deserialize)]
 pub struct ScopeState {
@@ -103,12 +104,6 @@ pub struct ScopeState {
 	pub tenant: String,
 	#[field(field_type = "text")]
 	pub node: String,
-	#[field]
-	pub suspended: bool,
-	#[field]
-	pub window_started_at: DateTime<Utc>,
-	#[field]
-	pub connections_in_window: i32,
 }
 
 /// Scope totals use an empty service; other rows hold a service's daily limit.
@@ -157,11 +152,44 @@ pub struct ScopeConnection {
 	pub duration_ms: i64,
 	#[field(field_type = "text")]
 	pub outcome: String,
+	/// The code the client received. Null for a connection that completed or
+	/// is still open, and for rows older than #845.
+	#[field(field_type = "text", null = true)]
+	pub error: Option<String>,
+	/// How long the connection waited for a Host connection limit. Null until
+	/// the wait is over, and for rows older than #845.
+	#[field(null = true)]
+	pub wait_ms: Option<i64>,
 	#[field]
 	pub created_at: DateTime<Utc>,
 }
 
-/// Notification outbox: a stop and its event are committed together.
+/// Counts of a scope's connections that ended before they held a Host
+/// connection limit, per minute, host and reason (#845). One gateway instance
+/// writes each minute once, so a minute may have a row per instance.
+#[model(app_label = "execution", table_name = "egress_scope_refusals")]
+#[derive(Serialize, Deserialize)]
+pub struct ScopeRefusal {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
+	pub node: String,
+	#[field]
+	pub scope_id: Uuid,
+	#[field]
+	pub minute: DateTime<Utc>,
+	/// Empty for the hosts past the per-minute cap, counted together.
+	#[field(field_type = "text")]
+	pub host: String,
+	#[field(field_type = "text")]
+	pub reason: String,
+	#[field]
+	pub count: i64,
+}
+
+/// Notifications for the operator, such as a scope reaching many hosts.
 #[model(app_label = "execution", table_name = "egress_scope_events")]
 #[derive(Serialize, Deserialize)]
 pub struct ScopeEvent {

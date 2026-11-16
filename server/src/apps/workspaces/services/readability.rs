@@ -3,10 +3,7 @@ use super::{ChannelAttachment, access::Lease};
 use crate::Result;
 use aidash_domain::{
 	model::ModelConfig,
-	registry::{
-		Entry,
-		bindings::{BindingKind, BindingSnapshot, ForeignAgentSnapshot},
-	},
+	registry::{Entry, bindings::BindingKind},
 };
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, JoinType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
@@ -40,36 +37,6 @@ impl Reader {
 			&& duration_ms.is_some_and(|ms| {
 				ms >= 0 && (ms as u64).saturating_mul(32).saturating_add(44) <= 8 * 1024 * 1024
 			}) && model.require_media_types(["audio/wav"]).is_ok()
-	}
-	fn from_snapshot(snapshot: &BindingSnapshot) -> Self {
-		let select = snapshot.supports_thread_attachment_selection();
-		let copy = !snapshot.remote
-			&& snapshot.bindings.iter().any(|b| {
-				b.excluded_reason.is_none()
-					&& b.identity.registry_deployment == snapshot.agent.registry_deployment
-					&& b.identity.id == "aidash.attachment_copy"
-					&& b.identity.version == "1.0.0"
-					&& b.definition.kind == "tool"
-			});
-		let model_ref = snapshot
-			.definitions
-			.iter()
-			.find(|d| d.identity == snapshot.agent)
-			.map(|d| &d.definition.config["model"]);
-		let model = model_ref
-			.and_then(|r| {
-				snapshot.definitions.iter().find(|d| {
-					d.definition.kind == "model"
-						&& Some(d.identity.id.as_str()) == r["id"].as_str()
-						&& Some(d.identity.version.as_str()) == r["version"].as_str()
-				})
-			})
-			.and_then(|d| serde_json::from_value(d.definition.config.clone()).ok());
-		Self {
-			select,
-			copy,
-			model,
-		}
 	}
 	fn from_entry(
 		agent: &Entry,
@@ -117,13 +84,12 @@ pub(crate) async fn annotate(
 		return Ok(());
 	}
 	let tenant = lease.access_mut().identity.tenant.clone();
-	let rows: Vec<(String, String, String, Option<Value>)> = crate::database::native::query_as(
+	let rows: Vec<(String, String, String)> = crate::database::native::query_as(
 		&Query::select()
 			.columns([
 				(Alias::new("d"), Alias::new("node_id")),
 				(Alias::new("d"), Alias::new("agent_id")),
 				(Alias::new("d"), Alias::new("agent_version")),
-				(Alias::new("d"), Alias::new("binding_snapshot")),
 			])
 			.from_as(Alias::new("delegations"), Alias::new("d"))
 			.join(
@@ -140,18 +106,15 @@ pub(crate) async fn annotate(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.columns(&["node_id", "agent_id", "agent_version", "binding_snapshot"])
+	.columns(&["node_id", "agent_id", "agent_version"])
 	.fetch_all(&mut **lease.tx())
 	.await?;
 	let mut local = HashSet::new();
 	let mut readers = Vec::new();
-	for (assigned_node, id, version, snapshot) in rows {
+	// Delegations are recorded only on this Deployment's own Nodes.
+	for (assigned_node, id, version) in rows {
 		if aidash_domain::nodes::same_deployment(&assigned_node, node) {
 			local.insert((id, version));
-		} else if let Some(snapshot) =
-			snapshot.and_then(|value| serde_json::from_value::<ForeignAgentSnapshot>(value).ok())
-		{
-			readers.push(Reader::from_snapshot(&snapshot.snapshot()));
 		}
 	}
 	let targets: Vec<String> = crate::database::native::query_scalar(
@@ -296,41 +259,5 @@ mod tests {
 		let legacy = Reader::from_entry(&agent, "aidash://local", &definitions);
 		assert!(!legacy.reads("image/png", None));
 		assert!(!legacy.reads("application/pdf", None));
-	}
-	#[test]
-	fn remote_agent_does_not_make_non_media_files_readable() {
-		use aidash_domain::registry::bindings::{
-			BindingOrigin, Narrowing, QualifiedRef, ResolvedBinding,
-		};
-		let (mut definition, _) = fixture();
-		definition.kind = "tool".into();
-		let node = "aidash://remote";
-		let mut snapshot = BindingSnapshot {
-			schema_version: 1,
-			agent: QualifiedRef {
-				registry_deployment: node.into(),
-				id: "agent".into(),
-				version: "1.0.0".into(),
-			},
-			remote: false,
-			bindings: vec![ResolvedBinding {
-				identity: QualifiedRef::builtin(node, "attachment_copy"),
-				definition,
-				digest: String::new(),
-				origin: BindingOrigin::Default,
-				alias: None,
-				narrow: Narrowing::default(),
-				installation: None,
-				provider_contract_digest: None,
-				provider_implementation: None,
-				excluded_reason: None,
-			}],
-			definitions: vec![],
-			foreign_agents: vec![],
-			agent_plugins: vec![],
-		};
-		assert!(Reader::from_snapshot(&snapshot).reads("application/pdf", None));
-		snapshot.remote = true;
-		assert!(!Reader::from_snapshot(&snapshot).reads("application/pdf", None));
 	}
 }

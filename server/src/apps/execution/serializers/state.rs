@@ -16,11 +16,14 @@ pub struct StateResponse {
 	pub registry: Vec<Entry>,
 	pub workspaces: Vec<Workspace>,
 	pub tasks: Vec<Task>,
-	pub runs: Vec<crate::domain::RunInspection>,
+	pub runs: Vec<crate::domain::RunSummary>,
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
 	pub artifacts: Vec<Artifact>,
+	/// Rows this read scanned and could not confirm because a Node did not
+	/// answer, for each Node, kind and Workspace. `[]` when none.
+	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
 	pub next_cursors: aidash_application::authorization::state::NextCursors,
 }
 

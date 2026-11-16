@@ -62,10 +62,30 @@ impl StateReads<'_> {
 		q
 	}
 }
+impl aidash_application::ports::authorization::visibility::RowOutcome for StateReads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
+	}
+}
 #[async_trait]
 impl WorkspaceStateScope for StateReads<'_> {
 	async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
 		self.access.allowed(id, action).await.map_err(Into::into)
+	}
+	async fn prepare_workspaces(&mut self, workspaces: &[Uuid]) -> Result<()> {
+		self.access
+			.prepare_state_workspaces(workspaces)
+			.await
+			.map_err(Into::into)
 	}
 	async fn registry(&mut self) -> Result<Vec<Entry>> {
 		aidash_application::authorization::catalog::list(
@@ -74,7 +94,10 @@ impl WorkspaceStateScope for StateReads<'_> {
 		)
 		.await
 	}
-	async fn latest_visible_events(&mut self, node: Option<&str>) -> Result<Vec<Event>> {
+	async fn latest_visible_events(
+		&mut self,
+		node: Option<&str>,
+	) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
 		super::projection::state_events(
 			&mut Reads {
 				access: self.access,
@@ -176,17 +199,35 @@ impl WorkspaceStateScope for StateReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn prepare_tasks(&mut self, tasks: &[Task]) -> Result<()> {
+		self.access
+			.prepare_state_tasks(tasks)
+			.await
+			.map_err(Into::into)
+	}
+	async fn prepare_artifacts(&mut self, artifacts: &[Artifact]) -> Result<()> {
+		self.access
+			.prepare_state_artifacts(artifacts)
+			.await
+			.map_err(Into::into)
+	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		self.access.task_visible(row).await.map_err(Into::into)
 	}
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
 		self.access.artifact_visible(row).await.map_err(Into::into)
 	}
+	async fn prepare_runs(&mut self, runs: &[RunMetadata]) -> Result<()> {
+		self.access
+			.prepare_state_runs(runs)
+			.await
+			.map_err(Into::into)
+	}
 	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
 		self.access.run_visible(row).await.map_err(Into::into)
 	}
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>> {
-		match crate::apps::identity::repositories::execution::details::visible_within(
+		match crate::apps::identity::repositories::execution::details::visible_within_state(
 			self.federation,
 			self.access,
 			id,
@@ -197,6 +238,17 @@ impl WorkspaceStateScope for StateReads<'_> {
 			Err(Error::Forbidden) => Ok(None),
 			Err(error) => Err(error),
 		}
+	}
+	async fn visible_runs(
+		&mut self,
+		ids: &[Uuid],
+	) -> Result<aidash_application::ports::authorization::state::VisibleRuns> {
+		crate::apps::identity::repositories::execution::details::visible_many_within_state(
+			self.federation,
+			self.access,
+			ids,
+		)
+		.await
 	}
 	async fn human_resource(&mut self, row: &HumanRequest) -> Result<Resource> {
 		self.access.human_resource(row).await.map_err(Into::into)

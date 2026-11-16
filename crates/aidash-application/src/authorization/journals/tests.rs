@@ -52,6 +52,7 @@ fn snapshot() -> WorkspaceSnapshot {
 			run_id: None,
 		}],
 		events: vec![],
+		unconfirmed: vec![],
 	}
 }
 fn event(kind: &str, data: Value) -> Event {

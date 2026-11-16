@@ -310,7 +310,41 @@
         "cache_write_tokens": { "$ref": "#/$defs/known_sum" },
         "cost_known_nanocredits": { "type": "integer", "minimum": 0 },
         "cost_uncertain_attempts": { "type": "integer", "minimum": 0 },
-        "records": { "type": "array", "items": { "type": "object" } }
+        "records": { "type": "array", "items": { "type": "object" } },
+        "cache_reuse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "overall_hit",
+            "summary_hit",
+            "main_calls",
+            "eligible_calls",
+            "unknown_compaction_calls",
+            "unknown_reuse_calls",
+            "reuse_at_least_999_share"
+          ],
+          "properties": {
+            "overall_hit": { "type": ["number", "null"] },
+            "summary_hit": { "type": ["number", "null"] },
+            "main_calls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["attempt_id", "reuse", "after_compaction"],
+                "properties": {
+                  "attempt_id": { "type": ["string", "null"] },
+                  "reuse": { "type": ["number", "null"] },
+                  "after_compaction": { "type": ["boolean", "null"] }
+                }
+              }
+            },
+            "eligible_calls": { "type": "integer", "minimum": 0 },
+            "unknown_compaction_calls": { "type": "integer", "minimum": 0 },
+            "unknown_reuse_calls": { "type": "integer", "minimum": 0 },
+            "reuse_at_least_999_share": { "type": ["number", "null"] }
+          }
+        }
       }
     },
     "known_sum": {

@@ -46,6 +46,13 @@ pub enum Error {
 	Invalid(String),
 	#[error("{0}")]
 	Conflict(String),
+	/// Someone else decided the approval first (ADR 0135). Only a person who
+	/// may decide it now is told who and how.
+	#[error("APPROVAL_ALREADY_DECIDED")]
+	ApprovalDecided {
+		decided_by: String,
+		outcome: aidash_domain::capabilities::approvals::DecidedOutcome,
+	},
 	#[error("{0}")]
 	NotFound(String),
 	/// The request is well formed and the facts it names do not hold, such as a
@@ -131,6 +138,9 @@ pub enum Error {
 	SemanticUnavailable,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	/// An authenticated authority identified the suspension epoch stopping a Run.
+	#[error("account suspended")]
+	AccountSuspended { epoch: u64 },
 	#[error("{0}")]
 	RemoteSemantic(aidash_domain::semantic::Failure),
 	/// Typed context-recovery pause; never retried as transport.

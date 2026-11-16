@@ -127,7 +127,13 @@ are set, its init scripts create both roles and, in `aidash_a`, `aidash_b` and
 `aidash_test`, transfer ownership to `aidash_owner`, create the three extensions
 and grant the server's default privileges. An existing local volume created
 before these roles must be recreated. The Helm chart uses externally managed
-databases, so provision these prerequisites on those databases separately.
+databases, so provision these prerequisites on those databases separately. For a
+non-Compose database, run `aidash setup-roles --superuser-url <url>` once.
+Save the printed server and migration owner URLs securely. Existing role
+passwords stay unchanged unless `--owner-password` or `--server-password` is
+provided. The command also creates the required extensions; the PostgreSQL
+image or package must provide them. `local-dev-db` and `migrate` check for
+`pg_jsonschema` 0.3.4.
 
 The bundled PostgreSQL image applies `pgroonga_crash_safer` preloading and
 `pgroonga.enable_crash_safe=on` on every server start, including retained data

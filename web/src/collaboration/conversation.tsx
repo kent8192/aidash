@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  channelAttachmentDescription,
   channelAttachmentUpload,
   channelMessageCreate,
   channelMessageHistory,
@@ -44,6 +45,8 @@ import { ApiError } from "../transport";
 import type { State, Discovery } from "../types";
 import { useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
+import { readUnconfirmed, unconfirmedFor } from "../unconfirmed";
+import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { senderLabel } from "./model";
@@ -53,6 +56,8 @@ import {
   attachmentWarningKey,
   attachmentWarningText,
   submissionFor,
+  descriptionTooLong,
+  uploadDescription,
   validAttachments,
   type MessageSubmission,
 } from "./conversation-model";
@@ -67,7 +72,13 @@ import {
   PopoverTrigger,
 } from "../components/ui/popover";
 
-type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
+type DraftFile = {
+  key: string;
+  file: File;
+  uploaded?: ChannelAttachment;
+  /** The sender's Image Description of an image, sent with its upload. */
+  description?: string;
+};
 type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
@@ -350,6 +361,14 @@ function ConversationFeed({
   const allMessages = query.isError
     ? []
     : mergeMessagePages(query.data?.pages ?? []);
+  // Every loaded page is a read of its own; what each left out adds up.
+  const missing = query.isError
+    ? []
+    : unconfirmedFor(
+        (query.data?.pages ?? []).flatMap(readUnconfirmed),
+        ["message"],
+        [workspace],
+      );
   const messages =
     threadList && !thread
       ? allMessages.filter((message) => message.thread_id !== null)
@@ -395,6 +414,16 @@ function ConversationFeed({
       query.isPending
     )
       return;
+    if (
+      draft.files.some(
+        (entry) =>
+          entry.file.type.startsWith("image/") &&
+          descriptionTooLong(entry.description),
+      )
+    ) {
+      setError(words.imageDescriptionTooLong);
+      return;
+    }
     const cited = omitCitations ? [] : citations;
     inFlight.current = true;
     setSending(true);
@@ -418,6 +447,25 @@ function ConversationFeed({
             ...current,
             files: current.files.map((file) =>
               file.key === entry.key ? { ...file, uploaded } : file,
+            ),
+          }));
+        }
+        // The description travels in a JSON body, never in the upload URL.
+        const description = uploadDescription(
+          entry.file.type,
+          entry.description,
+        );
+        if (description && uploaded.description !== description) {
+          uploaded = await channelAttachmentDescription(
+            workspace,
+            uploaded.id,
+            { description },
+          );
+          const described = uploaded;
+          updateDraft((current) => ({
+            ...current,
+            files: current.files.map((file) =>
+              file.key === entry.key ? { ...file, uploaded: described } : file,
             ),
           }));
         }
@@ -614,6 +662,7 @@ function ConversationFeed({
               }
             }}
           >
+            <UnconfirmedNotice className="mb-2" lines={missing} />
             {query.hasNextPage && (
               <Button
                 variant="ghost"
@@ -629,19 +678,23 @@ function ConversationFeed({
             {query.isPending && (
               <Loading className="py-6 text-center">{copy.processing}</Loading>
             )}
-            {!query.isPending && messages.length === 0 && (
-              <div className="mx-auto mt-8 grid max-w-64 justify-items-center gap-2 text-center">
-                <span className="grid size-8 place-items-center rounded-md bg-raised text-faint">
-                  <MessageSquare aria-hidden className="size-4" />
-                </span>
-                <p className="text-[13px] font-medium text-foreground">
-                  {threadList ? words.noThreads : copy.noMessages}
-                </p>
-                {!threadList && (
-                  <p className="text-xs text-muted-foreground">{words.scope}</p>
-                )}
-              </div>
-            )}
+            {!query.isPending &&
+              messages.length === 0 &&
+              missing.length === 0 && (
+                <div className="mx-auto mt-8 grid max-w-64 justify-items-center gap-2 text-center">
+                  <span className="grid size-8 place-items-center rounded-md bg-raised text-faint">
+                    <MessageSquare aria-hidden className="size-4" />
+                  </span>
+                  <p className="text-[13px] font-medium text-foreground">
+                    {threadList ? words.noThreads : copy.noMessages}
+                  </p>
+                  {!threadList && (
+                    <p className="text-xs text-muted-foreground">
+                      {words.scope}
+                    </p>
+                  )}
+                </div>
+              )}
             {feed.map((item, index) => {
               const previous = feed[index - 1];
               const divider =
@@ -918,6 +971,38 @@ function ConversationFeed({
                             <X className="size-3" />
                           </button>
                         </span>
+                        {entry.file.type.startsWith("image/") && (
+                          <input
+                            className="mt-1 block h-6 w-full max-w-sm rounded-sm border border-border bg-background px-2 text-[11px]"
+                            aria-invalid={descriptionTooLong(entry.description)}
+                            disabled={busy}
+                            value={entry.description ?? ""}
+                            placeholder={words.imageDescriptionPlaceholder}
+                            aria-label={`${words.imageDescription}: ${entry.file.name}`}
+                            onChange={(event) =>
+                              updateDraft((current) => ({
+                                ...current,
+                                files: current.files.map((file) =>
+                                  file.key === entry.key
+                                    ? {
+                                        ...file,
+                                        description: event.target.value,
+                                      }
+                                    : file,
+                                ),
+                              }))
+                            }
+                          />
+                        )}
+                        {entry.file.type.startsWith("image/") &&
+                          descriptionTooLong(entry.description) && (
+                            <p
+                              className="text-xs text-destructive"
+                              role="alert"
+                            >
+                              {words.imageDescriptionTooLong}
+                            </p>
+                          )}
                         {entry.uploaded?.no_assigned_agent_can_read && (
                           <p className="text-xs text-warning">
                             {attachmentWarningText(

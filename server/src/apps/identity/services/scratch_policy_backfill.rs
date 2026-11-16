@@ -12,7 +12,7 @@ pub(crate) fn forward() -> String {
 		.find(|policy| policy.id == "members")
 		.expect("the initial member policy exists");
 	// The member policy as it stood when this migration was written: later
-	// grants have their own migrations (`identity/0073_schedule_member_policy`).
+	// grants have their own migrations (`identity/0080_schedule_member_policy`).
 	current.actions.remove(aidash_domain::schedules::CREATE);
 	let mut previous = current.clone();
 	previous.actions.remove("scratch.create");

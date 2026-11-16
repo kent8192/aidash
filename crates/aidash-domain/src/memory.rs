@@ -436,6 +436,35 @@ impl Unit {
 	}
 }
 
+/// One Unit as a mutation returned it, with every field of [`Unit`].
+/// `unchanged` marks a correction identical to the current revision (#127
+/// decision 2): the revision stayed, no history was recorded and no Run that
+/// read the Unit stopped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Mutated {
+	#[serde(flatten)]
+	pub unit: Unit,
+	pub unchanged: bool,
+}
+impl Mutated {
+	/// Pair each returned Unit with the change that produced it. A changed
+	/// `Correct` or `Delete` always moves the revision past `expected_revision`,
+	/// so a `Correct` that kept it was identical. This holds for a first write
+	/// and for the receipt replay that rebuilds the same result.
+	pub fn of(changes: &[Change], units: Vec<Unit>) -> Vec<Self> {
+		units
+			.into_iter()
+			.map(|unit| {
+				let unchanged = changes.iter().any(|change| {
+					matches!(change, Change::Correct { id, expected_revision, .. }
+						if *id == unit.id && *expected_revision == unit.revision)
+				});
+				Self { unit, unchanged }
+			})
+			.collect()
+	}
+}
+
 /// These are operational caps, not unapproved product latency/quality targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

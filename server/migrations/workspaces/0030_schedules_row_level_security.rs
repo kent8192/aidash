@@ -2,14 +2,14 @@
 // Reinhardt does not express row policies; use the tenant policy template.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0029_schedules_row_level_security", "workspaces")
-		.add_dependency("workspaces", "0028_schedules")
+	Migration::new("0030_schedules_row_level_security", "workspaces")
+		.add_dependency("workspaces", "0029_schedules")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0029_schedules_row_level_security.sql").to_owned(),
+			sql: include_str!("sql/forward/0030_schedules_row_level_security.sql").to_owned(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0029_schedules_row_level_security.sql").to_owned(),
+				include_str!("sql/backward/0030_schedules_row_level_security.sql").to_owned(),
 			),
 		})
 }

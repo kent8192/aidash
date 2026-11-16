@@ -87,6 +87,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 		exchange: Arc::new(NoExchange),
 		fingerprint_key: "step-tenant-fingerprint-key-of-32-bytes".into(),
 		max_per_tenant: 5,
+		supplied_keys: false,
 	});
 	let credential = service
 		.create(

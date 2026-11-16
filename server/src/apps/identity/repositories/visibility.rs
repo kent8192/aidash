@@ -36,6 +36,7 @@ struct AttachmentMetadataRow {
 	width: Option<i32>,
 	height: Option<i32>,
 	duration_ms: Option<i64>,
+	description: Option<String>,
 }
 crate::native_record!(AttachmentMetadataRow {
 	message_id,
@@ -45,7 +46,8 @@ crate::native_record!(AttachmentMetadataRow {
 	size_bytes,
 	width,
 	height,
-	duration_ms
+	duration_ms,
+	description
 });
 
 async fn attachment_metadata(
@@ -67,6 +69,7 @@ async fn attachment_metadata(
 				"width",
 				"height",
 				"duration_ms",
+				"description",
 			]
 			.map(Alias::new),
 		)
@@ -88,6 +91,7 @@ async fn attachment_metadata(
 			"width",
 			"height",
 			"duration_ms",
+			"description",
 		])
 		.fetch_all(&mut **access.tx)
 		.await?;
@@ -103,6 +107,7 @@ async fn attachment_metadata(
 				width: row.width,
 				height: row.height,
 				duration_ms: row.duration_ms,
+				description: row.description,
 			},
 		})
 		.collect())
@@ -126,6 +131,10 @@ impl LocalRunVisibilityScope for Reads<'_> {
 			.flatten()
 	}
 	fn remember(&mut self, run: &RunMetadata, allowed: bool) {
+		// A refusal reached while a Node did not answer is not a verdict (#770).
+		if !allowed && self.access.has_silent_peers() {
+			return;
+		}
 		if self.access.dependency_frontier.is_none() {
 			self.access
 				.cached_runs
@@ -165,6 +174,9 @@ impl LocalRunVisibilityScope for Reads<'_> {
 		self.access.run_reads_visible(run).await.map_err(Into::into)
 	}
 	async fn task(&mut self, run: &RunMetadata) -> Result<Option<Task>> {
+		if let Some(task) = self.access.state_task(run.task_id, run.workspace_id) {
+			return Ok(Some(task));
+		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let task: Option<Task> = {
@@ -323,6 +335,34 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 	}
 	async fn run_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access.run_reads_visible(run).await.map_err(Into::into)
+	}
+}
+impl aidash_application::ports::authorization::visibility::RowOutcome for Reads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
+	}
+}
+impl aidash_application::ports::authorization::visibility::RowOutcome for NativeReads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
 	}
 }
 #[async_trait]
@@ -526,6 +566,9 @@ impl EventVisibilityScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn run(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<RunMetadata>> {
+		if let Some(run) = workspace.and_then(|workspace| self.access.state_run(id, workspace)) {
+			return Ok(Some(run));
+		}
 		let result: NativeResult<Option<RunMetadata>> = async {
 			let this = &mut *self.access;
 			let run: Option<crate::domain::RunMetadata> = {

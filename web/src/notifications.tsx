@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "./components/ui/sonner";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
@@ -30,6 +31,11 @@ import {
   SheetTitle,
 } from "./components/ui/sheet";
 import type { TenantState } from "./types";
+import { apiFetch } from "./transport";
+import {
+  useTenantAdministration,
+  type TenantAdministration,
+} from "./tenant-administration";
 import type { ApprovalCard } from "./generated/models";
 import { approvalNotice } from "./research";
 import { connect } from "./connections/connect";
@@ -42,6 +48,7 @@ import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
   NoticeStore,
+  storedWatermarks,
   taskEventScope,
   type Notice,
   type NoticeEntry,
@@ -67,6 +74,7 @@ const copy = {
     completed: "タスクが完了しました",
     failed: "タスクが失敗しました",
     schedule_stopped: "スケジュールが止まりました",
+    joined: "招待による参加",
     updates: (count: number) => `${count}件の更新があります`,
     view: "通知を確認",
     close: "通知を閉じる",
@@ -83,6 +91,7 @@ const copy = {
     completed: "Task completed",
     failed: "Task failed",
     schedule_stopped: "Schedule stopped",
+    joined: "Invitation accepted",
     updates: (count: number) => `${count} updates`,
     view: "View notifications",
     close: "Dismiss notification",
@@ -94,6 +103,7 @@ const icons = {
   completed: CheckCircle2,
   failed: TriangleAlert,
   schedule_stopped: CalendarX2,
+  joined: CheckCircle2,
 };
 const iconTone = {
   approval: "text-warning",
@@ -101,12 +111,21 @@ const iconTone = {
   completed: "text-success",
   failed: "text-destructive",
   schedule_stopped: "text-warning",
+  joined: "text-success",
+};
+type InvitationApprovalNotice = {
+  id: string;
+  identity: { display_name: string | null; verified_email: string | null };
+  subject: string;
+  occurred_at: string;
 };
 function frame(
   data: TenantState | undefined,
   node: string,
   approvals: ApprovalCard[] | undefined,
   schedules: ScheduleNotices | undefined,
+  administration: TenantAdministration | undefined,
+  joins: InvitationApprovalNotice[] | undefined,
   ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
@@ -268,6 +287,37 @@ function frame(
     scopes.push(stopped.scope);
     entries.push(...stopped.entries);
   }
+  if (joins && administration?.actions?.includes("registration.read")) {
+    const scope = JSON.stringify([
+      data.deployment.id,
+      administration.tenant,
+      "invitation-approvals",
+    ]);
+    scopes.push(scope);
+    for (const approval of joins) {
+      const person =
+        approval.identity?.display_name ||
+        approval.identity?.verified_email ||
+        approval.subject;
+      entries.push({
+        key: JSON.stringify([scope, approval.id]),
+        scope,
+        signature: approval.id,
+        kind: "joined",
+        detail: ja
+          ? `${person} が招待で参加しました`
+          : `${person} joined through an invitation`,
+        workspaceTitle: administration.label ?? administration.tenant,
+        occurredAt: approval.occurred_at,
+        target: {
+          kind: "administration",
+          id: approval.id,
+          node: data.deployment.id,
+          workspace: "",
+        },
+      });
+    }
+  }
   return {
     scopes,
     entries,
@@ -334,7 +384,26 @@ export function NotificationProvider({
   children: ReactNode;
 }) {
   const words = copy[locale];
-  const [store] = useState(() => new NoticeStore());
+  const tenant = data?.access.kind === "subject" ? data.access.tenant : null;
+  const administration = useTenantAdministration(tenant);
+  const joins = useQuery({
+    queryKey: ["invitation-approvals", tenant],
+    queryFn: () =>
+      apiFetch<InvitationApprovalNotice[]>(
+        `/api/tenants/${encodeURIComponent(tenant!)}/invitation-approvals`,
+      ),
+    enabled:
+      tenant !== null &&
+      !administration.isError &&
+      !!administration.data?.actions?.includes("registration.read"),
+    refetchInterval: 60_000,
+  });
+  const [store] = useState(
+    () =>
+      new NoticeStore(
+        storedWatermarks(localStorage, "aidash-notice-watermarks"),
+      ),
+  );
   const [centerOpen, setCenterOpen] = useState(false);
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -363,7 +432,17 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, node, approvals, schedules, locale === "ja-JP"));
+    store.observe(
+      frame(
+        data,
+        node,
+        approvals,
+        schedules,
+        administration.isError ? undefined : administration.data,
+        joins.isError ? undefined : joins.data,
+        locale === "ja-JP",
+      ),
+    );
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -441,6 +520,10 @@ export function NotificationProvider({
     node,
     approvals,
     schedules,
+    administration.data,
+    administration.isError,
+    joins.data,
+    joins.isError,
     locale,
     store,
     toastId,
@@ -455,7 +538,7 @@ export function NotificationProvider({
     },
     [toastId],
   );
-  const recent = view.recent.filter((item) => item.target.kind === "task");
+  const recent = view.recent;
   return (
     <NotificationContext value={{ store, show, label: words.notifications }}>
       {children}

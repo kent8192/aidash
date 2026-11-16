@@ -172,6 +172,5 @@ record!(Delegation {
 	task_id,
 	node_id,
 	agent_id,
-	agent_version,
-	delivered
+	agent_version
 });

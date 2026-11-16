@@ -193,6 +193,7 @@ pub async fn project(
 	let mut bytes = 0_usize;
 	let mut scanned = 0_u64;
 	let mut next_cursor = None;
+	let mut unconfirmed = aidash_domain::unconfirmed::Tally::new();
 	while cursor.kind < CANDIDATE_KINDS {
 		if scanned >= 4096 {
 			next_cursor = Some(scope.encode_cursor(&cursor)?);
@@ -220,17 +221,31 @@ pub async fn project(
 			if !allowed_kind {
 				continue;
 			}
-			let visible = scope
-				.visible(&candidate, options.scope_workspace.is_some())
-				.await?;
-			if !visible {
-				continue;
-			}
 			if let Candidate::Run(run) = &candidate
 				&& options.hours > 0
 				&& run.phase().is_terminal()
 				&& run.updated_at.timestamp() < cursor.window_end - i64::from(options.hours) * 3600
 			{
+				continue;
+			}
+			scope.begin_row();
+			let visible = scope
+				.visible(&candidate, options.scope_workspace.is_some())
+				.await?;
+			let silent = scope.take_row_silence().is_some();
+			if !visible {
+				if silent {
+					use aidash_domain::unconfirmed::Kind;
+					let row = match &candidate {
+						Candidate::Task(row) => Some((Kind::Task, row.workspace_id)),
+						Candidate::Run(row) => Some((Kind::Run, row.workspace_id)),
+						Candidate::Artifact(row) => Some((Kind::Artifact, row.workspace_id)),
+						_ => None,
+					};
+					if let Some((kind, workspace)) = row {
+						unconfirmed.record(&node_id, kind, workspace);
+					}
+				}
 				continue;
 			}
 			let addition: Vec<_> = candidate
@@ -295,6 +310,7 @@ pub async fn project(
 		nodes,
 		edges,
 		activity,
+		unconfirmed: unconfirmed.into_entries(),
 		next_cursor,
 	};
 	if serde_json::to_vec(&page)?.len() > 3_000_000 {

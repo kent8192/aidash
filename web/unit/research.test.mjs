@@ -411,18 +411,14 @@ test("only a shortening, or a Tenant period above a lowered ceiling, is called o
   assert.equal(exceedsCeiling(periods(3_600, 60), periods(3_600, 60)), false);
 });
 
-test("a Deployment Administrator's identity is shown only to Deployment Administrators", () => {
-  assert.equal(recordedActor("subject:acme/alice", false, false), "alice");
+test("a Deployment Administrator's identity in an older record is never shown", () => {
+  assert.equal(recordedActor("subject:acme/alice", false), "alice");
   assert.equal(
-    recordedActor("deployment-administrator:4b2c", false, false),
+    recordedActor("deployment-administrator:4b2c", false),
     "Deployment Administrator",
   );
   assert.equal(
-    recordedActor("deployment-administrator:4b2c", true, false),
-    "Deployment Administrator (4b2c)",
-  );
-  assert.equal(
-    recordedActor("deployment-administrator", false, true),
+    recordedActor("deployment-administrator", true),
     "デプロイメント管理者",
   );
 });

@@ -28,3 +28,7 @@ The previous model recreated the Execution Pod for every command, copied and re-
 ## Amendment (2026-11-05, #719)
 
 An Agent's Reference set stays readable through `file_read` and `file_search` without being copied, because a copied file is visible to everyone using the Scratch Space. The file tools cover the Scratch Space and the Reference set. Copying remains for a command that needs a file on disk. "Reference files" replaces "Reference Documents" above, because a Reference Document is an Agent's private knowledge, which is sent with every request and is not copied.
+
+## Amendment (2026-11-11, #845)
+
+Anomalous traffic no longer stops a Scratch Space's outbound traffic. Under a host list, every connection to another host or to an internal address is refused one by one, so stopping the Space protected nothing more. It did stop real work: a cold `pnpm install` of an ordinary app opened 600 connections in a minute and tripped the old rule (more than 600 new connections a minute), and nothing could lift a suspension. What the rule also guarded against is now handled without stopping anyone. A connection writes to the database only once it holds its Host connection limits, and connections that end before then are counted per minute, so no number of attempts loads the store. A Space that may reach any host, where scanning third parties is possible, is reported to the operator when it reaches more than 100 distinct hosts in a minute; a person decides whether to stop it.

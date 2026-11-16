@@ -533,11 +533,15 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 		} else {
 			&public["run"]
 		};
-		assert!(inspected["context"].is_object());
-		assert!(
-			inspected["context"].get("source_observation").is_none(),
-			"cached Source text must not be a public inspection field"
-		);
+		if path == "/api/state" {
+			assert!(inspected.get("context").is_none());
+		} else {
+			assert!(inspected["context"].is_object());
+			assert!(
+				inspected["context"].get("source_observation").is_none(),
+				"cached Source text must not be a public inspection field"
+			);
+		}
 	}
 	drop(server);
 	c.close().await;

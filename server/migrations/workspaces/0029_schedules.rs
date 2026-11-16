@@ -5,8 +5,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0028_schedules", "workspaces")
-		.add_dependency("workspaces", "0027_task_journal_range")
+	Migration::new("0029_schedules", "workspaces")
+		.add_dependency("workspaces", "0028_attachment_description")
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
 			name: "schedules".into(),

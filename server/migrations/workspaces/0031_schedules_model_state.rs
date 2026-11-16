@@ -1,12 +1,12 @@
 // reinhardt-migration-source: 1
-// Logical ORM state: the keys, checks and indexes 0027 created stay enforced in
+// Logical ORM state: the keys, checks and indexes 0029 created stay enforced in
 // the database. The models declare none of them, so this state-only checkpoint
 // removes them from the logical state and never executes SQL.
 
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0030_schedules_model_state", "workspaces")
+	Migration::new("0031_schedules_model_state", "workspaces")
         .add_operation(Operation::DropNamedIndex {
             table: "schedule_ticks".to_string(),
             name: "schedule_ticks_history".to_string(),
@@ -266,7 +266,7 @@ pub(super) fn migration() -> Migration {
                 deferrable: None,
             },
         })
-        .add_dependency("workspaces", "0029_schedules_row_level_security")
+        .add_dependency("workspaces", "0030_schedules_row_level_security")
         .atomic(true)
         .with_initial(None)
         .state_only(true)

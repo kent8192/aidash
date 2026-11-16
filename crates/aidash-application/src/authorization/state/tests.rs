@@ -6,6 +6,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
+use std::collections::BTreeSet;
 fn id(value: u128) -> Uuid {
 	Uuid::from_u128(value)
 }
@@ -89,6 +90,21 @@ struct Scope {
 	listing_fails: bool,
 	listing_called: bool,
 	policy_fails: bool,
+	/// Runs whose check stops at a Node that did not answer (#770).
+	silent_runs: BTreeSet<Uuid>,
+	silence: Option<String>,
+}
+const SILENT_NODE: &str = "aidash://other/silent";
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
 }
 #[async_trait]
 impl WorkspaceListingScope for Scope {
@@ -105,6 +121,7 @@ impl WorkspaceListingScope for Scope {
 		Ok(TaskPage {
 			tasks: vec![task(2)],
 			next_offset: Some(9),
+			unconfirmed: vec![],
 		})
 	}
 }
@@ -149,8 +166,8 @@ impl WorkspaceStateScope for Scope {
 	async fn conversation_candidates(&mut self, _: Option<&str>) -> Result<Vec<Conversation>> {
 		Ok(vec![])
 	}
-	async fn latest_visible_events(&mut self, _: Option<&str>) -> Result<Vec<Event>> {
-		Ok(vec![])
+	async fn latest_visible_events(&mut self, _: Option<&str>) -> Result<(Vec<Event>, Tally)> {
+		Ok((vec![], Tally::new()))
 	}
 	async fn task_visible(&mut self, _: &Task) -> Result<bool> {
 		Ok(true)
@@ -159,10 +176,18 @@ impl WorkspaceStateScope for Scope {
 		unreachable!()
 	}
 	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
+		if self.silent_runs.contains(&row.id) {
+			self.silence = Some(SILENT_NODE.into());
+			return Ok(false);
+		}
 		Ok(row.agent_id != "hidden")
 	}
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>> {
 		self.run_reads += 1;
+		if self.silent_runs.contains(&id) {
+			self.silence = Some(SILENT_NODE.into());
+			return Ok(None);
+		}
 		let mut result = run(id.as_u128(), true).inspect();
 		if let Some(deadline) = self.deadline {
 			result.state = Some(RunState::Waiting(Box::new(WaitingState::Human {
@@ -178,17 +203,17 @@ impl WorkspaceStateScope for Scope {
 			tenant: "tenant".into(),
 			kind: "human".into(),
 			id: row.id.to_string(),
-			attributes: json!({}),
+			attributes: json!({"hidden": row.prompt == "hidden"}),
 		})
 	}
 	async fn conversation_resource(&mut self, _: &Conversation) -> Result<Resource> {
 		unreachable!()
 	}
-	async fn decide(&mut self, _: &Resource, _: &str) -> Result<bool> {
+	async fn decide(&mut self, resource: &Resource, _: &str) -> Result<bool> {
 		if self.policy_fails {
 			Err(crate::Error::Forbidden)
 		} else {
-			Ok(true)
+			Ok(resource.attributes["hidden"] != json!(true))
 		}
 	}
 }
@@ -324,4 +349,64 @@ async fn malformed_visible_run_does_not_hide_its_neighbors_and_hidden_run_is_omi
 	);
 	assert!(output.runs[0].state_error.is_some());
 	assert!(output.runs[1].state_error.is_none());
+}
+
+#[tokio::test]
+async fn requests_of_a_run_left_out_for_a_silent_node_are_counted_after_human_read() {
+	// Arrange: Run 30 waits on a silent Node. It has one pending request the
+	// reader may read and one they may not.
+	let request = |value: u128, visible: bool| HumanRequest {
+		run_id: id(30),
+		..human(value, visible)
+	};
+	let mut scope = Scope {
+		runs: vec![run(3, true), run(30, true)],
+		humans: vec![human(5, true), request(50, true), request(51, false)],
+		silent_runs: BTreeSet::from([id(30)]),
+		..Default::default()
+	};
+	// Act
+	let state = state(&mut scope, None).await.unwrap();
+	// Assert: the surviving Run's request is returned, the other Run is counted,
+	// and only the request the reader may read is counted under the same Node.
+	assert_eq!(state.runs.len(), 1);
+	assert_eq!(state.human_requests.len(), 1);
+	let counts: Vec<_> = state
+		.unconfirmed
+		.iter()
+		.map(|entry| {
+			(
+				entry.node.as_str(),
+				entry.kind,
+				entry.workspace_id,
+				entry.count,
+			)
+		})
+		.collect();
+	assert_eq!(
+		counts,
+		vec![
+			(SILENT_NODE, aidash_domain::unconfirmed::Kind::Run, id(1), 1),
+			(
+				SILENT_NODE,
+				aidash_domain::unconfirmed::Kind::HumanRequest,
+				id(1),
+				1
+			),
+		]
+	);
+	// The Workspace of the unconfirmed rows is returned, so the Web keeps the
+	// warning when it narrows by Node.
+	assert!(state.workspaces.iter().any(|row| row.id == id(1)));
+}
+
+#[tokio::test]
+async fn a_state_with_nothing_left_out_has_an_empty_unconfirmed_list() {
+	let mut scope = Scope {
+		runs: vec![run(3, true)],
+		humans: vec![human(5, true)],
+		..Default::default()
+	};
+	let state = state(&mut scope, None).await.unwrap();
+	assert!(state.unconfirmed.is_empty());
 }

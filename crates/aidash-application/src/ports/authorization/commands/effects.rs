@@ -112,7 +112,14 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource>;
 	async fn snapshot(&mut self, workspace: Uuid) -> Result<Value>;
-	async fn observation(&mut self, workspace: Uuid, offset: usize, limit: usize) -> Result<Value>;
+	/// `exclude_run` leaves that Run's own events out of the view (#942).
+	async fn observation(
+		&mut self,
+		workspace: Uuid,
+		offset: usize,
+		limit: usize,
+		exclude_run: Option<Uuid>,
+	) -> Result<Value>;
 	async fn record(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value>;
 	async fn children(&mut self, workspace: Uuid, parent: Uuid) -> Result<Value>;
 	async fn created_by_grant(&mut self, grant: Uuid, child: Uuid) -> Result<bool>;

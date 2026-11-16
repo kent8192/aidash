@@ -71,14 +71,14 @@ fn assets() -> [(&'static str, String); 14] {
 			crate::apps::identity::services::scratch_policy_backfill::backward(),
 		),
 		(
-			"identity/sql/forward/0073_schedule_member_policy.sql",
+			"identity/sql/forward/0080_schedule_member_policy.sql",
 			format!(
 				"SET LOCAL aidash.scope = 'deployment';\n{};\n",
 				crate::apps::identity::services::schedule_policy_backfill::forward()
 			),
 		),
 		(
-			"identity/sql/backward/0073_schedule_member_policy.sql",
+			"identity/sql/backward/0080_schedule_member_policy.sql",
 			crate::apps::identity::services::schedule_policy_backfill::backward(),
 		),
 	]
@@ -198,7 +198,7 @@ mod tests {
 		assert!(matches!(migration.operations.as_slice(),
 			[Operation::RunSQL { sql, reverse_sql: Some(reverse) }] if sql == &expected[10].1 && reverse == &expected[11].1));
 		let migration = FilesystemSource::new(&root)
-			.get_migration("identity", "0073_schedule_member_policy")
+			.get_migration("identity", "0080_schedule_member_policy")
 			.await
 			.unwrap();
 		assert!(migration.database_only);

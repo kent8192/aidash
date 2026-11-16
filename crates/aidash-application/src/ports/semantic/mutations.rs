@@ -52,7 +52,9 @@ pub trait SemanticConfigurationSession: Send {
 }
 
 #[async_trait]
-pub trait SemanticEntriesSession: Send {
+pub trait SemanticEntriesSession:
+	Send + crate::ports::authorization::visibility::RowOutcome
+{
 	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
 	async fn index(&mut self, workspace: Uuid, exclusive: bool) -> Result<Index>;
 	async fn by_key(&mut self, workspace: Uuid, key: &str) -> Result<Option<Entry>>;

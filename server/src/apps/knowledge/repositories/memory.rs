@@ -28,7 +28,7 @@ pub(crate) async fn source_invalidated(
 		Source::Memory { .. } => false,
 		// The Area gate may hide an image without deleting it. Image sources have
 		// no text to disclose here, so leave the subsequent authority check to refuse them.
-		Source::WorkingImage { .. } => false,
+		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => false,
 		Source::Artifact { id } => crate::apps::workspaces::models::Artifact::read_in(
 			&mut **lease.tx(),
 			*id,
@@ -115,6 +115,9 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		self.entries.permits(entry, action).await
 	}
+	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		SemanticEntriesSession::image_visible(&mut self.entries, workspace, source).await
+	}
 	async fn entry_authorized(&mut self, entry: &Entry) -> Result<bool> {
 		aidash_application::semantic::visibility::permits_resource(
 			&mut crate::bootstrap::semantic_disclosure_scope(self.entries.lease),
@@ -133,6 +136,14 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 	}
 
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<(Uuid, i64)>> {
+		if let Some(rows) = self
+			.entries
+			.lease
+			.access()
+			.and_then(|access| access.state_semantic_reads(run))
+		{
+			return Ok(rows);
+		}
 		let result: NativeResult<Vec<(Uuid, i64)>> = async {
 			let dependencies: Vec<(Uuid, i64)> = {
 				let query_bind_1 = run;

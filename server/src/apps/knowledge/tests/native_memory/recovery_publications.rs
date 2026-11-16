@@ -155,8 +155,14 @@ async fn read_only_backup_revalidates_selected_publishers_through_credentialless
 		.await
 		.unwrap();
 	let revoked = recovery::backup(&job, directory, bank).await;
+	// A revoked credential answers 401 with reason `revoked` (#876 decision 12).
 	assert!(
-		matches!(revoked, Err(aidash_server::Error::Unauthorized)),
+		matches!(
+			revoked,
+			Err(aidash_server::Error::CredentialUnauthorized(
+				aidash_server::error::CredentialReason::Revoked
+			))
+		),
 		"revoked selected publisher must still withhold the archive: {revoked:?}"
 	);
 }

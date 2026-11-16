@@ -355,11 +355,10 @@ pub trait RevocationRecordScope: Send {
 	/// Who is reading.
 	fn decider(&self) -> Decider;
 	/// Whether a subject is permitted `action` on its Tenant's revocation
-	/// records; a Deployment Administrator needs no Tenant policy.
+	/// records. Only a subject reads them (#484).
 	async fn permits(&mut self, tenant: &str, action: &str) -> Result<bool>;
 	/// Whether a subject sees the Run and is permitted `action` on the Run's
-	/// `research` resource, as [`RevocationScope::require`] decides it; a
-	/// Deployment Administrator needs no Tenant policy.
+	/// `research` resource, as [`RevocationScope::require`] decides it.
 	async fn permits_run(&mut self, run: Uuid, action: &str) -> Result<bool>;
 	/// The Run's revocation record, if its evidence was revoked.
 	async fn record(&mut self, run: Uuid) -> Result<Option<EvidenceRevocation>>;

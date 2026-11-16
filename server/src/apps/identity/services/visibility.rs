@@ -202,6 +202,10 @@ impl NativeAccess {
 			.copied()
 	}
 	pub(crate) fn remember_run(&mut self, run: &domain::RunMetadata, allowed: bool) {
+		// A refusal reached while a Node did not answer is not a verdict (#770).
+		if !allowed && !self.access.unavailable_peers.is_empty() {
+			return;
+		}
 		self.access
 			.cached_runs
 			.insert((run.workspace_id, run.id), allowed);

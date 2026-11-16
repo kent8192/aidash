@@ -9,7 +9,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[async_trait]
-pub trait SemanticRetrievalSession: Send {
+pub trait SemanticRetrievalSession:
+	Send + crate::ports::authorization::visibility::RowOutcome
+{
 	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
 	/// Retain the same shared index lock through candidate and delivery checks.
 	async fn index(&mut self, workspace: Uuid) -> Result<Index>;
@@ -28,6 +30,23 @@ pub trait SemanticRetrievalSession: Send {
 		&mut self,
 		_workspace: Uuid,
 		_query: &aidash_domain::semantic::retrieval::ImageQuery,
+		_max_bytes: usize,
+	) -> Result<super::IndexImage> {
+		Err(crate::Error::Forbidden)
+	}
+	/// Whether the query's Run itself selected this attachment, with these
+	/// bytes, for its own inference.
+	async fn attachment_seen(
+		&mut self,
+		_query: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+	) -> Result<bool> {
+		Ok(false)
+	}
+	/// Read a selected attachment under its Run's current message authority.
+	async fn query_attachment(
+		&mut self,
+		_workspace: Uuid,
+		_query: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
 		_max_bytes: usize,
 	) -> Result<super::IndexImage> {
 		Err(crate::Error::Forbidden)

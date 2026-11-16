@@ -200,19 +200,36 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 		demo_data: false,
 	};
 	let mut tx = database.begin_in(&scope).await;
-	DashboardExecutionOrigin::require_current(&mut *tx, run, Some(&policy))
-		.await
-		.unwrap();
+	DashboardExecutionOrigin::require_current(
+		&mut *tx,
+		run,
+		Some(&policy),
+		aidash_application::ports::accounts::Recheck::Online,
+	)
+	.await
+	.unwrap();
 	online.unavailable.store(true, Ordering::SeqCst);
 	assert!(matches!(
-		DashboardExecutionOrigin::require_current(&mut *tx, run, Some(&policy)).await,
+		DashboardExecutionOrigin::require_current(
+			&mut *tx,
+			run,
+			Some(&policy),
+			aidash_application::ports::accounts::Recheck::Online
+		)
+		.await,
 		Err(crate::Error::IdentityStatusUnavailable)
 	));
 	// A suspension and restore happened while this product could not observe it.
 	online.current.lock().unwrap().suspension_epoch = Some(1);
 	online.unavailable.store(false, Ordering::SeqCst);
 	assert!(matches!(
-		DashboardExecutionOrigin::require_current(&mut *tx, run, Some(&policy)).await,
+		DashboardExecutionOrigin::require_current(
+			&mut *tx,
+			run,
+			Some(&policy),
+			aidash_application::ports::accounts::Recheck::Online
+		)
+		.await,
 		Err(crate::Error::Forbidden)
 	));
 	let mut identity = SubjectIdentity {
@@ -226,6 +243,7 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 		Err(crate::Error::Forbidden)
 	));
 	identity.http_session = Some(crate::authorization::identity::HttpSession {
+		recheck: aidash_application::ports::accounts::Recheck::Online,
 		id: Uuid::new_v4(),
 		provider_session: Some(online.session),
 		common_authority: Some(online.clone()),
@@ -241,12 +259,23 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 	DashboardExecutionOrigin::renew_manual(&mut *tx, run, &identity, Some(&policy))
 		.await
 		.unwrap();
-	DashboardExecutionOrigin::require_current(&mut *tx, run, Some(&policy))
-		.await
-		.unwrap();
+	DashboardExecutionOrigin::require_current(
+		&mut *tx,
+		run,
+		Some(&policy),
+		aidash_application::ports::accounts::Recheck::Online,
+	)
+	.await
+	.unwrap();
 	online.current.lock().unwrap().source_disable_epoch = Some(1);
 	assert!(matches!(
-		DashboardExecutionOrigin::require_current(&mut *tx, run, Some(&policy)).await,
+		DashboardExecutionOrigin::require_current(
+			&mut *tx,
+			run,
+			Some(&policy),
+			aidash_application::ports::accounts::Recheck::Online
+		)
+		.await,
 		Err(crate::Error::Forbidden)
 	));
 	tx.commit().await.unwrap();

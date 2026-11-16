@@ -143,14 +143,35 @@ impl ThreadScope for Scope<'_> {
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
 			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.to_owned();
+		let in_thread = Condition::any()
+			.add(Expr::col(Alias::new("message_id")).eq(Expr::value(root)))
+			.add(Expr::col(Alias::new("message_id")).in_subquery(replies));
+		// Indexed images leave the Workspace index with their attachments
+		// (#622 decision 11); the cleanup sweep removes their vectors.
+		let images = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("media_type")).like("image/%"))
+			.cond_where(in_thread.clone())
+			.to_string(PostgresQueryBuilder);
+		let images: Vec<Uuid> = crate::database::native::query_scalar(&images)
+			.scalar_all(&mut **self.access.tx)
+			.await?;
+		{
+			let mut lease =
+				crate::apps::knowledge::repositories::access::Lease::Inherited(&mut *self.access);
+			for image in images {
+				crate::apps::knowledge::repositories::attachment_images::retire(
+					&mut lease, workspace, image,
+				)
+				.await?;
+			}
+		}
 		let query = Query::delete()
 			.from_table(Alias::new("channel_attachments"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
-			.cond_where(
-				Condition::any()
-					.add(Expr::col(Alias::new("message_id")).eq(Expr::value(root)))
-					.add(Expr::col(Alias::new("message_id")).in_subquery(replies)),
-			)
+			.cond_where(in_thread)
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&query)
 			.execute(&mut **self.access.tx)

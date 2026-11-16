@@ -1,13 +1,13 @@
 // reinhardt-migration-source: 1
-// Mark the execution authority of a Run a Schedule started, and of every Run it
-// delegates to, so none of them registers or changes Schedules (#557).
+// Mark a generation request a Run a Schedule started made, so the Run its
+// generated Agent is delegated carries the mark too (#557 decision 7).
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0074_scheduled_executions", "identity")
-		.add_dependency("identity", "0073_schedule_member_policy")
+	Migration::new("0132_generation_scheduled", "execution")
+		.add_dependency("execution", "0131_scope_refusals_state")
 		.add_operation(Operation::AddColumn {
-			table: "authorization_execution".into(),
+			table: "generation_requests".into(),
 			column: ColumnDefinition::new("scheduled", FieldType::Boolean)
 				.with_not_null(true)
 				.with_default(Some("false".to_owned())),

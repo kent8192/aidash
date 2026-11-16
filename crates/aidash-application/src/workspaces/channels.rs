@@ -1,6 +1,10 @@
 //! Channel use cases preserve admission, visibility, replay, and write ordering.
 use crate::{Error, Result, ports::channels::ChannelScope};
-use aidash_domain::{nonempty, workspaces::channels::*};
+use aidash_domain::{
+	nonempty,
+	unconfirmed::{Kind, Tally},
+	workspaces::channels::*,
+};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -29,6 +33,8 @@ pub struct AttachmentUpload<'a> {
 	pub media_type: &'a str,
 	pub idempotency_key: Uuid,
 	pub measurements: MediaMeasurements,
+	/// The uploader's Image Description, if any; only an image has one.
+	pub description: Option<&'a str>,
 }
 
 pub async fn thread(
@@ -121,6 +127,16 @@ pub async fn post(
 			.await?
 	};
 	let attachments = attach(scope, workspace, message.id, input.attachment_ids).await?;
+	// A posted image enters the Workspace index with the message, under the
+	// poster's authority (#622 decision 2).
+	if attachments
+		.iter()
+		.any(|attachment| attachment.media_type.starts_with("image/"))
+	{
+		scope
+			.index_attachment_images(workspace, message.id, &attachments)
+			.await?;
+	}
 	let root_thread = scope.root_thread(message.id).await?;
 	Ok(ChannelMessage {
 		message,
@@ -183,6 +199,9 @@ pub async fn upload(
 	content: &[u8],
 ) -> Result<ChannelAttachment> {
 	validate_attachment(input.filename, input.media_type, content)?;
+	if let Some(description) = input.description {
+		validate_attachment_description(input.media_type, description)?;
+	}
 	let uploader = scope.principal();
 	let digest = format!("{:x}", Sha256::digest(content));
 	let attachment = match scope
@@ -197,6 +216,9 @@ pub async fn upload(
 			if existing.sha256 != digest
 				|| existing.filename != input.filename
 				|| existing.media_type != input.media_type
+				|| input
+					.description
+					.is_some_and(|text| existing.description.as_deref() != Some(text))
 				|| attachment_bytes(scope, &existing).await? != content
 			{
 				return Err(Error::Conflict(
@@ -237,6 +259,42 @@ async fn attachment_bytes(
 		return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 	}
 	Ok(bytes)
+}
+/// Write or replace an image's Image Description. Only the person or Agent who
+/// uploaded the image writes it (#622 decision 7), before or after posting it;
+/// an indexed image follows.
+pub async fn describe(
+	scope: &mut dyn ChannelScope,
+	workspace: Uuid,
+	id: Uuid,
+	description: &str,
+) -> Result<ChannelAttachment> {
+	let attachment = scope
+		.attachment(workspace, id)
+		.await?
+		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
+	// A posted image is described only by a writer who can still read its
+	// message; an unposted upload is visible to its uploader alone.
+	if let Some(message) = attachment.message_id {
+		scope.message(workspace, message).await?;
+	}
+	if attachment.uploaded_by != scope.principal() {
+		return Err(if attachment.message_id.is_some() {
+			Error::Forbidden
+		} else {
+			Error::NotFound("attachment unavailable".into())
+		});
+	}
+	validate_attachment_description(&attachment.media_type, description)?;
+	if attachment.description.as_deref() == Some(description) {
+		return Ok(attachment.metadata());
+	}
+	scope
+		.describe_attachment(workspace, id, &attachment.uploaded_by, description)
+		.await?;
+	let mut metadata = attachment.metadata();
+	metadata.description = Some(description.to_owned());
+	Ok(metadata)
 }
 pub async fn download(
 	scope: &mut dyn ChannelScope,
@@ -285,6 +343,11 @@ pub async fn history(
 		None => None,
 	};
 	let mut result = Vec::new();
+	let mut unconfirmed = Tally::new();
+	// What had been counted when the page's last message was found. The next
+	// page resumes after that message, so rows scanned beyond it are counted
+	// there, not here (#770).
+	let mut at_cut = Tally::new();
 	let mut scanned = 0;
 	let more = loop {
 		let rows = scope
@@ -294,7 +357,10 @@ pub async fn history(
 		for row in rows {
 			scanned += 1;
 			cursor = Some((row.message.created_at, row.message.id));
-			if scope.visible(&row.message).await? {
+			scope.begin_row();
+			let visible = scope.visible(&row.message).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle(silence, Kind::Message, workspace, visible) {
 				result.push(ChannelMessage {
 					message: row.message,
 					thread_id: row.reply_thread_id.or(row.root_thread_id),
@@ -302,6 +368,9 @@ pub async fn history(
 					attachments: Vec::new(),
 					citations: Vec::new(),
 				});
+				if result.len() == usize::from(input.limit) {
+					at_cut = unconfirmed.clone();
+				}
 				if result.len() > usize::from(input.limit) {
 					break;
 				}
@@ -323,6 +392,7 @@ pub async fn history(
 	};
 	if more {
 		result.pop();
+		unconfirmed = at_cut;
 	}
 	let next_before = if more {
 		result.last().map(|item| item.message.id)
@@ -342,6 +412,7 @@ pub async fn history(
 	Ok(ChannelMessagePage {
 		messages: result,
 		next_before,
+		unconfirmed: unconfirmed.into_entries(),
 	})
 }
 

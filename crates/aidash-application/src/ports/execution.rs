@@ -467,7 +467,12 @@ pub trait ExecutionHome: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
+	/// The Workspace view the model's observe tool reads: every event.
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value>;
+	/// The Workspace view a step pins as evidence: `observation` without the
+	/// Run's own events, which its history already holds and every step
+	/// renews (#942).
+	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value>;
 	async fn observation_fitted(
 		&self,
 		offset: usize,

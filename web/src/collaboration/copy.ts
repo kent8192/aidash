@@ -11,6 +11,7 @@ export const collaborationCopy = {
     unavailable: "この対象は現在の権限で取得できません。",
     continuesAt: "{time} に Run が自身の判断で続行します",
     noAnswerBeforeDeadline: "Answer Deadline までに回答がありませんでした",
+    questionClosedRunEnded: "Run が終了したため、この質問は締め切られました",
     deploymentAdministratorExecution:
       "デプロイメント管理者はテナントの外で作業を実行できません。マッピングを選んでテナント内で操作してください。",
     channelHelp: "一つのゴールに向けて、人間とエージェントで会話する場所です。",
@@ -111,6 +112,7 @@ export const collaborationCopy = {
     unavailable: "This resource is unavailable under your current access.",
     continuesAt: "The Run continues on its own at {time}",
     noAnswerBeforeDeadline: "No answer before the Answer Deadline",
+    questionClosedRunEnded: "This question closed because the Run ended",
     deploymentAdministratorExecution:
       "Deployment Administrators do not run work outside a Tenant. Choose a Mapping to work inside a Tenant.",
     channelHelp:

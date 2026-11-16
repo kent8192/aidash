@@ -33,7 +33,10 @@ pub(crate) async fn binding(
 pub(crate) fn failure(error: &Error) -> Failure {
 	match error {
 		Error::RemoteSemantic(reason) => *reason,
-		Error::Forbidden | Error::Unauthorized => Failure::Authority,
+		Error::Forbidden
+		| Error::Unauthorized
+		| Error::CredentialForbidden(_)
+		| Error::CredentialUnauthorized(_) => Failure::Authority,
 		Error::Invalid(_) | Error::NotFound(_) => Failure::Configuration,
 		_ => Failure::Unavailable,
 	}

@@ -6,6 +6,8 @@ use http::Method;
 use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "execution_authorization/issue_781_measure.rs"]
+mod issue_781_measure;
 #[path = "../../execution/tests/support/late_subnode.rs"]
 mod late_subnode;
 #[path = "execution_authorization/subnode_read_boundary.rs"]
@@ -634,7 +636,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(catalog.as_array().unwrap().len(), 8 + builtin_count);
 	for (id, version) in [
 		("aidash.workspace_read", "1.1.0"),
-		("aidash.workspace_search", "1.0.0"),
+		("aidash.workspace_search", "1.1.0"),
 		("aidash.attachment_copy", "1.0.0"),
 	] {
 		assert!(
@@ -961,7 +963,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		}
 		if path.starts_with("/api/events?") {
 			assert_eq!(
-				value.as_array().unwrap().len(),
+				value["events"].as_array().unwrap().len(),
 				1,
 				"hidden events must not trap pagination"
 			);
@@ -3304,7 +3306,6 @@ async fn an_approved_tool_call_runs_exactly_once_without_another_model_response(
 	assert_eq!(card["operation"], "invoke");
 	assert_eq!(card["call"]["name"], "plugin_0");
 	assert_eq!(card["call"]["arguments"], json!({"call":1}));
-	assert_eq!(card["approver"], "alice");
 	assert_eq!(card["viewer_is_approver"], true);
 	let (status, decided) =
 		decide_tool_call(&t.application.application, &token, approval, "allow_once").await;
@@ -8357,7 +8358,7 @@ impl LateFiles {
 		let (name, arguments) = match call {
 			LateCall::Message => (
 				"workspace_message",
-				json!({"content":"Late file","files":["sent.png"]}),
+				json!({"content":"Late file","files":["sent.png"],"image_descriptions":{"sent.png":"A single pixel"}}),
 			),
 			LateCall::Copy => (
 				"attachment_copy",

@@ -18,7 +18,6 @@ fn only_a_decision_about_the_operation_commits_its_bytes() {
 			call: None,
 		})),
 		Error::Refused("egress_budget_exhausted".into()),
-		Error::Refused("egress_suspended".into()),
 		Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into()),
 		Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into()),
 		Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into()),
