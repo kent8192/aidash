@@ -26,6 +26,9 @@ pub struct PreparedSearch {
 	pub result: SearchResult,
 	limit: usize,
 	max_tokens: usize,
+	/// Some entries were not READY yet; `allowed` holds only the READY ones.
+	/// Set only when the caller accepts a partial read (ADR 0129).
+	incomplete: bool,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Candidate {
@@ -115,6 +118,18 @@ pub async fn prepare(
 	input: &Search,
 	agent_controls: Option<&AgentConfig>,
 ) -> Result<PreparedSearch> {
+	prepare_reads(scope, workspace, input, agent_controls, false).await
+}
+
+/// [`prepare`], optionally keeping the READY part of an incomplete index for a
+/// Run step's optional context, which may degrade (ADR 0129).
+async fn prepare_reads(
+	scope: &mut dyn SemanticRetrievalSession,
+	workspace: Uuid,
+	input: &Search,
+	agent_controls: Option<&AgentConfig>,
+	partial: bool,
+) -> Result<PreparedSearch> {
 	scope.workspace(workspace, "semantic.search").await?;
 	let index = scope.index(workspace).await?;
 	let spec = index.configuration()?;
@@ -201,10 +216,9 @@ pub async fn prepare(
 		}
 		allowed.insert(entry.point_id, (entry, content));
 	}
-	if incomplete {
-		// A Run waits for the complete index under its bounded outage policy.
-		// Keep this outside search_or_outage's degradable provider failures:
-		// opting into degraded context must not turn indexing into a partial read.
+	if incomplete && !(partial && agent_controls.is_some()) {
+		// A Run waits for the complete index in an Outage Wait. Only a Run
+		// step's optional context reads the READY part, and says so (ADR 0129).
 		if agent_controls.is_some() {
 			return Err(Error::RemoteSemantic(Failure::Unavailable));
 		}
@@ -234,6 +248,7 @@ pub async fn prepare(
 		result,
 		limit: input.limit,
 		max_tokens: input.max_tokens,
+		incomplete,
 	})
 }
 pub async fn finish(
@@ -250,6 +265,7 @@ pub async fn finish(
 		mut result,
 		limit,
 		max_tokens,
+		incomplete: _,
 	} = prepared;
 	let workspace = index.workspace_id;
 	let points = backend
@@ -354,9 +370,20 @@ pub async fn search(
 	run: Option<Uuid>,
 	controls: Option<&AgentConfig>,
 ) -> Result<SearchResult> {
-	search_or_outage(scope, vector, workspace, input, run, controls)
-		.await?
-		.map_err(|_| Error::RemoteSemantic(Failure::Unavailable))
+	match search_or_outage(scope, vector, workspace, input, run, controls, false).await? {
+		Retrieval::Found(result) => Ok(result),
+		Retrieval::Incomplete(_) | Retrieval::Outage(_) => {
+			Err(Error::RemoteSemantic(Failure::Unavailable))
+		}
+	}
+}
+
+/// What a search found: everything it asked for, only the READY part of an
+/// incomplete index, or an outage that waiting can fix.
+enum Retrieval {
+	Found(SearchResult),
+	Incomplete(SearchResult),
+	Outage(OutageCause),
 }
 
 /// Search, returning an outage that waiting can fix as its cause instead of an
@@ -369,14 +396,20 @@ async fn search_or_outage(
 	input: &Search,
 	run: Option<Uuid>,
 	controls: Option<&AgentConfig>,
-) -> Result<std::result::Result<SearchResult, OutageCause>> {
+	partial: bool,
+) -> Result<Retrieval> {
 	let outage = |error: &Error| matches!(error, Error::RemoteSemantic(Failure::Unavailable));
 	if let Some(image) = &input.image
 		&& run != Some(image.run_id)
 	{
 		return Err(Error::Forbidden);
 	}
-	let prepared = prepare(scope, workspace, input, controls).await?;
+	let prepared = prepare_reads(scope, workspace, input, controls, partial).await?;
+	let found = if prepared.incomplete {
+		Retrieval::Incomplete
+	} else {
+		Retrieval::Found
+	};
 	let query_image = if let Some(image) = &input.image {
 		let content = scope
 			.query_image(workspace, image, prepared.spec.max_image_bytes)
@@ -391,12 +424,12 @@ async fn search_or_outage(
 		None
 	};
 	if prepared.allowed.is_empty() {
-		return Ok(Ok(prepared.result));
+		return Ok(found(prepared.result));
 	}
 	match prepared.points_present(vector).await {
 		Ok(true) => {}
 		Ok(false) => return Err(Error::RemoteSemantic(Failure::Unavailable)),
-		Err(error) if outage(&error) => return Ok(Err(OutageCause::VectorBackend)),
+		Err(error) if outage(&error) => return Ok(Retrieval::Outage(OutageCause::VectorBackend)),
 		Err(error) => return Err(error),
 	}
 	let embedding = match if let Some(image) = &query_image {
@@ -413,12 +446,14 @@ async fn search_or_outage(
 			.embed(workspace, &prepared.spec.embedding, &input.query, run)
 			.await
 	} {
-		Err(error) if outage(&error) => return Ok(Err(OutageCause::EmbeddingProvider)),
+		Err(error) if outage(&error) => {
+			return Ok(Retrieval::Outage(OutageCause::EmbeddingProvider));
+		}
 		embedding => embedding?,
 	};
 	let max_image_bytes = prepared.spec.max_image_bytes;
 	match finish(vector, scope, prepared, &embedding, false).await {
-		Err(error) if outage(&error) => Ok(Err(OutageCause::VectorBackend)),
+		Err(error) if outage(&error) => Ok(Retrieval::Outage(OutageCause::VectorBackend)),
 		Err(error) => Err(error),
 		Ok(result) => {
 			if let (Some(selection), Some(original)) = (&input.image, &query_image) {
@@ -431,7 +466,7 @@ async fn search_or_outage(
 					));
 				}
 			}
-			Ok(Ok(result))
+			Ok(found(result))
 		}
 	}
 }
@@ -440,8 +475,12 @@ async fn search_or_outage(
 #[derive(Debug)]
 pub enum WorkspaceContext {
 	Retrieved(Option<SearchResult>),
-	/// Retrieval failed with an outage that waiting can fix. The caller pauses
-	/// unless the slot may degrade (ADR 0059).
+	/// The index is not complete yet: only its READY part was searched. The
+	/// caller waits for the complete index unless the slot may degrade, in
+	/// which case this part is its Degraded context (ADR 0129).
+	Partial(SearchResult),
+	/// Retrieval failed with an outage that waiting can fix. The caller waits
+	/// unless the slot may degrade (ADR 0059, ADR 0129).
 	Unavailable(OutageCause),
 }
 impl WorkspaceContext {
@@ -449,7 +488,9 @@ impl WorkspaceContext {
 	pub fn required(self) -> Result<Option<SearchResult>> {
 		match self {
 			Self::Retrieved(result) => Ok(result),
-			Self::Unavailable(_) => Err(Error::RemoteSemantic(Failure::Unavailable)),
+			Self::Partial(_) | Self::Unavailable(_) => {
+				Err(Error::RemoteSemantic(Failure::Unavailable))
+			}
 		}
 	}
 }
@@ -526,11 +567,13 @@ pub async fn workspace_context(
 		},
 		Some(run.id),
 		Some(agent),
+		true,
 	)
 	.await?;
 	Ok(match result {
-		Ok(result) => WorkspaceContext::Retrieved(Some(result)),
-		Err(cause) => WorkspaceContext::Unavailable(cause),
+		Retrieval::Found(result) => WorkspaceContext::Retrieved(Some(result)),
+		Retrieval::Incomplete(result) => WorkspaceContext::Partial(result),
+		Retrieval::Outage(cause) => WorkspaceContext::Unavailable(cause),
 	})
 }
 

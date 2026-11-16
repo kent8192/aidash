@@ -1989,17 +1989,24 @@ impl Environment<'_> {
 			.await;
 			let degrade = degrade_on_outage && agent.workspace_degrades;
 			let result = async {
-				let semantic = match semantic? {
-					// Optional workspace context may degrade; memory still follows
-					// and still fails closed (ADR 0059).
-					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
-						cause,
-					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
-					workspace => workspace
-						.required()?
-						.map(serde_json::to_value)
-						.transpose()?,
-				};
+				let semantic =
+					match semantic? {
+						// Optional workspace context may degrade; memory still follows
+						// and still fails closed (ADR 0059).
+						aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
+							cause,
+						) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
+						// Only the READY part of an incomplete index (ADR 0129).
+						aidash_application::semantic::retrieval::WorkspaceContext::Partial(
+							result,
+						) if degrade => Some(aidash_domain::semantic::degraded::partial(
+							serde_json::to_value(result)?,
+						)),
+						workspace => workspace
+							.required()?
+							.map(serde_json::to_value)
+							.transpose()?,
+					};
 				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
 					aidash_domain::semantic::degraded::degraded(value).is_none()
 				});

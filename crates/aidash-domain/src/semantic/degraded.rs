@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 pub enum OutageCause {
 	EmbeddingProvider,
 	VectorBackend,
+	/// The index is still being built; only its READY part was read (ADR 0129).
+	IndexIncomplete,
 }
 
 /// The marker that stands in the workspace slot of `semantic_memory`, in the
@@ -22,9 +24,19 @@ pub fn marker(cause: OutageCause) -> Value {
 	json!({"status":"unavailable","cause":cause})
 }
 
-/// The cause when `slot` is the marker.
+/// The READY part of an incomplete index, marked as Degraded context: the
+/// search result with `status` and `cause` beside it (ADR 0129).
+pub fn partial(mut result: Value) -> Value {
+	if let Some(object) = result.as_object_mut() {
+		object.insert("status".into(), json!("incomplete"));
+		object.insert("cause".into(), json!(OutageCause::IndexIncomplete));
+	}
+	result
+}
+
+/// The cause when `slot` is the marker or a [`partial`] result.
 pub fn cause(slot: &Value) -> Option<OutageCause> {
-	if slot.get("status")?.as_str()? != "unavailable" {
+	if !matches!(slot.get("status")?.as_str()?, "unavailable" | "incomplete") {
 		return None;
 	}
 	serde_json::from_value(slot.get("cause")?.clone()).ok()

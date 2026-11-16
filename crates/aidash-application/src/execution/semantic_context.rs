@@ -5,7 +5,10 @@ use crate::{
 };
 use aidash_domain::{
 	Task,
-	semantic::{InputRead, degraded::marker},
+	semantic::{
+		InputRead,
+		degraded::{marker, partial},
+	},
 };
 use serde_json::Value;
 /// `degrade`: a local workspace outage yields the Degraded context marker
@@ -41,10 +44,12 @@ pub async fn retrieve_with_query(
 		return Ok(result);
 	}
 	let mut scope = repository.local_scope().await?;
-	let result = match scope.retrieve(query, budget).await? {
+	let (result, incomplete) = match scope.retrieve(query, budget).await? {
 		// A degraded slot read no entry, so it begins no dependency journal.
 		WorkspaceContext::Unavailable(cause) if degrade => return Ok(Some(marker(cause))),
-		workspace => workspace.required()?,
+		// The READY part of an incomplete index still depends on what it read.
+		WorkspaceContext::Partial(result) if degrade => (Some(result), true),
+		workspace => (workspace.required()?, false),
 	};
 	if let Some(result) = &result {
 		let mut journal = scope.begin_dependencies().await?;
@@ -53,10 +58,12 @@ pub async fn retrieve_with_query(
 		}
 		journal.commit().await?;
 	}
-	result
-		.map(serde_json::to_value)
-		.transpose()
-		.map_err(Into::into)
+	let value = result.map(serde_json::to_value).transpose()?;
+	Ok(if incomplete {
+		value.map(partial)
+	} else {
+		value
+	})
 }
 #[cfg(test)]
 mod tests;
