@@ -32160,6 +32160,25 @@
             "required": ["binding", "origin"],
             "type": "object"
           },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
+          },
           "Outcome": {
             "oneOf": [
               {
@@ -32547,6 +32566,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -32558,6 +32584,17 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "paused_call": {
                 "anyOf": [
@@ -33141,8 +33178,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -33969,6 +34015,42 @@
           },
           "WaitingState": {
             "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
               {
                 "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
@@ -36585,6 +36667,25 @@
             "required": ["binding", "origin"],
             "type": "object"
           },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
+          },
           "Outcome": {
             "oneOf": [
               {
@@ -36996,6 +37097,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -37007,6 +37115,17 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "paused_call": {
                 "anyOf": [
@@ -37756,8 +37875,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -38428,6 +38556,42 @@
           },
           "WaitingState": {
             "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
               {
                 "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
@@ -53034,6 +53198,25 @@
             "required": ["binding", "origin"],
             "type": "object"
           },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
+          },
           "Outcome": {
             "oneOf": [
               {
@@ -53421,6 +53604,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -53432,6 +53622,17 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "paused_call": {
                 "anyOf": [
@@ -54031,8 +54232,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -54703,6 +54913,42 @@
           },
           "WaitingState": {
             "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
               {
                 "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
@@ -59002,6 +59248,25 @@
             "required": ["binding", "origin"],
             "type": "object"
           },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
+          },
           "Outcome": {
             "oneOf": [
               {
@@ -59367,13 +59632,13 @@
                 "description": "Typed context-recovery reason for a paused Run; cleared on resume."
               },
               "decider_retry": {
-                "description": "Outage retries of the current step's compaction decision after every\nDecider Route failed. A decision commits to it, so each retry asks the\nRoutes again; it is reset once the step saves anything else (ADR 0066).",
+                "description": "Outage retries of the current step's decision after every\nDecider Route failed. A decision commits to it, so each retry asks the\nRoutes again; it is reset once the step saves anything else (ADR 0066).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
               },
               "decision_cycle": {
-                "description": "How many times a person resumed this Run from a pause. A compaction\ndecision commits to it, so a resume starts a new decision while a\nrecovered lease continues the same one (#108).",
+                "description": "How many times a person resumed this Run from a pause. A decision\ncommits to it, so a resume starts a new decision while a\nrecovered lease continues the same one (#108).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -59389,6 +59654,13 @@
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
                 "format": "uint32",
@@ -59400,6 +59672,17 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               },
               "paused_call": {
                 "anyOf": [
@@ -59999,8 +60282,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -60671,6 +60963,42 @@
           },
           "WaitingState": {
             "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
               {
                 "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
