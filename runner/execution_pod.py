@@ -2329,6 +2329,12 @@ print(json.dumps(r))'''
         finally:
             lock.release()
 
+    def stop_preview(self, operation_id):
+        """Stop a Live preview; another kind of Background process is refused."""
+        if self._read_command(operation_id).get('kind') != 'preview':
+            raise ExecutionPodError('command_not_found', 'Live preview does not exist')
+        return self.stop_background(operation_id)
+
     def stop_mcp(self, operation_id):
         if self._read_command(operation_id).get('kind') != 'mcp_session':
             raise ExecutionPodError('mcp_unavailable', 'MCP session does not exist')

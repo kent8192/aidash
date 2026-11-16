@@ -606,3 +606,17 @@ def test_stopping_one_command_leaves_the_runs_other_commands(tmp_path):
     controller._stop_command.assert_called_once_with('a')
     with pytest.raises(ExecutionPodError):
         controller.stop_command('bg')
+
+
+def test_the_preview_stop_route_stops_only_live_previews(tmp_path):
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    kinds = {'preview': 'preview', 'shell': 'shell'}
+    controller._read_command = lambda operation: {'operation_id': operation, 'kind': kinds[operation],
+                                                  'background': True}
+    controller.stop_background = Mock(return_value={'operation_id': 'preview', 'status': 'stopping'})
+    assert controller.stop_preview('preview')['status'] == 'stopping'
+    with pytest.raises(ExecutionPodError):
+        controller.stop_preview('shell')
+    controller.stop_background.assert_called_once_with('preview')

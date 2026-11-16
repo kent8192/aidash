@@ -1809,7 +1809,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/v2/previews/start':
                 return runner.execution_pods.start_preview(request)
             if path == '/v2/previews/stop':
-                return runner.execution_pods.stop_background(request['operation_id'])
+                return runner.execution_pods.stop_preview(request['operation_id'])
             if path == '/v2/mcp/start':
                 return runner.execution_pods.start_mcp(request)
             if path == '/v2/mcp/call':
