@@ -560,6 +560,63 @@ async fn a_tenant_bound_issuer_never_claims_the_deployment_administrator_reserva
 
 #[rstest::rstest]
 #[tokio::test]
+async fn the_deployment_administrator_reservation_follows_the_tenant_reservation_holder(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::models::BootstrapDeploymentAdministratorReservation;
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let policy = d.federation.config.dashboard_policy();
+	let a = d.sign_in_as("split-first", Some("split@example.com")).await;
+	let b = d
+		.sign_in_as("split-second", Some("split@example.com"))
+		.await;
+	let result = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		&d.federation.config,
+		"split@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.deployment_administrator, "reserved");
+	// Identity A wins the Tenant reservation, as a concurrent sign-in can
+	// before B reaches the Deployment Administrator reservation.
+	sqlx::query(
+		"UPDATE demo_reservations SET spent_at = clock_timestamp(), spent_by = $1 WHERE email = 'split@example.com' AND source = 'host_access'",
+	)
+	.bind(a)
+	.execute(pool.fixture_driver())
+	.await
+	.unwrap();
+	BootstrapDeploymentAdministratorReservation::consume(
+		pool,
+		policy.as_ref(),
+		"split@example.com",
+		b,
+	)
+	.await
+	.unwrap();
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{b}' AND enabled")).await, 0);
+	BootstrapDeploymentAdministratorReservation::consume(
+		pool,
+		policy.as_ref(),
+		"split@example.com",
+		a,
+	)
+	.await
+	.unwrap();
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{a}' AND enabled")).await, 1);
+	assert_eq!(
+		d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations")
+			.await,
+		0
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn bootstrap_coexists_with_an_existing_demo_reservation(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {

@@ -19,7 +19,7 @@ pub struct BootstrapDeploymentAdministratorReservation {
 
 use super::{
 	AdministrationActor, AdministrationEvent, DashboardDeploymentAdministratorGrant,
-	DashboardIdentity, database_time,
+	DashboardIdentity, DemoReservation, database_time,
 };
 use crate::{Result, database::native::Pool};
 use aidash_application::ports::authorization::dashboard::AccountPolicy;
@@ -161,7 +161,18 @@ impl BootstrapDeploymentAdministratorReservation {
 					.is_some_and(|account| {
 						account.disabled_at.is_none() && may_administer(policy, &account.issuer)
 					});
-				if !eligible {
+				// Both Host Access grants go to one identity. A sign-in spends
+				// the address's Tenant reservations first, so once another
+				// identity holds one, this reservation waits for that identity
+				// rather than splitting the roles between two accounts.
+				let split = DemoReservation::objects()
+					.filter(DemoReservation::field_email().eq(email.to_owned()))
+					.filter(DemoReservation::field_source().eq("host_access".to_owned()))
+					.all_with_db(tx)
+					.await?
+					.iter()
+					.any(|reservation| reservation.spent_by.is_some_and(|by| by != identity));
+				if !eligible || split {
 					return Ok(());
 				}
 				let existing = DashboardDeploymentAdministratorGrant::objects()

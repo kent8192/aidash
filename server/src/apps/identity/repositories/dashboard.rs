@@ -38,13 +38,6 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 		// them, and each is spent in its own Tenant's scope and transaction, so
 		// one that cannot be spent leaves the others to be.
 		let email = email.to_lowercase();
-		BootstrapDeploymentAdministratorReservation::consume(
-			&self.0,
-			policy.as_ref(),
-			&email,
-			identity,
-		)
-		.await?;
 		for reservation in DemoReservation::unspent(&self.0, &email).await? {
 			if reservation.source != "host_access" && !policy.as_ref().is_some_and(|p| p.demo_data)
 			{
@@ -62,6 +55,15 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 				tracing::debug!(%identity, tenant = %reservation.tenant, ?reason, "Demo Reservation not spent");
 			}
 		}
+		// After the Tenant reservations, so the grant follows whichever
+		// identity spent the address's Host Access Tenant reservation.
+		BootstrapDeploymentAdministratorReservation::consume(
+			&self.0,
+			policy.as_ref(),
+			&email,
+			identity,
+		)
+		.await?;
 		Ok(())
 	}
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
