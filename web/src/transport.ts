@@ -66,18 +66,22 @@ export class ApiError extends Error {
   readonly runReads: boolean;
   /** Seconds until a refused Authority Change can be sent again. */
   readonly retryAfter?: number;
+  /** The error envelope's other fields, such as a machine-readable `code`. */
+  readonly detail?: Record<string, unknown>;
   constructor(
     message: string,
     status: number,
     responseReceived = false,
     runReads = false,
     retryAfter?: number,
+    detail?: Record<string, unknown>,
   ) {
     super(message);
     this.status = status;
     this.responseReceived = responseReceived;
     this.runReads = runReads;
     this.retryAfter = retryAfter;
+    this.detail = detail;
   }
 }
 /** What a refused read or resume of a Run says: what it read, or what it uses. */
@@ -310,6 +314,9 @@ export async function authenticatedFetch(
         : (data.error?.message ?? response.statusText),
       response.status,
       true,
+      false,
+      undefined,
+      data && typeof data === "object" ? data : undefined,
     );
   }
   return response;
