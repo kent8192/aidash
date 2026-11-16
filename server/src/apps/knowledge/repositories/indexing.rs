@@ -625,11 +625,15 @@ impl SemanticIndexingSession for Session {
 			let policy =
 				crate::semantic::native_memory::policy(&mut self.lease, &bank.tenant, &provider)
 					.await?;
+			let role = policy
+				.embedding
+				.as_ref()
+				.ok_or(Error::SemanticUnavailable)?;
 			let pinned: EmbeddingConfig = serde_json::from_value(
 				crate::semantic::native_memory::definition(
 					&mut self.lease,
 					&bank.tenant,
-					&policy.embedding,
+					role,
 					"embedding",
 				)
 				.await?
@@ -665,7 +669,7 @@ impl SemanticIndexingSession for Session {
 			models.embedding_origin = Some(crate::generation::embedding::Origin::Index(entry));
 			let produced = models
 				.embed(
-					&policy.embedding,
+					role,
 					text,
 					Allowance {
 						calls: policy.bounds.max_model_calls,

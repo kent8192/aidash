@@ -30,6 +30,36 @@ pub struct HumanPage {
 	pub unconfirmed: Vec<Unconfirmed>,
 }
 
+pub async fn workspace_runs(
+	scope: &mut dyn Scope,
+	workspace: Uuid,
+	live: bool,
+	cursor: Option<Uuid>,
+) -> Result<RunPage> {
+	scope.require_workspace(workspace).await?;
+	let rows = scope.workspace_runs(workspace, live, cursor).await?;
+	let next_cursor =
+		(rows.len() == PAGE_SIZE).then(|| rows.last().unwrap().metadata.id.to_string());
+	let mut items = Vec::new();
+	let mut unconfirmed = Tally::new();
+	for row in rows {
+		scope.begin_row();
+		let run = scope.visible_run(row.metadata.id).await?;
+		let silence = scope.take_row_silence();
+		match run {
+			Some(run) => items.push(run),
+			None => {
+				unconfirmed.settle(silence, Kind::Run, row.metadata.workspace_id, false);
+			}
+		}
+	}
+	Ok(RunPage {
+		items,
+		next_cursor,
+		unconfirmed: unconfirmed.into_entries(),
+	})
+}
+
 /// Pages contain at most 50 candidate rows. Denied rows are skipped, so a
 /// short or empty page can still have a cursor to the next candidate page.
 pub async fn runs(scope: &mut dyn Scope, task: Uuid, cursor: Option<Uuid>) -> Result<RunPage> {
@@ -65,6 +95,7 @@ pub async fn humans(
 	cursor: Option<Uuid>,
 ) -> Result<HumanPage> {
 	let mut visible = HashMap::new();
+	let mut workspaces = HashMap::new();
 	if let Some(id) = run {
 		visible.insert(id, Some(scope.require_run(id).await?));
 	}
@@ -75,6 +106,14 @@ pub async fn humans(
 	// The Node each hidden Run's check gave up on, for the requests that follow it.
 	let mut silent: HashMap<Uuid, String> = HashMap::new();
 	for mut request in rows {
+		if let std::collections::hash_map::Entry::Vacant(entry) =
+			workspaces.entry(request.workspace_id)
+		{
+			entry.insert(scope.workspace_allowed(request.workspace_id).await?);
+		}
+		if !workspaces[&request.workspace_id] {
+			continue;
+		}
 		if let std::collections::hash_map::Entry::Vacant(entry) = visible.entry(request.run_id) {
 			scope.begin_row();
 			let run = scope.visible_run(request.run_id).await?;
@@ -123,6 +162,17 @@ mod tests {
 	impl crate::ports::authorization::visibility::RowOutcome for Hidden {}
 	#[async_trait]
 	impl Scope for Hidden {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			Ok(())
 		}
@@ -170,6 +220,9 @@ mod tests {
 		) -> Result<Vec<HumanRequest>> {
 			unreachable!()
 		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
+		}
 		async fn human_resource(&mut self, _: &HumanRequest) -> Result<Resource> {
 			unreachable!()
 		}
@@ -195,6 +248,17 @@ mod tests {
 	impl crate::ports::authorization::visibility::RowOutcome for Requests {}
 	#[async_trait]
 	impl Scope for Requests {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			unreachable!()
 		}
@@ -228,6 +292,9 @@ mod tests {
 					answer_by: None,
 				})
 				.collect())
+		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
 		}
 		async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
 			Ok(Resource {
@@ -290,6 +357,17 @@ mod tests {
 	}
 	#[async_trait]
 	impl Scope for Mixed {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			Ok(())
 		}
@@ -326,6 +404,9 @@ mod tests {
 				answer_by: None,
 			};
 			Ok(vec![request(70, "readable"), request(71, "hidden")])
+		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
 		}
 		async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
 			Ok(Resource {

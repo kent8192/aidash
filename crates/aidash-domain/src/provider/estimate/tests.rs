@@ -559,3 +559,12 @@ fn a_tokenized_snapshot_never_changes_request_metadata(mut mixed_request: ModelR
 	assert_eq!(serde_json::to_value(&mixed_request).unwrap(), metadata);
 	assert_eq!(mixed_request.inference_digest(), digest);
 }
+
+#[rstest]
+fn default_estimator_uses_bytes_until_calibration_is_ready(bytes: ByteEstimate) {
+	let estimator = RequestEstimator::default();
+	assert_eq!(estimator, RequestEstimator::Calibrated);
+	let collected = samples(std::iter::repeat_n(250_000, CALIBRATION_MINIMUM - 1));
+	let snapshot = EstimateSnapshot::choose(1, estimator, false, &collected);
+	assert_eq!(snapshot.tokens(&bytes), bytes.total());
+}

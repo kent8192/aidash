@@ -269,8 +269,6 @@ async fn node_purge_entry_only_cache_invalidation_fences_real_reply_persistence(
 			configuration_digest: "fixture".into(),
 		}),
 		native: None,
-		decider: None,
-		summarizer: None,
 	};
 	let mut operation = Operation {
 		id: Uuid::nil(),

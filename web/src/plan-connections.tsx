@@ -273,8 +273,8 @@ export function PlanConnectionsPage({
     <div className="grid max-w-3xl gap-4">
       <Notice>
         {ja
-          ? "これはあなた個人の Plan 接続です。あなたを起点とする委譲で実行するローカル Run（スケジュール・イベント・子 Run を含む）で使用でき、他の利用者に権限を与えません。ホストの運用者は Plan Token を読み取ることができます。コンテキストの圧縮には Tenant の OpenRouter 認証情報を使います。"
-          : "This is your personal Plan Connection. It serves local Runs whose delegation starts with you, including scheduled, event-triggered and child Runs; it grants no authority to other subjects. Whoever operates this host can read the Plan Tokens. Context compaction uses the Tenant's OpenRouter binding."}
+          ? "これはあなた個人の Plan 接続です。あなたを起点とする委譲で実行するローカル Run（スケジュール・イベント・子 Run を含む）で使用でき、他の利用者に権限を与えません。ホストの運用者は Plan Token を読み取ることができます。"
+          : "This is your personal Plan Connection. It serves local Runs whose delegation starts with you, including scheduled, event-triggered and child Runs; it grants no authority to other subjects. Whoever operates this host can read the Plan Tokens."}
       </Notice>
       <Hint>
         {ja

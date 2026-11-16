@@ -42,6 +42,7 @@ pub mod node_purge;
 
 pub(crate) mod data_protection;
 pub(crate) mod manual_keys;
+pub(crate) mod memory_scope;
 pub mod oauth_clients;
 
 pub mod oauth_connections;

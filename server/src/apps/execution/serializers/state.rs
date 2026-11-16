@@ -24,4 +24,20 @@ pub struct StateResponse {
 	/// Rows this read scanned and could not confirm because a Node did not
 	/// answer, for each Node, kind and Workspace. `[]` when none.
 	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
+	pub next_cursors: aidash_application::authorization::state::NextCursors,
+}
+
+#[derive(Default, serde::Deserialize, JsonSchema)]
+pub struct StateQuery {
+	pub node: Option<String>,
+}
+#[derive(Default, serde::Deserialize, JsonSchema)]
+pub struct WorkspacePageQuery {
+	pub node: Option<String>,
+	pub cursor: Option<String>,
+}
+#[derive(Serialize, JsonSchema)]
+pub struct WorkspacePage {
+	pub items: Vec<Workspace>,
+	pub next_cursor: Option<String>,
 }

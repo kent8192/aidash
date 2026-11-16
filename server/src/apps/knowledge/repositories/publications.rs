@@ -49,6 +49,7 @@ pub(crate) async fn check(
 	revision: i64,
 	max_visits: usize,
 	visits: &mut usize,
+	reader: Option<Uuid>,
 ) -> Result<()> {
 	let row = native::query(
 		&Query::select()
@@ -107,6 +108,7 @@ pub(crate) async fn check(
 				source_revision,
 				max_visits,
 				visits,
+				reader,
 			))
 			.await;
 			// Preserve all peer marks for retry behavior, but only the final
@@ -151,6 +153,7 @@ pub(crate) async fn check(
 			source_revision,
 			max_visits,
 			visits,
+			reader,
 		))
 		.await;
 		let audit = publisher.access.flush_audit().await;
@@ -176,6 +179,7 @@ pub(crate) async fn check(
 			source_revision,
 			max_visits,
 			visits,
+			reader,
 		))
 		.await
 	}
@@ -197,6 +201,7 @@ async fn check_source(
 	revision: i64,
 	max_visits: usize,
 	visits: &mut usize,
+	reader: Option<Uuid>,
 ) -> Result<()> {
 	let source = units::load(lease, id, false)
 		.await?
@@ -211,12 +216,13 @@ async fn check_source(
 		return Err(Error::Conflict("published memory source changed".into()));
 	}
 	units::authorize(lease, &source.bank, "memory.publish").await?;
-	Box::pin(units::current_in(
+	Box::pin(units::current_in_reader(
 		lease,
 		destination.workspace,
 		&[source.evidence()],
 		max_visits,
 		visits,
+		reader,
 	))
 	.await
 }
