@@ -10,6 +10,7 @@ struct Repository {
 	local: Option<u64>,
 	calls: Mutex<Vec<String>>,
 	admitted: Mutex<Option<(Uuid, String, i64)>>,
+	summary: Mutex<Vec<bool>>,
 }
 #[fixture]
 fn repository() -> Repository {
@@ -19,6 +20,7 @@ fn repository() -> Repository {
 		local: Some(7),
 		calls: Mutex::new(vec![]),
 		admitted: Mutex::new(None),
+		summary: Mutex::new(vec![]),
 	}
 }
 #[fixture]
@@ -61,8 +63,15 @@ impl InferenceAdmissionRepository<u64> for Repository {
 	async fn suspend(&self) -> Result<()> {
 		self.record("suspend")
 	}
-	async fn admit_remote(&self, attempt: Uuid, digest: String, units: i64) -> Result<u64> {
+	async fn admit_remote(
+		&self,
+		attempt: Uuid,
+		digest: String,
+		units: i64,
+		summary: bool,
+	) -> Result<u64> {
 		self.record("remote")?;
+		self.summary.lock().unwrap().push(summary);
 		*self.admitted.lock().unwrap() = Some((attempt, digest, units));
 		Ok(9)
 	}
@@ -107,9 +116,29 @@ async fn home_admission_binds_attempt_digest_and_units_after_suspending_the_work
 		Some(9)
 	);
 	assert_eq!(*repository.calls.lock().unwrap(), vec!["suspend", "remote"]);
+	assert_eq!(*repository.summary.lock().unwrap(), vec![false]);
 	assert_eq!(
 		*repository.admitted.lock().unwrap(),
 		Some((attempt(), request.inference_digest(), 135168))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_reservation_is_identified_and_charged_by_its_actual_output(
+	mut repository: Repository,
+	mut request: ModelRequest,
+) {
+	repository.remote = true;
+	request.response_format =
+		Some(aidash_domain::context::summary::SummaryContent::response_format());
+	reserve(&repository, attempt(), 62_000, 4096, &request)
+		.await
+		.unwrap();
+	assert_eq!(*repository.summary.lock().unwrap(), vec![true]);
+	assert_eq!(
+		repository.admitted.lock().unwrap().as_ref().unwrap().2,
+		66_096
 	);
 }
 #[rstest]

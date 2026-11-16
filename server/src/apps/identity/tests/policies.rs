@@ -174,6 +174,18 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	let id = workspace["id"].as_str().unwrap();
 	let path = format!("/api/workspaces/{id}");
 	assert_eq!(
+		scoped_request(
+			&app,
+			other,
+			"GET",
+			&format!("{path}/runs?live=true"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
 		scoped_request(&app, token, "GET", &path, Value::Null)
 			.await
 			.0,
@@ -479,7 +491,10 @@ async fn a_large_scoped_response_retains_every_authorization_decision(
 	.await;
 	// Assert: batching preserves the allowed decisions, their identities and order.
 	assert_eq!(status, 200, "{state}");
-	assert_eq!(state["workspaces"].as_array().unwrap().len(), 55);
+	// The Workspace list is the newest-50 window (#664 decision 1); the event
+	// window still checks all 55 Workspaces, which crosses the audit batch.
+	assert_eq!(state["workspaces"].as_array().unwrap().len(), 50);
+	assert!(state["next_cursors"]["workspaces"].is_string(), "{state}");
 	let audit = authorization.decisions("acme", cursor, 200).await.unwrap();
 	assert!(audit.len() > 100, "the response must cross an audit batch");
 	for id in ids {

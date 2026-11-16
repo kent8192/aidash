@@ -21,10 +21,21 @@ async fn every_policy_migration_runs_the_rendered_template() {
 	// Arrange
 	let migrations = migrations().await;
 	// Act + Assert: every enforced table, and nothing else, has a policy migration.
-	let policies =
-		assert_policy_migrations_run_the_rendered_template(&migrations, &tenant_owned(TABLES));
+	let policies = assert_policy_migrations_run_the_rendered_template(
+		&migrations,
+		&tenant_owned(TABLES),
+		RETIRED,
+	);
 	assert!(policies > 0);
 }
+
+/// Tables the compaction rebuild (#850) dropped after their policy migration ran.
+const RETIRED: &[&str] = &[
+	"decision_states",
+	"decision_outcomes",
+	"generation_compaction_usage",
+	"generation_summary_usage",
+];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
 /// their tables' policies. They run while no policy exists: forward before the

@@ -134,7 +134,11 @@ impl AgentTestSession {
 			.table(Alias::new(Self::table_name()))
 			.value_expr(
 				Alias::new("scenario"),
-				Expr::col("scenario").sub(Expr::value("fixtures")),
+				Expr::col("scenario")
+					.sub(Expr::value("fixtures"))
+					.sub(Expr::value("pending_approval"))
+					.sub(Expr::value("starter_identity"))
+					.sub(Expr::value("starter_subject")),
 			)
 			.value_expr(Alias::new("conversation"), Expr::value(None::<Value>))
 			.value_expr(Alias::new("tool_calls"), Expr::value(None::<Value>))

@@ -638,3 +638,159 @@ fn absorbed_ranges_skip_entries_pruned_between_merges() {
 		.is_err()
 	);
 }
+
+#[test]
+fn draft_copies_source_words_and_outcomes_and_drops_unknown_labels() {
+	let human = HistoryEntry::new(
+		1,
+		ContextEvent::Human {
+			request: "Never deploy on Friday".into(),
+			request_kind: "instruction".into(),
+			response: json!("agreed"),
+		},
+	);
+	let result = tool_with(2, json!({}), json!({"status":"tests passed"}));
+	let draft = json!({"retained":[],"labels":[{"call_id":"call_2","label":"verified"},{"call_id":"unknown","label":"invented"}],"prose":"The parser was checked."}).to_string();
+	let content =
+		SummaryContent::from_draft(&draft, "Ship the parser", None, &[human, result], 4096)
+			.unwrap();
+	assert_eq!(content.goal, "Ship the parser");
+	assert!(content.constraints.iter().any(|item| item.text == "agreed"));
+	assert!(
+		content
+			.constraints
+			.iter()
+			.any(|item| item.text == "Never deploy on Friday")
+	);
+	assert!(
+		content
+			.verification
+			.iter()
+			.any(|item| item.reference == "call_2" && item.outcome == "tests passed")
+	);
+	assert!(
+		!content
+			.decisions
+			.iter()
+			.any(|item| item.contains("invented"))
+	);
+}
+
+#[test]
+fn draft_rejects_a_missing_previous_item() {
+	let first = adopted(
+		&content(&[("c1", "never touch main")], &[], &[]),
+		None,
+		&[tool(2)],
+	);
+	let draft = json!({"retained":[],"labels":[],"prose":""}).to_string();
+	assert!(matches!(
+		SummaryContent::from_draft(&draft, "ignored", Some(&first), &[tool(3)], 4096),
+		Err(Rejection::DroppedItem(_))
+	));
+}
+
+#[test]
+fn draft_can_extend_a_previous_summary_near_the_model_output_limit() {
+	let mut first = adopted(&content(&[], &[], &[]), None, &[tool(2)]);
+	first.content.goal = "g".repeat(700);
+	let draft = json!({"retained":SummaryContent::retained_ids(Some(&first)),"labels":[],"prose":"d".repeat(400)}).to_string();
+	let result = SummaryContent::from_draft(&draft, "ignored", Some(&first), &[], 1024).unwrap();
+	assert_eq!(result.goal, first.content.goal);
+	assert!(result.decisions.iter().any(|item| item == &"d".repeat(400)));
+}
+
+#[test]
+fn history_budget_evicts_oldest_decisions_then_verification_but_keeps_required_state() {
+	let mut summary = SummaryContent {
+		goal: "日本語の目的".into(),
+		constraints: vec![SummaryItem {
+			id: "c".into(),
+			text: "keep constraint".into(),
+		}],
+		unresolved: vec![SummaryItem {
+			id: "u".into(),
+			text: "keep unresolved".into(),
+		}],
+		resolved: vec![],
+		artifacts: vec![ArtifactRef {
+			reference: "src/main.rs".into(),
+			revision: "".into(),
+		}],
+		decisions: vec![
+			"old decision".repeat(30),
+			"Full tool results remain in Context Journal sequences 10 through 20.".into(),
+			"new decision".repeat(30),
+		],
+		verification: vec![
+			VerificationRef {
+				reference: "old".into(),
+				outcome: "passed".repeat(30),
+			},
+			VerificationRef {
+				reference: "new".into(),
+				outcome: "passed".into(),
+			},
+		],
+	};
+	summary.trim_history(400).unwrap();
+	assert!(serde_json::to_string(&summary).unwrap().len() <= 400);
+	assert_eq!(
+		summary.decisions,
+		["Full tool results remain in Context Journal sequences 10 through 20."]
+	);
+	assert_eq!(summary.verification.len(), 1);
+	assert_eq!(summary.verification[0].reference, "new");
+	assert_eq!(summary.constraints[0].text, "keep constraint");
+	assert_eq!(summary.unresolved[0].text, "keep unresolved");
+	assert_eq!(summary.artifacts[0].reference, "src/main.rs");
+	summary.trim_history(1).unwrap();
+	assert_eq!(summary.decisions.len(), 1);
+	assert_eq!(summary.constraints.len(), 1);
+	assert_eq!(summary.unresolved.len(), 1);
+	assert_eq!(summary.artifacts.len(), 1);
+}
+
+#[test]
+fn a_running_command_with_a_null_exit_code_keeps_its_status_as_outcome() {
+	let running = tool_with(
+		2,
+		json!({}),
+		json!({"exit_code":null,"status":"running","stdout":"partial"}),
+	);
+	let draft = json!({"retained":[],"labels":[],"prose":""}).to_string();
+	let content = SummaryContent::from_draft(&draft, "Ship", None, &[running], 4096).unwrap();
+	assert!(
+		content
+			.verification
+			.iter()
+			.any(|item| item.reference == "call_2" && item.outcome == "running")
+	);
+}
+
+#[test]
+fn a_long_human_response_is_copied_as_a_bounded_excerpt_with_its_sequence() {
+	let human = HistoryEntry::new(
+		7,
+		ContextEvent::Human {
+			request: "Review this".into(),
+			request_kind: "instruction".into(),
+			response: json!("r".repeat(5 * 1024)),
+		},
+	);
+	let draft = json!({"retained":[],"labels":[],"prose":""}).to_string();
+	let content = SummaryContent::from_draft(&draft, "Ship", None, &[human], 4096).unwrap();
+	let response = content
+		.constraints
+		.iter()
+		.find(|item| item.id == "journal-7-response")
+		.unwrap();
+	assert!(response.text.len() < 1024, "{}", response.text.len());
+	assert!(response.text.ends_with("Context Journal sequence 7]"));
+	assert!(
+		content
+			.constraints
+			.iter()
+			.any(|item| item.text == "Review this")
+	);
+}
