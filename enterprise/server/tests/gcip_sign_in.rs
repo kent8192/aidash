@@ -3500,7 +3500,9 @@ async fn a_bound_tenants_administrators_decide_a_shared_pool_identitys_invitatio
 	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
 	let invitation: Value = admin
 		.send(&app, reqwest::Method::POST, "/api/tenants/acme/invitations")
-		.json(&json!({}))
+		// Joining directly is the default (#897); this test covers the
+		// administrator's decision, so the request must wait for one.
+		.json(&json!({"join_directly": false}))
 		.send()
 		.await
 		.unwrap()

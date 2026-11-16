@@ -219,6 +219,7 @@ pub(crate) async fn record(
 	let (sql, values) = Query::update()
 		.table(Alias::new(TenantInvitation::table_name()))
 		.value_expr(Alias::new("revoked_at"), Expr::value(now))
+		.value_expr(Alias::new("issued_by_token_hash"), Expr::value(Option::<Vec<u8>>::None))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.and_where(Expr::col("revoked_at").is_null())
 		.and_where(Expr::col("redeemed_at").is_null())

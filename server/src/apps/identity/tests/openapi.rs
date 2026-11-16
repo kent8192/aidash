@@ -70,3 +70,12 @@ fn invitation_holder_endpoints_publish_typed_contracts() {
 		);
 	}
 }
+
+#[rstest::rstest]
+fn invitation_approval_notifications_publish_an_authenticated_typed_contract() {
+	let document =
+		serde_json::to_value(aidash_server::config::openapi::openapi().unwrap()).unwrap();
+	let operation = &document["paths"]["/api/tenants/{tenant}/invitation-approvals"]["get"];
+	assert_eq!(operation["security"], json!([{"bearer_auth": []}]));
+	assert!(operation["responses"]["200"]["content"]["application/json"]["schema"].is_object());
+}

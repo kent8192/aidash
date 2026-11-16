@@ -5,8 +5,8 @@ use super::{
 	DashboardRegistrationRequest,
 };
 use crate::apps::identity::serializers::tenant_administration::{
-	Membership, MembershipUpdate, TenantAdministration, TenantIdentity, TenantMapping,
-	TenantRegistration,
+	InvitationApprovalNotice, Membership, MembershipUpdate, TenantAdministration, TenantIdentity,
+	TenantMapping, TenantRegistration,
 };
 use crate::authorization::{Snapshot, identity::SubjectIdentity};
 use crate::database::native::Pool;
@@ -117,7 +117,18 @@ impl AdministrationActor {
 		tx: &mut dyn TransactionExecutor,
 		event: AdministrationEvent<'_>,
 	) -> Result<()> {
-		self.record_target(tx, event, None).await
+		self.record_target(tx, event, None, None).await
+	}
+
+	/// Records the groups applied by an Invitation approval in immutable history.
+	pub(crate) async fn record_invitation_approval(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		event: AdministrationEvent<'_>,
+		groups: &BTreeSet<String>,
+	) -> Result<()> {
+		self.record_target(tx, event, None, Some(serde_json::to_value(groups)?))
+			.await
 	}
 
 	/// Node audit keeps the permanent name claim after the Node is purged.
@@ -127,7 +138,7 @@ impl AdministrationActor {
 		event: AdministrationEvent<'_>,
 		node: &str,
 	) -> Result<()> {
-		self.record_target(tx, event, Some(node)).await
+		self.record_target(tx, event, Some(node), None).await
 	}
 
 	async fn record_target(
@@ -135,6 +146,7 @@ impl AdministrationActor {
 		tx: &mut dyn TransactionExecutor,
 		event: AdministrationEvent<'_>,
 		node: Option<&str>,
+		groups: Option<Value>,
 	) -> Result<()> {
 		let (kind, identity, mapping) = self.parts();
 		let occurred_at = super::dashboard_administration::database_time(tx).await?;
@@ -155,6 +167,7 @@ impl AdministrationActor {
 					"actor_mapping_id",
 					"invitation_id",
 					"node",
+					"groups",
 				]
 				.map(Alias::new),
 			)
@@ -172,6 +185,7 @@ impl AdministrationActor {
 				IntoValue::into_value(mapping),
 				IntoValue::into_value(event.invitation),
 				IntoValue::into_value(node.map(str::to_owned)),
+				IntoValue::into_value(groups),
 			])
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
@@ -637,6 +651,7 @@ impl TenantAdministrator {
 				.await?
 				.pop()
 				.and_then(|root| root.label);
+
 			Ok(TenantAdministration {
 				label,
 				tenant: self.tenant().to_owned(),
@@ -649,6 +664,53 @@ impl TenantAdministrator {
 				},
 				policy_revision: administrator.then_some(snapshot.revision),
 			})
+		})
+		.await
+	}
+
+	/// Recent direct joins, restricted to the identities this administrator may read.
+	pub(crate) async fn invitation_approvals(
+		&self,
+		db: &Pool,
+	) -> Result<Vec<InvitationApprovalNotice>> {
+		db.atomic(&self.scope()?, async |tx| {
+			let snapshot = self.lock(tx, false).await?;
+			self.require(
+				tx,
+				&snapshot,
+				rules::REGISTRATION_READ,
+				rules::COLLECTION,
+				json!({}),
+			)
+			.await?;
+			let rows = DashboardAdministrationHistory::objects()
+				.filter(
+					DashboardAdministrationHistory::field_tenant()
+						.eq(Some(self.tenant().to_owned())),
+				)
+				.filter(DashboardAdministrationHistory::field_action().eq("invitation.direct_join"))
+				.filter_in_subquery("identity_id", |identities| {
+					self.visible(identities).values(&["id"])
+				})?
+				.order_by(&["-occurred_at", "-id"])
+				.limit(50)
+				.all_with_db(tx)
+				.await?;
+			let identities = self
+				.identities(tx, rows.iter().filter_map(|row| row.identity_id).collect())
+				.await?;
+			Ok(rows
+				.into_iter()
+				.filter_map(|row| {
+					let identity = identities.get(&row.identity_id?)?;
+					Some(InvitationApprovalNotice {
+						id: row.id,
+						identity: self.view(identity, true),
+						subject: row.subject?,
+						occurred_at: row.occurred_at,
+					})
+				})
+				.collect())
 		})
 		.await
 	}

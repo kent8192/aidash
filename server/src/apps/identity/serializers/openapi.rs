@@ -31,6 +31,17 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.response::<_, Vec<super::tenant_administration::InvitationApprovalNotice>>(
+		document,
+		views::tenant_administration::invitation_approvals,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::invitation_approvals,
+		&["String"],
+	)?;
 	{
 		use super::manual_keys as k;
 		use views::manual_keys as v;
