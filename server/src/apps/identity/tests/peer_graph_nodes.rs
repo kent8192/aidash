@@ -216,6 +216,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	)
 	.await;
 	assert_eq!(status, 200, "{alice_page}");
+	assert_eq!(alice_page["unconfirmed"], json!([]));
 	assert!(!alice_page.to_string().contains("aidash://graph-c"));
 	assert!(!alice_page.to_string().contains("Hidden B Agent"));
 	let mut alice_nodes = alice_page["nodes"].as_array().unwrap().clone();

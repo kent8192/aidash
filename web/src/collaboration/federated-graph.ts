@@ -1,3 +1,4 @@
+import type { Unconfirmed } from "../unconfirmed";
 import { entityKey } from "../agent-graph/model";
 import { ApiError, apiFetch } from "../transport";
 import { retryFreshGraphPage } from "./graph-retry";
@@ -38,6 +39,7 @@ export type GraphPage = {
     layer: string;
   }[];
   activity: GraphActivity[];
+  unconfirmed?: Unconfirmed[];
   next_cursor: string | null;
 };
 export type GraphRequest = {
@@ -129,6 +131,18 @@ export function validateGraphPage(page: GraphPage, peer: string): boolean {
     page.nodes.length > 80 ||
     page.edges.length > 600 ||
     page.activity.length > 80 ||
+    (page.unconfirmed !== undefined &&
+      (!Array.isArray(page.unconfirmed) ||
+        page.unconfirmed.length > 4096 ||
+        page.unconfirmed.some(
+          (item) =>
+            item.node !== peer ||
+            !["task", "run", "artifact"].includes(item.kind) ||
+            typeof item.workspace_id !== "string" ||
+            !item.workspace_id ||
+            !Number.isSafeInteger(item.count) ||
+            item.count <= 0,
+        ))) ||
     typeof page.generation !== "string" ||
     typeof page.checked_at !== "string" ||
     (page.next_cursor !== null && typeof page.next_cursor !== "string")

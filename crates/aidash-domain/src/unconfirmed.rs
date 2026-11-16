@@ -55,7 +55,7 @@ pub enum Kind {
 /// of the rows can still be refused once the Node answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Unconfirmed {
-	/// The address of the Node that did not answer.
+	/// The silent Node, except in graph responses where this is the answering Node.
 	pub node: String,
 	pub kind: Kind,
 	pub workspace_id: Uuid,
