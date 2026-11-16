@@ -512,3 +512,17 @@ fn a_tick_sooner_than_the_minimum_interval_after_the_last_is_too_soon() {
 	));
 	assert!(!too_soon(None, at("2026-03-08T07:00:00Z"), 900));
 }
+
+#[rstest]
+#[case(crate::TaskStatus::Running, None)]
+#[case(crate::TaskStatus::Blocked, None)]
+#[case(crate::TaskStatus::Failed, Some(TickStatus::Failed))]
+#[case(crate::TaskStatus::Abandoned, Some(TickStatus::Cancelled))]
+fn a_tick_ends_only_when_its_task_is_terminal(
+	#[case] task: crate::TaskStatus,
+	#[case] tick: Option<TickStatus>,
+) {
+	// Act + Assert: a blocked Task may run again, so its tick stays open.
+	assert_eq!(TickStatus::of_task(task), tick);
+	assert_eq!(tick.is_some(), task.is_terminal());
+}

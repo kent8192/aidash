@@ -408,7 +408,7 @@ pub(crate) async fn ended(pool: &Pool, limit: u64) -> Result<Vec<Ended>> {
 		&tick_tasks()
 			.and_where(
 				Expr::col((Alias::new("t"), Alias::new("status")))
-					.is_not_in(["OPEN", "CLAIMED", "RUNNING"]),
+					.is_not_in(["OPEN", "CLAIMED", "RUNNING", "BLOCKED"]),
 			)
 			.order_by((Alias::new("k"), Alias::new("recorded_at")), Order::Asc)
 			.limit(limit)

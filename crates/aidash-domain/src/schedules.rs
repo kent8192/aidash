@@ -786,14 +786,15 @@ impl TickStatus {
 		})
 	}
 
-	/// How a started tick ends when its Task does. None while it runs.
+	/// How a started tick ends when its Task does. None while it runs, and
+	/// while it is blocked, since a blocked Task may run again.
 	pub fn of_task(status: crate::TaskStatus) -> Option<Self> {
 		use crate::TaskStatus as Task;
 		match status {
 			Task::Completed => Some(Self::Completed),
-			Task::Failed | Task::Blocked => Some(Self::Failed),
+			Task::Failed => Some(Self::Failed),
 			Task::Cancelled | Task::Abandoned => Some(Self::Cancelled),
-			Task::Open | Task::Claimed | Task::Running => None,
+			Task::Open | Task::Claimed | Task::Running | Task::Blocked => None,
 		}
 	}
 }
