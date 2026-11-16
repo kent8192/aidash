@@ -82,8 +82,8 @@ returns the parsed JSONL lines. The export is refreshed before each call, so
 between cells. An optional `journal_range` limits the export to inclusive
 `from_seq` and `through_seq` bounds. Output is size-limited and treated as data.
 
-The export resolves Research references and substitutes revoked or expired
-results. A change in withdrawal state, authority, range, or Runner identity
+The export substitutes revoked or expired results, which only a Context
+Journal recorded before #987 may hold. A change in withdrawal state, authority, range, or Runner identity
 resets the kernel so its variables cannot retain withdrawn material. The call
 reports `SESSION_RESET`; a subsequent call starts with a fresh kernel. The
 kernel also ends when the Run ends or its idle session expires. Each completed

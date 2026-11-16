@@ -252,10 +252,7 @@ export function ArtifactList({
                 <div className="px-3 pb-3">
                   {artifact.run_id && typeof artifact.content === "string" ? (
                     <p className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                      <MessageText
-                        text={artifact.content}
-                        run={artifact.run_id}
-                      />
+                      <MessageText text={artifact.content} />
                     </p>
                   ) : (
                     <JsonView value={artifact.content} />

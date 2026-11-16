@@ -1379,7 +1379,6 @@ function Dashboard({
                           tenant={subjectTenant}
                           subject={subjectName}
                           initiallyOpen={route.integration === "authorization"}
-                          evidenceOpen={route.integration === "evidence"}
                         />
                       )
                     }
@@ -1416,7 +1415,6 @@ function Dashboard({
                   tenant={subjectTenant}
                   subject={subjectName}
                   initiallyOpen={route.integration === "authorization"}
-                  evidenceOpen={route.integration === "evidence"}
                 />
               </div>
             )}

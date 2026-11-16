@@ -36,7 +36,7 @@ import {
   type TenantAdministration,
 } from "./tenant-administration";
 import type { ApprovalCard } from "./generated/models";
-import { approvalNotice } from "./research";
+import { approvalNotice } from "./approval-notice";
 import { connect } from "./connections/connect";
 import { connectionError, outcomeMessage } from "./connections/install";
 import {

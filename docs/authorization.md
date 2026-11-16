@@ -239,7 +239,7 @@ After the grace period, Aidash purges the Tenant's data (ADR 0061). The purge is
 3. **Rows.** Every row the Tenant owns in a Tenant-owned table of `server/src/database/classification.rs` is deleted, children before parents. The order comes from the foreign keys of the migrated database, so a table added to the classification is purged without a second list. Marketplace consents, audiences, versions and provenance are Deployment-wide and stay, and so do events without a Tenant.
 4. **Finish.** The root record's label is cleared and the deletion record is marked purged. The Tenant name, creation time and creating principal stay as a tombstone, so the name is never reused, and a restore is refused with 409 `tenant_purged`. Tenant-creation limits stop counting the Tenant.
 
-The classification is the single source of what purge keeps. A Tenant-owned table is purged unless it is marked audit history or a tombstone pointer. **Audit history** is the administration history, authorization decisions, policy revisions, catalog history, and Evidence Revocation and Retention Rule history. It is kept for `audit_retention_days` after the purge and then deleted by the same loop. The accepted [Issue 301 decision](https://github.com/kent8192/aidash/issues/301)
+The classification is the single source of what purge keeps. A Tenant-owned table is purged unless it is marked audit history or a tombstone pointer. **Audit history** is the administration history, authorization decisions, policy revisions and catalog history. It is kept for `audit_retention_days` after the purge and then deleted by the same loop. The accepted [Issue 301 decision](https://github.com/kent8192/aidash/issues/301)
 closes ordinary audit APIs while the Tenant is deleted or purged; a valid restore
 re-enables normal Tenant-authorized reads. Retaining history grants no read
 authority. Runtime enforcement remains separately tracked by
@@ -560,7 +560,7 @@ The policy actions that govern these settings are checked on the approval's own 
 | `approval.mode.auto`   | `approval_mode`, ID `auto`   | Using Auto. Members hold it by default.                                                                                                                                        |
 | `approval.mode.bypass` | `approval_mode`, ID `bypass` | Using Bypass. An allow of `*` never grants it, so the policy must name it. A Personal Tenant's initial policy names it for its owner; other members do not hold it by default. |
 
-A rule names an approval kind, an effect (allow, ask or deny) and a target. The target is one target of that kind or every target of it. The kinds are a Tenant tool definition (optionally one operation), an outbound origin, a Research provider for Web search, a page host for Page reading, and a Generation policy. An allow rule beyond what the policy lets the person approve in advance stays stored with `effective: false` and has no effect.
+A rule names an approval kind, an effect (allow, ask or deny) and a target. The target is one target of that kind or every target of it. The kinds are a tool definition (optionally one operation), including the page reading built-in, an outbound origin, and a Generation policy. An allow rule beyond what the policy lets the person approve in advance stays stored with `effective: false` and has no effect.
 
 An approval that a rule or mode gives records `given_by` as `{"rule": id}` or `{"mode": "bypass"}`. `allow_always` approves once and creates an allow rule for the person. Only the person the Run's delegation chain starts at is offered it.
 
@@ -583,7 +583,7 @@ The routes below read and change these settings. The `mine` routes and the Threa
 
 The GET and PUT routes for `approval-preferences/mine` and `approval-decider` accept an optional `node=<Node name>` query. The Node must belong to the Tenant and the caller must hold `node.use`; omitting it selects the Tenant's default Node. Mode availability and the Decider's `approved` status use that Node's Catalog Approval. The person's preferences and the chosen Decider remain settings for the whole Tenant. Thread mode availability uses the Thread's Workspace Node, and a worker uses its Run's Node.
 
-When a pending Web disclosure, outbound request or Tool call is decided by its requester as the person at the root of the Run's delegation chain, the Thread offers the same approval card as the approvals list. Other participants are not offered that inline card. The decision uses the same choices and record; asking the Run to act is not itself an approval. The list and decision queue continue to offer the approval.
+When a pending outbound request or Tool call is decided by its requester as the person at the root of the Run's delegation chain, the Thread offers the same approval card as the approvals list. Other participants are not offered that inline card. The decision uses the same choices and record; asking the Run to act is not itself an approval. The list and decision queue continue to offer the approval.
 
 ## Scoped conversations and human interaction
 

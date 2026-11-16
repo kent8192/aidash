@@ -248,7 +248,7 @@ One provider call for one Run step or for one Sampling approval. It has a public
 _Avoid_: attempt (unqualified), request, claim
 
 **Tool call approval**:
-An eligible person's authorization for one exact call of a Tenant's HTTP or MCP tool, which the Run waits for and then makes. Like a Web disclosure approval, it is decided by an Eligible approver and may be given once or as a Run grant. A call to a remote MCP server of an Agent Plugin needs one too; a call to its stdio MCP server does not, because that server is Sandboxed.
+An eligible person's authorization for one exact call of a Tenant's HTTP or MCP tool or of page reading, which the Run waits for and then makes. It is decided by an Eligible approver and may be given once or as a Run grant. A call to a remote MCP server of an Agent Plugin needs one too; a call to its stdio MCP server does not, because that server is Sandboxed.
 _Avoid_: External approval, workbench approval, external write approval
 
 **Sampling approval**:
@@ -260,5 +260,5 @@ An MCP server's request, made as part of one of its tool operations, for a perso
 _Avoid_: human request (the model's question), server question, form prompt
 
 **Run grant**:
-An approver's decision to admit a Run's later requests of the same kind to the same destination until it expires; for Web disclosures it also ends at the Run's next user input. A Run grant for Web search therefore covers later queries through that Research provider that the approver has not seen. For Page reading the destination is the page's host, whichever Research provider reads it. For a Tool call approval the destination is one operation of the tool, and new user input does not end it. For a Sampling approval the destination is one MCP server of an Agent Plugin, and new user input does not end it either.
+An approver's decision to admit a Run's later requests of the same kind to the same destination until it expires. For a Tool call approval the destination is one operation of the tool, and new user input does not end it; for page reading it is the page's host, and the grant also ends at the Run's next user input. For a Sampling approval the destination is one MCP server of an Agent Plugin, and new user input does not end it either.
 _Avoid_: standing approval, allowlist, allow for this Run (the button, not the record)

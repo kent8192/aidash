@@ -128,13 +128,7 @@ async function observationAdmin(
         json: {
           range: { start: query.get("start"), end: query.get("end") },
           metrics: metrics(),
-          groups: [
-            "tool_call",
-            "outbound",
-            "web_search",
-            "page_reading",
-            "generation",
-          ].map((kind) => ({
+          groups: ["tool_call", "outbound", "generation"].map((kind) => ({
             group: {
               decider: { id: "approved-observer", version: "1.0.0" },
               configuration_digest: "sha256:configuration",
@@ -207,13 +201,7 @@ test("aggregate report shows five kinds, 2x2, missingness and zero-denominator N
   await expect(report).toContainText("50% (2 / 4)");
   await expect(report).toContainText("N/A (0 / 0)");
   await expect(report.getByRole("table").first()).toContainText("Human deny");
-  for (const kind of [
-    "Tool call",
-    "Outbound",
-    "Web search",
-    "Page reading",
-    "Generation",
-  ])
+  for (const kind of ["Tool call", "Outbound", "Generation"])
     await expect(
       report.locator("summary").filter({ hasText: kind }),
     ).toHaveCount(1);

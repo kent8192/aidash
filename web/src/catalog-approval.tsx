@@ -355,8 +355,8 @@ export function CatalogApprovalSection({
       {providerOwned && (
         <Hint>
           {locale === "ja-JP"
-            ? "この Provider tool は OpenRouter が実行します。この Catalog Approval が唯一の同意です。Agent の Binding で上限を固定します。結果は Research の証拠にはなりません。"
-            : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps. Results are not Research evidence."}
+            ? "この Provider tool は OpenRouter が実行します。この Catalog Approval が唯一の同意です。Agent の Binding で上限を固定します。"
+            : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps."}
         </Hint>
       )}
       {decides && state !== "approved" && warning(version)}

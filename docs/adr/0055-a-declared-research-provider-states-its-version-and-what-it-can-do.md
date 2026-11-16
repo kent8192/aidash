@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0138
+---
+
 # A declared Research provider states its version and what it can do
 
 Decided on 2026-10-17 for #311. Whoever runs the Deployment writes each declared Research provider (ADR 0048) as `research.<name>@<n>` together with what defines that version: the protocol (`aidash.research/v1`), transport, endpoint, operations (with the MCP tool name for each), the optional search filters it honours, its display name and description, and the data-handling Research account terms. Aidash materializes the version as `aidash.research.<name>.<operation>` at `<n>.0.0` with a digest of those fields in the Entry. If a later startup finds the same `@n` with a different digest, the Node refuses to start. The price, monthly limit, account identifier, agreement and verification dates, and the Deployment secret stay outside the Entry, so changing them keeps the version and its Catalog Approvals.

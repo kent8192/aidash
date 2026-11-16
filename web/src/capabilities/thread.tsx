@@ -48,8 +48,13 @@ import { DisplayFile, panelClass } from "./display";
 import { useFilePreview } from "./file-preview-pane";
 import { LivePreviewPanel } from "./live-preview";
 import { TransferHistory } from "./transfers";
-import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
-import { snapshotReadsPages, urlIntents } from "../research";
+import { registryDeployment } from "../node-selection";
+import { UrlIntentPicker } from "../url-intent-picker";
+import {
+  bindsPageReading,
+  snapshotReadsPages,
+  urlIntents,
+} from "../url-intents";
 import type { ApprovalCard as Approval, RunDetails } from "../generated/models";
 import { semanticEntries } from "../generated/aidash";
 type Session = {
@@ -942,7 +947,7 @@ export function ThreadCapabilities({
     (item) =>
       item.viewer_can_decide_inline &&
       item.state === "pending" &&
-      ["outbound", "disclosure", "tool_call"].includes(item.kind) &&
+      ["outbound", "tool_call"].includes(item.kind) &&
       item.area_id != null &&
       areaIds.has(item.area_id),
   );
@@ -991,10 +996,10 @@ export function ThreadCapabilities({
   const target = availableAgents.find(
     (e) => `${e.id}@${e.version}` === effectiveAgent,
   );
-  const research = useResearch(target, data);
+  const registryNode = registryDeployment(data);
+  const canRead = bindsPageReading(target, data.registry, registryNode);
   // Steering reaches the active Run, which reads pages only through the
   // Agent version it was pinned to, whichever version the selector shows.
-  // The research panel reports on that Run, or else the last one, the same way.
   const activeRunId = area ? (session.data?.active_run_id ?? null) : null;
   const shownRun = useQuery({
     queryKey: ["run-agent", active],
@@ -1017,18 +1022,16 @@ export function ThreadCapabilities({
       e.id === shownRun.data?.agent_id &&
       e.version === shownRun.data?.agent_version,
   );
-  const steering = useResearch(pinned, data);
-  const nextIsPinned =
-    !!pinned && target?.id === pinned.id && target.version === pinned.version;
+  const steeringCanRead = bindsPageReading(pinned, data.registry, registryNode);
   // The server records a steering URL intent only when the Run was admitted
-  // with Page reading, so a definition approved since then does not count.
+  // with page reading, so a definition approved since then does not count.
   const activeContext = activeRunId ? shownRun.data?.context : undefined;
   const steerReads =
-    steering.canRead &&
+    steeringCanRead &&
     (!activeContext || snapshotReadsPages(activeContext.binding_snapshot));
   // A URL intent is offered only when an Agent it would reach can read pages
   // on this Node, and each action sends only the pages its Agent can read.
-  const queued = research.canRead ? urlIntents(prompt) : [];
+  const queued = canRead ? urlIntents(prompt) : [];
   const steered = activeRunId && steerReads ? urlIntents(prompt) : [];
   const intents = [...new Set([...queued, ...steered])];
   const selectedPages = readPages.filter((page) => intents.includes(page));
@@ -1082,17 +1085,6 @@ export function ThreadCapabilities({
             ))}
           </NativeSelect>
         </Field>
-      )}
-      {/* A Run's usage and disclosures belong to the Agent version it was
-          pinned to; a different version selected for the next Run shows its
-          own readiness apart. */}
-      {pinned && <ResearchPanel research={steering} run={active} />}
-      {!nextIsPinned && (
-        <ResearchPanel
-          research={research}
-          run={pinned ? undefined : active}
-          next={!!pinned}
-        />
       )}
       <Field label={ja ? "次の指示" : "Next instruction"}>
         <Textarea

@@ -25,8 +25,6 @@ import {
 const kinds: Record<ObservationKind, [string, string]> = {
   tool_call: ["Tool call", "ツール呼び出し"],
   outbound: ["Outbound", "外部接続"],
-  web_search: ["Web search", "Web 検索"],
-  page_reading: ["Page reading", "ページ読み取り"],
   generation: ["Generation", "生成"],
 };
 const categories: Record<string, [string, string]> = {

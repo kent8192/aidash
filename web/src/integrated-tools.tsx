@@ -1,5 +1,4 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import { AdministratorTenantNotice } from "./administrator-notice";
 import { ChevronDown } from "lucide-react";
 import {
   Collapsible,
@@ -39,11 +38,6 @@ const AuthorizationPage = lazy(() =>
 const DashboardIdentityAdministration = lazy(() =>
   import("./dashboard-identity").then((m) => ({
     default: m.DashboardIdentityAdministration,
-  })),
-);
-const ResearchEvidenceGovernance = lazy(() =>
-  import("./research-governance").then((m) => ({
-    default: m.ResearchEvidenceGovernance,
   })),
 );
 const TenantAccess = lazy(() =>
@@ -118,7 +112,6 @@ export function TrustTools({
   tenant,
   subject,
   initiallyOpen,
-  evidenceOpen = false,
 }: {
   deploymentAdministrator: boolean;
   offering?: State["offering"];
@@ -129,8 +122,6 @@ export function TrustTools({
   /** The subject the selected Mapping acts as. */
   subject: string | null;
   initiallyOpen: boolean;
-  /** Whether the Research evidence retention and revocation tools start open. */
-  evidenceOpen?: boolean;
 }) {
   const { locale, t } = useI18n();
   const loading = (
@@ -168,23 +159,6 @@ export function TrustTools({
           </Suspense>
         ) : (
           administratorsOnly
-        )}
-      </ToolSection>
-      <ToolSection
-        title={
-          locale === "ja-JP"
-            ? "Research evidence の保持と取り消し"
-            : "Research evidence retention and revocation"
-        }
-        initiallyOpen={evidenceOpen}
-      >
-        {deploymentAdministrator ? (
-          // Retention Rules and Evidence Revocation are Tenant content (ADR 0102).
-          <AdministratorTenantNotice className="" />
-        ) : (
-          <Suspense fallback={loading}>
-            <ResearchEvidenceGovernance tenant={tenant} />
-          </Suspense>
         )}
       </ToolSection>
     </>

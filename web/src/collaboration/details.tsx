@@ -64,7 +64,6 @@ import {
   type Submit,
 } from "../forms";
 import { GenerationAssignForm } from "../generation";
-import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
 import { RunSubnodes } from "./subnodes";
 import { ArtifactList } from "./channel";
@@ -78,7 +77,6 @@ import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
 import { abandonable, resumableRun } from "./workspace-model";
-import { researchFailure } from "../research";
 import { isLocalRun } from "../node-selection";
 import {
   runMediaAccept,
@@ -691,7 +689,6 @@ function RunPanel({
       {!managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
       )}
-      {!managed && <RunResearchEvidence run={id} />}
       {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}
@@ -913,11 +910,6 @@ function RunPanel({
             <h4 className="text-[11px] font-medium text-faint">
               {t("result")}
             </h4>
-            {researchFailure(call.result, locale === "ja-JP") && (
-              <Hint role="status">
-                {researchFailure(call.result, locale === "ja-JP")}
-              </Hint>
-            )}
             <JsonView value={call.result} />
           </Disclosure>
         ))}

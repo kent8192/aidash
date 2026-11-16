@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0138
+---
+
 # A Web disclosure approval covers only what Aidash sends
 
 Decided on 2026-10-15 for #227. A declared Research provider adds a second hop: Aidash sends a query or a page address to the provider's service, and that service then queries its search engine or reads the page. Aidash sees, and can show a person, only the first hop. A Web disclosure approval therefore approves the exact request Aidash builds and sends to the provider's endpoint. What the service sends onward is governed by the Research account terms that whoever runs the Deployment records for it, which Catalog Approval shows the Tenant, and not by approving each request.
