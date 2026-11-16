@@ -20,3 +20,7 @@ Code in the Pod runs as root and can read another process's environment, so it c
 - A Run delegated to another Node runs in that Node's Scratch Space under a Run of that Node, so its credential and mark are local there. A Live preview whose Run has no local grant keeps the rule of ADR 0116: unconfirmed checks stop it after the limit.
 - Usage stays charged per Scratch Space (ADR 0111); the Run on a record is not a billing split.
 - Amends ADR 0111 and ADR 0070.
+
+## Amendment (2026-11-16, #738)
+
+ADR 0137: the Run credential also admits requests to the Scratch Space's External services. The Egress request record names that Run, which stays attribution, so Catalog Approvals limited to certain Agents do not count there.

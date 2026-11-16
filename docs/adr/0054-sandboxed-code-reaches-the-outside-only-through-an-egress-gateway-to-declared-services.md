@@ -38,3 +38,7 @@ Decided on 2026-10-16 for #296. Execution Pods keep deny-all networking for ingr
 ## Amendment (2026-11-07, #758)
 
 Each Egress request runs the Continuation Check, and no longer walks what the Run has read. The 30 second Read Recheck does that and withdraws the command when it fails (ADR 0116).
+
+## Amendment (2026-11-16, #738)
+
+ADR 0137: code in an Execution Pod reaches an External service as `http://services.aidash.internal/<service>/<path>` through its own proxy. The `/v1/<operation-token>` route, its per-operation budgets and its Continuation Check are removed. A request is admitted for the newest version that a Catalog Approval for everyone on the Scratch Space's Node covers, and it is stopped while running when that approval is withdrawn.

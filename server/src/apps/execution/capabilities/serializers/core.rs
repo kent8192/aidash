@@ -80,11 +80,11 @@ pub use aidash_domain::capabilities::CoreCapabilities;
 #[path = "../tests/serializers_core_tests.rs"]
 mod tests;
 
-/// The self-hosted internal gateway; its address is never published by Ingress.
+/// The self-hosted internal gateway: it serves the Execution Pod proxy, and its
+/// address is never published by Ingress.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct EgressSettings {
-	pub endpoint: String,
 	#[serde(default)]
 	pub namespace: Option<String>,
 	#[serde(default)]

@@ -10,6 +10,159 @@ use std::sync::{
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+/// The proxy credential the Sandbox in these tests holds.
+const CREDENTIAL: &str = "operation-token";
+
+/// Admits External service requests for gateway tests. Only the request for a
+/// service reaches it: it is never asked about a Host.
+#[async_trait]
+trait Authority: Send + Sync {
+	async fn admit(
+		&self,
+		credential: &str,
+		service: &str,
+		method: &str,
+		path: &str,
+		digest: &str,
+	) -> Result<Admission>;
+	async fn admit_external(
+		&self,
+		credential: &str,
+		service: &str,
+		method: &str,
+		path: &str,
+		digest: &str,
+	) -> Result<ExternalAdmission> {
+		self.admit(credential, service, method, path, digest)
+			.await
+			.map(|admission| ExternalAdmission::Admitted(Box::new(admission)))
+	}
+}
+
+/// Serves an [`Authority`] as the gateway's scopes.
+struct AuthorityScopes(Arc<dyn Authority>);
+#[async_trait]
+impl EgressScopes for AuthorityScopes {
+	async fn resolve(&self, _: &str) -> Result<aidash_application::egress::ScopeSettings> {
+		unreachable!("a service request resolves nothing but its service")
+	}
+	async fn admit_external(
+		&self,
+		credential: &str,
+		service: &str,
+		method: &str,
+		path: &str,
+		digest: &str,
+	) -> Result<ExternalAdmission> {
+		self.0
+			.admit_external(credential, service, method, path, digest)
+			.await
+	}
+	async fn admit_connection(&self, _: &aidash_application::egress::ScopeSettings) -> Result<()> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn check_active(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+		_: &str,
+	) -> Result<aidash_application::egress::ScopeSettings> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn debit(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+		_: Direction,
+		_: u64,
+		_: chrono::NaiveDate,
+	) -> Result<()> {
+		unreachable!("a service request is metered by its own meter")
+	}
+	async fn refund(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+		_: Direction,
+		_: u64,
+		_: chrono::NaiveDate,
+	) -> Result<()> {
+		unreachable!("a service request is metered by its own meter")
+	}
+	async fn record(&self, _: aidash_application::egress::ConnectionRecord) -> Result<()> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn lift_suspension(&self, _: &aidash_domain::egress::ScopeId) -> Result<()> {
+		unreachable!("a service request is not a Host connection")
+	}
+}
+
+async fn serve(
+	listener: TcpListener,
+	authority: Arc<dyn Authority>,
+	stopping: watch::Receiver<bool>,
+) -> crate::Result<()> {
+	serve_with_scopes(
+		listener,
+		Arc::new(AuthorityScopes(authority)),
+		ProxyLimits::default(),
+		stopping,
+	)
+	.await
+}
+
+fn basic(credential: &str) -> String {
+	use base64::Engine;
+	format!(
+		"Basic {}",
+		base64::engine::general_purpose::STANDARD.encode(format!("aidash:{credential}"))
+	)
+}
+
+/// Where the Sandbox addresses `<service>/<path>`: a plain-HTTP proxy request.
+fn service_url(path: &str) -> String {
+	format!("http://{}/{path}", aidash_domain::egress::SERVICES_HOST)
+}
+
+/// A client that reaches the gateway as the Sandbox's HTTP proxy.
+fn proxy_builder(origin: &str, credential: &str) -> reqwest::ClientBuilder {
+	reqwest::Client::builder().proxy(
+		reqwest::Proxy::http(origin)
+			.unwrap()
+			.basic_auth("aidash", credential),
+	)
+}
+
+fn proxy_client(origin: &str) -> reqwest::Client {
+	proxy_builder(origin, CREDENTIAL).build().unwrap()
+}
+
+async fn service_get(origin: &str, path: &str) -> reqwest::Result<reqwest::Response> {
+	service_get_as(origin, CREDENTIAL, path).await
+}
+
+async fn service_get_as(
+	origin: &str,
+	credential: &str,
+	path: &str,
+) -> reqwest::Result<reqwest::Response> {
+	proxy_builder(origin, credential)
+		.build()?
+		.get(service_url(path))
+		.send()
+		.await
+}
+
+/// The head of a raw proxy request for `<service>/<path>`.
+fn request_head(method: &str, credential: &str, path: &str, length: Option<usize>) -> String {
+	let length = length
+		.map(|length| format!("content-length: {length}\r\n"))
+		.unwrap_or_default();
+	format!(
+		"{method} {} HTTP/1.1\r\nhost: {}\r\nproxy-authorization: {}\r\n{length}\r\n",
+		service_url(path),
+		aidash_domain::egress::SERVICES_HOST,
+		basic(credential),
+	)
+}
+
 #[test]
 fn debit_refusals_use_their_public_codes_and_store_failures_are_temporary() {
 	use aidash_application::Error;
@@ -184,14 +337,11 @@ async fn idle_monitor_fixture(
 		listener,
 		Arc::new(FixtureAuthority {
 			upstream: upstream_url,
-			origin: origin.clone(),
 			audit,
 		}),
 		receiver,
 	));
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/idle"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/idle").await.unwrap();
 	(response, stop, gateway, upstream_task)
 }
 
@@ -282,14 +432,11 @@ async fn a_stopped_operation_interrupts_an_idle_response() {
 		listener,
 		Arc::new(FixtureAuthority {
 			upstream: upstream_url,
-			origin: origin.clone(),
 			audit: audit.clone(),
 		}),
 		receiver,
 	));
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/idle"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/idle").await.unwrap();
 	let mut body = response.bytes_stream();
 	assert_eq!(
 		body.next().await.unwrap().unwrap(),
@@ -333,14 +480,11 @@ async fn a_stopped_operation_releases_an_unread_response() {
 		listener,
 		Arc::new(FixtureAuthority {
 			upstream: upstream_url,
-			origin: origin.clone(),
 			audit: audit.clone(),
 		}),
 		receiver,
 	));
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/large"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/large").await.unwrap();
 	// Let the unread client fill its network buffers and stall the response.
 	tokio::time::sleep(Duration::from_millis(500)).await;
 	audit.stopped.store(true, Ordering::Release);
@@ -361,7 +505,6 @@ async fn a_stopped_operation_releases_an_unread_response() {
 
 struct FixtureAuthority {
 	upstream: String,
-	origin: String,
 	audit: Arc<Audit>,
 }
 #[async_trait]
@@ -383,11 +526,8 @@ impl Authority for FixtureAuthority {
 			.unwrap()
 			.push((method.into(), path.into(), digest.into()));
 		Ok(Admission {
-			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Some(Uuid::new_v4()),
-			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
@@ -443,7 +583,6 @@ async fn upload_and_download_stream_before_the_upload_finishes_and_audits_exclud
 	let (stop, receiver) = watch::channel(false);
 	let authority = Arc::new(FixtureAuthority {
 		upstream: upstream_url,
-		origin: origin.clone(),
 		audit: audit.clone(),
 	});
 	let gateway = tokio::spawn(serve(listener, authority, receiver));
@@ -454,16 +593,14 @@ async fn upload_and_download_stream_before_the_upload_finishes_and_audits_exclud
 		released.notified().await;
 		for _ in 0..160 { yield Ok(Bytes::from(vec![0x89;64*1024])); }
 	};
-	let client = reqwest::Client::builder()
+	let client = proxy_builder(&origin, CREDENTIAL)
 		.timeout(Duration::from_secs(15))
 		.build()
 		.unwrap();
 	let response = tokio::time::timeout(
 		Duration::from_secs(5),
 		client
-			.post(format!(
-				"{origin}/v1/operation-token/images/upload?private=never-audit-this"
-			))
+			.post(service_url("images/upload?private=never-audit-this"))
 			.header("content-type", "image/png")
 			.header("authorization", "untrusted")
 			.header("cookie", "dashboard=not-forwarded")
@@ -506,7 +643,7 @@ async fn upload_and_download_stream_before_the_upload_finishes_and_audits_exclud
 		)]
 	);
 	let redirect = client
-		.get(format!("{origin}/v1/operation-token/images/redirect"))
+		.get(service_url("images/redirect"))
 		.send()
 		.await
 		.unwrap();
@@ -573,14 +710,11 @@ async fn a_stalled_budget_store_cannot_hold_a_response_past_the_operation_deadli
 	let audit = Arc::new(Audit::default());
 	let authority = Arc::new(DeadlineAuthority(FixtureAuthority {
 		upstream: upstream_url,
-		origin: origin.clone(),
 		audit: audit.clone(),
 	}));
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(serve(listener, authority, receiver));
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/image"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/image").await.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
 	assert!(
 		tokio::time::timeout(Duration::from_secs(1), response.bytes())
@@ -670,7 +804,6 @@ async fn broker(
 
 struct BrokerAuthority {
 	broker: String,
-	origin: String,
 	audit: Arc<Audit>,
 	definition: ExternalService,
 }
@@ -693,11 +826,8 @@ impl Authority for BrokerAuthority {
 			.unwrap()
 			.push((method.into(), path.into(), digest.into()));
 		Ok(Admission {
-			gateway_origin: self.origin.clone(),
 			destination: Destination::PublicOnly,
 			request: Uuid::new_v4(),
-			operation: Some(Uuid::new_v4()),
-			session: None,
 			service: service.into(),
 			definition: self.definition.clone(),
 			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
@@ -747,19 +877,18 @@ async fn a_secret_bearing_service_streams_through_the_broker_and_rewrites_redire
 	let audit = Arc::new(Audit::default());
 	let authority = Arc::new(BrokerAuthority {
 		broker: format!("{broker_url}/v1/forward"),
-		origin: origin.clone(),
 		audit: audit.clone(),
 		definition: secret_service(),
 	});
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(serve(listener, authority, receiver));
-	let client = reqwest::Client::builder()
+	let client = proxy_builder(&origin, CREDENTIAL)
 		.timeout(Duration::from_secs(15))
 		.redirect(reqwest::redirect::Policy::none())
 		.build()
 		.unwrap();
 	let get = client
-		.get(format!("{origin}/v1/operation-token/images/models?q=1"))
+		.get(service_url("images/models?q=1"))
 		.header("authorization", "sandbox-supplied")
 		.send()
 		.await
@@ -778,7 +907,7 @@ async fn a_secret_bearing_service_streams_through_the_broker_and_rewrites_redire
 	let response = tokio::time::timeout(
 		Duration::from_secs(5),
 		client
-			.post(format!("{origin}/v1/operation-token/images/upload"))
+			.post(service_url("images/upload"))
 			.header("content-type", "application/octet-stream")
 			.body(reqwest::Body::wrap_stream(upload))
 			.send(),
@@ -801,14 +930,14 @@ async fn a_secret_bearing_service_streams_through_the_broker_and_rewrites_redire
 	}
 	assert_eq!(total, b"first-broker-chunk".len() + 64 * 64 * 1024);
 	let redirect = client
-		.get(format!("{origin}/v1/operation-token/images/redirect"))
+		.get(service_url("images/redirect"))
 		.send()
 		.await
 		.unwrap();
 	assert_eq!(redirect.status(), StatusCode::FOUND);
 	assert_eq!(
 		redirect.headers()["location"],
-		"/v1/operation-token/images/models/2?page=2"
+		"http://services.aidash.internal/images/models/2?page=2"
 	);
 	// Both directions are debited through the gateway's own meter.
 	assert_eq!(audit.sent.load(Ordering::Relaxed), total as u64);
@@ -841,15 +970,12 @@ async fn invalid_broker_capability_is_rejected_before_contacting_the_broker() {
 	let audit = Arc::new(Audit::default());
 	let authority = Arc::new(BrokerAuthority {
 		broker: "http://127.0.0.1:9/v1/forward".into(),
-		origin: origin.clone(),
 		audit: audit.clone(),
 		definition: secret_service(),
 	});
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(serve(listener, authority, receiver));
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/invalid-token"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/invalid-token").await.unwrap();
 	assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 	assert_eq!(
 		response.text().await.unwrap(),
@@ -884,13 +1010,12 @@ async fn every_broker_error_code_is_reported_without_the_broker_body() {
 	let audit = Arc::new(Audit::default());
 	let authority = Arc::new(BrokerAuthority {
 		broker: format!("{broker_url}/v1/forward"),
-		origin: origin.clone(),
 		audit: audit.clone(),
 		definition: secret_service(),
 	});
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(serve(listener, authority, receiver));
-	let client = reqwest::Client::builder()
+	let client = proxy_builder(&origin, CREDENTIAL)
 		.timeout(Duration::from_secs(15))
 		.build()
 		.unwrap();
@@ -903,7 +1028,7 @@ async fn every_broker_error_code_is_reported_without_the_broker_body() {
 		("upstream_unreachable", StatusCode::BAD_GATEWAY),
 	] {
 		let response = client
-			.get(format!("{origin}/v1/operation-token/images/error/{code}"))
+			.get(service_url(&format!("images/error/{code}")))
 			.send()
 			.await
 			.unwrap();
@@ -948,7 +1073,6 @@ async fn every_broker_error_code_is_reported_without_the_broker_body() {
 
 struct DirectAuthority {
 	upstream: String,
-	origin: String,
 	audit: Arc<Audit>,
 }
 #[async_trait]
@@ -970,11 +1094,8 @@ impl Authority for DirectAuthority {
 			.unwrap()
 			.push((method.into(), path.into(), digest.into()));
 		Ok(Admission {
-			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Some(Uuid::new_v4()),
-			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
@@ -1019,14 +1140,11 @@ async fn a_service_without_a_secret_still_goes_direct() {
 	let audit = Arc::new(Audit::default());
 	let authority = Arc::new(DirectAuthority {
 		upstream: upstream_url,
-		origin: origin.clone(),
 		audit: audit.clone(),
 	});
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(serve(listener, authority, receiver));
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/plain"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/plain").await.unwrap();
 	assert_eq!(response.status(), StatusCode::IM_A_TEAPOT);
 	assert_eq!(response.text().await.unwrap(), "direct");
 	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
@@ -1088,7 +1206,6 @@ fn a_brokered_request_keeps_the_service_path_exactly() {
 struct ScopeServiceFixture {
 	scopes: Arc<aidash_application::egress::test_support::MemoryScopes>,
 	upstream: String,
-	origin: String,
 	audit: Arc<Audit>,
 }
 #[async_trait]
@@ -1103,18 +1220,18 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 		_: &str,
 		_: &str,
 		_: &str,
-	) -> Result<Admission> {
+	) -> Result<ExternalAdmission> {
 		let scope = self.scopes.resolve(credential).await?;
 		self.scopes.check_active(&scope, credential).await?;
 		if service != "images" {
-			return Err(aidash_application::Error::Forbidden);
+			return Ok(ExternalAdmission::Refused(ServiceRefusal {
+				code: aidash_domain::egress::SERVICE_NOT_AVAILABLE,
+				available: vec!["images".into()],
+			}));
 		}
-		Ok(Admission {
-			gateway_origin: self.origin.clone(),
+		Ok(ExternalAdmission::Admitted(Box::new(Admission {
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: None,
-			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.upstream.clone(),
@@ -1127,7 +1244,7 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 			credential: Some("canary-tenant-secret".into()),
 			route: None,
 			meter: self.audit.clone(),
-		})
+		})))
 	}
 	async fn admit_connection(
 		&self,
@@ -1168,10 +1285,53 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 	}
 }
 
-#[tokio::test]
-async fn external_service_accepts_scope_credential_without_forwarding_it() {
-	use aidash_application::egress::{ScopeSettings, test_support::MemoryScopes};
+/// A Scratch Space whose every Host connection would be refused: nothing is
+/// allowed, and the first connection of a minute is already an anomaly.
+fn scope_settings() -> aidash_application::egress::ScopeSettings {
 	use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
+	aidash_application::egress::ScopeSettings {
+		run_id: None,
+		id: ScopeId {
+			tenant: "tenant".into(),
+			node: "node".into(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget::default(),
+		anomaly: AnomalyRule {
+			connections_per_minute: 0,
+		},
+		operator_allows_all: false,
+		tunnel_limits: Default::default(),
+	}
+}
+
+/// A gateway over an in-memory Scratch Space that has no External services.
+async fn memory_gateway() -> (
+	String,
+	Arc<aidash_application::egress::test_support::MemoryScopes>,
+	tokio::task::JoinHandle<()>,
+	watch::Sender<bool>,
+) {
+	let scopes = Arc::new(aidash_application::egress::test_support::MemoryScopes::new(
+		"scope-token".into(),
+		scope_settings(),
+	));
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let (stop, stopping) = watch::channel(false);
+	let served = scopes.clone();
+	let gateway = tokio::spawn(async move {
+		serve_with_scopes(listener, served, ProxyLimits::default(), stopping)
+			.await
+			.unwrap()
+	});
+	(origin, scopes, gateway, stop)
+}
+
+#[tokio::test]
+async fn external_service_accepts_proxy_credential_without_forwarding_it() {
+	use aidash_application::egress::test_support::MemoryScopes;
 	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
 	let upstream_task = tokio::spawn(async move {
@@ -1184,7 +1344,9 @@ async fn external_service_accepts_scope_credential_without_forwarding_it() {
 						request.headers()["authorization"],
 						"Bearer canary-tenant-secret"
 					);
+					// The Sandbox's own credential stays at the gateway (#738).
 					assert!(request.headers().get("proxy-authorization").is_none());
+					assert!(request.headers().get("proxy-connection").is_none());
 					if request.uri().path() == "/redirect" {
 						return Response::builder()
 							.status(StatusCode::FOUND)
@@ -1199,75 +1361,171 @@ async fn external_service_accepts_scope_credential_without_forwarding_it() {
 		.await
 		.unwrap();
 	});
-	let settings = ScopeSettings {
-		run_id: None,
-		id: ScopeId {
-			tenant: "tenant".into(),
-			node: "node".into(),
-			scratch_space: Uuid::new_v4(),
-		},
-		allowed_hosts: AllowedHosts::default(),
-		budget: DailyBudget::default(),
-		anomaly: AnomalyRule::default(),
-		operator_allows_all: false,
-		tunnel_limits: Default::default(),
-	};
+	let settings = scope_settings();
+	// Not allowed as a Host, and a Host connection would be an anomaly.
+	assert!(
+		!settings
+			.allowed_hosts
+			.permits(aidash_domain::egress::SERVICES_HOST, false)
+	);
+	let memory = Arc::new(MemoryScopes::new("scope-token".into(), settings));
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let origin = format!("http://{}", listener.local_addr().unwrap());
-	let audit = Arc::new(Audit::default());
-	let authority = Arc::new(FixtureAuthority {
-		upstream: upstream_url.clone(),
-		origin: origin.clone(),
-		audit: audit.clone(),
-	});
 	let scopes = Arc::new(ScopeServiceFixture {
-		scopes: Arc::new(MemoryScopes::new("scope-token".into(), settings)),
+		scopes: memory.clone(),
 		upstream: upstream_url,
-		origin: origin.clone(),
-		audit,
+		audit: Arc::new(Audit::default()),
 	});
 	let (stop, stopping) = watch::channel(false);
 	let gateway = tokio::spawn(serve_with_scopes(
 		listener,
-		authority,
-		Some(scopes),
+		scopes,
 		ProxyLimits::default(),
 		stopping,
 	));
-	let client = reqwest::Client::builder()
-		.redirect(reqwest::redirect::Policy::none())
-		.build()
-		.unwrap();
-	let url = format!("{origin}/v2/services/images/photo?private=yes");
-	assert_eq!(
-		client
-			.get(&url)
-			.bearer_auth("wrong")
-			.send()
-			.await
+	let client = |credential: &str| {
+		proxy_builder(&origin, credential)
+			.redirect(reqwest::redirect::Policy::none())
+			.build()
 			.unwrap()
-			.status(),
-		StatusCode::FORBIDDEN
-	);
-	let response = client
-		.get(&url)
-		.bearer_auth("scope-token")
-		.send()
-		.await
-		.unwrap();
+	};
+	let url = service_url("images/photo?private=yes");
+	let wrong = client("wrong").get(&url).send().await.unwrap();
+	assert_eq!(wrong.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+	let response = client("scope-token").get(&url).send().await.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
 	assert_eq!(response.text().await.unwrap(), "ok");
-	let redirect = client
-		.get(format!("{origin}/v2/services/images/redirect"))
-		.bearer_auth("scope-token")
+	// A redirect inside the service stays on the reserved host.
+	let redirect = client("scope-token")
+		.get(service_url("images/redirect"))
 		.send()
 		.await
 		.unwrap();
 	assert_eq!(redirect.status(), StatusCode::FOUND);
-	assert_eq!(redirect.headers()["location"], "/v2/services/images/next");
+	assert_eq!(
+		redirect.headers()["location"],
+		"http://services.aidash.internal/images/next"
+	);
+	// A service the Scratch Space cannot use says which ones it can.
+	let refused = client("scope-token")
+		.get(service_url("elsewhere/photo"))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+	assert_eq!(refused.headers()["content-type"], "application/json");
+	let body: serde_json::Value = refused.json().await.unwrap();
+	assert_eq!(
+		body,
+		serde_json::json!({
+			"error": aidash_domain::egress::SERVICE_NOT_AVAILABLE,
+			"available_services": ["images"],
+		})
+	);
+	// None of it was a Host connection: it was not counted, which would have
+	// suspended the Scratch Space, and no connection record was written.
+	assert_eq!(memory.notifications(), 0);
+	assert!(memory.records().is_empty());
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
 	upstream_task.abort();
+}
+
+#[tokio::test]
+async fn a_connect_to_the_services_host_is_refused_as_not_plain_http() {
+	let (origin, memory, gateway, stop) = memory_gateway().await;
+	let host = aidash_domain::egress::SERVICES_HOST;
+	let (line, body) = raw_exchange(
+		&origin,
+		&format!(
+			"CONNECT {host}:443 HTTP/1.1\r\nhost: {host}:443\r\nproxy-authorization: {}\r\n\r\n",
+			basic("scope-token")
+		),
+	)
+	.await;
+	assert!(line.starts_with("HTTP/1.1 400"), "{line}");
+	assert_eq!(body, r#"{"error":"external_service_requires_http"}"#);
+	assert_eq!(memory.notifications(), 0);
+	assert!(memory.records().is_empty());
+	stop.send(true).unwrap();
+	gateway.await.unwrap();
+}
+
+#[tokio::test]
+async fn the_former_origin_form_routes_are_gone() {
+	let (origin, _memory, gateway, stop) = memory_gateway().await;
+	for path in [
+		"/v1/scope-token/images/photo",
+		"/v2/services/images/photo",
+		"/",
+	] {
+		let (line, body) = raw_exchange(
+			&origin,
+			&format!(
+				"GET {path} HTTP/1.1\r\nhost: gateway\r\nauthorization: Bearer scope-token\r\nconnection: close\r\n\r\n"
+			),
+		)
+		.await;
+		assert!(line.starts_with("HTTP/1.1 404"), "{path}: {line}");
+		assert_eq!(body, r#"{"error":"egress_route_not_found"}"#, "{path}");
+	}
+	stop.send(true).unwrap();
+	gateway.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_service_request_without_a_proxy_credential_is_asked_for_one() {
+	let (origin, memory, gateway, stop) = memory_gateway().await;
+	let host = aidash_domain::egress::SERVICES_HOST;
+	let url = service_url("images/photo");
+	// A missing credential, one the proxy cannot read, and one for the wrong
+	// header: the Bearer `authorization` of the former route is not accepted.
+	for headers in [
+		"".to_owned(),
+		"proxy-authorization: Basic !!!\r\n".to_owned(),
+		format!("proxy-authorization: Basic {}\r\n", {
+			use base64::Engine;
+			base64::engine::general_purpose::STANDARD.encode("no-colon")
+		}),
+		"authorization: Bearer scope-token\r\n".to_owned(),
+	] {
+		let (line, body) = raw_exchange(
+			&origin,
+			&format!("GET {url} HTTP/1.1\r\nhost: {host}\r\n{headers}connection: close\r\n\r\n"),
+		)
+		.await;
+		assert!(line.starts_with("HTTP/1.1 407"), "{headers}: {line}");
+		assert_eq!(body, r#"{"error":"proxy_auth_required"}"#, "{headers}");
+	}
+	assert_eq!(memory.notifications(), 0);
+	stop.send(true).unwrap();
+	gateway.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_refused_service_says_why_and_which_services_are_available() {
+	let (origin, _memory, gateway, stop) = memory_gateway().await;
+	let (line, body) = raw_exchange(
+		&origin,
+		&format!(
+			"GET {} HTTP/1.1\r\nhost: {}\r\nproxy-authorization: {}\r\nconnection: close\r\n\r\n",
+			service_url("images/photo"),
+			aidash_domain::egress::SERVICES_HOST,
+			basic("scope-token"),
+		),
+	)
+	.await;
+	assert!(line.starts_with("HTTP/1.1 403"), "{line}");
+	let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+	assert_eq!(
+		body,
+		serde_json::json!({
+			"error": aidash_domain::egress::SERVICE_NOT_AVAILABLE,
+			"available_services": [],
+		})
+	);
+	stop.send(true).unwrap();
+	gateway.await.unwrap();
 }
 
 /// Commits every debit like the server meter, then refuses once a counter
@@ -1441,7 +1699,6 @@ async fn gateway_admitting_after(
 	let authority = Arc::new(MeterAuthority {
 		inner: FixtureAuthority {
 			upstream: upstream_url,
-			origin: origin.clone(),
 			audit: audit.clone(),
 		},
 		limit,
@@ -1490,7 +1747,6 @@ async fn gateway_metered_by(
 	let authority = Arc::new(FixedMeter {
 		inner: FixtureAuthority {
 			upstream: upstream_url,
-			origin: origin.clone(),
 			audit: Arc::new(Audit::default()),
 		},
 		meter,
@@ -1525,9 +1781,7 @@ async fn drain(response: reqwest::Response) -> (usize, bool) {
 #[tokio::test]
 async fn a_large_download_is_debited_in_batches_and_totals_the_streamed_bytes() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/160"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/download/160").await.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
 	let (total, clean) = drain(response).await;
 	assert!(clean);
@@ -1549,7 +1803,7 @@ async fn a_request_records_how_long_its_admission_took() {
 	let admission = Duration::from_millis(50);
 	let (origin, audit, tasks, stop) = gateway_admitting_after(u64::MAX, false, admission).await;
 	for path in ["download/1", "sized/1"] {
-		let response = reqwest::get(format!("{origin}/v1/operation-token/images/{path}"))
+		let response = service_get(&origin, &format!("images/{path}"))
 			.await
 			.unwrap();
 		drain(response).await;
@@ -1573,9 +1827,7 @@ async fn a_request_records_how_long_its_admission_took() {
 #[tokio::test]
 async fn a_download_with_a_content_length_is_recorded_as_complete() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/sized/40"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/sized/40").await.unwrap();
 	assert_eq!(response.content_length(), Some(40 * CHUNK as u64));
 	let (total, clean) = drain(response).await;
 	assert!(clean);
@@ -1592,9 +1844,7 @@ async fn a_download_with_a_content_length_is_recorded_as_complete() {
 async fn a_download_the_client_abandons_is_recorded_as_interrupted() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
 	// Far more than the socket buffers hold, so the gateway is still writing.
-	let mut response = reqwest::get(format!("{origin}/v1/operation-token/images/sized/1600"))
-		.await
-		.unwrap();
+	let mut response = service_get(&origin, "images/sized/1600").await.unwrap();
 	response.chunk().await.unwrap().unwrap();
 	drop(response);
 	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
@@ -1610,9 +1860,7 @@ async fn a_download_the_client_abandons_is_recorded_as_interrupted() {
 #[tokio::test]
 async fn an_interrupted_download_still_debits_every_streamed_byte() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/broken"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/broken").await.unwrap();
 	let (total, clean) = drain(response).await;
 	assert!(!clean);
 	assert_eq!(total, 40 * CHUNK);
@@ -1631,9 +1879,7 @@ async fn an_interrupted_download_still_debits_every_streamed_byte() {
 async fn an_exhausted_budget_stops_a_download_after_at_most_one_batch_over() {
 	let limit = 2 * BATCH_BYTES + 1;
 	let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/160"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/download/160").await.unwrap();
 	let (total, clean) = drain(response).await;
 	assert!(!clean, "the refused debit ends the body early");
 	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
@@ -1658,8 +1904,8 @@ async fn an_exhausted_upload_budget_is_reported_as_the_limit_not_the_upstream() 
 	let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(Bytes::from(
 		vec![1; BATCH_BYTES as usize],
 	))));
-	let response = reqwest::Client::new()
-		.post(format!("{origin}/v1/operation-token/images/upload"))
+	let response = proxy_client(&origin)
+		.post(service_url("images/upload"))
 		.body(reqwest::Body::wrap_stream(upload))
 		.send()
 		.await
@@ -1688,8 +1934,8 @@ async fn scoped_refusals_are_reported_on_upload() {
 		let upload = futures_util::stream::iter(
 			(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
 		);
-		let response = reqwest::Client::new()
-			.post(format!("{origin}/v1/operation-token/images/upload"))
+		let response = proxy_client(&origin)
+			.post(service_url("images/upload"))
 			.body(reqwest::Body::wrap_stream(upload))
 			.send()
 			.await
@@ -1710,9 +1956,7 @@ async fn scoped_refusals_are_reported_on_upload() {
 #[tokio::test]
 async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, true).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/1"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/download/1").await.unwrap();
 	let (_, clean) = drain(response).await;
 	assert!(!clean);
 	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
@@ -1724,8 +1968,8 @@ async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget(
 	let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(Bytes::from(
 		vec![1; CHUNK],
 	))));
-	let response = reqwest::Client::new()
-		.post(format!("{origin}/v1/operation-token/images/upload"))
+	let response = proxy_client(&origin)
+		.post(service_url("images/upload"))
 		.body(reqwest::Body::wrap_stream(upload))
 		.send()
 		.await
@@ -1761,15 +2005,17 @@ async fn a_stalled_client_write_times_out() {
 
 /// Sends a whole request before reading anything, as a client without a
 /// concurrent reader does, so a reset cannot be mistaken for a slow answer.
-async fn upload_then_read(origin: &str, path: &str, chunks: usize) -> std::io::Result<String> {
+async fn upload_then_read(
+	origin: &str,
+	credential: &str,
+	path: &str,
+	chunks: usize,
+) -> std::io::Result<String> {
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 	let mut socket = tokio::net::TcpStream::connect(origin.trim_start_matches("http://")).await?;
 	let length = chunks * CHUNK;
 	socket
-		.write_all(
-			format!("POST {path} HTTP/1.1\r\nhost: gateway\r\ncontent-length: {length}\r\n\r\n")
-				.as_bytes(),
-		)
+		.write_all(request_head("POST", credential, path, Some(length)).as_bytes())
 		.await?;
 	for _ in 0..chunks {
 		socket.write_all(&[1; CHUNK]).await?;
@@ -1784,7 +2030,7 @@ async fn a_refusal_during_an_upload_reaches_a_client_that_sends_everything_first
 	let (origin, audit, tasks, stop) = metered_gateway(BATCH_BYTES, false).await;
 	let answer = tokio::time::timeout(
 		Duration::from_secs(15),
-		upload_then_read(&origin, "/v1/operation-token/images/upload", 64),
+		upload_then_read(&origin, "operation-token", "images/upload", 64),
 	)
 	.await
 	.unwrap()
@@ -1804,7 +2050,7 @@ async fn a_refusal_at_admission_reaches_a_client_that_sends_everything_first() {
 	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
 	let answer = tokio::time::timeout(
 		Duration::from_secs(15),
-		upload_then_read(&origin, "/v1/wrong-token/images/upload", 64),
+		upload_then_read(&origin, "wrong-token", "images/upload", 64),
 	)
 	.await
 	.unwrap()
@@ -1824,7 +2070,7 @@ async fn a_refusal_for_full_slots_reaches_a_client_that_sends_everything_first()
 	}
 	let answer = tokio::time::timeout(
 		Duration::from_secs(15),
-		upload_then_read(&origin, "/v1/operation-token/images/upload", 64),
+		upload_then_read(&origin, "operation-token", "images/upload", 64),
 	)
 	.await
 	.unwrap()
@@ -1908,7 +2154,7 @@ async fn an_upload_past_the_discard_limit_is_cut_off_and_counted() {
 	let chunks = 4 * LINGER_BYTES as usize / CHUNK;
 	let cut_off = tokio::time::timeout(
 		Duration::from_secs(15),
-		upload_then_read(&origin, "/v1/wrong-token/images/upload", chunks),
+		upload_then_read(&origin, "wrong-token", "images/upload", chunks),
 	)
 	.await
 	.unwrap();
@@ -1933,7 +2179,7 @@ async fn lingering_connections_give_their_slots_back_at_the_time_limit() {
 		let mut socket = tokio::net::TcpStream::connect(&address).await.unwrap();
 		socket
 			.write_all(
-				b"POST /v1/wrong-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1048576\r\n\r\n",
+				request_head("POST", "wrong-token", "images/upload", Some(1048576)).as_bytes(),
 			)
 			.await
 			.unwrap();
@@ -1944,7 +2190,7 @@ async fn lingering_connections_give_their_slots_back_at_the_time_limit() {
 	}
 	tokio::time::timeout(Duration::from_secs(15), async {
 		loop {
-			let response = reqwest::get(format!("{origin}/v1/wrong-token/images/download/1"))
+			let response = service_get_as(&origin, "wrong-token", "images/download/1")
 				.await
 				.unwrap();
 			if response.status() == StatusCode::FORBIDDEN {
@@ -2129,11 +2375,9 @@ async fn gateway_with(
 async fn an_unexpected_admission_failure_is_logged_and_counted_without_the_request_contents() {
 	let observed = Observed::start();
 	let (origin, gateway, stop) = gateway_with(Arc::new(UnavailableAuthority)).await;
-	let response = reqwest::get(format!(
-		"{origin}/v1/operation-token/images/private-path?q=private-query"
-	))
-	.await
-	.unwrap();
+	let response = service_get(&origin, "images/private-path?q=private-query")
+		.await
+		.unwrap();
 	assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 	assert_eq!(
 		response.text().await.unwrap(),
@@ -2159,7 +2403,7 @@ async fn an_unexpected_admission_failure_is_logged_and_counted_without_the_reque
 async fn an_expected_refusal_is_counted_by_reason_and_not_logged_as_an_error() {
 	let observed = Observed::start();
 	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
-	let response = reqwest::get(format!("{origin}/v1/wrong-token/images/download/1"))
+	let response = service_get_as(&origin, "wrong-token", "images/download/1")
 		.await
 		.unwrap();
 	assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -2171,26 +2415,24 @@ async fn an_expected_refusal_is_counted_by_reason_and_not_logged_as_an_error() {
 	shutdown(tasks, stop).await;
 }
 
-struct InactiveAuthority;
+struct SuspendedAuthority;
 #[async_trait]
-impl Authority for InactiveAuthority {
+impl Authority for SuspendedAuthority {
 	async fn admit(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<Admission> {
-		Err(aidash_application::Error::Conflict(
-			aidash_domain::egress::OPERATION_INACTIVE.into(),
+		Err(aidash_application::Error::Refused(
+			"egress_suspended".into(),
 		))
 	}
 }
 
 #[tokio::test]
-async fn an_inactive_operation_is_refused_and_counted_by_its_own_reason() {
+async fn a_suspended_scope_is_refused_and_counted_by_its_own_reason() {
 	let observed = Observed::start();
-	let (origin, gateway, stop) = gateway_with(Arc::new(InactiveAuthority)).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/private-path"))
-		.await
-		.unwrap();
+	let (origin, gateway, stop) = gateway_with(Arc::new(SuspendedAuthority)).await;
+	let response = service_get(&origin, "images/private-path").await.unwrap();
 	assert_eq!(response.status(), StatusCode::FORBIDDEN);
 	assert_eq!(
-		observed.count(r#"aidash_egress_refused_total{reason="operation_inactive"}"#),
+		observed.count(r#"aidash_egress_refused_total{reason="egress_suspended"}"#),
 		1
 	);
 	shutdown(vec![gateway], stop).await;
@@ -2205,14 +2447,11 @@ async fn an_unreachable_upstream_is_logged_with_its_cause_and_without_the_url() 
 	drop(unused);
 	let authority = FixtureAuthority {
 		upstream,
-		origin: "http://gateway.invalid".into(),
 		audit: Arc::new(Audit::default()),
 	};
 	let audit = authority.audit.clone();
 	let (origin, gateway, stop) = gateway_with(Arc::new(authority)).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/private-path"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/private-path").await.unwrap();
 	assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 	assert_eq!(
 		*audit.finished_records.lock().unwrap(),
@@ -2240,7 +2479,7 @@ async fn full_connection_slots_answer_with_a_named_503_and_then_drop() {
 
 	let mut refused = tokio::net::TcpStream::connect(&address).await.unwrap();
 	refused
-		.write_all(b"GET /v1/operation-token/images/download/1 HTTP/1.1\r\nhost: gateway\r\n\r\n")
+		.write_all(request_head("GET", "operation-token", "images/download/1", None).as_bytes())
 		.await
 		.unwrap();
 	let mut answer = Vec::new();
@@ -2545,7 +2784,6 @@ async fn a_refused_final_debit_is_recorded_and_not_retried() {
 /// Admits `operation-token` for `service` against `base`, after `shape` has
 /// changed the admission.
 struct ShapedAuthority {
-	origin: String,
 	audit: Arc<Audit>,
 	service: &'static str,
 	base: String,
@@ -2566,11 +2804,8 @@ impl Authority for ShapedAuthority {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let mut admission = Admission {
-			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Some(Uuid::new_v4()),
-			session: None,
 			service: service.into(),
 			definition: ExternalService {
 				base_url: self.base.clone(),
@@ -2589,23 +2824,33 @@ impl Authority for ShapedAuthority {
 	}
 }
 
-/// Sends `GET path` and returns the raw status line and the body.
-async fn raw_get(origin: &str, path: &str) -> (String, String) {
+/// Sends a request head as written and returns the raw status line and the body.
+async fn raw_exchange(origin: &str, head: &str) -> (String, String) {
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 	let mut socket = tokio::net::TcpStream::connect(origin.trim_start_matches("http://"))
 		.await
 		.unwrap();
-	socket
-		.write_all(
-			format!("GET {path} HTTP/1.1\r\nHost: gateway\r\nConnection: close\r\n\r\n").as_bytes(),
-		)
-		.await
-		.unwrap();
+	socket.write_all(head.as_bytes()).await.unwrap();
 	let mut raw = Vec::new();
 	socket.read_to_end(&mut raw).await.unwrap();
 	let text = String::from_utf8_lossy(&raw).into_owned();
 	let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
 	(head.lines().next().unwrap().to_owned(), body.to_owned())
+}
+
+/// Sends `GET <service path>` through the proxy as the Sandbox does and returns
+/// the raw status line and the body.
+async fn raw_get(origin: &str, path: &str) -> (String, String) {
+	raw_exchange(
+		origin,
+		&format!(
+			"GET {} HTTP/1.1\r\nhost: {}\r\nproxy-authorization: {}\r\nconnection: close\r\n\r\n",
+			service_url(path),
+			aidash_domain::egress::SERVICES_HOST,
+			basic(CREDENTIAL),
+		),
+	)
+	.await
 }
 
 #[tokio::test]
@@ -2697,7 +2942,6 @@ async fn every_refusal_after_the_record_opens_records_the_status_the_client_rece
 		let origin = format!("http://{}", listener.local_addr().unwrap());
 		let audit = Arc::new(Audit::default());
 		let authority = Arc::new(ShapedAuthority {
-			origin: origin.clone(),
 			audit: audit.clone(),
 			service,
 			base,
@@ -2707,7 +2951,7 @@ async fn every_refusal_after_the_record_opens_records_the_status_the_client_rece
 		let (stop, receiver) = watch::channel(false);
 		let gateway =
 			tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
-		let (line, body) = raw_get(&origin, &format!("/v1/operation-token/{service}/{path}")).await;
+		let (line, body) = raw_get(&origin, &format!("{service}/{path}")).await;
 		assert!(
 			line.starts_with(&format!("HTTP/1.1 {}", status.as_u16())),
 			"{error}: {line}"
@@ -2773,9 +3017,7 @@ async fn a_record_stalled_in_the_store_still_arrives_after_the_client_disconnect
 async fn a_client_that_leaves_while_its_record_is_written_does_not_lose_the_record() {
 	let meter = Arc::new(StalledRecord(Audit::default()));
 	let (origin, tasks, stop) = gateway_metered_by(meter.clone()).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/1"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/download/1").await.unwrap();
 	let mut body = response.bytes_stream();
 	let mut total = 0;
 	while total < CHUNK {
@@ -2890,9 +3132,7 @@ async fn a_download_survives_a_final_debit_that_the_store_drops() {
 	// Fewer bytes than a batch, so the only debit is the last one.
 	let meter = FlakyMeter::failing(1, 0);
 	let (origin, tasks, stop) = gateway_metered_by(meter.clone()).await;
-	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/4"))
-		.await
-		.unwrap();
+	let response = service_get(&origin, "images/download/4").await.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
 	let (total, clean) = drain(response).await;
 	assert_eq!(total, 4 * CHUNK);
@@ -2926,9 +3166,7 @@ async fn a_short_path_does_not_garble_the_logged_cause() {
 	let (origin, gateway, stop) = gateway_with(Arc::new(UnavailableAuthority)).await;
 	// An empty path, and one a sandbox picked to match as many letters as it can.
 	for path in ["images", "images/a"] {
-		let response = reqwest::get(format!("{origin}/v1/operation-token/{path}"))
-			.await
-			.unwrap();
+		let response = service_get(&origin, path).await.unwrap();
 		assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 	}
 	let logs = observed.logs();
@@ -2957,7 +3195,7 @@ async fn a_slow_upload_still_reads_the_refusal_for_full_slots() {
 	let mut socket = tokio::net::TcpStream::connect(&address).await.unwrap();
 	socket
 		.write_all(
-			b"POST /v1/operation-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1048576\r\n\r\n",
+			request_head("POST", "operation-token", "images/upload", Some(1048576)).as_bytes(),
 		)
 		.await
 		.unwrap();
@@ -2985,7 +3223,7 @@ async fn a_slow_upload_still_reads_the_refusal_for_full_slots() {
 	);
 	// The refusal slot is back.
 	let mut next = tokio::net::TcpStream::connect(&address).await.unwrap();
-	next.write_all(b"GET /v1/operation-token/images/download/1 HTTP/1.1\r\nhost: gateway\r\n\r\n")
+	next.write_all(request_head("GET", "operation-token", "images/download/1", None).as_bytes())
 		.await
 		.unwrap();
 	let mut answer = Vec::new();
@@ -3024,7 +3262,7 @@ async fn refusal_slots_are_held_for_the_discard_and_then_given_back() {
 		let mut socket = tokio::net::TcpStream::connect(&address).await.unwrap();
 		socket
 			.write_all(
-				b"POST /v1/operation-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1048576\r\n\r\n",
+				request_head("POST", "operation-token", "images/upload", Some(1048576)).as_bytes(),
 			)
 			.await
 			.unwrap();
@@ -3056,7 +3294,7 @@ async fn refusal_slots_are_held_for_the_discard_and_then_given_back() {
 		REFUSAL_SLOTS as u64
 	);
 	let mut next = tokio::net::TcpStream::connect(&address).await.unwrap();
-	next.write_all(b"GET /v1/operation-token/images/download/1 HTTP/1.1\r\nhost: gateway\r\n\r\n")
+	next.write_all(request_head("GET", "operation-token", "images/download/1", None).as_bytes())
 		.await
 		.unwrap();
 	let mut answer = Vec::new();

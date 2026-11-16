@@ -1796,6 +1796,12 @@ impl<'a> Executor<'a> {
 					instructions.push('\n');
 					instructions.push_str(&line);
 				}
+				if let Some(section) =
+					external_services_section(&self.environment.external_services(run).await?)
+				{
+					instructions.push('\n');
+					instructions.push_str(&section);
+				}
 				let fixed_sources = collect_data_phase(
 					self.environment,
 					run,
@@ -4895,6 +4901,31 @@ fn reference_set_line(files: usize) -> Option<String> {
 			"You have {files} Reference files. List their paths with file_search (scope references, mode path, empty query), then read them with file_read."
 		)
 	})
+}
+/// The External services of the Run's Scratch Space that are usable now (#738).
+/// Code in the Execution Pod reaches them over plain HTTP through its proxy; the
+/// section is left out when there are none.
+fn external_services_section(services: &[ExternalServiceLine]) -> Option<String> {
+	if services.is_empty() {
+		return None;
+	}
+	let mut text = String::from(
+		"External services you can use now. Code you run in the Execution Pod reaches them over plain HTTP through its proxy; no token or header is needed. A refused request names the services usable now.\n",
+	);
+	for service in services {
+		text.push_str(&format!(
+			"- {}: {} (methods {})",
+			service.id,
+			service.url,
+			service.methods.join(", ")
+		));
+		if !service.description.is_empty() {
+			text.push_str(": ");
+			text.push_str(&service.description);
+		}
+		text.push('\n');
+	}
+	Some(text)
 }
 fn text_placement<'a>(text: &'a str, pointer: &str) -> Option<&'a str> {
 	let (start, end) = pointer.strip_prefix("/@text/")?.split_once('/')?;

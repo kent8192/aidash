@@ -83,6 +83,10 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0068_reject_new_compaction_deciders"),
 	("registry", "0069_remove_package_index_draft_bindings"),
 	("registry", "0070_execution_pod_tools"),
+	(
+		"registry",
+		"0071_remove_agent_external_service_draft_bindings",
+	),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -137,6 +141,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0131_agent_plugin_data"),
 	("execution", "0132_agent_plugin_data_rls"),
 	("execution", "0133_agent_plugin_data_state"),
+	("execution", "0134_remove_legacy_egress_tokens"),
+	("execution", "0135_remove_legacy_egress_tokens_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -166,6 +172,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0131_agent_plugin_data"),
 	("execution", "0132_agent_plugin_data_rls"),
 	("execution", "0133_agent_plugin_data_state"),
+	("execution", "0134_remove_legacy_egress_tokens"),
+	("execution", "0135_remove_legacy_egress_tokens_state"),
 ];
 
 async fn history_size() -> usize {
@@ -208,10 +216,13 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0070_execution_pod_tools");
+	assert_eq!(
+		registry[0].name,
+		"0071_remove_agent_external_service_draft_bindings"
+	);
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0133_agent_plugin_data_state");
+	assert_eq!(execution[0].name, "0135_remove_legacy_egress_tokens_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
@@ -492,14 +503,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0134_policy_probe")
+		.get_migration("execution", "0136_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0133_agent_plugin_data_state".to_owned()
+			"0135_remove_legacy_egress_tokens_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -562,6 +573,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0131_agent_plugin_data"),
 			("execution", "0132_agent_plugin_data_rls"),
 			("execution", "0133_agent_plugin_data_state"),
+			("execution", "0134_remove_legacy_egress_tokens"),
+			("execution", "0135_remove_legacy_egress_tokens_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -2135,6 +2148,10 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0068_reject_new_compaction_deciders"),
 			("registry", "0069_remove_package_index_draft_bindings"),
 			("registry", "0070_execution_pod_tools"),
+			(
+				"registry",
+				"0071_remove_agent_external_service_draft_bindings",
+			),
 		])
 		.await;
 	fixture.tenant_root("acme").await;

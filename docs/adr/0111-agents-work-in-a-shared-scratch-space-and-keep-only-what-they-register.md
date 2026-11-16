@@ -32,3 +32,7 @@ An Agent's Reference set stays readable through `file_read` and `file_search` wi
 ## Amendment (2026-11-14, #745)
 
 ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.
+
+## Amendment (2026-11-16, #738)
+
+ADR 0137: the External services of a Scratch Space are reached through the Execution Pod's proxy at a reserved host. Only Catalog Approvals for everyone on the Space's Node make them usable, and Agent definitions no longer bind them.

@@ -3,7 +3,12 @@
 //! has a binary to itself and must stay the only test in it.
 #![cfg(all(unix, feature = "cloud-adapters"))]
 
-use aidash_application::{Result, egress, preview};
+use aidash_application::{
+	Result,
+	egress::{ScopeSettings, test_support::MemoryScopes},
+	preview,
+};
+use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
 use aidash_integrations::{egress as egress_gateway, preview as preview_gateway};
 use async_trait::async_trait;
 use rstest::rstest;
@@ -41,17 +46,24 @@ impl preview::Authority for NoAuthority {
 	}
 }
 
-#[async_trait]
-impl egress::Authority for NoAuthority {
-	async fn admit(
-		&self,
-		_: &str,
-		_: &str,
-		_: &str,
-		_: &str,
-		_: &str,
-	) -> Result<egress::Admission> {
-		unreachable!("the request names no External service")
+fn scope_settings() -> ScopeSettings {
+	ScopeSettings {
+		run_id: None,
+		id: ScopeId {
+			tenant: "tenant".into(),
+			node: "node".into(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget {
+			sent_bytes: 1,
+			received_bytes: 1,
+		},
+		anomaly: AnomalyRule {
+			connections_per_minute: 1,
+		},
+		operator_allows_all: false,
+		tunnel_limits: Default::default(),
 	}
 }
 
@@ -152,9 +164,10 @@ async fn both_gateways_outlive_running_out_of_descriptors() {
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let address = listener.local_addr().unwrap();
 	let (stop, stopping) = watch::channel(false);
-	let gateway = tokio::spawn(egress_gateway::serve(
+	let gateway = tokio::spawn(egress_gateway::serve_with_scopes(
 		listener,
-		Arc::new(NoAuthority),
+		Arc::new(MemoryScopes::new("credential".into(), scope_settings())),
+		egress_gateway::ProxyLimits::default(),
 		stopping,
 	));
 	assert_outlives_running_out_of_descriptors(

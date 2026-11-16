@@ -1002,26 +1002,12 @@ impl Gateway {
 			.pod_host
 			.clone()
 			.ok_or_else(|| NativeError::NotFound("preview unavailable".into()))?;
-		// The browser's page path gets a page token, never the Pod's session
-		// token: the Egress gateway admits it without a Tenant Secret.
-		let egress_token = match live.egress_expires_at {
-			Some(expires_at) => Some(super::egress::page_token(live.id, expires_at, &self.store)?),
-			None => None,
-		};
 		Ok(Some(application::Proxy {
 			preview_id: live.id,
 			tenant: live.tenant,
 			session: session_id,
 			frame_ancestor: origin,
 			upstream: format!("{pod_host}:{}", live.port),
-			egress_origin: self
-				.store
-				.capabilities
-				.0
-				.egress
-				.as_ref()
-				.map(|settings| settings.endpoint.clone()),
-			egress_token,
 		}))
 	}
 }

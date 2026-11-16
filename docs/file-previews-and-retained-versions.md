@@ -341,19 +341,13 @@ the Pod is gone; ordinary reclamation then erases what no other hold covers.
 
 ### External services
 
-The Pod's Web server reaches the External services bound to its Run through the
-Egress gateway with a session-lifetime token that ends with the Live preview.
-That token resolves a bound service's Tenant Secret exactly as an operation
-token does, and keeps working after the Run completes.
-
-The viewer's page reaches the same services only through
-`<preview-origin>/__aidash/egress/<service>/…`, which the Preview gateway
-forwards to the Egress gateway with a separate page credential the Pod never
-holds. The page path is always admitted without a Tenant Secret, because any
-viewer may open the page. Both paths still require the service to be bound to
-the Run and the method to be declared, and both are recorded in the Run's
-egress requests; the record names the path (`operation`, `pod` or `page`).
-Requests are still limited by the service's declared limits.
+The Pod's Web server reaches the External services of its Scratch Space like any
+other code in the Pod: through its proxy, at
+`http://services.aidash.internal/<service>/<path>`, admitted for its Run
+(#738). A page does not reach them. `/__aidash/egress/<service>/…` is no longer
+special on the preview origin, so a request there goes to the Web server like
+any other path. A page that needs a service calls its own server in the Pod,
+which calls the service.
 
 ### Viewing
 

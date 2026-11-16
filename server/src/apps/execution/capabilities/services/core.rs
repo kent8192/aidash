@@ -121,30 +121,8 @@ impl Runtime {
 					"invalid Egress proxy tunnel capacity".into(),
 				));
 			}
-			let endpoint = reqwest::Url::parse(&egress.endpoint)
-				.map_err(|_| Error::Invalid("invalid Egress endpoint".into()))?;
-			let internal = endpoint
-				.host_str()
-				.and_then(|host| {
-					host.trim_matches(['[', ']'])
-						.parse::<std::net::IpAddr>()
-						.ok()
-				})
-				.is_some_and(|ip| match ip {
-					std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
-					std::net::IpAddr::V6(ip) => ip.is_unique_local() || ip.is_loopback(),
-				});
-			if endpoint.scheme() != "http"
-				|| !internal || profile.runner.is_none()
-				|| !endpoint.username().is_empty()
-				|| endpoint.password().is_some()
-				|| endpoint.query().is_some()
-				|| endpoint.fragment().is_some()
-				|| endpoint.path() != "/"
-			{
-				return Err(Error::Invalid(
-					"Egress endpoint must be an internal HTTP IP origin".into(),
-				));
+			if profile.runner.is_none() {
+				return Err(Error::Invalid("Egress requires a Runner".into()));
 			}
 		}
 		if !(1..=3600).contains(&profile.mcp.human_wait_seconds)

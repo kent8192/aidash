@@ -1,6 +1,8 @@
 //! Internal HTTP streaming adapter. The dashboard framework buffers incoming
 //! bodies, so this listener uses Hyper directly; it has no public API routes.
-use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
+use aidash_application::egress::{
+	Admission, Direction, EgressScopes, ExternalAdmission, Meter, RequestTimes, ServiceRefusal,
+};
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
@@ -953,14 +955,6 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 	}
 }
 
-pub async fn serve(
-	listener: TcpListener,
-	authority: Arc<dyn Authority>,
-	stopping: watch::Receiver<bool>,
-) -> crate::Result<()> {
-	serve_with_scopes(listener, authority, None, ProxyLimits::default(), stopping).await
-}
-
 /// Per-instance proxy capacity. Tenant capacity must be lower than global capacity.
 #[derive(Clone, Copy, Debug)]
 pub struct ProxyLimits {
@@ -976,11 +970,11 @@ impl Default for ProxyLimits {
 	}
 }
 
-/// Serve legacy External service calls and, when configured, scope proxy calls.
+/// Serve the Execution Pod proxy: Host connections, and External service
+/// requests sent as plain HTTP to [`aidash_domain::egress::SERVICES_HOST`].
 pub async fn serve_with_scopes(
 	listener: TcpListener,
-	authority: Arc<dyn Authority>,
-	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	scopes: Arc<dyn EgressScopes>,
 	limits: ProxyLimits,
 	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
@@ -1007,18 +1001,14 @@ pub async fn serve_with_scopes(
 		.read_timeout(IDLE)
 		.build()
 		.map_err(crate::http_error)?;
-	serve_with_clients(
-		listener, authority, scopes, limits, stopping, client, public,
-	)
-	.await
+	serve_with_clients(listener, scopes, limits, stopping, client, public).await
 }
 
 /// The serving loop, with the upstream clients supplied. Tests give it clients
 /// that reach a local stand-in for the package registries.
 async fn serve_with_clients(
 	listener: TcpListener,
-	authority: Arc<dyn Authority>,
-	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	scopes: Arc<dyn EgressScopes>,
 	limits: ProxyLimits,
 	mut stopping: watch::Receiver<bool>,
 	client: reqwest::Client,
@@ -1050,7 +1040,7 @@ async fn serve_with_clients(
 					}
 					continue;
 				};
-				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
+				let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
 				connections.spawn(async move {
 					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
@@ -1059,14 +1049,18 @@ async fn serve_with_clients(
 					let lingering_tunnel = connection_lease.clone();
 					let service = service_fn(move |request| {
 						noting.note(&request);
-						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
+						let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
 								let connect = request.method() == hyper::Method::CONNECT;
-								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit, connection_lease).await, None => refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
+								// An External service request never becomes a Host connection: it
+								// is not counted, allowlisted or resolved as one (#738).
+								let mut response = if is_services_host(&request) {
+									if connect { refuse(StatusCode::BAD_REQUEST, "external_service_requires_http") } else { forward_service(request, client, public, scopes).await }
+								} else { proxy::forward(request, scopes, tunnels, permit, connection_lease).await };
 								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
 								response
-							} else { forward(request, authority, client, public, scopes).await };
+							} else { refuse(StatusCode::NOT_FOUND, "egress_route_not_found") };
 							Ok::<_,Infallible>(response)
 						}
 					});
@@ -1181,53 +1175,55 @@ fn forwarded_header(name: &str, connection: &[String]) -> bool {
 		&& !connection.iter().any(|v| v == name)
 }
 
-async fn forward(
+/// A proxied request whose target is the reserved External service host.
+fn is_services_host(request: &Request<hyper::body::Incoming>) -> bool {
+	request
+		.uri()
+		.host()
+		.is_some_and(|host| host.eq_ignore_ascii_case(aidash_domain::egress::SERVICES_HOST))
+}
+
+/// A refusal that names why the service cannot be used and which services the
+/// Scratch Space can use now (#738).
+fn service_refused(refusal: &ServiceRefusal) -> Response<Body> {
+	metrics::counter!("aidash_egress_refused_total", "reason" => refusal.code).increment(1);
+	let body = serde_json::json!({
+		"error": refusal.code,
+		"available_services": refusal.available,
+	});
+	Response::builder()
+		.status(StatusCode::FORBIDDEN)
+		.header("content-type", "application/json")
+		.header("cache-control", "no-store")
+		.body(
+			Full::new(Bytes::from(body.to_string()))
+				.map_err(|never| match never {})
+				.boxed_unsync(),
+		)
+		.unwrap()
+}
+
+/// Forwards `http://services.aidash.internal/<service>/<path>`, sent through the
+/// proxy with the process's own credential, to the External service, attaching
+/// its Tenant Secret on the way.
+async fn forward_service(
 	request: Request<hyper::body::Incoming>,
-	authority: Arc<dyn Authority>,
 	client: reqwest::Client,
 	public: reqwest::Client,
-	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	scopes: Arc<dyn EgressScopes>,
 ) -> Response<Body> {
-	if request.uri().scheme().is_some() {
-		return refuse(StatusCode::NOT_FOUND, "egress_route_not_found");
+	let Some(token) = proxy::credential(request.headers()) else {
+		return proxy::auth_required();
+	};
+	let uri = request.uri();
+	if uri.scheme_str() != Some("http")
+		|| uri.port_u16().is_some_and(|port| port != 80)
+		|| uri.authority().is_some_and(|a| a.as_str().contains('@'))
+	{
+		return refuse(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
-	let request_path = request.uri().path();
-	let scoped = request_path.starts_with("/v2/services/");
-	let route = if scoped {
-		request_path[13..].to_owned()
-	} else if let Some(path) = request_path.strip_prefix("/v1/") {
-		path.to_owned()
-	} else {
-		return refuse(StatusCode::NOT_FOUND, "egress_route_not_found");
-	};
-	let scope_token = if scoped {
-		let mut values = request
-			.headers()
-			.get_all(hyper::header::AUTHORIZATION)
-			.iter();
-		let token = values
-			.next()
-			.and_then(|v| v.to_str().ok())
-			.and_then(|s| s.split_once(' '))
-			.filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-			.map(|(_, token)| token)
-			.filter(|s| !s.is_empty());
-		if values.next().is_some() || token.is_none() {
-			return refuse(StatusCode::UNAUTHORIZED, "egress_token_required");
-		}
-		token.map(str::to_owned)
-	} else {
-		None
-	};
-	let (token, remainder) = if let Some(token) = scope_token.as_deref() {
-		(token, route.as_str())
-	} else {
-		let Some((token, remainder)) = route.split_once('/') else {
-			return refuse(StatusCode::UNAUTHORIZED, "egress_token_required");
-		};
-		(token, remainder)
-	};
-	let (service, path) = remainder.split_once('/').unwrap_or((remainder, ""));
+	let route = uri.path().trim_start_matches('/');
+	let (service, path) = route.split_once('/').unwrap_or((route, ""));
 	if token.len() > 512
 		|| service.is_empty()
 		|| service.len() > 100
@@ -1237,6 +1233,11 @@ async fn forward(
 	{
 		return refuse(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
+	let service = service.to_owned();
+	let path = path.to_owned();
+	let service = service.as_str();
+	let path = path.as_str();
+	let token = token.as_str();
 	let query = request.uri().query().map(str::to_owned);
 	let audit_path = path;
 	let head = request.method() == hyper::Method::HEAD;
@@ -1245,50 +1246,22 @@ async fn forward(
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
 	let admitting = tokio::time::Instant::now();
-	let admitted = if scoped {
-		match scopes {
-			Some(scopes) => {
-				scopes
-					.admit_external(
-						token,
-						service,
-						request.method().as_str(),
-						audit_path,
-						&query_digest,
-					)
-					.await
-			}
-			None => Err(aidash_application::Error::Forbidden),
-		}
-	} else {
-		authority
-			.admit(
-				token,
-				service,
-				request.method().as_str(),
-				audit_path,
-				&query_digest,
-			)
-			.await
-	};
+	let admitted = scopes
+		.admit_external(
+			token,
+			service,
+			request.method().as_str(),
+			audit_path,
+			&query_digest,
+		)
+		.await;
 	let admission_ms = millis(admitting.elapsed());
 	let admission = match admitted {
-		Ok(value) => value,
-		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
+		Ok(ExternalAdmission::Admitted(value)) => *value,
+		Ok(ExternalAdmission::Refused(refusal)) => return service_refused(&refusal),
+		Err(aidash_application::Error::Unauthorized) => return proxy::auth_required(),
+		Err(aidash_application::Error::Forbidden) => {
 			return refuse(StatusCode::FORBIDDEN, "egress_forbidden");
-		}
-		Err(aidash_application::Error::Conflict(code))
-			if code == aidash_domain::egress::OPERATION_EXPIRED =>
-		{
-			return refuse(Refusal::EXPIRED.status, Refusal::EXPIRED.code);
-		}
-		Err(aidash_application::Error::Conflict(code))
-			if code == aidash_domain::egress::OPERATION_INACTIVE =>
-		{
-			return refuse(Refusal::INACTIVE.status, Refusal::INACTIVE.code);
-		}
-		Err(aidash_application::Error::Conflict(_)) => {
-			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);
 		}
 		Err(aidash_application::Error::Refused(message))
 			if message == "egress_budget_exhausted" =>
@@ -1576,8 +1549,7 @@ async fn forward(
 			headers.remove(name);
 		}
 	}
-	// A redirect is followed through the gateway, with a fresh live decision and
-	// another request debit. Streaming uploads are never buffered for replay.
+	// A redirect is followed through the gateway, with a fresh live decision. Streaming uploads are never buffered for replay.
 	if response.status().is_redirection()
 		&& let Some(location) = headers.get("location")
 	{
@@ -1601,11 +1573,10 @@ async fn forward(
 				.await;
 		};
 		let relative = redirected.path().strip_prefix(base.path()).unwrap_or("");
-		let prefix = if scoped {
-			format!("/v2/services/{service}/{relative}")
-		} else {
-			format!("/v1/{token}/{service}/{relative}")
-		};
+		let prefix = format!(
+			"http://{}/{service}/{relative}",
+			aidash_domain::egress::SERVICES_HOST
+		);
 		let rewritten = format!(
 			"{prefix}{}",
 			redirected

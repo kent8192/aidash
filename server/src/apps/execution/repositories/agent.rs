@@ -1215,6 +1215,24 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
+	async fn external_services(&self, run: &Run) -> Result<Vec<ExternalServiceLine>> {
+		let store = &self.federation.store;
+		let scope = &self.run_store.scope;
+		let Some(tenant) = scope.tenant_name().map(|name| name.as_str().to_owned()) else {
+			return Ok(Vec::new());
+		};
+		let workspace = store.workspace(scope, run.workspace_id).await?;
+		let mut tx = store.pool.begin(scope).await?;
+		let lines = crate::apps::workspaces::repositories::scratch::usable_lines(
+			&mut tx,
+			&tenant,
+			workspace.scratch_space_id,
+		)
+		.await;
+		// Only reads happened; the transaction ends without keeping anything.
+		tx.rollback().await?;
+		Ok(lines?)
+	}
 	async fn run_start_memory(&self, run: &Run, task: &Task) -> Result<Option<StartMemory>> {
 		let builtin = run
 			.context

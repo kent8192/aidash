@@ -269,9 +269,6 @@ impl RuntimeTasks {
 		{
 			require_egress_broker(&federation.store)?;
 			let listener = tokio::net::TcpListener::bind(egress.listen).await?;
-			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
-				federation.store.clone(),
-			));
 			let scopes = Arc::new(
 				crate::apps::execution::repositories::scope_egress::DurableScopes::new(
 					federation.store.clone(),
@@ -292,11 +289,7 @@ impl RuntimeTasks {
 				"egress gateway",
 				runtime_task(async move {
 					aidash_integrations::egress::serve_with_scopes(
-						listener,
-						authority,
-						Some(scopes),
-						limits,
-						stopping,
+						listener, scopes, limits, stopping,
 					)
 					.await
 					.map_err(Into::into)

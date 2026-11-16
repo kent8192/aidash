@@ -587,7 +587,7 @@ async fn preview_stop(fixture: &Fixture, id: Uuid) -> (String, Option<String>) {
 		.unwrap()
 }
 
-async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) {
+async fn remote_preview(fixture: &Fixture) {
 	sqlx::query("DELETE FROM authorization_execution WHERE run_id = $1")
 		.bind(fixture.run)
 		.execute(fixture.driver())
@@ -606,11 +606,6 @@ async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) {
 		.bind(fixture.run).bind(node).bind(DEPLOYMENT).bind(Uuid::new_v4()).bind(fixture.task)
 		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
 		.execute(fixture.driver()).await.unwrap();
-	if with_session {
-		sqlx::query("INSERT INTO egress_sessions (id,tenant,run_id,live_preview_id,principal,credential_id,expires_at,max_sent_bytes,max_received_bytes,max_requests) VALUES ($1,'acme',$2,$1,'reader',$3,clock_timestamp()+interval '1 hour',100,100,10)")
-			.bind(preview).bind(fixture.run).bind(fixture.identity.credential_id)
-			.execute(fixture.driver()).await.unwrap();
-	}
 }
 
 #[rstest]
@@ -623,7 +618,7 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
+	remote_preview(&fixture).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
@@ -645,40 +640,7 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 
 #[rstest]
 #[tokio::test]
-async fn remote_preview_recheck_still_checks_a_viewer_outside_the_chain(
-	#[future] database: DatabaseFixture,
-) {
-	use aidash_application::ports::capabilities::read_recheck::{
-		Outcome, ReadRecheckRepository, Target,
-	};
-	let fixture = fixture(database.await, 1).await;
-	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
-	let credential = Uuid::new_v4();
-	sqlx::query("INSERT INTO authorization_credentials (id,tenant,subject,token_hash,created_at,expires_at,issued_by) VALUES ($1,'acme','viewer',$2,clock_timestamp(),clock_timestamp()+interval '1 day','fixture')")
-		.bind(credential).bind(vec![2u8; 32]).execute(fixture.driver()).await.unwrap();
-	sqlx::query(
-		"UPDATE egress_sessions SET principal = 'viewer', credential_id = $1 WHERE id = $2",
-	)
-	.bind(credential)
-	.bind(preview)
-	.execute(fixture.driver())
-	.await
-	.unwrap();
-	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
-		store: &fixture.store,
-	};
-	let target = Target::LivePreview(preview);
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
-	fixture
-		.set_policy(1, Some(("viewer", "message.read")))
-		.await;
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-}
-
-#[rstest]
-#[tokio::test]
-async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
+async fn remote_preview_recheck_without_admission_is_unconfirmed_and_stops(
 	#[future] database: DatabaseFixture,
 ) {
 	use aidash_application::{
@@ -687,7 +649,12 @@ async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, false).await;
+	remote_preview(&fixture).await;
+	sqlx::query("DELETE FROM authorization_remote_admissions WHERE id = $1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
@@ -713,34 +680,6 @@ async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
 
 #[rstest]
 #[tokio::test]
-async fn remote_preview_recheck_without_admission_is_unconfirmed(
-	#[future] database: DatabaseFixture,
-) {
-	use aidash_application::ports::capabilities::read_recheck::{
-		Outcome, ReadRecheckRepository, Target,
-	};
-	let fixture = fixture(database.await, 1).await;
-	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
-	sqlx::query("DELETE FROM authorization_remote_admissions WHERE id = $1")
-		.bind(fixture.run)
-		.execute(fixture.driver())
-		.await
-		.unwrap();
-	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
-		store: &fixture.store,
-	};
-	assert_eq!(
-		repository
-			.check(Target::LivePreview(preview))
-			.await
-			.unwrap(),
-		Outcome::Unconfirmed
-	);
-}
-
-#[rstest]
-#[tokio::test]
 async fn remote_preview_recheck_with_an_empty_chain_is_unconfirmed(
 	#[future] database: DatabaseFixture,
 ) {
@@ -749,7 +688,7 @@ async fn remote_preview_recheck_with_an_empty_chain_is_unconfirmed(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
+	remote_preview(&fixture).await;
 	sqlx::query("UPDATE authorization_remote_admissions SET subject_chain = '{}' WHERE id = $1")
 		.bind(fixture.run)
 		.execute(fixture.driver())

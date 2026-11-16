@@ -735,7 +735,7 @@ impl Drop for Audit {
 	}
 }
 
-fn credential(headers: &hyper::HeaderMap) -> Option<String> {
+pub(super) fn credential(headers: &hyper::HeaderMap) -> Option<String> {
 	use base64::Engine;
 	let mut values = headers.get_all(hyper::header::PROXY_AUTHORIZATION).iter();
 	let value = values.next()?.to_str().ok()?;
@@ -759,7 +759,7 @@ fn credential(headers: &hyper::HeaderMap) -> Option<String> {
 	None
 }
 
-fn auth_required() -> hyper::Response<super::Body> {
+pub(super) fn auth_required() -> hyper::Response<super::Body> {
 	let mut response = super::refuse(
 		hyper::StatusCode::PROXY_AUTHENTICATION_REQUIRED,
 		"proxy_auth_required",
@@ -1357,7 +1357,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.0.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -1508,7 +1508,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.0.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -1752,20 +1752,6 @@ mod tests {
 		assert_eq!(result.1, 3);
 		assert!(result.2.is_err());
 	}
-	struct DenyLegacy;
-	#[async_trait::async_trait]
-	impl aidash_application::egress::Authority for DenyLegacy {
-		async fn admit(
-			&self,
-			_: &str,
-			_: &str,
-			_: &str,
-			_: &str,
-			_: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
-			Err(aidash_application::Error::Forbidden)
-		}
-	}
 
 	#[tokio::test]
 	async fn public_ipv6_literal_is_resolved_without_brackets() {
@@ -1789,8 +1775,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -1815,8 +1800,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -1878,8 +1862,7 @@ mod tests {
 		let (stop, stopping) = tokio::sync::watch::channel(false);
 		let gateway = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			stopping,
 		));
@@ -1947,8 +1930,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -1976,8 +1958,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -2018,8 +1999,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -2042,8 +2022,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -2074,8 +2053,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -2608,7 +2586,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.memory.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -2789,8 +2767,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -2960,8 +2937,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));

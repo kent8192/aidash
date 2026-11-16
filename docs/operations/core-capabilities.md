@@ -529,16 +529,15 @@ in remote Runs. See
 [deferred capability exposure](registry-capabilities.md#deferred-capability-exposure).
 
 The outbound broker enforces configured HTTPS origins, public DNS/IP checks,
-per-hop scope and bounded responses. Shell/Python have no general network proxy
-in the currently wired runtime. The Scratch Space proxy integration contract and
-its remaining authority wiring are described in [Tenant Secrets and sandbox
-egress](../tenant-secrets.md#scratch-space-proxy-integration). The `egress`
+per-hop scope and bounded responses. Code in an Execution Pod reaches the
+outside only through its proxy to the Egress gateway; Runner `shell` and `verify`
+operations have no network. The Scratch Space proxy integration is described in
+[Tenant Secrets and sandbox egress](../tenant-secrets.md#scratch-space-proxy-integration). The `egress`
 profile accepts `proxy_tenant_tunnels` (default 32) and
 `proxy_global_tunnels` (default 1024) for each gateway instance. The Tenant
 value must be positive and strictly less than the global value. Helm deployments
 set these with `execution.egress.proxyTenantTunnels` and
-`execution.egress.proxyGlobalTunnels`. Scope authority is connected in a later
-integration wave.
+`execution.egress.proxyGlobalTunnels`.
 
 An approval binds the original requester, invocation, targets and current policy;
 upper-policy denial cannot be approved away. Authenticated services belong in

@@ -1,6 +1,7 @@
 use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::egress_tests::{settings, tenant_roots};
+use aidash_application::egress::Admission;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget};
 
 async fn received_bytes(store: &Store, id: &ScopeId, day: NaiveDate, service: &str) -> i64 {
@@ -97,15 +98,14 @@ impl ScopeAuthority for FlakyAuthority {
 	}
 	async fn admit_external(
 		&self,
-		credential: &str,
-		scope: &ScopeId,
+		scope: &ScopeSettings,
 		service: &str,
 		method: &str,
 		path: &str,
 		digest: &str,
-	) -> aidash_application::Result<Admission> {
+	) -> aidash_application::Result<ExternalAdmission> {
 		self.inner
-			.admit_external(credential, scope, service, method, path, digest)
+			.admit_external(scope, service, method, path, digest)
 			.await
 	}
 }
@@ -125,22 +125,18 @@ impl ScopeAuthority for Authority {
 	}
 	async fn admit_external(
 		&self,
-		credential: &str,
-		scope: &ScopeId,
+		scope: &ScopeSettings,
 		service: &str,
 		_: &str,
 		_: &str,
 		_: &str,
-	) -> aidash_application::Result<Admission> {
-		if credential != "credential" || scope != &self.0.id || service != "maps" {
+	) -> aidash_application::Result<ExternalAdmission> {
+		if scope.id != self.0.id || service != "maps" {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		Ok(Admission {
-			gateway_origin: "http://gateway.test".into(),
+		Ok(ExternalAdmission::Admitted(Box::new(Admission {
 			destination: aidash_domain::keyless::Destination::PublicOnly,
 			request: Uuid::new_v4(),
-			operation: None,
-			session: None,
 			service: service.into(),
 			definition: aidash_domain::egress::ExternalService {
 				base_url: "https://maps.example/".into(),
@@ -157,7 +153,14 @@ impl ScopeAuthority for Authority {
 			credential: None,
 			route: None,
 			meter: Arc::new(AuditMeter),
-		})
+		})))
+	}
+}
+
+fn admitted(outcome: ExternalAdmission) -> Admission {
+	match outcome {
+		ExternalAdmission::Admitted(admission) => *admission,
+		ExternalAdmission::Refused(refusal) => panic!("refused: {refusal:?}"),
 	}
 }
 
@@ -262,14 +265,18 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		.debit(&scope, Direction::Sent, 2, day)
 		.await
 		.unwrap();
-	let first = durable
-		.admit_external("credential", "maps", "GET", "/", "digest")
-		.await
-		.unwrap();
-	let second = durable
-		.admit_external("credential", "maps", "GET", "/", "digest")
-		.await
-		.unwrap();
+	let first = admitted(
+		durable
+			.admit_external("credential", "maps", "GET", "/", "digest")
+			.await
+			.unwrap(),
+	);
+	let second = admitted(
+		durable
+			.admit_external("credential", "maps", "GET", "/", "digest")
+			.await
+			.unwrap(),
+	);
 	first.meter.charge(Direction::Received, 3).await.unwrap();
 	assert!(
 		second
@@ -555,11 +562,13 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		durable.resolve(&foreign).await,
 		Err(aidash_application::Error::Unauthorized)
 	));
+	// The Scratch Space has no External services, so it names none.
 	assert!(matches!(
 		durable
-			.admit_external(&credential, "maps", "GET", "/", "digest")
+			.admit_external(&credential, "maps", "GET", "/", &"0".repeat(64))
 			.await,
-		Err(aidash_application::Error::Forbidden)
+		Ok(ExternalAdmission::Refused(aidash_application::egress::ServiceRefusal { code, available }))
+			if code == aidash_domain::egress::SERVICE_NOT_AVAILABLE && available.is_empty()
 	));
 
 	let row = RunRevocation::build()
@@ -841,13 +850,7 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	let (stop, receiver) = tokio::sync::watch::channel(false);
 	let gateway = tokio::spawn(aidash_integrations::egress::serve_with_scopes(
 		listener,
-		Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
-			federation.store.clone(),
-		)),
-		Some(Arc::new(DurableScopes::new(
-			federation.store.clone(),
-			authority,
-		))),
+		Arc::new(DurableScopes::new(federation.store.clone(), authority)),
 		Default::default(),
 		receiver,
 	));

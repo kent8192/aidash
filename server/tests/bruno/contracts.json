@@ -55005,6 +55005,23 @@
     "responses": {
       "200": {
         "definitions": {
+          "ExternalServiceStatus": {
+            "description": "Whether one External service on a Scratch Space is usable now (#738).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "description": "Why it is not usable: `not_found`, `not_approved` or `approval_limited`.",
+                "type": ["string", "null"]
+              },
+              "usable": {
+                "type": "boolean"
+              }
+            },
+            "required": ["id", "usable"],
+            "type": "object"
+          },
           "HostAllowlist": {
             "description": "All hosts, or an explicit set of canonical DNS names or IP addresses.",
             "oneOf": [
@@ -55123,6 +55140,13 @@
               "expired": {
                 "type": "boolean"
               },
+              "external_service_status": {
+                "description": "One entry per External service in the settings, in the settings' order.",
+                "items": {
+                  "$ref": "#/components/schemas/ExternalServiceStatus"
+                },
+                "type": "array"
+              },
               "id": {
                 "format": "uuid",
                 "type": "string"
@@ -55172,7 +55196,8 @@
               "settings",
               "created_at",
               "last_used_at",
-              "expired"
+              "expired",
+              "external_service_status"
             ],
             "type": "object"
           }
@@ -55194,6 +55219,23 @@
     "responses": {
       "200": {
         "definitions": {
+          "ExternalServiceStatus": {
+            "description": "Whether one External service on a Scratch Space is usable now (#738).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "description": "Why it is not usable: `not_found`, `not_approved` or `approval_limited`.",
+                "type": ["string", "null"]
+              },
+              "usable": {
+                "type": "boolean"
+              }
+            },
+            "required": ["id", "usable"],
+            "type": "object"
+          },
           "HostAllowlist": {
             "description": "All hosts, or an explicit set of canonical DNS names or IP addresses.",
             "oneOf": [
@@ -55312,6 +55354,13 @@
               "expired": {
                 "type": "boolean"
               },
+              "external_service_status": {
+                "description": "One entry per External service in the settings, in the settings' order.",
+                "items": {
+                  "$ref": "#/components/schemas/ExternalServiceStatus"
+                },
+                "type": "array"
+              },
               "id": {
                 "format": "uuid",
                 "type": "string"
@@ -55361,7 +55410,8 @@
               "settings",
               "created_at",
               "last_used_at",
-              "expired"
+              "expired",
+              "external_service_status"
             ],
             "type": "object"
           }
@@ -55494,6 +55544,23 @@
     "responses": {
       "200": {
         "definitions": {
+          "ExternalServiceStatus": {
+            "description": "Whether one External service on a Scratch Space is usable now (#738).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "description": "Why it is not usable: `not_found`, `not_approved` or `approval_limited`.",
+                "type": ["string", "null"]
+              },
+              "usable": {
+                "type": "boolean"
+              }
+            },
+            "required": ["id", "usable"],
+            "type": "object"
+          },
           "HostAllowlist": {
             "description": "All hosts, or an explicit set of canonical DNS names or IP addresses.",
             "oneOf": [
@@ -55612,6 +55679,13 @@
               "expired": {
                 "type": "boolean"
               },
+              "external_service_status": {
+                "description": "One entry per External service in the settings, in the settings' order.",
+                "items": {
+                  "$ref": "#/components/schemas/ExternalServiceStatus"
+                },
+                "type": "array"
+              },
               "id": {
                 "format": "uuid",
                 "type": "string"
@@ -55661,7 +55735,8 @@
               "settings",
               "created_at",
               "last_used_at",
-              "expired"
+              "expired",
+              "external_service_status"
             ],
             "type": "object"
           }

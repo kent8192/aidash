@@ -62,6 +62,17 @@ pub struct ExecutionAgent {
 	/// verification before the Run completes (#112).
 	pub completion: Option<aidash_domain::completion::CompletionPolicy>,
 }
+/// One External service a Run's Scratch Space can use now (#738), as its
+/// starting instructions describe it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalServiceLine {
+	pub id: String,
+	/// The address code in the Execution Pod calls, through its proxy.
+	pub url: String,
+	pub methods: Vec<String>,
+	/// The registry entry's English description; empty when it has none.
+	pub description: String,
+}
 pub struct InvocationOutcome {
 	pub status: String,
 	pub result: Option<Value>,
@@ -704,6 +715,11 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// One bounded data recall at Run start; explicit memory providers opt out.
 	async fn run_start_memory(&self, _run: &Run, _task: &Task) -> Result<Option<StartMemory>> {
 		Ok(None)
+	}
+	/// The External services of the Run's Scratch Space that are usable now,
+	/// for its starting instructions. None when it has none.
+	async fn external_services(&self, _run: &Run) -> Result<Vec<ExternalServiceLine>> {
+		Ok(Vec::new())
 	}
 	/// Recheck and hydrate only the exact Units recalled at Run start.
 	async fn hydrate_start_memory(

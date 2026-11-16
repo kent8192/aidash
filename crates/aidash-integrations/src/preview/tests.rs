@@ -221,12 +221,6 @@ async fn a_request_without_the_session_cookie_is_forbidden() {
 }
 
 #[test]
-fn the_egress_prefix_is_the_page_s_own_origin_path() {
-	assert_eq!(EGRESS_PREFIX, "/__aidash/egress/");
-	assert!(EGRESS_PREFIX.starts_with("/__aidash/"));
-}
-
-#[test]
 fn a_forwarded_request_never_carries_the_viewer_s_cookies() {
 	for name in [
 		"cookie",
@@ -333,8 +327,6 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 			session: uuid::Uuid::new_v4(),
 			frame_ancestor: "https://dashboard.example".into(),
 			upstream: address.to_string(),
-			egress_origin: None,
-			egress_token: None,
 		},
 		calls: Mutex::new(Vec::new()),
 		last_activity: Mutex::new(tokio::time::Instant::now()),

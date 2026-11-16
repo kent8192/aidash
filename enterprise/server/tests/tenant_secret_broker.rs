@@ -6,13 +6,12 @@
 
 use aidash_application::{
 	Error,
-	egress::{Admission, Authority, Direction, Meter, RequestTimes},
 	ports::tools::ToolTransport,
 	provider_access::KeylessAccess,
 	provider_credentials::Store as SecretStore,
 	tenant_secrets::{
-		CallSecret, Put, Repository, Resolved, Scope, SecretCall, SecretCallGrant, SecretCalls,
-		Service, endpoint_destination,
+		CallSecret, Put, Repository, Scope, SecretCall, SecretCallGrant, SecretCalls, Service,
+		endpoint_destination,
 	},
 };
 use aidash_broker::tenant_secret::{
@@ -24,16 +23,11 @@ use aidash_capability::{
 		Attach, Destination, SealedSecretSource, SecretClaims, SecretSubject, mint_secret, sealed,
 	},
 };
-use aidash_domain::{
-	egress::{Authentication, ExternalService},
-	keyless::{Destination as Address, PermittedOrigins},
-	tenant_secrets::TenantSecret,
-	tool::ToolConfig,
-};
+use aidash_domain::{keyless::PermittedOrigins, tenant_secrets::TenantSecret, tool::ToolConfig};
 use aidash_gcp::capability::{
 	secret_calls::SecretCallsAdapter, secret_issuer::SecretIssuerConfiguration,
 };
-use aidash_integrations::{egress, tools::HttpTools, tools::ToolClients};
+use aidash_integrations::tools::{HttpTools, ToolClients};
 use async_trait::async_trait;
 use axum::{
 	Json, Router,
@@ -54,7 +48,7 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-	sync::{Mutex as AsyncMutex, OwnedMutexGuard, watch},
+	sync::{Mutex as AsyncMutex, OwnedMutexGuard},
 	task::JoinHandle,
 };
 use uuid::Uuid;
@@ -66,8 +60,6 @@ const VALUE: &str = "canary-tenant-secret-value-never-in-the-sandbox";
 const HTTP_HOST: &str = "upstream.test";
 const HTTP_ENDPOINT: &str = "https://upstream.test/v1/tools/invoke";
 const MCP_ENDPOINT: &str = "https://upstream.test/v1/mcp";
-const IMAGE_HOST: &str = "images.example.test";
-const IMAGE_ENDPOINT: &str = "https://images.example.test/v1/";
 
 fn now() -> u64 {
 	SystemTime::now()
@@ -490,7 +482,6 @@ struct Harness {
 	broker_server: JoinHandle<()>,
 	logs: Arc<Logs>,
 	upstream: Arc<Upstream>,
-	upstream_base: String,
 	upstream_server: JoinHandle<()>,
 }
 impl Drop for Harness {
@@ -566,7 +557,6 @@ impl Harness {
 			broker_server,
 			logs,
 			upstream,
-			upstream_base,
 			upstream_server,
 		}
 	}
@@ -790,189 +780,6 @@ async fn an_mcp_streamable_http_session_passes_through_the_broker_with_its_sessi
 			.any(|seen| seen.headers.get("mcp-session-id").is_some()),
 		"the session id reached the tool endpoint"
 	);
-}
-
-// ---------------------------------------------------------------------------
-// A.3 Egress gateway -> broker -> upstream, and a no-secret service direct.
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct GatewayLog {
-	sent: AtomicUsize,
-	received: AtomicUsize,
-	finished: Mutex<Vec<(u16, Option<String>)>>,
-}
-#[async_trait]
-impl Meter for GatewayLog {
-	async fn charge(&self, direction: Direction, bytes: usize) -> Result<(), Error> {
-		match direction {
-			Direction::Sent => &self.sent,
-			Direction::Received => &self.received,
-		}
-		.fetch_add(bytes, Ordering::Relaxed);
-		Ok(())
-	}
-	async fn finish(&self, status: u16, _: RequestTimes, error: Option<&str>) -> Result<(), Error> {
-		self.finished
-			.lock()
-			.unwrap()
-			.push((status, error.map(str::to_owned)));
-		Ok(())
-	}
-}
-
-struct GatewayAuthority {
-	direct_base: String,
-	route: Option<aidash_application::tenant_secrets::SecretRoute>,
-	log: Arc<GatewayLog>,
-}
-#[async_trait]
-impl Authority for GatewayAuthority {
-	async fn admit(
-		&self,
-		token: &str,
-		service: &str,
-		_method: &str,
-		_path: &str,
-		_digest: &str,
-	) -> Result<Admission, Error> {
-		if token != "operation-token" {
-			return Err(Error::Forbidden);
-		}
-		let (definition, route) = match service {
-			"images" => (
-				ExternalService {
-					base_url: IMAGE_ENDPOINT.into(),
-					methods: vec!["GET".into(), "POST".into()],
-					secret: Some("image-key".into()),
-					authentication: Authentication::Bearer,
-					limits: None,
-				},
-				self.route.clone(),
-			),
-			"direct" => (
-				ExternalService {
-					base_url: self.direct_base.clone(),
-					methods: vec!["GET".into()],
-					secret: None,
-					authentication: Authentication::Bearer,
-					limits: None,
-				},
-				None,
-			),
-			_ => return Err(Error::Forbidden),
-		};
-		Ok(Admission {
-			gateway_origin: "http://gateway.test".into(),
-			destination: Address::Permitted,
-			request: Uuid::new_v4(),
-			operation: Some(Uuid::new_v4()),
-			session: None,
-			service: service.into(),
-			definition,
-			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
-			credential: None,
-			route,
-			meter: self.log.clone(),
-		})
-	}
-}
-
-#[tokio::test]
-async fn the_egress_gateway_forwards_a_secret_service_and_not_a_plain_one() {
-	let h = Harness::new().await;
-	h.put_secret("tenant-a", "image-key", &[IMAGE_HOST]).await;
-	let route = match h
-		.service
-		.resolve(
-			"tenant-a",
-			"image-key",
-			IMAGE_ENDPOINT,
-			Some(SecretCall {
-				destination: endpoint_destination(IMAGE_ENDPOINT).unwrap(),
-				methods: vec!["GET".into(), "POST".into()],
-				attach: Attach::Bearer,
-				subject: SecretSubject::Operation {
-					operation: Uuid::new_v4(),
-					tenant: "tenant-a".into(),
-				},
-				max_response_bytes: None,
-			}),
-		)
-		.await
-		.unwrap()
-	{
-		Resolved::Brokered(route) => route,
-		Resolved::Value(_) => panic!("the Cloud path never reads a value"),
-	};
-	let log = Arc::new(GatewayLog::default());
-	let authority = Arc::new(GatewayAuthority {
-		direct_base: format!("{}/", h.upstream_base),
-		route: Some(route),
-		log: log.clone(),
-	});
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let gateway_base = format!("http://{}", listener.local_addr().unwrap());
-	let (stop, receiver) = watch::channel(false);
-	let gateway = tokio::spawn(egress::serve(listener, authority, receiver));
-	let client = reqwest::Client::builder().no_proxy().build().unwrap();
-
-	let response = client
-		.get(format!(
-			"{gateway_base}/v1/operation-token/images/upload?q=1"
-		))
-		.send()
-		.await
-		.unwrap();
-	assert_eq!(response.status(), StatusCode::OK);
-	let body = response.text().await.unwrap();
-	assert!(!body.contains(VALUE), "the sandbox saw the value: {body}");
-	{
-		let seen = h.upstream.seen.lock().unwrap();
-		assert_eq!(seen.last().unwrap().path, "/v1/upload");
-		assert_eq!(
-			seen.last().unwrap().headers[header::AUTHORIZATION]
-				.to_str()
-				.unwrap(),
-			format!("Bearer {VALUE}")
-		);
-		assert!(
-			!seen
-				.last()
-				.unwrap()
-				.headers
-				.contains_key("x-aidash-secret-call")
-		);
-	}
-
-	let broker_calls = h.logs.entries().len();
-	let plain = client
-		.get(format!("{gateway_base}/v1/operation-token/direct/ping"))
-		.send()
-		.await
-		.unwrap();
-	assert_eq!(plain.status(), StatusCode::OK);
-	assert!(!plain.text().await.unwrap().contains("canary"));
-	{
-		let seen = h.upstream.seen.lock().unwrap();
-		assert_eq!(seen.last().unwrap().path, "/ping");
-		assert!(
-			seen.last()
-				.unwrap()
-				.headers
-				.get(header::AUTHORIZATION)
-				.is_none()
-		);
-	}
-	assert_eq!(
-		h.logs.entries().len(),
-		broker_calls,
-		"a no-secret External service must not reach the broker"
-	);
-	assert_eq!(log.finished.lock().unwrap().len(), 2);
-
-	stop.send(true).unwrap();
-	gateway.await.unwrap().unwrap();
 }
 
 // ---------------------------------------------------------------------------
