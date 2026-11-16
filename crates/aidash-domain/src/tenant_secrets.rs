@@ -265,6 +265,25 @@ pub fn definition_shared_target(entry: &crate::registry::Entry) -> Option<(Strin
 	}
 }
 
+/// The shared Tenant Secrets an Agent definition's Agent Plugin servers may use, each with the
+/// server URL it goes to. A personal-only server secret has none: its hosts are enforced against
+/// the person's own row at dispatch, as for a personal-only Tool definition.
+pub fn plugin_shared_targets(entry: &crate::registry::Entry) -> Vec<(String, String)> {
+	if entry.kind != "agent" {
+		return Vec::new();
+	}
+	let Ok(agent) =
+		serde_json::from_value::<crate::registry::bindings::AgentBindings>(entry.config.clone())
+	else {
+		return Vec::new();
+	};
+	crate::agent_plugin::server_secrets(&agent.agent_plugins, &agent.agent_plugin_settings)
+		.into_iter()
+		.filter(|(secret, _)| secret.owner == crate::tool::SecretOwner::Any)
+		.map(|(secret, server)| (secret.name.clone(), server.url.as_str().to_owned()))
+		.collect()
+}
+
 /// The Tenant Secret a Tool definition names, if any.
 pub fn definition_secret(entry: &crate::registry::Entry) -> Option<String> {
 	definition_target(entry).map(|(secret, _)| secret)

@@ -397,6 +397,10 @@ pub async fn resolve(
 		let hosts = scope.tenant_secret_hosts(&name).await?;
 		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
 	}
+	for (name, endpoint) in aidash_domain::tenant_secrets::plugin_shared_targets(&entry) {
+		let hosts = scope.tenant_secret_hosts(&name).await?;
+		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
+	}
 	if entry.kind == "agent" {
 		entry.binding_normalization = None;
 		let snapshot = crate::registry::bindings::resolve(

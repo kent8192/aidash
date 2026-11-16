@@ -124,6 +124,8 @@ struct World {
 	_servers: Vec<Arc<reinhardt::test::fixtures::server::TestServerGuard>>,
 	url: String,
 	schema: String,
+	/// The digest of the stored plugin copy the Agent takes in.
+	digest: String,
 }
 
 /// An Agent that takes in the plugin, whose `lookup` tool is declared Read-only, claimed by a
@@ -214,6 +216,8 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 			.unwrap();
 		f.store.tenant_secrets = Some(service);
 		f.registry = f.registry.clone().with_tenant_secrets(true);
+		// HTTP routes resolve the runtime the application injects.
+		app.context.set_singleton(f.clone());
 	}
 	let deployment_administrator = &f.config.api_token;
 	let (status, snapshot) = request(
@@ -357,6 +361,7 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 		_servers: vec![server],
 		url,
 		schema,
+		digest: reference.digest.clone(),
 	}
 }
 
@@ -696,6 +701,68 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 	}
 	assert!(results(&finished).is_empty());
 	assert_eq!(world.mcp.sessions_issued(), 0);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attaching_lists_a_servers_tools_with_the_digests_run_start_checks_and_stores_nothing(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world_with(
+		fixture,
+		false,
+		Some(json!({"name":"docs-token","header":"X-Api-Key"})),
+	)
+	.await;
+	world.mcp.record_header("x-api-key");
+
+	let (status, listed) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/agent-plugins/tools",
+		json!({"digest": world.digest, "server": SERVER,
+			"secret": {"name":"docs-token","header":"X-Api-Key"}}),
+	)
+	.await;
+	let (missing_status, missing) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/agent-plugins/tools",
+		json!({"digest": world.digest, "server": SERVER,
+			"secret": {"name":"docs-token","owner":"personal"}}),
+	)
+	.await;
+
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed["outcome"], "listed", "{listed}");
+	let digest = schema_digest(&mcp::schema());
+	assert_eq!(
+		listed["tools"],
+		json!([{"name":"lookup","schema_digest":digest},{"name":"update","schema_digest":digest}])
+	);
+	let credentials = world.mcp.credentials();
+	assert!(!credentials.is_empty());
+	assert!(
+		credentials
+			.iter()
+			.all(|value| value.as_deref() == Some(SECRET_VALUE)),
+		"{credentials:?}"
+	);
+	// The person has no personal secret of that name: nothing is sent and the form says why.
+	let sent = world.mcp.request_count();
+	assert_eq!(missing_status, 200, "{missing}");
+	assert_eq!(
+		missing,
+		json!({"outcome":"unavailable","reason":"secret_unavailable"})
+	);
+	assert_eq!(world.mcp.request_count(), sent);
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

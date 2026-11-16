@@ -460,6 +460,10 @@ transport's list above or the Credential Broker's rule refuses it: the broker
 accepts only letters, digits and `-`, and refuses `cookie`, `expect`,
 `proxy-authorization`, `sec-*`, `x-forwarded-*` and `x-aidash-*` besides the
 framing headers. There is no separate per-server Tenant Secret binding.
+Registering or installing the Agent refuses a server secret on a Deployment
+without Tenant Secrets or toward plain HTTP other than a loopback literal, and,
+unless `owner` is `personal`, one whose shared Tenant Secret does not exist or
+does not record the server's host.
 
 The secret is resolved at each session, after the arguments are valid and
 before anything is sent, with the same checks as a Registry tool's: the row
