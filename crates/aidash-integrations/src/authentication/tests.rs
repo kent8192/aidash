@@ -182,6 +182,12 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client.validate_bound_origin(&admitted).await,
 		Err(Error::AccountSuspended { epoch: 1 })
 	));
+	// The unbound check a credential or a worker admission makes keeps the
+	// reason too, instead of a plain refusal (#876 decisions 12, 15).
+	assert!(matches!(
+		client.validate_origin(source).await,
+		Err(Error::AccountSuspended { epoch: 1 })
+	));
 	{
 		let mut response = response.lock().unwrap();
 		response.active = true;

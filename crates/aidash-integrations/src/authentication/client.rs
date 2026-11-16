@@ -389,6 +389,15 @@ impl Authority for Client {
 			.await
 			.map_err(rpc_error)?
 			.into_inner();
+		// A suspension keeps its reason and epoch, so a credential caller is told
+		// `account_suspended` and a Run pauses for a resume (#876 decisions 12, 15).
+		if !response.active
+			&& response.reason == "account_suspended"
+			&& Uuid::parse_str(&response.source_identity_id).ok() == Some(source_identity)
+			&& let Some(epoch) = response.suspension_epoch
+		{
+			return Err(Error::AccountSuspended { epoch });
+		}
 		require_validity(source_identity, &response, false)?;
 		Ok(aidash_domain::accounts::DurableOrigin {
 			identity_id: source_identity,

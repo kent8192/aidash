@@ -230,7 +230,14 @@ impl DashboardAuthority {
 					tracing::warn!(identity_id=%account.id, %error, "status recovery check failed");
 				}
 			}
-			Err(error) if !matches!(error, Error::Forbidden | Error::IdentityStatusUnavailable) => {
+			Err(error)
+				if !matches!(
+					error,
+					Error::Forbidden
+						| Error::AccountSuspended { .. }
+						| Error::IdentityStatusUnavailable
+				) =>
+			{
 				tracing::warn!(identity_id=%account.id, "issuer status refresh did not establish validity");
 			}
 			Err(_) => {}
