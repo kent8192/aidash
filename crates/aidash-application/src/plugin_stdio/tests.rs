@@ -375,25 +375,22 @@ async fn listing_starts_the_session_in_the_pod_with_the_run_credential_and_its_p
 	assert_eq!(
 		&start.command[5..],
 		[
-			"/scratch/.aidash/plugins/sha256-abc/bin/server.js".to_owned(),
+			format!(
+				"/scratch/.aidash/plugins/{}/sha256-abc/bin/server.js",
+				run()
+			),
 			"--data".to_owned(),
 			data,
 		]
 	);
 	let files = pod.files.lock().unwrap();
-	assert_eq!(
-		files[".aidash/plugins/sha256-abc/bin/server.js"].1,
-		Some(0o755)
-	);
-	assert_eq!(
-		files[".aidash/plugins/sha256-abc/plugin.json"].1,
-		Some(0o644)
-	);
+	let root = format!(".aidash/plugins/{}/sha256-abc", run());
+	assert_eq!(files[&format!("{root}/bin/server.js")].1, Some(0o755));
+	assert_eq!(files[&format!("{root}/plugin.json")].1, Some(0o644));
 	let commands = pod.commands.lock().unwrap();
 	assert_eq!(
 		commands[0],
-		"rm -rf -- '.aidash/plugins/sha256-abc' && mkdir -p -- '.aidash/plugins/sha256-abc' \
-		 '.aidash/plugins/sha256-abc/bin'"
+		format!("rm -rf -- '{root}' && mkdir -p -- '{root}' '{root}/bin'")
 	);
 	assert_eq!(
 		pod.methods(),
@@ -550,6 +547,52 @@ async fn a_new_session_refuses_a_tool_whose_schema_moved() {
 }
 
 #[tokio::test]
+async fn a_retried_call_of_a_tool_whose_schema_moved_is_refused_again() {
+	// Arrange: the first call started and kept the session.
+	let (pod, _, _, sessions) = setup();
+	*pod.tools.lock().unwrap() =
+		json!([{"name": "search", "inputSchema": {"type": "object", "required": ["q"]}}]);
+	let (server, node, digest) = (server(), node(), digest());
+	let call = || sessions.call(run(), &server, &node, "search", &digest, json!({}), "k1");
+	assert!(call().await.is_err());
+
+	// Act
+	let retried = call().await;
+
+	// Assert
+	assert!(
+		matches!(retried, Err(Error::Invalid(message)) if message.starts_with("CAPABILITY_CHANGED"))
+	);
+	assert!(!pod.methods().contains(&"tools/call".to_owned()));
+}
+
+#[tokio::test]
+async fn a_second_server_of_the_plugin_keeps_the_tree_the_first_runs_from() {
+	// Arrange
+	let (pod, _, _, sessions) = setup();
+	sessions.list(run(), &server(), &node()).await.unwrap();
+	let second = PluginServer {
+		server: ServerName::try_from("other".to_owned()).unwrap(),
+		..server()
+	};
+
+	// Act
+	sessions.list(run(), &second, &node()).await.unwrap();
+
+	// Assert: only the first start removed and wrote the tree.
+	let root = format!(".aidash/plugins/{}/sha256-abc", run());
+	let commands = pod.commands.lock().unwrap();
+	assert_eq!(
+		commands
+			.iter()
+			.filter(|command| command.contains(&format!("'{root}'")))
+			.count(),
+		1,
+		"{commands:?}"
+	);
+}
+
+#[tokio::test]
 async fn without_the_tenants_approval_nothing_starts() {
 	// Arrange
 	let (pod, host, _, sessions) = setup();
@@ -626,7 +669,12 @@ async fn closing_stops_the_sessions_and_saves_checked_plugin_data_for_the_next_r
 	let restored = stdio_session::plugin_data(next, &server().plugin);
 	let commands = pod.commands.lock().unwrap().clone();
 	assert_eq!(commands[1], format!("rm -rf -- '{data}'"));
-	assert!(commands[2].contains(&format!("'{restored}'")));
+	// The closed Run's plugin trees go too.
+	assert_eq!(
+		commands[2],
+		format!("rm -rf -- '{}'", stdio_session::run_plugins(run()))
+	);
+	assert!(commands[3].contains(&format!("'{restored}'")));
 	assert_eq!(
 		pod.files.lock().unwrap()[&format!("{restored}/cache/state.json")].0,
 		b"{\"n\":1}"
@@ -766,7 +814,7 @@ async fn a_run_that_lost_its_authority_keeps_the_saved_version_and_its_live_area
 	assert_eq!(host.saved.lock().unwrap().clone().unwrap()[0].bytes, b"old");
 	assert_eq!(host.not_saved.lock().unwrap().len(), 1);
 	let commands = pod.commands.lock().unwrap().clone();
-	assert_eq!(commands.last().unwrap(), &format!("rm -rf -- '{data}'"));
+	assert_eq!(commands[commands.len() - 2], format!("rm -rf -- '{data}'"));
 }
 
 #[tokio::test]

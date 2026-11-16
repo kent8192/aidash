@@ -37,9 +37,12 @@ fn a_plugin_file_starts_in_its_directory_with_placeholders_expanded_in_the_pod()
 	let launch = launch(DIGEST, &plugin, run(), &config).unwrap();
 
 	// Assert
-	let root = "/scratch/.aidash/plugins/sha256-abc";
+	let root = format!("/scratch/.aidash/plugins/{}/sha256-abc", run());
 	let data = format!("/scratch/.aidash/plugin-data/{}/acme-tools", run());
-	assert_eq!(launch.plugin_root, ".aidash/plugins/sha256-abc");
+	assert_eq!(
+		launch.plugin_root,
+		format!(".aidash/plugins/{}/sha256-abc", run())
+	);
 	assert_eq!(launch.plugin_data, plugin_data(run(), &plugin));
 	assert_eq!(launch.executable.as_deref(), Some("bin/index.js"));
 	assert_eq!(&launch.command[..2], ["/bin/sh", "-c"]);
@@ -50,7 +53,7 @@ fn a_plugin_file_starts_in_its_directory_with_placeholders_expanded_in_the_pod()
 			format!("{data}/work"),
 			format!("{root}/bin/index.js"),
 			"--root".to_owned(),
-			root.to_owned(),
+			root.clone(),
 			format!("--data={data}"),
 		]
 	);
@@ -75,7 +78,10 @@ fn bare_commands_run_from_the_image_and_package_fetchers_wait_for_a_lockfile(
 	match expected {
 		Ok(program) => {
 			let launched = launched.unwrap();
-			assert_eq!(launched.command[4], "/scratch/.aidash/plugins/sha256-abc");
+			assert_eq!(
+				launched.command[4],
+				format!("/scratch/.aidash/plugins/{}/sha256-abc", run())
+			);
 			assert_eq!(launched.command[5], program);
 			assert_eq!(launched.executable, None);
 		}
@@ -85,9 +91,10 @@ fn bare_commands_run_from_the_image_and_package_fetchers_wait_for_a_lockfile(
 
 #[test]
 fn a_digest_names_a_single_directory() {
+	let run = Uuid::from_u128(1);
 	assert_eq!(
-		plugin_root("sha256:a/b..c"),
-		".aidash/plugins/sha256-a-b--c"
+		plugin_root("sha256:a/b..c", run),
+		format!(".aidash/plugins/{run}/sha256-a-b--c")
 	);
 }
 
