@@ -194,10 +194,11 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	let durable = DurableScopes::new(federation.store.clone(), Arc::new(Authority(scope.clone())));
 	assert!(durable.resolve("invalid").await.is_err());
 	durable.resolve("credential").await.unwrap();
+	let connection_run = Uuid::new_v4();
 	let mut connection = ConnectionRecord {
-		run_id: None,
-		admission_ms: None,
-		settle_ms: None,
+		run_id: Some(connection_run),
+		admission_ms: Some(5),
+		settle_ms: Some(3),
 		id: Uuid::new_v4(),
 		scope: scope.id.clone(),
 		host: "registry.npmjs.org".into(),
@@ -216,6 +217,15 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	let recorded: (i64, i64) = sqlx::query_as("SELECT count(*), COALESCE(sum(sent_bytes), 0)::bigint FROM egress_scope_connections WHERE id = $1")
 		.bind(connection.id).fetch_one(federation.store.pool.fixture_driver()).await.unwrap();
 	assert_eq!(recorded, (1, 7));
+	// A connection that held its limits names its Run and its timings (ADR 0136).
+	let attribution: (Option<Uuid>, Option<i64>, Option<i64>) = sqlx::query_as(
+		"SELECT run_id, admission_ms, settle_ms FROM egress_scope_connections WHERE id = $1",
+	)
+	.bind(connection.id)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(attribution, (Some(connection_run), Some(5), Some(3)));
 	let invalid_target = ConnectionRecord {
 		id: Uuid::new_v4(),
 		port: 0,
@@ -985,16 +995,6 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	.fetch_all(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let attribution: Vec<(Option<Uuid>, Option<i64>)> = sqlx::query_as(
-		"SELECT run_id, admission_ms FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
-	).bind(space).fetch_all(federation.store.pool.fixture_driver()).await.unwrap();
-	assert_eq!(attribution.len(), 3);
-	assert!(
-		attribution
-			.iter()
-			.all(|(recorded_run, admission)| *recorded_run == Some(run_id)
-				&& admission.is_some_and(|ms| ms >= 0))
-	);
 	assert_eq!(
 		tallies,
 		vec![
