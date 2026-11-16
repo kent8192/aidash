@@ -403,10 +403,19 @@ impl Workspaces {
 		access.finish(result).await
 	}
 
-	pub async fn state(&self, deployment: DeploymentIdentity) -> Result<StateResponse> {
+	pub async fn state(
+		&self,
+		deployment: DeploymentIdentity,
+		federation: &crate::federation::Federation,
+		node: Option<&str>,
+	) -> Result<StateResponse> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = aidash_application::authorization::state::state(
-			&mut crate::bootstrap::run_visibility_scope(&mut access),
+			&mut crate::apps::identity::repositories::visibility::state::StateReads {
+				access: &mut access,
+				federation,
+			},
+			node,
 		)
 		.await
 		.map(|state| StateResponse {
@@ -424,6 +433,7 @@ impl Workspaces {
 			human_requests: state.human_requests,
 			conversations: state.conversations,
 			events: state.events,
+			next_cursors: state.next_cursors,
 		})
 		.map_err(Into::into);
 		access.finish(result).await

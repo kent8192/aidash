@@ -10,7 +10,7 @@ async function stateAfterLoad(page: Page) {
   const data: State = await page.evaluate(() =>
     fetch("/api/state").then((response) => response.json()),
   );
-  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
   return data;
 }
 
@@ -26,7 +26,13 @@ function addRequest(data: State, id: string, prompt: string) {
   });
 }
 
+// The dashboard re-reads state on window focus rather than on a short poll (#664).
+async function refreshState(page: Page) {
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+}
+
 async function nextToast(page: Page) {
+  await refreshState(page);
   await page.clock.runFor(5500);
   await expect
     .poll(async () => {
@@ -36,6 +42,86 @@ async function nextToast(page: Page) {
     .toBe(1);
   await expect(page.locator(".intent-toast-open")).toBeVisible();
 }
+
+test("an older task completing emits one notice from the visible event", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { subject: true, locale: "en-US" });
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await stateAfterLoad(page);
+  const old = {
+    ...data.tasks[0],
+    id: "old-task",
+    title: "Older task",
+    workspace_id: "older-workspace",
+    status: "COMPLETED",
+    revision: 42,
+  };
+  data.tasks = data.tasks.filter((task) => task.id !== old.id);
+  data.events.push({
+    id: "completion-event",
+    sequence: 123456,
+    kind: "task.completed",
+    workspace_id: old.workspace_id,
+    node: data.workspaces[0].node,
+    created_at: new Date().toISOString(),
+    data: { task: old },
+  });
+  await nextToast(page);
+  await expect(page.locator(".intent-toast-open")).toContainText("Older task");
+  await refreshState(page);
+  await page.clock.runFor(6000);
+  await expect(page.locator(".intent-toast")).toHaveCount(0);
+});
+
+test("a notice opens an older task through its workspace snapshot", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { subject: true, locale: "en-US" });
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await stateAfterLoad(page);
+  const workspace = {
+    ...data.workspaces[0],
+    id: "older-workspace",
+    title: "Older workspace",
+  };
+  const task = {
+    ...data.tasks[0],
+    id: "old-task",
+    title: "Older task",
+    workspace_id: workspace.id,
+    status: "COMPLETED" as const,
+    revision: 42,
+  };
+  await page.route("**/api/workspaces/older-workspace", (route) =>
+    route.fulfill({
+      json: {
+        workspace,
+        tasks: [task],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  data.events.push({
+    id: "completion-event",
+    sequence: 123456,
+    kind: "task.completed",
+    workspace_id: workspace.id,
+    node: workspace.node,
+    created_at: new Date().toISOString(),
+    data: { task },
+  });
+  await nextToast(page);
+  await page.locator(".intent-toast-open").click();
+  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(
+    page.getByRole("dialog").getByRole("heading", { name: "Older task" }),
+  ).toBeVisible();
+});
 
 for (const width of [1440, 390]) {
   test(`quiet baseline and actionable approval toast at ${width}px`, async ({
@@ -58,7 +144,9 @@ for (const width of [1440, 390]) {
     const data: State = await page.evaluate(() =>
       fetch("/api/state").then((response) => response.json()),
     );
-    await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+    await page.route("**/api/state**", (route) =>
+      route.fulfill({ json: data }),
+    );
     await page.clock.runFor(10_000);
     await expect(page.locator(".intent-toast")).toHaveCount(0);
     addRequest(data, "approval-new", "リリースの実行を承認してください。");
@@ -171,13 +259,20 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
   await page.clock.runFor(500);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
   addRequest(data, "second", "Second approval");
+  await refreshState(page);
   await page.clock.runFor(15_000);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
-  await page.clock.runFor(20_000);
+  // The held toast shows once the interval passes, then closes after 8 s, so
+  // step the clock until it appears instead of jumping past it.
+  for (let step = 0; step < 40; step++) {
+    if (await page.locator(".intent-toast-open").count()) break;
+    await page.clock.runFor(500);
+  }
   await expect(page.locator(".intent-toast-open")).toContainText(
     "Second approval",
   );
   addRequest(data, "queued", "Queued approval");
+  await refreshState(page);
   await page.clock.runFor(5500);
   await page.getByLabel("Account settings", { exact: true }).click();
   await page
@@ -208,7 +303,7 @@ test("recent updates and throttled requests survive a temporary state outage", a
   await page.goto("/collaboration?channel=workspace-one");
   const data = await stateAfterLoad(page);
   let unavailable = false;
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     unavailable
       ? route.fulfill({
           status: 503,
@@ -224,12 +319,15 @@ test("recent updates and throttled requests survive a temporary state outage", a
     .click();
   data.tasks[0] = { ...data.tasks[0], status: "COMPLETED", revision: 3 };
   addRequest(data, "queued", "Approval queued before the outage");
+  await refreshState(page);
   await page.clock.runFor(5500);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
   unavailable = true;
+  await refreshState(page);
   await page.clock.runFor(8000);
   await expect(page.getByRole("alert")).toContainText("temporary state outage");
   unavailable = false;
+  await refreshState(page);
   await page.clock.runFor(5500);
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),

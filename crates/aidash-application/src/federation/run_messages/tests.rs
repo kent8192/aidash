@@ -77,6 +77,7 @@ impl Scope {
 				idempotency_key: key.into(),
 				message_id: None,
 				reference_only: false,
+				is_data: false,
 			});
 		}
 		if let Some(error) = error {
@@ -145,6 +146,7 @@ impl RunMessages for Scope {
 				idempotency_key: key.clone(),
 				message_id: Some(message.id),
 				reference_only: false,
+				is_data: false,
 			});
 		}
 		Ok(())
@@ -217,6 +219,7 @@ fn input(seq: i64, key: &str) -> RunInput {
 		idempotency_key: key.into(),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	}
 }
 fn message(scope: &Scope, key: &str) -> Message {

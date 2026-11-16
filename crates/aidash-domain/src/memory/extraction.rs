@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub enum Mode {
 	Retain,
 	RunCandidate,
+	OffloadedRange,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

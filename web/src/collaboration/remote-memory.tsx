@@ -420,10 +420,19 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                     <ul className="grid min-w-0 gap-0.5 border-l border-border pl-2">
                       {unit.evidence.map((source, index) => (
                         <li key={index}>
-                          <code className="font-mono">
-                            {source.kind}: {source.id}
-                          </code>{" "}
-                          · r{source.revision}
+                          {source.kind === "journal_range" ? (
+                            <code className="font-mono">
+                              {source.kind}: {source.run_id} #{source.from_seq}–
+                              {source.through_seq}
+                            </code>
+                          ) : (
+                            <>
+                              <code className="font-mono">
+                                {source.kind}: {source.id}
+                              </code>{" "}
+                              · r{source.revision}
+                            </>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -460,11 +469,6 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                       [
                         t("generationEmbeddingCalls"),
                         `${allowance.embedding_calls} / ${allowance.embedding_call_limit}`,
-                        true,
-                      ],
-                      [
-                        t("generationCompactionCalls"),
-                        `${allowance.compaction_calls} / ${allowance.compaction_call_limit}`,
                         true,
                       ],
                     ]}
