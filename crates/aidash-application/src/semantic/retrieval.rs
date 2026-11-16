@@ -335,6 +335,7 @@ pub async fn finish(
 				let mut tally = Tally::from_entries(std::mem::take(&mut result.unconfirmed));
 				tally.record(&node, Kind::SemanticEntry, workspace);
 				result.unconfirmed = tally.into_entries();
+				refit(&mut result, max_tokens)?;
 			}
 			continue;
 		}
@@ -363,6 +364,24 @@ pub async fn finish(
 		}
 	}
 	Ok(result)
+}
+/// Keep a result within its budget after a count added at delivery grew it:
+/// the latest matches give way first, and a budget that cannot hold the
+/// counts alone fails as it would have in `prepare` (#770).
+fn refit(result: &mut SearchResult, max_tokens: usize) -> Result<()> {
+	loop {
+		let tokens = result_tokens(result)?;
+		if tokens <= max_tokens {
+			result.estimated_tokens = tokens;
+			return Ok(());
+		}
+		if result.matches.pop().is_none() {
+			return Err(Error::Invalid(
+				"semantic token budget cannot hold provenance".into(),
+			));
+		}
+		result.truncated = true;
+	}
 }
 pub async fn search(
 	scope: &mut dyn SemanticRetrievalSession,

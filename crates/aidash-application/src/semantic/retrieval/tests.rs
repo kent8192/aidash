@@ -1343,3 +1343,18 @@ async fn a_source_that_a_node_stops_confirming_before_delivery_is_counted() {
 		}]
 	);
 }
+#[rstest]
+#[tokio::test]
+async fn a_count_added_at_delivery_keeps_the_result_within_its_budget() {
+	// Arrange: the budget holds the empty result exactly.
+	let (_, mut scope, vector) = fixture();
+	let mut prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+		.await
+		.unwrap();
+	prepared.max_tokens = prepared.result.estimated_tokens;
+	// Act: the only candidate's source stops answering before delivery.
+	scope.silent_sources = 1;
+	let result = finish(&vector, &mut scope, prepared, &[0.25, 0.75], false).await;
+	// Assert: the count no longer fits, which fails as it would in `prepare`.
+	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+}
