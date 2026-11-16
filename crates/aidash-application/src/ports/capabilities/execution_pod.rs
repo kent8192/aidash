@@ -183,6 +183,10 @@ pub struct CommandResult {
 	pub message: Option<String>,
 	pub python_result: Option<Value>,
 	pub left_running: Option<String>,
+	/// The Run's Python interpreter was started afresh for this cell (the Pod
+	/// was replaced), so earlier variables are gone.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub session_replaced: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundProcesses {

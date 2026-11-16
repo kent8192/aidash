@@ -374,6 +374,7 @@ pub(crate) fn reply(status: &str) -> CommandResult {
 		message: None,
 		python_result: None,
 		left_running: None,
+		session_replaced: None,
 	}
 }
 
@@ -455,6 +456,40 @@ fn a_cell_that_raised_fails_with_its_traceback_as_output() {
 			.unwrap(),
 		b"Traceback ..."
 	);
+}
+
+#[test]
+fn a_cell_whose_interpreter_ended_fails_with_the_helpers_output() {
+	let operation = operation(PYTHON, "running");
+	let mut cell = reply("completed");
+	cell.exit_code = Some(1);
+	cell.stderr = Some(STANDARD.encode("EOFError: interpreter closed"));
+	let (state, result) = observe(&operation, &cell, 1.0);
+	assert_eq!(state, "failed");
+	assert_eq!(result["error"]["code"], "PYTHON_SESSION_ENDED");
+	assert_eq!(
+		STANDARD
+			.decode(result["preview_bytes"].as_str().unwrap())
+			.unwrap(),
+		b"EOFError: interpreter closed"
+	);
+}
+
+#[test]
+fn a_cell_in_a_restarted_interpreter_says_so_first() {
+	let operation = operation(PYTHON, "running");
+	let mut cell = reply("completed");
+	cell.exit_code = Some(0);
+	cell.session_replaced = Some(true);
+	cell.python_result = Some(json!({"status":"completed","stdout":"1\n","truncated":false}));
+	let (state, result) = observe(&operation, &cell, 1.0);
+	assert_eq!(state, "completed");
+	assert_eq!(result["session_reset"], true);
+	let output = STANDARD
+		.decode(result["preview_bytes"].as_str().unwrap())
+		.unwrap();
+	assert!(output.starts_with(b"[The Python session restarted"));
+	assert!(output.ends_with(b"1\n"));
 }
 
 #[test]

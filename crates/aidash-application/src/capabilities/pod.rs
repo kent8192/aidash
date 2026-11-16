@@ -33,6 +33,8 @@ pub mod save;
 
 pub const SHELL: &str = "shell";
 pub const PYTHON: &str = "code_interpreter";
+/// Leads a cell's output when its interpreter was started afresh.
+const SESSION_RESET_NOTICE: &str = "[The Python session restarted because the Execution Pod was replaced; earlier variables and imports are gone.]\n";
 
 /// Admit a command or Python cell for the Execution Pod. The Working Area is
 /// neither checked nor held: the command writes the Scratch Space, so
@@ -180,6 +182,27 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 				),
 			};
 		}
+	} else if python && status == "completed" {
+		// The cell helper ended without a cell result: the interpreter exited or
+		// crashed (os._exit, a closed socket). Its diagnostic is the output.
+		failed = true;
+		output = decode(reply.stdout.as_deref());
+		let stderr = decode(reply.stderr.as_deref());
+		if !stderr.is_empty() {
+			if !output.is_empty() && !output.ends_with(b"\n") {
+				output.push(b'\n');
+			}
+			output.extend_from_slice(&stderr);
+		}
+		error = error_value(
+			"PYTHON_SESSION_ENDED",
+			&format!(
+				"The Python interpreter ended before the cell finished (exit code {}); its variables are gone.",
+				reply
+					.exit_code
+					.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+			),
+		);
 	} else if !python {
 		output = decode(reply.stdout.as_deref());
 		// While the command runs only stdout grows, so offsets stay valid;
@@ -196,6 +219,13 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 		if reply.truncated == Some(true) {
 			object.insert("truncated".into(), json!(true));
 		}
+	}
+	if python && reply.session_replaced == Some(true) {
+		// The cell ran in a new interpreter: say so before its output (#745).
+		object.insert("session_reset".into(), json!(true));
+		let mut notice = SESSION_RESET_NOTICE.as_bytes().to_vec();
+		notice.extend_from_slice(&output);
+		output = notice;
 	}
 	object.insert("preview_bytes".into(), json!(STANDARD.encode(&output)));
 	object.remove("preview");

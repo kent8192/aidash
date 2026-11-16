@@ -84,6 +84,7 @@ impl ExecutionPodRuntime for Pod {
 			message: None,
 			python_result: None,
 			left_running: None,
+			session_replaced: None,
 		})
 	}
 	async fn result(&self, _: &str) -> PodResult<CommandResult> {
