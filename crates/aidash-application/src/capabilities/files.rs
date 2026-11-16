@@ -224,7 +224,12 @@ pub async fn invoke(
 			let search: ScratchSearch = parse(input)?;
 			tokio::time::timeout(
 				std::time::Duration::from_secs(scope.limits()?.search_seconds),
-				super::pod::files::search(pod, search, scope.limits()?.search_matches),
+				super::pod::files::search(
+					pod,
+					search,
+					scope.limits()?.search_matches,
+					scope.limits()?.search_bytes,
+				),
 			)
 			.await
 			.map_err(|_| Error::Invalid("SEARCH_TIME_LIMIT".into()))??

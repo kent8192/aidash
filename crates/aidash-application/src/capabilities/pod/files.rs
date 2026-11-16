@@ -97,9 +97,17 @@ pub async fn read(context: &PodContext, input: ScratchRead, read_bytes: usize) -
 
 /// Search Scratch Space files. In `path` mode the query matches paths, listed
 /// from the selection `.gitignore` files leave; otherwise it matches lines.
-pub async fn search(context: &PodContext, input: ScratchSearch, limit: usize) -> Result<Value> {
-	let limit = input.limit.unwrap_or(limit).min(SEARCH_RESULTS);
-	if limit == 0
+/// `max_matches` and `max_bytes` are the Deployment's search ceilings, as for
+/// the Working Area: a larger `limit` is refused, and matches stop before
+/// their JSON exceeds `max_bytes`.
+pub async fn search(
+	context: &PodContext,
+	input: ScratchSearch,
+	max_matches: usize,
+	max_bytes: usize,
+) -> Result<Value> {
+	let limit = input.limit.unwrap_or(max_matches);
+	if !(1..=max_matches.min(SEARCH_RESULTS)).contains(&limit)
 		|| input.query.len() > 1024
 		|| (input.query.is_empty() && !matches!(input.mode, SearchMode::Path))
 	{
@@ -126,8 +134,8 @@ pub async fn search(context: &PodContext, input: ScratchSearch, limit: usize) ->
 			.filter(|file| file.path.contains(&input.query))
 			.filter(|file| glob.as_ref().is_none_or(|glob| glob.is_match(&file.path)))
 			.map(|file| json!({"path": file.path, "size": file.size}));
-		let page: Vec<Value> = matches.by_ref().take(limit).collect();
-		let truncated = manifest.truncated || matches.next().is_some();
+		let (page, cut) = within_bytes(matches.by_ref().take(limit), max_bytes);
+		let truncated = cut || manifest.truncated || matches.next().is_some();
 		return Ok(json!({"matches": page, "truncated": truncated}));
 	}
 	let request = FileSearchRequest {
@@ -139,14 +147,27 @@ pub async fn search(context: &PodContext, input: ScratchSearch, limit: usize) ->
 		max_results: u32::try_from(limit).expect("bounded search"),
 	};
 	let found = in_pod!(context, context.runtime.file_search(&request))?;
-	Ok(json!({
-		"matches": found
-			.matches
-			.iter()
-			.map(|item| json!({"path": item.path, "location": {"line": item.line}, "snippet": item.text}))
-			.collect::<Vec<_>>(),
-		"truncated": found.truncated,
-	}))
+	let (page, cut) = within_bytes(
+		found.matches.iter().map(
+			|item| json!({"path": item.path, "location": {"line": item.line}, "snippet": item.text}),
+		),
+		max_bytes,
+	);
+	Ok(json!({"matches": page, "truncated": cut || found.truncated}))
+}
+
+/// The leading matches whose JSON fits `max_bytes`, and whether any was left out.
+fn within_bytes(matches: impl Iterator<Item = Value>, max_bytes: usize) -> (Vec<Value>, bool) {
+	let mut page = vec![];
+	let mut used = 0_usize;
+	for item in matches {
+		used = used.saturating_add(item.to_string().len() + 1);
+		if used > max_bytes {
+			return (page, true);
+		}
+		page.push(item);
+	}
+	(page, false)
 }
 
 /// A shell-style glob over a whole path, as the Runner's search uses.
