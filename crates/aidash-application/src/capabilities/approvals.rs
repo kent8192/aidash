@@ -701,18 +701,20 @@ pub async fn decide(
 	}
 	// Every Eligible approver is offered it and the first decision counts
 	// (ADR 0135). A later one is told who decided and how; only a person who
-	// may decide it now gets this far.
-	if let (Some(by), Some(outcome)) = (
-		record.data["decided_by"].as_str(),
-		match record.state.as_str() {
-			"approved" | "attempted" | "consumed" => Some(approvals::DecidedOutcome::Allowed),
-			"denied" => Some(approvals::DecidedOutcome::Denied),
-			_ => None,
-		},
-	) {
+	// may decide it now gets this far. Every state after a decision counts,
+	// including an allowed outbound read its worker has since completed or left
+	// uncertain, and one an Approval Rule, mode or the Auto Decider settled.
+	if let Some(by) = record.data["decided_by"]
+		.as_str()
+		.filter(|_| record.state != "pending")
+	{
 		return Err(Error::ApprovalDecided {
 			decided_by: by.into(),
-			outcome,
+			outcome: if record.state == "denied" {
+				approvals::DecidedOutcome::Denied
+			} else {
+				approvals::DecidedOutcome::Allowed
+			},
 		});
 	}
 	if record.revision != input.expected_revision

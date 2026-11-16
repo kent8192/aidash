@@ -3011,3 +3011,65 @@ async fn a_late_tool_call_decision_is_told_who_decided_and_how() {
 	));
 	assert!(matches!(stale, Err(Error::Conflict(ref code)) if code == "APPROVAL_STALE_OR_EXPIRED"));
 }
+
+/// What happens to an allowed approval after its decision: an outbound read's
+/// worker completes it or leaves it uncertain, a call consumes it, a person
+/// revokes it, or an Evidence Revocation closes it.
+#[rstest::rstest]
+#[case::attempted("attempted")]
+#[case::completed("completed")]
+#[case::uncertain("uncertain")]
+#[case::failed("failed")]
+#[case::consumed("consumed")]
+#[case::revoked("revoked")]
+#[case::closed("closed")]
+#[tokio::test]
+async fn a_late_decision_is_told_who_decided_after_the_approval_moved_on(#[case] state: &str) {
+	// Arrange: Carol allows the call, and the record moves past `approved`.
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	scope.records.get_mut(&approval_id).unwrap().state = state.into();
+
+	// Act
+	let late = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::Deny).await;
+
+	// Assert: Bob is told Carol allowed it, not that it expired.
+	assert!(matches!(
+		late,
+		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Allowed })
+			if decided_by == "carol"
+	));
+}
+
+#[tokio::test]
+async fn a_late_decision_on_what_the_auto_decider_settled_names_the_person() {
+	// Arrange: Alice's Auto mode leaves the call to the Decider, which refuses it.
+	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
+	let run = scope.run.clone();
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	settle(
+		&mut scope,
+		&run,
+		approval_id,
+		Settlement::Blocked {
+			reason: BlockReason::DataExfiltration,
+			evidence: Uuid::from_u128(0xe2),
+		},
+	)
+	.await
+	.unwrap();
+
+	// Act
+	let late = decide_as(&mut scope, "alice", approval_id, ApprovalChoice::AllowOnce).await;
+
+	// Assert
+	assert!(matches!(
+		late,
+		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Denied })
+			if decided_by == "alice"
+	));
+}

@@ -32,6 +32,23 @@ test("a decided approval names who allowed or denied it", () => {
   );
 });
 
+test("a decision stays named after the approval moves on", () => {
+  for (const state of [
+    "attempted",
+    "completed",
+    "uncertain",
+    "failed",
+    "consumed",
+    "revoked",
+    "closed",
+  ])
+    assert.equal(
+      approverText({ kind: "outbound", state, decided_by: "carol" }, false),
+      "carol allowed it",
+      state,
+    );
+});
+
 test("an approval nobody decided names nobody once it stops waiting", () => {
   assert.equal(
     approverText(

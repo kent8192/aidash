@@ -10,11 +10,11 @@ export type ApproverCard = {
   decided_by?: string | null;
 };
 
-const ALLOWED = new Set(["approved", "attempted", "consumed", "active"]);
-
 /**
  * Who decides, or decided, `card`; `null` when nobody did, as for an approval
- * that expired or closed while it waited.
+ * that expired or closed while it waited. A decision stays named after the
+ * card moves on: an allowed outbound read its worker completed or left
+ * uncertain, a consumed call, or an approval revoked or closed later.
  */
 export function approverText(card: ApproverCard, ja: boolean): string | null {
   if (card.state === "blocked")
@@ -28,8 +28,7 @@ export function approverText(card: ApproverCard, ja: boolean): string | null {
   const by = card.decided_by;
   if (by && card.state === "denied")
     return ja ? `${by} が拒否しました` : `${by} denied it`;
-  if (by && (ALLOWED.has(card.state) || card.kind === "grant"))
-    return ja ? `${by} が許可しました` : `${by} allowed it`;
+  if (by) return ja ? `${by} が許可しました` : `${by} allowed it`;
   return null;
 }
 
