@@ -1416,8 +1416,12 @@ async fn invitation_waits_when_proposed_group_is_no_longer_assignable(
 #[tokio::test]
 async fn invitation_waits_when_member_admission_is_refused(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[values(false, true)] failing: bool,
 ) {
-	struct RefuseMember;
+	/// Refuses member admission, or fails it as a payment provider outage would.
+	struct RefuseMember {
+		failing: bool,
+	}
 	#[async_trait::async_trait]
 	impl aidash_application::usage::Admission for RefuseMember {
 		async fn admit(
@@ -1425,11 +1429,15 @@ async fn invitation_waits_when_member_admission_is_refused(
 			_: &str,
 			work: aidash_application::usage::Work,
 		) -> aidash_application::Result<aidash_application::usage::Verdict> {
-			Ok(if work == aidash_application::usage::Work::Member {
-				aidash_application::usage::Verdict::refuse("member_limit")
-			} else {
-				aidash_application::usage::Verdict::Admit
-			})
+			if work != aidash_application::usage::Work::Member {
+				return Ok(aidash_application::usage::Verdict::Admit);
+			}
+			if self.failing {
+				return Err(aidash_application::Error::External(
+					"payment provider unavailable".into(),
+				));
+			}
+			Ok(aidash_application::usage::Verdict::refuse("member_limit"))
 		}
 	}
 	let mut t = Team::new(runtime).await;
@@ -1439,7 +1447,7 @@ async fn invitation_waits_when_member_admission_is_refused(
 		t.d.as_person(&t.alice, "POST", &path, Some(&t.alice_context), json!({}))
 			.await;
 	assert_eq!(status, 201, "{invitation}");
-	t.d.federation.store.admission = Arc::new(RefuseMember);
+	t.d.federation.store.admission = Arc::new(RefuseMember { failing });
 	t.d.app.context.set_singleton(t.d.federation.clone());
 	let link = json!({"tenant":t.tenant,"secret":invitation["secret"]});
 	let (status, request) =

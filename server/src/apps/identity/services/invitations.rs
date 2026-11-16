@@ -537,10 +537,16 @@ impl Invitations {
 		} else {
 			None
 		};
+		// Admission gates only the optional direct join, and it ran outside the
+		// write transaction, so any failure leaves the request pending (ADR 0127)
+		// instead of failing the redemption.
 		let admission_allowed = match admission {
 			Some(Ok(())) | None => true,
 			Some(Err(error)) if approval_refusal(&error) => false,
-			Some(Err(error)) => return Err(error),
+			Some(Err(error)) => {
+				tracing::warn!(%error, tenant = %input.tenant, "member admission failed; the Invitation request waits for approval");
+				false
+			}
 		};
 		let registration = self
 			.runtime
