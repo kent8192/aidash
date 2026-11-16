@@ -1345,9 +1345,9 @@ def render():
                     headers=SUBJECT, body=limits, immutable=True)
             continue
         if route["source"] == "server/src/apps/execution/capabilities/views/previews.rs":
-            # The contract server runs on a loopback origin, so the preview
-            # domain defaults to `*.localhost` (#894).
-            flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(true);expect(res.getBody().preview_domain).to.equal("localhost");'
+            # A loopback origin defaults to `*.localhost` only with a
+            # `public_port` (#894); the contract server sets none.
+            flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(false);expect(res.getBody().preview_domain).to.equal(null);'
             if path.endswith("/availability"):
                 add(endpoint, "Anonymous request is rejected", 401)
                 add(endpoint, "Deployment Administrator cannot read preview availability", 403,

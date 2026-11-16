@@ -7,7 +7,8 @@ use reinhardt::conf::settings::{
 use reinhardt::settings;
 use std::net::SocketAddr;
 
-/// The preview domain is optional; local dashboard origins default to localhost.
+/// The preview domain is optional; a local dashboard origin defaults to
+/// localhost once `public_port` names the HTTPS endpoint previews are served on.
 #[settings(fragment = true, section = "preview", validate = false)]
 pub struct PreviewSettings {
 	/// A registrable domain separate from the dashboard's; a local cluster uses
@@ -60,7 +61,12 @@ impl PreviewSettings {
 			.ok()
 			.and_then(|url| url.host_str().map(str::to_owned))
 			.is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]"));
-		let Some(domain) = self.domain.as_deref().or(local.then_some("localhost")) else {
+		// A ticket names `https://<label>.<domain>` on `public_port`, 443 when
+		// absent, while the gateway itself serves plain HTTP on `listen`. A
+		// local default without a named endpoint would advertise previews whose
+		// links never connect and hide the dashboard's PDF and HTML fallbacks.
+		let default = (local && self.public_port.is_some()).then_some("localhost");
+		let Some(domain) = self.domain.as_deref().or(default) else {
 			return Ok(None);
 		};
 		let domain = aidash_domain::preview::preview_domain(domain).map_err(crate::Error::from)?;
@@ -189,18 +195,25 @@ mod tests {
 
 	#[test]
 	fn local_dashboard_defaults_to_localhost_preview() {
+		let endpoint = PreviewSettings {
+			public_port: Some(8960),
+			..settings(None)
+		};
 		for origin in [
 			"http://localhost:8080",
 			"http://127.0.0.1:8080",
 			"http://[::1]:8080",
 		] {
 			assert_eq!(
-				settings(None).configured(origin).unwrap().unwrap().domain,
+				endpoint.configured(origin).unwrap().unwrap().domain,
 				"localhost"
 			);
+			// Without an endpoint no ticket URL would connect, so previews
+			// stay unavailable and the dashboard falls back.
+			assert!(settings(None).configured(origin).unwrap().is_none());
 		}
 		assert!(
-			settings(None)
+			endpoint
 				.configured("https://example.com")
 				.unwrap()
 				.is_none()

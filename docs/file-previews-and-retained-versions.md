@@ -162,9 +162,11 @@ correction request tells the agent exactly which File version it refers to.
 ### Settings
 
 `[preview]` and `[preview_limits]` are optional settings sections. A profile
-that omits either defaults to a `localhost` preview domain for a localhost or
-loopback dashboard origin, otherwise no preview domain, and the 15-minute idle
-and 2-hour absolute Live preview ceilings. The server supplies these defaults
+that omits either has no preview domain, and the 15-minute idle and 2-hour
+absolute Live preview ceilings. A localhost or loopback dashboard origin that
+sets only `public_port` defaults to a `localhost` preview domain: the gateway
+serves plain HTTP, so a ticket URL connects only through the HTTPS endpoint
+that port names. Without it, the dashboard uses the PDF and HTML fallbacks. The server supplies these defaults
 even when the sections are absent from TOML. Every value below is optional.
 
 ```toml
