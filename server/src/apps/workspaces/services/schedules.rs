@@ -692,13 +692,13 @@ async fn fire(
 			.effective(limits, None)
 			.min_interval_seconds;
 		// A Tenant that raised its minimum above this Schedule's interval
-		// stops it, saying so, rather than skipping every tick.
-		if schedule
-			.definition
-			.trigger
-			.validate(min_interval, now)
-			.is_err()
-		{
+		// stops it, saying so, rather than skipping every tick. Only the
+		// interval itself is compared: a daylight-saving gap that brings one
+		// tick closer is skipped below, never a reason to stop (#557).
+		if matches!(
+			schedule.definition.trigger.meets_minimum(min_interval),
+			Ok(false)
+		) {
 			stopping = Some((
 				Halt::IntervalTooShort,
 				format!(

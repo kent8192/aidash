@@ -32,9 +32,6 @@ pub const MAX_LATENESS_SECONDS: std::ops::RangeInclusive<i64> = 60..=7 * 24 * 60
 pub const MAX_JITTER_SECONDS: i64 = 30;
 pub const TITLE_MAX: usize = 200;
 pub const REQUEST_MAX: usize = 16_000;
-/// Fire times checked against the minimum interval when a cron expression is
-/// registered. Gaps of a cron expression repeat within this many.
-const INTERVAL_CHECKS: usize = 1_000;
 /// Missed fire times walked while catching up after downtime.
 const CATCH_UP_LIMIT: usize = 100_000;
 
@@ -54,13 +51,13 @@ pub enum Trigger {
 
 impl Trigger {
 	/// Checks the trigger and that no two fire times are closer than
-	/// `min_interval_seconds`.
+	/// `min_interval_seconds` in local time.
 	pub fn validate(&self, min_interval_seconds: i64, now: DateTime<Utc>) -> Result<()> {
+		if !self.meets_minimum(min_interval_seconds)? {
+			return Err(too_frequent(min_interval_seconds));
+		}
 		match self {
 			Self::Interval { every_seconds } => {
-				if *every_seconds < min_interval_seconds {
-					return Err(too_frequent(min_interval_seconds));
-				}
 				if *every_seconds > MAX_INTERVAL_SECONDS {
 					return Err(Error::Invalid(
 						"a Schedule's interval may be at most one year".into(),
@@ -73,24 +70,29 @@ impl Trigger {
 				time_zone,
 			} => {
 				let parsed = cron::Cron::parse(expression)?;
-				let zone = cron::time_zone(time_zone)?;
-				if parsed.shortest_local_gap_minutes().saturating_mul(60) < min_interval_seconds {
-					return Err(too_frequent(min_interval_seconds));
-				}
-				let mut previous = parsed.next_after(zone, now).ok_or_else(|| {
-					Error::Invalid(format!("cron expression {expression:?} never fires"))
-				})?;
-				for _ in 0..INTERVAL_CHECKS {
-					let Some(next) = parsed.next_after(zone, previous) else {
-						break;
-					};
-					if (next - previous).num_seconds() < min_interval_seconds {
-						return Err(too_frequent(min_interval_seconds));
-					}
-					previous = next;
-				}
+				parsed
+					.next_after(cron::time_zone(time_zone)?, now)
+					.ok_or_else(|| {
+						Error::Invalid(format!("cron expression {expression:?} never fires"))
+					})?;
 				Ok(())
 			}
+		}
+	}
+
+	/// Whether no two fire times are closer than `min_interval_seconds`, read
+	/// in local time. A daylight-saving change can bring one pair closer
+	/// (#557, owner decision 2026-11-13); that is not a breach of the
+	/// minimum, and the scheduler skips such a tick instead of stopping the
+	/// Schedule. It reads no clock, so a Schedule that met the minimum when it
+	/// was registered still meets it at every tick.
+	pub fn meets_minimum(&self, min_interval_seconds: i64) -> Result<bool> {
+		match self {
+			Self::Interval { every_seconds } => Ok(*every_seconds >= min_interval_seconds),
+			Self::Cron { expression, .. } => Ok(cron::Cron::parse(expression)?
+				.shortest_local_gap_minutes()
+				.saturating_mul(60)
+				>= min_interval_seconds),
 		}
 	}
 

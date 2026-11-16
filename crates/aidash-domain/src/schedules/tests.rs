@@ -147,6 +147,20 @@ fn the_minimum_interval_bounds_every_gap(#[case] trigger: Trigger, #[case] accep
 }
 
 #[rstest]
+fn a_daylight_saving_gap_ahead_does_not_breach_the_minimum() {
+	// Arrange: New York skips 02:00-03:00 on 2027-03-14, so 01:50 EST is
+	// followed by 03:00 EDT, ten minutes later. The gap is five weeks away.
+	let hourly = cron("50 * * * *", "America/New_York");
+	let now = at("2027-02-10T00:00:00Z");
+	// Act
+	let registered = hourly.validate(DEFAULT_MIN_INTERVAL_SECONDS, now);
+	let at_fire_time = hourly.meets_minimum(DEFAULT_MIN_INTERVAL_SECONDS);
+	// Assert: the scheduler skips the close tick; the Schedule stays valid.
+	assert!(registered.is_ok(), "{registered:?}");
+	assert!(at_fire_time.unwrap());
+}
+
+#[rstest]
 fn an_unknown_time_zone_is_refused() {
 	// Act
 	let result = cron("0 9 * * *", "Mars/Olympus").validate(900, at("2026-11-13T00:00:00Z"));
