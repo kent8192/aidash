@@ -2452,6 +2452,7 @@ impl<'a> Executor<'a> {
                         self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                     }
                     aidash_application::context::Compaction::Offloaded { context: candidate, batch } => {
+                        persist_recorded_inputs(store, run, token, &context).await?;
                         store.journal_context(run, token).await?;
                         run.context = *candidate;
                         store.save_run(run, token, "context.offloaded").await?;
@@ -2460,6 +2461,7 @@ impl<'a> Executor<'a> {
                         return Ok(());
                     }
                     aidash_application::context::Compaction::NeedsSummary(mut plan, batch) => {
+                        persist_recorded_inputs(store, run, token, &context).await?;
                         self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                         if !batch.ranges.is_empty() {
                             store.journal_context(run, token).await?;
@@ -4771,6 +4773,24 @@ async fn finish_source_read(
 		store.recover_sources(run, token).await?;
 	}
 	read.result
+}
+
+/// Save the step state and evidence this step recorded only in its local
+/// `context` before compaction can offload or absorb them (#942). The save
+/// journals their original bytes in the same transaction and keeps the
+/// lease; journaling without saving could leave Journal rows for sequence
+/// numbers a retried step reuses for other content.
+async fn persist_recorded_inputs(
+	store: &dyn ExecutionStore,
+	run: &mut Run,
+	token: Uuid,
+	context: &Context,
+) -> Result<()> {
+	if context.journal.head <= run.context.journal.head {
+		return Ok(());
+	}
+	run.context = context.clone();
+	store.observe_sources(run, token).await
 }
 
 async fn degrade_context(

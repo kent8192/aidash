@@ -157,6 +157,8 @@ struct State {
 	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
 	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
 	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
+	/// Fields the workspace observation carries beside its ID.
+	observation_extra: serde_json::Map<String, Value>,
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
@@ -1080,7 +1082,12 @@ impl ExecutionHome for Backend {
 	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		let _ = (offset, limit);
-		Ok(json!({"workspace_id":self.task_value().workspace_id}))
+		let mut observation = json!({"workspace_id":self.task_value().workspace_id});
+		observation
+			.as_object_mut()
+			.expect("observation object")
+			.extend(self.0.observation_extra.clone());
+		Ok(observation)
 	}
 	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		self.observation(offset, limit).await
@@ -1938,6 +1945,7 @@ fn fixture() -> Fixture {
 		journal: Mutex::new(vec![]),
 		compaction_attempts: Mutex::new(vec![]),
 		context_policy: None,
+		observation_extra: serde_json::Map::new(),
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
 		summary_extras: (vec![], vec![]),

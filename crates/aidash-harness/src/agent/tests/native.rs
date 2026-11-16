@@ -667,6 +667,89 @@ async fn native_offloading_keeps_calls_and_original_journal_results(mut fixture:
 		NativeMessage::Tool { envelope, .. } if aidash_application::context::offload::is_marker(&envelope.content))));
 }
 
+/// Evidence admitted in the step that offloads it is journaled with its
+/// original bytes, not with the marker that replaces it (#942).
+#[rstest]
+#[tokio::test]
+async fn evidence_offloaded_in_its_own_step_is_journaled_whole(mut fixture: Fixture) {
+	// Arrange: a Run over its window whose older turns hold nothing worth
+	// offloading, and a small protected tail, so this step's new workspace
+	// evidence is the one item compaction offloads.
+	native(&mut fixture);
+	let large = "q".repeat(60_000);
+	{
+		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+		state.context_policy = Some(
+			serde_json::from_value(json!({
+				"version": "context-recovery/1",
+				"summary": {},
+				"protected_tail_fraction": 0.05,
+			}))
+			.unwrap(),
+		);
+		state
+			.observation_extra
+			.insert("notes".into(), json!([large.clone()]));
+	}
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..40 {
+		let id = format!("old-{i}");
+		fixture.run.context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: i,
+			text: "t".repeat(16_000),
+			calls: vec![id.clone()],
+			reasoning: None,
+		});
+		fixture
+			.run
+			.context
+			.push(result(&id, "read", json!({"path": id}), json!("ok")));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the projection holds a marker for it, the Journal the original.
+	let notes = |history: &[aidash_domain::context::HistoryEntry]| {
+		history
+			.iter()
+			.filter_map(|entry| match &entry.event {
+				ContextEvent::Evidence { items } => Some(items.clone()),
+				_ => None,
+			})
+			.flatten()
+			.filter(|item| item.field.as_deref() == Some("notes"))
+			.collect::<Vec<_>>()
+	};
+	let projected = notes(&fixture.run.context.history);
+	assert_eq!(projected.len(), 1, "{:?}", events(&fixture));
+	assert!(aidash_application::context::offload::is_marker(
+		&projected[0].content
+	));
+	let journal = fixture
+		.backend
+		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
+		.await
+		.unwrap();
+	let journaled = notes(&journal);
+	assert_eq!(journaled.len(), 1);
+	// The Journal holds the bytes the item was admitted with, as its digest
+	// attests, not the marker.
+	let original = &journaled[0];
+	assert!(!aidash_application::context::offload::is_marker(
+		&original.content
+	));
+	assert_eq!(
+		original.digest,
+		aidash_domain::context::EvidenceItem::digest(
+			&original.key,
+			original.field.as_deref(),
+			&original.content
+		)
+	);
+	assert!(original.content.as_str().unwrap().len() > 300);
+}
+
 fn structured(fixture: &mut Fixture, contract: aidash_domain::harness_contract::HarnessContract) {
 	native(fixture);
 	Arc::get_mut(&mut fixture.backend.0)
