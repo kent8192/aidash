@@ -358,7 +358,7 @@ export function SchedulesPanel({
                 await apiFetch(`/api/schedules/${editing.id}`, {
                   method: "PATCH",
                   headers: { "content-type": "application/json" },
-                  body: JSON.stringify(patchOf(form)),
+                  body: JSON.stringify(patchOf(form, editing)),
                 });
               }
               setEditing(null);

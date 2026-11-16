@@ -98,6 +98,25 @@ test("a stored Schedule round-trips through the form", () => {
   assert.equal(triggerSummary(schedule.trigger, true), "1日ごと");
 });
 
+test("saving a Schedule kept in seconds does not round its timing", () => {
+  const schedule = {
+    title: "Probe",
+    request: "Check the probe.",
+    agent: { id: "reporter", version: "1.2.0" },
+    trigger: { kind: "interval", every_seconds: 930 },
+    thread: { kind: "new" },
+    approval_mode: null,
+    max_lateness_seconds: 90,
+  };
+  const renamed = { ...formOf(schedule), title: "Probe 2" };
+  const patch = patchOf(renamed, schedule);
+  assert.deepEqual(patch.trigger, schedule.trigger);
+  assert.equal(patch.max_lateness_seconds, 90);
+  assert.equal(patch.title, "Probe 2");
+  const retimed = patchOf({ ...renamed, everyMinutes: "30" }, schedule);
+  assert.deepEqual(retimed.trigger, { kind: "interval", every_seconds: 1800 });
+});
+
 test("tick labels give the skip reason and who ran it now", () => {
   const tick = {
     status: "skipped",

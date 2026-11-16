@@ -210,16 +210,27 @@ export function definitionOf(form: ScheduleForm) {
 }
 
 /** The body of `PATCH /api/schedules/{id}`: the whole form, with the
- *  Registrant's default mode named explicitly. */
-export function patchOf(form: ScheduleForm) {
+ *  Registrant's default mode named explicitly. The form counts in whole
+ *  minutes; a field left as `original` showed it keeps its exact seconds, so
+ *  saving a Schedule registered in seconds does not retime it. */
+export function patchOf(form: ScheduleForm, original?: Schedule) {
   const definition = definitionOf(form);
+  const shown = original ? formOf(original) : undefined;
+  const sameInterval =
+    original?.trigger.kind === "interval" &&
+    form.timing === "interval" &&
+    form.everyMinutes === shown?.everyMinutes;
+  const sameLateness = form.maxLatenessMinutes === shown?.maxLatenessMinutes;
   return {
     title: definition.title,
     request: definition.request,
     agent: definition.agent,
-    trigger: definition.trigger,
+    trigger: sameInterval ? original.trigger : definition.trigger,
     thread: definition.thread,
-    max_lateness_seconds: definition.max_lateness_seconds,
+    max_lateness_seconds:
+      sameLateness && original
+        ? original.max_lateness_seconds
+        : definition.max_lateness_seconds,
     approval_mode: form.approvalMode,
   };
 }
