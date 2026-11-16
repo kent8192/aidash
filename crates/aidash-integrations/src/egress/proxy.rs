@@ -1683,10 +1683,11 @@ async fn forward_http(
 	let received = audit.received.clone();
 	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
 	let stopping = manager.stopping.clone();
-	let reclaim = Some(Reclaim {
-		manager: manager.clone(),
-		scope: scope.id.clone(),
-	});
+	// Idle reclamation is for CONNECT tunnels kept open between requests
+	// (#845 decision 27). This connection carries one request with
+	// `Connection: close`, so a quiet one is a request still in flight, which
+	// it would only cut.
+	let reclaim = None;
 	{
 		let mut tasks = manager.tasks.lock().unwrap();
 		while tasks.try_join_next().is_some() {}
@@ -3314,6 +3315,109 @@ mod tests {
 		assert!(records[0].sent_bytes > 5);
 		assert!(records[0].received_bytes > 5);
 	}
+	/// A plain HTTP request is never idle between requests, so a slow answer
+	/// is not cut to make way for a waiting connection of its Space (#845).
+	#[tokio::test]
+	async fn a_slow_plain_http_answer_is_not_reclaimed_for_a_waiting_connection() {
+		use hyper::{Request, Response, service::service_fn};
+		use std::convert::Infallible;
+		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let upstream_address = upstream.local_addr().unwrap();
+		let upstream_task = tokio::spawn(async move {
+			let (socket, _) = upstream.accept().await.unwrap();
+			let service = service_fn(|_: Request<hyper::body::Incoming>| async move {
+				// Quiet for longer than a tunnel may be before it makes way.
+				tokio::time::sleep(super::RECLAIM_IDLE + std::time::Duration::from_secs(1)).await;
+				Ok::<_, Infallible>(Response::new(http_body_util::Full::new(
+					bytes::Bytes::from_static(b"hello"),
+				)))
+			});
+			hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.await
+				.unwrap();
+		});
+		let settings = limited(1);
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let gateway_address = gateway.local_addr().unwrap();
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let gateway_manager = manager.clone();
+		let gateway_settings = settings.clone();
+		let waiter = Arc::new(std::sync::Mutex::new(None));
+		let gateway_waiter = waiter.clone();
+		let gateway_task = tokio::spawn(async move {
+			let (socket, _) = gateway.accept().await.unwrap();
+			let service = service_fn(move |request| {
+				let manager = gateway_manager.clone();
+				let scopes = scopes.clone();
+				let settings = gateway_settings.clone();
+				let waiter = gateway_waiter.clone();
+				async move {
+					let audit = super::Audit {
+						id: uuid::Uuid::new_v4(),
+						manager: manager.clone(),
+						scopes: scopes.clone(),
+						scope: settings.id.clone(),
+						host: "test.invalid".into(),
+						port: 80,
+						started: std::time::Instant::now(),
+						sent: Arc::new(super::AtomicU64::new(0)),
+						received: Arc::new(super::AtomicU64::new(0)),
+						outcome: "refused",
+						error: None,
+						wait_ms: 0,
+						finished: false,
+						started_record: false,
+					};
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
+					// Another connection of the Space waits for this one's slot.
+					*waiter.lock().unwrap() = Some(tokio::spawn({
+						let (manager, settings) = (manager.clone(), settings.clone());
+						async move { manager.acquire(&settings, super::LIMIT_WAIT).await.is_ok() }
+					}));
+					let result = super::forward_http(
+						request,
+						url::Url::parse("http://test.invalid/slow").unwrap(),
+						vec![upstream_address],
+						scopes,
+						settings,
+						"token".into(),
+						audit,
+						super::TunnelLease { permit, manager },
+					)
+					.await;
+					Ok::<_, Infallible>(result)
+				}
+			});
+			hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.await
+				.unwrap();
+		});
+		let mut client = tokio::net::TcpStream::connect(gateway_address)
+			.await
+			.unwrap();
+		client.write_all(b"GET http://test.invalid/slow HTTP/1.1\r\nHost: test.invalid\r\nConnection: close\r\n\r\n").await.unwrap();
+		let mut response = Vec::new();
+		client.read_to_end(&mut response).await.unwrap();
+		let response = String::from_utf8_lossy(&response);
+		assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+		assert!(response.ends_with("hello"), "response: {response}");
+		upstream_task.await.unwrap();
+		gateway_task.await.unwrap();
+		let waiter = waiter.lock().unwrap().take().unwrap();
+		assert!(
+			waiter.await.unwrap(),
+			"the waiter gets the slot once the answer is done"
+		);
+		manager.drain().await;
+	}
+
 	#[tokio::test]
 	async fn interrupted_close_delimited_http_response_does_not_end_cleanly() {
 		exercise_close_delimited_response(true).await;
