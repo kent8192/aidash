@@ -536,6 +536,7 @@ pub(crate) async fn claim(
 }
 
 /// What stops Schedules besides a person.
+#[derive(Clone, Copy)]
 pub(crate) enum Stop<'a> {
 	/// Their Registrant left the Tenant or lost access.
 	Registrant(&'a str),
@@ -566,6 +567,30 @@ pub(crate) async fn stop(
 			Halt::ThreadDeleted,
 		),
 		Stop::Tenant => (query, Halt::TenantDeleted),
+	};
+	// Deleting a Thread holds its channel row, and a tick holds its Schedule
+	// while it reads that row: waiting here could deadlock. A Schedule a tick
+	// holds is skipped; that tick then finds the Thread deleted and stops it.
+	let query = match stop {
+		Stop::Thread(thread) => {
+			let held: Vec<Uuid> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("schedules"))
+					.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+					.lock(LockType::Update)
+					.lock_behavior(LockBehavior::SkipLocked)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut *tx)
+			.await?;
+			if held.is_empty() {
+				return Ok(vec![]);
+			}
+			query.filter(ScheduleRecord::field_id().is_in(held))
+		}
+		Stop::Registrant(_) | Stop::Tenant => query,
 	};
 	let rows = query
 		.select_for_update()
