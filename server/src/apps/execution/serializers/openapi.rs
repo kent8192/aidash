@@ -5,7 +5,7 @@ use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::management::{
-	ControlInput, DeclineCallInput, SuspendedRunsResume,
+	ControlInput, DeclineCallInput, SuspendedRuns, SuspendedRunsResume,
 };
 use crate::apps::execution::serializers::research::{
 	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
@@ -185,6 +185,12 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts.request::<_, DeclineCallInput>(document, views::management::run_decline_call)?;
+	contracts.response::<_, SuspendedRuns>(
+		document,
+		views::management::suspended_runs,
+		200,
+		"application/json",
+	)?;
 	contracts.response::<_, SuspendedRunsResume>(
 		document,
 		views::management::suspended_runs_resume,

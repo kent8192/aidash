@@ -489,6 +489,21 @@ impl HarnessManagement {
 		};
 		management::control(f, actor, id, RunManagementInput { action }).await
 	}
+	/// The caller's Runs that an Account suspension paused. A Deployment
+	/// Administrator has no Runs of its own and is refused, as on resume.
+	pub(crate) async fn suspended_runs(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::management::SuspendedRuns> {
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		Ok(
+			crate::apps::execution::serializers::management::SuspendedRuns {
+				runs: execution::suspension_paused(&self.runtime, identity).await?,
+			},
+		)
+	}
 	/// Resumes each of the caller's Runs that an Account suspension paused,
 	/// one at a time through the manual resume and all of its checks, and
 	/// reports each Run (#876 decision 17). A Deployment Administrator has no

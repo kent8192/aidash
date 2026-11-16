@@ -56669,6 +56669,38 @@
   },
   {
     "json": false,
+    "method": "GET",
+    "name": "suspended-runs",
+    "path": "/api/suspended-runs",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "SuspendedRuns": {
+            "description": "The caller's Runs that an Account suspension paused, in Run order (#876).\nThe dashboard offers to resume them while any is listed, wherever a Run\nfalls in `/api/state`'s windows.",
+            "properties": {
+              "runs": {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["runs"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/SuspendedRuns"
+        }
+      }
+    },
+    "source": "server/src/apps/execution/views/management.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
     "method": "POST",
     "name": "suspended-runs-resume",
     "path": "/api/suspended-runs/resume",

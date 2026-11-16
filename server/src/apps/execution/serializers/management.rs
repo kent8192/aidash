@@ -60,6 +60,13 @@ impl ControlInput {
 		})
 	}
 }
+/// The caller's Runs that an Account suspension paused, in Run order (#876).
+/// The dashboard offers to resume them while any is listed, wherever a Run
+/// falls in `/api/state`'s windows.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct SuspendedRuns {
+	pub(crate) runs: Vec<Uuid>,
+}
 /// What resuming the caller's Runs that an Account suspension paused did to
 /// each of them, in Run order (#876).
 #[derive(Serialize, JsonSchema)]

@@ -148,6 +148,16 @@ pub async fn run_control(
 	crate::http::json(service.run_control(actor, id, input).await)
 }
 
+/// The caller's Runs that an Account suspension paused, which
+/// `/api/suspended-runs/resume` would resume (#876).
+#[get("/api/suspended-runs", name = "suspended-runs", auth = "protected")]
+pub async fn suspended_runs(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+) -> ViewResult<Response> {
+	crate::http::json(service.suspended_runs(actor).await)
+}
+
 /// The caller resumes every Run of theirs that an Account suspension paused.
 /// Each Run gets the checks of a resume through `/control`; the answer lists
 /// each Run's outcome (#876).

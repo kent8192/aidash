@@ -20,6 +20,7 @@ import {
 } from "@tanstack/react-query";
 import {
   session as getSession,
+  suspendedRuns,
   suspendedRunsResume,
   workspaceGet,
 } from "./generated/aidash";
@@ -248,40 +249,26 @@ function SignInMethodPrompt({
 }
 /**
  * One action that resumes every Run of this person that an Account suspension
- * paused (#876). State does not say who started a Run, and the server resumes
- * only the caller's own, so a paused Run the answer leaves out belongs to
- * someone else and stops showing the action.
+ * paused (#876). The server lists them, since `/api/state` holds only a window
+ * of Runs (#664) and does not say who started one.
  */
-function SuspendedRunsPrompt({
-  runs,
-}: {
-  runs: readonly { id: string; control: string; error?: string | null }[];
-}) {
+function SuspendedRunsPrompt() {
   const { t } = useI18n();
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState("");
-  const [others, setOthers] = useState<ReadonlySet<string>>(() => new Set());
-  const paused = runs.filter(
-    (run) =>
-      run.control === "PAUSED" &&
-      run.error === "account_suspended" &&
-      !others.has(run.id),
-  );
+  const listed = useQuery({
+    queryKey: ["suspended-runs"],
+    queryFn: () => suspendedRuns(),
+    refetchInterval: 60_000,
+  });
+  const paused = listed.data?.runs ?? [];
   if (paused.length === 0) return null;
   async function resume() {
     setBusy(true);
     setOutcome("");
     try {
       const { runs: results } = await suspendedRunsResume();
-      const mine = new Set(results.map((result) => result.run_id));
-      setOthers(
-        (known) =>
-          new Set([
-            ...known,
-            ...paused.map((run) => run.id).filter((id) => !mine.has(id)),
-          ]),
-      );
       const resumed = results.filter(
         (result) => result.outcome === "resumed",
       ).length;
@@ -294,7 +281,10 @@ function SuspendedRunsPrompt({
     } catch (reason) {
       setOutcome(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      await client.invalidateQueries({ queryKey: ["state"] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["suspended-runs"] }),
+        client.invalidateQueries({ queryKey: ["state"] }),
+      ]);
       setBusy(false);
     }
   }
@@ -1177,9 +1167,7 @@ function Dashboard({
             prompt={browserSession.sign_in_method_prompt}
           />
         )}
-        {subjectTenant !== null && everything && (
-          <SuspendedRunsPrompt runs={everything.runs} />
-        )}
+        {subjectTenant !== null && <SuspendedRunsPrompt />}
         <AppShell
           section={route.section}
           settings={route.settings}
