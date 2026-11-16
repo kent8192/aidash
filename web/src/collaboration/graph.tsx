@@ -43,7 +43,7 @@ import {
   type GraphPage,
   type RemoteExpansion,
 } from "./federated-graph";
-import { graphUnconfirmed } from "./graph-unconfirmed";
+import { graphEmptyText, graphUnconfirmed } from "./graph-unconfirmed";
 import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
 import { floatingToolbar, MeshIcon } from "./mesh-icons";
@@ -1078,9 +1078,11 @@ export function Graph({
                             state === "loading"
                               ? copy.peerLoading
                               : state === "empty"
-                                ? expansion?.page?.next_cursor
-                                  ? copy.peerEmptyPage
-                                  : copy.peerEmpty
+                                ? {
+                                    page: copy.peerEmptyPage,
+                                    view: copy.peerEmpty,
+                                    none: "",
+                                  }[graphEmptyText(expansion?.page) ?? "none"]
                                 : state === "denied"
                                   ? copy.peerDenied
                                   : state === "unsupported"

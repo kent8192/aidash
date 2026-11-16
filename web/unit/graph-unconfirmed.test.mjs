@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { graphUnconfirmed } from "../src/collaboration/graph-unconfirmed.ts";
+import {
+  graphEmptyText,
+  graphUnconfirmed,
+} from "../src/collaboration/graph-unconfirmed.ts";
 
 test("graph warning counts the current pages under their answering Nodes", () => {
   const row = (count) => ({
@@ -18,4 +21,21 @@ test("graph warning counts the current pages under their answering Nodes", () =>
     { node: "aidash://b", count: 5 },
   ]);
   assert.deepEqual(graphUnconfirmed(pages, "new"), []);
+});
+
+test("an empty page whose rows another Node could not confirm shows no empty text", () => {
+  const counted = {
+    nodes: [],
+    next_cursor: null,
+    unconfirmed: [
+      { node: "aidash://b", kind: "task", workspace_id: "w", count: 4 },
+    ],
+  };
+  assert.equal(graphEmptyText(counted), null);
+  assert.equal(graphEmptyText({ ...counted, next_cursor: "c" }), null);
+  assert.equal(
+    graphEmptyText({ nodes: [], next_cursor: null, unconfirmed: [] }),
+    "view",
+  );
+  assert.equal(graphEmptyText({ nodes: [], next_cursor: "c" }), "page");
 });
