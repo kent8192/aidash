@@ -497,6 +497,7 @@ async fn concurrent_first_admissions_of_a_day_write_no_counter_and_all_pass(
 		.unwrap();
 	tenant_roots::tenant_root(&federation, "acme").await;
 	let scope = ScopeSettings {
+		run_id: None,
 		id: ScopeId {
 			tenant: "acme".into(),
 			node: tenant_roots::fixture_node_name("acme").to_string(),

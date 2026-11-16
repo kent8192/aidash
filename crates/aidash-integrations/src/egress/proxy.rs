@@ -3496,6 +3496,9 @@ mod tests {
 				let waiter = gateway_waiter.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
