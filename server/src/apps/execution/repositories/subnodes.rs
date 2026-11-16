@@ -280,6 +280,7 @@ impl EndScope for NativeCascade<'_> {
 		let workspace: Uuid = QueryRow::from_backend_row(row)
 			.get("workspace_id")
 			.ok_or(crate::Error::Forbidden)?;
+		crate::apps::execution::models::HumanRequest::close_for_run(self.tx, run).await?;
 		crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
 			self.tx,
 			run,

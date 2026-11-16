@@ -187,6 +187,11 @@ impl HomeScope for Scope {
 		}
 		Ok(visible)
 	}
+	async fn close_human_requests(&mut self, grant: Uuid, admission: Uuid) -> Result<()> {
+		super::remote_commands::humans::close_for_run(&mut **self.access.tx, grant, admission)
+			.await
+			.map_err(Into::into)
+	}
 	async fn answer_human(
 		&mut self,
 		grant: Uuid,
@@ -911,6 +916,8 @@ pub(crate) async fn cancel_deleted_node_grant(
 	)
 	.fetch_one(&mut *tx)
 	.await?;
+	// The matching remote Run is terminal even if the Task was reassigned.
+	super::remote_commands::humans::close_for_run(tx.as_mut(), id, bound.admission_id).await?;
 	// A historical grant must not cancel an independent later assignment.
 	if task.revision != bound.task_revision {
 		tx.commit().await?;
