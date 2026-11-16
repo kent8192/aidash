@@ -41390,23 +41390,8 @@
             "required": ["question", "automatic_refresh"],
             "type": "object"
           },
-          "TimeRange": {
-            "additionalProperties": false,
-            "properties": {
-              "end": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "start": {
-                "format": "date-time",
-                "type": "string"
-              }
-            },
-            "required": ["start", "end"],
-            "type": "object"
-          },
-          "Unit": {
-            "additionalProperties": false,
+          "Mutated": {
+            "description": "One Unit as a mutation returned it, with every field of [`Unit`].\n`unchanged` marks a correction identical to the current revision (#127\ndecision 2): the revision stayed, no history was recorded and no Run that\nread the Unit stopped.",
             "properties": {
               "bank": {
                 "$ref": "#/components/schemas/Bank"
@@ -41432,6 +41417,9 @@
               "stale": {
                 "type": "boolean"
               },
+              "unchanged": {
+                "type": "boolean"
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -41445,8 +41433,24 @@
               "learned_at",
               "updated_at",
               "deleted",
-              "stale"
+              "stale",
+              "unchanged"
             ],
+            "type": "object"
+          },
+          "TimeRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "start": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["start", "end"],
             "type": "object"
           },
           "Verification": {
@@ -41466,7 +41470,7 @@
         },
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/Unit"
+            "$ref": "#/components/schemas/Mutated"
           },
           "type": "array"
         }
