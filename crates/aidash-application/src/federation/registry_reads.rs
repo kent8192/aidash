@@ -101,6 +101,12 @@ async fn check(
 		if !scope.decide(&resource, "federation.discover").await? {
 			return Ok(RemoteReads::Unconfirmed);
 		}
+		// A Node with no route, such as a disabled registration or a deleted
+		// sibling, is a refusal: the memory of its silence spares only the
+		// transport, never this local check.
+		let Some(route) = scope.route(&node).await? else {
+			return Ok(RemoteReads::Unconfirmed);
+		};
 		// After the decision: a mark may come from another identity of the
 		// same authority, and this reader's own right comes first.
 		if scope.unavailable(&node) {
@@ -110,9 +116,6 @@ async fn check(
 			}
 			continue;
 		}
-		let Some(route) = scope.route(&node).await? else {
-			return Ok(RemoteReads::Unconfirmed);
-		};
 		for batch in references.chunks(128) {
 			match transport.verify(&route, batch).await {
 				Verification::Verified => scope.answered(&node),

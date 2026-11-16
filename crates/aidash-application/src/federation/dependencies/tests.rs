@@ -824,3 +824,22 @@ async fn a_silent_node_does_not_hide_discovery_denial_at_the_walk_deadline(
 	);
 	assert_eq!(scope.row_silence, None);
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_node_remembered_silent_without_a_route_stays_a_refusal(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// The Node did not answer, then its registration was disabled.
+	scope.marked.insert("aidash://foreign".into());
+	scope.peer = None;
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.skipped.is_empty());
+	assert_eq!(scope.row_silence, None);
+	assert!(transport.calls.lock().unwrap().is_empty());
+}

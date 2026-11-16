@@ -153,6 +153,11 @@ pub async fn verify_all(
 			if !scope.decide(&resource, "federation.discover").await? {
 				return Ok(false);
 			}
+			// A Node with no route is a refusal: the memory of its silence spares
+			// only the transport, never this local check.
+			let Some(route) = scope.route(node).await? else {
+				return Ok(false);
+			};
 			// After the decision: a mark may come from another identity of the
 			// same authority, and this reader's own right comes first.
 			if scope.unavailable(node) {
@@ -162,9 +167,6 @@ pub async fn verify_all(
 				}
 				continue;
 			}
-			let Some(route) = scope.route(node).await? else {
-				return Ok(false);
-			};
 			last_asked = Some(node.to_owned());
 			let input = Input { reference };
 			match transport.check(&route, &input, remaining).await {
