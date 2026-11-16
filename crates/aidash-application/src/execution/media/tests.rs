@@ -63,6 +63,7 @@ fn model() -> ModelConfig {
 		cache_mode: None,
 		request_estimator: None,
 		estimate_diagnostics: None,
+		reasoning_passback: None,
 	}
 }
 
@@ -1254,4 +1255,21 @@ async fn deleted_thread_attachment_yields_unavailable_notice(mut file_scope: Fil
 		matches!(&result[..], [ContentPart::Text(notice)] if notice.contains("Thread Attachment unavailable") && notice.contains(&id(99).to_string()))
 	);
 	assert_eq!(file_scope.calls, vec![("thread_attachment", id(99))]);
+}
+
+#[rstest]
+fn a_text_only_model_gets_the_description_of_an_image_not_an_error(mut model: ModelConfig) {
+	// Arrange
+	let reader = model.clone();
+	model.modalities = vec!["text".into()];
+
+	// Act
+	let text_only = describes_instead(&model, "image/png");
+	let image_capable = describes_instead(&reader, "image/png");
+	let audio = describes_instead(&model, "audio/mpeg");
+
+	// Assert
+	assert!(text_only);
+	assert!(!image_capable);
+	assert!(!audio, "audio keeps its explicit tool error");
 }

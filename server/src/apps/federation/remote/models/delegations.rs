@@ -18,17 +18,8 @@ pub struct Delegation {
 	pub agent_id: String,
 	#[field(field_type = "text")]
 	pub agent_version: String,
-	#[field(default = false)]
-	pub delivered: bool,
-	#[field]
-	pub human_requests: reinhardt::db::orm::Json<serde_json::Value>,
-	#[field]
-	pub binding_snapshot:
-		Option<reinhardt::db::orm::Json<aidash_domain::registry::bindings::ForeignAgentSnapshot>>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
-	#[field(auto_now_add = true)]
-	pub next_attempt_at: DateTime<Utc>,
 }
 
 use crate::Result;

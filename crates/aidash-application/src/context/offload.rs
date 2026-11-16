@@ -172,8 +172,50 @@ pub fn is_marker(value: &Value) -> bool {
 }
 
 /// Offload one journaled result. Its Tool Call and position are retained.
+/// Native evidence offloads item by item and keeps each item's digest, so a
+/// later step never appends it again (#942). A step state other than the
+/// latest one, which says what holds now, offloads whole.
 fn replace(context: &mut Context, index: usize, batch: &mut OffloadBatch) -> bool {
+	let latest_state = context
+		.history
+		.iter()
+		.rposition(|entry| matches!(entry.event, ContextEvent::StepState { .. }));
 	let entry = &mut context.history[index];
+	let seq = entry.seq;
+	let mut shrink = |value: &mut Value| {
+		if is_marker(value) {
+			return false;
+		}
+		let replacement = marker(seq, value);
+		if replacement.to_string().len() >= value.to_string().len() {
+			return false;
+		}
+		*value = replacement;
+		true
+	};
+	let replaced = match &mut entry.event {
+		// Every item is offloaded, so no short-circuit.
+		ContextEvent::Evidence { items } => items
+			.iter_mut()
+			.map(|item| shrink(&mut item.content))
+			.collect::<Vec<_>>()
+			.contains(&true),
+		ContextEvent::StepState { state, harness } if latest_state != Some(index) => {
+			let shrunk = shrink(state);
+			shrunk | harness.as_mut().is_some_and(&mut shrink)
+		}
+		_ => false,
+	};
+	if !matches!(entry.event, ContextEvent::Tool { .. }) {
+		if replaced {
+			context.offloaded.get_or_insert_default();
+			batch.ranges.push(JournalRange {
+				from_seq: seq,
+				through_seq: seq,
+			});
+		}
+		return replaced;
+	}
 	let ContextEvent::Tool { result, .. } = &mut entry.event else {
 		return false;
 	};
@@ -275,7 +317,13 @@ pub fn batch(
 			continue;
 		}
 		let same_turn = turns[index].is_some() && turns[index] == current;
-		if !same_turn && protected_count >= preserve_recent {
+		// Native step states and evidence sit between turns; they are
+		// protected with the tail around them but take no turn's place.
+		let between_turns = matches!(
+			context.history[index].event,
+			ContextEvent::StepState { .. } | ContextEvent::Evidence { .. }
+		);
+		if !same_turn && !between_turns && protected_count >= preserve_recent {
 			break;
 		}
 		let bytes = serde_json::to_string(&context.history[index].event).expect("history is JSON");
@@ -286,7 +334,7 @@ pub fn batch(
 			break;
 		}
 		protected[index] = true;
-		if !same_turn {
+		if !same_turn && !between_turns {
 			protected_count += 1;
 			current = turns[index];
 		}
@@ -326,6 +374,7 @@ mod tests {
 			epoch: 1,
 			text: String::new(),
 			calls: vec![id.into()],
+			reasoning: None,
 		});
 		context.push(ContextEvent::tool(call(id), json!("x".repeat(bytes))));
 	}
@@ -339,6 +388,72 @@ mod tests {
 				_ => 0,
 			})
 			.sum()
+	}
+
+	/// Record a Native step's state and evidence, as the Harness does.
+	fn step(context: &mut Context, phase: &str, tasks: &[String]) {
+		let mut pinned = json!({
+			"agent_state": {"phase": phase},
+			"turn_instructions": "i".repeat(1000),
+			"workspace": {"tasks": tasks},
+		});
+		aidash_domain::projection::native::record_step_state(context, &pinned);
+		aidash_domain::projection::native::record_evidence(context, &mut pinned, usize::MAX);
+	}
+
+	fn whole(context: &Context) -> usize {
+		context
+			.history
+			.iter()
+			.map(|entry| serde_json::to_string(&entry.event).unwrap().len() / 4)
+			.sum()
+	}
+
+	#[test]
+	fn a_compaction_step_keeps_the_latest_state_and_never_reappends_evidence() {
+		// Arrange: three Native steps, each with a new state and new evidence.
+		let mut context = Context::default();
+		let task = |n: usize| format!("{n}{}", "t".repeat(2000));
+		let mut tasks = Vec::new();
+		for (n, phase) in ["a", "b", "c"].into_iter().enumerate() {
+			tasks.push(task(n));
+			step(&mut context, phase, &tasks);
+			turn(&mut context, &format!("call-{n}"), 10);
+		}
+		let latest = context
+			.history
+			.iter()
+			.rposition(|entry| matches!(entry.event, ContextEvent::StepState { .. }))
+			.unwrap();
+		let latest_state = context.history[latest].clone();
+		// Act
+		let batch = batch(&mut context, 1000, 100, 1, 1, 0, whole);
+		// Assert: older evidence and states are markers, the latest state is
+		// whole and the newest turn's evidence stays protected.
+		assert!(!batch.ranges.is_empty());
+		assert_eq!(context.history[latest], latest_state);
+		let first_evidence = context
+			.history
+			.iter()
+			.find_map(|entry| match &entry.event {
+				ContextEvent::Evidence { items } => Some(items),
+				_ => None,
+			})
+			.unwrap();
+		assert!(is_marker(&first_evidence[0].content));
+		assert!(matches!(
+			&context.history[0].event,
+			ContextEvent::StepState { state, .. } if is_marker(state)
+		));
+		// The next step appends neither offloaded evidence nor an unchanged state.
+		let before = context.history.len();
+		step(&mut context, "c", &tasks);
+		assert_eq!(context.history.len(), before);
+		let pinned = json!({"workspace": {"tasks": tasks}});
+		let delivered =
+			aidash_domain::projection::native::delivered_evidence(&context, &pinned, "workspace")
+				.unwrap();
+		assert_eq!(delivered["tasks"][0], Value::Null);
 	}
 
 	#[test]
@@ -591,6 +706,7 @@ mod tests {
 			epoch: 1,
 			text: String::new(),
 			calls: ids.clone(),
+			reasoning: None,
 		});
 		for id in &ids {
 			context.push(ContextEvent::tool(call(id), json!("x".repeat(4000))));

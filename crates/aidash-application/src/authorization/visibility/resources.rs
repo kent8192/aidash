@@ -1,8 +1,9 @@
 //! Stored ownership, output provenance, and immutable event membership govern disclosure.
 use crate::{
 	Error, Result,
-	ports::authorization::visibility::resources::{
-		ResourceAccessScope, ResourceEventScope, ResourceVisibilityScope,
+	ports::authorization::visibility::{
+		conclude_chain,
+		resources::{ResourceAccessScope, ResourceEventScope, ResourceVisibilityScope},
 	},
 };
 use aidash_domain::{
@@ -91,9 +92,20 @@ pub async fn artifact_visible(
 	if !scope.decide(&resource, "artifact.read").await? {
 		return Ok(false);
 	}
-	match scope.artifact_task(artifact).await? {
-		Some(task) if task_visible(scope, &task).await? => {}
-		_ => return Ok(false),
+	let Some(task) = scope.artifact_task(artifact).await? else {
+		return Ok(false);
+	};
+	if !task_visible(scope, &task).await? {
+		// The Task's check may have stopped at a silent Node. The artifact's own
+		// provenance is still judged, so a refusal there is not counted (#770).
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope
+				.output_visible(artifact.workspace_id, "artifact", artifact.id)
+				.await?;
+			conclude_chain(scope, held, rest);
+		}
+		return Ok(false);
 	}
 	scope
 		.output_visible(artifact.workspace_id, "artifact", artifact.id)
@@ -189,10 +201,22 @@ pub async fn event_visible(
 		let Some(task) = scope.event_task(task_id, event.workspace_id).await? else {
 			return Ok(Some(false));
 		};
+		let artifact = id(&event.data["artifact"]["id"]);
 		if !task_visible(scope, &task).await? {
+			// A silent Node stopped the Task's check; the artifact the event
+			// names is judged too, so a refusal there is not counted (#770).
+			let held = scope.take_row_silence();
+			if held.is_some()
+				&& let Some(artifact) = artifact
+			{
+				let rest = artifact_id_visible(scope, artifact, event.workspace_id).await?;
+				conclude_chain(scope, held, rest);
+			} else {
+				conclude_chain(scope, held, true);
+			}
 			return Ok(Some(false));
 		}
-		if let Some(artifact) = id(&event.data["artifact"]["id"]) {
+		if let Some(artifact) = artifact {
 			return Ok(Some(
 				artifact_id_visible(scope, artifact, event.workspace_id).await?,
 			));
@@ -226,10 +250,23 @@ pub async fn event_visible(
 			return Ok(Some(false));
 		}
 		// Legacy events without an ID must authorize every matching immutable row.
+		// A row that stops at a silent Node does not end the chain: the others are
+		// judged too, and a refusal among them is not counted (#770).
+		let mut held: Option<String> = None;
 		for message in messages {
-			if !message_visible(scope, &message).await? {
-				return Ok(Some(false));
+			if message_visible(scope, &message).await? {
+				continue;
 			}
+			match (held.is_some(), scope.take_row_silence()) {
+				(false, None) => return Ok(Some(false)),
+				(false, node) => held = node,
+				(true, None) => return Ok(Some(false)),
+				(true, Some(_)) => {}
+			}
+		}
+		if held.is_some() {
+			conclude_chain(scope, held, true);
+			return Ok(Some(false));
 		}
 		return Ok(Some(true));
 	}

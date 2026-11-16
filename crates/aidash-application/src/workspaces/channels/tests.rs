@@ -37,6 +37,8 @@ fn metadata(id: u128) -> ChannelAttachment {
 		media_type: "text/plain".into(),
 		size_bytes: 1,
 		no_assigned_agent_can_read: false,
+		description: None,
+		index_state: None,
 	}
 }
 fn attachment(key: Uuid) -> AttachmentState {
@@ -52,6 +54,7 @@ fn attachment(key: Uuid) -> AttachmentState {
 		content: Some(b"x".to_vec()),
 		object_id: None,
 		message_id: Some(Uuid::from_u128(2)),
+		description: None,
 	}
 }
 #[derive(Default)]
@@ -65,9 +68,14 @@ struct Fixture {
 	reply: Option<Uuid>,
 	history: VecDeque<Vec<HistoryRow>>,
 	hidden: HashSet<Uuid>,
+	/// Messages whose check stops at a Node that did not answer (#770).
+	silent: HashSet<Uuid>,
+	silence: Option<String>,
 	positions: Vec<(Uuid, i32)>,
 	stored: Option<AttachmentState>,
 	key: Option<String>,
+	indexed: Vec<(Uuid, Vec<Uuid>)>,
+	described: Option<String>,
 }
 impl Fixture {
 	fn record(&mut self, op: &'static str) -> Result<()> {
@@ -90,6 +98,17 @@ impl crate::ports::channels::AttachmentObjects for Fixture {
 		Ok(b"x".to_vec())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Fixture {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
+}
 #[async_trait]
 impl ChannelScope for Fixture {
 	fn sender(&self) -> String {
@@ -104,6 +123,10 @@ impl ChannelScope for Fixture {
 	}
 	async fn visible(&mut self, message: &Message) -> Result<bool> {
 		self.record("message.visible")?;
+		if self.silent.contains(&message.id) {
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(!self.hidden.contains(&message.id))
 	}
 	async fn thread_visible(&mut self, _: Uuid) -> Result<()> {
@@ -242,6 +265,29 @@ impl ChannelScope for Fixture {
 		self.record("history.citations")?;
 		Ok(ids.iter().map(|id| (*id, vec![])).collect())
 	}
+	async fn describe_attachment(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+		writer: &str,
+		description: &str,
+	) -> Result<()> {
+		self.record("attachment.describe")?;
+		assert_eq!(writer, "principal");
+		self.described = Some(description.into());
+		Ok(())
+	}
+	async fn index_attachment_images(
+		&mut self,
+		_: Uuid,
+		message: Uuid,
+		attachments: &[ChannelAttachment],
+	) -> Result<()> {
+		self.record("attachment.index")?;
+		self.indexed
+			.push((message, attachments.iter().map(|a| a.id).collect()));
+		Ok(())
+	}
 }
 fn submission<'a>(ids: &'a [Uuid]) -> MessageSubmission<'a> {
 	MessageSubmission {
@@ -379,6 +425,7 @@ async fn upload_replay_compares_metadata_and_content_before_returning() {
 			media_type: "text/plain",
 			idempotency_key: key,
 			measurements: MediaMeasurements::default(),
+			description: None,
 		},
 		b"changed",
 	)
@@ -439,6 +486,88 @@ async fn history_cursor_uses_only_visible_messages_and_pages_are_chronological()
 	);
 	assert_eq!(page.next_before, Some(Uuid::from_u128(3)));
 	assert_eq!(page.messages[0].attachments[0].id, Uuid::from_u128(10));
+}
+#[rstest]
+#[tokio::test]
+async fn history_counts_the_messages_a_silent_node_left_out_and_not_the_refused_ones() {
+	let rows = (2..=9)
+		.rev()
+		.map(|id| HistoryRow {
+			message: message(id),
+			reply_thread_id: None,
+			root_thread_id: None,
+		})
+		.collect();
+	let mut scope = Fixture {
+		history: VecDeque::from([rows]),
+		hidden: HashSet::from([Uuid::from_u128(6), Uuid::from_u128(4)]),
+		silent: HashSet::from([Uuid::from_u128(3), Uuid::from_u128(8), Uuid::from_u128(9)]),
+		..Default::default()
+	};
+	let page = history(
+		&mut scope,
+		workspace(),
+		HistoryRequest {
+			thread_id: None,
+			before: None,
+			limit: 100,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		page.messages
+			.iter()
+			.map(|x| x.message.id)
+			.collect::<Vec<_>>(),
+		vec![Uuid::from_u128(2), Uuid::from_u128(5), Uuid::from_u128(7)]
+	);
+	assert_eq!(
+		page.unconfirmed,
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			node: "aidash://other/silent".into(),
+			kind: aidash_domain::unconfirmed::Kind::Message,
+			workspace_id: workspace(),
+			count: 3,
+		}]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn an_unconfirmed_message_is_counted_on_one_page_only() {
+	// Arrange: scanning newest first, 9 reads, 8 is silent, 7 reads, 6 is silent,
+	// 5 reads. The first page of two ends at 7; 6 and 5 belong to the next page.
+	let rows = |ids: &[u128]| {
+		ids.iter()
+			.map(|id| HistoryRow {
+				message: message(*id),
+				reply_thread_id: None,
+				root_thread_id: None,
+			})
+			.collect::<Vec<_>>()
+	};
+	let silent = HashSet::from([Uuid::from_u128(8), Uuid::from_u128(6)]);
+	let mut scope = Fixture {
+		history: VecDeque::from([rows(&[9, 8, 7, 6, 5]), rows(&[6, 5, 4])]),
+		silent,
+		..Default::default()
+	};
+	let request = |before| HistoryRequest {
+		thread_id: None,
+		before,
+		limit: 2,
+	};
+	// Act
+	let first = history(&mut scope, workspace(), request(None))
+		.await
+		.unwrap();
+	let second = history(&mut scope, workspace(), request(first.next_before))
+		.await
+		.unwrap();
+	// Assert: 8 on the first page, 6 on the second, never 6 twice.
+	assert_eq!(first.next_before, Some(Uuid::from_u128(7)));
+	assert_eq!(first.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
+	assert_eq!(second.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
 }
 #[rstest]
 #[tokio::test]
@@ -537,4 +666,208 @@ async fn a_denied_citation_stops_before_any_attachment_write() {
 		vec!["message.insert", "message.context", "citations.record"]
 	);
 	assert!(scope.bind_order.is_empty());
+}
+
+fn image_link(id: u128) -> AttachmentLink {
+	let mut attachment = metadata(id);
+	attachment.media_type = "image/png".into();
+	attachment.filename = format!("{id}.png");
+	AttachmentLink {
+		attachment,
+		message_id: None,
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn posting_an_image_enters_it_into_the_index_with_its_message() {
+	// Arrange
+	let ids = [Uuid::from_u128(10), Uuid::from_u128(11)];
+	let mut text = metadata(11);
+	text.id = Uuid::from_u128(11);
+	let mut scope = Fixture {
+		links: vec![
+			image_link(10),
+			AttachmentLink {
+				attachment: text,
+				message_id: None,
+			},
+		],
+		..Default::default()
+	};
+
+	// Act
+	post(&mut scope, workspace(), submission(&ids))
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(scope.indexed, vec![(Uuid::from_u128(2), ids.to_vec())]);
+	let bound = scope
+		.calls
+		.iter()
+		.rposition(|call| call == "attachment.bind");
+	let indexed = scope
+		.calls
+		.iter()
+		.position(|call| call == "attachment.index");
+	assert!(bound < indexed, "{:?}", scope.calls);
+}
+
+#[rstest]
+#[tokio::test]
+async fn posting_without_an_image_leaves_the_index_alone() {
+	// Arrange
+	let ids = [Uuid::from_u128(10)];
+	let mut scope = Fixture {
+		links: vec![AttachmentLink {
+			attachment: metadata(10),
+			message_id: None,
+		}],
+		..Default::default()
+	};
+
+	// Act
+	post(&mut scope, workspace(), submission(&ids))
+		.await
+		.unwrap();
+
+	// Assert
+	assert!(scope.indexed.is_empty());
+	assert!(!scope.calls.contains(&"attachment.index".to_owned()));
+}
+
+fn image_state() -> AttachmentState {
+	let mut state = attachment(Uuid::from_u128(100));
+	state.media_type = "image/png".into();
+	state
+}
+
+#[rstest]
+#[tokio::test]
+async fn only_the_writer_describes_an_image() {
+	// Arrange
+	let mut scope = Fixture {
+		stored: Some(image_state()),
+		..Default::default()
+	};
+
+	// Act
+	let described = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(described.description.as_deref(), Some("A red bicycle"));
+	assert_eq!(scope.described.as_deref(), Some("A red bicycle"));
+	assert_eq!(
+		scope.calls,
+		vec!["attachment.read", "message.read", "attachment.describe"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn someone_else_cannot_describe_the_image() {
+	// Arrange
+	let mut state = image_state();
+	state.uploaded_by = "someone else".into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(scope.described.is_none());
+}
+
+#[rstest]
+#[case("text/plain", "A note")]
+#[case("image/png", " ")]
+#[tokio::test]
+async fn a_description_needs_an_image_and_words(#[case] media_type: &str, #[case] text: &str) {
+	// Arrange
+	let mut state = image_state();
+	state.media_type = media_type.into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(&mut scope, workspace(), Uuid::from_u128(10), text).await;
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::Domain(_) | Error::Invalid(_))),
+		"{result:?}"
+	);
+	assert!(scope.described.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_uploader_describes_an_image_before_posting_it() {
+	// Arrange
+	let mut state = image_state();
+	state.message_id = None;
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let described = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(described.description.as_deref(), Some("A red bicycle"));
+	assert_eq!(scope.calls, vec!["attachment.read", "attachment.describe"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_unposted_upload_of_someone_else_is_not_found() {
+	// Arrange
+	let mut state = image_state();
+	state.message_id = None;
+	state.uploaded_by = "someone else".into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::NotFound(_))), "{result:?}");
+	assert!(scope.described.is_none());
 }

@@ -1316,3 +1316,68 @@ fn diversity_lambda_is_optional_validated_and_omitted_when_unset() {
 	policy.diversity_lambda_millionths = None;
 	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
 }
+
+#[test]
+fn mutated_flags_only_a_correct_that_kept_its_expected_revision() {
+	// Arrange: a repeated Unit kept revision 1; a corrected one moved to 2; an
+	// added one starts at 1; a deleted one moved to 3.
+	let (kept, edited, added, deleted) = (unit(1), unit(2), unit(3), unit(4));
+	let mut edited = edited;
+	edited.revision = 2;
+	let mut deleted = deleted;
+	deleted.revision = 3;
+	deleted.deleted = true;
+	let changes = [
+		Change::Correct {
+			id: kept.id,
+			expected_revision: 1,
+			content: kept.content.clone(),
+		},
+		Change::Correct {
+			id: edited.id,
+			expected_revision: 1,
+			content: edited.content.clone(),
+		},
+		Change::Add {
+			id: added.id,
+			content: added.content.clone(),
+		},
+		Change::Delete {
+			id: deleted.id,
+			expected_revision: 2,
+		},
+	];
+
+	// Act
+	let flags: Vec<_> = Mutated::of(&changes, vec![kept, edited, added, deleted])
+		.into_iter()
+		.map(|mutated| mutated.unchanged)
+		.collect();
+
+	// Assert
+	assert_eq!(flags, vec![true, false, false, false]);
+}
+
+#[test]
+fn mutated_serializes_every_unit_field_beside_its_flag() {
+	// Arrange
+	let mutated = Mutated {
+		unit: unit(1),
+		unchanged: true,
+	};
+
+	// Act
+	let value = serde_json::to_value(&mutated).unwrap();
+	let schema = serde_json::to_value(schemars::schema_for!(Mutated)).unwrap();
+
+	// Assert: a Unit reader sees the same fields, and the flag is declared.
+	assert_eq!(value["unchanged"], serde_json::json!(true));
+	assert_eq!(value["revision"], serde_json::json!(1));
+	assert_eq!(
+		serde_json::from_value::<Mutated>(value).unwrap(),
+		mutated,
+		"the flattened Unit round-trips despite its closed field set"
+	);
+	assert!(schema["properties"]["unchanged"].is_object(), "{schema}");
+	assert!(schema["properties"]["revision"].is_object(), "{schema}");
+}

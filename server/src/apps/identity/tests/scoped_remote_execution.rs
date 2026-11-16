@@ -694,42 +694,49 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 		scope: aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 		run: text_run,
 	};
+	// #622 decision 6: a model that cannot read images receives the Image
+	// Description, file name and message text instead of the image, with no
+	// selection and without fetching the attachment bytes from Home.
+	let described = |read: &Value| {
+		assert_eq!(read["status"], "completed", "{read}");
+		assert_eq!(read["metadata"]["filename"], "sample.png", "{read}");
+		assert_eq!(
+			read["described_instead"]["reason"], "this model cannot read images",
+			"{read}"
+		);
+		assert_eq!(
+			read["described_instead"]["message_text"], "remote image",
+			"{read}"
+		);
+		assert!(read["described_instead"]["description"].is_null(), "{read}");
+		assert!(read.get("selection").is_none(), "{read}");
+	};
 	let before = p.peers.attachment_fetches.load(Ordering::Acquire);
-	let error = aidash_server::tool::builtins()["workspace_read"]
+	let read = aidash_server::tool::builtins()["workspace_read"]
 		.invoke(
 			&ctx,
 			json!({"kind":"attachment","id":attachment["id"],"representation":"model_input"}),
 			"text-only",
 		)
 		.await
-		.unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("cannot read image/png through any current route"),
-		"{error}"
-	);
+		.unwrap();
+	described(&read);
 	assert_eq!(
 		p.peers.attachment_fetches.load(Ordering::Acquire),
 		before,
-		"unsupported media must not fetch attachment bytes from Home"
+		"a described image must not fetch attachment bytes from Home"
 	);
 	let mut without_observation = ctx.clone();
 	without_observation.run.context.history.clear();
-	let error = aidash_server::tool::builtins()["workspace_read"]
+	let read = aidash_server::tool::builtins()["workspace_read"]
 		.invoke(
 			&without_observation,
 			json!({"kind":"attachment","id":attachment["id"],"representation":"model_input"}),
 			"text-only-no-observation",
 		)
 		.await
-		.unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("cannot read image/png through any current route"),
-		"{error}"
-	);
+		.unwrap();
+	described(&read);
 	assert_eq!(p.peers.attachment_fetches.load(Ordering::Acquire), before);
 	let credential = common::issued_credential(&p.a.store, "acme", "alice").await;
 	let mapping = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"source_node":node_of(&p.b),"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0});
@@ -2664,6 +2671,112 @@ async fn consumed_home_semantic_revision_blocks_next_remote_inference(
 	p.close().await;
 }
 
+/// #127: a remote Run stopped by a Home source change stays stopped when both
+/// Nodes restart. It keeps its cause and revision, makes no inference, does not
+/// loop, and the Home still offers only a Follow-up Task.
+#[rstest::rstest]
+#[tokio::test]
+async fn invalidated_remote_run_stays_paused_across_an_execution_node_restart(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+	#[from(signal_state)] source_notify: Arc<Notify>,
+	#[from(signal_state)] receiver_notify: Arc<Notify>,
+) {
+	// Arrange
+	let mut p = scoped_pair;
+	let a_file = common::peering::key_file(&p.a).unwrap();
+	let b_file = common::peering::key_file(&p.b).unwrap();
+	let mut a_keys = sender_schedule::SenderSchedule::install(&mut p.a, a_file).await;
+	let mut b_keys = sender_schedule::SenderSchedule::install(&mut p.b, b_file).await;
+	p.aa.context.set_singleton(p.a.clone());
+	p.ba.context.set_singleton(p.b.clone());
+	p.step().await;
+	p.step().await;
+	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let source = p.semantic.as_ref().unwrap().entry;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"DELETE",
+		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		json!({"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	p.step().await;
+	let stopped = p.run().await;
+	assert_eq!(stopped.control.as_str(), "PAUSED", "{stopped:?}");
+
+	// Act
+	restart_scoped_peers(
+		&mut p,
+		source_notify.clone(),
+		receiver_notify.clone(),
+		&mut a_keys,
+		&mut b_keys,
+	)
+	.await;
+	// `Pair::step` waits until the worker makes progress, and a paused Run
+	// offers none, so drive bounded worker passes directly.
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
+	for _ in 0..3 {
+		tokio::time::timeout(std::time::Duration::from_secs(60), worker.worker_once())
+			.await
+			.expect("a worker pass over a paused Run returns")
+			.unwrap();
+	}
+
+	// Assert
+	let after = p.run().await;
+	assert_eq!(after.control.as_str(), "PAUSED", "{after:?}");
+	assert_eq!(
+		after.revision, stopped.revision,
+		"no restart loop rewrites the paused Run"
+	);
+	assert_eq!(
+		p.requests.lock().await.len(),
+		1,
+		"no inference after the restart"
+	);
+	let management = format!("/api/runs/{}/management", p.admission);
+	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &management, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["semantic_reason"], "invalidated");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body[0]["semantic"]["recovery"],
+		json!({"cause":"invalidated","actions":["create_follow_up_task"]})
+	);
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn lost_semantic_reply_replays_receipt_without_a_second_embedding(
@@ -3900,7 +4013,7 @@ async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
 		&p.token,
 		"POST",
 		&p.decline_path(),
-		json!({"call": key}),
+		json!({"call": key, "rest_of_run": true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{declined}");
@@ -3951,12 +4064,23 @@ async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
 	assert_eq!(there.len(), 1, "{there:?}");
 	assert_eq!(there[0]["by"], "home");
 	assert_eq!(there[0]["kind"], "other_node");
+	assert_eq!(there[0]["rest_of_run"], true);
+	let receiver = p.run().await;
+	assert!(
+		receiver
+			.recovery
+			.standing_declines
+			.iter()
+			.any(|decision| decision.tool == "task_delegate"
+				&& decision.kind == aidash_domain::tool::RefusalKind::OtherNode)
+	);
 	assert!(!there[0].to_string().contains("alice"), "{}", there[0]);
 	let here = p.home_events("remote.call_declined").await;
 	assert_eq!(here.len(), 1, "{here:?}");
 	assert_eq!(here[0]["by"], "alice");
 	assert_eq!(here[0]["tool"], "task_delegate");
 	assert_eq!(here[0]["kind"], "other_node");
+	assert_eq!(here[0]["rest_of_run"], true);
 	assert_eq!(here[0]["call"], key);
 	assert!(
 		!here[0].to_string().contains("task.delegate"),
@@ -9822,5 +9946,145 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 			.as_str()
 			.is_some_and(|text| text.contains("Remote subtask"))
 	}));
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_question_closes_when_home_observes_cancelled_run(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let question = home
+		.human_request("QUESTION", "Continue?", "run-end-question")
+		.await
+		.unwrap();
+	let management = format!("/api/runs/{}/management", p.admission);
+	let (status, body) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		&management,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let requests = body[0]["human_requests"].as_array().unwrap();
+	let closed = requests
+		.iter()
+		.find(|entry| entry["id"] == json!(question.id))
+		.unwrap();
+	assert_eq!(closed["answered_by"], "system");
+	assert_eq!(
+		closed["response"],
+		json!({"answered":false,"reason":"run_ended"})
+	);
+	let path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&path,
+		json!({"id":question.id,"response":{"answer":"late"}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_cancellation_closes_remote_questions_and_refuses_late_answers(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let question = home
+		.human_request("QUESTION", "Continue?", "home-cancel-question")
+		.await
+		.unwrap();
+	let answer_path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let answered = home
+		.human_request("QUESTION", "Already answered?", "home-answer-before-cancel")
+		.await
+		.unwrap();
+	let (status, response) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":answered.id,"response":{"answer":"yes"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	let control_path = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control_path,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let journal: Value = sqlx::query_scalar(
+		"SELECT human_requests FROM authorization_remote_execution WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let closed = journal
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["request"]["id"] == json!(question.id))
+		.unwrap();
+	let retained = journal
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["request"]["id"] == json!(answered.id))
+		.unwrap();
+	assert_eq!(retained["request"]["response"], json!({"answer":"yes"}));
+	assert_eq!(closed["request"]["answered_by"], "system");
+	assert_eq!(
+		closed["request"]["response"],
+		json!({"answered":false,"reason":"run_ended"})
+	);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":question.id,"response":{"answer":"late"}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":answered.id,"response":{"answer":"yes"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
 	p.close().await;
 }

@@ -42,7 +42,9 @@ impl Access {
 	/// Append an edge even when the local graph has already visited a source.
 	/// Deduplication happens at the coordinator, after each edge's authority is checked.
 	pub(crate) async fn received_semantic_visible(&mut self, run: Uuid) -> Result<bool> {
-		let bound: Option<(String, Uuid, String)> = {
+		let bound: Option<(String, Uuid, String)> = if let Some(bound) = self.state_received(run) {
+			bound
+		} else {
 			let query_bind_1 = run;
 			let query_bind_2 = &self.identity.tenant;
 			crate::database::native::query_as(

@@ -25,9 +25,14 @@ pub(crate) async fn can_allow_always(
 	.map_err(Into::into)
 }
 
-pub(crate) async fn visible(access: &mut Access, record: &Record) -> Result<bool> {
+/// What the reader may do with an approval record or Run grant, judged now
+/// (ADR 0135).
+pub(crate) async fn reader(
+	access: &mut Access,
+	record: &Record,
+) -> Result<aidash_application::capabilities::approvals::Reader> {
 	let mut scope = crate::bootstrap::approval_scope(None, access, None);
-	aidash_application::capabilities::approvals::visible(
+	aidash_application::capabilities::approvals::reader(
 		&mut scope,
 		&crate::apps::execution::repositories::capability_records::domain(record.clone()),
 	)

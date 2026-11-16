@@ -74,6 +74,17 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 }
 #[async_trait]
 impl SemanticMemoryReadSession for NativeReads<'_> {
+	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		let mut lease = crate::semantic::service::Lease::Inherited(self.access);
+		let mut entries =
+			crate::apps::knowledge::repositories::mutations::Entries { lease: &mut lease };
+		aidash_application::ports::semantic::mutations::SemanticEntriesSession::image_visible(
+			&mut entries,
+			workspace,
+			source,
+		)
+		.await
+	}
 	async fn classified_output_source(
 		&mut self,
 		workspace: Uuid,

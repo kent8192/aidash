@@ -101,6 +101,31 @@ pub enum State {
 	Revoked,
 	Deleted,
 }
+/// How the current Key Material of a Provider Credential reached Aidash. Only
+/// a Self-hosted Deployment accepts a key that did not come from Provider
+/// Authorization (ADR 0006, amended by #877).
+#[derive(
+	Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyOrigin {
+	/// Issued by the provider's own consent flow.
+	#[default]
+	Authorization,
+	/// Typed or pasted by a person in the dashboard.
+	Pasted,
+	/// Stored through Host Access with the host-side command.
+	HostAccess,
+}
+impl KeyOrigin {
+	pub fn id(self) -> &'static str {
+		match self {
+			Self::Authorization => "authorization",
+			Self::Pasted => "pasted",
+			Self::HostAccess => "host_access",
+		}
+	}
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderCredential {
 	pub id: Uuid,
@@ -118,6 +143,9 @@ pub struct ProviderCredential {
 	/// every authorization issues a fresh random key.
 	#[serde(default)]
 	pub key_digest: Option<String>,
+	/// How the pinned Key Material arrived; a rotation records the new key's.
+	#[serde(default)]
+	pub key_origin: KeyOrigin,
 	pub state: State,
 	pub created_at: DateTime<Utc>,
 	pub rotated_at: Option<DateTime<Utc>>,

@@ -1,6 +1,8 @@
 //! The server's database login (#262): a login that row-level security would
 //! not bind is refused, and session state never passes between pool borrowers.
-use super::native_database::{ADMIN, DatabaseFixture, OWNER, database, with_login};
+use super::native_database::{
+	ADMIN, DatabaseFixture, OWNER, database, postgres_container, with_login,
+};
 use aidash_server::database::runtime;
 use rstest::rstest;
 
@@ -466,4 +468,57 @@ async fn returned_connections_lose_session_settings(#[future] database: Database
 		.unwrap();
 	// Assert: the placeholder may remain defined, but only with an empty value.
 	assert_eq!(value.unwrap_or_default(), "");
+}
+
+/// A fresh external database can be provisioned twice without replacing passwords.
+#[rstest]
+#[tokio::test]
+async fn setup_roles_provisions_a_server_login_and_is_idempotent(
+	#[future] postgres_container: (
+		reinhardt::test::testcontainers::ContainerAsync<
+			reinhardt::test::testcontainers::GenericImage,
+		>,
+		std::sync::Arc<sqlx::PgPool>,
+		u16,
+		String,
+	),
+) {
+	let (_container, pool, _, admin_url) = postgres_container.await;
+	let directory = tempfile::tempdir().unwrap();
+	let run = |first: bool| {
+		let mut cmd = crate::deployment::deployment_command(&admin_url, directory.path());
+		cmd.args(["setup-roles", "--superuser-url", &admin_url]);
+		if first {
+			cmd.args([
+				"--owner-password",
+				"owner'pass",
+				"--server-password",
+				"server'pass",
+			]);
+		}
+		cmd
+	};
+	let first = run(true).output().await.unwrap();
+	assert!(
+		first.status.success(),
+		"{}",
+		String::from_utf8_lossy(&first.stderr)
+	);
+	let installed: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM pg_extension WHERE extname IN ('pg_jsonschema', 'vector', 'pgroonga')",
+	)
+	.fetch_one(pool.as_ref())
+	.await
+	.unwrap();
+	assert_eq!(installed, 3);
+	let server_url = with_login(&admin_url, ("aidash_server", "server'pass"));
+	runtime::connect_command(&server_url, 1).await.unwrap();
+	let second = run(false).output().await.unwrap();
+	assert!(
+		second.status.success(),
+		"{}",
+		String::from_utf8_lossy(&second.stderr)
+	);
+	assert!(String::from_utf8_lossy(&second.stdout).contains("password unchanged"));
+	runtime::connect_command(&server_url, 1).await.unwrap();
 }

@@ -271,7 +271,8 @@ impl AuthorizationDecision {
 			"coalesced",
 		];
 		// Bound statement size and parameter count for large disclosure responses.
-		for rows in rows.chunks(100) {
+		// A full dashboard window normally fits in one batch, including its audit.
+		for rows in rows.chunks(256) {
 			let mut selected = Query::select();
 			for (index, row) in rows.iter().enumerate() {
 				let mut one = Query::select();

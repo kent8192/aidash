@@ -1001,6 +1001,8 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 		} else {
 			content.to_owned()
 		},
+		// Kept as received; the harness decides whether the Run records it.
+		reasoning: aidash_domain::provider::reasoning::Reasoning::from_chat_message(message),
 		..usage
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {

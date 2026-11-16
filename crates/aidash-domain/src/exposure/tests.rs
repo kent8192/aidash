@@ -179,7 +179,6 @@ impl Run {
 			remote: false,
 			bindings: self.bindings.clone(),
 			definitions: self.definitions.clone(),
-			foreign_agents: vec![],
 			agent_plugins: vec![],
 		}
 	}

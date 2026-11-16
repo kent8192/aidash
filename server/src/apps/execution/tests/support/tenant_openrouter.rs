@@ -103,6 +103,7 @@ pub fn install(home: &mut Federation) -> TenantOpenRouter {
 		exchange: Arc::new(NoExchange),
 		fingerprint_key: "scoped-remote-fingerprint-key-of-32-bytes".into(),
 		max_per_tenant: 5,
+		supplied_keys: false,
 	});
 	let credentials = TenantOpenRouter {
 		endpoint: Arc::new(Mutex::new(String::new())),

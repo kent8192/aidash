@@ -71,6 +71,8 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		// A list: a silent Node leaves its Runs unconfirmed instead of failing it (#770).
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::workspace_runs(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
@@ -104,6 +106,7 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::runs(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
@@ -135,6 +138,7 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::humans(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
@@ -182,6 +186,7 @@ impl HarnessManagement {
 			conversations: Vec::new(),
 			events: Vec::new(),
 			artifacts: Vec::new(),
+			unconfirmed: Vec::new(),
 			next_cursors: Default::default(),
 		};
 		Ok(Response::ok().with_json(&state)?)
@@ -489,6 +494,45 @@ impl HarnessManagement {
 		};
 		management::control(f, actor, id, RunManagementInput { action }).await
 	}
+	/// The caller's Runs that an Account suspension paused. A Deployment
+	/// Administrator has no Runs of its own and is refused, as on resume.
+	pub(crate) async fn suspended_runs(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::management::SuspendedRuns> {
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		Ok(
+			crate::apps::execution::serializers::management::SuspendedRuns {
+				runs: execution::suspension_paused(&self.runtime, identity).await?,
+			},
+		)
+	}
+	/// Resumes each of the caller's Runs that an Account suspension paused,
+	/// one at a time through the manual resume and all of its checks, and
+	/// reports each Run (#876 decision 17). A Deployment Administrator has no
+	/// Runs of its own and is refused, as on `/control`.
+	pub(crate) async fn resume_suspended(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::management::SuspendedRunsResume> {
+		use crate::apps::execution::serializers::management::{
+			SuspendedRunResume, SuspendedRunsResume,
+		};
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		let f = &self.runtime;
+		let mut runs = Vec::new();
+		for id in execution::suspension_paused(f, identity).await? {
+			runs.push(match execution::resume(f, identity, id).await {
+				Ok(_) => SuspendedRunResume::resumed(id),
+				Err(error) => SuspendedRunResume::refused(id, error),
+			});
+		}
+		Ok(SuspendedRunsResume { runs })
+	}
 	/// Declining answers as `/control` does. A Deployment Administrator never declines.
 	pub(crate) async fn run_decline_call(
 		&self,
@@ -500,7 +544,7 @@ impl HarnessManagement {
 			return Err(Error::Forbidden);
 		};
 		Ok(
-			execution::decline_call(&self.runtime, identity, id, &input.call)
+			execution::decline_call(&self.runtime, identity, id, &input.call, input.rest_of_run)
 				.await?
 				.into(),
 		)
@@ -541,11 +585,16 @@ impl HarnessManagement {
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		let (events, cursor) = scope
+		let (events, cursor, unconfirmed) = scope
 			.events_with_cursor(q.after, q.workspace_id, 500)
 			.await?;
-		let mut response =
-			crate::marketplace::events::response(&scope.store, &scope.identity, events).await?;
+		let mut response = crate::marketplace::events::response(
+			&scope.store,
+			&scope.identity,
+			events,
+			unconfirmed,
+		)
+		.await?;
 		response
 			.headers
 			.insert("x-aidash-event-cursor", cursor.into());

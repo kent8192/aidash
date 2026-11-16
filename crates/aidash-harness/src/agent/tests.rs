@@ -157,11 +157,19 @@ struct State {
 	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
 	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
 	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
+	/// Fields the workspace observation carries beside its ID.
+	observation_extra: serde_json::Map<String, Value>,
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
+	/// Tool calls and provider activity the summarizer answers with.
+	summary_extras: (Vec<ToolCall>, Vec<Value>),
 	summary_truncations: Mutex<u32>,
 	model_reasoning: bool,
+	/// The agent model's `reasoning_passback`, omitted when `None` (#942).
+	reasoning_passback: Option<bool>,
+	/// Reasoning each ordinary response carries (#942).
+	response_reasoning: Option<aidash_domain::provider::reasoning::Reasoning>,
 	provider_configs: Mutex<Vec<ModelConfig>>,
 	/// The summarizer is approved at reservation but revoked during its call.
 	revoke_summarizer: bool,
@@ -285,6 +293,8 @@ struct State {
 	/// A child Task failed and the others are unfinished, so the Run's final
 	/// answer waits for a person to intervene.
 	failed_children: bool,
+	/// A child Task's check stops at this Node, which did not answer (#770).
+	unconfirmed_child: Option<&'static str>,
 	/// The Answer Deadline, in seconds, of the person the Run's chain starts at.
 	answer_deadline: Option<i64>,
 	/// A person's answer that lands just before the system closes the Home
@@ -370,6 +380,11 @@ impl Backend {
 		});
 		if id == "model" && self.0.model_reasoning {
 			config["reasoning_effort"] = json!("medium");
+		}
+		if id == "model"
+			&& let Some(passback) = self.0.reasoning_passback
+		{
+			config["reasoning_passback"] = json!(passback);
 		}
 		if id == "model"
 			&& let Some(limit) = self.0.summarizer_provider_limit
@@ -1069,7 +1084,15 @@ impl ExecutionHome for Backend {
 	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		let _ = (offset, limit);
-		Ok(json!({"workspace_id":self.task_value().workspace_id}))
+		let mut observation = json!({"workspace_id":self.task_value().workspace_id});
+		observation
+			.as_object_mut()
+			.expect("observation object")
+			.extend(self.0.observation_extra.clone());
+		Ok(observation)
+	}
+	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		self.observation(offset, limit).await
 	}
 	async fn observation_fitted(
 		&self,
@@ -1082,6 +1105,13 @@ impl ExecutionHome for Backend {
 	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let _ = parent;
+		self.record("home.child_summary");
+		if let Some(node) = self.0.unconfirmed_child {
+			return Err(Error::NodeUnreachable {
+				node: node.into(),
+				after_effect: false,
+			});
+		}
 		if let Some(summary) = self.0.child_summaries.lock().unwrap().pop_front() {
 			return Ok(summary);
 		}
@@ -1427,7 +1457,7 @@ impl ExecutionEnvironment for Backend {
 			}
 			"workspace" => self
 				.home(run)
-				.observation(0, context::observation::DEFAULT_LIMIT)
+				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
 			"skills" => self.skill_context(run).await.map(|text| Some(json!(text))),
@@ -1740,6 +1770,9 @@ impl ModelProvider for Backend {
 				.expect("summary fixture");
 			return Ok(ModelResponse {
 				text,
+				tool_calls: self.0.summary_extras.0.clone(),
+				provider_activity: self.0.summary_extras.1.clone(),
+				reasoning: None,
 				input_tokens: 100,
 				output_tokens: 50,
 				usage_complete: true,
@@ -1752,7 +1785,6 @@ impl ModelProvider for Backend {
 					}),
 					..Default::default()
 				},
-				..Default::default()
 			});
 		}
 		request.ensure_fits(128000).unwrap();
@@ -1815,6 +1847,7 @@ impl ModelProvider for Backend {
 				cache_read_tokens: Some(150),
 				..Default::default()
 			},
+			reasoning: self.0.response_reasoning.clone(),
 			..Default::default()
 		})
 	}
@@ -1921,10 +1954,14 @@ fn fixture() -> Fixture {
 		journal: Mutex::new(vec![]),
 		compaction_attempts: Mutex::new(vec![]),
 		context_policy: None,
+		observation_extra: serde_json::Map::new(),
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
+		summary_extras: (vec![], vec![]),
 		summary_truncations: Mutex::new(0),
 		model_reasoning: false,
+		reasoning_passback: None,
+		response_reasoning: None,
 		provider_configs: Mutex::new(vec![]),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
@@ -2014,6 +2051,7 @@ fn fixture() -> Fixture {
 		approval_mode: None,
 		auto_judging: false,
 		failed_children: false,
+		unconfirmed_child: None,
 		answer_deadline: None,
 		answered_just_before_close: Mutex::new(None),
 		approval_judgements: Mutex::new(VecDeque::new()),
@@ -2594,6 +2632,62 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 		vec![]
 	};
 	assert_eq!(fixture.backend.outcomes(), expected);
+}
+#[rstest]
+#[tokio::test]
+async fn a_child_task_that_cannot_be_confirmed_retries_the_step_without_calling_the_model(
+	mut fixture: Fixture,
+) {
+	// Arrange: the model already answered, so the Run is in its Tool state, and
+	// a child Task's check stops at a Node that did not answer.
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.unconfirmed_child = Some("aidash://other/sibling");
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			text: "Final answer".into(),
+			..Default::default()
+		},
+		..Default::default()
+	}));
+	// Act: two attempts, as a retry would make.
+	let mut errors = vec![];
+	for _ in 0..2 {
+		errors.push(
+			Executor::new(&fixture.backend)
+				.advance(
+					&mut fixture.run,
+					fixture.backend.0.token,
+					&mut fixture.backend.clone(),
+				)
+				.await
+				.unwrap_err(),
+		);
+	}
+	// Assert: the failure is the typed one the recovery path retries and then
+	// pauses on, nothing was decided about the children, and the Run stays in
+	// its Tool state so no inference runs again.
+	for error in errors {
+		assert!(
+			matches!(
+				&error,
+				Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
+			),
+			"{error:?}"
+		);
+	}
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+	let calls = fixture.backend.0.calls.lock().unwrap();
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "home.child_summary")
+			.count(),
+		2
+	);
+	assert!(!calls.contains(&"home.output"));
+	assert!(!calls.contains(&"home.complete"));
+	assert!(!calls.iter().any(|call| call.starts_with("inference")));
 }
 #[rstest]
 #[tokio::test]
@@ -3863,6 +3957,7 @@ async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fi
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		fixture.run.context.push(ContextEvent::tool(
 			call(&id, "read", json!({})),
@@ -3899,6 +3994,7 @@ async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
 			epoch: i,
 			text: "working".into(),
 			calls: vec![id.clone()],
+			reasoning: None,
 		});
 		let result = if i == 0 {
 			json!("h".repeat(200_000))
@@ -4492,7 +4588,19 @@ async fn subnode_results_reach_the_model_inside_a_data_envelope(
 	let state = match &requests[0].context {
 		ModelContext::Legacy(value) => value["current"].clone(),
 		ModelContext::Ordered(value) => serde_json::from_str(&value.volatile).unwrap(),
-		ModelContext::Native(value) => serde_json::from_str(&value.volatile).unwrap(),
+		// Run messages are evidence in history (#942).
+		ModelContext::Native(value) => value
+			.history
+			.iter()
+			.find_map(|message| match message {
+				aidash_domain::projection::native::NativeMessage::Data { envelope }
+					if envelope.source == aidash_domain::projection::native::Source::Evidence =>
+				{
+					Some(envelope.content.clone())
+				}
+				_ => None,
+			})
+			.unwrap(),
 		_ => panic!("unexpected projection"),
 	};
 	assert_eq!(state["run_messages"][0]["trust"], "data");
@@ -4964,7 +5072,6 @@ impl DeferredSnapshot {
 			remote: false,
 			bindings: self.bindings,
 			definitions: self.definitions,
-			foreign_agents: vec![],
 			agent_plugins: vec![],
 		}
 	}
@@ -7238,6 +7345,7 @@ async fn intake_keeps_parallel_results_in_the_journal_before_offloading(mut fixt
 		epoch: 1,
 		text: String::new(),
 		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+		reasoning: None,
 	});
 	for id in calls {
 		fixture.run.context.push(ContextEvent::tool(

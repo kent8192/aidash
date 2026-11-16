@@ -150,6 +150,7 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 		&self,
 		id: Uuid,
 		call: &str,
+		rest_of_run: bool,
 	) -> Result<(RunInspection, aidash_domain::run_state::PausedCall)>;
 	fn messages(&self, run: &Run) -> Box<dyn AdmissionMessages + '_>;
 	async fn message_limit(&self, run: &Run) -> Result<usize>;

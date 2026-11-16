@@ -4,6 +4,19 @@ use aidash_application::ports::marketplace::EventScope;
 use aidash_domain::Event;
 use async_trait::async_trait;
 use uuid::Uuid;
+impl<Effects> aidash_application::ports::authorization::visibility::RowOutcome
+	for NativeDefinitions<'_, Effects>
+{
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+}
 #[async_trait]
 impl<Effects: Send> EventScope for NativeDefinitions<'_, Effects> {
 	async fn workspace_allowed(

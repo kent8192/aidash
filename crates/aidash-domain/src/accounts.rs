@@ -20,6 +20,9 @@ pub struct Account {
 	pub session_epoch: u64,
 	#[serde(default)]
 	pub suspension_epoch: u64,
+	/// Suspension epochs for which an administrator authorized automatic resume.
+	#[serde(default)]
+	pub resumable_suspension_epochs: Vec<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalIdentity {

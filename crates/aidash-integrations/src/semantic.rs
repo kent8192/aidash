@@ -104,6 +104,15 @@ pub async fn embed_input(
 		aidash_domain::semantic::EmbeddingInput::Image { media_type, bytes } => {
 			json!([{"content":[{"type":"image_url","image_url":{"url":format!("data:{media_type};base64,{}", STANDARD.encode(bytes))}}]}])
 		}
+		// One content with both parts yields one vector for the image and its
+		// Image Description together.
+		aidash_domain::semantic::EmbeddingInput::DescribedImage {
+			text,
+			media_type,
+			bytes,
+		} => {
+			json!([{"content":[{"type":"text","text":text},{"type":"image_url","image_url":{"url":format!("data:{media_type};base64,{}", STANDARD.encode(bytes))}}]}])
+		}
 	};
 	let mut body = json!({"model":config.model,"input":request_input,"encoding_format":"float"});
 	if config.provider == "openrouter" {

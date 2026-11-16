@@ -1071,6 +1071,8 @@ pub fn execution_database(
 				format!("connect the server pool to {database}"),
 				PgPoolOptions::new()
 					.max_connections(max_connections)
+					// Match the server pool so its timeout precedes the HTTP deadline.
+					.acquire_timeout(std::time::Duration::from_secs(10))
 					.connect_with(options),
 			)
 			.await
@@ -1120,6 +1122,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			registry,
 			config: Config {
 				scratch_policy: Default::default(),
+				credential_max_seconds: 90 * 24 * 60 * 60,
 				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")
 					.unwrap(),
 				endpoint: "http://localhost:8080".into(),

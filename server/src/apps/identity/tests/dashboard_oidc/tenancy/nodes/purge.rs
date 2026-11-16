@@ -136,7 +136,7 @@ async fn provisional(d: &Deployment, tenant: &str, owner: &str) -> Uuid {
 async fn shared_secrets(d: &Deployment, tenant: &str) -> (Uuid, Uuid) {
 	let provider = Uuid::now_v7();
 	let secret = Uuid::now_v7();
-	sqlx::query("INSERT INTO provider_credentials (id,tenant,provider,base_url,secret_resource,pinned_version,fingerprint,last4,state,created_at,revision) VALUES ($1,$2,'openrouter','https://openrouter.ai/api/v1','fixture-provider-resource','fixture-provider-resource/versions/1','0123456789abcdef','1234','active',clock_timestamp(),1)").bind(provider).bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO provider_credentials (id,tenant,provider,base_url,secret_resource,pinned_version,fingerprint,last4,key_origin,state,created_at,revision) VALUES ($1,$2,'openrouter','https://openrouter.ai/api/v1','fixture-provider-resource','fixture-provider-resource/versions/1','0123456789abcdef','1234','authorization','active',clock_timestamp(),1)").bind(provider).bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO tenant_secrets (id,tenant,name,hosts,secret_resource,pinned_version,fingerprint,last4,state,created_at,updated_at,revision) VALUES ($1,$2,'shared',ARRAY['example.com'],'aidash-store/tenant-secrets/'||$1::text,'aidash-store/tenant-secrets/'||$1::text||'/versions/1','0123456789abcdef','1234','active',clock_timestamp(),clock_timestamp(),1)").bind(secret).bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	(provider, secret)
 }

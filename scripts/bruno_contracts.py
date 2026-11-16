@@ -29,7 +29,7 @@ ADMIN_ADMITTED = {
     "session", "state", "run-management-get", "run-management-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
     "transaction_revocations", "transaction-participants",
-    "tenant-administration", "tenant-registrations", "tenant-registration-approve",
+    "tenant-administration", "tenant-invitation-approvals", "tenant-registrations", "tenant-registration-approve",
     "tenant-registration-reject", "tenant-mappings", "tenant-mapping-disable",
     "tenant-invitations-issue", "tenant-invitations", "tenant-invitations-revoke",
     "tenants-label", "tenants-delete", "tenants-list", "tenants-purge",
@@ -168,7 +168,7 @@ SUBJECT_READS = {
     ],
     "GET /api/tasks/{id}/runs": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
-         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
+         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
     ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
@@ -1087,6 +1087,9 @@ def render():
             body = (
                 json.dumps({"expected_revision": 0, "provider_credential_id": None})
                 if method == "PUT"
+                # Pasted Key Material (#892) names the provider and the key.
+                else json.dumps({"provider": "openrouter", "key": "sk-or-contract"})
+                if method == "POST" and path.endswith("/provider-credentials")
                 else json.dumps({"expected_revision": 0})
                 if route["json"]
                 else None
@@ -1276,6 +1279,10 @@ def render():
                             "remote_runs_may_create": False})
                 if method == "PUT" and path.endswith("/subnode-limits")
                 else
+                # One day, within any Deployment maximum, so only the caller is refused.
+                json.dumps({"seconds": 86400})
+                if method == "PUT" and path.endswith("/credential-maximum")
+                else
                 json.dumps({"groups": [], "expected_policy_revision": 1})
                 if method == "PUT"
                 else json.dumps({"subject": "carol", "groups": []})
@@ -1346,6 +1353,8 @@ def render():
                     headers=SUBJECT, body=limits, immutable=True)
             continue
         if route["source"] == "server/src/apps/execution/capabilities/views/previews.rs":
+            # A loopback origin defaults to `*.localhost` only with a
+            # `public_port` (#894); the contract server sets none.
             flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(false);expect(res.getBody().preview_domain).to.equal(null);'
             if path.endswith("/availability"):
                 add(endpoint, "Anonymous request is rejected", 401)
@@ -1571,7 +1580,7 @@ def render():
         if path == "/api/tasks":
             checks += 'expect(res.getBody().tasks.map(value=>value.id)).to.include(bru.getVar("task_id"));'
         if path == "/api/events":
-            checks += 'expect(res.getBody()).to.be.an("array");expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
+            checks += 'expect(res.getBody().events).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
         if path == "/api/events/stream":
             add(
                 endpoint,

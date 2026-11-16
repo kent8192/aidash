@@ -48,6 +48,9 @@ pub(crate) struct Fixture {
 	pub(crate) source_pages: Vec<(usize, u64)>,
 	/// The hosts of the installing Tenant's Tenant Secrets, by name.
 	pub(crate) secret_hosts: BTreeMap<String, Vec<String>>,
+	/// The Node a workspace event's check stopped at, when `denied` is
+	/// `workspace_event_silent` (#770).
+	pub(crate) silence: Option<String>,
 }
 impl Fixture {
 	fn new() -> Self {
@@ -661,6 +664,17 @@ async fn unprojected_definitions_need_no_marketplace_lease() {
 	assert_eq!(scope.calls, Vec::<String>::new());
 }
 
+impl crate::ports::authorization::visibility::RowOutcome for Fixture {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
+}
 #[async_trait]
 impl crate::ports::marketplace::EventScope for Fixture {
 	async fn workspace_allowed(&mut self, _: Uuid, action: &str) -> Result<bool> {
@@ -669,6 +683,10 @@ impl crate::ports::marketplace::EventScope for Fixture {
 	}
 	async fn workspace_event_visible(&mut self, _: &aidash_domain::Event) -> Result<bool> {
 		self.calls.push("workspace_event_visible".into());
+		if self.denied.as_deref() == Some("workspace_event_silent") {
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(self.denied.as_deref() != Some("workspace_event_visible"))
 	}
 }

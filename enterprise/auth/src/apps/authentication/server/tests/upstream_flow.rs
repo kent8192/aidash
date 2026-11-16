@@ -495,7 +495,7 @@ async fn rejected_browser_login_persists_definite_upstream_stop(#[case] disabled
 		"a definite upstream observation must invalidate old interactive sessions immediately"
 	);
 	drop(scope);
-	let (validity, _, _) = fixture
+	let (validity, _, _, _) = fixture
 		.auth
 		.check_origin(
 			fixture.identity.id,

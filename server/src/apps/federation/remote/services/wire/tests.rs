@@ -27,6 +27,7 @@ fn without_runtime() -> Wire {
 			egress: Default::default(),
 		},
 		runtime: None,
+		silent: Default::default(),
 	}
 }
 

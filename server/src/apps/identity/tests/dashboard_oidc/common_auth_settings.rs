@@ -15,6 +15,26 @@ struct Configuration {
 	_directory: tempfile::TempDir,
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn validity_cache_setting_defaults_and_rejects_values_above_limit(
+	mut configuration: Configuration,
+) {
+	let common = configuration
+		.settings
+		.dashboard
+		.common_auth
+		.as_mut()
+		.unwrap();
+	assert_eq!(common.validity_cache_seconds, 30);
+	common.validity_cache_seconds = 301;
+	let error = match Config::from_settings(&configuration.settings) {
+		Ok(_) => panic!("out-of-range cache lifetime was accepted"),
+		Err(error) => error,
+	};
+	assert!(error.to_string().contains("validity_cache_seconds"));
+}
+
 #[rstest::fixture]
 fn configuration(temp_dir: tempfile::TempDir) -> Configuration {
 	let mut ca_parameters = CertificateParams::default();

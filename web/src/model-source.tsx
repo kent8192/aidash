@@ -31,7 +31,13 @@ export function ModelSource({
     </span>
   );
 }
-export function RunPlanUsage({ run, data }: { run: Run; data: State }) {
+export function RunPlanUsage({
+  run,
+  data,
+}: {
+  run: Pick<Run, "agent_id" | "agent_version">;
+  data: State;
+}) {
   const { locale } = useI18n();
   const agent = data.registry.find(
     (entry) =>

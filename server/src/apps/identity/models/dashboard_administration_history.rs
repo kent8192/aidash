@@ -34,7 +34,7 @@ pub struct DashboardAdministrationHistory {
 	#[field(field_type = "text", null = true)]
 	pub node: Option<String>,
 	/// `deployment_administrator`, `tenant_administrator`, `identity` or
-	/// `demo_data`.
+	/// `demo_data` or `host_access`.
 	#[field(field_type = "text")]
 	pub actor_kind: String,
 	/// The acting External Identity; absent for the Deployment Administrator bearer token.
@@ -46,4 +46,7 @@ pub struct DashboardAdministrationHistory {
 	/// The Invitation an `invitation.*` event concerns.
 	#[field(null = true)]
 	pub invitation_id: Option<uuid::Uuid>,
+	/// Groups recorded with an Invitation approval.
+	#[field(null = true)]
+	pub groups: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 }

@@ -137,6 +137,18 @@ export function statusTone(value: string): StatusTone {
   return statusTones[value.toUpperCase()] ?? "neutral";
 }
 /** Status word badge; `tone` overrides `statusTone` for vocabularies it does not cover. */
+/**
+ * Why a Subject Credential ended or was shortened, in the reader's words
+ * (#876). A reason this page does not know yet is shown as written.
+ */
+export function credentialEndReason(
+  t: (key: string) => string,
+  reason: string,
+) {
+  const key = `credentialEndReason_${reason}`;
+  const text = t(key);
+  return text === key ? reason : text;
+}
 export function Badge({ value, tone }: { value: string; tone?: StatusTone }) {
   const { t } = useI18n();
   return (

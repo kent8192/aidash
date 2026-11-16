@@ -20,6 +20,7 @@ import type { State } from "./types";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceGet } from "./generated/aidash";
 import { ArtifactList } from "./collaboration/channel";
+import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { ChannelFiles } from "./collaboration/attachments";
 const WorkingFileSettings = lazy(() =>
   import("./capabilities/management").then((m) => ({
@@ -182,10 +183,7 @@ export function TrustTools({
           <AdministratorTenantNotice className="" />
         ) : (
           <Suspense fallback={loading}>
-            <ResearchEvidenceGovernance
-              tenant={tenant}
-              deploymentAdministrator={false}
-            />
+            <ResearchEvidenceGovernance tenant={tenant} />
           </Suspense>
         )}
       </ToolSection>
@@ -301,7 +299,14 @@ function RequestFiles({ workspace }: { workspace: string }) {
             : "Could not load results."}
         </Alert>
       ) : (
-        <ArtifactList artifacts={query.data?.artifacts ?? []} />
+        <ArtifactList
+          artifacts={query.data?.artifacts ?? []}
+          unconfirmed={unconfirmedFor(
+            readUnconfirmed(query.data),
+            ["artifact"],
+            [workspace],
+          )}
+        />
       )}
       <ChannelFiles workspace={workspace} />
     </div>

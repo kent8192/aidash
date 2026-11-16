@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
-pub trait ResourceVisibilityScope: Send {
+pub trait ResourceVisibilityScope: Send + super::RowOutcome {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
