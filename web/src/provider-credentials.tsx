@@ -137,6 +137,9 @@ function TenantProviderCredentials({
   const [pasteOutcome, setPasteOutcome] = useState<"bound" | "unbound" | null>(
     null,
   );
+  // Replacing an OAuth-connected key leaves that key live at OpenRouter, and
+  // its settings link is not kept once the pasted key is stored.
+  const [pastePrevious, setPastePrevious] = useState<string | null>(null);
   const client = useQueryClient();
   const path = encodeURIComponent(tenant);
   const [offset, setOffset] = useState(0);
@@ -222,6 +225,7 @@ function TenantProviderCredentials({
     const key = pasted.trim();
     setPasted("");
     setPasteOutcome(null);
+    setPastePrevious(null);
     return act(async () => {
       const stored = await providerCredentialSupply(path, {
         provider: "openrouter",
@@ -230,6 +234,7 @@ function TenantProviderCredentials({
         expected_revision: target?.revision ?? null,
       });
       setPasteOutcome(stored.bound ? "bound" : "unbound");
+      setPastePrevious(stored.previous_key_settings_url ?? null);
     });
   };
   const disabled = rows.error instanceof ApiError && rows.error.status === 404;
@@ -354,9 +359,25 @@ function TenantProviderCredentials({
           {pasteOutcome && (
             <Notice
               role="status"
-              tone={pasteOutcome === "bound" ? "info" : "warning"}
+              tone={
+                pasteOutcome === "bound" && !pastePrevious ? "info" : "warning"
+              }
             >
               {t(`providerKeyPasteOutcome_${pasteOutcome}`)}
+              {pastePrevious && (
+                <>
+                  {" "}
+                  {t("providerKeyPasteReplacedPrevious")}{" "}
+                  <a
+                    className="underline"
+                    href={pastePrevious}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {t("providerKeySettings")}
+                  </a>
+                </>
+              )}
             </Notice>
           )}
           <form

@@ -653,6 +653,7 @@
   "providerKeyPasteReplace": "キーを置き換える",
   "providerKeyPasteOutcome_bound": "キーを保存しました。Run はこのキーを使います。",
   "providerKeyPasteOutcome_unbound": "キーを保存しましたが、別の認証情報が割り当てられたままなので、Run はまだこのキーを使いません。",
+  "providerKeyPasteReplacedPrevious": "置き換えたキーは、OpenRouter で削除するまで OpenRouter 上で有効なままです。",
   "providerKeyOrigin_authorization": "接続",
   "providerKeyOrigin_pasted": "貼り付け",
   "providerKeyOrigin_host_access": "ホストから登録",

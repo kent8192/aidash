@@ -653,6 +653,7 @@
   "providerKeyPasteReplace": "Replace key",
   "providerKeyPasteOutcome_bound": "The key was saved. Runs use it now.",
   "providerKeyPasteOutcome_unbound": "The key was saved, but another credential is still bound, so Runs do not use it yet.",
+  "providerKeyPasteReplacedPrevious": "The replaced key stays valid at OpenRouter until you delete it there.",
   "providerKeyOrigin_authorization": "Connected",
   "providerKeyOrigin_pasted": "Pasted",
   "providerKeyOrigin_host_access": "Stored from host",
