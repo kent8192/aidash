@@ -16,6 +16,7 @@ use aidash_application::{
 };
 use aidash_domain::preview::live::StopReason;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
@@ -81,6 +82,8 @@ impl ReadRecheckRepository for Repository<'_> {
 			Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
 				Ok(Outcome::Refused)
 			}
+			// A Node that does not answer refuses nothing (#906, ADR 0117).
+			Err(Error::NodeUnreachable { .. }) => Ok(Outcome::Unconfirmed),
 			Err(error) => Err(error.into()),
 		}
 	}
@@ -96,6 +99,17 @@ impl ReadRecheckRepository for Repository<'_> {
 					.map_err(Into::into)
 			}
 		}
+	}
+	async fn withhold(&self, preview: Uuid) -> Result<Option<DateTime<Utc>>> {
+		live_previews::set_unconfirmed(self.store, preview, true)
+			.await
+			.map_err(Into::into)
+	}
+	async fn serve_again(&self, preview: Uuid) -> Result<()> {
+		live_previews::set_unconfirmed(self.store, preview, false)
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
 	}
 	async fn stop_unconfirmed(&self, preview: Uuid) -> Result<()> {
 		live_previews::stop_serving(self.store, preview, StopReason::NodeUnreachable)

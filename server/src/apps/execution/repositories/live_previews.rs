@@ -53,6 +53,7 @@ pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
 		pod_host: row.pod_host,
 		termination_confirmed: row.termination_confirmed,
 		egress_expires_at: row.egress_expires_at,
+		unconfirmed_since: row.unconfirmed_since,
 	})
 }
 
@@ -74,6 +75,7 @@ pub(crate) fn to_row(preview: &LivePreview) -> Row {
 		.pod_host(preview.pod_host.clone())
 		.termination_confirmed(preview.termination_confirmed)
 		.egress_expires_at(preview.egress_expires_at)
+		.unconfirmed_since(preview.unconfirmed_since)
 		.updated_at(Utc::now())
 		.finish()
 }
@@ -751,6 +753,36 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 	}
 	let result = access.recheck_run_reads(preview.run_id).await.map(|_| ());
 	access.finish(result).await.map(|()| true)
+}
+
+/// Withhold a serving Live preview's responses while its Read Recheck cannot
+/// be confirmed, or serve again once it is (ADR 0129). Returns since when it
+/// has been withheld, which survives a restart of the recheck loop.
+pub(crate) async fn set_unconfirmed(
+	store: &Store,
+	id: Uuid,
+	unconfirmed: bool,
+) -> NativeResult<Option<DateTime<Utc>>> {
+	let Some(mut preview) = load_for_maintenance(store, id).await? else {
+		return Ok(None);
+	};
+	if !matches!(preview.state, State::Running | State::Stale)
+		|| preview.unconfirmed_since.is_some() == unconfirmed
+	{
+		return Ok(preview.unconfirmed_since);
+	}
+	preview.unconfirmed_since = unconfirmed.then(Utc::now);
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(&preview.tenant)?)
+		.await?;
+	Row::objects()
+		.save_with_executor(&mut *tx, &to_row(&preview))
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?;
+	tx.commit().await?;
+	Ok(preview.unconfirmed_since)
 }
 
 /// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the

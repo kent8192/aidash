@@ -33,6 +33,9 @@ pub struct CoreLivePreviews {
 	#[field(default = true)]
 	pub termination_confirmed: bool,
 	pub egress_expires_at: Option<DateTime<Utc>>,
+	/// Set while a Node on the Run's chain does not answer its Read Recheck;
+	/// the gateway then answers `503` instead of serving (ADR 0129).
+	pub unconfirmed_since: Option<DateTime<Utc>>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 	#[field(auto_now_add = true)]
