@@ -1,6 +1,10 @@
 /** Readiness facts for Tenant Secrets (decision 5 of #310). A fact never
  *  carries a value, a Fingerprint or the last four characters. */
-export type SecretReadinessKind = "tool" | "external_service" | "slot";
+export type SecretReadinessKind =
+  | "tool"
+  | "external_service"
+  | "slot"
+  | "agent_plugin_server";
 export type SecretReadinessStatus =
   | "ready"
   | "secret_missing"
@@ -26,7 +30,7 @@ export type SecretReadinessLocale = "en-US" | "ja-JP";
 export const secretReadinessCopy = {
   "en-US": {
     title: "Tenant Secret readiness",
-    help: "Each bound tool, External service and Secret slot is checked against this Tenant's secrets. Values are never shown.",
+    help: "Each bound tool, External service, Agent Plugin server and Secret slot is checked against this Tenant's secrets. Values are never shown.",
     ready: "Ready",
     secretMissing: "Tenant Secret missing",
     hostsMismatch: "Hosts do not permit this destination",
@@ -40,10 +44,11 @@ export const secretReadinessCopy = {
     tool: "Tool",
     externalService: "External service",
     slot: "Secret slot",
+    agentPluginServer: "Agent Plugin server",
   },
   "ja-JP": {
     title: "Tenant Secret の準備状況",
-    help: "バインドされたツール、External service、Secret スロットをこの Tenant の Secret と照合します。値は表示しません。",
+    help: "バインドされたツール、External service、Agent Plugin のサーバー、Secret スロットをこの Tenant の Secret と照合します。値は表示しません。",
     ready: "準備完了",
     secretMissing: "Tenant Secret がありません",
     hostsMismatch: "許可ホストが送信先と一致しません",
@@ -58,6 +63,7 @@ export const secretReadinessCopy = {
     tool: "ツール",
     externalService: "External service",
     slot: "Secret スロット",
+    agentPluginServer: "Agent Plugin のサーバー",
   },
 } as const;
 
@@ -84,6 +90,7 @@ export function readinessKindLabel(
     tool: copy.tool,
     external_service: copy.externalService,
     slot: copy.slot,
+    agent_plugin_server: copy.agentPluginServer,
   }[kind];
 }
 

@@ -199,8 +199,8 @@ impl RegistryManagement {
 		agent_plugin_import::list_tools(&self.runtime, actor, request).await
 	}
 
-	/// Readiness facts for the Tenant Secrets this Agent version's bound tools
-	/// and External services name (decision 5 of #310). A bound tool or
+	/// Readiness facts for the Tenant Secrets this Agent version's bound tools,
+	/// External services and Agent Plugin servers name (decision 5 of #310). A bound tool or
 	/// External service that names no Tenant Secret needs none and has no fact.
 	/// A fact never carries a value, a Fingerprint or the last four characters.
 	pub(crate) async fn secret_readiness(
@@ -271,6 +271,36 @@ impl RegistryManagement {
 					tenant_secret_name: Some(tenant_secret_name),
 					endpoint: Some(endpoint),
 				});
+			}
+			// The remote servers of the Agent's own Agent Plugins whose secret may be the shared
+			// Tenant Secret; a personal-only one is checked against each person's row at dispatch.
+			if let Ok(bindings) = serde_json::from_value::<
+				aidash_domain::registry::bindings::AgentBindings,
+			>(agent.config.clone())
+			{
+				for plugin in &bindings.agent_plugins {
+					let Some(servers) = bindings.agent_plugin_settings.get(&plugin.name) else {
+						continue;
+					};
+					for (server, settings) in servers {
+						let (
+							Some(secret),
+							Some(aidash_domain::agent_plugin::McpServer::Remote(remote)),
+						) = (&settings.secret, plugin.servers.get(server))
+						else {
+							continue;
+						};
+						if secret.owner != aidash_domain::tool::SecretOwner::Any {
+							continue;
+						}
+						targets.push(Target {
+							item: format!("{}/{server}", plugin.name.as_str()),
+							kind: Kind::AgentPluginServer,
+							tenant_secret_name: Some(secret.name.clone()),
+							endpoint: Some(remote.url.as_str().to_owned()),
+						});
+					}
+				}
 			}
 			targets.sort_by(|left, right| left.item.cmp(&right.item));
 			let can_manage = tenant_secret_readiness::can_manage(&mut access).await?;
