@@ -343,6 +343,50 @@ impl Authentication {
 		// there is no positive-result cache when this authority is unreachable.
 		Ok(())
 	}
+	/// Read only linked methods owned by this account; unknown upstream status
+	/// suppresses the prompt rather than claiming a method is unusable.
+	pub(crate) async fn usable_sign_in_method_count(&self, account: Uuid) -> Result<Option<u32>> {
+		use reinhardt::db::orm::execution::convert_values;
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+		// The dashboard asks on every session read, so the lookup uses the
+		// `auth_identity_first_account` index instead of decoding every identity.
+		let mut tx = self.store.scope().await?;
+		let (sql, args) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("auth_identities"))
+			.and_where(Expr::cust_with_values(
+				"document->>'first_account' = ?",
+				[account.to_string()],
+			))
+			.build(PostgresQueryBuilder);
+		let rows = tx
+			.executor()
+			.fetch_all(&sql, convert_values(args))
+			.await
+			.map_err(crate::store::unavailable)?;
+		let mut ids = Vec::with_capacity(rows.len());
+		for row in rows {
+			ids.push(row.get::<Uuid>("id").map_err(crate::store::unavailable)?);
+		}
+		drop(tx);
+		let mut count = 0u32;
+		for id in ids {
+			self.refresh_identity(id).await?;
+			let mut tx = self.store.scope().await?;
+			let Some(identity) = tx.identity(id).await? else {
+				return Ok(None);
+			};
+			if identity.first_account != Some(account) || !identity.linked {
+				continue;
+			}
+			match identity.validity(Utc::now()) {
+				Validity::Active => count += 1,
+				Validity::Unavailable => return Ok(None),
+				Validity::Denied(_) => {}
+			}
+		}
+		Ok(Some(count))
+	}
 	pub async fn check_session(
 		&self,
 		id: Uuid,
@@ -368,17 +412,26 @@ impl Authentication {
 		expected_epoch: Option<u64>,
 		expected_source_epoch: Option<u64>,
 		bind_current: bool,
-	) -> Result<(Validity, Option<ExternalIdentity>, Option<u64>)> {
+	) -> Result<(Validity, Option<ExternalIdentity>, Option<u64>, Vec<u64>)> {
 		self.refresh_identity(source).await?;
 		let mut tx = self.store.scope().await?;
 		let Some(identity) = tx.identity(source).await? else {
-			return Ok((Validity::Denied(Denial::ProvenanceMismatch), None, None));
+			return Ok((
+				Validity::Denied(Denial::ProvenanceMismatch),
+				None,
+				None,
+				Vec::new(),
+			));
 		};
 		let account = match identity.first_account {
 			Some(id) => tx.account(id).await?,
 			None => None,
 		};
 		let epoch = account.as_ref().map(|account| account.suspension_epoch);
+		let resumable = account
+			.as_ref()
+			.map(|account| account.resumable_suspension_epochs.clone())
+			.unwrap_or_default();
 		let origin = DurableOrigin {
 			identity_id: source,
 			account_id: expected_account,
@@ -389,8 +442,19 @@ impl Authentication {
 				expected_source_epoch
 			},
 		};
-		let result = durable_validity(&origin, account.as_ref(), &identity, Utc::now());
-		Ok((result, Some(identity), epoch))
+		let mut result = durable_validity(&origin, account.as_ref(), &identity, Utc::now());
+		// `account_suspended` tells the product a Run may wait for a resume (#876
+		// decisions 15–16). Once the Account is restored without authorizing
+		// resume of this epoch, the stale binding stays a plain refusal; only the
+		// owner's manual resume rebinds it.
+		if result == Validity::Denied(Denial::AccountSuspended)
+			&& let Some(account) = account.as_ref()
+			&& account.status != AccountStatus::Suspended
+			&& !resumable.contains(&account.suspension_epoch)
+		{
+			result = Validity::Denied(Denial::ProvenanceMismatch);
+		}
+		Ok((result, Some(identity), epoch, resumable))
 	}
 	pub(crate) fn resource_client(&self, id: &str, raw: &str) -> Result<String> {
 		use subtle::ConstantTimeEq;

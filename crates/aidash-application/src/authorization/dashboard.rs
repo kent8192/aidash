@@ -1,7 +1,10 @@
 //! Ongoing runs and browser sessions share the same account validity deadline.
 use crate::{
 	Error, Result,
-	ports::authorization::dashboard::{AccountStatus, Accounts},
+	ports::{
+		accounts::Recheck,
+		authorization::dashboard::{AccountStatus, Accounts},
+	},
 };
 use aidash_domain::identity::dashboard::{Account, SignIn, session_revoked};
 use chrono::{DateTime, Duration, Utc};
@@ -104,6 +107,14 @@ impl DashboardAuthority {
 		Ok(account)
 	}
 	pub async fn account_valid(&self, account: &Account) -> Result<()> {
+		self.account_valid_with(account, Recheck::Online).await
+	}
+	/// [`Self::account_valid`] for an already admitted stream frame, whose caller
+	/// has just made the interactive check with the same `recheck`. With common
+	/// authentication and [`Recheck::WithinT`], that check's answer, reused within
+	/// T, stands for the Authentication Server's, so the origin is not asked again
+	/// on every frame (#876 decisions 2, 4 and 5). The local checks still run.
+	pub async fn account_valid_with(&self, account: &Account, recheck: Recheck) -> Result<()> {
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
 		}
@@ -120,6 +131,9 @@ impl DashboardAuthority {
 			return Err(Error::Forbidden);
 		}
 		if let Some(authority) = &policy.authority {
+			if matches!(recheck, Recheck::WithinT) {
+				return Ok(());
+			}
 			authority.validate_origin(account.id).await?;
 			return self
 				.accounts
@@ -230,7 +244,14 @@ impl DashboardAuthority {
 					tracing::warn!(identity_id=%account.id, %error, "status recovery check failed");
 				}
 			}
-			Err(error) if !matches!(error, Error::Forbidden | Error::IdentityStatusUnavailable) => {
+			Err(error)
+				if !matches!(
+					error,
+					Error::Forbidden
+						| Error::AccountSuspended { .. }
+						| Error::IdentityStatusUnavailable
+				) =>
+			{
 				tracing::warn!(identity_id=%account.id, "issuer status refresh did not establish validity");
 			}
 			Err(_) => {}

@@ -2945,8 +2945,14 @@ async fn tenant_administrators_disabling_each_other_are_serialized(
 	lock_waiters(&f, 2).await;
 	barrier.commit().await.unwrap();
 	assert_eq!(first_disables.await.unwrap().unwrap().status(), 204);
-	// The second administrator's own Mapping was disabled before it acted.
-	assert_eq!(second_disables.await.unwrap().unwrap().status(), 401);
+	// The second administrator's own Mapping was disabled before it acted, so
+	// its session answers 403 with the reason (ADR 0131, #876 decision 12).
+	let refused = second_disables.await.unwrap().unwrap();
+	assert_eq!(refused.status(), 403);
+	assert_eq!(
+		refused.json::<Value>().await.unwrap()["reason"],
+		"mapping_disabled"
+	);
 	let enabled = |mapping: &Value| {
 		format!(
 			"SELECT enabled FROM dashboard_mappings WHERE id = '{}'",

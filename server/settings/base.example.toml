@@ -119,6 +119,7 @@ federation = true
 # Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
 # one Tenant are never covered.
 [tenancy]
+credential_max_days = 90
 # Create a Personal Tenant for each External Identity at its first sign-in.
 # personal_tenants = false
 # Let signed-in External Identities create Tenants. Deployment Administrators
@@ -165,6 +166,7 @@ enabled = false
 # ca_certificate_file = "/run/auth-tls/ca.pem"
 # client_certificate_file = "/run/auth-tls/cloud.pem"
 # client_private_key_file = "/run/auth-tls/cloud-key.pem"
+# validity_cache_seconds = 30 # 0 disables reuse; maximum 300
 # [dashboard.common_auth.source_issuers]
 # "https://securetoken.google.com/PROJECT/tenants/shared-pool" = "" # unrestricted
 # "https://securetoken.google.com/PROJECT/tenants/corporate-pool" = "acme" # Tenant-bound

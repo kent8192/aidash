@@ -201,6 +201,7 @@ async fn setup_endpoint_policy_with_window(
 		.created_at(chrono::Utc::now())
 		.created_by_kind("deployment_administrator".to_owned())
 		.created_by_identity(None)
+		.credential_max_seconds(None)
 		.finish();
 	store
 		.pool
