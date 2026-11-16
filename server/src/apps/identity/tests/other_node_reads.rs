@@ -1432,6 +1432,69 @@ async fn closing_a_required_home_receiver_withholds_its_outputs(#[future(awt)] p
 	world.close().await;
 }
 
+/// A same-Tenant admission on another Node of this Deployment carries no Peer
+/// Mapping: it reads only for the subject that began its chain. With any other
+/// first subject the outputs are withheld as a refusal, not counted, and they
+/// return once the chain names that subject again.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_same_tenant_admission_reads_only_for_the_subject_that_began_it(
+	#[future(awt)] provider: Provider,
+) {
+	provider
+		.script
+		.tasks
+		.store(2, std::sync::atomic::Ordering::SeqCst);
+	provider
+		.script
+		.read_delegated
+		.store(true, std::sync::atomic::Ordering::SeqCst);
+	let world = world(provider).await;
+	establish_delegated_read(&world, 2).await;
+	let children = world.all_handed_over().await;
+	assert_eq!(children.len(), 2);
+	let (status, before) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{before}");
+	assert!(
+		children.iter().all(|child| listed(&before, child.id)),
+		"{before}"
+	);
+	// Another subject now heads the chain of every admission of the Tenant.
+	let original: Vec<(Uuid, String)> = sqlx::query_as(
+		"UPDATE authorization_remote_admissions a SET subject_chain[1] = 'mallory' \
+		 FROM authorization_remote_admissions o WHERE a.id = o.id AND a.tenant = 'acme' \
+		 RETURNING a.id, o.subject_chain[1]",
+	)
+	.fetch_all(world.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(!original.is_empty(), "the delegation admitted a Run");
+	let (status, after) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{after}");
+	assert!(
+		children.iter().all(|child| !listed(&after, child.id)),
+		"{after}"
+	);
+	assert_eq!(after["unconfirmed"], json!([]), "{after}");
+	for (id, subject) in &original {
+		sqlx::query(
+			"UPDATE authorization_remote_admissions SET subject_chain[1] = $2 WHERE id = $1",
+		)
+		.bind(id)
+		.bind(subject)
+		.execute(world.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+	let (status, restored) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{restored}");
+	assert!(
+		children.iter().all(|child| listed(&restored, child.id)),
+		"{restored}"
+	);
+	world.close().await;
+}
+
 /// Serves the application from `pool` again, once the Node answers.
 async fn restore_pool(world: &mut World, pool: aidash_server::database::native::Pool) {
 	world.f.store.pool = pool;
