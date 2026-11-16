@@ -253,13 +253,15 @@ pub(crate) async fn mutate_origin(
 			// A write identical to the current revision is not a change: the
 			// revision stays, so no Run that read it stops. A stale Unit is
 			// refreshed by any correction, so it never takes this path. The
-			// body is returned only under the same checks as a changed one.
+			// body is returned only after the expiry and evidence checks a
+			// changed one meets, read as the same originating Run.
 			units::unexpired(lease, current).await?;
-			units::current(
+			units::current_for_run(
 				lease,
 				current.bank.workspace,
 				&current.content.evidence,
 				bounds.max_graph_visits,
+				origin,
 			)
 			.await?;
 			unchanged.push(current.id);
