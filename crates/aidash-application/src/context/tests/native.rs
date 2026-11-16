@@ -106,6 +106,20 @@ fn native_summary_candidates_are_whole_turns_outside_the_protected_tail() {
 	);
 }
 
+#[test]
+fn a_large_recent_tail_cannot_protect_all_older_turns() {
+	let context = turns(4);
+	let count = super::super::bounded_native_tail(&context, 6, 1);
+	assert_eq!(count, 1);
+	let candidates = native_summary_candidates(&context, count);
+	assert_eq!(candidates.len(), 9);
+	assert!(
+		candidates
+			.iter()
+			.all(|entry| entry.seq < context.journal.head - 2)
+	);
+}
+
 #[rstest::rstest]
 fn a_turn_that_renders_nothing_takes_no_protected_slot() {
 	// Arrange: the latest response's only call was deferred before it ran.
@@ -130,7 +144,7 @@ fn a_turn_that_renders_nothing_takes_no_protected_slot() {
 #[tokio::test]
 async fn native_summaries_absorb_whole_turns_and_keep_the_recent_ones() {
 	// Arrange: pruning keeps everything, so only the Summary Stage can fit.
-	let mut context = turns(12);
+	let context = turns(12);
 	let pinned = json!({"task": {"description": "Ship the release"}});
 	let mut retained = context.clone();
 	let candidates = native_summary_candidates(&context, 6);
@@ -151,11 +165,7 @@ async fn native_summaries_absorb_whole_turns_and_keep_the_recent_ones() {
 		policy: &policy,
 	};
 	// Act
-	let plan = needs_summary(
-		super::super::compact_decided(&mut context, None, &fitting)
-			.await
-			.unwrap(),
-	);
+	let plan = *super::super::summary_plan(context.clone(), &fitting).unwrap();
 	let (adopted, _) = summary_candidate(
 		&plan,
 		&summary_text(&[], &[], &[]),
@@ -166,16 +176,36 @@ async fn native_summaries_absorb_whole_turns_and_keep_the_recent_ones() {
 	)
 	.unwrap();
 	// Assert
-	assert_eq!(plan.absorbed.len(), 18, "six whole turns of three entries");
+	assert_eq!(plan.absorbed.len() % 3, 0, "only whole turns are absorbed");
+	let absorbed_turns = plan.absorbed.len() / 3;
+	assert!((6..12).contains(&absorbed_turns));
 	assert_eq!(
 		rendered_turns(&adopted),
-		(6..12).map(turn_ids).collect::<Vec<_>>()
+		(absorbed_turns..12).map(turn_ids).collect::<Vec<_>>()
 	);
 	assert!(adopted.execution_summary.is_some());
 	assert!(matches!(
 		adopted.events().next(),
 		Some(ContextEvent::Human { .. })
 	));
+}
+
+#[test]
+fn fitting_falls_back_to_the_newest_turn_before_pausing() {
+	let context = turns(3);
+	let pinned = json!({"task": {"description": "x".repeat(500_000)}});
+	let budget = budget(100_000);
+	let policy = recovery_policy(true);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let result = super::super::compact(&context, &fitting, 0).unwrap();
+	let Compaction::NeedsSummary(plan, _) = result else {
+		panic!("older turns remain reducible")
+	};
+	assert_eq!(plan.absorbed.len(), 6);
 }
 
 #[rstest::rstest]

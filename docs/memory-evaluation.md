@@ -99,8 +99,7 @@ A Run passes when its answer matches the case's `expect` and none of its
 `forbid` patterns, and `/memory/units/impact` lists the Run against every
 required Unit at its current revision. A read of a superseded revision or of a
 deleted Unit fails the Run, and so does any read by the control. A correct
-answer without a read is a guess and fails. The Agents remove the default
-compaction binding, so no Decider is involved, and `memory_reflect`, so only the
+answer without a read is a guess and fails. The Agents remove `memory_reflect`, so only the
 arm's own delivery path supplies memory. The control seeds its bank through an
 evaluated arm's provider, or through a seed-only provider when `--arm none` is
 the only arm. A Run that does not finish within `--run-timeout` (every poll is

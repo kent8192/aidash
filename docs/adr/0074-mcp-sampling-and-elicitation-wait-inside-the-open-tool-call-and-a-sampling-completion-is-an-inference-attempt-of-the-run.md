@@ -16,7 +16,7 @@ A Sampling approval is addressed to a Designated approver and may be given once 
 
 - Legacy waits hold a worker lease and session. Modern human waits use a durable checkpoint; both need approval notifications within their waiting limits.
 - Auto never approves sampling by itself until a Decider can answer a question about it.
-- Workbench tests deny sampling and elicitation, as they deny other approvals.
+- Workbench tests deny sampling and elicitation. Other approvals can be offered to the test's starter under ADR 0127.
 
 ## Amendment accepted on 2026-10-23
 

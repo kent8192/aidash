@@ -9,7 +9,6 @@ import {
   restrictionLabel,
   restrictionRequest,
   unapprovedClosure,
-  unapprovedCompactionDecider,
   unapprovedDependency,
   withdrawalAgentLabels,
   withdrawalHasNoImpact,
@@ -57,12 +56,12 @@ test("dependencies follow the definitions each kind names", () => {
         model: ref("model"),
         context_policy: {
           version: "context-recovery/1",
-          summary: { model: ref("summarizer") },
+          summary: { max_tokens: 1024 },
         },
         bindings: [{ kind: "tool", target: ref("search") }, null],
       },
     }),
-    [ref("model"), ref("summarizer"), ref("search")],
+    [ref("model"), ref("search")],
   );
   assert.deepEqual(
     dependencies({
@@ -142,22 +141,6 @@ test("only a dependency refusal names a dependency", () => {
   );
   assert.equal(unapprovedDependency("AGENT_SUBJECT_EXISTS"), null);
   assert.equal(unapprovedDependency("forbidden"), null);
-});
-
-test("only a refused Run start names its compaction Decider", () => {
-  assert.deepEqual(
-    unapprovedCompactionDecider(
-      "COMPACTION_DECIDER_UNAPPROVED: aidash.compaction-decider@1.0.0",
-    ),
-    ref("aidash.compaction-decider"),
-  );
-  assert.equal(
-    unapprovedCompactionDecider(
-      "CATALOG_DEPENDENCY_UNAPPROVED: aidash.shell@1.0.0",
-    ),
-    null,
-  );
-  assert.equal(unapprovedCompactionDecider("forbidden"), null);
 });
 
 test("a new agent version starts from the latest approved earlier version's groups", () => {

@@ -131,13 +131,6 @@
       "approvals": [
         {
           "entry": {
-            "id": "aidash.compaction-decider",
-            "version": "1.0.0"
-          },
-          "groups": ["members"]
-        },
-        {
-          "entry": {
             "id": "demo-gpt-4o-mini",
             "version": "1.0.0"
           },
@@ -229,13 +222,6 @@
         }
       ],
       "approvals": [
-        {
-          "entry": {
-            "id": "aidash.compaction-decider",
-            "version": "1.0.0"
-          },
-          "groups": ["members"]
-        },
         {
           "entry": {
             "id": "demo-gpt-4o-mini",
