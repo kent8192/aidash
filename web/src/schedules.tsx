@@ -145,6 +145,9 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+/** How often a mounted Schedule list and history refresh. */
+const SCHEDULE_REFRESH_MS = 15_000;
+
 function listUrl(scope: Scope): string {
   if (scope.kind === "workspace")
     return `/api/workspaces/${encodeURIComponent(scope.workspace)}/schedules`;
@@ -167,10 +170,13 @@ export function SchedulesPanel({
   const shown: Scope =
     scope.kind === "mine" && all ? { kind: "tenant" } : scope;
   const key = ["schedules", shown];
+  // The scheduler changes next times, history and stops on its own, so a
+  // mounted list follows it as the bell's notices do.
   const list = useQuery({
     queryKey: key,
     queryFn: () => apiFetch<Schedule[]>(listUrl(shown)),
     retry: false,
+    refetchInterval: SCHEDULE_REFRESH_MS,
   });
   const limits = useQuery({
     queryKey: ["schedule-limits"],
@@ -397,6 +403,7 @@ function ScheduleHistory({
     queryKey: ["schedule", id],
     queryFn: () => apiFetch<ScheduleDetail>(`/api/schedules/${id}`),
     retry: false,
+    refetchInterval: SCHEDULE_REFRESH_MS,
   });
   if (detail.isError) return <Alert>{String(detail.error)}</Alert>;
   if (!detail.data) return <Loading />;
