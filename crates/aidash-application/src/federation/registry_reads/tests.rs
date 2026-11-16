@@ -865,13 +865,12 @@ async fn a_node_remembered_silent_without_a_route_stays_a_refusal(mut scope: Sco
 	scope.unavailable.insert("aidash://leaf".into());
 	scope.missing_peer = true;
 	let transport = Transport::default();
-	scope.begin_row();
 	assert!(
 		!reads_visible(&mut scope, &transport, Uuid::from_u128(1))
 			.await
 			.unwrap()
 	);
 	assert!(scope.skipped.is_empty());
-	assert_eq!(scope.take_row_silence(), None);
+	assert_eq!(scope.row_silence, None);
 	assert!(transport.calls.lock().unwrap().is_empty());
 }

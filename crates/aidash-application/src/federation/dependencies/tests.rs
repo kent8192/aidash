@@ -431,7 +431,8 @@ async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
 		.await
 		.unwrap();
 	// Assert: both are unconfirmed, the Node is marked, and the second walk
-	// only checked this reader's right to discover it, then did not ask.
+	// only checked this reader's right to discover it and the Node's route,
+	// then did not ask.
 	assert!(!first && !second);
 	assert!(scope.marked.contains("aidash://foreign"));
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
@@ -440,7 +441,10 @@ async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
 	assert_eq!(scope.met, ["aidash://foreign", "aidash://foreign"]);
 	assert_eq!(
 		scope.calls[calls_after_first..],
-		["decide:federation.discover:aidash://foreign"]
+		[
+			"decide:federation.discover:aidash://foreign",
+			"peer:aidash://foreign"
+		]
 	);
 }
 
