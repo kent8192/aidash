@@ -36,8 +36,9 @@ pub struct ApprovalCard {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub disclosure: Option<String>,
 	/// Whether the reader acts on this card as an Eligible approver: for a
-	/// pending approval, they may decide it now (ADR 0135); for anything else,
-	/// they may approve its kind for its destination now, so may revoke it.
+	/// pending approval, they may decide it now (ADR 0135); for a Run grant, they
+	/// may approve its kind for its destination now; for another approval, they
+	/// decided or gave it and still may approve it. Either way they may revoke it.
 	pub viewer_is_approver: bool,
 	/// The card is a pending outbound, disclosure or tool call approval that
 	/// the reader decides as its requester and the person at the root of the

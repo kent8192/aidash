@@ -9374,7 +9374,7 @@
                 "type": "boolean"
               },
               "viewer_is_approver": {
-                "description": "Whether the reader acts on this card as an Eligible approver: for a\npending approval, they may decide it now (ADR 0135); for anything else,\nthey may approve its kind for its destination now, so may revoke it.",
+                "description": "Whether the reader acts on this card as an Eligible approver: for a\npending approval, they may decide it now (ADR 0135); for a Run grant, they\nmay approve its kind for its destination now; for another approval, they\ndecided or gave it and still may approve it. Either way they may revoke it.",
                 "type": "boolean"
               }
             },
