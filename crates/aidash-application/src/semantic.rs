@@ -4,7 +4,7 @@ use crate::{
 	ports::{VectorIndex, semantic::*},
 };
 use aidash_domain::semantic::{
-	EmbeddingInput, EmbeddingInputKind, Source,
+	EmbeddingInputKind, Source,
 	indexing::{self, IndexingSpec, UnsupportedReason},
 };
 use serde_json::{Value, json};
@@ -83,7 +83,7 @@ async fn index(
 		&& scope.permits("semantic.read").await?;
 	let content = if permitted && spec.enabled {
 		match &source {
-			Source::WorkingImage { .. } => {
+			Source::WorkingImage { .. } | Source::AttachmentImage { .. } => {
 				let supported = spec.embedding.inputs.contains(&EmbeddingInputKind::Image);
 				let limit = if supported { spec.max_image_bytes } else { 0 };
 				let image = match scope.image(workspace, &source, limit).await {
@@ -184,7 +184,7 @@ async fn index(
 	};
 	let digest = match &content {
 		IndexContent::Text(text) => indexing::content_digest(text),
-		IndexContent::Image(image) => indexing::content_digest_bytes(&image.bytes),
+		IndexContent::Image(image) => image.digest(),
 	};
 	let old = scope.point(entry.point_id).await?;
 	if indexing::has_current_point(&entry, &old, &digest)
@@ -219,7 +219,7 @@ async fn index(
 	let result = async {
         match &content {
             IndexContent::Text(text) => indexing::validate_text(text, spec.max_input_bytes)?,
-            IndexContent::Image(image) => EmbeddingInput::Image { media_type: &image.media_type, bytes: &image.bytes }.validate(&spec.embedding)?,
+            IndexContent::Image(image) => image.input().validate(&spec.embedding)?,
         }
         vector.ensure_collection(&spec.vector, &plan.collection, spec.embedding.dimensions).await?;
         let embedding = match &content {

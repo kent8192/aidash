@@ -593,6 +593,7 @@ async fn observation_discloses_only_visible_attachment_metadata_within_the_fit(m
 					width: Some(2),
 					height: Some(3),
 					duration_ms: None,
+					description: None,
 				},
 			});
 	}

@@ -46,6 +46,20 @@ import {
 
 import { Alert, Check, Hint } from "./components/patterns";
 
+type EditableKind = Exclude<
+  SemanticSource["kind"],
+  "working_image" | "attachment_image"
+>;
+/** Images enter the index with their File or Thread Attachment; they are never edited here. */
+function isImageSource(kind: string): boolean {
+  return kind === "working_image" || kind === "attachment_image";
+}
+function hasRecordId(
+  source: SemanticSource,
+): source is Extract<SemanticSource, { id: string }> {
+  return "id" in source && typeof source.id === "string";
+}
+
 const semanticMessages: Record<string, string> = {
   "semantic backend unavailable or invalid; inspect index status and retry":
     "semanticBackendFailure",
@@ -176,10 +190,18 @@ function SemanticWorkspace({
     agent
       ? (labels.get(agent) ?? t("unavailableEntity"))
       : t("semanticWorkspaceScope");
-  const entryName = (entry: SemanticEntry) =>
-    entry.key.startsWith("agent-memory:")
-      ? `${scopeLabel(entry.agent)} · ${t("semanticMemoryText")}`
-      : entry.key;
+  const entryName = (entry: SemanticEntry) => {
+    const metadata = entry.metadata as { name?: unknown } | null;
+    if (entry.key.startsWith("agent-memory:"))
+      return `${scopeLabel(entry.agent)} · ${t("semanticMemoryText")}`;
+    // A posted image is named by its file, with the message it came in.
+    if (
+      entry.key.startsWith("attachment-image:") &&
+      typeof metadata?.name === "string"
+    )
+      return `${metadata.name} · ${t("message")}`;
+    return entry.key;
+  };
   const describe = (message: string) => t(semanticMessages[message] ?? message);
   const client = useQueryClient();
   const [error, setError] = useState("");
@@ -431,8 +453,7 @@ function SemanticWorkspace({
                           size="sm"
                           disabled={
                             busy ||
-                            (entry.source as SemanticSource).kind ===
-                              "working_image"
+                            isImageSource((entry.source as SemanticSource).kind)
                           }
                           onClick={() => openEditing(entry)}
                         >
@@ -805,9 +826,9 @@ function EntryForm({
 }) {
   const { t } = useI18n();
   const source = entry?.source as SemanticSource | undefined;
-  const [kind, setKind] = useState<
-    Exclude<SemanticSource["kind"], "working_image">
-  >(source?.kind === "working_image" ? "memory" : (source?.kind ?? "memory"));
+  const [kind, setKind] = useState<EditableKind>(
+    source && hasRecordId(source) ? source.kind : "memory",
+  );
   const [metadataError, setMetadataError] = useState("");
   const olderMessages = useInfiniteQuery({
     queryKey: ["workspace", workspace, "semantic-message-sources"],
@@ -875,14 +896,7 @@ function EntryForm({
         <NativeSelect
           value={kind}
           disabled={!!entry}
-          onChange={(e) =>
-            setKind(
-              e.target.value as Exclude<
-                SemanticSource["kind"],
-                "working_image"
-              >,
-            )
-          }
+          onChange={(e) => setKind(e.target.value as EditableKind)}
         >
           <option value="memory">{t("semanticMemoryText")}</option>
           <option value="artifact">{t("artifact")}</option>
@@ -903,13 +917,7 @@ function EntryForm({
           <NativeSelect
             name="sourceId"
             required
-            defaultValue={
-              source &&
-              source.kind !== "memory" &&
-              source.kind !== "working_image"
-                ? source.id
-                : ""
-            }
+            defaultValue={source && hasRecordId(source) ? source.id : ""}
           >
             <option value="">{t("choose")}</option>
             {(kind === "artifact"
@@ -925,10 +933,7 @@ function EntryForm({
               .filter(
                 (option) =>
                   !entry ||
-                  (source &&
-                    source.kind !== "memory" &&
-                    source.kind !== "working_image" &&
-                    option.id === source.id),
+                  (source && hasRecordId(source) && option.id === source.id),
               )
               .map((option) => (
                 <option key={option.id} value={option.id}>
@@ -936,8 +941,7 @@ function EntryForm({
                 </option>
               ))}
             {source &&
-              source.kind !== "memory" &&
-              source.kind !== "working_image" &&
+              hasRecordId(source) &&
               !(kind === "artifact" ? sources.artifacts : messages).some(
                 (option) => option.id === source.id,
               ) && <option value={source.id}>{t("unavailableEntity")}</option>}

@@ -28,7 +28,7 @@ pub(crate) async fn source_invalidated(
 		Source::Memory { .. } => false,
 		// The Area gate may hide an image without deleting it. Image sources have
 		// no text to disclose here, so leave the subsequent authority check to refuse them.
-		Source::WorkingImage { .. } => false,
+		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => false,
 		Source::Artifact { id } => crate::apps::workspaces::models::Artifact::read_in(
 			&mut **lease.tx(),
 			*id,
@@ -114,6 +114,9 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		self.entries.permits(entry, action).await
+	}
+	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		SemanticEntriesSession::image_visible(&mut self.entries, workspace, source).await
 	}
 	async fn entry_authorized(&mut self, entry: &Entry) -> Result<bool> {
 		aidash_application::semantic::visibility::permits_resource(

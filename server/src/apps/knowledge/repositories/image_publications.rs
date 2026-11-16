@@ -70,8 +70,13 @@ impl Session {
 
 fn key(slot: &ImageSlot) -> String {
 	format!(
-		"working-image:{}:{}:{}:{}:{}",
-		slot.area_id, slot.generation, slot.file_id, slot.publication, slot.position
+		"{}{}:{}:{}:{}:{}",
+		aidash_domain::semantic::indexing::WORKING_IMAGE_KEY_PREFIX,
+		slot.area_id,
+		slot.generation,
+		slot.file_id,
+		slot.publication,
+		slot.position
 	)
 }
 
@@ -205,7 +210,11 @@ async fn refresh_owner_authority(
 	Ok(authorities)
 }
 
-async fn mark_limit(entries: &mut Entries<'_, '_>, workspace: Uuid, entry: &Entry) -> Result<()> {
+pub(crate) async fn mark_limit(
+	entries: &mut Entries<'_, '_>,
+	workspace: Uuid,
+	entry: &Entry,
+) -> Result<()> {
 	native::query(
 		&Query::update()
 			.table(Alias::new("semantic_entries"))
@@ -242,6 +251,9 @@ pub(crate) async fn rebuild(
 ) -> Result<()> {
 	// Serialize the rebuild boundary with File publication commits.
 	lock_workspace(&mut **lease.tx(), workspace).await?;
+	// Thread Attachment images share the one image limit (#622 decision 12).
+	let max_images =
+		max_images.saturating_sub(super::attachment_images::counted(lease.tx(), workspace).await?);
 	let ledger = native::query(
 		&Query::select()
 			.columns(["slots", "authorities"].map(Alias::new))
@@ -800,6 +812,8 @@ impl ImagePublicationSession for Session {
 		};
 		let sequence: i64 = row.try_get("sequence")?;
 		let rebuild_after = slots.rebuild_through == Some(sequence);
+		// Thread Attachment images share the one image limit (#622 decision 12).
+		let attachments = super::attachment_images::counted(lease.tx(), workspace).await?;
 		let publication = ImagePublication {
 			workspace,
 			area: row.try_get("area_id")?,
@@ -807,7 +821,7 @@ impl ImagePublicationSession for Session {
 			sequence,
 			changes: serde_json::from_value(row.try_get("changes")?)?,
 			authority: row.try_get("authority")?,
-			max_images: spec.max_images,
+			max_images: spec.max_images.saturating_sub(attachments),
 			slots,
 			rebuild_after,
 		};

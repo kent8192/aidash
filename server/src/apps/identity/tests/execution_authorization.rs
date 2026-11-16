@@ -636,7 +636,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert_eq!(catalog.as_array().unwrap().len(), 8 + builtin_count);
 	for (id, version) in [
 		("aidash.workspace_read", "1.1.0"),
-		("aidash.workspace_search", "1.0.0"),
+		("aidash.workspace_search", "1.1.0"),
 		("aidash.attachment_copy", "1.0.0"),
 	] {
 		assert!(
@@ -8345,7 +8345,7 @@ impl LateFiles {
 		let (name, arguments) = match call {
 			LateCall::Message => (
 				"workspace_message",
-				json!({"content":"Late file","files":["sent.png"]}),
+				json!({"content":"Late file","files":["sent.png"],"image_descriptions":{"sent.png":"A single pixel"}}),
 			),
 			LateCall::Copy => (
 				"attachment_copy",

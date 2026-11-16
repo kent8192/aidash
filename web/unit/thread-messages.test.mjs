@@ -9,6 +9,9 @@ import {
   validRunMediaAttachments,
   runMediaAccept,
   validRunMediaRoute,
+  uploadDescription,
+  descriptionTooLong,
+  MAX_IMAGE_DESCRIPTION_CHARS,
 } from "../src/collaboration/conversation-model.ts";
 import {
   MAX_FILE_CITATIONS,
@@ -265,4 +268,26 @@ test("a remote citation pins its source Run in the message payload", () => {
   assert.deepEqual(fileCitationPayload([citation]), [
     { area_id: "remote-area", file_id: "version", run_id: "source-run" },
   ]);
+});
+
+test("only an image sends its trimmed Image Description", () => {
+  assert.equal(
+    uploadDescription("image/png", "  A red bicycle  "),
+    "A red bicycle",
+  );
+  assert.equal(uploadDescription("image/png", "   "), undefined);
+  assert.equal(uploadDescription("image/png", undefined), undefined);
+  assert.equal(uploadDescription("text/plain", "Notes"), undefined);
+});
+
+test("a long Image Description is reported, not dropped, in characters", () => {
+  const japanese = "画".repeat(MAX_IMAGE_DESCRIPTION_CHARS);
+  assert.equal(descriptionTooLong(japanese), false);
+  assert.equal(uploadDescription("image/jpeg", japanese), japanese);
+  assert.equal(descriptionTooLong(`${japanese}画`), true);
+  assert.equal(
+    uploadDescription("image/jpeg", `${japanese}画`),
+    `${japanese}画`,
+  );
+  assert.equal(descriptionTooLong(undefined), false);
 });

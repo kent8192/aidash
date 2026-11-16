@@ -37,6 +37,8 @@ fn metadata(id: u128) -> ChannelAttachment {
 		media_type: "text/plain".into(),
 		size_bytes: 1,
 		no_assigned_agent_can_read: false,
+		description: None,
+		index_state: None,
 	}
 }
 fn attachment(key: Uuid) -> AttachmentState {
@@ -52,6 +54,7 @@ fn attachment(key: Uuid) -> AttachmentState {
 		content: Some(b"x".to_vec()),
 		object_id: None,
 		message_id: Some(Uuid::from_u128(2)),
+		description: None,
 	}
 }
 #[derive(Default)]
@@ -68,6 +71,8 @@ struct Fixture {
 	positions: Vec<(Uuid, i32)>,
 	stored: Option<AttachmentState>,
 	key: Option<String>,
+	indexed: Vec<(Uuid, Vec<Uuid>)>,
+	described: Option<String>,
 }
 impl Fixture {
 	fn record(&mut self, op: &'static str) -> Result<()> {
@@ -242,6 +247,29 @@ impl ChannelScope for Fixture {
 		self.record("history.citations")?;
 		Ok(ids.iter().map(|id| (*id, vec![])).collect())
 	}
+	async fn describe_attachment(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+		writer: &str,
+		description: &str,
+	) -> Result<()> {
+		self.record("attachment.describe")?;
+		assert_eq!(writer, "principal");
+		self.described = Some(description.into());
+		Ok(())
+	}
+	async fn index_attachment_images(
+		&mut self,
+		_: Uuid,
+		message: Uuid,
+		attachments: &[ChannelAttachment],
+	) -> Result<()> {
+		self.record("attachment.index")?;
+		self.indexed
+			.push((message, attachments.iter().map(|a| a.id).collect()));
+		Ok(())
+	}
 }
 fn submission<'a>(ids: &'a [Uuid]) -> MessageSubmission<'a> {
 	MessageSubmission {
@@ -379,6 +407,7 @@ async fn upload_replay_compares_metadata_and_content_before_returning() {
 			media_type: "text/plain",
 			idempotency_key: key,
 			measurements: MediaMeasurements::default(),
+			description: None,
 		},
 		b"changed",
 	)
@@ -537,4 +566,208 @@ async fn a_denied_citation_stops_before_any_attachment_write() {
 		vec!["message.insert", "message.context", "citations.record"]
 	);
 	assert!(scope.bind_order.is_empty());
+}
+
+fn image_link(id: u128) -> AttachmentLink {
+	let mut attachment = metadata(id);
+	attachment.media_type = "image/png".into();
+	attachment.filename = format!("{id}.png");
+	AttachmentLink {
+		attachment,
+		message_id: None,
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn posting_an_image_enters_it_into_the_index_with_its_message() {
+	// Arrange
+	let ids = [Uuid::from_u128(10), Uuid::from_u128(11)];
+	let mut text = metadata(11);
+	text.id = Uuid::from_u128(11);
+	let mut scope = Fixture {
+		links: vec![
+			image_link(10),
+			AttachmentLink {
+				attachment: text,
+				message_id: None,
+			},
+		],
+		..Default::default()
+	};
+
+	// Act
+	post(&mut scope, workspace(), submission(&ids))
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(scope.indexed, vec![(Uuid::from_u128(2), ids.to_vec())]);
+	let bound = scope
+		.calls
+		.iter()
+		.rposition(|call| call == "attachment.bind");
+	let indexed = scope
+		.calls
+		.iter()
+		.position(|call| call == "attachment.index");
+	assert!(bound < indexed, "{:?}", scope.calls);
+}
+
+#[rstest]
+#[tokio::test]
+async fn posting_without_an_image_leaves_the_index_alone() {
+	// Arrange
+	let ids = [Uuid::from_u128(10)];
+	let mut scope = Fixture {
+		links: vec![AttachmentLink {
+			attachment: metadata(10),
+			message_id: None,
+		}],
+		..Default::default()
+	};
+
+	// Act
+	post(&mut scope, workspace(), submission(&ids))
+		.await
+		.unwrap();
+
+	// Assert
+	assert!(scope.indexed.is_empty());
+	assert!(!scope.calls.contains(&"attachment.index".to_owned()));
+}
+
+fn image_state() -> AttachmentState {
+	let mut state = attachment(Uuid::from_u128(100));
+	state.media_type = "image/png".into();
+	state
+}
+
+#[rstest]
+#[tokio::test]
+async fn only_the_writer_describes_an_image() {
+	// Arrange
+	let mut scope = Fixture {
+		stored: Some(image_state()),
+		..Default::default()
+	};
+
+	// Act
+	let described = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(described.description.as_deref(), Some("A red bicycle"));
+	assert_eq!(scope.described.as_deref(), Some("A red bicycle"));
+	assert_eq!(
+		scope.calls,
+		vec!["attachment.read", "message.read", "attachment.describe"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn someone_else_cannot_describe_the_image() {
+	// Arrange
+	let mut state = image_state();
+	state.uploaded_by = "someone else".into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(scope.described.is_none());
+}
+
+#[rstest]
+#[case("text/plain", "A note")]
+#[case("image/png", " ")]
+#[tokio::test]
+async fn a_description_needs_an_image_and_words(#[case] media_type: &str, #[case] text: &str) {
+	// Arrange
+	let mut state = image_state();
+	state.media_type = media_type.into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(&mut scope, workspace(), Uuid::from_u128(10), text).await;
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::Domain(_) | Error::Invalid(_))),
+		"{result:?}"
+	);
+	assert!(scope.described.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_uploader_describes_an_image_before_posting_it() {
+	// Arrange
+	let mut state = image_state();
+	state.message_id = None;
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let described = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(described.description.as_deref(), Some("A red bicycle"));
+	assert_eq!(scope.calls, vec!["attachment.read", "attachment.describe"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_unposted_upload_of_someone_else_is_not_found() {
+	// Arrange
+	let mut state = image_state();
+	state.message_id = None;
+	state.uploaded_by = "someone else".into();
+	let mut scope = Fixture {
+		stored: Some(state),
+		..Default::default()
+	};
+
+	// Act
+	let result = describe(
+		&mut scope,
+		workspace(),
+		Uuid::from_u128(10),
+		"A red bicycle",
+	)
+	.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::NotFound(_))), "{result:?}");
+	assert!(scope.described.is_none());
 }

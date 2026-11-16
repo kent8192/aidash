@@ -32,6 +32,23 @@ pub trait SemanticRetrievalSession: Send {
 	) -> Result<super::IndexImage> {
 		Err(crate::Error::Forbidden)
 	}
+	/// Whether the query's Run itself selected this attachment, with these
+	/// bytes, for its own inference.
+	async fn attachment_seen(
+		&mut self,
+		_query: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+	) -> Result<bool> {
+		Ok(false)
+	}
+	/// Read a selected attachment under its Run's current message authority.
+	async fn query_attachment(
+		&mut self,
+		_workspace: Uuid,
+		_query: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+		_max_bytes: usize,
+	) -> Result<super::IndexImage> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn embed_image(
 		&mut self,
 		_workspace: Uuid,

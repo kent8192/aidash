@@ -141,6 +141,30 @@ impl Channels {
 		};
 		lease.finish(result).await
 	}
+	pub async fn describe(
+		&self,
+		workspace: Uuid,
+		attachment: Uuid,
+		input: ChannelAttachmentDescription,
+	) -> Result<ChannelAttachment> {
+		crate::http::validate(&input)?;
+		let mut lease = Lease::begin(
+			&self.runtime.store,
+			self.actor.clone(),
+			workspace,
+			"message.create",
+		)
+		.await?;
+		let result = attachments::describe(
+			&self.runtime.store,
+			&mut lease,
+			workspace,
+			attachment,
+			&input.description,
+		)
+		.await;
+		lease.finish(result).await
+	}
 	pub async fn download(
 		&self,
 		workspace: Uuid,
