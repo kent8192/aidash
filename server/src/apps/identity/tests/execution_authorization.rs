@@ -8990,7 +8990,9 @@ async fn an_agent_registers_a_schedule_only_once_its_person_approves(
 	.await;
 	assert_eq!(pending.len(), 1, "{pending:?}");
 	assert_eq!(pending[0]["kind"], "tool_call");
-	assert_eq!(pending[0]["approver"], "alice");
+	// The card reaches alice as an Eligible approver; a pending request names
+	// no approver until someone decides it (ADR 0135).
+	assert!(pending[0]["approver"].is_null(), "{pending:?}");
 	// Act: the person approves this one call.
 	let (status, decided) =
 		decide_tool_call(&t.application.application, &token, approval, "allow_once").await;
