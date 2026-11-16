@@ -377,6 +377,8 @@ async fn every_eligible_approver_sees_a_waiting_approval_and_a_late_one_is_told_
 		common::post(&c.app, &carol, &path, decide("allow_once")).await;
 	let (bob_status, bob_decision) = common::post(&c.app, &bob, &path, decide("deny")).await;
 	let (_, bob_after) = common::get(&c.app, &bob, inbox).await;
+	let (_, bob_all) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
+	let (_, carol_all) = common::get(&c.app, &carol, "/api/capabilities/approvals").await;
 
 	// Assert
 	let offered = |page: &serde_json::Value| {
@@ -401,6 +403,18 @@ async fn every_eligible_approver_sees_a_waiting_approval_and_a_late_one_is_told_
 		!offered(&bob_after),
 		"a decided approval leaves every inbox: {bob_after}"
 	);
+	let listed = |page: &serde_json::Value| {
+		page["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|card| card["id"] == json!(id))
+	};
+	assert!(
+		!listed(&bob_all),
+		"only who decided keeps a decided approval: {bob_all}"
+	);
+	assert!(listed(&carol_all), "{carol_all}");
 	c.close().await;
 }
 

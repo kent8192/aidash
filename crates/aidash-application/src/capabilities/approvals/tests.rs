@@ -3105,3 +3105,51 @@ async fn a_record_whose_workspace_is_gone_stays_with_its_requester_and_fails_no_
 	);
 	assert_eq!(bob.unwrap(), Reader::default());
 }
+
+#[tokio::test]
+async fn a_decided_approval_leaves_the_approvers_who_did_not_decide_it() {
+	// Arrange: Bob and Carol may approve Alice's call; Carol allows it once.
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	let record = scope.records[&approval_id].clone();
+	let revision = record.revision;
+	let read_as = async |scope: &mut Fake, who: &str| {
+		let previous = std::mem::replace(&mut scope.principal, who.into());
+		let read = reader(scope, &record).await.unwrap();
+		scope.principal = previous;
+		read
+	};
+
+	// Act
+	let alice = read_as(&mut scope, "alice").await;
+	let carol = read_as(&mut scope, "carol").await;
+	let bob = read_as(&mut scope, "bob").await;
+	scope.principal = "bob".into();
+	let bob_revokes = revoke(
+		&mut scope,
+		approval_id,
+		TOOL_CALL,
+		Revoke {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+		},
+	)
+	.await;
+
+	// Assert: only Run grants may be revoked by any Eligible approver.
+	assert!(alice.visible);
+	assert_eq!(
+		carol,
+		Reader {
+			visible: true,
+			approver: true
+		}
+	);
+	assert_eq!(bob, Reader::default());
+	assert!(matches!(bob_revokes, Err(Error::NotFound(_))));
+	assert_eq!(scope.records[&approval_id].state, "approved");
+}

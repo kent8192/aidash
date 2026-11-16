@@ -455,8 +455,8 @@ pub struct Reader {
 	/// They may see it: its requester, or someone it concerns as an approver.
 	pub visible: bool,
 	/// They act on it as an approver: they may decide it while it is pending;
-	/// for anything else they gave it or may approve its kind for its
-	/// destination now, so they may revoke it.
+	/// for a Run grant they may approve its kind for its destination now; for
+	/// any other approval they decided or gave it and still may approve it.
 	pub approver: bool,
 }
 
@@ -477,10 +477,20 @@ pub async fn reader(scope: &mut dyn ApprovalScope, record: &Record) -> Result<Re
 			approver: false,
 		});
 	};
-	let approver = if record.kind != "grant" && record.state == "pending" {
+	let approver = if record.kind == "grant" {
+		// Anyone who may approve its kind for its destination now may revoke a
+		// Run grant (ADR 0135).
+		eligible_for_all(scope, &principal, &record.owner, &targets)
+	} else if record.state == "pending" {
 		decides(scope, &principal, &record.owner, &targets)
 	} else {
-		eligible_for_all(scope, &principal, &record.owner, &targets)
+		// A decided approval leaves the lists of the approvers who did not
+		// decide it (ADR 0135); only who decided or gave it keeps it, while
+		// they may still approve it, as before.
+		let gave = ["decided_by", "approver"]
+			.iter()
+			.any(|field| record.data[*field].as_str() == Some(principal.as_str()));
+		gave && eligible_for_all(scope, &principal, &record.owner, &targets)
 	};
 	Ok(Reader {
 		visible: owner || approver,
@@ -863,8 +873,8 @@ pub async fn revoke(
 	if let Some(result) = scope.cached(input.idempotency_key, &digest).await? {
 		return Ok(result);
 	}
-	// Its requester, whoever gave it, or anyone who may approve its kind for its
-	// destination now may revoke it (ADR 0135).
+	// Its requester or whoever gave it may revoke it; so may anyone who may
+	// approve its kind for its destination now, for a Run grant (ADR 0135).
 	if record.owner != scope.principal()
 		&& record.data["approver"] != scope.principal()
 		&& !reader(scope, &record).await?.approver
