@@ -119,6 +119,11 @@ nothing keep the legacy bytes and stay claimable by every worker.
 `event_wait` covers operation and workspace waits, a woken result awaiting
 delivery, and the retained workspace event cursor and remote Task snapshot.
 
+`outage_wait` covers a Run in an Outage Wait (ADR 0129): the `outage` wait reason and
+`RecoveryState.outage`, which keeps when the outage began across wake-ups so that the
+24-hour bound counts from the first failure. Roll out every worker before an outage
+can put a Run in this wait.
+
 `unassigned_abandonment` covers a saved completion that names the Unassigned Tasks
 it abandons (#772). A cancel settles that completion with exactly those Tasks.
 
@@ -167,9 +172,9 @@ exactly as the Projection Version note above describes.
 
 Degraded context (#234, ADR 0059) is the second capability, `degraded_context`. It is
 derived from `RecoveryState`, not from the state: a Run requires it once a step ran with
-Degraded context, and keeps it for as long as that record is kept. Only Agents whose
-`workspace_retrieval` sources opt in with `on_unavailable: degrade` write it, so roll out
-every worker before an Agent opts in.
+Degraded context, and keeps it for as long as that record is kept. Since ADR 0129,
+`workspace_retrieval` sources degrade by default (`on_unavailable: degrade`), so roll out
+every worker before Agents run on this build.
 
 Early Unassigned Task abandonments (#818) require `early_unassigned_abandonment` while
 `RecoveryState.early_abandoned_tasks` is present. This keeps older workers from leasing a Run

@@ -31,7 +31,7 @@ The database wait (ADR 0113, ADR 0124) is the same kind of wait. It keeps its ow
 
 **Degraded context by default.** `on_unavailable` on a Workspace source now defaults to `degrade`. An Agent may still set `pause`, which now means an Outage Wait. Optional Workspace context whose index is incomplete returns its READY part as Degraded context with the existing typed marker, which is shown in the dashboard and stated in the model's context. Inference, authority decisions, write targets, required-Home context and native memory are never advisory and never degrade.
 
-**Unloaded capabilities.** Revoking a capability that a deferred Run has neither loaded nor discovered no longer stops the Run. The capability leaves the Run's candidates, and an event stays visible to Deployment Administrators. Revoking a loaded or discovered capability still stops the Run at its next boundary (ADR 0013).
+**Unloaded capabilities.** Revoking a capability that a deferred Run has neither loaded nor discovered no longer stops the Run. The capability leaves the Run's candidates, and an event stays visible to Deployment Administrators. Revoking a loaded or discovered capability still stops the Run at its next boundary (ADR 0013). This rule needs a durable record of what a Run discovered, which does not exist yet; it is implemented in #960, and until then revoking any bound capability still stops a deferred Run.
 
 ## Considered Options
 

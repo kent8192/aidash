@@ -1,5 +1,7 @@
 # Semantic context when the embedding provider or vector backend is unavailable
 
+> Updated by ADR 0129 (2026-11-11): `on_unavailable` now defaults to `degrade`, and `pause` means an Outage Wait that goes on by itself. The opt-in described below is historical.
+
 Investigation for [#154](https://github.com/kent8192/aidash/issues/154), prepared against `develop/0.1.0` at `13a6f144`. The behavior below is pinned by regression tests added with this document; no runtime behavior changes. The recommendation below was adopted on 2026-10-12 and is [recorded on #154](https://github.com/kent8192/aidash/issues/154#issuecomment-6120720336); section 6 states the decision and section 5 links the filed follow-ups.
 
 ## Decision in one paragraph
