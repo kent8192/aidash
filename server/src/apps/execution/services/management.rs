@@ -500,7 +500,7 @@ impl HarnessManagement {
 			return Err(Error::Forbidden);
 		};
 		Ok(
-			execution::decline_call(&self.runtime, identity, id, &input.call)
+			execution::decline_call(&self.runtime, identity, id, &input.call, input.rest_of_run)
 				.await?
 				.into(),
 		)

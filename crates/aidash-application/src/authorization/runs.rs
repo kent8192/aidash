@@ -126,9 +126,10 @@ pub async fn decline_call(
 	repository: &dyn RunControlRepository,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<RunInspection> {
 	let mut scope = repository.begin().await?;
-	let result = decline_call_in(scope.as_mut(), id, call).await;
+	let result = decline_call_in(scope.as_mut(), id, call, rest_of_run).await;
 	let run = scope.finish(result).await?;
 	repository.notify();
 	Ok(run)
@@ -141,6 +142,7 @@ pub async fn decline_call_in(
 	scope: &mut dyn RunControlScope,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<RunInspection> {
 	if call.is_empty() || call.len() > CALL_KEY_LIMIT {
 		return Err(Error::Invalid("call key is empty or too long".into()));
@@ -173,7 +175,7 @@ pub async fn decline_call_in(
 		let credential = scope.identity().credential_id;
 		scope.update_credential(id, credential).await?;
 	}
-	scope.decline_call(id, call).await
+	scope.decline_call(id, call, rest_of_run).await
 }
 #[cfg(test)]
 mod tests;
