@@ -205,8 +205,13 @@ pub async fn bootstrap(
 			))
 		})
 		.await?;
-	let deployment_administrator =
-		BootstrapDeploymentAdministratorReservation::grant_or_hold(pool, &email, identity).await?;
+	let deployment_administrator = BootstrapDeploymentAdministratorReservation::grant_or_hold(
+		pool,
+		policy.as_ref(),
+		&email,
+		identity,
+	)
+	.await?;
 	Ok(Outcome {
 		tenant,
 		created,
@@ -253,6 +258,14 @@ impl reinhardt::commands::CapabilityCommand for Command {
 				.get_one::<String>("tenant")
 				.ok_or_else(|| Error::Invalid("bootstrap requires --tenant".into()))?;
 			let settings = crate::config::startup::load_settings()?;
+			// Host Access bootstraps only a Self-hosted Deployment (ADR 0102
+			// amendment); the Offering is known once the settings load.
+			if crate::bootstrap::build::offering() != aidash_domain::offering::Offering::SelfHosted
+			{
+				return Err(Error::Invalid(
+					"only a Self-hosted Deployment is bootstrapped from the host".into(),
+				));
+			}
 			crate::bootstrap::require_migrated(&settings).await?;
 			let config = Config::from_settings(&settings)?;
 			let connection =

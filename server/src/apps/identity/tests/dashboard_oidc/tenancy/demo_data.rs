@@ -508,6 +508,58 @@ async fn demo_reservation_never_maps_a_tenant_bound_issuer(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_tenant_bound_issuer_never_claims_the_deployment_administrator_reservation(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	use aidash_server::apps::identity::models::BootstrapDeploymentAdministratorReservation;
+	let d = Deployment::with_demo_data(runtime, rules(false), false).await;
+	let pool = &d.federation.store.pool;
+	let other = d.demo_tenant("Other", "member").await;
+	let result = aidash_server::apps::identity::services::bootstrap_command::bootstrap(
+		pool,
+		&d.federation.config,
+		"ops@example.com",
+		"default",
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.deployment_administrator, "reserved");
+	// An identity whose issuer is bound to another Tenant signs in with the
+	// reserved address.
+	let bound = d.sign_in_as("bound-ops", None).await;
+	let policy = aidash_application::ports::authorization::dashboard::AccountPolicy {
+		issuers: std::sync::Arc::new(BoundIssuer(other)),
+		authority: None,
+		personal_tenants: false,
+		demo_data: false,
+	};
+	BootstrapDeploymentAdministratorReservation::consume(
+		pool,
+		Some(&policy),
+		"ops@example.com",
+		bound,
+	)
+	.await
+	.unwrap();
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{bound}' AND enabled")).await, 0);
+	assert_eq!(
+		d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations WHERE email = 'ops@example.com'")
+			.await,
+		1
+	);
+	// The reservation still waits for an identity that may hold the role.
+	let free = d.sign_in_as("free-ops", Some("ops@example.com")).await;
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_deployment_administrator_grants WHERE identity_id = '{free}' AND enabled")).await, 1);
+	assert_eq!(
+		d.count("SELECT count(*) FROM bootstrap_deployment_administrator_reservations")
+			.await,
+		0
+	);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn bootstrap_coexists_with_an_existing_demo_reservation(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {

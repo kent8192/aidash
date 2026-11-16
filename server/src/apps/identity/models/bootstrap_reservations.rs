@@ -22,6 +22,7 @@ use super::{
 	DashboardIdentity, database_time,
 };
 use crate::{Result, database::native::Pool};
+use aidash_application::ports::authorization::dashboard::AccountPolicy;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
@@ -31,9 +32,17 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
+/// Deployment Administrator is Deployment-wide, so only an identity whose
+/// issuer no Tenant Binding restricts may hold it (ADR 0102 amendment). Without
+/// a sign-in policy no issuer is known to be unrestricted, so none is.
+fn may_administer(policy: Option<&AccountPolicy>, issuer: &str) -> bool {
+	policy.is_some_and(|policy| policy.unrestricted(issuer))
+}
+
 impl BootstrapDeploymentAdministratorReservation {
 	pub(crate) async fn grant_or_hold(
 		pool: &Pool,
+		policy: Option<&AccountPolicy>,
 		email: &str,
 		identity: Option<Uuid>,
 	) -> Result<&'static str> {
@@ -58,6 +67,11 @@ impl BootstrapDeploymentAdministratorReservation {
 						.ok_or(crate::Error::Unauthorized)?;
 					if account.disabled_at.is_some() {
 						return Err(crate::Error::Forbidden);
+					}
+					// The address belongs to an identity of a Tenant-bound
+					// issuer: grant nothing, and hold nothing it could claim.
+					if !may_administer(policy, &account.issuer) {
+						return Ok("refused: the identity's issuer is bound to a Tenant");
 					}
 					let existing = DashboardDeploymentAdministratorGrant::objects()
 						.filter(DashboardDeploymentAdministratorGrant::field_identity_id().eq(id))
@@ -116,7 +130,15 @@ impl BootstrapDeploymentAdministratorReservation {
 		.await
 	}
 
-	pub(crate) async fn consume(pool: &Pool, email: &str, identity: Uuid) -> Result<()> {
+	/// Grants the Deployment Administrator held for `email` to `identity`, the
+	/// identity signing in with it as its verified address. An identity that
+	/// may not hold the role leaves the reservation for one that may.
+	pub async fn consume(
+		pool: &Pool,
+		policy: Option<&AccountPolicy>,
+		email: &str,
+		identity: Uuid,
+	) -> Result<()> {
 		pool.atomic(
 			&TenancyScope::Deployment(DeploymentScopeReason::Bootstrap),
 			async |tx| {
@@ -129,6 +151,17 @@ impl BootstrapDeploymentAdministratorReservation {
 					.map_err(reinhardt::core::exception::Error::from)?
 					.pop();
 				if row.is_none() {
+					return Ok(());
+				}
+				let eligible = DashboardIdentity::objects()
+					.filter(DashboardIdentity::field_id().eq(identity))
+					.all_with_db(tx)
+					.await?
+					.pop()
+					.is_some_and(|account| {
+						account.disabled_at.is_none() && may_administer(policy, &account.issuer)
+					});
+				if !eligible {
 					return Ok(());
 				}
 				let existing = DashboardDeploymentAdministratorGrant::objects()

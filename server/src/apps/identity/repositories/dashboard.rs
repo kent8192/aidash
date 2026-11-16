@@ -38,7 +38,13 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 		// them, and each is spent in its own Tenant's scope and transaction, so
 		// one that cannot be spent leaves the others to be.
 		let email = email.to_lowercase();
-		BootstrapDeploymentAdministratorReservation::consume(&self.0, &email, identity).await?;
+		BootstrapDeploymentAdministratorReservation::consume(
+			&self.0,
+			policy.as_ref(),
+			&email,
+			identity,
+		)
+		.await?;
 		for reservation in DemoReservation::unspent(&self.0, &email).await? {
 			if reservation.source != "host_access" && !policy.as_ref().is_some_and(|p| p.demo_data)
 			{
