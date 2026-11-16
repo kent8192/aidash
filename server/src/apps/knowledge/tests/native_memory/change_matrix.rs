@@ -312,7 +312,8 @@ async fn an_identical_write_changes_nothing_but_still_checks_its_revision(
 		expected_revision: 1,
 		content: content("Review every migration twice."),
 	});
-	let written = memory::mutate(&store, &actor, batch).await.unwrap();
+	let written = memory::mutate(&store, &actor, batch.clone()).await.unwrap();
+	let replayed = memory::mutate(&store, &actor, batch.clone()).await.unwrap();
 	let late = memory::mutate(
 		&store,
 		&actor,
@@ -333,6 +334,17 @@ async fn an_identical_write_changes_nothing_but_still_checks_its_revision(
 		.map(|unit| (unit.id, unit.revision))
 		.collect();
 	assert_eq!(revisions, vec![(kept, 1), (edited, 2)]);
+	for (units, label) in [(written, "first write"), (replayed, "receipt replay")] {
+		let flags: Vec<_> = Mutated::of(&batch.changes, units)
+			.into_iter()
+			.map(|mutated| (mutated.unit.id, mutated.unchanged))
+			.collect();
+		assert_eq!(
+			flags,
+			vec![(kept, true), (edited, false)],
+			"only the repeated Unit is flagged on the {label}"
+		);
+	}
 	assert!(
 		run_visible(&scope, &store, kept_reader).await,
 		"the reader of the identical Unit goes on"

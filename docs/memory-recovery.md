@@ -162,10 +162,14 @@ in `crates/aidash-harness/src/agent/tests.rs`, and `semantic:` tests in
    metadata-only edits: `verification`, `occurred` or `kind` change what a
    Unit means. A write whose content equals the current revision of a Unit
    that is not stale is not a change: it succeeds with the revision it was
-   checked against, records no history, stops no Run and leaves a Dormant Unit
-   Dormant. A stale `expected_revision` is still a conflict, and in a batch
+   checked against and `unchanged: true`, records no history, stops no Run and
+   leaves a Dormant Unit Dormant. Every Unit that `memory/units/mutate` and the
+   `memory_mutate` tool return carries `unchanged`, including on a receipt
+   replay. A stale `expected_revision` is still a conflict, and in a batch
    only the Units that changed gain a revision
-   (`an_identical_write_changes_nothing_but_still_checks_its_revision`).
+   (`an_identical_write_changes_nothing_but_still_checks_its_revision`). A
+   batch that also changes a Unit the repeated one cites fails as a conflict
+   (`an_identical_write_fails_when_its_batch_changes_what_it_cites`).
 2. **Correction or withdrawal of a claim**: `Change::Correct` with
    `verification: contradicted`, or a withdrawal by deletion (row 4).
 3. **Permission or credential revocation**: policy, catalog, Subject Credential

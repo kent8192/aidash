@@ -784,7 +784,8 @@ impl Builtin {
 							}
 						}
 					}
-					Ok(json!(ctx.operations.memory_mutate(key, &input.changes).await?))
+					let units = ctx.operations.memory_mutate(key, &input.changes).await?;
+					Ok(json!(aidash_domain::memory::Mutated::of(&input.changes, units)))
 				}.await;
 				memory_tool_result(ctx.run, result)
 			}
