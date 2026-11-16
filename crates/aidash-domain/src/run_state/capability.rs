@@ -121,11 +121,7 @@ impl RecoveryState {
 			.as_ref()
 			.map(|_| PersistedCapability::OutageWait)
 			.into_iter()
-			.chain(
-				(!self.degraded.is_empty())
-					.then_some(PersistedCapability::DegradedContext)
-					.into_iter(),
-			)
+			.chain((!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext))
 			.chain(
 				self.workspace_event_cursor
 					.map(|_| PersistedCapability::EventWait),
