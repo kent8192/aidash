@@ -32262,14 +32262,15 @@
             ]
           },
           "RecoveryState": {
-            "additionalProperties": false,
+            "type": "object",
+            "required": ["retry"],
             "properties": {
               "connection_refusals": {
-                "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/ConnectionRefusal"
                 },
-                "type": "array"
+                "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
               },
               "connection_wait": {
                 "anyOf": [
@@ -32282,11 +32283,11 @@
                 ]
               },
               "connection_waited": {
-                "description": "Survives context compaction and prevents repeated failure deferrals.",
+                "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "type": "array",
+                "description": "Survives context compaction and prevents repeated failure deferrals.",
                 "uniqueItems": true
               },
               "context_reason": {
@@ -32313,27 +32314,27 @@
                 "type": "integer"
               },
               "declined_calls": {
-                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.",
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/DeclinedCall"
                 },
-                "type": "array"
+                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first."
               },
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
               "lease_recoveries": {
-                "description": "Consecutive Lease Recoveries of the current step.",
+                "type": "integer",
                 "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
+                "description": "Consecutive Lease Recoveries of the current step.",
+                "minimum": 0
               },
               "node_retry": {
-                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
+                "type": "integer",
                 "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
+                "minimum": 0
               },
               "paused_call": {
                 "anyOf": [
@@ -32347,8 +32348,8 @@
                 "description": "The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on\nresume; people never read it, only whether they may decline."
               },
               "remote_task_fingerprint": {
-                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "Fingerprint of remote terminal child Tasks observed before inference."
               },
               "retry": {
                 "anyOf": [
@@ -32371,13 +32372,19 @@
                 ]
               },
               "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
+                "type": ["integer", "null"],
                 "format": "int64",
-                "type": ["integer", "null"]
+                "description": "Last workspace event delivered to this Run."
+              },
+              "standing_declines": {
+                "description": "Refusals a person declined for the rest of this Run.",
+                "items": {
+                  "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
               }
             },
-            "required": ["retry"],
-            "type": "object"
+            "additionalProperties": false
           },
           "RefusalKind": {
             "oneOf": [
@@ -34181,6 +34188,24 @@
               "human_requests",
               "conversations"
             ],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           }
         },
@@ -36698,14 +36723,15 @@
             ]
           },
           "RecoveryState": {
-            "additionalProperties": false,
+            "type": "object",
+            "required": ["retry"],
             "properties": {
               "connection_refusals": {
-                "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/ConnectionRefusal"
                 },
-                "type": "array"
+                "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
               },
               "connection_wait": {
                 "anyOf": [
@@ -36718,11 +36744,11 @@
                 ]
               },
               "connection_waited": {
-                "description": "Survives context compaction and prevents repeated failure deferrals.",
+                "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "type": "array",
+                "description": "Survives context compaction and prevents repeated failure deferrals.",
                 "uniqueItems": true
               },
               "context_reason": {
@@ -36749,27 +36775,27 @@
                 "type": "integer"
               },
               "declined_calls": {
-                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.",
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/DeclinedCall"
                 },
-                "type": "array"
+                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first."
               },
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
               "lease_recoveries": {
-                "description": "Consecutive Lease Recoveries of the current step.",
+                "type": "integer",
                 "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
+                "description": "Consecutive Lease Recoveries of the current step.",
+                "minimum": 0
               },
               "node_retry": {
-                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
+                "type": "integer",
                 "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
+                "minimum": 0
               },
               "paused_call": {
                 "anyOf": [
@@ -36783,8 +36809,8 @@
                 "description": "The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on\nresume; people never read it, only whether they may decline."
               },
               "remote_task_fingerprint": {
-                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "Fingerprint of remote terminal child Tasks observed before inference."
               },
               "retry": {
                 "anyOf": [
@@ -36807,13 +36833,19 @@
                 ]
               },
               "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
+                "type": ["integer", "null"],
                 "format": "int64",
-                "type": ["integer", "null"]
+                "description": "Last workspace event delivered to this Run."
+              },
+              "standing_declines": {
+                "description": "Refusals a person declined for the rest of this Run.",
+                "items": {
+                  "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
               }
             },
-            "required": ["retry"],
-            "type": "object"
+            "additionalProperties": false
           },
           "RefusalKind": {
             "oneOf": [
@@ -38532,6 +38564,24 @@
                 "type": "object"
               }
             ]
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
+            "type": "object"
           }
         },
         "schema": {
@@ -53064,14 +53114,15 @@
             ]
           },
           "RecoveryState": {
-            "additionalProperties": false,
+            "type": "object",
+            "required": ["retry"],
             "properties": {
               "connection_refusals": {
-                "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/ConnectionRefusal"
                 },
-                "type": "array"
+                "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
               },
               "connection_wait": {
                 "anyOf": [
@@ -53084,11 +53135,11 @@
                 ]
               },
               "connection_waited": {
-                "description": "Survives context compaction and prevents repeated failure deferrals.",
+                "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "type": "array",
+                "description": "Survives context compaction and prevents repeated failure deferrals.",
                 "uniqueItems": true
               },
               "context_reason": {
@@ -53115,27 +53166,27 @@
                 "type": "integer"
               },
               "declined_calls": {
-                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.",
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/DeclinedCall"
                 },
-                "type": "array"
+                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first."
               },
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
               },
               "lease_recoveries": {
-                "description": "Consecutive Lease Recoveries of the current step.",
+                "type": "integer",
                 "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
+                "description": "Consecutive Lease Recoveries of the current step.",
+                "minimum": 0
               },
               "node_retry": {
-                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
+                "type": "integer",
                 "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
+                "minimum": 0
               },
               "paused_call": {
                 "anyOf": [
@@ -53149,8 +53200,8 @@
                 "description": "The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on\nresume; people never read it, only whether they may decline."
               },
               "remote_task_fingerprint": {
-                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "Fingerprint of remote terminal child Tasks observed before inference."
               },
               "retry": {
                 "anyOf": [
@@ -53173,13 +53224,19 @@
                 ]
               },
               "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
+                "type": ["integer", "null"],
                 "format": "int64",
-                "type": ["integer", "null"]
+                "description": "Last workspace event delivered to this Run."
+              },
+              "standing_declines": {
+                "description": "Refusals a person declined for the rest of this Run.",
+                "items": {
+                  "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
               }
             },
-            "required": ["retry"],
-            "type": "object"
+            "additionalProperties": false
           },
           "RefusalKind": {
             "oneOf": [
@@ -54771,6 +54828,24 @@
                 "type": "object"
               }
             ]
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
+            "type": "object"
           }
         },
         "schema": {

@@ -2791,11 +2791,13 @@ pub async fn decline_call(
 	identity: &SubjectIdentity,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<RunInspection> {
 	aidash_application::authorization::runs::decline_call(
 		&crate::bootstrap::run_control_repository(f, identity),
 		id,
 		call,
+		rest_of_run,
 	)
 	.await
 	.map_err(Into::into)
