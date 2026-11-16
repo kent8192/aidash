@@ -8,7 +8,7 @@ The reuse applies only to work already admitted: protected stream frames, the pe
 
 A reused result is keyed by what it proved: the External Identity and Product Session for an interactive check, and the External Identity, Account and recorded epochs for a bound origin. Every stream and Run with the same key shares it. A failed or refused check is never reused, and a refusal seen by any online check ends the reuse of its key at once. A local logout drops its entry at once. The product's own authority checks still run on every frame and boundary.
 
-When the Authentication Server stops answering, admitted work continues until T after the last success. Then a stream closes as before, and a Run pauses and resumes automatically as ADR 0085 decided.
+When the Authentication Server stops answering, a stream continues until T after the last success and then closes as before. At a Run boundary only the bound-origin check is reused; the Run's credential check still goes online, so an outage pauses the Run at its next boundary and it resumes automatically as ADR 0085 decided.
 
 ## Considered Options
 
