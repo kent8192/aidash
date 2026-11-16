@@ -783,6 +783,89 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 	);
 }
 
+/// The Read Recheck of a Remote Grant Run's preview still judges the Run itself
+/// through its admission (#904 drops only the local Workspace step): what the
+/// receiver revokes there stops the preview.
+#[rstest]
+#[case::with_session(true)]
+#[case::without_session(false)]
+#[tokio::test]
+async fn remote_preview_recheck_stops_when_the_peer_mapping_is_disabled(
+	#[future] database: DatabaseFixture,
+	#[case] with_session: bool,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, with_session).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::LivePreview(preview);
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	sqlx::query("UPDATE authorization_peer_mappings SET enabled = false, revision = revision + 1 WHERE tenant = 'acme' AND source_node = $1")
+		.bind(home_node())
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+	repository.stop_refused(target).await.unwrap();
+	assert_eq!(
+		preview_stop(&fixture, preview).await,
+		("stopped".into(), Some("run_authority_revoked".into()))
+	);
+}
+
+#[rstest]
+#[case::with_session(true)]
+#[case::without_session(false)]
+#[tokio::test]
+async fn remote_preview_recheck_stops_when_the_admission_expires(
+	#[future] database: DatabaseFixture,
+	#[case] with_session: bool,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	let mut remote = remote_preview(&fixture, preview, with_session).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::LivePreview(preview);
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	remote.description.expires_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+	remote.pin(&fixture).await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+}
+
+#[rstest]
+#[case::run("run.read")]
+#[case::task("task.read")]
+#[case::memory("memory.read")]
+#[tokio::test]
+async fn remote_preview_recheck_stops_when_a_chain_member_loses_the_run(
+	#[future] database: DatabaseFixture,
+	#[case] action: &str,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, true).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::LivePreview(preview);
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	fixture.set_policy(1, Some(("helper", action))).await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+}
+
 #[rstest]
 #[tokio::test]
 async fn remote_preview_recheck_still_checks_a_viewer_outside_the_chain(

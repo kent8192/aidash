@@ -762,11 +762,20 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 		access.subjects = subjects;
 	}
 	let result = if remote {
+		// Skip only the local Workspace step (#904): the Run itself is still
+		// checked, through its admission (expiry, Peer Mapping, the chain's
+		// read policies), and then what it has read.
 		let mut check = access.rechecking(preview.run_id);
-		match check.run_reads_visible(preview.run_id).await {
-			Ok(true) => Ok(()),
-			Ok(false) => Err(NativeError::Forbidden),
-			Err(error) => Err(error),
+		match crate::apps::execution::models::Run::read_in(check.tx.as_mut(), preview.run_id, None)
+			.await
+		{
+			Ok(Some(run)) => match check.run_visible(&run).await {
+				Ok(true) => Ok(()),
+				Ok(false) => Err(NativeError::Forbidden),
+				Err(error) => Err(error),
+			},
+			Ok(None) => Err(NativeError::Forbidden),
+			Err(error) => Err(error.into()),
 		}
 	} else {
 		access.recheck_run_reads(preview.run_id).await.map(|_| ())
