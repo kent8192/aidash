@@ -54,9 +54,10 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
 	"identity.0067_scratch_member_policy forward",
-	"identity.0080_remove_package_index_approvals forward",
+	"identity.0080_schedule_member_policy forward",
+	"identity.0082_remove_package_index_approvals forward",
 	"registry.0054_remove_agent_cluster forward",
-	"registry.0069_remove_package_index_draft_bindings forward",
+	"registry.0070_remove_package_index_draft_bindings forward",
 	"workspaces.0021_conversation_scratch_space forward",
 	"workspaces.0024_workspace_scratch_space forward",
 ];

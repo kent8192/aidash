@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0132_egress_run_revocations", "execution")
-		.add_dependency("execution", "0131_scope_refusals_state")
+	Migration::new("0133_egress_run_revocations", "execution")
+		.add_dependency("execution", "0132_generation_scheduled")
 		.add_operation(Operation::CreateTable {
 			name: "egress_run_revocations".into(),
 			columns: vec![

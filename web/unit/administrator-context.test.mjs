@@ -13,6 +13,7 @@ test("a Deployment Administrator sees no Tenant content settings", () => {
     assert.ok(!sections.includes(hidden), `${hidden} stays hidden`);
   assert.ok(!sections.includes("approvals"));
   assert.ok(!sections.includes("planConnections"));
+  assert.ok(!sections.includes("schedules"));
 });
 
 test("a Deployment Administrator keeps Deployment-level settings", () => {

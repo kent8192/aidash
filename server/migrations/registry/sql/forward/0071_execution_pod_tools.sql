@@ -5,11 +5,11 @@
 DO $$
 DECLARE original text; copied text;
 BEGIN
- IF to_regprocedure('public.aidash_descriptor_before_pod_tools_0070(jsonb)') IS NOT NULL THEN
+ IF to_regprocedure('public.aidash_descriptor_before_pod_tools_0071(jsonb)') IS NOT NULL THEN
   RAISE EXCEPTION 'Execution Pod tool descriptor contract backup already exists';
  END IF;
  original := pg_get_functiondef('public.aidash_descriptor_is_valid(jsonb)'::regprocedure);
- copied := replace(original, 'FUNCTION public.aidash_descriptor_is_valid(', 'FUNCTION public.aidash_descriptor_before_pod_tools_0070(');
+ copied := replace(original, 'FUNCTION public.aidash_descriptor_is_valid(', 'FUNCTION public.aidash_descriptor_before_pod_tools_0071(');
  IF copied = original THEN RAISE EXCEPTION 'Descriptor contract header missing'; END IF;
  EXECUTE copied;
 END $$;
@@ -26,8 +26,8 @@ BEGIN
   IF value->>'provider' IS DISTINCT FROM expected_provider
   OR COALESCE(value->'lifecycle','null'::jsonb) <> 'null'::jsonb THEN RETURN false; END IF;
   -- Every other rule is apply_patch's: Sandboxed tier, no transport, the same narrowing.
-  RETURN public.aidash_descriptor_before_pod_tools_0070(value || '{"provider":"core.files@1","operation":"apply_patch"}'::jsonb);
+  RETURN public.aidash_descriptor_before_pod_tools_0071(value || '{"provider":"core.files@1","operation":"apply_patch"}'::jsonb);
  END IF;
- RETURN public.aidash_descriptor_before_pod_tools_0070(value);
+ RETURN public.aidash_descriptor_before_pod_tools_0071(value);
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END $$;

@@ -5,8 +5,8 @@
 // `sha256` is the digest of `data`.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0134_agent_plugin_data", "execution")
-		.add_dependency("execution", "0133_egress_run_revocations_rls")
+	Migration::new("0135_agent_plugin_data", "execution")
+		.add_dependency("execution", "0134_egress_run_revocations_rls")
 		.add_dependency("workspaces", "0019_scratch_spaces")
 		.database_only(true)
 		.atomic(true)

@@ -4,14 +4,14 @@
 // deletion that Reinhardt cannot express as a typed operation.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0080_remove_package_index_approvals", "identity")
-		.add_dependency("identity", "0079_bootstrap_reservations_state")
+	Migration::new("0082_remove_package_index_approvals", "identity")
+		.add_dependency("identity", "0081_scheduled_executions")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0080_remove_package_index_approvals.sql").into(),
+			sql: include_str!("sql/forward/0082_remove_package_index_approvals.sql").into(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0080_remove_package_index_approvals.sql").into(),
+				include_str!("sql/backward/0082_remove_package_index_approvals.sql").into(),
 			),
 		})
 }

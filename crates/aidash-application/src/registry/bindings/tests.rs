@@ -234,11 +234,17 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
 	let saved = agent.binding_normalization.as_mut().unwrap();
-	// A normalization saved before #640 and #639 has neither default.
+	// A normalization saved before #640 and #639 has neither default, nor
+	// the Schedule tools #557 added later.
 	saved.bindings.retain(|binding| {
 		!matches!(
 			binding.binding.target.id.as_str(),
-			"aidash.attachment_copy" | "aidash.workspace_search"
+			"aidash.attachment_copy"
+				| "aidash.workspace_search"
+				| "aidash.schedule_create"
+				| "aidash.schedule_list"
+				| "aidash.schedule_update"
+				| "aidash.schedule_delete"
 		)
 	});
 	for binding in &mut saved.bindings {

@@ -696,6 +696,126 @@ fn legacy_harness_contract_accepts_every_projection_version() {
 }
 
 #[test]
+fn a_workbench_test_excludes_only_the_schedule_tools() {
+	// Arrange: one Schedule tool and one other default tool.
+	let bound = |operation: &str| {
+		let descriptor =
+			crate::tool::providers::core_descriptor("aidash://node-a", operation).unwrap();
+		let definition: Entry = serde_json::from_value(json!({"id":operation,"version":"1.0.0","kind":"tool","name":{"en":operation},"description":{"en":operation},"config":descriptor})).unwrap();
+		ResolvedBinding {
+			identity: QualifiedRef {
+				registry_deployment: "aidash://node-a".into(),
+				id: operation.into(),
+				version: "1.0.0".into(),
+			},
+			definition,
+			digest: String::new(),
+			origin: BindingOrigin::Default,
+			alias: Some(operation.into()),
+			narrow: Default::default(),
+			installation: None,
+			provider_contract_digest: None,
+			provider_implementation: None,
+			excluded_reason: None,
+		}
+	};
+	let snapshot = BindingSnapshot {
+		schema_version: 1,
+		agent: QualifiedRef {
+			registry_deployment: "aidash://node-a".into(),
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		},
+		remote: false,
+		bindings: vec![bound("schedule_create"), bound("task_create")],
+		definitions: vec![],
+		agent_plugins: vec![],
+	};
+	// Act
+	let tested = snapshot.for_workbench_test();
+	// Assert
+	assert_eq!(
+		tested.bindings[0].excluded_reason.as_deref(),
+		Some(WORKBENCH_SCHEDULE_EXCLUSION)
+	);
+	assert_eq!(tested.bindings[1].excluded_reason, None);
+}
+
+#[test]
+fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
+	// Arrange: today's defaults as stored before #557 added the four
+	// Schedule tools, and a #640-era (mode 2) normalization.
+	let node = "aidash://node-a";
+	let config = agent();
+	let schedule_tool = |binding: &NormalizedBinding| {
+		SCHEDULE_TOOLS
+			.iter()
+			.any(|tool| binding.binding.target == QualifiedRef::builtin(node, tool))
+	};
+	// Before #745 too, so its file tools are at 1.0.0 (set 6).
+	let mut saved = config.normalize_mode(node, 6).unwrap();
+	assert_eq!(saved.iter().filter(|b| schedule_tool(b)).count(), 4);
+	saved.retain(|binding| !schedule_tool(binding));
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: node.into(),
+		bindings: saved,
+	});
+
+	// Act
+	let resolved = entry.normalized_bindings(node).unwrap();
+	let historical = config.normalize_mode(node, 2).unwrap();
+
+	// Assert: what it pinned stands; no historical set has the new tools.
+	assert!(!resolved.iter().any(schedule_tool));
+	assert!(!historical.iter().any(schedule_tool));
+}
+
+#[test]
+fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
+	// Arrange: today's defaults, schedule tools included, as stored before
+	// #745 moved file_read, file_search and attachment_copy to 1.0.1.
+	let node = "aidash://node-a";
+	let config = agent();
+	let today = config.normalize(node).unwrap();
+	let mut saved = today.clone();
+	for item in &mut saved {
+		if POD_FILE_TOOLS
+			.iter()
+			.any(|tool| item.binding.target == QualifiedRef::builtin(node, tool))
+		{
+			item.binding.target.version = "1.0.0".into();
+		}
+	}
+	assert_ne!(saved, today);
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: node.into(),
+		bindings: saved.clone(),
+	});
+
+	// Act
+	let resolved = entry.normalized_bindings(node).unwrap();
+
+	// Assert: the pinned 1.0.0 file tools stand; a new normalization binds 1.0.1.
+	assert_eq!(resolved, saved);
+	let file_read = |bindings: &[NormalizedBinding]| {
+		bindings
+			.iter()
+			.find(|b| b.binding.target.id == "aidash.file_read")
+			.unwrap()
+			.binding
+			.target
+			.version
+			.clone()
+	};
+	assert_eq!(file_read(&resolved), "1.0.0");
+	assert_eq!(file_read(&today), "1.0.1");
+}
+
+#[test]
 fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 	// Arrange: a normalization saved between image retrieval (#639) and
 	// Thread Attachment image search (#622 part 2), as it was stored then.
