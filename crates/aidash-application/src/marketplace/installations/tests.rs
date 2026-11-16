@@ -878,3 +878,36 @@ async fn configuration_cannot_name_a_tenant_secret() {
 		"{error}"
 	);
 }
+
+/// An Agent whose plugin's remote server names `secret` in its settings.
+fn agent_with_server_secret(secret: serde_json::Value) -> Entry {
+	let stored = crate::test_support::stored_plugin_with_servers(
+		"acme-tools",
+		serde_json::json!({"docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp"}}),
+		&[],
+	);
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["agent_plugins"] =
+		serde_json::json!([crate::test_support::plugin_reference(&stored)]);
+	agent.config["agent_plugin_settings"] =
+		serde_json::json!({"acme-tools": {"docs": {"secret": secret}}});
+	agent
+}
+
+#[rstest]
+#[case::shared_may_be_used(serde_json::json!({"name": "docs-token"}), true)]
+#[case::personal_only(serde_json::json!({"name": "docs-token", "owner": "personal"}), false)]
+#[tokio::test]
+async fn installing_an_agent_needs_secret_use_on_a_shared_plugin_server_secret(
+	#[case] secret: serde_json::Value,
+	#[case] needs_use: bool,
+) {
+	let entry = agent_with_server_secret(secret);
+	let mut scope = Fixture::new();
+	scope.denied = Some("secret.use".into());
+
+	let refused = require_secret_use(&mut scope, &entry).await;
+
+	assert_eq!(matches!(refused, Err(Error::Forbidden)), needs_use);
+	assert_eq!(scope.calls.iter().any(|c| c == "secret.use"), needs_use);
+}

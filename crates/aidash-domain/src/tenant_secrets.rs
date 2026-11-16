@@ -9,6 +9,10 @@ use uuid::Uuid;
 /// What a tool call fails with when the Tenant Secret it names is missing,
 /// deleted or no longer permitted to reach the tool's host.
 pub const UNAVAILABLE: &str = "secret_unavailable";
+/// What a call fails with when the server refused the pasted secret it carried: a `401`, or a
+/// `403` with `insufficient_scope`. The operation did not execute, and no connection a person
+/// could make would change the answer, so nothing waits for one.
+pub const REJECTED: &str = "secret_rejected";
 /// The most hosts one Tenant Secret may record.
 pub const MAX_HOSTS: usize = 16;
 /// The warning Catalog Approval states beside every Tenant Secret a definition
@@ -287,6 +291,20 @@ pub fn plugin_shared_targets(entry: &crate::registry::Entry) -> Vec<(String, Str
 /// The Tenant Secret a Tool definition names, if any.
 pub fn definition_secret(entry: &crate::registry::Entry) -> Option<String> {
 	definition_target(entry).map(|(secret, _)| secret)
+}
+
+/// Every Tenant Secret name a definition names that needs `secret.use` from whoever registers
+/// or installs it: a Tool's or External service's `secret`, and the server secrets of an Agent's
+/// Agent Plugins that may use the shared Tenant Secret. A server secret with `owner: personal`
+/// names only each person's own secret, which no one else's authority reaches.
+pub fn definition_secret_names(entry: &crate::registry::Entry) -> Vec<String> {
+	let mut names: Vec<String> = definition_secret(entry).into_iter().collect();
+	for (name, _) in plugin_shared_targets(entry) {
+		if !names.contains(&name) {
+			names.push(name);
+		}
+	}
+	names
 }
 
 /// Replaces the Tenant Secret a Tool definition names. Does nothing to a
