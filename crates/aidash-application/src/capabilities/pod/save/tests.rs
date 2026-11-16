@@ -153,3 +153,9 @@ fn roots_accept_the_whole_scratch_space_and_refuse_escapes() {
 	assert!(!under("srcs/a.rs", "src"));
 	assert!(under("anything", "."));
 }
+
+#[test]
+fn a_saved_image_records_its_image_type_so_a_model_can_read_it() {
+	assert_eq!(media_type(b"\x89PNG\r\n\x1a\n\0\0\0\r"), "image/png");
+	assert_eq!(media_type(b"plain text file"), "application/octet-stream");
+}
