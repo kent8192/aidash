@@ -294,6 +294,16 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			.fetch_one(&mut **access.tx)
 			.await?
 		};
+		// A Run a Schedule started passes its mark on to the Run of the Agent
+		// generated for it (#557 decision 7).
+		if let Some(run) = access.read_run {
+			crate::apps::workspaces::repositories::schedules::mark_generation(
+				&mut **access.tx,
+				run,
+				id,
+			)
+			.await?;
+		}
 		crate::apps::execution::observation::enqueue_generation(
 			access,
 			&generated,

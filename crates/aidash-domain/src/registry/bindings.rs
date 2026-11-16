@@ -17,8 +17,8 @@ pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
 /// Default Tool sets an Agent version may have been normalized with: today's
-/// (0) and four historical ones (see `AgentBindings::normalize_mode`).
-const HISTORICAL_DEFAULT_SETS: u8 = 5;
+/// (0) and five historical ones (see `AgentBindings::normalize_mode`).
+const HISTORICAL_DEFAULT_SETS: u8 = 6;
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
 pub const MAX_TOOL_PARALLELISM: u8 = 16;
 fn sequential_tools() -> u8 {
@@ -47,6 +47,18 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
+	"schedule_create",
+	"schedule_list",
+	"schedule_update",
+	"schedule_delete",
+];
+/// The core capability `schedules` (#557): on by default, so its tools are
+/// default tools an Agent definition removes with `remove_default`.
+pub const SCHEDULE_TOOLS: &[&str] = &[
+	"schedule_create",
+	"schedule_list",
+	"schedule_update",
+	"schedule_delete",
 ];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
@@ -394,7 +406,9 @@ impl AgentBindings {
 		self.normalize_mode(node, 0)
 	}
 	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
-	/// version was normalized with (0 today, 1–4 historical); `mode >=
+	/// version was normalized with (0 today, 1–5 historical, where 5 is
+	/// today's set before the Schedule tools of #557, which every historical
+	/// set lacks); `mode >=
 	/// HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and `subnode_task`
 	/// at the 1.0.0 they had before they moved to 1.1.0.
 	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
@@ -406,6 +420,7 @@ impl AgentBindings {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
 					|| (mode == 2 && name == "workspace_search")
 					|| (mode == 3 && name == "attachment_copy")
+					|| SCHEDULE_TOOLS.contains(&name.as_str())
 			}) {
 			return Err(Error::Invalid("unknown historical default".into()));
 		}
@@ -419,6 +434,7 @@ impl AgentBindings {
 			if (mode == 1 && matches!(*operation, "workspace_search" | "attachment_copy"))
 				|| (mode == 2 && *operation == "workspace_search")
 				|| (mode == 3 && *operation == "attachment_copy")
+				|| (mode != 0 && SCHEDULE_TOOLS.contains(operation))
 			{
 				continue;
 			}
@@ -437,9 +453,9 @@ impl AgentBindings {
 				target.version = "1.0.1".into();
 			}
 			let pinned: &[&str] = match *operation {
-				"workspace_read" if matches!(mode, 0 | 3 | 4) => &["1.0.0", "1.0.1", "1.1.0"],
-				"workspace_message" if mode == 0 => &["1.0.0", "1.0.1", "1.1.0"],
-				"workspace_search" if mode == 0 => &["1.0.0", "1.1.0"],
+				"workspace_read" if matches!(mode, 0 | 3 | 4 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_message" if matches!(mode, 0 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_search" if matches!(mode, 0 | 5) => &["1.0.0", "1.1.0"],
 				_ => &[],
 			};
 			if let Some(binding) = self.bindings.iter().find(|b| {
@@ -990,7 +1006,33 @@ pub struct BindingSnapshot {
 	pub agent_plugins: Vec<crate::agent_plugin::PinnedAgentPlugin>,
 }
 
+/// Why a Workbench test does not offer a Schedule tool (#557).
+pub const WORKBENCH_SCHEDULE_EXCLUSION: &str = "Schedules are not offered in Workbench tests";
+
 impl BindingSnapshot {
+	/// The Bindings a Workbench test offers. A sandboxed test cannot register a
+	/// real Schedule, and the four Schedule tools would take about a quarter of
+	/// the default test token limit, so the test excludes them (#557). Both the
+	/// admission and each step apply this, so their snapshots stay equal.
+	pub fn for_workbench_test(mut self) -> Self {
+		for binding in &mut self.bindings {
+			if binding.excluded_reason.is_none()
+				&& binding.definition.kind == "tool"
+				&& binding
+					.definition
+					.config
+					.get("provider")
+					.and_then(Value::as_str)
+					== Some("core.schedules@1")
+			{
+				binding.excluded_reason = Some(WORKBENCH_SCHEDULE_EXCLUSION.into());
+				// An excluded tool carries no Provider implementation.
+				binding.provider_implementation = None;
+			}
+		}
+		self
+	}
+
 	/// Whether the admitted, pinned Tools can select a Thread Attachment for model input.
 	pub fn supports_thread_attachment_selection(&self) -> bool {
 		self.bindings.iter().any(|binding| {

@@ -1,11 +1,37 @@
 //! Application endpoint registration and access policies.
-use super::views::{channels, management, scratch};
+use super::views::{channels, management, schedules, scratch};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(schedules::workspace_list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::create)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::notices)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::limits)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::set_limits)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::read)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::update)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::pause)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::resume)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::successor)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::run_now)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(schedules::remove)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::list)
