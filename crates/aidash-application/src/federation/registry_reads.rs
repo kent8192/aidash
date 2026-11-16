@@ -95,35 +95,51 @@ async fn check(
 			RemoteReads::Unconfirmed
 		});
 	}
-	for (node, references) in nodes {
+	let mut silent = None;
+	'nodes: for (node, references) in nodes {
 		let resource = scope.resource("node", &node, json!({"remote_node":node}));
 		if !scope.decide(&resource, "federation.discover").await? {
 			return Ok(RemoteReads::Unconfirmed);
 		}
-		// After the decision: a mark may come from another identity of the
-		// same authority, and this reader's own right comes first.
-		if scope.unavailable(&node) {
-			// Not asked again, but this walk met it: its caller is told so (#751).
-			scope.mark_unavailable(&node);
-			return Ok(RemoteReads::Unconfirmed);
-		}
+		// A Node with no route, such as a disabled registration or a deleted
+		// sibling, is a refusal: the memory of its silence spares only the
+		// transport, never this local check.
 		let Some(route) = scope.route(&node).await? else {
 			return Ok(RemoteReads::Unconfirmed);
 		};
+		// After the decision: a mark may come from another identity of the
+		// same authority, and this reader's own right comes first.
+		if scope.unavailable(&node) {
+			scope.skipped(&node);
+			if let Some(node) = scope.take_row_silence() {
+				silent.get_or_insert(node);
+			}
+			continue;
+		}
 		for batch in references.chunks(128) {
 			match transport.verify(&route, batch).await {
-				Verification::Verified => {}
-				Verification::Rejected | Verification::NotAsked => {
+				Verification::Verified => scope.answered(&node),
+				Verification::Rejected => {
+					scope.answered(&node);
 					return Ok(RemoteReads::Unconfirmed);
 				}
+				Verification::NotAsked => return Ok(RemoteReads::Unconfirmed),
 				Verification::Unavailable => {
 					scope.mark_unavailable(&node);
-					return Ok(RemoteReads::Unconfirmed);
+					if let Some(node) = scope.take_row_silence() {
+						silent.get_or_insert(node);
+					}
+					continue 'nodes;
 				}
 			}
 		}
 	}
-	Ok(RemoteReads::Visible)
+	if let Some(node) = silent {
+		scope.set_row_silence(Some(node));
+		Ok(RemoteReads::Unconfirmed)
+	} else {
+		Ok(RemoteReads::Visible)
+	}
 }
 /// The policy resource of an Agent found on another Node: the Tenant's own definition keeps its
 /// id, and another Tenant's is named by its Node. Either carries the trusted `remote_node`.

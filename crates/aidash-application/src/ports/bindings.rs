@@ -28,12 +28,6 @@ pub trait BindingCatalog: Send {
 	async fn agent_plugin(&mut self, _digest: &str) -> Result<Option<StoredAgentPlugin>> {
 		Err(crate::Error::Invalid("AGENT_PLUGIN_UNAVAILABLE".into()))
 	}
-	async fn foreign_agent(
-		&mut self,
-		_: &QualifiedRef,
-	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		Err(crate::Error::Forbidden)
-	}
 	/// New execution admission requires this revision to be active and approved.
 	/// A structural staging preview may check a readable pending revision, but
 	/// that preview cannot authorize activation or execution.

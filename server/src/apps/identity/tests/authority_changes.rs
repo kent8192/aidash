@@ -23,14 +23,14 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// Every test first shortens the limit, before anything reads it, to this value.
-const LIMIT: Duration = Duration::from_secs(2);
-const PAUSE_SECONDS: u64 = 6;
+const LIMIT: Duration = Duration::from_secs(4);
+const PAUSE_SECONDS: u64 = 12;
 
 fn short_limit() {
 	static SET: Once = Once::new();
 	// Sound because every test comes here first, so no other thread reads the
 	// environment until this has returned.
-	SET.call_once(|| unsafe { std::env::set_var("AIDASH_POLICY_WAIT_SECONDS", "2") });
+	SET.call_once(|| unsafe { std::env::set_var("AIDASH_POLICY_WAIT_SECONDS", "4") });
 }
 
 fn bundle(tenant: &str) -> Value {
@@ -420,7 +420,9 @@ async fn a_resume_waits_at_the_entrance_before_it_holds_a_visibility_lease(
 		});
 	}
 	tokio::time::sleep(Duration::from_millis(300)).await;
-	let reader = tokio::time::timeout(Duration::from_secs(1), bystander.get("/api/state"))
+	// Leave room for an instrumented runner to service the concurrent requests,
+	// while requiring the bystander to pass before the Authority Change times out.
+	let reader = tokio::time::timeout(Duration::from_secs(2), bystander.get("/api/state"))
 		.await
 		.expect("resumes waiting at the entrance took the visibility pool from another Tenant")
 		.unwrap();

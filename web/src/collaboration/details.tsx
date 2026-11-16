@@ -6,7 +6,11 @@ import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
-import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
+import {
+  RemoteMemoryProvenance,
+  RemoteRunManagement,
+  semanticReasons,
+} from "./remote-memory";
 import { ApiError, apiFetch } from "../transport";
 import { DeclineCall } from "./decline-call";
 import { offeredDecline } from "./decline-call-model";
@@ -67,6 +71,7 @@ import { RunSubnodes } from "./subnodes";
 import { ArtifactList } from "./channel";
 import {
   answeredAtDeadline,
+  closedWhenRunEnded,
   continuesAt,
   deadlineTime,
 } from "../approval-settings-model";
@@ -353,13 +358,18 @@ export function OperationsDialog({
                     </div>
                   </form>
                 )
-              ) : request && answeredAtDeadline(request) ? (
+              ) : request &&
+                (answeredAtDeadline(request) || closedWhenRunEnded(request)) ? (
                 <div className="grid min-w-0 justify-items-start gap-2">
                   <Badge value={request.kind} />
                   <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
                     {elicitationMessage(request)}
                   </p>
-                  <Hint role="status">{copy.noAnswerBeforeDeadline}</Hint>
+                  <Hint role="status">
+                    {closedWhenRunEnded(request)
+                      ? copy.questionClosedRunEnded
+                      : copy.noAnswerBeforeDeadline}
+                  </Hint>
                 </div>
               ) : (
                 <Hint role="status">{copy.unavailable}</Hint>
@@ -513,7 +523,7 @@ export function OperationsDialog({
  * Steps that went without optional Workspace semantic context (ADR 0059). Only a
  * Run local to its executing node degrades, which need not be the viewer's node.
  */
-function DegradedContext({ run }: { run: Run }) {
+function DegradedContext({ run }: { run: Pick<Run, "recovery"> }) {
   const { t } = useI18n();
   const degraded = run.recovery?.degraded;
   if (!degraded?.count) return null;
@@ -634,6 +644,18 @@ function RunPanel({
           <ReferenceName id={node} />
         </p>
       </header>
+      {controllable &&
+        run.control === "PAUSED" &&
+        run.recovery?.semantic_reason && (
+          // The same cause and next step a Run on another Node reports (#127).
+          <Hint role="status">
+            {
+              semanticReasons[run.recovery.semantic_reason][
+                locale === "ja-JP" ? 1 : 0
+              ]
+            }
+          </Hint>
+        )}
       {(controllable || home) && (
         <div className="flex min-w-0 flex-wrap gap-2">
           {controllable && !administrator && (
@@ -666,11 +688,14 @@ function RunPanel({
                       attachment_ids: [],
                     })
                   }
-                  decline={(call) =>
+                  decline={(call, rest_of_run) =>
                     apiFetch(`/api/runs/${id}/declined-calls`, {
                       method: "POST",
                       headers: { "content-type": "application/json" },
-                      body: JSON.stringify({ call }),
+                      body: JSON.stringify({
+                        call,
+                        ...(rest_of_run ? { rest_of_run: true } : {}),
+                      }),
                     })
                   }
                 />
@@ -709,14 +734,7 @@ function RunPanel({
       {!managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
       )}
-      {!managed && (
-        <RunResearchEvidence
-          run={id}
-          deploymentAdministrator={
-            data.access.kind === "deployment_administrator"
-          }
-        />
-      )}
+      {!managed && <RunResearchEvidence run={id} />}
       {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}

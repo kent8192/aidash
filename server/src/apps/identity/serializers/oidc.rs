@@ -49,6 +49,8 @@ pub struct MappingView {
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct SessionView {
 	pub(crate) id: Uuid,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub(crate) sign_in_method_prompt: Option<SignInMethodPrompt>,
 	pub(crate) deployment_administrator: bool,
 	pub(crate) mappings: Vec<MappingView>,
 	/// True when Aidash made a Personal Tenant for this identity, which may
@@ -65,6 +67,12 @@ pub(crate) struct SessionView {
 	/// Whether this identity's Personal Tenant is deleted, so it may ask for
 	/// a new one.
 	pub(crate) personal_tenant_deleted: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct SignInMethodPrompt {
+	pub(crate) identity_id: Uuid,
+	pub(crate) account_url: String,
 }
 
 #[derive(Serialize, JsonSchema)]

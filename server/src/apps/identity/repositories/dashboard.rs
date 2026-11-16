@@ -4,7 +4,8 @@ use crate::{
 	apps::{
 		execution::models::Run,
 		identity::models::{
-			DashboardExecutionOrigin, DashboardIdentity, DemoReservation, Fulfilment,
+			BootstrapDeploymentAdministratorReservation, DashboardExecutionOrigin,
+			DashboardIdentity, DemoReservation, Fulfilment,
 		},
 	},
 	authorization::access::Access,
@@ -24,15 +25,24 @@ pub(crate) struct Repository(pub(crate) Federation);
 
 /// External Identities and sessions are Deployment-wide, so these ports work
 /// in the no-Tenant scope; a personal Tenant is provisioned in its own scope.
-pub(crate) struct Login(pub(crate) Pool, pub(crate) String);
+pub(crate) struct Login(
+	pub(crate) Pool,
+	pub(crate) String,
+	pub(crate) Option<AccountPolicy>,
+);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
 	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()> {
-		let policy = self.0.dashboard_policy();
+		let policy = self.2.clone();
 		// Reservations are Tenant-owned: this Deployment-scope read only finds
 		// them, and each is spent in its own Tenant's scope and transaction, so
 		// one that cannot be spent leaves the others to be.
-		for reservation in DemoReservation::unspent(&self.0, &email.to_lowercase()).await? {
+		let email = email.to_lowercase();
+		for reservation in DemoReservation::unspent(&self.0, &email).await? {
+			if reservation.source != "host_access" && !policy.as_ref().is_some_and(|p| p.demo_data)
+			{
+				continue;
+			}
 			let outcome = DemoReservation::fulfil(
 				&self.0,
 				policy.as_ref(),
@@ -45,6 +55,15 @@ impl aidash_application::ports::authorization::dashboard::LoginAccounts for Logi
 				tracing::debug!(%identity, tenant = %reservation.tenant, ?reason, "Demo Reservation not spent");
 			}
 		}
+		// After the Tenant reservations, so the grant follows whichever
+		// identity spent the address's Host Access Tenant reservation.
+		BootstrapDeploymentAdministratorReservation::consume(
+			&self.0,
+			policy.as_ref(),
+			&email,
+			identity,
+		)
+		.await?;
 		Ok(())
 	}
 	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
@@ -208,8 +227,126 @@ impl StatusRecovery for Recovery {
 			return Ok(false);
 		};
 		let policy = pool.dashboard_policy();
-		match DashboardExecutionOrigin::require_current(&mut **access.tx, run, policy.as_ref())
-			.await
+		// A suspension requires a separate, explicit administrator authorization.
+		// Lock the Run and rebind its origin in the same transaction as resume.
+		{
+			use reinhardt::db::orm::Model;
+			let suspended_epoch = Run::objects()
+				.filter(Run::field_id().eq(run))
+				.filter(
+					Run::field_control()
+						.eq(crate::apps::execution::services::states::RunControl::Paused),
+				)
+				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+				.all_with_executor(access.tx.native_mut())
+				.await
+				.map_err(|error| {
+					crate::Error::from(reinhardt::core::exception::Error::from(error))
+				})?
+				.pop()
+				.and_then(|row| {
+					row.pending
+						.0
+						.get("recovery")
+						.and_then(|v| v.get("account_suspension_epoch"))
+						.and_then(|v| v.as_u64())
+				});
+			if let Some(epoch) = suspended_epoch {
+				// Only a Run the administrator's choice covers is rechecked, so a Run
+				// waiting on an unauthorized epoch costs no permission check per pass.
+				if !DashboardExecutionOrigin::suspension_resumable(
+					&mut **access.tx,
+					run,
+					epoch,
+					policy.as_ref(),
+				)
+				.await?
+				{
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				}
+				// The administrator's choice stands in for the owner's manual resume, so
+				// the owner's local permissions are rechecked as that resume would: a Run
+				// whose owner lost them stays paused (#876 decision 16, ADR 0132). This
+				// runs before the Run row lock, in the manual resume's lock order.
+				let (returned, allowed) =
+					super::execution::control::recheck_resume(&self.federation, access, run).await;
+				access = returned;
+				if let Err(error) = allowed {
+					use aidash_application::Error as Refusal;
+					if !matches!(
+						error,
+						Refusal::Forbidden
+							| Refusal::Unauthorized
+							| Refusal::AccountSuspended { .. }
+							| Refusal::ResumeBlocked(_)
+					) {
+						tracing::warn!(run_id = %run, %error, "automatic suspension resume could not recheck the owner");
+					}
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				}
+			}
+			let row = Run::objects()
+				.filter(Run::field_id().eq(run))
+				.filter(
+					Run::field_control()
+						.eq(crate::apps::execution::services::states::RunControl::Paused),
+				)
+				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+				.select_for_update()
+				.all_with_executor(access.tx.native_mut())
+				.await
+				.map_err(|error| {
+					crate::Error::from(reinhardt::core::exception::Error::from(error))
+				})?
+				.pop();
+			if let Some(mut row) = row {
+				let Some(epoch) = row
+					.pending
+					.0
+					.get("recovery")
+					.and_then(|v| v.get("account_suspension_epoch"))
+					.and_then(|v| v.as_u64())
+				else {
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				};
+				if !DashboardExecutionOrigin::rebind_suspended(
+					&mut **access.tx,
+					run,
+					epoch,
+					policy.as_ref(),
+				)
+				.await?
+				{
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				}
+				if let Some(recovery) = row
+					.pending
+					.0
+					.get_mut("recovery")
+					.and_then(|v| v.as_object_mut())
+				{
+					recovery.remove("account_suspension_epoch");
+				}
+				row.control = crate::apps::execution::services::states::RunControl::Active;
+				row.error = None;
+				row.revision += 1;
+				row.updated_at = Utc::now();
+				Run::objects()
+					.save_with_executor(access.tx.native_mut(), &row)
+					.await
+					.map_err(|error| {
+						crate::Error::from(reinhardt::core::exception::Error::from(error))
+					})?;
+				return access.finish(Ok(true)).await.map_err(Into::into);
+			}
+		}
+		match DashboardExecutionOrigin::require_current(
+			&mut **access.tx,
+			run,
+			policy.as_ref(),
+			aidash_application::ports::accounts::Recheck::Online,
+		)
+		.await
 		{
 			Ok(()) => {}
 			Err(crate::Error::Forbidden | crate::Error::Unauthorized) => {
@@ -226,6 +363,12 @@ impl StatusRecovery for Recovery {
 				crate::database::native::query(&update)
 					.execute(&mut **access.tx)
 					.await?;
+				return access.finish(Ok(false)).await.map_err(Into::into);
+			}
+			// The Account was suspended after this Run paused for another reason.
+			// Lifting the suspension leaves such work untouched (ADR 0132), and the
+			// identity's other Runs still get their pass.
+			Err(crate::Error::AccountSuspended { .. }) => {
 				return access.finish(Ok(false)).await.map_err(Into::into);
 			}
 			Err(error) => return Err(error.into()),

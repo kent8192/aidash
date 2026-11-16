@@ -112,6 +112,7 @@ pub(crate) async fn decline_call(
 		id,
 		input.grant_id,
 		&input.call,
+		input.rest_of_run,
 	)
 	.await
 	.map_err(Into::into)

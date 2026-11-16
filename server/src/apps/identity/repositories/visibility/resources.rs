@@ -44,6 +44,12 @@ impl ResourceVisibilityScope for Reads<'_> {
 	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
 		if let Some(task) = self
 			.access
+			.state_source_task(artifact.task_id, artifact.workspace_id)
+		{
+			return Ok(task);
+		}
+		if let Some(task) = self
+			.access
 			.read_lookups
 			.task(artifact.task_id, artifact.workspace_id)
 		{
@@ -88,6 +94,9 @@ impl ResourceVisibilityScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn humans(&mut self, workspace: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
+		if let Some(requests) = self.access.state_humans(workspace, run) {
+			return Ok(requests);
+		}
 		let result: NativeResult<Vec<HumanRequest>> = async {
 			let this = &mut *self.access;
 			let requests: Vec<HumanRequest> = {
@@ -214,6 +223,9 @@ impl ResourceAccessScope for Reads<'_> {
 #[async_trait]
 impl ResourceEventScope for Reads<'_> {
 	async fn event_task(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Task>> {
+		if let Some(task) = workspace.and_then(|workspace| self.access.state_task(id, workspace)) {
+			return Ok(Some(task));
+		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let task: Option<Task> = {

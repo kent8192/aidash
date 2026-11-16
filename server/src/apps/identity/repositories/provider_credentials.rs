@@ -142,7 +142,7 @@ impl Scope for NativeScope {
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(crate::Error::from)?;
-		crate::apps::execution::models::event_records::append(self.tx.as_mut(),None,event,json!({"tenant":value.tenant,"id":value.id,"provider":value.provider,"state":value.state,"revision":value.revision,"actor":actor})).await?;
+		crate::apps::execution::models::event_records::append(self.tx.as_mut(),None,event,json!({"tenant":value.tenant,"id":value.id,"provider":value.provider,"key_origin":value.key_origin,"state":value.state,"revision":value.revision,"actor":actor})).await?;
 		Ok(())
 	}
 	async fn bindings(&mut self) -> Result<Vec<Binding>> {

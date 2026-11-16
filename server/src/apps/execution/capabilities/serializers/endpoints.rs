@@ -17,7 +17,7 @@ pub(crate) struct ApprovalQuery {
 	/// `pending`: approvals awaiting a decision; `active`: unexpired Run
 	/// grants. Both exclude what has expired.
 	pub(crate) state: Option<ApprovalState>,
-	/// `approver`: only records addressed to the reader as approver.
+	/// `approver`: only records the reader may decide, or as an approver revoke.
 	pub(crate) role: Option<ApprovalRole>,
 }
 

@@ -38,8 +38,6 @@ pub enum DebitRefusal {
 	Inactive,
 	/// The Scratch Space's daily budget was exhausted.
 	ScopeBudget,
-	/// The Scratch Space's egress was suspended.
-	Suspended,
 	/// The request's authority was refused.
 	Forbidden,
 }
@@ -58,7 +56,6 @@ impl DebitRefusal {
 				Some(Self::Inactive)
 			}
 			Error::Refused(code) if code == "egress_budget_exhausted" => Some(Self::ScopeBudget),
-			Error::Refused(code) if code == "egress_suspended" => Some(Self::Suspended),
 			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => {
 				Some(Self::Forbidden)
 			}
@@ -142,6 +139,8 @@ pub fn credentials_match(expected: &str, provided: &str) -> bool {
 /// Limits for one gateway instance and scope tunnel.
 #[derive(Clone, Copy, Debug)]
 pub struct TunnelLimits {
+	/// Host connections one Scratch Space may have open at once. No setting
+	/// changes it, so a Tenant's own limit is checked against this default.
 	pub concurrent: usize,
 	pub idle_timeout: std::time::Duration,
 	pub max_lifetime: std::time::Duration,
@@ -149,7 +148,7 @@ pub struct TunnelLimits {
 impl Default for TunnelLimits {
 	fn default() -> Self {
 		Self {
-			concurrent: 64,
+			concurrent: 32,
 			idle_timeout: std::time::Duration::from_secs(300),
 			max_lifetime: std::time::Duration::from_secs(86400),
 		}
@@ -179,6 +178,10 @@ pub struct ConnectionRecord {
 	pub received_bytes: u64,
 	pub duration_ms: u64,
 	pub outcome: String,
+	/// The code the client received, for a connection that did not complete.
+	pub error: Option<String>,
+	/// How long it waited for a Host connection limit; `None` until known.
+	pub wait_ms: Option<u64>,
 }
 
 /// Supplies live Scratch Space authority to the durable egress adapter.
@@ -204,8 +207,8 @@ pub trait ScopeAuthority: Send + Sync {
 	) -> Result<Admission>;
 }
 
-/// Durable scope authority. Implementations must serialize admission, suspension,
-/// and budget debits across all gateway instances. Debits are made before bytes
+/// Durable scope authority. Implementations must serialize budget debits across
+/// all gateway instances. Debits are made before bytes
 /// leave the gateway and may be reserved in batches; unused reservations must be
 /// returned on completion. Each debit is associated with its UTC day.
 #[async_trait]
@@ -221,12 +224,13 @@ pub trait EgressScopes: Send + Sync {
 		path: &str,
 		query_digest: &str,
 	) -> Result<Admission>;
-	/// Atomically checks suspension, counts a new connection in the current
-	/// minute, and suspends and notifies the operator on anomaly.
+	/// Refuses a new connection once the scope's daily budget is spent. It reads
+	/// and writes nothing else, so a connection costs the store no write before
+	/// it holds a Host connection limit (#845).
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
-	/// Reauthenticate the credential, fail on suspension and return current policy.
+	/// Reauthenticate the credential and return current policy.
 	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings>;
-	/// Atomically rejects suspended scopes and reserves bytes against the daily budget.
+	/// Atomically reserves bytes against the daily budget.
 	async fn debit(
 		&self,
 		scope: &ScopeSettings,
@@ -243,7 +247,30 @@ pub trait EgressScopes: Send + Sync {
 	) -> Result<()>;
 	/// Idempotently inserts or updates a connection by record ID.
 	async fn record(&self, record: ConnectionRecord) -> Result<()>;
-	async fn lift_suspension(&self, scope: &aidash_domain::egress::ScopeId) -> Result<()>;
+	/// Adds counts of connections that ended before they held a Host connection
+	/// limit. Each tally is written once; a lost write loses only counts.
+	async fn record_refusals(&self, tallies: Vec<RefusalTally>) -> Result<()>;
+	/// Tells the operator that a scope allowed to reach any host reached more
+	/// distinct hosts in a minute than its anomaly rule expects. Nothing stops.
+	async fn notify_many_hosts(
+		&self,
+		scope: &aidash_domain::egress::ScopeId,
+		hosts: usize,
+	) -> Result<()>;
+}
+
+/// How many connections of one scope to one host ended for one reason, before
+/// they held a Host connection limit, within one minute (#845).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusalTally {
+	pub scope: aidash_domain::egress::ScopeId,
+	/// The start of the minute the connections ended in.
+	pub minute: chrono::DateTime<chrono::Utc>,
+	/// Empty for the hosts beyond a minute's cap, counted together.
+	pub host: String,
+	/// The code the client received, or `egress_client_closed`.
+	pub reason: String,
+	pub count: u64,
 }
 
 #[cfg(any(test, feature = "test-support"))]

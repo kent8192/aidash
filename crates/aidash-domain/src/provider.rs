@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub mod estimate;
+pub mod reasoning;
 pub mod responses;
 pub mod usage;
 
@@ -193,6 +194,11 @@ pub struct ModelResponse {
 	pub provider_activity: Vec<Value>,
 	pub text: String,
 	pub tool_calls: Vec<ToolCall>,
+	/// The provider's reasoning, exactly as received (#942). Kept in the
+	/// pending state so a resumed step records it with its Model Turn; omitted
+	/// when absent, so responses without reasoning keep their JSON shape.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reasoning: Option<reasoning::Reasoning>,
 	pub input_tokens: u64,
 	pub output_tokens: u64,
 	pub usage_complete: bool,
@@ -438,6 +444,8 @@ impl ModelRequest {
 		for message in body["messages"].as_array_mut().into_iter().flatten() {
 			if let Some(object) = message.as_object_mut() {
 				object.remove("_provider_activity");
+				// Responses reasoning items never go to a Chat route.
+				object.remove(reasoning::RESPONSES_ITEMS_KEY);
 			}
 		}
 		body["messages"]

@@ -41,6 +41,9 @@ impl<Events: Send> InstallationRead for NativeDefinitions<'_, Events> {
 		&mut self,
 		id: &str,
 	) -> aidash_application::Result<Option<Installation>> {
+		if let Some(result) = self.access.state_installation(id) {
+			return result.map_err(Into::into);
+		}
 		let doc: Option<Value> = {
 			let query_bind_1 = &id;
 			crate::database::native::query_scalar(

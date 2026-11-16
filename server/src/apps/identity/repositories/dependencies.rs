@@ -14,6 +14,17 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) struct NativeDependencies<'a>(pub(crate) &'a mut Access);
+impl aidash_application::ports::authorization::visibility::RowOutcome for NativeDependencies<'_> {
+	fn row_silence(&self) -> Option<String> {
+		self.0.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.0.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.0.set_row_silence(node);
+	}
+}
 #[async_trait]
 impl DependencyScope for NativeDependencies<'_> {
 	fn node(&self) -> &str {
@@ -113,5 +124,11 @@ impl DependencyScope for NativeDependencies<'_> {
 	}
 	fn mark_unavailable(&mut self, node: &str) {
 		self.0.mark_peer_unavailable(node);
+	}
+	fn skipped(&mut self, node: &str) {
+		self.0.skip_peer(node);
+	}
+	fn answered(&mut self, node: &str) {
+		self.0.peer_answered(node);
 	}
 }

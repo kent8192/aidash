@@ -223,8 +223,10 @@ all; without it the disclosure is denied.
 - If every Run subject's policy allows `research.disclose`, or an active Run
   grant from an earlier "allow for this Run" decision covers the destination,
   the disclosure proceeds.
-- Otherwise a designated approver (a `user` subject with the
-  `capability_approver` attribute and `capability.approve`) must decide. The
+- Otherwise an Eligible approver must decide: the requester alone when the
+  policy lets them approve it, otherwise any `user` subject with the
+  `capability_approver` attribute and `capability.approve`, and the first
+  decision counts (ADR 0135). The
   tool's `approval_required` result, with the `approval_id`, is not shown to the
   model; the Run waits as it does for any other capability approval. The
   approver sees the exact `disclosure` content in
@@ -348,12 +350,14 @@ needs its own Web disclosure approval, even when the person who pasted it may
 approve. Non-public destinations are refused when the page is read.
 
 The header's decision queue is the approver's inbox. Besides human requests it
-lists the capability approvals addressed to the signed-in Designated approver
-in the signed-in Tenant and the Run grants they gave, which they can revoke,
+lists the capability approvals the signed-in person may decide as an Eligible
+approver in the signed-in Tenant, and the Run grants they may revoke,
 and a new approval raises the same in-app notification as a human approval
 request. The notification names the operation, destination, Agent and
-requester, never the content sent. A Designated approver decides in the inbox
-without access to the Thread. The disclosure card shows the operation,
+requester, never the content sent. An Eligible approver decides in the inbox
+without access to the Thread. While it waits nobody is named as its approver;
+once decided, the card names who allowed or denied it, and a later decision
+by another approver is refused with the same. The disclosure card shows the operation,
 destination, provider, the Deployment account it is charged to, the estimated
 price, requester and Agent, a summary of the search query and, collapsed, the
 exact content sent. It never shows the Thread, the Run's output, the account

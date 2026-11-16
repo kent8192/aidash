@@ -29,6 +29,16 @@ pub trait SemanticMemoryReadSession: Send {
 		source: &aidash_domain::semantic::Source,
 		pending: &mut Vec<Uuid>,
 	) -> Result<Option<String>>;
+	/// Whether the image a recorded read pointed at is still there for this
+	/// reader: its File version in an Area they can read, or its attachment in
+	/// its message. Refuses unless an adapter checks.
+	async fn image_visible(
+		&mut self,
+		_: Uuid,
+		_: &aidash_domain::semantic::Source,
+	) -> Result<bool> {
+		Ok(false)
+	}
 	/// True only when the stored source is provably missing or withdrawn.
 	async fn source_invalidated(
 		&mut self,

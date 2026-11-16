@@ -3,7 +3,8 @@
 //! Plan usage requires `stream: true` and `store: false` and keeps no
 //! conversation state, so every request carries the whole projected context
 //! in `input`. Legacy, Ordered and Native projections retain the observable
-//! messages and tool turns without provider reasoning (ADR 0083). Output is
+//! messages and tool turns; a Native Run also replays each turn's reasoning
+//! items as received (#942, amending ADR 0083). Output is
 //! accepted only from `response.completed`; truncated terminal responses retain
 //! text for bounded MCP sampling. Deltas feed sanitized Inference Progress.
 use super::{CacheSaltKeys, MAX_RESPONSE_BYTES, safe_upstream_reason};
@@ -140,6 +141,7 @@ pub(crate) fn request_body(
 		)));
 	}
 	let mut body = input::encoded_input_body(request)?;
+	drop_unreplayable_reasoning(&mut body);
 	body["model"] = json!(config.model_id);
 	body["instructions"] = json!(format!(
 		"{}{}",
@@ -149,10 +151,32 @@ pub(crate) fn request_body(
 	// Plan usage requires both; neither is configurable (ADR 0007).
 	body["store"] = json!(false);
 	body["stream"] = json!(true);
+	// With `store: false` the provider keeps no reasoning item, so a replayed
+	// item is usable only with its encrypted content, which the provider
+	// returns only when asked (#942). A route with passback off replays none.
+	if config.reasoning_passback() {
+		body["include"] = json!(["reasoning.encrypted_content"]);
+	}
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
 	Ok(body)
+}
+
+/// Remove replayed `reasoning` items that carry no encrypted content. Under
+/// `store: false` such an item only names an ID the provider never stored, so
+/// resending it would be rejected; it is left out of every request alike, so
+/// the cached prefix stays stable. Other Responses routes resend items as
+/// received (#942).
+fn drop_unreplayable_reasoning(body: &mut Value) {
+	if let Some(items) = body["input"].as_array_mut() {
+		items.retain(|item| {
+			item["type"] != "reasoning"
+				|| item["encrypted_content"]
+					.as_str()
+					.is_some_and(|content| !content.is_empty())
+		});
+	}
 }
 
 /// OpenRouter's Responses body. It uses flat function tools and no namespace
@@ -1057,6 +1081,9 @@ fn completed_with_cost(
 	if openrouter {
 		result.provider_activity = super::provider_activity::responses(response);
 	}
+	// Reasoning items are kept as received, in order; the harness decides
+	// whether the Run records and replays them (#942).
+	result.reasoning = aidash_domain::provider::reasoning::Reasoning::from_responses_output(output);
 	let mut refused = false;
 	for item in output {
 		match item["type"].as_str() {
@@ -1101,7 +1128,7 @@ fn completed_with_cost(
 					})?,
 				});
 			}
-			// Provider reasoning is deliberately discarded (ADR 0083).
+			// Reasoning was captured above; other items carry no output.
 			_ => {}
 		}
 	}

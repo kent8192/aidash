@@ -1,20 +1,15 @@
 //! An in-memory scope authority for gateway tests, never for deployment.
-use super::{ConnectionRecord, Direction, EgressScopes, ScopeSettings};
+use super::{ConnectionRecord, Direction, EgressScopes, RefusalTally, ScopeSettings};
 use crate::{Error, Result};
 use aidash_domain::egress::ScopeId;
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use std::{
-	collections::HashMap,
-	sync::Mutex,
-	time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Mutex};
 
 struct State {
-	suspended: bool,
-	window: Instant,
-	connections: u32,
+	revoked: bool,
 	notifications: u32,
+	refusals: Vec<RefusalTally>,
 	checks: u32,
 	usage: HashMap<NaiveDate, (u64, u64)>,
 	records: Vec<ConnectionRecord>,
@@ -32,10 +27,9 @@ impl MemoryScopes {
 			credential,
 			settings,
 			state: Mutex::new(State {
-				suspended: false,
-				window: Instant::now(),
-				connections: 0,
+				revoked: false,
 				notifications: 0,
+				refusals: Vec::new(),
 				checks: 0,
 				usage: HashMap::new(),
 				records: Vec::new(),
@@ -48,8 +42,12 @@ impl MemoryScopes {
 	pub fn notifications(&self) -> u32 {
 		self.state.lock().unwrap().notifications
 	}
-	pub fn suspend(&self) {
-		self.state.lock().unwrap().suspended = true;
+	/// Makes the credential stop authenticating, as a deleted Space's does.
+	pub fn revoke(&self) {
+		self.state.lock().unwrap().revoked = true;
+	}
+	pub fn refusals(&self) -> Vec<RefusalTally> {
+		self.state.lock().unwrap().refusals.clone()
 	}
 	pub fn checks(&self) -> u32 {
 		self.state.lock().unwrap().checks
@@ -73,7 +71,9 @@ impl MemoryScopes {
 #[async_trait]
 impl EgressScopes for MemoryScopes {
 	async fn resolve(&self, credential: &str) -> Result<ScopeSettings> {
-		if !super::credentials_match(&self.credential, credential) {
+		if !super::credentials_match(&self.credential, credential)
+			|| self.state.lock().unwrap().revoked
+		{
 			return Err(Error::Unauthorized);
 		}
 		Ok(self.settings.clone())
@@ -91,10 +91,7 @@ impl EgressScopes for MemoryScopes {
 	}
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()> {
 		self.check(&scope.id)?;
-		let mut s = self.state.lock().unwrap();
-		if s.suspended {
-			return Err(Error::Refused("egress_suspended".into()));
-		}
+		let s = self.state.lock().unwrap();
 		let usage = s
 			.usage
 			.get(&chrono::Utc::now().date_naive())
@@ -105,16 +102,6 @@ impl EgressScopes for MemoryScopes {
 		{
 			return Err(Error::Refused("egress_budget_exhausted".into()));
 		}
-		if s.window.elapsed() >= Duration::from_secs(60) {
-			s.window = Instant::now();
-			s.connections = 0;
-		}
-		s.connections = s.connections.saturating_add(1);
-		if s.connections > self.settings.anomaly.connections_per_minute {
-			s.suspended = true;
-			s.notifications += 1;
-			return Err(Error::Refused("egress_suspended".into()));
-		}
 		Ok(())
 	}
 	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings> {
@@ -122,9 +109,6 @@ impl EgressScopes for MemoryScopes {
 		self.check(&scope.id)?;
 		let mut state = self.state.lock().unwrap();
 		state.checks += 1;
-		if state.suspended {
-			return Err(Error::Refused("egress_suspended".into()));
-		}
 		Ok(current)
 	}
 	async fn debit(
@@ -136,9 +120,6 @@ impl EgressScopes for MemoryScopes {
 	) -> Result<()> {
 		self.check(&scope.id)?;
 		let mut s = self.state.lock().unwrap();
-		if s.suspended {
-			return Err(Error::Refused("egress_suspended".into()));
-		}
 		let entry = s.usage.entry(day).or_default();
 		let (counter, limit) = match direction {
 			Direction::Sent => (&mut entry.0, self.settings.budget.sent_bytes),
@@ -187,12 +168,16 @@ impl EgressScopes for MemoryScopes {
 		}
 		Ok(())
 	}
-	async fn lift_suspension(&self, scope: &ScopeId) -> Result<()> {
+	async fn record_refusals(&self, tallies: Vec<RefusalTally>) -> Result<()> {
+		for tally in &tallies {
+			self.check(&tally.scope)?;
+		}
+		self.state.lock().unwrap().refusals.extend(tallies);
+		Ok(())
+	}
+	async fn notify_many_hosts(&self, scope: &ScopeId, _: usize) -> Result<()> {
 		self.check(scope)?;
-		let mut s = self.state.lock().unwrap();
-		s.suspended = false;
-		s.window = Instant::now();
-		s.connections = 0;
+		self.state.lock().unwrap().notifications += 1;
 		Ok(())
 	}
 }
@@ -216,7 +201,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn credential_budget_and_suspension_are_scoped() {
+	async fn credential_and_budget_are_scoped() {
 		let settings = ScopeSettings {
 			id: ScopeId {
 				tenant: "tenant".into(),
@@ -228,9 +213,7 @@ mod tests {
 				sent_bytes: 10,
 				received_bytes: 10,
 			},
-			anomaly: AnomalyRule {
-				connections_per_minute: 1,
-			},
+			anomaly: AnomalyRule::default(),
 			operator_allows_all: false,
 			tunnel_limits: Default::default(),
 		};
@@ -269,10 +252,6 @@ mod tests {
 			.await
 			.unwrap();
 		authority.admit_connection(&scope).await.unwrap();
-		assert!(authority.admit_connection(&scope).await.is_err());
-		assert_eq!(authority.notifications(), 1);
-		assert!(authority.admit_connection(&scope).await.is_err());
-		authority.lift_suspension(&scope.id).await.unwrap();
 		authority.admit_connection(&scope).await.unwrap();
 	}
 }

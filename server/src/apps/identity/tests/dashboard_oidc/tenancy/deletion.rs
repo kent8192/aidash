@@ -345,6 +345,22 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 		)
 		.await;
 	assert_eq!(status, 201, "{invitation}");
+	let (status, bearer_invitation) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{bearer_invitation}");
+	let bearer_id = Uuid::parse_str(bearer_invitation["id"].as_str().unwrap()).unwrap();
+	let tag: Option<Vec<u8>> =
+		sqlx::query_scalar("SELECT issued_by_token_hash FROM tenant_invitations WHERE id = $1")
+			.bind(bearer_id)
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(tag.is_some());
 
 	let (status, snapshot) = d
 		.as_deployment_administrator("GET", &format!("/api/authorization/{tenant}"), Value::Null)
@@ -366,6 +382,13 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 	assert_eq!(status, 400, "{body}");
 	let (status, deletion) = d.delete(&alice, &context, &tenant).await;
 	assert_eq!(status, 200, "{deletion}");
+	let tag: Option<Vec<u8>> =
+		sqlx::query_scalar("SELECT issued_by_token_hash FROM tenant_invitations WHERE id = $1")
+			.bind(bearer_id)
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(tag.is_none());
 	// Startup reconciliation must leave a deleted Tenant's authority frozen
 	// and must not prevent a later restore.
 	d.federation.registry.seed_system().await.unwrap();
@@ -636,7 +659,7 @@ async fn leaving_keeps_an_administrator_and_a_returning_member_gets_only_the_inv
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
 			Some(&context),
-			json!({"groups":["members"]}),
+			json!({"groups":["members"],"join_directly":false}),
 		)
 		.await;
 	assert_eq!(status, 201, "{invitation}");

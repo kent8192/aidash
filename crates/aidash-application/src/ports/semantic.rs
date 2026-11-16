@@ -12,6 +12,30 @@ use uuid::Uuid;
 pub struct IndexImage {
 	pub media_type: String,
 	pub bytes: Vec<u8>,
+	/// The Image Description embedded with a Thread Attachment image.
+	pub description: Option<String>,
+}
+impl IndexImage {
+	/// The digest its point records: the bytes, and the description if any.
+	pub fn digest(&self) -> String {
+		aidash_domain::semantic::indexing::image_digest(
+			&aidash_domain::semantic::indexing::content_digest_bytes(&self.bytes),
+			self.description.as_deref(),
+		)
+	}
+	pub fn input(&self) -> aidash_domain::semantic::EmbeddingInput<'_> {
+		match &self.description {
+			None => aidash_domain::semantic::EmbeddingInput::Image {
+				media_type: &self.media_type,
+				bytes: &self.bytes,
+			},
+			Some(text) => aidash_domain::semantic::EmbeddingInput::DescribedImage {
+				text,
+				media_type: &self.media_type,
+				bytes: &self.bytes,
+			},
+		}
+	}
 }
 
 pub enum IndexImageRead {

@@ -105,6 +105,7 @@ impl Task {
 		Ok(TaskPage {
 			next_offset: (tasks.len() == 500).then_some(offset.saturating_add(500)),
 			tasks,
+			unconfirmed: vec![],
 		})
 	}
 

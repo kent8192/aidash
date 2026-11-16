@@ -979,6 +979,7 @@ fn federation(
 			config: Config {
 				smtp: None,
 				scratch_policy: Default::default(),
+				credential_max_seconds: 90 * 24 * 60 * 60,
 				deployment: store.deployment.clone(),
 				endpoint: "http://127.0.0.1:18080".into(),
 				database_url: store.pool.connect_options().to_url_lossy().to_string(),
@@ -2524,6 +2525,7 @@ fn authenticated_runtime(
 		runtime.federation.config = Config {
 			smtp: None,
 			scratch_policy: Default::default(),
+			credential_max_seconds: 90 * 24 * 60 * 60,
 			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:18080".into(),
 			database_url: runtime.url.clone(),

@@ -101,8 +101,26 @@ pub(crate) async fn upload_for_run(
 				height: measured.height,
 				duration_ms: measured.duration_ms,
 			},
+			description: input.description.as_deref(),
 		},
 		content,
+	)
+	.await
+	.map_err(Into::into)
+}
+/// Replace an image's Image Description as the person who posted it (#622).
+pub(crate) async fn describe(
+	store: &Store,
+	lease: &mut Lease,
+	workspace: Uuid,
+	attachment: Uuid,
+	description: &str,
+) -> Result<ChannelAttachment> {
+	aidash_application::workspaces::channels::describe(
+		&mut crate::bootstrap::channel_scope(store, lease),
+		workspace,
+		attachment,
+		description,
 	)
 	.await
 	.map_err(Into::into)

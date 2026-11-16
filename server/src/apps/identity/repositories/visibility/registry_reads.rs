@@ -42,6 +42,12 @@ impl RegistryReadScope for Reads<'_> {
 	fn mark_unavailable(&mut self, node: &str) {
 		self.access.mark_peer_unavailable(node);
 	}
+	fn skipped(&mut self, node: &str) {
+		self.access.skip_peer(node);
+	}
+	fn answered(&mut self, node: &str) {
+		self.access.peer_answered(node);
+	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
@@ -55,6 +61,9 @@ impl RegistryReadScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<RegistryJournalRow>> {
+		if let Some(rows) = self.access.state_remote_reads(run) {
+			return Ok(rows);
+		}
 		let result: NativeResult<Vec<RegistryJournalRow>> = async {
 			let rows: Vec<RegistryJournalRow> = {
 				let query_bind_1 = run;
@@ -158,6 +167,12 @@ impl RegistryReadScope for NativeReads<'_> {
 	}
 	fn mark_unavailable(&mut self, node: &str) {
 		self.access.mark_peer_unavailable(node);
+	}
+	fn skipped(&mut self, node: &str) {
+		self.access.skip_peer(node);
+	}
+	fn answered(&mut self, node: &str) {
+		self.access.peer_answered(node);
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)

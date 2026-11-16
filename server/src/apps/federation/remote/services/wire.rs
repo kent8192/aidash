@@ -29,6 +29,9 @@ pub(crate) struct Wire {
 	/// The runtime whose handlers answer a Node of this Deployment. `None`
 	/// reaches no other Node: such an exchange is not asked (#751).
 	pub runtime: Option<Federation>,
+	/// Nodes that did not answer a list read within the last moments, shared by
+	/// every clone of the Store (#770).
+	pub silent: std::sync::Arc<SilentNodes>,
 }
 
 impl Wire {
@@ -65,6 +68,7 @@ impl Wire {
 				egress: store.egress.clone(),
 			},
 			runtime: None,
+			silent: store.silent_nodes.clone(),
 		}
 	}
 
@@ -121,6 +125,11 @@ impl Transport for Wire {
 			semantic_reason: outcome.semantic_reason,
 			execution_refusal: outcome.execution_refusal,
 			transaction_pending: outcome.transaction_pending,
+			unreachable: (outcome.status == 503)
+				.then(|| {
+					aidash_application::ports::federation::authority::Unreachable::of(&outcome.body)
+				})
+				.flatten(),
 			policy_busy: outcome.policy_busy,
 			body: if (200..300).contains(&outcome.status) {
 				serde_json::to_vec(&outcome.body).map_err(Into::into)
@@ -276,6 +285,9 @@ impl DependencyTransport for Reach {
 		}
 	}
 }
+
+mod silence;
+pub(crate) use silence::SilentNodes;
 
 #[cfg(test)]
 mod tests;

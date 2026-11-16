@@ -1,4 +1,5 @@
 //! Bounded, policy-filtered Run and Human Request reads within one transaction.
+use super::visibility::RowOutcome;
 use crate::Result;
 use aidash_domain::{HumanRequest, RawRun, RunInspection, policy::Resource};
 use async_trait::async_trait;
@@ -14,7 +15,7 @@ pub enum HumanState {
 }
 
 #[async_trait]
-pub trait Scope: Send {
+pub trait Scope: Send + RowOutcome {
 	async fn require_workspace(&mut self, id: Uuid) -> Result<()>;
 	async fn workspace_runs(
 		&mut self,

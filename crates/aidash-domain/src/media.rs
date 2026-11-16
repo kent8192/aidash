@@ -14,6 +14,9 @@ pub struct ThreadAttachment {
 	pub height: Option<i32>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub duration_ms: Option<i64>,
+	/// The Image Description its writer gave an image, if any (#622).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +111,36 @@ pub struct SelectedFile {
 	pub media_type: String,
 }
 
+/// The selection with which this Run's own `workspace_read` put Thread
+/// Attachment `attachment` into its inference, if its history still shows one
+/// for `digest`. Only such an attachment may be an image query (#622 decision
+/// 4). A selection refused for lack of headroom was recorded as an error and
+/// does not count; one a compaction removed must be selected again.
+pub fn selected_attachment(
+	history: &[crate::context::HistoryEntry],
+	attachment: Uuid,
+	digest: &str,
+) -> Option<ThreadAttachmentSelection> {
+	history.iter().rev().find_map(|entry| {
+		let crate::context::ContextEvent::Tool { call, result } = &entry.event else {
+			return None;
+		};
+		if call.name != "workspace_read"
+			|| call.arguments["kind"] != "attachment"
+			|| call.arguments["representation"] != "model_input"
+			|| result["status"] != "completed"
+		{
+			return None;
+		}
+		let selection: ThreadAttachmentSelection =
+			serde_json::from_value(result["selection"].clone()).ok()?;
+		(selection.attachment_id == attachment
+			&& selection.expected_digest == digest
+			&& call.arguments["id"] == attachment.to_string())
+		.then_some(selection)
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -122,5 +155,58 @@ mod tests {
 		});
 		assert!(!image.supported_by(&["text".into()]));
 		assert!(image.supported_by(&["text".into(), "image".into()]));
+	}
+
+	fn tool(
+		arguments: serde_json::Value,
+		result: serde_json::Value,
+	) -> crate::context::HistoryEntry {
+		crate::context::HistoryEntry {
+			seq: 1,
+			event: crate::context::ContextEvent::Tool {
+				call: crate::provider::ToolCall {
+					id: "c".into(),
+					name: "workspace_read".into(),
+					arguments,
+				},
+				result,
+			},
+			research: None,
+		}
+	}
+
+	#[test]
+	fn only_a_completed_selection_of_the_same_bytes_counts_as_seen() {
+		// Arrange
+		let attachment = Uuid::from_u128(7);
+		let message = Uuid::from_u128(8);
+		let input =
+			serde_json::json!({"kind":"attachment","id":attachment,"representation":"model_input"});
+		let selected = serde_json::json!({"status":"completed","metadata":{"id":attachment},
+			"selection":{"attachment_id":attachment,"message_id":message,"expected_digest":"d1","wav":false}});
+		let metadata_only = serde_json::json!({"kind":"attachment","id":attachment});
+		let refused =
+			serde_json::json!({"status":"error","error":"model media input exceeds count limit"});
+
+		// Act
+		let seen = selected_attachment(&[tool(input.clone(), selected.clone())], attachment, "d1");
+		let other_bytes =
+			selected_attachment(&[tool(input.clone(), selected.clone())], attachment, "d2");
+		let read_only = selected_attachment(
+			&[tool(metadata_only, json_completed(attachment))],
+			attachment,
+			"d1",
+		);
+		let failed = selected_attachment(&[tool(input, refused)], attachment, "d1");
+
+		// Assert
+		assert_eq!(seen.map(|s| s.message_id), Some(message));
+		assert!(other_bytes.is_none());
+		assert!(read_only.is_none());
+		assert!(failed.is_none());
+	}
+
+	fn json_completed(attachment: Uuid) -> serde_json::Value {
+		serde_json::json!({"status":"completed","metadata":{"id":attachment}})
 	}
 }

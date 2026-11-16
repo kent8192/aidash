@@ -23,7 +23,7 @@ Each value is a complete, frozen rendering; layout and message format are never 
 - Binding snapshots without the field decode as `Legacy` and must keep producing byte-identical requests. Recovery and resumption reproduce the pinned version.
 - Only `Native` Runs append `ContextEvent::Assistant` to the Context Journal. `Legacy` and `Ordered` projections never see it.
 - Under `Native`, pruning and the Summary Stage treat a Model Turn as a unit. An elided tool result keeps its `tool_call_id`, and no request contains a partial Model Turn.
-- `Native` does not persist or replay reasoning output.
+- `Native` does not persist or replay reasoning output. (Changed by #942: Native Runs now record and resend reasoning; see the ADR 0083 amendment of 2026-11-13.)
 - Unsupported versions fail at Agent registration and again in the adapter. There is never a silent fallback to `Legacy`, and ZDR stays enforced.
 - The default for new Agent definitions stays `Legacy` until the matched-task comparison in #181 supports a change.
 

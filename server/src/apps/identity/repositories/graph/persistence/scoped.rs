@@ -166,16 +166,30 @@ pub(crate) async fn visible(
 		}),
 	);
 	// Admission identifies the data; only the current mapped viewer authorizes it.
-	if !access.foreign_run_base_visible(run).await?
-		|| !access.decide(&workspace, "workspace.read").await?
+	if !access.decide(&workspace, "workspace.read").await?
 		|| !access.decide(&task, "task.read").await?
 		|| !access.decide(&resource, "run.read").await?
 		|| !access.decide(&memory, "memory.read").await?
-		|| !access.run_reads_visible(run.id).await?
 	{
 		return Ok(false);
 	}
-	access.human_reads(run.workspace_id, run.id).await
+	let base = access.foreign_run_base_visible(run).await?;
+	let base_silence = access.take_row_silence();
+	if !base && base_silence.is_none() {
+		return Ok(false);
+	}
+	let reads = access.run_reads_visible(run.id).await?;
+	let reads_silence = access.take_row_silence();
+	if !reads && reads_silence.is_none() {
+		return Ok(false);
+	}
+	let held = base_silence.or(reads_silence);
+	let human = access.human_reads(run.workspace_id, run.id).await?;
+	let human_silent = access.take_row_silence();
+	if human || human_silent.is_some() {
+		access.set_row_silence(held.or(human_silent));
+	}
+	Ok(base && reads && human)
 }
 
 pub(super) async fn revision(
