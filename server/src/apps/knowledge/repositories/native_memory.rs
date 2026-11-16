@@ -10,6 +10,8 @@ use reinhardt::query::{
 use std::collections::{BTreeSet, VecDeque};
 
 mod dependencies;
+#[cfg(test)]
+mod tests;
 pub(crate) use dependencies::validate_impact;
 use uuid::Uuid;
 
@@ -230,12 +232,44 @@ pub(crate) async fn mutate_origin(
 	let mut retained =
 		usize::try_from(count).map_err(|_| Error::Invalid("corrupt memory count".into()))?;
 	let mut result = Vec::new();
+	// Units a write left exactly as they were (#127): returned and receipted,
+	// but never saved, fenced or reindexed.
+	let mut unchanged = Vec::new();
 	// PostgreSQL's timestamp input rounds nanoseconds. Canonicalize before
 	// admission so the pending fence, returned unit and persisted row agree.
 	let now = Utc::now().trunc_subsecs(6);
 	for change in &mutation.changes {
 		let id = change.id();
 		let existing = units::load(lease, id, true).await?;
+		if let Change::Correct {
+			expected_revision,
+			content,
+			..
+		} = change && let Some(current) = existing.as_ref()
+			&& current.bank == mutation.bank
+			&& current.revision == *expected_revision
+			&& !current.deleted
+			&& !current.stale
+			&& canonical(content, &mutation.provider) == current.content
+		{
+			// A write identical to the current revision is not a change: the
+			// revision stays, so no Run that read it stops. A stale Unit is
+			// refreshed by any correction, so it never takes this path. The
+			// body is returned only after the expiry and evidence checks a
+			// changed one meets, read as the same originating Run.
+			units::unexpired(lease, current).await?;
+			units::current_for_run(
+				lease,
+				current.bank.workspace,
+				&current.content.evidence,
+				bounds.max_graph_visits,
+				origin,
+			)
+			.await?;
+			unchanged.push(current.id);
+			result.push(current.clone());
+			continue;
+		}
 		let mut unit = match change {
 			Change::Add { content, .. } => {
 				if existing.is_some() {
@@ -293,13 +327,7 @@ pub(crate) async fn mutate_origin(
 				unit
 			}
 		};
-		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
-			&& mutation.provider.version
-				== aidash_domain::registry::bindings::memory_defaults::VERSION
-			&& unit.content.verification == Verification::Unverified
-		{
-			unit.content.verification = Verification::Recorded;
-		}
+		unit.content = canonical(&unit.content, &mutation.provider);
 		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
 			&& mutation.provider.version
 				== aidash_domain::registry::bindings::memory_defaults::VERSION
@@ -314,10 +342,6 @@ pub(crate) async fn mutate_origin(
 			return Err(Error::Invalid(
 				"built-in memory facts require Journal provenance".into(),
 			));
-		}
-		if let Some(range) = unit.content.occurred.as_mut() {
-			range.start = range.start.trunc_subsecs(6);
-			range.end = range.end.trunc_subsecs(6);
 		}
 		if !unit.deleted {
 			units::unexpired(lease, &unit).await?;
@@ -467,21 +491,40 @@ pub(crate) async fn mutate_origin(
 		};
 		Box::pin(mutate_origin(lease, &eviction, bounds, origin)).await?;
 	}
+	let changed: Vec<Unit> = result
+		.iter()
+		.filter(|unit| !unchanged.contains(&unit.id))
+		.cloned()
+		.collect();
 	// Admission must leave every source correctable within its pinned impact cap.
-	for unit in result.iter().filter(|unit| !unit.deleted) {
+	for unit in changed.iter().filter(|unit| !unit.deleted) {
 		dependencies::validate_admission(lease, unit, bounds).await?;
 	}
 	// Impact discovery is bounded and complete before any result may leave the transaction.
 	fence_dependents(
 		lease,
 		mutation.bank.workspace,
-		&result,
+		&changed,
 		mutation.operation_id,
 		&actor,
 		bounds,
 	)
 	.await?;
-	for unit in &result {
+	// A repeated Unit that cites one this batch changed was just fenced: its
+	// returned body is no longer current, so the batch fails as a changed
+	// write citing the old revision would.
+	for id in &unchanged {
+		let now = units::load(lease, *id, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let returned = result.iter().find(|unit| unit.id == *id);
+		if returned.is_none_or(|unit| unit.revision != now.revision) || now.stale {
+			return Err(Error::Conflict(
+				"memory unit changed by another change in this batch".into(),
+			));
+		}
+	}
+	for unit in &changed {
 		if !unit.deleted {
 			units::current_for_run(
 				lease,
@@ -493,16 +536,18 @@ pub(crate) async fn mutate_origin(
 			.await?;
 		}
 	}
-	bump_bank(lease, bank_id).await?;
-	super::engine_jobs::changed(
-		lease,
-		&mutation.bank,
-		&mutation.provider,
-		&policy,
-		&result,
-		origin,
-	)
-	.await?;
+	if !changed.is_empty() {
+		bump_bank(lease, bank_id).await?;
+		super::engine_jobs::changed(
+			lease,
+			&mutation.bank,
+			&mutation.provider,
+			&policy,
+			&changed,
+			origin,
+		)
+		.await?;
+	}
 	let outcome: Vec<_> = result.iter().map(Unit::evidence).collect();
 	super::memory_receipts::reserve(
 		lease,
@@ -514,6 +559,29 @@ pub(crate) async fn mutate_origin(
 	)
 	.await?;
 	Ok(result)
+}
+
+/// `content` as it would be stored: the built-in provider records an
+/// unverified fact as `recorded`, and PostgreSQL keeps microseconds, so an
+/// incoming time with nanoseconds equals the stored one only once truncated.
+/// A changed write stores exactly this, and an identical write compares it.
+fn canonical(
+	content: &aidash_domain::memory::Content,
+	provider: &aidash_domain::registry::EntityRef,
+) -> aidash_domain::memory::Content {
+	use aidash_domain::registry::bindings::memory_defaults;
+	let mut content = content.clone();
+	if provider.id == memory_defaults::MEMORY_ID
+		&& provider.version == memory_defaults::VERSION
+		&& content.verification == Verification::Unverified
+	{
+		content.verification = Verification::Recorded;
+	}
+	if let Some(range) = content.occurred.as_mut() {
+		range.start = range.start.trunc_subsecs(6);
+		range.end = range.end.trunc_subsecs(6);
+	}
+	content
 }
 
 pub(crate) fn content_columns() -> Vec<Alias> {

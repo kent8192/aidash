@@ -2664,6 +2664,112 @@ async fn consumed_home_semantic_revision_blocks_next_remote_inference(
 	p.close().await;
 }
 
+/// #127: a remote Run stopped by a Home source change stays stopped when both
+/// Nodes restart. It keeps its cause and revision, makes no inference, does not
+/// loop, and the Home still offers only a Follow-up Task.
+#[rstest::rstest]
+#[tokio::test]
+async fn invalidated_remote_run_stays_paused_across_an_execution_node_restart(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+	#[from(signal_state)] source_notify: Arc<Notify>,
+	#[from(signal_state)] receiver_notify: Arc<Notify>,
+) {
+	// Arrange
+	let mut p = scoped_pair;
+	let a_file = common::peering::key_file(&p.a).unwrap();
+	let b_file = common::peering::key_file(&p.b).unwrap();
+	let mut a_keys = sender_schedule::SenderSchedule::install(&mut p.a, a_file).await;
+	let mut b_keys = sender_schedule::SenderSchedule::install(&mut p.b, b_file).await;
+	p.aa.context.set_singleton(p.a.clone());
+	p.ba.context.set_singleton(p.b.clone());
+	p.step().await;
+	p.step().await;
+	assert_eq!(p.requests.lock().await.len(), 1, "{:?}", p.run().await);
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let source = p.semantic.as_ref().unwrap().entry;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"DELETE",
+		&format!("/api/workspaces/{workspace}/semantic/entries/{source}"),
+		json!({"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	p.step().await;
+	let stopped = p.run().await;
+	assert_eq!(stopped.control.as_str(), "PAUSED", "{stopped:?}");
+
+	// Act
+	restart_scoped_peers(
+		&mut p,
+		source_notify.clone(),
+		receiver_notify.clone(),
+		&mut a_keys,
+		&mut b_keys,
+	)
+	.await;
+	// `Pair::step` waits until the worker makes progress, and a paused Run
+	// offers none, so drive bounded worker passes directly.
+	let worker = Harness {
+		federation: p.b.clone(),
+	};
+	for _ in 0..3 {
+		tokio::time::timeout(std::time::Duration::from_secs(60), worker.worker_once())
+			.await
+			.expect("a worker pass over a paused Run returns")
+			.unwrap();
+	}
+
+	// Assert
+	let after = p.run().await;
+	assert_eq!(after.control.as_str(), "PAUSED", "{after:?}");
+	assert_eq!(
+		after.revision, stopped.revision,
+		"no restart loop rewrites the paused Run"
+	);
+	assert_eq!(
+		p.requests.lock().await.len(),
+		1,
+		"no inference after the restart"
+	);
+	let management = format!("/api/runs/{}/management", p.admission);
+	let (status, body) = request(&p.ba, &p.receiver_token, "GET", &management, json!({})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["semantic_reason"], "invalidated");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body[0]["semantic"]["recovery"],
+		json!({"cause":"invalidated","actions":["create_follow_up_task"]})
+	);
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn lost_semantic_reply_replays_receipt_without_a_second_embedding(

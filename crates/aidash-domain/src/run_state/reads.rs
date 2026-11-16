@@ -26,6 +26,10 @@ pub enum RunReadsBlock {
 	SemanticRead,
 	/// A record of this kind that the Run read is no longer visible to this reader.
 	Source { source: String },
+	/// Something the Run read changed after it read it, so the Run stopped with
+	/// `invalidated` and only a Follow-up Task goes on from here (#127). Told only
+	/// to someone who could otherwise resume the Run.
+	SourceChanged,
 }
 
 impl fmt::Display for RunReadsBlock {
@@ -56,6 +60,9 @@ impl fmt::Display for RunReadsBlock {
 			Self::Source { source } => {
 				write!(f, "a {source} this Run read is no longer visible to you")
 			}
+			Self::SourceChanged => f.write_str(
+				"something this Run read has changed since, so it cannot be resumed; create a follow-up Task",
+			),
 		}
 	}
 }

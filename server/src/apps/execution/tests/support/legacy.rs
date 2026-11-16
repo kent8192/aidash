@@ -1071,6 +1071,8 @@ pub fn execution_database(
 				format!("connect the server pool to {database}"),
 				PgPoolOptions::new()
 					.max_connections(max_connections)
+					// Match the server pool so its timeout precedes the HTTP deadline.
+					.acquire_timeout(std::time::Duration::from_secs(10))
 					.connect_with(options),
 			)
 			.await

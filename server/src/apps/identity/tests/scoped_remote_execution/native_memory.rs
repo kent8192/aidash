@@ -774,7 +774,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	scoped_pair: Pair,
 ) {
 	use aidash_domain::memory::{
-		Bank, Change, Content, Evidence, Kind, Learning, Mutation, Unit, Verification,
+		Bank, Change, Content, Evidence, Kind, Learning, Mutation, Verification,
 	};
 	let p = scoped_pair;
 	first_native_context(&p).await;
@@ -834,8 +834,8 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		let saved: Vec<Unit> = serde_json::from_value(body).unwrap();
-		support.push(saved[0].evidence());
+		let saved: Vec<aidash_domain::memory::Mutated> = serde_json::from_value(body).unwrap();
+		support.push(saved[0].unit.evidence());
 		if support.len() > 2 {
 			support.remove(0);
 		}
