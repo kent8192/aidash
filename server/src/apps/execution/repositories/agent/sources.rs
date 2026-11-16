@@ -678,9 +678,6 @@ impl aidash_application::ports::decision::DecisionAuthority for SourceAuthority<
 			state_retention: self.config.state_retention.clone(),
 		})
 	}
-	async fn read(&self, _: &aidash_domain::decision::Evidence, _: bool) -> Result<()> {
-		Err(aidash_application::Error::Forbidden)
-	}
 }
 impl Environment<'_> {
 	// Keep the native selection boundary's authorization and decision inputs explicit.

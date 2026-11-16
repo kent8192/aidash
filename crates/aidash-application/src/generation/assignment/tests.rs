@@ -94,9 +94,7 @@ impl Scope {
 				spec: serde_json::from_value(test_support::specification()).unwrap(),
 				generated_count: 0,
 				allocated_tokens: 0,
-				allocated_compaction_calls: 0,
 				allocated_embedding_calls: 0,
-				allocated_summary_calls: 0,
 			},
 			chain: vec!["alice".into()],
 			bundle: serde_json::from_value(json!({"tenant":"tenant"})).unwrap(),
@@ -300,10 +298,8 @@ impl GenerationCreationScope for Scope {
 	) -> Result<()> {
 		self.point("allocate").await?;
 		self.effects.push(format!(
-			"allocate:{}:{}:{}",
-			policy.spec.limits.tokens_per_agent,
-			allowances.compaction_calls,
-			allowances.embedding_calls
+			"allocate:{}:{}",
+			policy.spec.limits.tokens_per_agent, allowances.embedding_calls
 		));
 		Ok(())
 	}
@@ -315,10 +311,8 @@ impl GenerationCreationScope for Scope {
 	) -> Result<()> {
 		assert_eq!(id, Uuid::from_u128(1));
 		self.point("budget").await?;
-		self.effects.push(format!(
-			"budget:{}:{}",
-			allowances.compaction_calls, allowances.embedding_calls
-		));
+		self.effects
+			.push(format!("budget:{}", allowances.embedding_calls));
 		Ok(())
 	}
 	async fn history(&mut self, id: Uuid, status: &str, reason: &str) -> Result<()> {
@@ -483,8 +477,8 @@ async fn local_creation_locks_before_reservation_and_notifies_after_commit(
 		state.effects,
 		[
 			"insert",
-			"allocate:200000:0:0",
-			"budget:0:0",
+			"allocate:200000:0",
+			"budget:0",
 			"history:PENDING_APPROVAL",
 			"event"
 		]
@@ -991,16 +985,14 @@ async fn approval_free_policy_is_queued_and_generated_tag_is_not_duplicated(
 #[case("chain")]
 #[case("tokens")]
 #[case("tokens_overflow")]
-#[case("compaction")]
 #[case("embedding")]
-#[case("compaction_overflow")]
 #[case("embedding_overflow")]
 #[tokio::test]
 async fn each_quota_limit_is_independent_and_prevents_insert(
 	validation: DefinitionValidation,
 	#[case] limit: &str,
 ) {
-	use aidash_domain::generation::policy::{Compaction, Embedding};
+	use aidash_domain::generation::policy::Embedding;
 	let mut scope = Scope::new();
 	let provider = EntityRef {
 		id: "provider".into(),
@@ -1016,18 +1008,6 @@ async fn each_quota_limit_is_independent_and_prevents_insert(
 		}
 		"tokens" => scope.policy.allocated_tokens = 600001,
 		"tokens_overflow" => scope.policy.allocated_tokens = i64::MAX,
-		"compaction" | "compaction_overflow" => {
-			scope.policy.spec.compaction = Some(Compaction {
-				provider,
-				calls_per_agent: 2,
-				call_budget: 3,
-			});
-			scope.policy.allocated_compaction_calls = if limit.ends_with("overflow") {
-				i64::MAX
-			} else {
-				2
-			};
-		}
 		"embedding" | "embedding_overflow" => {
 			scope.policy.spec.embedding = Some(Embedding {
 				provider,

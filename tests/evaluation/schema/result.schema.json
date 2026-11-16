@@ -274,7 +274,11 @@
               "pattern": "^[0-9a-f]{64}$"
             },
             "final_answer": { "type": ["string", "null"] },
-            "verifier": { "type": "array", "items": { "type": "object" } }
+            "verifier": { "type": "array", "items": { "type": "object" } },
+            "fixture_record_pages": {
+              "type": "array",
+              "items": { "type": ["integer", "null"] }
+            }
           }
         }
       }

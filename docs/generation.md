@@ -9,9 +9,7 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 - `enabled`, `approval_required` and `template`, an ordinary Agent Registry entry.
 - `permissions`: existing role/group IDs and generated subject attributes.
 - `limits`: `max_agents`, `max_concurrent`, `max_depth`, `token_budget`, `tokens_per_agent` and `lifetime_seconds`.
-- Optional `compaction`: an approved `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids external compaction for that generated definition.
 - Optional `embedding`: an approved embedding `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids embedding calls under that generated authority.
-- Optional `summary`: an approved `model` `provider` reference for the Context Recovery Summary Stage, `calls_per_agent` and total `call_budget`. Omitting it forbids Summary Stage calls under that generated authority.
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.
 
@@ -33,7 +31,7 @@ A running request is `ACTIVE`. Completed, failed, denied, stopped and expired re
 
 Open **Agent generation** with a tenant subject credential to manage that tenant; a Deployment Administrator has no Tenant authority over it (ADR 0102). Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. Compaction and embedding selectors use tenant-approved providers and expose per-agent and total call limits.
 
-On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, compaction and embedding calls/limits, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
+On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, embedding calls/limits, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
 
 ## Read APIs
 
@@ -56,58 +54,15 @@ The budget covers inference input/output and embedding input tokens, not monetar
 
 Successful, complete, positive and bounded provider usage refunds unused reservation. Reported usage is the OpenRouter response's `prompt_tokens` plus `completion_tokens`. Prompt-cache reads and writes are breakdowns of `prompt_tokens` (`prompt_tokens_details`) and are never added again. Each Inference Attempt's Usage Record (`inference_usage`) stores those breakdowns separately, together with the provider cost and Aidash's request estimate; values the provider did not report stay unknown rather than zero. The provider cost is converted from its raw decimal text, never through binary floating point. An attempt still dispatched when another worker recovers the Run's lease becomes `unknown`. Missing, invalid or uncertain usage remains charged in full. Crashes and failed attempts retain their reservation; a retry requires a new reservation. Request bytes must fit the reserved context window before provider I/O. These checks assume the approved provider honors its declared model limits; out-of-contract usage is an execution error and does not refund allowance.
 
-## Approved compaction
+## Context recovery
 
-Generated chains prune through a compaction Decider, like every other Run (see the [decision gate](decision-gate.md)), but they never inherit an Agent's default Binding. Register a `decider` Registry entry and approve its exact version in the tenant catalog. Its configuration names `provider_credential: "openrouter"`, an exact Jev release as `model` (such as `typesafe/jev-1.14`; aliases are refused), its mode, its per-Run call limit and its state budget. It has no endpoint or key: calls go to OpenRouter's System One API with the Tenant's current OpenRouter Provider Credential and `provider.zdr = true` (ADR 0041). The bilingual Registry form exposes these fields.
+Generated chains do not require a compaction Decider or a compaction call allowance (ADR 0125).
 
-A policy explicitly references that Decider version:
+## Summary Stage
 
-```json
-{
-  "compaction": {
-    "provider": { "id": "approved-jev", "version": "1.0.0" },
-    "calls_per_agent": 10,
-    "call_budget": 100
-  }
-}
-```
-
-The request pins this contract to its immutable policy revision. Each generation reserves its per-agent call allowance against the policy total. Termination returns unused allowance exactly once; consumed calls remain allocated. Before each Decision Attempt, the worker checks live authority, `registry.read`, `decision.invoke`, catalog approval, expiry and the Decider agreement of every generated ancestor. An ordinary child executing within a generated chain inherits this contract too. All generated ancestors must approve the same exact Decider version; an omitted or different reference leaves the Run unpruned, and its Summary Stage may still run on its own.
-
-The journal charges each Decision Attempt once: against the Decider version's per-Run call limit and, in the same reservation, one call and an attempt record for every generated ancestor, before network I/O. Each ancestor's charge is kept as an owner receipt of the attempt. The ledger retains the Decider version, run, the version's maximum request bytes and the question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries recover the charged attempt instead of charging it again. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after the pruned context is saved and rechecks lifetime before its own HTTP request.
-
-No configured compaction permission is needed when the context already fits. There is no environment-selected Jev provider. Every Route of a Decider version is charged the same way, so asking a later Route or retrying after every Route failed spends the same call limits (ADR 0066). A Run whose Decider cannot run pauses with `decider_unapproved`, `decider_calls_exhausted` or `decider_unavailable`; a Tenant without an OpenRouter binding pauses with `decider_unavailable` before any allowance is reserved.
-
-## Approved Summary Stage model
-
-An Agent whose `context_policy` (`context-recovery/1`) names `summary.model` pins that
-exact model version in its admitted Binding snapshot; a reference to a non-`model`
-entry fails admission. On an ordinary Run, each Summary Stage request requires the
-current tenant catalog approval of that exact version, `registry.read` and
-`model.infer`, and an unchanged definition digest. Its tokens are reserved like
-agent inference.
-
-Inside a generated chain, every generated ancestor must also approve the same
-exact model:
-
-```json
-{
-  "summary": {
-    "provider": { "id": "approved-summarizer", "version": "1.0.0" },
-    "calls_per_agent": 4,
-    "call_budget": 40
-  }
-}
-```
-
-Allocation and release follow the compaction rules. Before network I/O, the worker
-atomically commits one summary call and one `generation_summary_usage` attempt
-(provider/version, definition digest, run and request bytes) for every ancestor;
-the model tokens are charged to the shared token budget. Failed, uncertain and
-crashed attempts stay charged. A missing or different approval, an exhausted
-allowance or a denied catalog check pauses the Run with `SummaryUnavailable`; no
-other provider or environment credential is ever substituted. `remote.summary`
-uses the `remote.compaction` shape for summarizers owned by another Node.
+The Summary Stage uses the Agent's own pinned model and ordinary inference
+allowances (ADR 0125). It does not require a separate summarizer Binding or
+Catalog Approval. The Run's Context Policy bounds Summary calls and output.
 
 ## Approved embeddings
 
@@ -177,19 +132,13 @@ Each policy can additionally approve providers owned by another Node through `re
 
 Digests are `sha256:` plus the SHA-256 of the recursively key-sorted, compact UTF-8
 JSON of the complete stored Registry definition and its `config`, respectively.
-Read the stored definition, including default fields. `remote.compaction` and
-`remote.summary` use the same provider/call-limit shape as `remote.embedding`. Local provider approvals
-continue to use `embedding`, `compaction` and the policy's model references. For a
-generated A ancestor with a generated B executor, A approves B's inference and any
-B compaction Decider, while B approves A's embedding. The generation policy editor exposes
+Read the stored definition, including default fields. Local provider approvals continue to use `embedding` and the policy's model references. For a generated A ancestor with a generated B executor, A approves B's inference, while B approves A's embedding. The generation policy editor exposes
 these complete descriptors and preserves them on subsequent edits.
 
 Every owner validates and durably reserves its own shared token balance and separate
-call allowance before any HTTP provider dispatch. Embedding and remote compaction
-reserve exact request bytes plus 1,024; inference reserves the approved model window
+call allowance before any HTTP provider dispatch. Embedding reserves exact request bytes plus 1,024; inference reserves the approved model window
 plus its maximum output. All local and remote ancestors must agree with the pinned
-provider, live policy, catalog, authority and lifetime. Compaction has no trustworthy
-token usage report and remains charged in full. Missing/malformed embedding usage
+provider, live policy, catalog, authority and lifetime. Missing/malformed embedding usage
 also remains charged; valid bounded usage settles once at each owner.
 
 `generation_remote_usage` records owner debits. A dispatcher commits its
@@ -206,21 +155,19 @@ serving node, never cached foreign balances.
 
 The fixtures use local HTTP providers and real PostgreSQL; no paid provider quality is inferred.
 
-| Contract                            | Verification                                                                                                                                                             |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Missing matching agent              | Generated definition completes its task; matching ordinary agents are reused without reserving generation quota                                                          |
-| Retry, approval and provenance      | Identical assignments/controls retain IDs, pinned revisions, origin and history; denial prevents activation                                                              |
-| Count, concurrency and total tokens | Each limit independently rejects a new request without partial state; raising only that limit admits the same task                                                       |
-| Generated depth and authority       | Worker-created task origins retain parent restrictions even when the root submits assignment                                                                             |
-| Per-agent inference tokens          | Unknown/incomplete usage keeps the full reservation and blocks another over-budget model call                                                                            |
-| Tool permission denial              | A generated `/team` attribute triggers ABAC denial before HTTP; the pending tool cursor survives and runs once after policy correction and explicit resume               |
-| Lifetime, stop and revocation       | Expiry and revoked credentials prevent provider calls; stop waits for an in-flight lease and blocks the next boundary                                                    |
-| Compaction                          | Long history is pruned with the pinned provider; call reservations commit before HTTP and intersect all generated ancestors                                              |
-| Compaction limits and failures      | Concurrent allocation is bounded; failed calls stay charged, exhausted budgets prevent HTTP and unused allowance releases once                                           |
-| Generated semantic memory           | Queries and background indexing require the pinned provider, intersect ancestor authority and charge shared tokens plus embedding call limits                            |
-| Embedding recovery                  | Concurrent indexers, failed/unknown/overreported usage, expiry, catalog denial and real worker SIGKILL/restart retain durable reservations and prevent unfunded calls    |
-| Process failure                     | Real worker processes are killed during inference and compaction; new processes finish the original run with one generated definition and retained uncertain usage       |
-| Tenant and read scope               | Requests, specifications, usage, histories and events honor tenant/read permission boundaries                                                                            |
-| Management dashboard                | Japanese/English policy creation/editing, compaction selection, immutable approval review, completion, denial, stop, archive and enable/disable pass in the real browser |
+| Contract                            | Verification                                                                                                                                                          |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Missing matching agent              | Generated definition completes its task; matching ordinary agents are reused without reserving generation quota                                                       |
+| Retry, approval and provenance      | Identical assignments/controls retain IDs, pinned revisions, origin and history; denial prevents activation                                                           |
+| Count, concurrency and total tokens | Each limit independently rejects a new request without partial state; raising only that limit admits the same task                                                    |
+| Generated depth and authority       | Worker-created task origins retain parent restrictions even when the root submits assignment                                                                          |
+| Per-agent inference tokens          | Unknown/incomplete usage keeps the full reservation and blocks another over-budget model call                                                                         |
+| Tool permission denial              | A generated `/team` attribute triggers ABAC denial before HTTP; the pending tool cursor survives and runs once after policy correction and explicit resume            |
+| Lifetime, stop and revocation       | Expiry and revoked credentials prevent provider calls; stop waits for an in-flight lease and blocks the next boundary                                                 |
+| Generated semantic memory           | Queries and background indexing require the pinned provider, intersect ancestor authority and charge shared tokens plus embedding call limits                         |
+| Embedding recovery                  | Concurrent indexers, failed/unknown/overreported usage, expiry, catalog denial and real worker SIGKILL/restart retain durable reservations and prevent unfunded calls |
+| Process failure                     | Real worker processes are killed during inference; new processes finish the original run with one generated definition and retained uncertain usage                   |
+| Tenant and read scope               | Requests, specifications, usage, histories and events honor tenant/read permission boundaries                                                                         |
+| Management dashboard                | Japanese/English policy creation/editing, immutable approval review, completion, denial, stop, archive and enable/disable pass in the real browser                    |
 
-The cases are in the [Generation suite](../server/src/apps/execution/generation/tests/generation.rs), [compaction suite](../server/src/apps/execution/generation/tests/generation_compaction.rs), [semantic suite](../server/src/apps/execution/generation/tests/generation_semantic.rs), [compaction adapter](../server/src/apps/execution/services/context/jev.rs) and `web/tests/generation.spec.ts`. The broader two-node dashboard golden path also passes. These results establish the standalone generation and local semantic integration contracts; the six-capability integrated release gate remains separate.
+The cases are in the [Generation suite](../server/src/apps/execution/generation/tests/generation.rs), [semantic suite](../server/src/apps/execution/generation/tests/generation_semantic.rs) and `web/tests/generation.spec.ts`. The broader two-node dashboard golden path also passes. These results establish the standalone generation and local semantic integration contracts; the six-capability integrated release gate remains separate.

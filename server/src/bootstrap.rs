@@ -799,7 +799,7 @@ pub fn deployment_observations(
 	)
 }
 
-/// Semantic transports share rotating credentials with inference and compaction.
+/// Semantic transports share rotating credentials with inference and Summary requests.
 pub fn semantic_transport(
 	store: &Store,
 ) -> crate::apps::knowledge::repositories::postgres_vector::Transport {
@@ -1350,31 +1350,6 @@ pub(crate) fn generation_embedding_repository(
 	}
 }
 
-pub(crate) fn generation_compaction_authority_scope(
-	access: &mut crate::authorization::access::Access,
-) -> impl aidash_application::ports::generation::compaction::GenerationCompactionAuthority + '_ {
-	crate::apps::execution::generation::repositories::compaction::NativeCompactionAuthority {
-		catalog: catalog_scope(access),
-	}
-}
-pub(crate) fn generation_compaction_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
-	crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
-		store: store.clone(),
-		scope,
-	}
-}
-pub(crate) fn generation_summary_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
-	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
-		store: store.clone(),
-		scope,
-	}
-}
 pub(crate) fn generation_protocol_authority(
 	federation: &crate::federation::Federation,
 ) -> crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
@@ -1401,16 +1376,6 @@ pub(crate) fn generation_protocol_repository(
 	}
 }
 
-pub(crate) fn generation_remote_compaction_scope<'a>(
-	access: &'a mut crate::authorization::access::Access,
-	federation: &crate::federation::Federation,
-) -> crate::apps::execution::generation::repositories::compaction::remote::NativeRemoteCompaction<'a>
-{
-	crate::apps::execution::generation::repositories::compaction::remote::NativeRemoteCompaction {
-		catalog: catalog_scope(access),
-		federation: federation.clone(),
-	}
-}
 pub(crate) fn generation_foreign_guard(
 	access: &mut crate::authorization::access::Access,
 ) -> crate::apps::execution::generation::repositories::foreign::NativeForeignGuard<'_> {
@@ -1771,23 +1736,6 @@ pub(crate) fn inference_admission_repository<'a>(
 		access,
 		run,
 		purpose: crate::generation::remote::Purpose::Inference,
-	}
-}
-
-/// Summary Stage admission charges model tokens locally and the `summary`
-/// purpose (with its call allowance) at the Home.
-pub(crate) fn summary_admission_repository<'a>(
-	store: &'a Store,
-	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
-	run: &'a crate::domain::Run,
-) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
-	crate::apps::identity::repositories::execution::admission::Admissions {
-		store,
-		remote,
-		access,
-		run,
-		purpose: crate::generation::remote::Purpose::Summary,
 	}
 }
 
@@ -2480,6 +2428,7 @@ pub(crate) fn workbench_sandbox_repository(
 ) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
+		search_destination: workbench_search_destination,
 		node_id: runtime.config.deployment.to_string(),
 		tenant_actions:
 			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
@@ -2488,6 +2437,20 @@ pub(crate) fn workbench_sandbox_repository(
 			),
 		actor,
 	}
+}
+
+fn workbench_search_destination(
+	provider: &str,
+	arguments: &serde_json::Value,
+) -> aidash_application::Result<Option<String>> {
+	let query = aidash_domain::research::search::SearchQuery::parse(arguments, None)?;
+	let provider = crate::apps::execution::services::research::providers()
+		.search(provider)
+		.map_err(aidash_application::Error::from)?;
+	Ok(provider
+		.disclosure(&query)
+		.ok()
+		.map(|outbound| outbound.destination))
 }
 
 /// Isolated test HTTP requests retain their original timeout, redirect and
@@ -2647,6 +2610,7 @@ pub(crate) fn worker_step(
 		_active: crate::http::ActiveExecution::begin(),
 		visibility,
 		tenant: None,
+		offloaded: Vec::new(),
 	})
 }
 

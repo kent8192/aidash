@@ -261,10 +261,9 @@ fn scope(run: RunMetadata) -> Scope {
 				metadata: entry.clone(),
 			}],
 			semantic_memory: 0,
-			decider: None,
 		},
 		expires_at: now + chrono::Duration::minutes(10),
-		semantic: Binding::Disabled { summarizer: None },
+		semantic: Binding::Disabled {},
 	};
 	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"acme","subjects":{
         "root":{"kind":"user"},"aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}}}))
@@ -304,101 +303,6 @@ fn scope(run: RunMetadata) -> Scope {
 	}
 }
 
-#[fixture]
-fn compaction_scope(mut scope: Scope) -> Scope {
-	scope.entry.config["schema_version"] = json!(1);
-	let snapshot = crate::test_support::resolve("aidash://local", &scope.entry, true, vec![]);
-	scope.entry = crate::registry::system::compaction_decider().unwrap();
-	let inspection = &mut scope.record.as_mut().unwrap().description.inspection;
-	inspection.agent = snapshot
-		.definitions
-		.iter()
-		.find(|definition| definition.identity == snapshot.agent)
-		.unwrap()
-		.definition
-		.clone();
-	inspection.definitions = snapshot
-		.definitions
-		.iter()
-		.map(|definition| Definition {
-			entry: definition.identity.local(),
-			kind: definition.definition.kind.clone(),
-			digest: definition.digest.clone(),
-			metadata: definition.definition.clone(),
-		})
-		.collect();
-	inspection.binding_snapshot = snapshot;
-	scope
-}
-
-#[rstest]
-#[case::unapproved(Some(Fault::Forbidden), None)]
-#[case::dispatch_denied(None, Some("decision.invoke"))]
-#[tokio::test]
-async fn dormant_compaction_metadata_does_not_require_dispatch_authority(
-	mut compaction_scope: Scope,
-	run: RunMetadata,
-	#[case] approval_fault: Option<Fault>,
-	#[case] denied: Option<&'static str>,
-) {
-	compaction_scope.entry_fault = approval_fault;
-	compaction_scope.definition_denied = denied;
-	assert!(visible(&mut compaction_scope, &run).await.unwrap());
-	restored(&compaction_scope);
-}
-
-#[rstest]
-#[case::registry_denied("registry.read")]
-#[case::metadata_changed("digest")]
-#[case::metadata_hidden("hidden")]
-#[tokio::test]
-async fn dormant_compaction_metadata_retains_current_read_and_digest_checks(
-	mut compaction_scope: Scope,
-	run: RunMetadata,
-	#[case] mutation: &str,
-) {
-	match mutation {
-		"registry.read" => compaction_scope.definition_denied = Some("registry.read"),
-		"digest" => {
-			compaction_scope
-				.entry
-				.description
-				.insert("en".into(), "Changed".into());
-		}
-		"hidden" => compaction_scope.metadata_fault = Some(Fault::Forbidden),
-		_ => panic!("unknown mutation"),
-	}
-	assert!(!visible(&mut compaction_scope, &run).await.unwrap());
-	restored(&compaction_scope);
-}
-
-#[rstest]
-#[case::approved(None, None, true)]
-#[case::unapproved(Some(Fault::Forbidden), None, false)]
-#[case::dispatch_denied(None, Some("decision.invoke"), false)]
-#[tokio::test]
-async fn an_explicit_compaction_decider_retains_approval_and_dispatch_checks(
-	mut compaction_scope: Scope,
-	run: RunMetadata,
-	#[case] approval_fault: Option<Fault>,
-	#[case] denied: Option<&'static str>,
-	#[case] allowed: bool,
-) {
-	let inspection = &mut compaction_scope
-		.record
-		.as_mut()
-		.unwrap()
-		.description
-		.inspection;
-	inspection.decider = Some(EntityRef {
-		id: compaction_scope.entry.id.clone(),
-		version: compaction_scope.entry.version.clone(),
-	});
-	compaction_scope.entry_fault = approval_fault;
-	compaction_scope.definition_denied = denied;
-	assert_eq!(visible(&mut compaction_scope, &run).await.unwrap(), allowed);
-	restored(&compaction_scope);
-}
 fn restored(scope: &Scope) {
 	assert_eq!(scope.snapshot.revision, 1);
 	assert_eq!(scope.subjects, ["viewer"]);
@@ -677,8 +581,6 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 			digest: "definition".into(),
 			configuration_digest: "configuration".into(),
 		}),
-		decider: None,
-		summarizer: None,
 	};
 	scope.source_denied = Some("semantic.use");
 	assert!(!visible(&mut scope, &run).await.unwrap());

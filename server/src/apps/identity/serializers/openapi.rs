@@ -80,6 +80,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 
 	use super::desktop;
 	{
+		use super::memory_scope::{Settings, Update};
+		use views::memory_scope as view;
+		contracts.response::<_, Settings>(document, view::get, 200, "application/json")?;
+		contracts.path(document, view::get, &["String"])?;
+		contracts.request::<_, Update>(document, view::update)?;
+		contracts.response::<_, Settings>(document, view::update, 200, "application/json")?;
+		contracts.path(document, view::update, &["String"])?;
+	}
+	{
 		use super::data_protection::{Impact, Settings};
 		use aidash_domain::data_protection::DataProtection;
 		use views::data_protection as view;
