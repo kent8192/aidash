@@ -477,7 +477,41 @@ pub(crate) async fn due(
 	limit: u64,
 ) -> Result<Vec<(String, Uuid, DateTime<Utc>)>> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::ScheduleTicks);
+	let rows: Vec<(String, Uuid, DateTime<Utc>)> = native::query_as(&due_query(now, after, limit))
+		.columns(&["tenant", "id", "next_fire_at"])
+		.fetch_all(pool.in_scope(&scope))
+		.await?;
+	Ok(rows)
+}
+
+/// The statement [`due`] runs.
+fn due_query(now: DateTime<Utc>, after: Option<(DateTime<Utc>, Uuid)>, limit: u64) -> String {
 	let mut query = Query::select();
+	query
+		.columns([
+			Alias::new("tenant"),
+			Alias::new("id"),
+			Alias::new("next_fire_at"),
+		])
+		.from(Alias::new("schedules"))
+		.and_where(Expr::col("halt").is_null())
+		.and_where(Expr::col("next_fire_at").lte(Expr::value(now)))
+		// A deleted Tenant's Schedules are stopped with it; never start one
+		// in the moment between the deletion and that stop.
+		.and_where(
+			Expr::exists(
+				Query::select()
+					.expr(Expr::value(1_i32))
+					.from(Alias::new("tenant_deletions"))
+					.and_where(
+						Expr::col((Alias::new("tenant_deletions"), Alias::new("tenant")))
+							.equals((Alias::new("schedules"), Alias::new("tenant"))),
+					)
+					.and_where(Expr::col("restored_at").is_null())
+					.to_owned(),
+			)
+			.not(),
+		);
 	if let Some((at, id)) = after {
 		query.cond_where(
 			Condition::any()
@@ -489,41 +523,11 @@ pub(crate) async fn due(
 				),
 		);
 	}
-	let rows: Vec<(String, Uuid, DateTime<Utc>)> = native::query_as(
-		&query
-			.columns([
-				Alias::new("tenant"),
-				Alias::new("id"),
-				Alias::new("next_fire_at"),
-			])
-			.from(Alias::new("schedules"))
-			.and_where(Expr::col("halt").is_null())
-			.and_where(Expr::col("next_fire_at").lte(Expr::value(now)))
-			// A deleted Tenant's Schedules are stopped with it; never start one
-			// in the moment between the deletion and that stop.
-			.and_where(
-				Expr::exists(
-					Query::select()
-						.expr(Expr::value(1_i32))
-						.from(Alias::new("tenant_deletions"))
-						.and_where(
-							Expr::col((Alias::new("tenant_deletions"), Alias::new("tenant")))
-								.equals((Alias::new("schedules"), Alias::new("tenant"))),
-						)
-						.and_where(Expr::col("restored_at").is_null())
-						.to_owned(),
-				)
-				.not(),
-			)
-			.order_by(Alias::new("next_fire_at"), Order::Asc)
-			.order_by(Alias::new("id"), Order::Asc)
-			.limit(limit)
-			.to_string(PostgresQueryBuilder),
-	)
-	.columns(&["tenant", "id", "next_fire_at"])
-	.fetch_all(pool.in_scope(&scope))
-	.await?;
-	Ok(rows)
+	query
+		.order_by(Alias::new("next_fire_at"), Order::Asc)
+		.order_by(Alias::new("id"), Order::Asc)
+		.limit(limit)
+		.to_string(PostgresQueryBuilder)
 }
 
 /// Claims a due Schedule for this transaction, or None when another replica
@@ -941,3 +945,6 @@ pub(crate) async fn inherit_generation(
 	}
 	Ok(())
 }
+
+#[cfg(test)]
+mod tests;
