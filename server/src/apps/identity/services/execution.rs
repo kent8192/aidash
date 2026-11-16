@@ -1073,7 +1073,16 @@ impl WorkerAuthority {
 				previews::Dispatch::failed(String::new()),
 			)
 			.await;
-			access.finish(result).await?;
+			let started = access.finish(result).await?;
+			drop(outer);
+			if started.status.state.is_stopped() {
+				// Admission was refused before any dispatch, so no Pod can exist.
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result =
+					previews::settle(store, &mut access, run, domain.clone(), pending.id).await;
+				access.finish(result).await?;
+			}
 		}
 		accepted?;
 		let dispatched = previews::wait_ready(store, &pending)
@@ -1081,9 +1090,36 @@ impl WorkerAuthority {
 			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result =
-			previews::finish_start(store, &mut access, run, domain, pending, dispatched).await;
+		let result = previews::finish_start(
+			store,
+			&mut access,
+			run,
+			domain.clone(),
+			pending.clone(),
+			dispatched,
+		)
+		.await;
 		let started = access.finish(result).await?;
+		drop(outer);
+		if started.status.state.is_stopped() {
+			let confirmed = match previews::terminate(store, &pending).await {
+				Ok(true) => true,
+				Ok(false) => {
+					tracing::warn!(preview_id = %pending.id, "live preview termination is not confirmed; the sweep will retry");
+					false
+				}
+				Err(error) => {
+					tracing::warn!(preview_id = %pending.id, %error, "could not terminate stopped live preview; the sweep will retry");
+					false
+				}
+			};
+			if confirmed {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::settle(store, &mut access, run, domain, pending.id).await;
+				access.finish(result).await?;
+			}
+		}
 		Ok(json!(started))
 	}
 

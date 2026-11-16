@@ -250,6 +250,9 @@ impl HomeScope for Scope {
 		self.repository.call("human_requests");
 		Ok(self.repository.state.lock().unwrap().human_requests.clone())
 	}
+	async fn close_human_requests(&mut self, _: Uuid, _: Uuid) -> Result<()> {
+		Ok(())
+	}
 	async fn answer_human(
 		&mut self,
 		_: Uuid,

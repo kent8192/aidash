@@ -3503,6 +3503,7 @@ impl Store {
 		if saved.phase().is_terminal() {
 			// Closing an open attempt appends an event, so lock first; see `lock_end`.
 			super::subnodes::lock_for_end(tx, saved.id).await?;
+			HumanRequestRecord::close_for_run(tx.as_mut(), saved.id).await?;
 		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
@@ -3630,6 +3631,7 @@ impl Store {
 		}
 		// Before the first event below; see `lock_end`.
 		super::subnodes::lock_for_end(&mut tx, run.id).await?;
+		HumanRequestRecord::close_for_run(tx.as_mut(), run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3967,6 +3969,7 @@ impl Store {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
 		if action == RunControlAction::Cancel {
+			HumanRequestRecord::close_for_run(tx, id).await?;
 			crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
 				tx,
 				id,
@@ -4050,7 +4053,20 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		// Match end transactions: lock the Run before its Subnode. An ended
+		// Subnode still refuses as Forbidden, ahead of the Run's own end; a
+		// Run that is no longer active holds no lock here.
+		let ended = match HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await {
+			Err(Error::Conflict(message)) => Some(message),
+			other => {
+				other?;
+				None
+			}
+		};
 		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		if let Some(message) = ended {
+			return Err(Error::Conflict(message));
+		}
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -4216,6 +4232,12 @@ impl Store {
 		actor: &str,
 	) -> Result<HumanRequest> {
 		human_interaction::validate_response(&response)?;
+		let original = HumanRequestRecord::read_in(tx, id, false)
+			.await?
+			.ok_or_else(|| Error::NotFound("human request".into()))?;
+		if original.response.is_none() {
+			HumanRequestRecord::require_active_run(tx, original.run_id).await?;
+		}
 		let old = HumanRequestRecord::read_in(tx, id, true)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
@@ -5829,6 +5851,7 @@ impl Store {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
+		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		if !matches!(
 			kind,
 			"QUESTION" | "APPROVAL_REQUIRED" | "CONFIRMATION" | "INFORMATION_REQUEST"
