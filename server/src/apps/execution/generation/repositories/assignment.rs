@@ -315,9 +315,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let query_bind_1 = &access.identity.tenant;
 		let query_bind_2 = policy_id;
 		let query_bind_3 = limits.tokens_per_agent;
-		let query_bind_4 = allowances.compaction_calls;
 		let query_bind_5 = allowances.embedding_calls;
-		let query_bind_6 = allowances.summary_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("generation_policies"))
@@ -333,24 +331,10 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 					),
 				)
 				.value_expr(
-					reinhardt::query::Alias::new("allocated_compaction_calls"),
-					SimpleExpr::CustomWithExpr(
-						"(allocated_compaction_calls + ?)".to_owned(),
-						vec![Expr::value(query_bind_4.to_owned()).into()],
-					),
-				)
-				.value_expr(
 					reinhardt::query::Alias::new("allocated_embedding_calls"),
 					SimpleExpr::CustomWithExpr(
 						"(allocated_embedding_calls + ?)".to_owned(),
 						vec![Expr::value(query_bind_5.to_owned()).into()],
-					),
-				)
-				.value_expr(
-					reinhardt::query::Alias::new("allocated_summary_calls"),
-					SimpleExpr::CustomWithExpr(
-						"(allocated_summary_calls + ?)".to_owned(),
-						vec![Expr::value(query_bind_6.to_owned()).into()],
 					),
 				)
 				.and_where(SimpleExpr::CustomWithExpr(
@@ -378,18 +362,14 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 
 		let query_bind_1 = id;
 		let query_bind_2 = limits.tokens_per_agent;
-		let query_bind_3 = allowances.compaction_calls;
 		let query_bind_4 = allowances.embedding_calls;
-		let query_bind_5 = allowances.summary_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("generation_budgets"))
 				.columns([
 					reinhardt::query::Alias::new("request_id"),
 					reinhardt::query::Alias::new("token_limit"),
-					reinhardt::query::Alias::new("compaction_call_limit"),
 					reinhardt::query::Alias::new("embedding_call_limit"),
-					reinhardt::query::Alias::new("summary_call_limit"),
 					reinhardt::query::Alias::new("tenant"),
 				])
 				.from_subquery(
@@ -404,15 +384,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 						))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
-							vec![Expr::value(query_bind_3.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
 							vec![Expr::value(query_bind_4.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_5.to_owned()).into()],
 						))
 						.expr(crate::database::scope::tenant_of(
 							"generation_requests",

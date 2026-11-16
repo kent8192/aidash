@@ -3,10 +3,11 @@ use crate::apps::registry::workbench::models::{AgentDraft, AgentTestLimit, Agent
 use crate::{authorization::identity::Actor, store::Store};
 use aidash_application::{
 	Result,
-	ports::registry::workbench::sandbox::{SandboxRepository, SandboxScope},
+	ports::registry::workbench::sandbox::{Approver, SandboxRepository, SandboxScope},
 };
 use aidash_domain::{
 	identity::Principal,
+	policy::PolicyBundle,
 	registry::workbench::{
 		Draft,
 		sandbox::{TestLimitCeilings, TestLimits, TestSession},
@@ -19,6 +20,7 @@ pub(crate) struct Repository {
 	pub(crate) store: Store,
 	pub(crate) node_id: String,
 	pub(crate) actor: Actor,
+	pub(crate) search_destination: fn(&str, &serde_json::Value) -> Result<Option<String>>,
 	/// Shared with every scope, so the caller audits a denial after the scope's
 	/// transaction has rolled back.
 	pub(crate) tenant_actions: super::authority::TenantActions,
@@ -31,6 +33,8 @@ struct Scope {
 	ceilings: TestLimitCeilings,
 	/// Resolves the Tenant Secret a real-tool rule names at dispatch.
 	tenant_secrets: Option<std::sync::Arc<aidash_application::tenant_secrets::Service>>,
+	/// Which outbound origins this Deployment admits, for a test approval.
+	capabilities: crate::capabilities::Runtime,
 }
 #[async_trait]
 impl SandboxRepository for Repository {
@@ -54,6 +58,7 @@ impl SandboxRepository for Repository {
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
 			tenant_secrets: self.store.tenant_secrets.clone(),
+			capabilities: self.store.capabilities.clone(),
 		}))
 	}
 	async fn purge(&self) -> Result<u64> {
@@ -116,6 +121,46 @@ impl SandboxScope for Scope {
 			.commit()
 			.await
 			.map_err(crate::Error::from)
+			.map_err(Into::into)
+	}
+	fn approver(&self) -> Option<Approver> {
+		match &self.actor {
+			Actor::Subject(identity) => Some(Approver {
+				subject: identity.subject.clone(),
+				person: identity
+					.http_session
+					.as_ref()
+					.map(|session| session.identity_id),
+			}),
+			_ => None,
+		}
+	}
+	async fn approval_policy(&mut self) -> Result<PolicyBundle> {
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let policy = self.tx.pool().dashboard_policy();
+		Ok(identity
+			.lock_native(&mut self.tx, false, policy.as_ref())
+			.await?
+			.bundle)
+	}
+	fn outbound_admitted(&self, origin: &str) -> bool {
+		self.capabilities.0.admission
+			&& self
+				.capabilities
+				.0
+				.outbound_origins
+				.iter()
+				.any(|admitted| admitted == origin)
+	}
+	async fn write_scenario(
+		&mut self,
+		id: Uuid,
+		scenario: serde_json::Value,
+	) -> Result<TestSession> {
+		AgentTestSession::complete_listing(&mut self.tx, id, scenario)
+			.await
 			.map_err(Into::into)
 	}
 }

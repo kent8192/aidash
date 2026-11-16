@@ -2,7 +2,7 @@
 //! labels, the deployment-wide Tenancy Rules, the initial policy of a Tenant
 //! created through Aidash, the conservative last-administrator check, and
 //! Tenant Deletion.
-use crate::approval_rules::{APPROVAL_ADVANCE, MODE_AUTO};
+use crate::approval_rules::{APPROVAL_ADVANCE, MODE_AUTO, MODE_BYPASS, MODE_RESOURCE};
 use crate::identity::tenant_administration::{self as administration, COLLECTION};
 use crate::offering::Offering;
 use crate::policy::{
@@ -381,6 +381,27 @@ pub fn initial_policy(tenant: &str, creator: bool) -> Result<PolicyBundle> {
 			},
 		],
 	};
+	bundle.validate()?;
+	Ok(bundle)
+}
+
+/// A Personal Tenant's owner may select Bypass after accepting its risk.
+pub fn personal_initial_policy(tenant: &str) -> Result<PolicyBundle> {
+	let mut bundle = initial_policy(tenant, true)?;
+	bundle.policies.push(Policy {
+		id: "personal-owner-bypass".into(),
+		effect: Effect::Allow,
+		subjects: SubjectSelector {
+			ids: [OWNER.to_owned()].into(),
+			..Default::default()
+		},
+		actions: [MODE_BYPASS.to_owned()].into(),
+		resources: ResourceSelector {
+			kinds: [MODE_RESOURCE.to_owned()].into(),
+			ids: ["bypass".to_owned()].into(),
+		},
+		condition: None,
+	});
 	bundle.validate()?;
 	Ok(bundle)
 }

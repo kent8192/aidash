@@ -24,6 +24,19 @@ use std::sync::{
 };
 use uuid::Uuid;
 
+/// The first tool result in a Run's history. Run-start memory recall (#852)
+/// may record a history entry before it.
+fn first_result(context: &Value) -> &Value {
+	context["history"]
+		.as_array()
+		.and_then(|history| {
+			history
+				.iter()
+				.find(|entry| entry["event"].get("result").is_some())
+		})
+		.map_or(&Value::Null, |entry| entry)
+}
+
 #[rstest::rstest]
 #[case::success("success")]
 #[case::policy_deny("policy")]
@@ -158,7 +171,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 			return;
 		}
 		assert_eq!(current.control.as_str(), "ACTIVE", "{:?}", current.error);
-		let error = json!(current.context)["history"][0]["event"]["result"]["error"]
+		let error = first_result(&json!(current.context))["event"]["result"]["error"]
 			.as_str()
 			.unwrap_or_default()
 			.to_owned();
@@ -399,7 +412,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
-		json!(run.context)["history"][0]["event"]["result"]["error"],
+		first_result(&json!(run.context))["event"]["result"]["error"],
 		"Skill file not found: references/missing.md"
 	);
 	assert!(
@@ -615,9 +628,10 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
 	// The Tenant's three approved definitions, current built-in declarations,
-	// workspace observation Source, and both Deciders. Legacy versions are
+	// workspace observation Source, the approval Decider, and Built-in
+	// Memory's provider, reranker and tokenizer (#852). Legacy versions are
 	// preserved for pinned Runs but are not automatically listed.
-	assert_eq!(catalog.as_array().unwrap().len(), 6 + builtin_count);
+	assert_eq!(catalog.as_array().unwrap().len(), 8 + builtin_count);
 	for (id, version) in [
 		("aidash.workspace_read", "1.1.0"),
 		("aidash.workspace_search", "1.0.0"),
@@ -681,13 +695,17 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{other_catalog}");
 	let other_catalog = other_catalog.as_array().unwrap();
-	// The current declarations are listed for every Tenant.
-	assert_eq!(other_catalog.len(), builtin_count + 3);
+	// The current declarations are listed for every Tenant: the built-in
+	// tools, the approval Decider, the workspace observation Source and
+	// Built-in Memory's three definitions.
+	assert_eq!(other_catalog.len(), builtin_count + 5);
 	assert!(
 		other_catalog
 			.iter()
 			.all(|entry| { entry["tags"].as_array().unwrap().contains(&json!("system")) })
 	);
+	// `research` is registered only in acme, so the other Tenant finds no such
+	// definition rather than an unapproved one (#813).
 	assert_eq!(
 		request(
 			&app,
@@ -698,7 +716,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		)
 		.await
 		.0,
-		403
+		404
 	);
 	let catalog = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1});
 	assert_eq!(
@@ -1881,7 +1899,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denied_tail(
+async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denied_tail(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -1965,10 +1983,23 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 		.0,
 		200
 	);
+	// The Runs window scans 50 candidates, all of them denied, and stops there
+	// instead of scanning on for a visible Run (#664 decision 1).
 	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200, "{state}");
-	assert_eq!(state["runs"].as_array().unwrap().len(), 1);
-	assert_eq!(state["runs"][0]["id"], visible.id.to_string());
+	assert!(state["runs"].as_array().unwrap().is_empty(), "{state}");
+	assert!(state["next_cursors"]["runs"].is_string(), "{state}");
+	// The visible Run is still reached through its Task.
+	let (status, page) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/tasks/{task}/runs"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page["items"][0]["id"], visible.id.to_string());
 	let before: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COALESCE(MAX(sequence), 0)"))
@@ -2020,18 +2051,16 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task}/claim"),
-			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
-		)
-		.await
-		.0,
-		200
-	);
+	let (claim_status, claim_body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(claim_status, 200, "{claim_body}");
+
 	let harness = Harness {
 		federation: f.clone(),
 	};
@@ -2076,7 +2105,12 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	assert!(json!(run.context)["history"][0]["event"]["result"]["error"].is_string());
+	let history = json!(run.context)["history"].as_array().unwrap().clone();
+	let result = history
+		.iter()
+		.find(|entry| entry["event"]["call"]["id"] == "bad-id")
+		.expect("the malformed call is recorded");
+	assert!(result["event"]["result"]["error"].is_string(), "{result}");
 	assert_eq!(
 		f.store
 			.task(&TEST_FIXTURE, task)
@@ -2161,6 +2195,66 @@ async fn run_with_pending_call(
 }
 
 #[rstest::rstest]
+#[case::missing(false)]
+#[case::unapproved(true)]
+#[tokio::test]
+async fn delegation_distinguishes_missing_and_unapproved_agents(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] registered: bool,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	if registered {
+		let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+		agent.id = "missing-agent".into();
+		agent.binding_normalization = None;
+		f.registry.register(&tenant, agent).await.unwrap();
+	}
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f, &app, &token, task, &harness,
+		aidash_server::provider::ToolCall {
+			id: "missing-agent".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"missing-agent","version":"1.0.0"}}),
+		}, false,
+	).await;
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	if registered {
+		assert_eq!(run.control.as_str(), "PAUSED", "{:?}", run.error);
+		assert!(
+			run.error
+				.as_deref()
+				.unwrap_or_default()
+				.contains("Catalog Approval"),
+			"{:?}",
+			run.error
+		);
+		cleanup(f, &url, &schema).await;
+		return;
+	}
+	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	// Built-in Memory's Run-start recall may come first, so find the delegation by its call id.
+	let history = json!(run.context)["history"].as_array().unwrap().clone();
+	let result = history
+		.iter()
+		.find(|entry| entry["event"]["call"]["id"] == "missing-agent")
+		.expect("the delegation is recorded");
+	let error = result["event"]["result"]["error"].as_str().unwrap();
+	assert!(error.contains("not found"), "{error}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_denial_is_audited(
 	#[future(awt)]
@@ -2221,9 +2315,10 @@ async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_deni
 	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+	let context = json!(run.context);
+	let error = first_result(&context)["event"]["result"]["error"]
 		.as_str()
-		.unwrap_or_else(|| panic!("{}", json!(run.context)["history"][0]))
+		.unwrap_or_else(|| panic!("{}", context["history"]))
 		.to_owned();
 	assert!(error.contains("was not found in this Workspace"), "{error}");
 	let denials: i64 = sqlx::query_scalar(
@@ -2289,7 +2384,7 @@ async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
 	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+	let error = first_result(&json!(run.context))["event"]["result"]["error"]
 		.as_str()
 		.unwrap_or_default()
 		.to_owned();
@@ -6170,8 +6265,7 @@ async fn approval_review_approves_local_items_and_activates_marketplace_on_a_non
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	// The Agent's default compaction Decider is a local review item too (#540).
-	assert_eq!(result["bindings"].as_array().unwrap().len(), 3);
+	assert_eq!(result["bindings"].as_array().unwrap().len(), 2);
 	assert_eq!(result["installations"].as_array().unwrap().len(), 1);
 	assert_eq!(
 		result["installations"][0]["active_revision"],
@@ -7226,7 +7320,10 @@ impl SubnodeRig {
 						"workspace_search",
 					]
 				};
-				for name in narrow {
+				for name in narrow
+					.iter()
+					.chain(aidash_domain::registry::bindings::MEMORY_TOOLS)
+				{
 					if !defaults.contains(&json!(name)) {
 						defaults.push(json!(name));
 					}
@@ -7695,6 +7792,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.unwrap_or_else(|| panic!("member message: {inputs:?}"));
 	let member = child.executor_subject(f.config.deployment.as_str());
 	assert_eq!(input.sender, member);
+	assert_eq!(serde_json::to_value(input).unwrap()["is_data"], true);
 	// The creating Run's Workspace names the Agent and keeps the member's Run.
 	let home = f
 		.store

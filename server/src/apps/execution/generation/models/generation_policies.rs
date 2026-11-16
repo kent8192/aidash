@@ -21,11 +21,7 @@ pub struct GenerationPolicy {
 	#[field(default = 0)]
 	pub allocated_tokens: i64,
 	#[field(default = 0)]
-	pub allocated_compaction_calls: i64,
-	#[field(default = 0)]
 	pub allocated_embedding_calls: i64,
-	#[field(default = 0)]
-	pub allocated_summary_calls: i64,
 }
 
 impl GenerationPolicy {

@@ -463,7 +463,7 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 			&alice,
 			"GET",
 			&format!("/api/tenants/{tenant}/administration"),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;
@@ -504,7 +504,7 @@ async fn a_tenant_creator_administers_the_tenant_it_created(
 			&alice,
 			"PUT",
 			&format!("/api/tenants/{tenant}/label"),
-			Some(&context),
+			Some(context.as_str()),
 			json!({"label":"Renamed team"}),
 		)
 		.await;
@@ -651,7 +651,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
-			Some(&context),
+			Some(context.as_str()),
 			json!({}),
 		)
 		.await;
@@ -708,7 +708,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"GET",
 			&format!("/api/tenants/{tenant}/registrations"),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;
@@ -722,7 +722,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"GET",
 			&format!("/api/tenants/{tenant}/registrations?offset=1"),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;
@@ -734,7 +734,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"POST",
 			&format!("/api/tenants/{tenant}/registrations/{id}/approve"),
-			Some(&context),
+			Some(context.as_str()),
 			json!({"subject":"bob","groups":["members"]}),
 		)
 		.await;
@@ -767,7 +767,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"GET",
 			&format!("/api/tenants/{tenant}/mappings"),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;
@@ -785,7 +785,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
-			Some(&context),
+			Some(context.as_str()),
 			json!({"expires_in_seconds":60}),
 		)
 		.await;
@@ -797,7 +797,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 				"/api/tenants/{tenant}/invitations/{}/revoke",
 				revoked["id"].as_str().unwrap()
 			),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;
@@ -817,7 +817,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			&alice,
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
-			Some(&context),
+			Some(context.as_str()),
 			json!({"expires_in_seconds":60}),
 		)
 		.await;
@@ -944,7 +944,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 			&dana,
 			"GET",
 			&format!("/api/tenants/{tenant}/administration"),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;
@@ -1188,6 +1188,26 @@ async fn personal_tenants_follow_the_rules_and_are_never_restored(
 		d.count("SELECT count(*) FROM tenants WHERE personal").await,
 		1
 	);
+	// Its owner may choose Bypass, which still waits for the owner's acceptance (#899).
+	let context = d.context(&alice, &tenant).await;
+	let (status, preferences) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/tenants/{tenant}/approval-preferences/mine"),
+			Some(context.as_str()),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{preferences}");
+	let bypass = preferences["modes"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|choice| choice["mode"] == "bypass")
+		.unwrap_or_else(|| panic!("bypass is offered: {preferences}"));
+	assert_eq!(bypass["allowed"], true, "{preferences}");
+	assert_eq!(preferences["bypass_accepted_at"], Value::Null);
 	// Disabling the Personal Tenant's Mapping is a durable decision.
 	let (status, body) = d
 		.as_deployment_administrator(
@@ -1269,7 +1289,7 @@ async fn a_pending_invitation_request_keeps_the_display_attributes_its_administr
 			&alice,
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
-			Some(&context),
+			Some(context.as_str()),
 			json!({}),
 		)
 		.await;
@@ -1299,7 +1319,7 @@ async fn a_pending_invitation_request_keeps_the_display_attributes_its_administr
 			&alice,
 			"GET",
 			&format!("/api/tenants/{tenant}/registrations"),
-			Some(&context),
+			Some(context.as_str()),
 			Value::Null,
 		)
 		.await;

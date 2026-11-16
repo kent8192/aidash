@@ -138,6 +138,7 @@ pub(crate) mod task_evidence;
 
 pub(crate) mod events;
 
+pub(crate) mod journal_query;
 pub mod tools;
 
 pub mod store;

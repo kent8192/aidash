@@ -68,6 +68,7 @@ impl ProviderSet for Providers {
 			.then(|| descriptor.operation.clone());
 		Ok(Arc::new(ProviderTool {
 			tool: self.tool(binding, descriptor, &implementations())?,
+			description_note: None,
 			contract,
 			operation,
 			connection_scopes,
@@ -85,6 +86,14 @@ fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 impl Providers {
 	/// Coordination tools are intrinsic to a Subnode, independent of a member's Bindings.
 	pub(crate) fn coordination_tool(&self, name: &str) -> Result<Arc<dyn ExecutionTool>> {
+		self.intrinsic_tool(name, None)
+	}
+
+	pub(crate) fn intrinsic_tool(
+		&self,
+		name: &str,
+		description_note: Option<String>,
+	) -> Result<Arc<dyn ExecutionTool>> {
 		let tool = implementations()
 			.remove(name)
 			.ok_or_else(|| Error::Invalid(format!("missing coordination tool: {name}")))?;
@@ -93,6 +102,7 @@ impl Providers {
 		contract.authorization.core = None;
 		Ok(Arc::new(ProviderTool {
 			tool,
+			description_note,
 			contract,
 			operation: Some(name.into()),
 			connection_scopes: Vec::new(),
@@ -153,6 +163,7 @@ impl Providers {
 }
 struct ProviderTool {
 	tool: Arc<dyn Tool>,
+	description_note: Option<String>,
 	contract: ToolContract,
 	/// The core provider operation; integrations carry a transport instead.
 	operation: Option<String>,
@@ -170,7 +181,11 @@ impl ExecutionTool for ProviderTool {
 		self.contract.clone()
 	}
 	fn specification(&self) -> ToolSpec {
-		self.tool.specification()
+		let mut spec = self.tool.specification();
+		if let Some(note) = &self.description_note {
+			spec.description.push_str(note);
+		}
+		spec
 	}
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()

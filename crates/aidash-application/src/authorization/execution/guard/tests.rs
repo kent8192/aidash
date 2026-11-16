@@ -55,7 +55,7 @@ fn scope() -> Scope {
 	agent.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
 	agent.config["bindings"] = json!([
 		{"kind":"memory","target":{"registry_deployment":node,"id":"memory","version":"1.0.0"}},
-		{"kind":"decider","target":{"registry_deployment":node,"id":"private.compaction","version":"1.0.0"}},
+		{"kind":"decider","target":{"registry_deployment":node,"id":"private.approval","version":"1.0.0"}},
 		{"kind":"tool","target":{"registry_deployment":node,"id":"tool","version":"1.0.0"}}
 	]);
 	let memory = crate::test_support::entry(
@@ -68,8 +68,8 @@ fn scope() -> Scope {
 		"tool",
 		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe"}}),
 	);
-	let mut compaction = crate::registry::system::compaction_decider().unwrap();
-	compaction.id = "private.compaction".into();
+	let mut compaction = crate::registry::system::approval_decider().unwrap();
+	compaction.id = "private.approval".into();
 	Scope {
 		visible: true,
 		clusters: vec!["conversation-cluster@1.0.0".into()],
@@ -269,11 +269,7 @@ async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 	assert!(!config.core_capabilities.enabled());
 	assert!(!scope.calls.contains(&"context".into()));
 	for definition in &scope.snapshot.definitions {
-		let path = if definition.identity.id == "private.compaction" {
-			"metadata"
-		} else {
-			"catalog"
-		};
+		let path = "catalog";
 		assert!(
 			scope
 				.calls
@@ -283,7 +279,7 @@ async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 }
 #[rstest]
 #[case("fixture-model")]
-#[case("private.compaction")]
+#[case("private.approval")]
 #[case("memory")]
 #[case("tool")]
 #[case("aidash.workspace_read")]
@@ -294,11 +290,7 @@ async fn revocation_of_any_admitted_dependency_prevents_accepting_output(
 	run: RunMetadata,
 	#[case] dependency: &str,
 ) {
-	let path = if dependency == "private.compaction" {
-		"metadata"
-	} else {
-		"catalog"
-	};
+	let path = "catalog";
 	scope.deny = Some(format!("{path}:{dependency}:registry.read"));
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
@@ -308,7 +300,7 @@ async fn revocation_of_any_admitted_dependency_prevents_accepting_output(
 #[rstest]
 #[case("producer")]
 #[case("fixture-model")]
-#[case("private.compaction")]
+#[case("private.approval")]
 #[case("memory")]
 #[case("tool")]
 #[tokio::test]
@@ -356,7 +348,7 @@ async fn adapter_fault_stops_at_the_failing_boundary(
 			.snapshot
 			.definitions
 			.iter()
-			.filter(|d| ["memory", "tool", "private.compaction"].contains(&d.identity.id.as_str()))
+			.filter(|d| ["memory", "tool", "private.approval"].contains(&d.identity.id.as_str()))
 			.map(|d| d.definition.clone())
 			.collect();
 		scope.snapshot = crate::test_support::resolve("aidash://local", &root, false, extras);
@@ -623,11 +615,7 @@ async fn use_recheck_names_the_first_definition_the_run_may_not_use(
 async fn use_recheck_of_a_usable_run_finds_nothing(mut scope: Scope, run: RunMetadata) {
 	assert_eq!(use_recheck(&mut scope, &run).await.unwrap(), None);
 	for definition in &scope.snapshot.definitions {
-		let path = if definition.identity.id == "private.compaction" {
-			"metadata"
-		} else {
-			"catalog"
-		};
+		let path = "catalog";
 		assert!(
 			scope
 				.calls

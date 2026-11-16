@@ -9,6 +9,7 @@ struct Fixture {
 	approved: BTreeSet<(String, String)>,
 	admissions: BTreeMap<(String, String), Entry>,
 	documents: Vec<Value>,
+	unapproved: BTreeSet<String>,
 	inactive: BTreeSet<String>,
 	denied: Option<String>,
 	restricted_ids: BTreeSet<String>,
@@ -33,6 +34,7 @@ impl Fixture {
 			approved: BTreeSet::new(),
 			admissions: BTreeMap::new(),
 			documents: vec![definition("first"), definition("second")],
+			unapproved: BTreeSet::new(),
 			inactive: BTreeSet::new(),
 			denied: None,
 			restricted_ids: BTreeSet::new(),
@@ -90,11 +92,20 @@ impl CatalogScope for Fixture {
 	}
 	async fn document(&mut self, reference: &EntityRef) -> Result<Option<Value>> {
 		self.calls.push(format!("document:{}", reference.id));
+		if self.unapproved.contains(&reference.id) {
+			return Ok(None);
+		}
 		Ok(self
 			.documents
 			.iter()
 			.find(|d| d["id"] == reference.id && d["version"] == reference.version)
 			.cloned())
+	}
+	async fn registered(&mut self, reference: &EntityRef) -> Result<bool> {
+		Ok(self
+			.documents
+			.iter()
+			.any(|d| d["id"] == reference.id && d["version"] == reference.version))
 	}
 	async fn documents(&mut self) -> Result<Vec<Value>> {
 		self.calls.push("documents".into());
@@ -178,6 +189,51 @@ async fn ordinary_exact_read_locks_distribution_before_catalog_and_policy() {
 			"remember:first"
 		]
 	);
+}
+
+#[tokio::test]
+async fn missing_definition_is_a_correctable_call_error() {
+	let mut scope = Fixture::new();
+	let result = tool_entry(
+		&mut scope,
+		&reference("missing"),
+		"agent.execute",
+		"task_delegate",
+	)
+	.await;
+	assert!(
+		matches!(&result, Err(Error::NotFound(message)) if message.contains("not found")),
+		"{result:?}"
+	);
+}
+
+#[tokio::test]
+async fn unapproved_definition_remains_an_authority_refusal() {
+	let mut scope = Fixture::new();
+	scope.unapproved.insert("first".into());
+	let result = tool_entry(
+		&mut scope,
+		&reference("first"),
+		"agent.execute",
+		"task_delegate",
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+}
+
+#[tokio::test]
+async fn inherited_scope_does_not_disclose_a_missing_definition() {
+	let mut scope = Fixture::new();
+	scope.inherited = true;
+	scope.approved.insert(("missing".into(), "1.0.0".into()));
+	let result = tool_entry(
+		&mut scope,
+		&reference("missing"),
+		"agent.execute",
+		"task_delegate",
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
 }
 #[rstest]
 #[tokio::test]

@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  # Retry crates.io downloads and avoid HTTP/2 framing errors on runners (#878).
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 jobs:
   validate:
     runs-on: ubuntu-24.04

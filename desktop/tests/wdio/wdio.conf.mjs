@@ -39,6 +39,8 @@ export const config = {
         appBinaryPath: process.env.AIDASH_E2E_BINARY,
         embeddedPort: Number(process.env.TAURI_WEBDRIVER_PORT),
         tauriDriverPort: Number(process.env.TAURI_WEBDRIVER_PORT),
+        // CI pins the Edge driver to the WebView2 runtime on Windows (#948).
+        nativeDriverPath: process.env.AIDASH_E2E_NATIVE_DRIVER || undefined,
         startTimeout: 60000,
         autoInstallTauriDriver: external,
         autoDownloadEdgeDriver: external,

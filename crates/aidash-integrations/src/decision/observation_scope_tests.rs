@@ -61,8 +61,8 @@ fn an_observer_uses_its_real_scope_without_inventing_a_generation_run() {
 			false,
 		),
 		(
-			"compaction cannot impersonate observation",
-			Hook::Compaction,
+			"context selection cannot impersonate observation",
+			Hook::ContextSelection,
 			None,
 			Some(observation),
 			None,

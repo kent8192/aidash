@@ -40,6 +40,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(test::stop)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(test::answer_approval)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(test::start)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(profile::list)

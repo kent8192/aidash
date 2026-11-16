@@ -261,7 +261,7 @@ impl RawRun {
 			Ok(Some(encode(&state, &recovery)?))
 		} else if self.control == RunControl::Paused && recovery.node_retry > 0 {
 			// A pause after a Node did not answer (#751): resuming checks again
-			// with a fresh set of retries. It is not a compaction decision, so
+			// with a fresh set of retries. It is not a Decider pause, so
 			// the decision cycle stays where it was.
 			recovery.retry = None;
 			recovery.node_retry = 0;

@@ -1,5 +1,7 @@
 # Approval Modes and Approval Rules are a person's own approvals inside the Tenant's policy
 
+Amended by ADR 0127 (2026-11-11): a Personal Tenant's owner may use Bypass, and a Workbench test asks the person who started it.
+
 Decided on 2026-10-19 for #408 and #411. Autonomy is what Aidash offers, yet each approval stops a Run until a person answers. People can now decide in advance, as in Claude Code's permission modes and rules: an Approval Mode (Manual, Auto, Don't ask or Bypass) and allow, ask or deny Approval Rules. Unlike Claude Code, where the person who allows an action also bears its risk, a Tenant answers for what its members' Runs do. So a mode or rule is an approval given in advance by its owner, recorded under their name with the rule or mode that gave it, and never reaches beyond what the Tenant's policy lets that person approve. The Tenant's policy also says who may use each mode, and Bypass is unavailable unless it allows it.
 
 A person's modes and rules cover only Runs whose delegation chain starts at that person, child Runs included within their delegated authority, and never Runs that arrived through Federation or Tenant maintenance, Workbench tests or evaluation fixtures. Aidash decides at the moment an approval is needed, in a fixed order: an explicit deny in the Tenant's policy refuses; direct permission or a Read-only operation proceeds; then the person's rules, deny before ask before allow; then the person's mode.

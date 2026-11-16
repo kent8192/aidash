@@ -2,6 +2,8 @@
 
 Supersedes the first consequence of ADR 0021.
 
+Amended by ADR 0127 (2026-11-11): an Invitation's issuer may let opening it join directly, approved in the issuer's name.
+
 Personal Tenants from direct Google sign-in and self-service Tenants have no
 Tenant Binding, so ADR 0021's rule left them without an administrator, and with
 no way to add members except a Deployment Administrator. A Tenant Administrator now exists in
@@ -19,7 +21,9 @@ basis for showing it their Display Attributes.
   expose every applicant's Display Attributes to every Tenant. Rejected.
 - **Joining immediately on opening an Invitation link.** Anyone holding a
   leaked link could join. Rejected in favor of a single-use link followed by an
-  approval.
+  approval. ADR 0127 partly reverses this: when the issuer can approve, opening
+  the single-use link joins directly, and the issuer's authority is rechecked
+  at redemption.
 - **Email-addressed invitations.** Emails never link identities or grant
   authority in Aidash. Rejected.
 

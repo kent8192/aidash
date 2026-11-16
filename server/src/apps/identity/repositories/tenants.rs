@@ -1,6 +1,6 @@
 //! Creating Tenants. Every Tenant, including a Personal Tenant and one a
 //! Deployment Administrator creates, gets a root record under a name Aidash
-//! draws (ADR 0050) and the same initial policy.
+//! draws (ADR 0050) and an initial policy.
 use crate::apps::identity::models::{
 	AdministrationActor, AdministrationEvent, AuthorizationBundle, AuthorizationCredential,
 	DashboardMapping, Tenant, database_time,
@@ -195,7 +195,11 @@ pub(crate) async fn create(
 	let label = tenancy::label(label)?;
 	let (name, created_at) = insert_root(tx, &label, personal, creator).await?;
 	super::nodes::create_default(tx, &name, creator).await?;
-	let bundle = tenancy::initial_policy(&name, matches!(creator, Creator::Identity(_)))?;
+	let bundle = if personal {
+		tenancy::personal_initial_policy(&name)?
+	} else {
+		tenancy::initial_policy(&name, matches!(creator, Creator::Identity(_)))?
+	};
 	AuthorizationBundle::replace(
 		tx,
 		&name,

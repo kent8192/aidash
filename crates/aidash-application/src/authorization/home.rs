@@ -747,7 +747,7 @@ pub async fn delegate<R: HomeRepository>(
 					node_id: node.into(),
 					agent: agent.clone(),
 					ttl_seconds: 3600,
-					semantic: Request::Disabled { summarizer: None },
+					semantic: Request::Disabled {},
 				},
 			)
 			.await?;

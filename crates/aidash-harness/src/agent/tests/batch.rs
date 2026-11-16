@@ -257,6 +257,8 @@ struct Desk {
 	parallelism: usize,
 	slots: Option<ToolSlots>,
 	denied: Mutex<BTreeSet<String>>,
+	/// Calls naming a definition the Registry lacks: the gate answers `NotFound` (#813).
+	missing: Mutex<BTreeSet<String>>,
 	/// Calls the gate refuses with an Authority Pause (the Tenant policy denies them).
 	refused: Mutex<BTreeSet<String>>,
 	/// Every call the gate was asked about.
@@ -276,6 +278,9 @@ impl Bench {
 	fn deny(&self, call: &str) {
 		self.0.denied.lock().unwrap().insert(call.into());
 	}
+	fn miss(&self, call: &str) {
+		self.0.missing.lock().unwrap().insert(call.into());
+	}
 	/// A person's Run message the Run accepted after its response was stored.
 	fn accept_message(&self, seq: i64, content: &str) {
 		self.0
@@ -289,6 +294,7 @@ impl Bench {
 				idempotency_key: format!("human:{seq}"),
 				message_id: None,
 				reference_only: false,
+				is_data: false,
 			});
 	}
 	fn refuse(&self, call: &str) {
@@ -415,6 +421,7 @@ fn bench(
 		parallelism,
 		slots,
 		denied: Mutex::new(BTreeSet::new()),
+		missing: Mutex::new(BTreeSet::new()),
 		refused: Mutex::new(BTreeSet::new()),
 		consulted: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
@@ -762,7 +769,6 @@ impl ExecutionStore for Bench {
 		_token: Uuid,
 		_attempt: Uuid,
 		_settlement: &aidash_domain::context::recovery::Settlement,
-		_staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		unexpected("ExecutionStore.adopt_compaction")
 	}
@@ -882,6 +888,9 @@ impl ExecutionAuthority for Bench {
 		if self.0.denied.lock().unwrap().contains(&call.id) {
 			return Err(Error::Invalid(format!("{} revoked", call.id)));
 		}
+		if self.0.missing.lock().unwrap().contains(&call.id) {
+			return Err(Error::NotFound(format!("{} names no definition", call.id)));
+		}
 		Ok(())
 	}
 	async fn human_read(&self, _id: Uuid) -> Result<()> {
@@ -949,25 +958,6 @@ impl ExecutionAuthority for Bench {
 	}
 	async fn resume(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.resume")
-	}
-	async fn reserve_summary(
-		&self,
-		_token: Uuid,
-		_summarizer: &aidash_domain::context::summary::SummaryProvider,
-		_window: usize,
-		_output: u32,
-		_request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		unexpected("ExecutionAuthority.reserve_summary")
-	}
-	async fn recheck_summary(
-		&self,
-		_summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		unexpected("ExecutionAuthority.recheck_summary")
-	}
-	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
-		unexpected("ExecutionAuthority.recheck_decider")
 	}
 }
 
@@ -1359,6 +1349,66 @@ async fn revoked_calls_of_a_resumed_batch_record_denials_without_dispatch() {
 	finished.sort();
 	assert_eq!(finished, keys(&run, [1, 2]));
 	assert_eq!(progress(&run), (3, None));
+}
+
+/// A missing definition is a call error at the batch gate, not an Authority Pause (#813).
+#[tokio::test]
+async fn fresh_plan_naming_a_missing_definition_runs_the_first_call_and_answers_the_second() {
+	// Arrange
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	bench.miss("call-1");
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert: the batch stops before the missing call; call 0 runs sequentially.
+	assert!(bench.admitted().is_empty());
+	assert_eq!(bench.starts(), keys(&run, [0]));
+	assert_eq!(progress(&run), (1, None));
+	// The missing call is then answered with the error, without a journal entry.
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(bench.starts(), keys(&run, [0]));
+	assert_eq!(
+		adopted(&run),
+		expected(&[
+			(0, read("p0")),
+			(1, json!({"error":"call-1 names no definition"}))
+		])
+	);
+	assert_eq!(progress(&run), (2, None));
+}
+
+/// A resumed batch whose definition went missing records the call error for that call (#813).
+#[tokio::test]
+async fn a_missing_definition_in_a_resumed_batch_records_a_call_error_without_dispatch() {
+	// Arrange: both calls started before the restart; call 0's definition is now missing.
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	run.state.tool_mut().unwrap().batch_end = Some(2);
+	bench.seed(&key(&run, 0), "STARTED", None);
+	bench.seed(&key(&run, 1), "STARTED", None);
+	bench.miss("call-0");
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert
+	assert_eq!(lab.events("admit"), ["p1"]);
+	assert_eq!(lab.events("dispatch"), keys(&run, [1]));
+	let missing = json!({"error":"call-0 names no definition"});
+	assert_eq!(
+		adopted(&run),
+		expected(&[(0, missing.clone()), (1, read("p1"))])
+	);
+	assert_eq!(bench.status(&key(&run, 0)), ("COMPLETED", Some(missing)));
+	assert_eq!(progress(&run), (2, None));
 }
 
 #[tokio::test]
@@ -2039,7 +2089,7 @@ async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted
 	let (error, _) = refusal_note::scoped(async {
 		refusal_note::set(refusal_note::Note::new(
 			aidash_domain::tool::RefusalCheck::Catalog,
-			Some("decision.invoke"),
+			Some("model.infer"),
 		));
 		at_stage("compaction")(Error::Forbidden)
 	})
@@ -2049,7 +2099,7 @@ async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted
 	};
 	assert_eq!(
 		refusal.to_string(),
-		"compaction: Catalog Approval refused decision.invoke"
+		"compaction: Catalog Approval refused model.infer"
 	);
 	// Without a note the check is Unnamed, and every other error passes through.
 	let (error, _) =

@@ -637,17 +637,18 @@ pub fn catalog(
 	Ok(result)
 }
 
-/// Add trusted intrinsic coordination specifications to a Run's catalog.
-/// Callers establish membership and tool identity before supplying these specs.
+/// Add trusted intrinsic specifications to a Run's catalog: Subnode
+/// coordination tools and Journal retrieval tools. Callers establish
+/// membership or offloading, and tool identity, before supplying these specs.
 pub fn include_subnode_intrinsics(
 	snapshot: &BindingSnapshot,
 	catalog: &mut Vec<Capability>,
 	intrinsic: &BTreeMap<String, ToolSpec>,
 ) -> Result<()> {
 	for (name, spec) in intrinsic {
-		if !crate::subnodes::COORDINATION_TOOLS.contains(&name.as_str()) {
+		if !is_intrinsic(name) {
 			return Err(Error::Invalid(format!(
-				"not a Subnode coordination tool: {name}"
+				"not an intrinsic Subnode or Journal tool: {name}"
 			)));
 		}
 		if let Some(item) = catalog.iter_mut().find(|item| item.alias == *name) {
@@ -676,6 +677,12 @@ pub fn include_subnode_intrinsics(
 	}
 	catalog.sort_by(|a, b| a.alias.cmp(&b.alias));
 	Ok(())
+}
+
+/// Whether `name` is an intrinsic tool a Run may receive outside its Bindings.
+pub fn is_intrinsic(name: &str) -> bool {
+	crate::subnodes::COORDINATION_TOOLS.contains(&name)
+		|| crate::context::journal_query::TOOLS.contains(&name)
 }
 
 /// The resident instruction block of a Skill whose body is in the request.

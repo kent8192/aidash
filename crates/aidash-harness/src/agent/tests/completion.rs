@@ -507,6 +507,7 @@ async fn new_input_closes_the_superseded_review_request(mut fixture: Fixture) {
 		idempotency_key: "correction".into(),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	});
 	advance_sources(&mut fixture).await.unwrap();
 	assert_eq!(fixture.run.context.completion.review, None);
@@ -617,6 +618,7 @@ async fn new_input_during_a_check_discards_the_candidate_and_keeps_its_evidence(
 		idempotency_key: "correction".into(),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	});
 	settle(&mut fixture).await;
 	assert_eq!(fixture.run.phase(), RunPhase::Thinking);

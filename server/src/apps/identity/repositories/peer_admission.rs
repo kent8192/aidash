@@ -110,6 +110,16 @@ pub(crate) struct Records<'a> {
 	pub(crate) store: &'a Store,
 }
 
+/// A peer is refused a definition the receiver lacks exactly as it is refused an
+/// unapproved one: the same audited Catalog Approval refusal, so it cannot tell the
+/// two apart (#813 made a missing definition `NotFound` for local callers only).
+fn hide_missing_definition<T>(result: NativeResult<T>) -> NativeResult<T> {
+	match result {
+		Err(crate::Error::NotFound(_)) => Err(crate::Error::Forbidden),
+		other => other,
+	}
+}
+
 async fn record_missing_catalog(
 	access: &mut Access,
 	r: &EntityRef,
@@ -225,9 +235,10 @@ where
 			.map_err(Into::into)
 	}
 	async fn entry(&mut self, r: &EntityRef, action: &str) -> Result<Entry> {
-		let result =
+		let result = hide_missing_definition(
 			crate::authorization::catalog::tool_entry(&mut self.access, r, action, "task_delegate")
-				.await;
+				.await,
+		);
 		if matches!(result, Err(crate::Error::Forbidden)) {
 			record_missing_catalog(&mut self.access, r, action).await?;
 		}
@@ -249,8 +260,9 @@ where
 		users: &[EntityRef],
 	) -> Result<Entry> {
 		let serial = self.access.decision_serial;
-		let result =
-			crate::authorization::catalog::closure_entry(&mut self.access, r, action, users).await;
+		let result = hide_missing_definition(
+			crate::authorization::catalog::closure_entry(&mut self.access, r, action, users).await,
+		);
 		if matches!(result, Err(crate::Error::Forbidden)) {
 			if self.access.decision_serial != serial {
 				return Err(aidash_application::Error::RemoteExecutionRefused(
