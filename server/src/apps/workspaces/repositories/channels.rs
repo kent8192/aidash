@@ -67,12 +67,16 @@ impl LinkRecord {
 /// Where an image attachment stands in its Workspace index, as a status word
 /// only; the entry itself stays under the semantic index's own authority.
 fn index_state() -> SimpleExpr {
-	SimpleExpr::from(Expr::cust(
+	SimpleExpr::from(Expr::cust(format!(
 		"(SELECT CASE se.state WHEN 'READY' THEN 'indexed' WHEN 'PENDING' THEN 'pending' \
 		 WHEN 'UNSUPPORTED' THEN 'unsupported' ELSE 'failed' END \
 		 FROM semantic_entries se WHERE se.workspace_id = channel_attachments.workspace_id \
-		 AND se.key = 'attachment-image:' || channel_attachments.id::text AND NOT se.deleted)",
-	))
+		 AND {} AND NOT se.deleted)",
+		crate::apps::knowledge::repositories::attachment_images::names_attachment(
+			"se",
+			"channel_attachments"
+		)
+	)))
 }
 
 struct HistoryRecord {

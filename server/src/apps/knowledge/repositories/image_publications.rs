@@ -70,8 +70,13 @@ impl Session {
 
 fn key(slot: &ImageSlot) -> String {
 	format!(
-		"working-image:{}:{}:{}:{}:{}",
-		slot.area_id, slot.generation, slot.file_id, slot.publication, slot.position
+		"{}{}:{}:{}:{}:{}",
+		aidash_domain::semantic::indexing::WORKING_IMAGE_KEY_PREFIX,
+		slot.area_id,
+		slot.generation,
+		slot.file_id,
+		slot.publication,
+		slot.position
 	)
 }
 

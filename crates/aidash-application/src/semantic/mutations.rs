@@ -77,6 +77,11 @@ pub fn validate_public_put(input: &Put) -> Result<()> {
 			"Thread Attachment images are indexed when they are posted".into(),
 		));
 	}
+	if aidash_domain::semantic::indexing::is_managed_image_key(&input.key) {
+		return Err(Error::Invalid(
+			"image entry keys are managed by the Workspace index".into(),
+		));
+	}
 	if input.key.starts_with("agent-memory:")
 		|| input.key.starts_with("memory-unit:")
 		|| matches!(input.source, aidash_domain::semantic::Source::Unit { .. })

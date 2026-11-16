@@ -52,9 +52,20 @@ pub fn image_digest(bytes_digest: &str, description: Option<&str>) -> String {
 	}
 }
 
+/// The key prefix of Thread Attachment image entries.
+pub const ATTACHMENT_IMAGE_KEY_PREFIX: &str = "attachment-image:";
+/// The key prefix of Working Area image entries.
+pub const WORKING_IMAGE_KEY_PREFIX: &str = "working-image:";
+
 /// The entry key of a Thread Attachment image. One attachment has one entry.
 pub fn attachment_image_key(attachment: Uuid) -> String {
-	format!("attachment-image:{attachment}")
+	format!("{ATTACHMENT_IMAGE_KEY_PREFIX}{attachment}")
+}
+
+/// Whether a key belongs to the image entries the index manages itself. A
+/// public write may not use one, so it cannot occupy an image's entry.
+pub fn is_managed_image_key(key: &str) -> bool {
+	key.starts_with(ATTACHMENT_IMAGE_KEY_PREFIX) || key.starts_with(WORKING_IMAGE_KEY_PREFIX)
 }
 
 /// The reason an image cannot currently enter its Workspace index.

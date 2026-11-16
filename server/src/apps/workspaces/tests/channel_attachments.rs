@@ -1218,3 +1218,65 @@ async fn backfill_pages_past_images_the_configuring_person_cannot_read(
 		Some("PENDING")
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn image_entry_keys_are_reserved_and_text_entries_hold_no_image_slot(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: room for one image, and a text entry whose key looks like an
+	// image's, as one written before the prefix was reserved would.
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let entries_path = format!("/api/workspaces/{workspace}/semantic/entries");
+	let (text_status, text) = request(&app, &token, "POST", &entries_path,
+		json!({"key":"note","source":{"kind":"memory","text":"A note"},"expected_revision":0,"metadata":{}})).await;
+	assert_eq!(text_status, 200, "{text}");
+	sqlx::query("UPDATE semantic_entries SET key = $1 WHERE key = 'note'")
+		.bind(format!("attachment-image:{}", Uuid::new_v4()))
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+
+	// Act
+	let mut refusals = vec![];
+	for key in [
+		format!("attachment-image:{}", Uuid::new_v4()),
+		format!("working-image:{}:1", Uuid::new_v4()),
+	] {
+		refusals.push(
+			request(&app, &token, "POST", &entries_path,
+				json!({"key":key,"source":{"kind":"memory","text":"Squatter"},"expected_revision":0,"metadata":{}}))
+			.await
+			.0,
+		);
+	}
+	let image = post_image(&app, &token, &workspace, "Photo").await;
+
+	// Assert: public writes cannot take an image key, and only image entries
+	// take image slots.
+	assert_eq!(refusals, [400, 400]);
+	assert_eq!(
+		image_entry(&app, &image)
+			.await
+			.map(|entry| entry.0)
+			.as_deref(),
+		Some("PENDING")
+	);
+}

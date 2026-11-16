@@ -10,7 +10,7 @@ use aidash_application::ports::semantic::mutations::SemanticEntriesSession;
 use aidash_application::ports::semantic::{IndexImage, IndexImageRead};
 use aidash_domain::semantic::{
 	Source,
-	indexing::{ImageSlots, IndexingSpec, attachment_image_key},
+	indexing::{ATTACHMENT_IMAGE_KEY_PREFIX, ImageSlots, IndexingSpec, attachment_image_key},
 	mutations::Entry,
 };
 use chrono::Utc;
@@ -45,6 +45,16 @@ crate::native_record!(AttachmentRow {
 	content,
 	description
 });
+
+/// SQL that holds when semantic entry `entry` is the image entry of attachment
+/// `attachment`. It matches the entry's source rather than its key, so only the
+/// index's own image entries count, whatever a key looks like.
+pub(crate) fn names_attachment(entry: &str, attachment: &str) -> String {
+	format!(
+		"{entry}.source->>'kind' = 'attachment_image' \
+		 AND {entry}.source->>'attachment_id' = {attachment}.id::text"
+	)
+}
 
 const COLUMNS: [&str; 9] = [
 	"id",
@@ -248,7 +258,7 @@ pub(crate) async fn counted(tx: &mut native::Transaction, workspace: Uuid) -> Re
 		.expr(Expr::cust("COUNT(*)"))
 		.from(Alias::new("semantic_entries"))
 		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
-		.and_where(Expr::col("key").like("attachment-image:%"))
+		.and_where(Expr::cust("source->>'kind' = 'attachment_image'"))
 		.and_where(Expr::col("deleted").eq(Expr::value(false)))
 		.and_where(Expr::cust(
 			"NOT (state = 'UNSUPPORTED' AND last_error IS NOT DISTINCT FROM 'limit')",
@@ -418,9 +428,10 @@ pub(crate) async fn relimit(
 		.join(
 			JoinType::InnerJoin,
 			TableRef::table_alias(Alias::new("channel_attachments"), Alias::new("a")),
-			Expr::cust(
-				"se.key = 'attachment-image:' || a.id::text AND a.workspace_id = se.workspace_id",
-			),
+			Expr::cust(format!(
+				"{} AND a.workspace_id = se.workspace_id",
+				names_attachment("se", "a")
+			)),
 		)
 		.join(
 			JoinType::InnerJoin,
@@ -487,10 +498,13 @@ pub(crate) async fn backfill(
 			)
 			.and_where(Expr::col(("a", "workspace_id")).eq(Expr::value(workspace)))
 			.and_where(Expr::col(("a", "media_type")).like("image/%"))
-			.and_where(Expr::cust(
+			// An image with an entry, or with a retired entry still holding its
+			// key, has nothing to enter.
+			.and_where(Expr::cust(format!(
 				"NOT EXISTS (SELECT 1 FROM semantic_entries se WHERE se.workspace_id = a.workspace_id \
-				 AND se.key = 'attachment-image:' || a.id::text)",
-			))
+				 AND ({} OR se.key = '{ATTACHMENT_IMAGE_KEY_PREFIX}' || a.id::text))",
+				names_attachment("se", "a")
+			)))
 			.order_by(("m", "created_at"), Order::Asc)
 			.order_by(("a", "position"), Order::Asc)
 			.order_by(("a", "id"), Order::Asc)
