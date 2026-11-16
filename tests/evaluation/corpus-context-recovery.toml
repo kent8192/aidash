@@ -38,6 +38,10 @@ max_steps = 24
 context_window = 128000
 max_output_tokens = 4096
 
+[models.measurement-large]
+context_window = 1048576
+max_output_tokens = 4096
+
 # Sized so the base request plus seven reference pages fits and plus eight does
 # not: the eighth page outgrows the window in both arms. The evaluator's Agents
 # remove the default compaction binding and carry no Summary Stage, so nothing
@@ -149,12 +153,12 @@ schema = '{"type":"object","properties":{"document":{"type":"string"}},"required
 [[tools]]
 alias = "record_note"
 description = "Append one entry to the shared review ledger. Each call adds a permanent entry, so a repeated call records a duplicate."
-schema = '{"type":"object","properties":{"page":{"type":"integer","minimum":1,"maximum":64}},"required":["page"],"additionalProperties":false}'
+schema = '{"type":"object","properties":{"page":{"type":"integer","minimum":1,"maximum":75}},"required":["page"],"additionalProperties":false}'
 
 [[tools]]
 alias = "reference_lookup"
 description = "Fetch one numbered reference page from the procurement archive."
-schema = '{"type":"object","properties":{"page":{"type":"integer","minimum":1,"maximum":64}},"required":["page"],"additionalProperties":false}'
+schema = '{"type":"object","properties":{"page":{"type":"integer","minimum":1,"maximum":75}},"required":["page"],"additionalProperties":false}'
 
 [[tools]]
 alias = "invoice_lookup"
@@ -305,6 +309,39 @@ excluded_vendors = ["Contoso", "Northwind"]
 [tasks.expected]
 outcome = "unresolved"
 context_reason = "context_unreducible"
+long_context = "none"
+
+# 150 tool calls plus the final answer, with five 150 KB reads and 70 1.2 KB reads.
+# A planning estimate of 5 bytes/token yields ~30k tokens per large read, ~240
+# per small read, 3k initial tokens, and ~20 tokens per ledger exchange. This
+# gives ~33k after the first read, ~171k at the end and ~15.56m total input.
+# Assuming a cold cache and all output reusable, new input is ~169.8k tokens:
+# the append-only overall ceiling is 1 - 169800 / 15563580 = 98.91%.
+# These estimates are tokenizer-dependent, not measured billing quantities.
+# OpenRouter lists deepseek/deepseek-v4.1-flash-1017 at 1,048,576 context tokens.
+[[tasks]]
+id = "long-cache-ledger"
+kind = "long-context"
+language = "en-US"
+title = "Survey a long archive and record every page"
+prompt = """Prepare a vendor shortlist. Initial constraints: BUDGET-USD=500 and EXCLUDE-VENDOR=Northwind. Read reference pages 1 to 75 with reference_lookup, and after reading each page call record_note once with that page number. Every record_note call adds a permanent ledger entry, so never record a page twice. Later corrections replace earlier values. Call one tool per turn, in page order. Reply with one JSON object in a ```json block: {"budget_usd": number, "excluded_vendors": [names]}."""
+model = "measurement-large"
+comparisons = ["projection"]
+fixture_agent = "constraint-tracker"
+tools = ["reference_lookup", "record_note"]
+fixture_record_pages = true
+reference_pages = 75
+max_steps = 155
+reference_page_bytes = 1200
+reference_page_sizes = { 1 = 150000, 15 = 150000, 30 = 150000, 45 = 150000, 60 = 150000 }
+reference_correction_offset = 75000
+reference_corrections = { 45 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
+[tasks.oracle]
+kind = "constraint-retention"
+budget_usd = 300
+excluded_vendors = ["Contoso", "Northwind"]
+[tasks.expected]
+outcome = "success"
 long_context = "none"
 
 # The same correction arrives only inside an early tool result. Pruning would

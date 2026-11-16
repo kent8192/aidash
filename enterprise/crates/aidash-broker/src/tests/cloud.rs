@@ -276,6 +276,7 @@ impl Cloud {
 			request_estimator: None,
 			provider_route: None,
 			estimate_diagnostics: None,
+			reasoning_passback: None,
 		}
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {

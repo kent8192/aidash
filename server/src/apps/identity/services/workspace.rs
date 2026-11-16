@@ -250,12 +250,14 @@ impl Access {
 		id: Uuid,
 		offset: usize,
 		limit: usize,
+		exclude_run: Option<Uuid>,
 	) -> Result<Value> {
 		aidash_application::authorization::projection::observation(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 			offset,
 			limit,
+			exclude_run,
 		)
 		.await
 		.map_err(Into::into)

@@ -236,6 +236,8 @@ pub async fn revoke_projection(context: &mut Context, journal: &dyn Journal) -> 
 		context.research_revoked = true;
 	}
 	revocation::redact(&mut context.history, &originals);
+	// Later turns stop resending reasoning that may quote it (#942).
+	context.withhold_reasoning_after_withheld_results();
 	Ok(())
 }
 
