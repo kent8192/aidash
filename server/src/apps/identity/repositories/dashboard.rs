@@ -212,7 +212,7 @@ impl StatusRecovery for Recovery {
 		// Lock the Run and rebind its origin in the same transaction as resume.
 		{
 			use reinhardt::db::orm::Model;
-			let suspended = Run::objects()
+			let suspended_epoch = Run::objects()
 				.filter(Run::field_id().eq(run))
 				.filter(
 					Run::field_control()
@@ -225,8 +225,26 @@ impl StatusRecovery for Recovery {
 					crate::Error::from(reinhardt::core::exception::Error::from(error))
 				})?
 				.pop()
-				.is_some();
-			if suspended {
+				.and_then(|row| {
+					row.pending
+						.0
+						.get("recovery")
+						.and_then(|v| v.get("account_suspension_epoch"))
+						.and_then(|v| v.as_u64())
+				});
+			if let Some(epoch) = suspended_epoch {
+				// Only a Run the administrator's choice covers is rechecked, so a Run
+				// waiting on an unauthorized epoch costs no permission check per pass.
+				if !DashboardExecutionOrigin::suspension_resumable(
+					&mut **access.tx,
+					run,
+					epoch,
+					policy.as_ref(),
+				)
+				.await?
+				{
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				}
 				// The administrator's choice stands in for the owner's manual resume, so
 				// the owner's local permissions are rechecked as that resume would: a Run
 				// whose owner lost them stays paused (#876 decision 16, ADR 0132). This
@@ -234,7 +252,17 @@ impl StatusRecovery for Recovery {
 				let (returned, allowed) =
 					super::execution::control::recheck_resume(&self.federation, access, run).await;
 				access = returned;
-				if allowed.is_err() {
+				if let Err(error) = allowed {
+					use aidash_application::Error as Refusal;
+					if !matches!(
+						error,
+						Refusal::Forbidden
+							| Refusal::Unauthorized
+							| Refusal::AccountSuspended { .. }
+							| Refusal::ResumeBlocked(_)
+					) {
+						tracing::warn!(run_id = %run, %error, "automatic suspension resume could not recheck the owner");
+					}
 					return access.finish(Ok(false)).await.map_err(Into::into);
 				}
 			}

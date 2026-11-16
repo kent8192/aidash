@@ -381,6 +381,21 @@ impl DashboardExecutionOrigin {
 			.collect())
 	}
 
+	/// Whether the authority would let [`Self::rebind_suspended`] rebind `run` to
+	/// `epoch` now, without writing anything. The refresh pass asks it before the
+	/// owner's permission recheck, so a Run whose epoch the administrator did not
+	/// authorize is not rechecked on every pass.
+	pub(crate) async fn suspension_resumable(
+		db: &mut dyn TransactionExecutor,
+		run: Uuid,
+		epoch: u64,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<bool> {
+		Ok(Self::resumed_origin(db, run, epoch, policy)
+			.await?
+			.is_some())
+	}
+
 	/// Called only while the paused Run is locked and its original local authority
 	/// is held. The authority validates the administrator's exact epoch choice.
 	pub(crate) async fn rebind_suspended(
@@ -389,27 +404,7 @@ impl DashboardExecutionOrigin {
 		epoch: u64,
 		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<bool> {
-		let Some(authority) = policy.and_then(|p| p.authority.as_ref()) else {
-			return Ok(false);
-		};
-		let Some((origin, true)) = Self::saved_or_legacy(db, run).await? else {
-			return Ok(false);
-		};
-		let bound = aidash_domain::accounts::DurableOrigin {
-			identity_id: origin.identity_id(),
-			account_id: origin.account_id,
-			suspension_epoch: origin
-				.suspension_epoch
-				.map(u64::try_from)
-				.transpose()
-				.map_err(|_| crate::Error::Forbidden)?,
-			source_disable_epoch: origin
-				.source_disable_epoch
-				.map(u64::try_from)
-				.transpose()
-				.map_err(|_| crate::Error::Forbidden)?,
-		};
-		let Some(fresh) = authority.resume_suspended_origin(&bound, epoch).await? else {
+		let Some(fresh) = Self::resumed_origin(db, run, epoch, policy).await? else {
 			return Ok(false);
 		};
 		let suspension_epoch = fresh
@@ -431,6 +426,38 @@ impl DashboardExecutionOrigin {
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&query).execute(db).await?;
 		Ok(true)
+	}
+
+	async fn resumed_origin(
+		db: &mut dyn TransactionExecutor,
+		run: Uuid,
+		epoch: u64,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		let Some(authority) = policy.and_then(|p| p.authority.as_ref()) else {
+			return Ok(None);
+		};
+		let Some((origin, true)) = Self::saved_or_legacy(db, run).await? else {
+			return Ok(None);
+		};
+		let bound = aidash_domain::accounts::DurableOrigin {
+			identity_id: origin.identity_id(),
+			account_id: origin.account_id,
+			suspension_epoch: origin
+				.suspension_epoch
+				.map(u64::try_from)
+				.transpose()
+				.map_err(|_| crate::Error::Forbidden)?,
+			source_disable_epoch: origin
+				.source_disable_epoch
+				.map(u64::try_from)
+				.transpose()
+				.map_err(|_| crate::Error::Forbidden)?,
+		};
+		authority
+			.resume_suspended_origin(&bound, epoch)
+			.await
+			.map_err(Into::into)
 	}
 
 	pub(crate) async fn original_subject<E: OrmExecutor>(
