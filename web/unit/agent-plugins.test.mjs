@@ -10,8 +10,14 @@ import {
   httpsLink,
   isAgentPluginRef,
   readImport,
+  readListing,
+  describeSecret,
+  isDeclaredReadOnly,
+  serverSettings,
   skippedServers,
+  toggleReadOnly,
   withPlugin,
+  withServerSettings,
   withoutPlugin,
 } from "../src/agent-plugins.ts";
 
@@ -330,4 +336,72 @@ test("a pin event names each unreachable plugin server once and ignores other sk
   assert.deepEqual(skippedServers({ skipped: [] }), []);
   assert.deepEqual(skippedServers({}), []);
   assert.deepEqual(skippedServers(null), []);
+});
+
+test("server settings are written only while they choose something", () => {
+  const secret = { name: "docs-token", header: "X-Api-Key" };
+  const config = withServerSettings({ model: "m" }, "acme", "docs", {
+    secret,
+    read_only: [],
+  });
+  assert.deepEqual(config.agent_plugin_settings, {
+    acme: { docs: { secret } },
+  });
+  assert.deepEqual(serverSettings(config, "acme", "docs"), { secret });
+  assert.deepEqual(serverSettings(config, "acme", "wiki"), {});
+  const cleared = withServerSettings(config, "acme", "docs", {
+    secret: { name: "" },
+  });
+  assert.deepEqual(cleared, { model: "m" });
+});
+
+test("a server secret shows its header, form and owner, never a value", () => {
+  assert.deepEqual(describeSecret({ name: "docs-token" }), {
+    name: "docs-token",
+    header: "Authorization",
+    form: "bearer",
+    owner: "either",
+  });
+  assert.deepEqual(
+    describeSecret({ name: "k", header: "authorization", owner: "personal" }),
+    { name: "k", header: "authorization", form: "bearer", owner: "personal" },
+  );
+  assert.equal(describeSecret({ name: "k", header: "X-Api-Key" }).form, "raw");
+});
+
+test("a listing is read with names and digests only, or a typed reason", () => {
+  const digest = `sha256:${"b".repeat(64)}`;
+  assert.deepEqual(
+    readListing({
+      outcome: "listed",
+      tools: [{ name: "search", schema_digest: digest, extra: 1 }],
+    }),
+    { outcome: "listed", tools: [{ name: "search", schema_digest: digest }] },
+  );
+  assert.deepEqual(
+    readListing({ outcome: "unavailable", reason: "connection_required" }),
+    { outcome: "unavailable", reason: "connection_required" },
+  );
+  assert.equal(readListing({ outcome: "listed", tools: [{ name: 1 }] }), null);
+  assert.equal(readListing({ tools: [] }), null);
+});
+
+test("Read-only follows the digest the listing returned", () => {
+  const search = { name: "search", schema_digest: `sha256:${"a".repeat(64)}` };
+  const fetch = { name: "fetch", schema_digest: `sha256:${"c".repeat(64)}` };
+  const declared = toggleReadOnly(
+    toggleReadOnly([], search, true),
+    fetch,
+    true,
+  );
+  assert.deepEqual(
+    declared.map((tool) => tool.name),
+    ["fetch", "search"],
+  );
+  assert.ok(isDeclaredReadOnly(declared, search));
+  // A changed schema is no longer declared until the person checks it again.
+  const changed = { ...search, schema_digest: `sha256:${"d".repeat(64)}` };
+  assert.ok(!isDeclaredReadOnly(declared, changed));
+  assert.deepEqual(toggleReadOnly(declared, changed, true).at(-1), changed);
+  assert.deepEqual(toggleReadOnly(declared, search, false), [fetch]);
 });

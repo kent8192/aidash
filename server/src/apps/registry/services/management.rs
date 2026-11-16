@@ -1,7 +1,7 @@
 //! Management use cases.
 use crate::apps::identity::services::tenant_secret_readiness;
 use crate::apps::registry::serializers::agent_plugin_import::{
-	AgentPluginImportResult, PluginImportRequest,
+	AgentPluginImportResult, AttachListing, PluginImportRequest, PluginToolsRequest,
 };
 use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
 use crate::apps::registry::services::agent_plugin_import;
@@ -188,6 +188,15 @@ impl RegistryManagement {
 		};
 		let source = crate::bootstrap::agent_plugin_import(&self.runtime.config, &identity.tenant)?;
 		agent_plugin_import::import(&self.runtime, &source, actor, request).await
+	}
+
+	/// See [`crate::apps::registry::services::agent_plugin_import::list_tools`].
+	pub(crate) async fn agent_plugin_tools(
+		&self,
+		actor: Actor,
+		request: PluginToolsRequest,
+	) -> Result<AttachListing> {
+		agent_plugin_import::list_tools(&self.runtime, actor, request).await
 	}
 
 	/// Readiness facts for the Tenant Secrets this Agent version's bound tools

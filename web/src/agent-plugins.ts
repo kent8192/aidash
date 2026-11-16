@@ -326,3 +326,150 @@ export function skippedServers(data: unknown): string[] {
   }
   return [...servers];
 }
+
+/** The header a server secret travels in unless the definition names another. */
+export const SECRET_HEADER = "Authorization";
+
+/**
+ * The pasted secret one remote server authenticates with when it offers no
+ * OAuth (ADR 0100, ADR 0073 amended 2026-11-16), as `ServerSecret` stores it.
+ */
+export type ServerSecret = {
+  name: string;
+  header?: string;
+  owner?: "any" | "personal";
+};
+export type ReadOnlyTool = { name: string; schema_digest: string };
+/** What an Agent definition decides about one server, as `ServerSettings` stores it. */
+export type ServerSettings = {
+  tools?: string[] | null;
+  exposure?: "eager" | "deferred" | null;
+  read_only?: ReadOnlyTool[];
+  secret?: ServerSecret;
+};
+/** `agent_plugin_settings`: plugin name, then server name. */
+export type PluginSettings = Record<string, Record<string, ServerSettings>>;
+
+/** The settings of every attached plugin, or none when they are not an object. */
+export function pluginSettings(config: Config): PluginSettings {
+  return isRecord(config.agent_plugin_settings)
+    ? (config.agent_plugin_settings as PluginSettings)
+    : {};
+}
+
+export function serverSettings(
+  config: Config,
+  plugin: string,
+  server: string,
+): ServerSettings {
+  const servers = pluginSettings(config)[plugin];
+  return isRecord(servers) && isRecord(servers[server]) ? servers[server] : {};
+}
+
+/**
+ * `config` with one server's settings replaced. Empty choices are left out,
+ * and so are a plugin and the whole key once nothing is chosen, so a
+ * definition without choices keeps its bytes.
+ */
+export function withServerSettings(
+  config: Config,
+  plugin: string,
+  server: string,
+  settings: ServerSettings,
+): Config {
+  const kept: ServerSettings = {};
+  if (settings.tools != null) kept.tools = settings.tools;
+  if (settings.exposure != null) kept.exposure = settings.exposure;
+  if (settings.read_only && settings.read_only.length > 0)
+    kept.read_only = settings.read_only;
+  if (settings.secret && settings.secret.name) kept.secret = settings.secret;
+  const all = { ...pluginSettings(config) };
+  const servers = { ...(all[plugin] ?? {}) };
+  if (Object.keys(kept).length > 0) servers[server] = kept;
+  else delete servers[server];
+  if (Object.keys(servers).length > 0) all[plugin] = servers;
+  else delete all[plugin];
+  const next = { ...config };
+  if (Object.keys(all).length > 0) next.agent_plugin_settings = all;
+  else delete next.agent_plugin_settings;
+  return next;
+}
+
+export type SecretDescription = {
+  name: string;
+  header: string;
+  /** `Authorization` carries `Bearer <value>`; any other header the raw value. */
+  form: "bearer" | "raw";
+  /** `personal`: only the Run's person's own secret. `either`: theirs wins, the shared one otherwise. */
+  owner: "personal" | "either";
+};
+
+/** What Catalog Approval and the Agent form show of a server secret: never its value. */
+export function describeSecret(secret: ServerSecret): SecretDescription {
+  const header = secret.header?.trim() || SECRET_HEADER;
+  return {
+    name: secret.name,
+    header,
+    form:
+      header.toLowerCase() === SECRET_HEADER.toLowerCase() ? "bearer" : "raw",
+    owner: secret.owner === "personal" ? "personal" : "either",
+  };
+}
+
+export type AttachTool = { name: string; schema_digest: string };
+/** The answer of `POST /api/agent-plugins/tools`. */
+export type AttachListing =
+  | { outcome: "listed"; tools: AttachTool[] }
+  | { outcome: "unavailable"; reason: string };
+
+/** The answer of `POST /api/agent-plugins/tools`, or `null` when it is not one. */
+export function readListing(value: unknown): AttachListing | null {
+  if (!isRecord(value)) return null;
+  if (value.outcome === "unavailable" && isString(value.reason))
+    return { outcome: "unavailable", reason: value.reason };
+  if (
+    value.outcome === "listed" &&
+    Array.isArray(value.tools) &&
+    value.tools.every(
+      (tool) =>
+        isRecord(tool) && isString(tool.name) && isString(tool.schema_digest),
+    )
+  )
+    return {
+      outcome: "listed",
+      tools: (value.tools as AttachTool[]).map(({ name, schema_digest }) => ({
+        name,
+        schema_digest,
+      })),
+    };
+  return null;
+}
+
+/**
+ * Read-only declarations after one tool of a listing is checked or
+ * unchecked. A checked tool records the digest the listing returned, so Run
+ * start can confirm the schema it was declared against.
+ */
+export function toggleReadOnly(
+  declared: readonly ReadOnlyTool[],
+  tool: AttachTool,
+  checked: boolean,
+): ReadOnlyTool[] {
+  const others = declared.filter((item) => item.name !== tool.name);
+  return checked
+    ? [...others, { name: tool.name, schema_digest: tool.schema_digest }].sort(
+        (a, b) => a.name.localeCompare(b.name),
+      )
+    : others;
+}
+
+/** Whether `tool` is declared Read-only against the schema the listing returned. */
+export function isDeclaredReadOnly(
+  declared: readonly ReadOnlyTool[],
+  tool: AttachTool,
+): boolean {
+  return declared.some(
+    (item) =>
+      item.name === tool.name && item.schema_digest === tool.schema_digest,
+  );
+}

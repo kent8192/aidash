@@ -1,10 +1,12 @@
 import { EntryConnections } from "./connections/install";
 import { useRef, useState } from "react";
 import { AgentPluginSummary } from "./agent-plugin-summary";
+import { AgentPluginServerSettings } from "./agent-plugin-server-settings";
 import {
   MAX_AGENT_PLUGINS,
   agentPlugins,
   canAttach,
+  pluginSettings,
   readImport,
   withPlugin,
   withoutPlugin,
@@ -195,7 +197,23 @@ export function AgentPluginImport({
                     </span>
                   }
                 >
-                  <AgentPluginSummary plugin={plugin} />
+                  <div className="grid min-w-0 gap-3">
+                    <AgentPluginSummary
+                      plugin={plugin}
+                      settings={pluginSettings(config)[plugin.name]}
+                    />
+                    {Object.entries(plugin.servers)
+                      .filter(([, server]) => "remote" in server)
+                      .map(([server]) => (
+                        <AgentPluginServerSettings
+                          key={server}
+                          plugin={plugin}
+                          server={server}
+                          config={config}
+                          change={change}
+                        />
+                      ))}
+                  </div>
                 </Disclosure>
                 <Button
                   type="button"
