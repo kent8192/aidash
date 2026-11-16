@@ -78,7 +78,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "egress_scope_state"
 		| "egress_scope_daily"
 		| "egress_scope_connections"
-		| "egress_scope_events" => Node("node"),
+		| "egress_scope_events"
+		| "egress_scope_refusals" => Node("node"),
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
