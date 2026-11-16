@@ -344,6 +344,10 @@ impl WaitingState {
 		}
 	}
 }
+/// How long an Outage Wait lasts before it becomes a pause only a person can
+/// lift (ADR 0129).
+pub const OUTAGE_BOUND: chrono::Duration = chrono::Duration::hours(24);
+
 /// Retry interval for an external service or a plan allowance.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -355,7 +359,7 @@ pub enum OutageCadence {
 impl OutageCadence {
 	/// The deadline is fixed from the first failed attempt, including lease retries.
 	pub fn next_wake(self, started_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-		let deadline = started_at + chrono::Duration::hours(24);
+		let deadline = started_at + OUTAGE_BOUND;
 		if now >= deadline {
 			return None;
 		}

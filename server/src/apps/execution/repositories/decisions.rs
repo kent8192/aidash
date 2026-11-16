@@ -60,6 +60,13 @@ const ATTEMPT_COLUMNS: [&str; 23] = [
 	"provider_report",
 ];
 
+/// Leaves out of a Run's Decider call count the attempts an outage retry made
+/// that got no answer (ADR 0129): `retry` is the Run's Decider outage retry
+/// count when the attempt was reserved, and only an answered or unfinished
+/// attempt counts once that count is above zero.
+const OUTAGE_ATTEMPT_EXCLUDED: &str =
+	"NOT (retry > 0 AND COALESCE(status, '') IN ('failed', 'uncertain', 'not_dispatched'))";
+
 /// The snake_case wire label of a serialized enum, as stored in the CHECKed columns.
 fn label<T: Serialize>(value: &T) -> Result<String> {
 	match serde_json::to_value(value)? {
@@ -450,6 +457,10 @@ impl<'a> RunDecisionJournal<'a> {
 					"(decider = CAST(? AS jsonb))".to_owned(),
 					vec![Expr::value(decider.to_string()).into()],
 				))
+				// An attempt retried after every Decider Route failed (`retry` > 0)
+				// that got no answer belongs to an outage and spends none of the
+				// call limit (ADR 0129). An attempt still in flight counts.
+				.and_where(Expr::cust(OUTAGE_ATTEMPT_EXCLUDED))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut *tx)

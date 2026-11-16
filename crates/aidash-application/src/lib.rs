@@ -128,6 +128,11 @@ pub enum Error {
 	InferenceStalled,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
 	SemanticUnavailable,
+	/// Native memory of this Home is closed while a write's outcome is unknown
+	/// (ADR 0083). It reopens by itself once reconciled, so a Run waits for it
+	/// (ADR 0129).
+	#[error("native memory is closed until its last write is reconciled; it reopens by itself")]
+	MemoryClosed,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	#[error("{0}")]

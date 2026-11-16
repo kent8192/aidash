@@ -754,7 +754,7 @@ async fn decider_wait_preserves_start_and_pauses_after_twenty_four_hours(
 }
 #[rstest]
 #[tokio::test]
-async fn a_node_that_did_not_answer_is_retried_then_pauses_naming_it(
+async fn a_node_that_did_not_answer_is_retried_then_waits_naming_it(
 	repository: Repository,
 	now: DateTime<Utc>,
 ) {
@@ -785,17 +785,20 @@ async fn a_node_that_did_not_answer_is_retried_then_pauses_naming_it(
 			.iter()
 			.all(|write| *write == Write::Save("run.node_retrying".into()))
 	);
-	let Write::Pause(reason, event) = &writes[5] else {
-		panic!("the sixth failure pauses: {:?}", writes[5])
-	};
-	assert!(reason.contains("aidash://other/sibling"), "{reason}");
-	assert_eq!(event, "run.node_unreachable");
+	// Not answering is not a refusal: the Run waits and names the Node (ADR 0129).
+	assert_eq!(writes[5], Write::Save("run.outage_waiting".into()));
+	let run = repository.run.lock().unwrap();
+	assert!(matches!(
+		&run.as_ref().unwrap().state,
+		RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { service, wake_at, .. }
+			if service == "Node aidash://other/sibling" && *wake_at == now + chrono::Duration::minutes(5))
+	));
 	assert!(!failure().retryable());
 }
 
 #[rstest]
 #[tokio::test]
-async fn a_node_that_did_not_answer_after_a_tools_effect_waits(
+async fn a_node_that_did_not_answer_after_a_tools_effect_is_retried_like_any_other(
 	repository: Repository,
 	now: DateTime<Utc>,
 ) {
@@ -810,11 +813,126 @@ async fn a_node_that_did_not_answer_after_a_tools_effect_waits(
 	)
 	.await
 	.unwrap();
+	// Taking the step up again reconciles the STARTED call; it does not repeat it.
+	assert_eq!(
+		*repository.writes.lock().unwrap(),
+		[Write::Save("run.node_retrying".into())]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_outage_pauses_once_its_wait_reaches_the_bound(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	{
+		let mut run = repository.run.lock().unwrap();
+		let run = run.as_mut().unwrap();
+		run.recovery.node_retry = 5;
+		run.recovery.outage = Some(aidash_domain::run_state::OutageTracking {
+			service: "Node aidash://other/sibling".into(),
+			started_at: now - aidash_domain::run_state::OUTAGE_BOUND,
+		});
+	}
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::NodeUnreachable {
+			node: "aidash://other/sibling".into(),
+			retry: true,
+		},
+		now,
+	)
+	.await
+	.unwrap();
 	let writes = repository.writes.lock().unwrap();
-	assert_eq!(writes.len(), 1);
-	assert_eq!(writes[0], Write::Save("run.outage_waiting".into()));
+	let [Write::Pause(reason, event)] = writes.as_slice() else {
+		panic!("the bound pauses: {writes:?}")
+	};
+	assert!(reason.contains("aidash://other/sibling"), "{reason}");
+	assert_eq!(event, "run.node_unreachable");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_reached_plan_usage_limit_waits_an_hour_instead_of_failing(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let failure = || ExecutionFailure::PlanAllowance("usage limit reached".into());
+	recover(&repository, repository.token, failure(), now)
+		.await
+		.unwrap();
+	{
+		let writes = repository.writes.lock().unwrap();
+		assert_eq!(*writes, [Write::Save("run.outage_waiting".into())]);
+		let run = repository.run.lock().unwrap();
+		assert!(matches!(
+			&run.as_ref().unwrap().state,
+			RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { wake_at, .. }
+				if *wake_at == now + chrono::Duration::hours(1))
+		));
+	}
+	// After 24 hours the wait becomes a pause a person lifts (ADR 0129).
+	{
+		let mut run = repository.run.lock().unwrap();
+		let run = run.as_mut().unwrap();
+		let RunState::Waiting(wait) = run.state.clone() else {
+			panic!("expected a wait")
+		};
+		let WaitingState::Outage { resume, .. } = *wait else {
+			panic!("expected an Outage Wait")
+		};
+		run.state = resume.into_state();
+	}
+	recover(
+		&repository,
+		repository.token,
+		failure(),
+		now + aidash_domain::run_state::OUTAGE_BOUND,
+	)
+	.await
+	.unwrap();
+	let writes = repository.writes.lock().unwrap();
+	assert!(
+		matches!(writes.last(), Some(Write::Pause(_, event)) if event == "run.plan_allowance_exhausted"),
+		"{writes:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn closed_native_memory_is_retried_then_waited_out(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let failure = || ExecutionFailure::ServiceOutage("Native memory".into());
+	for _ in 0..5 {
+		assert!(
+			recover(&repository, repository.token, failure(), now)
+				.await
+				.unwrap()
+		);
+	}
+	assert!(
+		!recover(&repository, repository.token, failure(), now)
+			.await
+			.unwrap()
+	);
+	let writes = repository.writes.lock().unwrap();
+	assert!(
+		writes[..5]
+			.iter()
+			.all(|write| *write == Write::Save("run.retrying".into()))
+	);
+	assert_eq!(writes[5], Write::Save("run.outage_waiting".into()));
 	let run = repository.run.lock().unwrap();
-	assert_eq!(run.as_ref().unwrap().recovery.node_retry, 0);
+	assert!(matches!(
+		&run.as_ref().unwrap().state,
+		RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { service, .. }
+			if service == "Native memory")
+	));
 }
 
 #[rstest]

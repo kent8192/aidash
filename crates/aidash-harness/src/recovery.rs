@@ -8,6 +8,11 @@ use aidash_domain::{FailureTarget, RetryState, Run, RunControl, RunPhase, RunSta
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// The service an Outage Wait names in the dashboard ("Outage Wait: <service>").
+const DECIDER: &str = "Decider";
+const SEMANTIC_CONTEXT: &str = "Semantic context";
+const PLAN_ALLOWANCE: &str = "ChatGPT plan usage limit";
+
 fn track_outage(run: &mut Run, service: &str, now: DateTime<Utc>) -> DateTime<Utc> {
 	if run
 		.recovery
@@ -96,7 +101,7 @@ pub async fn recover(
 		+ 1;
 	if let ExecutionFailure::Semantic(reason) = failure {
 		if reason == SemanticFailure::Unavailable {
-			track_outage(&mut current, "Semantic context", now);
+			track_outage(&mut current, SEMANTIC_CONTEXT, now);
 		}
 		if reason == SemanticFailure::Stale && attempts <= OUTAGE_RETRIES {
 			// The Home refused a reused retrieval whose corpus changed (ADR
@@ -145,7 +150,7 @@ pub async fn recover(
 				store,
 				&mut current,
 				token,
-				"Semantic context",
+				SEMANTIC_CONTEXT,
 				OutageCadence::Service,
 				now,
 			)
@@ -165,7 +170,7 @@ pub async fn recover(
 			store.pause_semantic(&current, token, reason).await?;
 		}
 	} else if matches!(failure, ExecutionFailure::DeciderOutage) {
-		track_outage(&mut current, "Decider", now);
+		track_outage(&mut current, DECIDER, now);
 		// Every Decider Route failed. Retry after 2, 4, 8, 16 and 32 s, each
 		// time as a new decision, then pause until a person resumes (ADR 0066).
 		let retries = current.recovery.decider_retry.saturating_add(1);
@@ -185,7 +190,7 @@ pub async fn recover(
 				store,
 				&mut current,
 				token,
-				"Decider",
+				DECIDER,
 				OutageCadence::Service,
 				now,
 			)
@@ -194,14 +199,16 @@ pub async fn recover(
 				store.pause_context(&current, token, reason).await?;
 			}
 		}
-	} else if let ExecutionFailure::NodeUnreachable { retry, ref node } = failure {
+	} else if let ExecutionFailure::NodeUnreachable { ref node, .. } = failure {
 		let service = format!("Node {node}");
 		track_outage(&mut current, &service, now);
 		// Another Node did not answer. As with a Decider outage, retry after 2,
-		// 4, 8, 16 and 32 s while nothing took effect, then pause until a person
-		// resumes, which checks again (#751). A Run never goes on unconfirmed.
-		let retries = current.recovery.node_retry + 1;
-		if retry && retries <= OUTAGE_RETRIES {
+		// 4, 8, 16 and 32 s, then wait out the outage (ADR 0129). A Run never
+		// goes on unconfirmed (#751). After a tool's effect (`retry` false) the
+		// step is not run again: its invocation stays STARTED, and taking the
+		// step up again reconciles it, exactly as a manual resume used to.
+		let retries = current.recovery.node_retry.saturating_add(1);
+		if retries <= OUTAGE_RETRIES {
 			current.recovery.node_retry = retries;
 			current.recovery.retry = Some(RetryState {
 				count: retries,
@@ -209,18 +216,17 @@ pub async fn recover(
 			});
 			current.error = Some(failure.message());
 			store.save(&current, token, "run.node_retrying").await?;
-		} else if !retry
-			&& wait_outage(
-				store,
-				&mut current,
-				token,
-				&service,
-				OutageCadence::Service,
-				now,
-			)
-			.await?
+		} else if wait_outage(
+			store,
+			&mut current,
+			token,
+			&service,
+			OutageCadence::Service,
+			now,
+		)
+		.await?
 		{
-			// A post-effect check must be retried without repeating the effect.
+			// Waiting; the Run goes on by itself once the Node answers.
 		} else {
 			store
 				.pause(
@@ -251,6 +257,63 @@ pub async fn recover(
 				authority.refusal(),
 			)
 			.await?;
+	} else if let ExecutionFailure::ServiceOutage(ref service) = failure {
+		// A service that will come back by itself: retry after 2, 4, 8, 16
+		// and 32 s, then wait it out (ADR 0129).
+		track_outage(&mut current, service, now);
+		current.error = Some(failure.message());
+		if attempts <= OUTAGE_RETRIES {
+			current.recovery.retry = Some(RetryState {
+				count: attempts,
+				at: now + chrono::Duration::seconds(2_i64.pow(attempts)),
+			});
+			store.save(&current, token, "run.retrying").await?;
+			return Ok(true);
+		}
+		if !wait_outage(
+			store,
+			&mut current,
+			token,
+			service,
+			OutageCadence::Service,
+			now,
+		)
+		.await?
+		{
+			store
+				.pause(
+					&current,
+					token,
+					&failure.message(),
+					"run.service_unavailable",
+					None,
+				)
+				.await?;
+		}
+	} else if let ExecutionFailure::PlanAllowance(ref message) = failure {
+		// The plan's usage limit lifts by itself at a time OpenAI does not give,
+		// so the Run waits and tries again every hour (ADR 0129).
+		current.error = Some(message.clone());
+		if !wait_outage(
+			store,
+			&mut current,
+			token,
+			PLAN_ALLOWANCE,
+			OutageCadence::PlanAllowance,
+			now,
+		)
+		.await?
+		{
+			store
+				.pause(
+					&current,
+					token,
+					message,
+					"run.plan_allowance_exhausted",
+					None,
+				)
+				.await?;
+		}
 	} else if let ExecutionFailure::MediaRoute(ref message) = failure {
 		store
 			.pause(&current, token, message, "run.media_route_blocked", None)
