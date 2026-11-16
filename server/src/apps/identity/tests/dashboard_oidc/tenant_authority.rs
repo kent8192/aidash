@@ -725,6 +725,60 @@ async fn tenant_credential_maximum_shortens_existing_credentials(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_tenant_maximum_shortens_credentials_issued_under_a_higher_deployment_maximum(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, body) = t
+		.replace(|bundle| {
+			bundle["subjects"]["ci"] =
+				json!({"kind":"service", "node": t.node,"groups":["members"]});
+		})
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, issued) = t
+		.alice("POST", "/credentials", json!({"subject":"ci"}))
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let id = Uuid::parse_str(issued["credential"]["id"].as_str().unwrap()).unwrap();
+	// Issued while the Deployment allowed 200 days; the Deployment's 90 days is
+	// already below it, so the Tenant's 90 days is no lower than what it reads.
+	sqlx::query(
+		"UPDATE authorization_credentials SET expires_at = created_at + interval '200 days' WHERE id = $1",
+	)
+	.bind(id)
+	.execute(t.d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let (status, body) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&format!("/api/tenants/{}/credential-maximum", t.tenant),
+			Some(&t.alice_context),
+			json!({"seconds": 90 * 86400}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, listed) = t.alice("GET", "/credentials", Value::Null).await;
+	assert_eq!(status, 200, "{listed}");
+	let row = listed
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|row| row["id"] == issued["credential"]["id"])
+		.unwrap();
+	assert_eq!(row["end_reason"], "lowered_maximum");
+	let created =
+		chrono::DateTime::parse_from_rfc3339(row["created_at"].as_str().unwrap()).unwrap();
+	let expires =
+		chrono::DateTime::parse_from_rfc3339(row["expires_at"].as_str().unwrap()).unwrap();
+	assert_eq!((expires - created).num_seconds(), 90 * 86400);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn an_administrator_issues_credentials_only_for_subjects_no_person_was_mapped_to(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {

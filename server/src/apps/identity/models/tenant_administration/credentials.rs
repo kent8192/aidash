@@ -63,8 +63,8 @@ impl TenantAdministrator {
 			};
 			self.require(tx, &snapshot, action, self.tenant(), json!({}))
 				.await?;
-			let old = super::super::Tenant::credential_maximum(tx, self.tenant(), deployment, true)
-				.await?;
+			// Locks the Tenant row against issuance under the maximum being replaced.
+			super::super::Tenant::credential_maximum(tx, self.tenant(), deployment, true).await?;
 			let assignments: Vec<FieldAssignment> = vec![
 				(
 					super::super::Tenant::field_credential_max_seconds(),
@@ -76,7 +76,10 @@ impl TenantAdministrator {
 				.filter(super::super::Tenant::field_name().eq(self.tenant().to_owned()))
 				.update_fields_with_conn(tx, assignments)
 				.await?;
-			if seconds < old {
+			// Compare each credential, not the old maximum: that reads already clamped
+			// to the Deployment's, which may have been lowered since a credential was
+			// issued under it (#876 decision 7).
+			{
 				let now = super::super::dashboard_administration::database_time(tx).await?;
 				super::super::authority::authority_control(tx).await?;
 				let rows = AuthorizationCredential::objects()
