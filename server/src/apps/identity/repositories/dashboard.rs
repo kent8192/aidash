@@ -292,6 +292,12 @@ impl StatusRecovery for Recovery {
 					.await?;
 				return access.finish(Ok(false)).await.map_err(Into::into);
 			}
+			// The Account was suspended after this Run paused for another reason.
+			// Lifting the suspension leaves such work untouched (ADR 0132), and the
+			// identity's other Runs still get their pass.
+			Err(crate::Error::AccountSuspended { .. }) => {
+				return access.finish(Ok(false)).await.map_err(Into::into);
+			}
 			Err(error) => return Err(error.into()),
 		}
 		let scope = TenancyScope::tenant(&subject.tenant)?;
