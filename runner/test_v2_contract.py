@@ -590,3 +590,19 @@ def test_command_submit_http_keeps_proxy_credential_out_of_journal(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_stopping_one_command_leaves_the_runs_other_commands(tmp_path):
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    records = {'a': {'operation_id': 'a', 'scratch_space_id': 's', 'run_id': 'r', 'status': 'running'},
+               'b': {'operation_id': 'b', 'scratch_space_id': 's', 'run_id': 'r', 'status': 'running'},
+               'bg': {'operation_id': 'bg', 'scratch_space_id': 's', 'run_id': 'r', 'status': 'running',
+                      'background': True}}
+    controller._read_command = lambda operation: records[operation]
+    controller._stop_command = Mock(return_value={'operation_id': 'a', 'status': 'stopped'})
+    assert controller.stop_command('a') == {'operation_id': 'a', 'status': 'stopped'}
+    controller._stop_command.assert_called_once_with('a')
+    with pytest.raises(ExecutionPodError):
+        controller.stop_command('bg')

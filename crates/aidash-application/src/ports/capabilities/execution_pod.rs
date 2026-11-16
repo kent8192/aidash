@@ -374,6 +374,12 @@ pub trait ExecutionPodRuntime: Send + Sync {
 		)))
 	}
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
+	/// Stop one foreground command; the Run's other commands keep running.
+	async fn stop_command(&self, _operation_id: &str) -> Result<CommandResult> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot stop one command".into(),
+		)))
+	}
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses>;
 	async fn stop_background(&self, operation_id: &str) -> Result<CommandResult>;
 	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession>;

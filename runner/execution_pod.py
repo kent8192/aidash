@@ -2129,6 +2129,14 @@ print(json.dumps(r))'''
                 raise ExecutionPodError('stop_failed', '; '.join(failures))
         return {'cancelled_waiting': True}
 
+    def stop_command(self, operation_id):
+        """Stop one foreground command; the Run's other commands keep running."""
+        record = self._read_command(operation_id)
+        if record.get('background'):
+            raise ExecutionPodError('invalid_request', 'Use the Background process stop for this operation')
+        with self._space_lock(record['scratch_space_id']):
+            return self._stop_command(operation_id)
+
     def stop_run(self, scratch_space_id, run_id):
         import json
         import time

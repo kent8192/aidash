@@ -120,6 +120,10 @@ impl ExecutionPodRuntime for RunnerHttp {
 		)
 		.await
 	}
+	async fn stop_command(&self, operation_id: &str) -> Result<CommandResult> {
+		self.pod_call("/v2/commands/stop", &json!({"operation_id":operation_id}))
+			.await
+	}
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses> {
 		self.pod_call(
 			"/v2/background/list",

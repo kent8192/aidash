@@ -107,6 +107,12 @@ impl ExecutionPodRuntime for Runtime {
 		self.call("cancel_waiting");
 		Ok(())
 	}
+	async fn stop_command(&self, operation_id: &str) -> PodResult<CommandResult> {
+		self.call("stop_command");
+		let mut stopped = reply("stopped");
+		stopped.operation_id = operation_id.into();
+		Ok(stopped)
+	}
 	async fn backgrounds(&self, _: &str) -> PodResult<BackgroundProcesses> {
 		self.call("backgrounds");
 		self.available()?;
@@ -293,6 +299,8 @@ struct Repository {
 	operation: Mutex<PodOperation>,
 	runtime: Arc<Runtime>,
 	saves: Mutex<Vec<(String, String)>>,
+	/// Fails `context` like a revoked Run or a deleted Scratch Space.
+	context_error: Mutex<Option<Error>>,
 }
 #[async_trait::async_trait]
 impl PodOperationRepository for Repository {
@@ -303,6 +311,9 @@ impl PodOperationRepository for Repository {
 		Ok(self.operation.lock().unwrap().clone())
 	}
 	async fn context(&self, _: &PodOperation) -> Result<PodContext> {
+		if let Some(error) = self.context_error.lock().unwrap().take() {
+			return Err(error);
+		}
 		Ok(context(self.runtime.clone()))
 	}
 	async fn save(&self, _: Uuid, expected: &str, state: &str, result: &Value) -> Result<bool> {
@@ -341,6 +352,7 @@ fn repository(operation: PodOperation) -> (Repository, Arc<Runtime>) {
 			operation: Mutex::new(operation),
 			runtime: runtime.clone(),
 			saves: Mutex::default(),
+			context_error: Mutex::default(),
 		},
 		runtime,
 	)
@@ -538,16 +550,39 @@ async fn a_python_cell_starts_the_session_with_the_run_credential_first() {
 }
 
 #[tokio::test]
-async fn cancelling_stops_the_runs_foreground_work_and_records_the_end() {
+async fn cancelling_stops_only_this_command_and_records_the_end() {
 	let mut cancelling = operation(SHELL, "cancelling");
 	cancelling.result = json!({"runner_acknowledged": true});
 	let (repository, runtime) = repository(cancelling);
 	runtime.reply(Ok(reply("stopped")));
 	drive(&repository, Uuid::from_u128(7)).await.unwrap();
-	assert_eq!(runtime.calls(), ["cancel_waiting", "result"]);
+	// Not the Run-wide cancel: another command of the Run keeps running.
+	assert_eq!(runtime.calls(), ["stop_command", "result"]);
 	let saved = repository.operation.lock().unwrap().clone();
 	assert_eq!(saved.state, "cancelled");
 	assert_eq!(saved.result["termination_confirmed"], true);
+}
+
+#[tokio::test]
+async fn a_cancelling_command_of_a_revoked_run_ends_uncertain_instead_of_retrying() {
+	let (repository, runtime) = repository(operation(SHELL, "cancelling"));
+	*repository.context_error.lock().unwrap() = Some(Error::Forbidden);
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert!(runtime.calls().is_empty());
+	let saved = repository.operation.lock().unwrap().clone();
+	assert_eq!(saved.state, "uncertain");
+	assert_eq!(saved.result["termination_confirmed"], false);
+	assert_eq!(saved.result["error"]["code"], "EXECUTION_UNVERIFIED");
+}
+
+#[tokio::test]
+async fn a_finished_runs_command_stops_with_the_runs_foreground_work() {
+	let mut running = operation(SHELL, "running");
+	running.run_finished = true;
+	let (repository, runtime) = repository(running);
+	runtime.reply(Ok(reply("stopped")));
+	drive(&repository, Uuid::from_u128(7)).await.unwrap();
+	assert_eq!(runtime.calls(), ["cancel_waiting", "result"]);
 }
 
 #[tokio::test]
@@ -599,7 +634,7 @@ async fn a_cancelled_command_the_runner_refused_never_ran() {
 	drive(&repository, Uuid::from_u128(7)).await.unwrap();
 	assert_eq!(
 		runtime.calls(),
-		["cancel_waiting", "result", "refuse_command"]
+		["stop_command", "result", "refuse_command"]
 	);
 	let saved = repository.operation.lock().unwrap().clone();
 	assert_eq!(saved.state, "cancelled");

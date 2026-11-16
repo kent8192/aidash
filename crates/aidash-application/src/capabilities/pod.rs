@@ -412,6 +412,25 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 				.await?;
 			return Ok(());
 		}
+		// A row the Runner may already hold can no longer be observed or stopped
+		// through this Run: its authority was revoked (the Read Recheck stops the
+		// Run's processes) or its Scratch Space is gone. Retrying would keep it
+		// active forever, so it ends with an unknown outcome.
+		Err(Error::Forbidden | Error::NotFound(_) | Error::Unauthorized) => {
+			let mut result = operation.result.clone();
+			if !result.is_object() {
+				result = json!({});
+			}
+			result["termination_confirmed"] = json!(false);
+			result["error"] = error_value(
+				"EXECUTION_UNVERIFIED",
+				"The Run's authority or its Scratch Space ended while this command was active; its effects are unknown.",
+			);
+			repository
+				.save(operation.id, &operation.state, "uncertain", &result)
+				.await?;
+			return Ok(());
+		}
 		Err(error) => return Err(error),
 	};
 	let dispatch_pending = operation.result["dispatch_pending"] == true;
@@ -457,15 +476,29 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 		}
 		"cancelling" | "submitted" | "running" => {
 			let stopping = operation.state == "cancelling" || operation.run_finished;
-			if stopping {
-				// The Runner serializes a Run's foreground commands, so stopping
-				// the Run's foreground work stops this one and leaves its
+			if stopping && operation.run_finished {
+				// The Run ended: stop all its foreground work, leaving its
 				// Background processes and previews running.
 				context
 					.runtime
 					.cancel_waiting(context.scratch_space_id(), &operation.run_id.to_string())
 					.await
 					.map_err(tool_error)?;
+			} else if stopping {
+				// An explicit cancel stops only this command: a Run may have
+				// several foreground commands running at once.
+				match context
+					.runtime
+					.stop_command(&operation.id.to_string())
+					.await
+				{
+					Ok(_)
+					| Err(ExecutionPodError::Remote {
+						code: ExecutionPodErrorCode::CommandNotFound,
+						..
+					}) => {}
+					Err(error) => return Err(tool_error(error)),
+				}
 			}
 			match context.runtime.result(&operation.id.to_string()).await {
 				Ok(reply) => {
