@@ -55,6 +55,15 @@ def open_file(fd, name, flags=os.O_RDONLY, mode=0o600):
     return result
 
 
+def split_lines(text):
+    """Split on '\n' only, keeping each line's ending: '\r\n', '\n' or '' for a last line without one."""
+    pieces = text.split('\n')
+    lines = [(piece[:-1], '\r\n') if piece.endswith('\r') else (piece, '\n') for piece in pieces[:-1]]
+    if pieces[-1]:
+        lines.append((pieces[-1], ''))
+    return lines
+
+
 def pattern_matches(path, pattern, *, is_dir=False):
     """Match git-style wildcards without allowing a single star across directories."""
     directory_only = pattern.endswith('/')
@@ -339,7 +348,11 @@ class FileService:
         text = request['patch']
         if not isinstance(text, str) or len(text.encode()) > 1048576:
             raise ValueError('invalid patch size')
-        lines = text.splitlines()
+        # Split on newlines only: splitlines() would also split on form feeds
+        # and other separators that can appear inside a line.
+        lines = [line[:-1] if line.endswith('\r') else line for line in text.split('\n')]
+        if lines and lines[-1] == '':
+            lines.pop()
         if len(lines) < 3 or lines[0] != '*** Begin Patch' or lines[-1] != '*** End Patch':
             raise ValueError('invalid patch grammar')
         edits, seen, i = [], set(), 1
@@ -423,22 +436,35 @@ class FileService:
                     if len(original) > 16 << 20:
                         raise ValueError('patch source exceeds limit')
                 if mode == 2:
-                    source = original.decode('utf-8').splitlines()
+                    # Lines keep their own endings, so a patch changes only the
+                    # lines it names (CRLF, a missing final newline, form feeds).
+                    source = split_lines(original.decode('utf-8'))
+                    default = next((ending for _, ending in source if ending), '\n')
                     cursor = 0
                     for context, old, new, eof in change:
                         if context is not None:
                             try:
-                                cursor = source.index(context, cursor) + 1
-                            except ValueError:
+                                cursor = next(pos for pos in range(cursor, len(source))
+                                              if source[pos][0] == context) + 1
+                            except StopIteration:
                                 raise ValueError('patch context not found') from None
                         found = next((pos for pos in range(cursor, len(source) + 1)
-                                      if source[pos:pos + len(old)] == old
+                                      if [line for line, _ in source[pos:pos + len(old)]] == old
                                       and (not eof or pos + len(old) == len(source))), None)
                         if found is None:
                             raise ValueError('patch hunk not found')
-                        source[found:found + len(old)] = new
+                        replaced = source[found:found + len(old)]
+                        endings = [replaced[k][1] if k < len(replaced) and replaced[k][1] else default
+                                   for k in range(len(new))]
+                        at_end = found + len(old) == len(source)
+                        if at_end and new and (replaced[-1][1] == '' if replaced
+                                               else bool(source) and source[-1][1] == ''):
+                            endings[-1] = ''
+                            if not replaced and source:
+                                source[-1] = (source[-1][0], default)
+                        source[found:found + len(old)] = list(zip(new, endings))
                         cursor = found + len(new)
-                    change = (''.join(line + '\n' for line in source)).encode()
+                    change = ''.join(line + ending for line, ending in source).encode()
                 token = '.aidash-patch-' + uuid.uuid4().hex
                 temp, backup = token + '.new', token + '.old'
                 prepared.append((parent, name, temp, backup, mode))

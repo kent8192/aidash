@@ -117,3 +117,23 @@ def test_manifest_subdirectory_honors_ancestor_ignore_file(tmp_path):
     result = service.manifest({'root': 'nested', 'ignore_files': ['.gitignore'],
                                'include': [], 'exclude': [], 'max_files': 20})
     assert [item['path'] for item in result['files']] == ['nested/shown.txt']
+
+
+def test_patch_changes_only_the_lines_it_names(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / 'crlf').write_bytes(b'one\r\ntwo\r\nthree\r\n')
+    (scratch / 'feed').write_bytes(b'a\x0cb\nold\nlast')
+    service = FileService(scratch, tmp_path / 'state')
+    patch = ('*** Begin Patch\n*** Update File: crlf\n@@\n-two\n+TWO\n+added\n'
+             '*** Update File: feed\n@@\n-old\n+new\n*** End Patch\n')
+    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['crlf', 'feed']}
+    assert (scratch / 'crlf').read_bytes() == b'one\r\nTWO\r\nadded\r\nthree\r\n'
+    assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nlast'
+    patch = '*** Begin Patch\n*** Update File: feed\n@@\n-last\n+final\n*** End of File\n*** End Patch\n'
+    service.patch({'run_id': 'r', 'patch': patch})
+    assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal'
+    patch = '*** Begin Patch\n*** Update File: feed\n@@ final\n+appended\n*** End Patch\n'
+    service.patch({'run_id': 'r', 'patch': patch})
+    assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal\nappended'
+
