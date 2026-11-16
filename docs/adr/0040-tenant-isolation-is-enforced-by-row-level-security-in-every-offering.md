@@ -88,3 +88,12 @@ injection or a compromised server, either of which can set the scope itself.
     allowed. Seeding happens in the server, inside a scope.
   - The foreign keys from each `tenant` column to the Tenant root record land
     with #265, for the tables that already had a `tenant` column too.
+- Amended 2026-11-11 (#877):
+  - A Self-hosted Deployment that points the server at a PostgreSQL superuser
+    still refuses to start; relaxing the check by Offering is the two-path
+    option rejected above.
+  - The host-side `setup-roles` command takes a superuser URL once, creates the
+    owner and server roles, and prints the connection URLs to use. Every
+    refusal of the server's login names the command, so a default local
+    PostgreSQL needs one extra command rather than reading the role
+    requirements.

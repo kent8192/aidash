@@ -34,7 +34,7 @@ pub struct DashboardAdministrationHistory {
 	#[field(field_type = "text", null = true)]
 	pub node: Option<String>,
 	/// `deployment_administrator`, `tenant_administrator`, `identity` or
-	/// `demo_data`.
+	/// `demo_data` or `host_access`.
 	#[field(field_type = "text")]
 	pub actor_kind: String,
 	/// The acting External Identity; absent for the Deployment Administrator bearer token.

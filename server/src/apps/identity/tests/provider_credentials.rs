@@ -210,6 +210,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: ids.len(),
+		supplied_keys: false,
 	});
 	// Seed metadata in chronological order: the first 200 records are denied.
 	let mut scope = service.repository.begin("alpha").await.unwrap();
@@ -226,6 +227,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 				fingerprint: "0123456789abcdef".into(),
 				last4: "test".into(),
 				key_digest: None,
+				key_origin: Default::default(),
 				state: State::Active,
 				created_at: created_at + chrono::Duration::milliseconds(index as i64),
 				rotated_at: None,
@@ -301,6 +303,161 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 	}
 }
 
+/// A Self-hosted Deployment accepts a pasted key under the same live
+/// `provider_credential.create` decision as Provider Authorization, binds it
+/// like a connection and records how it arrived (#892).
+#[rstest]
+#[tokio::test]
+async fn pasted_keys_follow_live_policy_and_record_their_origin(
+	#[future] endpoint: EndpointFixture,
+) {
+	let mut f = endpoint.await;
+	for (tenant, actions) in [
+		(
+			"alpha",
+			json!([
+				"provider_credential.create",
+				"provider_credential.read",
+				"provider_credential.rotate",
+				"provider_credential_binding.read",
+				"provider_credential_binding.update"
+			]),
+		),
+		("beta", json!(["provider_credential.read"])),
+	] {
+		let bundle = json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":actions,"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
+		endpoint_fixtures::tenant_root(&f.runtime, tenant).await;
+		assert_json(
+			f.deployment_administrator
+				.post(
+					&format!("/api/authorization/{tenant}"),
+					&json!({"expected_revision":0,"bundle":bundle}),
+					"json",
+				)
+				.await
+				.unwrap(),
+			200,
+		);
+	}
+	let service = Arc::new(Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.runtime.store.control_pool.clone(),
+			node: f.runtime.store.deployment.to_string(),
+		}),
+		store: Arc::new(FakeStore::default()),
+		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
+		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
+		max_per_tenant: 2,
+		supplied_keys: true,
+	});
+	f.runtime.store.provider_credentials = Some(service.clone());
+	f.context.set_singleton(f.runtime.clone());
+	let canary = "canary-pasted-provider-key-b2c4";
+	let client = |tenant: &'static str| {
+		let runtime = f.runtime.clone();
+		let url = f.server.url.clone();
+		async move {
+			let token = endpoint_fixtures::issued_credential(&runtime.store, tenant, "alice").await;
+			let client = reinhardt::test::fixtures::api_client_from_url(&url);
+			client
+				.set_header(
+					"Authorization",
+					&format!("Bearer {}", token["token"].as_str().unwrap()),
+				)
+				.await
+				.unwrap();
+			client
+		}
+	};
+	let alpha = client("alpha").await;
+	let created = assert_json(
+		alpha
+			.post(
+				"/api/tenants/alpha/provider-credentials",
+				&json!({"provider":"openrouter","key":canary}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert!(!created.to_string().contains(canary));
+	assert_eq!(created["provider_credential"]["key_origin"], "pasted");
+	assert_eq!(created["provider_credential"]["last4"], "b2c4");
+	assert!(created["provider_credential"]["key_settings_url"].is_null());
+	assert_eq!(created["bound"], true);
+	let id = created["provider_credential"]["id"].as_str().unwrap();
+	let revision = created["provider_credential"]["revision"].as_i64().unwrap();
+	// Half a replacement target is refused before anything is written.
+	assert_eq!(
+		alpha
+			.post(
+				"/api/tenants/alpha/provider-credentials",
+				&json!({"provider":"openrouter","key":canary,"provider_credential_id":id}),
+				"json",
+			)
+			.await
+			.unwrap()
+			.status_code(),
+		400
+	);
+	let replaced = assert_json(
+		alpha
+			.post(
+				"/api/tenants/alpha/provider-credentials",
+				&json!({"provider":"openrouter","key":"replacement-pasted-key-9e1f","provider_credential_id":id,"expected_revision":revision}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(replaced["provider_credential"]["id"], id);
+	assert_eq!(replaced["provider_credential"]["last4"], "9e1f");
+	assert_eq!(replaced["bound"], true);
+	// A Plan Connection entry holds no Provider Credential.
+	assert_eq!(
+		alpha
+			.post(
+				"/api/tenants/alpha/provider-credentials",
+				&json!({"provider":"chatgpt","key":canary}),
+				"json",
+			)
+			.await
+			.unwrap()
+			.status_code(),
+		400
+	);
+	// Without `provider_credential.create` the paste is refused and stores nothing.
+	let beta = client("beta").await;
+	let refused = beta
+		.post(
+			"/api/tenants/beta/provider-credentials",
+			&json!({"provider":"openrouter","key":canary}),
+			"json",
+		)
+		.await
+		.unwrap();
+	assert_eq!(refused.status_code(), 403, "{}", refused.text());
+	let mut empty = service.repository.begin("beta").await.unwrap();
+	assert_eq!(empty.count().await.unwrap(), 0);
+	empty.commit().await.unwrap();
+	// Neither may a Deployment Administrator paste into a Tenant (ADR 0102).
+	assert_eq!(
+		f.deployment_administrator
+			.post(
+				"/api/tenants/alpha/provider-credentials",
+				&json!({"provider":"openrouter","key":canary}),
+				"json",
+			)
+			.await
+			.unwrap()
+			.status_code(),
+		403
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key_material(
@@ -354,6 +511,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 2,
+		supplied_keys: false,
 	});
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
@@ -427,25 +585,34 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		)
 		.await
 		.unwrap();
-	// Public Key Material ingestion is intentionally absent, even with a Store.
-	for path in [
-		"/api/tenants/alpha/provider-credentials".to_owned(),
-		format!(
-			"/api/tenants/alpha/provider-credentials/{}/rotate",
-			Uuid::now_v7()
-		),
-	] {
-		let response = alpha_subject
-			.post(
-				&path,
-				&json!({"provider":"openrouter", "key_material":canary, "expected_revision":0}),
-				"json",
-			)
-			.await
-			.unwrap();
-		assert!(matches!(response.status_code(), 404 | 405));
-		assert!(!response.text().contains(canary));
-	}
+	// Pasted Key Material is accepted only where the Deployment allows it
+	// (#892); this service, like Cloud's, does not. No rotate route exists.
+	let rotate = alpha_subject
+		.post(
+			&format!(
+				"/api/tenants/alpha/provider-credentials/{}/rotate",
+				Uuid::now_v7()
+			),
+			&json!({"provider":"openrouter", "key":canary, "expected_revision":0}),
+			"json",
+		)
+		.await
+		.unwrap();
+	assert!(matches!(rotate.status_code(), 404 | 405));
+	assert!(!rotate.text().contains(canary));
+	let pasted = alpha_subject
+		.post(
+			"/api/tenants/alpha/provider-credentials",
+			&json!({"provider":"openrouter", "key":canary}),
+			"json",
+		)
+		.await
+		.unwrap();
+	assert_eq!(pasted.status_code(), 409, "{}", pasted.text());
+	assert!(!pasted.text().contains(canary));
+	let mut unchanged = service.repository.begin("alpha").await.unwrap();
+	assert_eq!(unchanged.count().await.unwrap(), 1);
+	unchanged.commit().await.unwrap();
 	let disclosed = assert_json(
 		alpha_subject
 			.get(&format!("/api/tenants/alpha/provider-credentials/{id}"))
@@ -776,6 +943,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 20,
+		supplied_keys: false,
 	});
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
@@ -980,6 +1148,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 20,
+		supplied_keys: false,
 	});
 	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-model","version":"1.0.0","kind":"model","name":{"en":"Tenant model"},"description":{"en":"Tenant model"},"config":{"provider":"openrouter","model_id":"test/model","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	assert!(
@@ -1613,6 +1782,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "fingerprint-test-key-at-least-32-bytes".into(),
 		max_per_tenant: 20,
+		supplied_keys: false,
 	};
 	let canary = "canary-self-hosted-provider-key-never-persist-157!";
 	let row = service
@@ -2408,6 +2578,7 @@ fn real_service(
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "fingerprint-root-at-least-32-bytes-157".into(),
 		max_per_tenant: 20,
+		supplied_keys: false,
 	}
 }
 
@@ -2938,6 +3109,7 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 					fingerprint: "0123456789abcdef".into(),
 					last4: "test".into(),
 					key_digest: None,
+					key_origin: Default::default(),
 					state,
 					created_at: chrono::Utc::now(),
 					rotated_at: None,
@@ -3028,6 +3200,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 2,
+		supplied_keys: false,
 	});
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.context.set_singleton(f.runtime.clone());
@@ -3253,6 +3426,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 			exchange: Arc::new(CodeIsKey),
 			fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 			max_per_tenant: 20,
+			supplied_keys: false,
 		});
 		let mut runtime = f.runtime.clone();
 		runtime.store.provider_credentials = Some(service.clone());
