@@ -48,8 +48,9 @@ fn authority_router(#[from(authority_state)] state: Arc<ModelState>) -> Arc<Rout
 }
 
 #[rstest]
-#[case::empty_dependency(false)]
-#[case::lost_run_authority(true)]
+#[case::fresh_workspace(None)]
+#[case::empty_dependency(Some(false))]
+#[case::lost_run_authority(Some(true))]
 #[tokio::test]
 async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	#[future] database: DatabaseFixture,
@@ -63,7 +64,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	#[with(_router.clone())]
 	provider: reinhardt::test::fixtures::server::TestServerGuard,
 	runtime_controls: RuntimeControls,
-	#[case] revoke_run: bool,
+	#[case] revoke_run: Option<bool>,
 ) {
 	let database = database.await;
 	let endpoint = format!("{}/v1", provider.url);
@@ -251,9 +252,8 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		.await
 		.unwrap();
 	state.stage.store(2, Ordering::SeqCst);
-	// Let inference record the coordinator event under the original authority.
-	// Then revoke access to the coordinator's private memory before the two
-	// tool calls; it has never read a memory Unit.
+	// Let inference record the coordinator event before the two tool calls.
+	// The authority cases then change policy; the fresh-workspace case does not.
 	tokio::time::timeout(std::time::Duration::from_secs(90), async {
 		loop {
 			worker.worker_once().await.unwrap();
@@ -272,24 +272,27 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	})
 	.await
 	.expect("member reaches its first tool calls");
-	let denial = if revoke_run {
-		json!({"id":"revoke-run","effect":"deny","subjects":{"ids":[member_subject]},"actions":["run.read"],"resources":{"kinds":["run"],"ids":[member.id.to_string()]}})
-	} else {
-		json!({"id":"private-coordinator","effect":"deny","subjects":{"ids":[member_subject]},"actions":["memory.read"],"resources":{"kinds":["memory"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":coordinator_subject}}})
-	};
-	policy["policies"].as_array_mut().unwrap().push(denial);
-	tokio::time::timeout(
-		std::time::Duration::from_secs(60),
-		authorization.replace(
-			"acme",
-			2,
-			serde_json::from_value(policy).unwrap(),
-			"deployment_administrator",
-		),
-	)
-	.await
-	.expect("policy update must pass the suspended authority boundary")
-	.unwrap();
+	if let Some(revoke_run) = revoke_run {
+		let denial = if revoke_run {
+			json!({"id":"revoke-run","effect":"deny","subjects":{"ids":[member_subject]},"actions":["run.read"],"resources":{"kinds":["run"],"ids":[member.id.to_string()]}})
+		} else {
+			json!({"id":"private-coordinator","effect":"deny","subjects":{"ids":[member_subject]},"actions":["memory.read"],"resources":{"kinds":["memory"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":coordinator_subject}}})
+		};
+		policy["policies"].as_array_mut().unwrap().push(denial);
+		tokio::time::timeout(
+			std::time::Duration::from_secs(60),
+			authorization.replace(
+				"acme",
+				2,
+				serde_json::from_value(policy).unwrap(),
+				"deployment_administrator",
+			),
+		)
+		.await
+		.expect("policy update must pass the suspended authority boundary")
+		.unwrap();
+	}
+
 	let settled = tokio::time::timeout(std::time::Duration::from_secs(90), async {
 		loop {
 			worker.worker_once().await.unwrap();
@@ -331,7 +334,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		coordinator_reads, 1,
 		"the coordinator must be an actual dependency"
 	);
-	if revoke_run {
+	if revoke_run == Some(true) {
 		assert_eq!(settled.control, aidash_domain::RunControl::Paused);
 		assert_eq!(
 			settled.error.as_deref(),
