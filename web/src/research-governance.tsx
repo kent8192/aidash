@@ -73,15 +73,10 @@ function useHistory<T>(key: unknown[], path: string, enabled: boolean) {
  * A Run's Evidence Revocation as its reader may see it (ADR 0046): that and
  * when it was revoked, who revoked it and why for the records' audience, and
  * the revoke action for those permitted it, offered only once the Run has
- * done research.
+ * done research. Only a Tenant subject revokes (#484); a Deployment
+ * Administrator is never offered the action or shown the record.
  */
-export function RunResearchEvidence({
-  run,
-  deploymentAdministrator,
-}: {
-  run: string;
-  deploymentAdministrator: boolean;
-}) {
+export function RunResearchEvidence({ run }: { run: string }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const [revoking, setRevoking] = useState(false);
@@ -133,12 +128,7 @@ export function RunResearchEvidence({
           </Button>
         </div>
       )}
-      {readable && record.data && (
-        <RevocationFacts
-          record={record.data}
-          deploymentAdministrator={deploymentAdministrator}
-        />
-      )}
+      {readable && record.data && <RevocationFacts record={record.data} />}
       {readable && record.isError && <Alert>{message(record.error)}</Alert>}
       {revoking && <RevokeDialog run={run} close={() => setRevoking(false)} />}
     </section>
@@ -147,11 +137,9 @@ export function RunResearchEvidence({
 
 function RevocationFacts({
   record,
-  deploymentAdministrator,
   withRun = false,
 }: {
   record: RevocationRecord;
-  deploymentAdministrator: boolean;
   withRun?: boolean;
 }) {
   const { locale } = useI18n();
@@ -163,7 +151,7 @@ function RevocationFacts({
         ...(withRun ? [["Run", record.run_id, true] as const] : ([] as const)),
         [
           ja ? "取り消した人" : "Revoked by",
-          recordedActor(record.revoked_by, deploymentAdministrator, ja),
+          recordedActor(record.revoked_by, ja),
         ],
         [ja ? "日時" : "Revoked at", when(record.revoked_at, ja)],
         [ja ? "理由" : "Reason", record.reason],
@@ -189,18 +177,10 @@ function RevocationFacts({
 
 /**
  * Revoke all of one Run's research evidence. Irreversible, so it states what
- * happens and requires a reason that is kept as audit history. `tenant`
- * guards a Run ID entered by hand: a Run of another Tenant is not revoked.
+ * is removed and what stays (ADR 0046, ADR 0083) and requires a reason that
+ * is kept as audit history.
  */
-function RevokeDialog({
-  run,
-  tenant,
-  close,
-}: {
-  run: string;
-  tenant?: string;
-  close: () => void;
-}) {
+function RevokeDialog({ run, close }: { run: string; close: () => void }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const client = useQueryClient();
@@ -229,10 +209,7 @@ function RevokeDialog({
             {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                reason,
-                ...(tenant ? { tenant } : {}),
-              }),
+              body: JSON.stringify({ reason }),
             },
           )
             .then(async (record) => {
@@ -249,14 +226,6 @@ function RevokeDialog({
             .finally(() => setBusy(false));
         }}
       >
-        {tenant && (
-          <Facts
-            items={[
-              [ja ? "Tenant" : "Tenant", tenant, true],
-              ["Run", run, true],
-            ]}
-          />
-        )}
         <Notice tone="warning">
           <p>
             {ja
@@ -278,6 +247,11 @@ function RevokeDialog({
               {ja
                 ? "公開済みの回答はそのまま残り、その引用は利用不可と表示されます。"
                 : "Published answers stay, and their citations show as unavailable."}
+            </li>
+            <li>
+              {ja
+                ? "モデル自身が書いた文章は消えないため、取り消したページの内容を引用したまま残る場合があります。"
+                : "What the model wrote itself is not removed and may still quote the revoked pages."}
             </li>
           </ul>
         </Notice>
@@ -313,73 +287,32 @@ function RevokeDialog({
 }
 
 /**
- * A Tenant's Retention Rules and Evidence Revocation records. Deployment
- * Administrators choose the Tenant; a subject sees its own.
+ * A subject's own Tenant's Retention Rules and Evidence Revocation records.
+ * A Deployment Administrator never sees them (ADR 0102).
  */
 export function ResearchEvidenceGovernance({
   tenant,
-  deploymentAdministrator,
 }: {
   tenant: string | null;
-  deploymentAdministrator: boolean;
 }) {
-  const { locale, t } = useI18n();
+  const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const [chosen, setChosen] = useState("");
-  const current = deploymentAdministrator ? chosen : tenant;
   return (
     <div className="grid min-w-0 gap-4">
-      {deploymentAdministrator && (
-        <form
-          className="flex flex-wrap items-end gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setChosen(
-              String(new FormData(event.currentTarget).get("tenant")).trim(),
-            );
-          }}
-        >
-          <div className="w-full min-w-0 sm:w-72">
-            <Field label={t("tenant")}>
-              <Input
-                name="tenant"
-                required
-                maxLength={256}
-                autoComplete="off"
-                spellCheck={false}
-                className="font-mono"
-              />
-            </Field>
-          </div>
-          <Button variant="outline">{t("open")}</Button>
-        </form>
-      )}
-      {current ? (
-        <TenantResearchEvidence
-          key={current}
-          tenant={current}
-          deploymentAdministrator={deploymentAdministrator}
-        />
+      {tenant ? (
+        <TenantResearchEvidence key={tenant} tenant={tenant} />
       ) : (
-        !deploymentAdministrator && (
-          <Hint role="status">
-            {ja
-              ? "Tenant の主体として接続すると表示されます。"
-              : "Shown when you act as a subject of a Tenant."}
-          </Hint>
-        )
+        <Hint role="status">
+          {ja
+            ? "Tenant の主体として接続すると表示されます。"
+            : "Shown when you act as a subject of a Tenant."}
+        </Hint>
       )}
     </div>
   );
 }
 
-function TenantResearchEvidence({
-  tenant,
-  deploymentAdministrator,
-}: {
-  tenant: string;
-  deploymentAdministrator: boolean;
-}) {
+function TenantResearchEvidence({ tenant }: { tenant: string }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const path = `/api/tenants/${encodeURIComponent(tenant)}`;
@@ -442,18 +375,8 @@ function TenantResearchEvidence({
           />
         )}
       </section>
-      {view.can_read_history && (
-        <RetentionHistory
-          tenant={tenant}
-          deploymentAdministrator={deploymentAdministrator}
-        />
-      )}
-      {view.can_read_revocations && (
-        <RevocationRecords
-          tenant={tenant}
-          deploymentAdministrator={deploymentAdministrator}
-        />
-      )}
+      {view.can_read_history && <RetentionHistory tenant={tenant} />}
+      {view.can_read_revocations && <RevocationRecords tenant={tenant} />}
     </div>
   );
 }
@@ -707,13 +630,7 @@ function LoadMore({
   );
 }
 
-function RetentionHistory({
-  tenant,
-  deploymentAdministrator,
-}: {
-  tenant: string;
-  deploymentAdministrator: boolean;
-}) {
+function RetentionHistory({ tenant }: { tenant: string }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const history = useHistory<RetentionChange>(
@@ -743,14 +660,14 @@ function RetentionHistory({
                 : ja
                   ? "Deployment の期間に戻した"
                   : "Cleared to the Deployment's periods") +
-              ` · ${recordedActor(change.changed_by, deploymentAdministrator, ja)}`
+              ` · ${recordedActor(change.changed_by, ja)}`
             }
           >
             <Facts
               items={[
                 [
                   ja ? "変更した人" : "Changed by",
-                  recordedActor(change.changed_by, deploymentAdministrator, ja),
+                  recordedActor(change.changed_by, ja),
                 ],
                 ...(change.rules
                   ? (Object.keys(PERIODS) as Period[]).map(
@@ -774,16 +691,9 @@ function RetentionHistory({
   );
 }
 
-function RevocationRecords({
-  tenant,
-  deploymentAdministrator,
-}: {
-  tenant: string;
-  deploymentAdministrator: boolean;
-}) {
+function RevocationRecords({ tenant }: { tenant: string }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const [run, setRun] = useState("");
   const records = useHistory<RevocationRecord>(
     ["research-revocations", tenant],
     `/api/tenants/${encodeURIComponent(tenant)}/research-revocations`,
@@ -796,36 +706,6 @@ function RevocationRecords({
   return (
     <section aria-label={title} className="grid min-w-0 gap-2">
       <h3 className="text-[13px] font-semibold">{title}</h3>
-      {deploymentAdministrator && (
-        <form
-          className="flex flex-wrap items-end gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setRun(String(new FormData(event.currentTarget).get("run")).trim());
-          }}
-        >
-          <div className="w-full min-w-0 sm:w-96">
-            <Field
-              label={ja ? "Run ID を指定して取り消す" : "Revoke by Run ID"}
-            >
-              <Input
-                name="run"
-                required
-                pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-                autoComplete="off"
-                spellCheck={false}
-                className="font-mono"
-              />
-            </Field>
-          </div>
-          <Button variant="outline">
-            {ja ? "取り消しを確認" : "Review revocation"}
-          </Button>
-        </form>
-      )}
-      {run && (
-        <RevokeDialog run={run} tenant={tenant} close={() => setRun("")} />
-      )}
       {records.isError && <Alert>{message(records.error)}</Alert>}
       {records.isSuccess && list.length === 0 && (
         <Hint>{ja ? "取り消しはまだありません。" : "No revocations yet."}</Hint>
@@ -835,13 +715,9 @@ function RevocationRecords({
           <HistoryRow
             key={record.run_id}
             time={when(record.revoked_at, ja)}
-            summary={`Run ${record.run_id.slice(0, 8)} · ${recordedActor(record.revoked_by, deploymentAdministrator, ja)}`}
+            summary={`Run ${record.run_id.slice(0, 8)} · ${recordedActor(record.revoked_by, ja)}`}
           >
-            <RevocationFacts
-              record={record}
-              deploymentAdministrator={deploymentAdministrator}
-              withRun
-            />
+            <RevocationFacts record={record} withRun />
           </HistoryRow>
         ))}
       </div>

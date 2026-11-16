@@ -138,8 +138,9 @@ pub struct RevocationRecord {
 	pub run_id: Uuid,
 	/// The Run's Tenant, when it has one.
 	pub tenant: Option<String>,
-	/// `subject:<tenant>/<subject>`, `deployment-administrator:<identity>` or
-	/// `deployment-administrator` for the deployment's API token.
+	/// `subject:<tenant>/<subject>`. A record written before #484 may instead
+	/// hold `deployment-administrator:<identity>` or `deployment-administrator`
+	/// for the deployment's API token; no Deployment Administrator revokes now.
 	pub revoked_by: String,
 	pub reason: String,
 	pub revoked_at: DateTime<Utc>,

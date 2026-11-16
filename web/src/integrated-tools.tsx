@@ -182,10 +182,7 @@ export function TrustTools({
           <AdministratorTenantNotice className="" />
         ) : (
           <Suspense fallback={loading}>
-            <ResearchEvidenceGovernance
-              tenant={tenant}
-              deploymentAdministrator={false}
-            />
+            <ResearchEvidenceGovernance tenant={tenant} />
           </Suspense>
         )}
       </ToolSection>
