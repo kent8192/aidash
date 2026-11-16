@@ -34,9 +34,13 @@ impl SemanticEntries {
 		let f = self.runtime.clone();
 		service::put(&f.store, &actor, workspace, input).await
 	}
-	pub async fn entries(&self, actor: Actor, workspace: Uuid) -> Result<Vec<Entry>> {
+	pub async fn entries(
+		&self,
+		actor: Actor,
+		workspace: Uuid,
+	) -> Result<crate::apps::knowledge::serializers::contracts::EntryList> {
 		let f = self.runtime.clone();
-		service::entries(&f.store, &actor, workspace).await
+		service::entries_counted(&f.store, &actor, workspace).await
 	}
 	pub async fn delete(
 		&self,

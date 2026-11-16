@@ -72,6 +72,11 @@ impl Lease {
 		&mut self.0
 	}
 
+	/// The Node the check in progress gave up on, if any (#770).
+	pub fn row_silence(&self) -> Option<String> {
+		self.0.row_silence()
+	}
+
 	pub fn sender(&self) -> String {
 		self.0.identity.subject.clone()
 	}
@@ -114,9 +119,26 @@ impl Lease {
 			.fetch_optional(&mut **self.tx())
 			.await?
 		};
-		match message {
-			Some(message) if self.visible(&message).await? => Ok(message),
-			_ => Err(Error::NotFound("message unavailable".into())),
+		let Some(message) = message else {
+			return Err(Error::NotFound("message unavailable".into()));
+		};
+		self.0.begin_row();
+		// A message asked for by id is a read of one thing, even inside a list:
+		// it always asks the Node (#770).
+		let lists = std::mem::replace(&mut self.0.lists, false);
+		let visible = self.visible(&message).await;
+		self.0.lists = lists;
+		if visible? {
+			return Ok(message);
+		}
+		// A message that cannot be confirmed is not one that is not there: a
+		// person who asks for this one is told which Node to wait for (#770).
+		match self.0.take_row_silence() {
+			Some(node) => Err(Error::NodeUnreachable {
+				node,
+				after_effect: false,
+			}),
+			None => Err(Error::NotFound("message unavailable".into())),
 		}
 	}
 

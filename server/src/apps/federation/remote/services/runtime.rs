@@ -629,6 +629,7 @@ impl Home {
 				artifacts: self.snapshot_collection("artifacts").await?,
 				events: self.snapshot_collection("events").await?,
 				messages: self.snapshot_collection("messages").await?,
+				unconfirmed: vec![],
 			};
 			snapshot
 				.tasks

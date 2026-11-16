@@ -433,6 +433,20 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
+		let mut access = self.access.write().await;
+		// A search leaves a Node that did not answer alone for a while, like the
+		// lists a person reads; the Run's other reads still ask it (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = Self::workspace_search_in(&mut access, store, run, input).await;
+		access.lists = lists;
+		result
+	}
+	async fn workspace_search_in(
+		access: &mut Access,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
 		// An image query names a File version in the Run's own Working Area, or
 		// a Thread Attachment by the selection `workspace_read` returned (#622).
 		let (image, attachment) = if input.get("image").is_some_and(|value| !value.is_null()) {
@@ -463,8 +477,7 @@ impl WorkerAuthority {
 		} else {
 			(None, None)
 		};
-		let mut access = self.access.write().await;
-		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
+		let mut lease = crate::semantic::service::Lease::Inherited(access);
 		lease.durable();
 		lease.workspace(run.workspace_id, "semantic.search").await?;
 		let reference = run
@@ -615,6 +628,7 @@ impl WorkerAuthority {
 				max_tokens,
 			)?;
 		}
+		aidash_domain::unconfirmed::for_tool(&mut result);
 		Ok(result)
 	}
 	pub(crate) async fn workspace_image(
@@ -1553,7 +1567,10 @@ impl WorkerAuthority {
 		key: &str,
 		query: aidash_domain::memory::RecallQuery,
 		reflect: bool,
-	) -> Result<crate::semantic::native_memory::Outcome> {
+	) -> Result<(
+		crate::semantic::native_memory::Outcome,
+		Vec<aidash_domain::unconfirmed::Unconfirmed>,
+	)> {
 		let mut outer = self.access.write().await;
 		if outer.tx.is_active() {
 			outer.suspend().await?;
@@ -1564,11 +1581,16 @@ impl WorkerAuthority {
 				.ok_or(Error::Forbidden)?;
 			memory_run_check(&mut access, &run.metadata()).await?;
 			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			lease.lists();
 			let result = crate::semantic::native_memory::run_recall(
 				store, &mut lease, run, key, query, reflect,
 			)
 			.await;
-			lease.finish(result).await
+			let left_out = lease.take_unconfirmed().into_entries();
+			lease
+				.finish(result)
+				.await
+				.map(|outcome| (outcome, left_out))
 		}
 		.await;
 		restore_outer(&mut outer, store, run, result).await
@@ -2021,11 +2043,15 @@ impl WorkerAuthority {
 		limit: usize,
 		exclude_run: Option<Uuid>,
 	) -> Result<Value> {
-		self.access
-			.write()
-			.await
+		let mut access = self.access.write().await;
+		// An observation lists the Workspace, so it leaves a Node that did not
+		// answer alone for a while (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = access
 			.workspace_observation(workspace, offset, limit, exclude_run)
-			.await
+			.await;
+		access.lists = lists;
+		result
 	}
 
 	pub async fn workspace_observation_fitted<F>(
@@ -2038,11 +2064,14 @@ impl WorkerAuthority {
 	where
 		F: FnMut(usize, &Value) -> Result<bool>,
 	{
-		self.access
-			.write()
-			.await
+		let mut access = self.access.write().await;
+		// See `workspace_observation` (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = access
 			.workspace_observation_fitted(workspace, offset, limit, fits)
-			.await
+			.await;
+		access.lists = lists;
+		result
 	}
 
 	pub async fn skill_context(&self, store: &Store, run: &Run) -> Result<String> {

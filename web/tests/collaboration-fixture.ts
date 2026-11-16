@@ -1,4 +1,5 @@
 import type { Artifact } from "../src/generated/models";
+import type { Unconfirmed } from "../src/unconfirmed";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { defaultNode, registryVersion } from "./registry-fixture";
@@ -115,6 +116,7 @@ export function fixture(reference = false) {
     conversations: [],
     events: [],
     artifacts: [] as Artifact[],
+    unconfirmed: [] as Unconfirmed[],
     installations: [],
     next_cursors: {
       workspaces: null,
@@ -283,6 +285,12 @@ export async function setup(
     /** When the Run waiting for the question continues without an answer. */
     answerBy?: string;
     elicitation?: { message: string; schema: Record<string, unknown> };
+    /** Items a silent Node left out; every list response carries them (#770). */
+    unconfirmed?: Unconfirmed[];
+    /** A peer on an older build: no response carries `unconfirmed`. */
+    omitUnconfirmed?: boolean;
+    /** A request without Tasks, Runs or questions, to show an empty list. */
+    withoutWork?: boolean;
   } = {},
 ) {
   // Tenant content belongs to a Tenant's Mapping (ADR 0102): a spec opens it as a
@@ -291,6 +299,12 @@ export async function setup(
     options.subject ??
     (!options.administrator && options.dashboardContext === undefined);
   let data = fixture(options.referenceLayout);
+  data.unconfirmed = options.unconfirmed ?? [];
+  if (options.withoutWork) {
+    data.tasks = [];
+    data.runs = [];
+    data.human_requests = [];
+  }
   if (options.planModel)
     data.registry[1].config = {
       ...data.registry[1].config,
@@ -621,11 +635,16 @@ export async function setup(
             (request) => request.response === null,
           ),
           access,
+          ...(options.omitUnconfirmed ? { unconfirmed: undefined } : {}),
         },
       });
     if (path === "/api/human-requests" && request.method() === "GET")
       return route.fulfill({
-        json: { items: data.human_requests, next_cursor: null },
+        json: {
+          items: data.human_requests,
+          next_cursor: null,
+          ...(options.omitUnconfirmed ? {} : { unconfirmed: [] }),
+        },
       });
     if (path === "/api/tenants/acme/nodes")
       return route.fulfill({
@@ -752,6 +771,7 @@ export async function setup(
         json: {
           messages: selected.map(envelope),
           next_before: hasOlder ? selected[0].id : null,
+          ...(options.omitUnconfirmed ? {} : { unconfirmed: data.unconfirmed }),
         },
       });
     }
@@ -905,6 +925,7 @@ export async function setup(
             workspace.id === "workspace-one"
               ? [...referenceEvents, ...deadlineEvents]
               : [],
+          ...(options.omitUnconfirmed ? {} : { unconfirmed: data.unconfirmed }),
         },
       });
     }

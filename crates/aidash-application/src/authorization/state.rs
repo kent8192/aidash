@@ -5,7 +5,10 @@ use crate::{
 };
 use aidash_domain::{
 	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, RunSummary, Task,
-	WaitingState, Workspace, registry::Entry, workspaces::TaskPage,
+	WaitingState, Workspace,
+	registry::Entry,
+	unconfirmed::{Kind, Tally, Unconfirmed},
+	workspaces::TaskPage,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -20,6 +23,10 @@ pub struct WorkspaceState {
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
 	pub next_cursors: NextCursors,
+	/// Rows this read scanned and could not confirm because a Node did not
+	/// answer (#770). Counted within each window, so a window's count covers
+	/// only the candidates that window scanned.
+	pub unconfirmed: Vec<Unconfirmed>,
 }
 pub async fn task_page(scope: &mut dyn WorkspaceListingScope, offset: u64) -> Result<TaskPage> {
 	let workspaces = scope.visible("workspace.read").await?;
@@ -77,14 +84,21 @@ pub async fn state(
 		.map(|row| row.metadata.clone())
 		.collect::<Vec<_>>();
 	scope.prepare_runs(&run_metadata).await?;
+	// A row counts as unconfirmed only after the reader's own `workspace.read`
+	// passed, and only when its check stopped at a silent Node (#770).
+	let mut unconfirmed = Tally::new();
 	let mut tasks = Vec::new();
 	let candidates = scope.task_candidates(node).await?;
 	cursors.tasks = cursor(&candidates, |row| row.id);
 	scope.prepare_tasks(&candidates).await?;
 	for row in candidates {
-		if workspace_ok(scope, &mut cache, row.workspace_id).await?
-			&& scope.task_visible(&row).await?
-		{
+		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
+			continue;
+		}
+		scope.begin_row();
+		let allowed = scope.task_visible(&row).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Task, row.workspace_id, allowed) {
 			workspace_ids.push(row.workspace_id);
 			tasks.push(row);
 		}
@@ -94,9 +108,13 @@ pub async fn state(
 	cursors.artifacts = cursor(&candidates, |row| row.id);
 	scope.prepare_artifacts(&candidates).await?;
 	for row in candidates {
-		if workspace_ok(scope, &mut cache, row.workspace_id).await?
-			&& scope.artifact_visible(&row).await?
-		{
+		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
+			continue;
+		}
+		scope.begin_row();
+		let allowed = scope.artifact_visible(&row).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Artifact, row.workspace_id, allowed) {
 			workspace_ids.push(row.workspace_id);
 			artifacts.push(row);
 		}
@@ -104,9 +122,13 @@ pub async fn state(
 	let mut runs = Vec::new();
 	let candidates = run_candidates;
 	for row in candidates {
-		if workspace_ok(scope, &mut cache, row.metadata.workspace_id).await?
-			&& scope.run_visible(&row.metadata).await?
-		{
+		if !workspace_ok(scope, &mut cache, row.metadata.workspace_id).await? {
+			continue;
+		}
+		scope.begin_row();
+		let allowed = scope.run_visible(&row.metadata).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Run, row.metadata.workspace_id, allowed) {
 			workspace_ids.push(row.metadata.workspace_id);
 			runs.push(row.inspect().into());
 		}
@@ -134,13 +156,24 @@ pub async fn state(
 	let mut run_ids: Vec<_> = waiting.iter().map(|row| row.run_id).collect();
 	run_ids.sort_unstable();
 	run_ids.dedup();
-	let visible_runs = if run_ids.is_empty() {
-		HashMap::new()
+	// The Node each hidden Run's check gave up on comes back with the batch,
+	// for the requests that follow it (#770).
+	let (visible_runs, silent_runs) = if run_ids.is_empty() {
+		(HashMap::new(), HashMap::new())
 	} else {
 		scope.visible_runs(&run_ids).await?
 	};
 	for mut row in waiting {
 		let Some(run) = visible_runs.get(&row.run_id).and_then(Option::as_ref) else {
+			// A request of a Run left out for a silent Node counts only after the
+			// reader's own `human.read`, so a request they may not read is not
+			// counted as one they would see (#770).
+			if let Some(silent) = silent_runs.get(&row.run_id) {
+				let resource = scope.human_resource(&row).await?;
+				if scope.decide(&resource, "human.read").await? {
+					unconfirmed.record(silent, Kind::HumanRequest, row.workspace_id);
+				}
+			}
 			continue;
 		};
 		let resource = scope.human_resource(&row).await?;
@@ -170,6 +203,13 @@ pub async fn state(
 			conversations.push(row);
 		}
 	}
+	let (events, left_out) = scope.latest_visible_events(node).await?;
+	unconfirmed.merge(left_out);
+	// A Workspace that only an unconfirmed row belongs to is returned too, so
+	// the Web's Node filter keeps that row's warning (#664 decision 9, #770).
+	// Every window and the event scan are bounded, so this is bounded as well.
+	let unconfirmed_entries = unconfirmed.into_entries();
+	workspace_ids.extend(unconfirmed_entries.iter().map(|entry| entry.workspace_id));
 	workspace_ids.sort_unstable();
 	workspace_ids.dedup();
 	Ok(WorkspaceState {
@@ -180,8 +220,9 @@ pub async fn state(
 		runs,
 		human_requests,
 		conversations,
-		events: scope.latest_visible_events(node).await?,
+		events,
 		next_cursors: cursors,
+		unconfirmed: unconfirmed_entries,
 	})
 }
 /// When each question that Runs wait on continues without an answer, by request.

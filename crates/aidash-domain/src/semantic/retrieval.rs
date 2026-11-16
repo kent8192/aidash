@@ -81,13 +81,62 @@ impl Search {
 }
 
 pub fn result_tokens(result: &SearchResult) -> serde_json::Result<usize> {
-	// Preserve room for growth of the counter's own JSON representation.
-	Ok(crate::context::estimated_tokens(&serde_json::to_string(result)?) + 16)
+	// Preserve room for growth of the counter's own JSON representation. An
+	// empty `unconfirmed` is not counted, so an ordinary result keeps its
+	// estimate; a non-empty one is counted as an Agent receives it, with its
+	// note (#770).
+	let mut value = serde_json::to_value(result)?;
+	crate::unconfirmed::for_tool(&mut value);
+	Ok(crate::context::estimated_tokens(&value.to_string()) + 16)
 }
 pub fn provenance(source: &Value) -> Value {
 	if source["kind"] == "memory" {
 		json!({"kind":"memory"})
 	} else {
 		source.clone()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn result(unconfirmed: Vec<crate::unconfirmed::Unconfirmed>) -> SearchResult {
+		SearchResult {
+			workspace_id: Uuid::from_u128(1),
+			index_revision: 1,
+			model: "embedding".into(),
+			model_version: "1".into(),
+			matches: vec![],
+			estimated_tokens: 0,
+			truncated: false,
+			unconfirmed,
+		}
+	}
+
+	#[test]
+	fn the_estimate_covers_the_note_an_agent_receives_with_unconfirmed_entries() {
+		let entry = crate::unconfirmed::Unconfirmed {
+			node: "aidash://local/brave-otter-k3m9q2xa".into(),
+			kind: crate::unconfirmed::Kind::SemanticEntry,
+			workspace_id: Uuid::from_u128(1),
+			count: 2,
+		};
+		let left_out = result(vec![entry]);
+		let mut delivered = serde_json::to_value(&left_out).unwrap();
+		crate::unconfirmed::for_tool(&mut delivered);
+		assert!(delivered.get("unconfirmed_note").is_some());
+		assert!(
+			result_tokens(&left_out).unwrap()
+				>= crate::context::estimated_tokens(&delivered.to_string()) + 16
+		);
+		// An ordinary result is estimated without the field.
+		let ordinary = result(vec![]);
+		let mut bare = serde_json::to_value(&ordinary).unwrap();
+		bare.as_object_mut().unwrap().remove("unconfirmed");
+		assert_eq!(
+			result_tokens(&ordinary).unwrap(),
+			crate::context::estimated_tokens(&bare.to_string()) + 16
+		);
 	}
 }

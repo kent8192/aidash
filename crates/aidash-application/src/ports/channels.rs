@@ -38,7 +38,9 @@ pub trait AttachmentObjects: Send {
 }
 
 #[async_trait]
-pub trait ChannelScope: AttachmentObjects + Send {
+pub trait ChannelScope:
+	AttachmentObjects + Send + crate::ports::authorization::visibility::RowOutcome
+{
 	fn sender(&self) -> String;
 	fn principal(&self) -> String;
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message>;

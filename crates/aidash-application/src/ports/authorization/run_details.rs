@@ -22,6 +22,12 @@ pub struct RunDetails {
 pub trait RunDetailsScope: Send {
 	fn node_id(&self) -> &str;
 	fn set_context(&mut self, context: Value);
+	/// A Run's check begins: forget the Node an earlier Run's check gave up on (#770).
+	fn begin_run_check(&mut self) {}
+	/// The Node this Run's check gave up on because it did not answer (#770).
+	fn take_run_silence(&mut self) -> Option<String> {
+		None
+	}
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>>;
 	/// The existing Runs among `ids`, in no particular order. One read where the
 	/// adapter can batch it.

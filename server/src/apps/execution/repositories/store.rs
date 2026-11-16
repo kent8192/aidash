@@ -125,6 +125,10 @@ pub struct Store {
 	/// reaches the other Nodes of its Deployment (#751). Empty in a process
 	/// that never built a `Federation`. Shared by every clone of this Store.
 	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
+	/// Nodes that did not answer a list read, so the next list does not wait on
+	/// them again (#770). Shared by every clone of this Store.
+	pub(crate) silent_nodes:
+		std::sync::Arc<crate::apps::federation::remote::services::wire::SilentNodes>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -542,6 +546,7 @@ impl Store {
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 			in_process: Default::default(),
+			silent_nodes: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -689,6 +694,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
 
@@ -749,6 +755,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
 	pub async fn event(
@@ -2531,6 +2538,7 @@ impl Store {
 						.into_iter()
 						.map(Into::into)
 						.collect(),
+					unconfirmed: vec![],
 				})
 			})
 			.await
