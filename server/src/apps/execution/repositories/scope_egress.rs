@@ -197,13 +197,15 @@ async fn locked_state(tx: &mut Transaction, id: &ScopeId) -> Result<ScopeState> 
 		.pop()
 		.ok_or(Error::Forbidden)
 }
-async fn daily(
+/// The day's counter row, if one exists. Reads only, so that admission, which
+/// does not take the state lock, never races another writer to create it.
+async fn existing_daily(
 	tx: &mut Transaction,
 	id: &ScopeId,
 	day: NaiveDate,
 	service: &str,
-) -> Result<ScopeDaily> {
-	if let Some(row) = ScopeDaily::objects()
+) -> Result<Option<ScopeDaily>> {
+	Ok(ScopeDaily::objects()
 		.filter(ScopeDaily::field_scope_id().eq(id.scratch_space))
 		.filter(ScopeDaily::field_tenant().eq(id.tenant.clone()))
 		.filter(ScopeDaily::field_node().eq(id.node.clone()))
@@ -212,11 +214,10 @@ async fn daily(
 		.all_with_executor(&mut **tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
-		.pop()
-	{
-		return Ok(row);
-	}
-	let row = ScopeDaily::build()
+		.pop())
+}
+fn empty_daily(id: &ScopeId, day: NaiveDate, service: &str) -> ScopeDaily {
+	ScopeDaily::build()
 		.id(Uuid::new_v4())
 		.tenant(id.tenant.clone())
 		.node(id.node.clone())
@@ -225,7 +226,20 @@ async fn daily(
 		.service(service.to_owned())
 		.sent_bytes(0)
 		.received_bytes(0)
-		.finish();
+		.finish()
+}
+/// The day's counter row, created at zero when missing. Callers hold the
+/// scope's state lock, which serializes the creation.
+async fn daily(
+	tx: &mut Transaction,
+	id: &ScopeId,
+	day: NaiveDate,
+	service: &str,
+) -> Result<ScopeDaily> {
+	if let Some(row) = existing_daily(tx, id, day, service).await? {
+		return Ok(row);
+	}
+	let row = empty_daily(id, day, service);
 	ScopeDaily::objects()
 		.insert_with_executor(&mut **tx, &row)
 		.await
@@ -278,15 +292,21 @@ async fn check_budget(
 	settings: &ScopeSettings,
 	service: Option<(&str, aidash_domain::egress::Limits)>,
 ) -> Result<()> {
+	// Admission takes no state lock (#845), so it reads the counters without
+	// creating them: a missing row is a day with nothing charged yet.
 	let day = Utc::now().date_naive();
-	let total = daily(tx, &settings.id, day, "").await?;
+	let total = existing_daily(tx, &settings.id, day, "")
+		.await?
+		.unwrap_or_else(|| empty_daily(&settings.id, day, ""));
 	budget_available(
 		&total,
 		settings.budget.sent_bytes,
 		settings.budget.received_bytes,
 	)?;
 	if let Some((name, limits)) = service {
-		let row = daily(tx, &settings.id, day, name).await?;
+		let row = existing_daily(tx, &settings.id, day, name)
+			.await?
+			.unwrap_or_else(|| empty_daily(&settings.id, day, name));
 		budget_available(&row, limits.sent_bytes, limits.received_bytes)?;
 	}
 	Ok(())
