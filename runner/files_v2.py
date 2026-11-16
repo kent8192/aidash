@@ -290,7 +290,17 @@ class FileService:
         for name in ignore_files:
             if len(parts(name)) != 1:
                 raise ValueError('ignore file names must be single path components')
-        parts(root, allow_root=True)
+        components = parts(root, allow_root=True)
+        if request.get('missing_ok') is True and components:
+            # A sync save may select a path that was deleted: it lists nothing.
+            try:
+                parent = open_dir(self.root, components[:-1])
+                try:
+                    os.stat(components[-1], dir_fd=parent, follow_symlinks=False)
+                finally:
+                    os.close(parent)
+            except FileNotFoundError:
+                return {'files': [], 'skipped_symlinks': [], 'truncated': False}
         rule_cache = {}
         def rules(directory):
             key = '/'.join(directory)

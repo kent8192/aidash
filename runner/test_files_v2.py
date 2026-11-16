@@ -185,3 +185,14 @@ def test_new_files_get_their_missing_parent_directories(tmp_path):
     with pytest.raises(InvalidPath):
         service.write(dict(chunk, path='link/new/x'))
     assert list((tmp_path / 'outside').iterdir()) == []
+
+
+def test_a_sync_manifest_of_a_deleted_path_lists_nothing(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    service = FileService(scratch, tmp_path / 'state')
+    request = {'root': 'gone/dir', 'ignore_files': [], 'exclude': [], 'include': [], 'max_files': 10}
+    with pytest.raises(FileNotFoundError):
+        service.manifest(request)
+    assert service.manifest(dict(request, missing_ok=True)) == {
+        'files': [], 'skipped_symlinks': [], 'truncated': False}

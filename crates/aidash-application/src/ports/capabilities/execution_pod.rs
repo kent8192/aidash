@@ -289,6 +289,10 @@ pub struct FileManifestRequest {
 	pub exclude: Vec<String>,
 	pub include: Vec<String>,
 	pub max_files: u32,
+	/// A `root` that does not exist lists no files instead of failing, so a
+	/// sync save can select a deleted path.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub missing_ok: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManifestFile {

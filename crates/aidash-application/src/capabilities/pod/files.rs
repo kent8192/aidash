@@ -116,6 +116,7 @@ pub async fn search(context: &PodContext, input: ScratchSearch, limit: usize) ->
 			exclude: vec![],
 			include: vec![],
 			max_files: 10_000,
+			missing_ok: false,
 		};
 		let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
 		let glob = input.glob.as_deref().map(glob_matcher).transpose()?;

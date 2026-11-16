@@ -170,6 +170,7 @@ pub async fn save(
 			exclude: input.exclude.clone(),
 			include: input.include.clone(),
 			max_files: u32::try_from(MAX_AREA_FILES + 1).expect("bounded"),
+			missing_ok: input.sync,
 		};
 		let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
 		if manifest.truncated {
