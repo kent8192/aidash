@@ -395,8 +395,10 @@ beyond the Tenant's share is refused at once. The server raises its soft
 open-file limit to the hard limit at startup and logs the budget it derived. A
 `CONNECT` gives its listener slot back before it waits, so one Tenant's waiting
 connections never keep another Tenant's from being accepted; the listener has
-512 slots. A connection that waited is checked against its scope once more
-before it is forwarded. Clients keep tunnels open between requests, so while a
+512 slots. A plain HTTP request keeps its slot while it waits, so a Tenant's
+waiting plain HTTP requests may hold at most a quarter of the slots (128); one
+beyond that is refused at once with `egress_tenant_tunnel_limit`. A connection
+that waited is checked against its scope once more before it is forwarded. Clients keep tunnels open between requests, so while a
 connection of a scope waits, that scope's tunnels that carried nothing for two
 seconds close as `egress_idle_reclaimed` and give their slots to the waiters;
 the client opens a new tunnel when it needs one. A credential resolved for a new

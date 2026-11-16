@@ -134,8 +134,16 @@ struct Waiting {
 	/// Not capped: only read so that a Space's idle tunnels make way (#845).
 	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
 	tenants: std::collections::HashMap<String, usize>,
+	/// A Tenant's waiting plain HTTP requests, which keep their listener slot
+	/// while they wait (#845 decision 8), capped at `SLOT_HOLDING_WAITERS`.
+	holding_slots: std::collections::HashMap<String, usize>,
 	global: usize,
 }
+/// The listener slots one Tenant's waiting plain HTTP requests may hold: a
+/// quarter, so that the rest of the slots still accept other Tenants'
+/// connections. CONNECT gives its slot back before it waits, so it is not
+/// counted (lead decision on PR #912, layered on #845 decision 8).
+const SLOT_HOLDING_WAITERS: usize = super::CONNECTION_SLOTS / 4;
 impl CapacityCounts {
 	/// Forget a semaphore that nothing holds or waits on any longer.
 	fn prune(&mut self, scope: &aidash_domain::egress::ScopeId) {
@@ -300,6 +308,8 @@ struct WaitTurn {
 	counts: ScopeCounts,
 	scope: aidash_domain::egress::ScopeId,
 	semaphores: Vec<Arc<tokio::sync::Semaphore>>,
+	/// Whether the waiting connection holds a listener slot.
+	holds_slot: bool,
 }
 impl Drop for WaitTurn {
 	fn drop(&mut self) {
@@ -316,6 +326,14 @@ impl Drop for WaitTurn {
 			*n -= 1;
 			if *n == 0 {
 				waiting.tenants.remove(&self.scope.tenant);
+			}
+		}
+		if self.holds_slot
+			&& let Some(n) = waiting.holding_slots.get_mut(&self.scope.tenant)
+		{
+			*n -= 1;
+			if *n == 0 {
+				waiting.holding_slots.remove(&self.scope.tenant);
 			}
 		}
 		waiting.global -= 1;
@@ -412,18 +430,21 @@ impl TunnelManager {
 		scope: &ScopeSettings,
 		wait: std::time::Duration,
 	) -> Result<(TunnelPermit, std::time::Duration), &'static str> {
-		self.acquire_watched(scope, wait, || None)
+		self.acquire_watched(scope, wait, false, || None)
 			.await
 			.map_err(|refused| match refused {
 				NotAdmitted::Limit(code) | NotAdmitted::Stopped((_, code)) => code,
 			})
 	}
 	/// As `acquire`, and a connection that has to wait also ends its wait as
-	/// soon as `watch`, made only then, says its Scratch Space stopped.
+	/// soon as `watch`, made only then, says its Scratch Space stopped. A
+	/// connection that `holds_slot` of the listener while it waits (plain HTTP)
+	/// is refused at once beyond its Tenant's `SLOT_HOLDING_WAITERS`.
 	async fn acquire_watched(
 		&self,
 		scope: &ScopeSettings,
 		wait: std::time::Duration,
+		holds_slot: bool,
 		watch: impl FnOnce() -> Option<tokio::sync::watch::Receiver<Option<Stopped>>>,
 	) -> Result<(TunnelPermit, std::time::Duration), NotAdmitted> {
 		let code = match self.try_acquire(scope) {
@@ -445,6 +466,13 @@ impl TunnelManager {
 				.copied()
 				.unwrap_or(0)
 				>= (self.waiting_budget / 4).max(1)
+				|| (holds_slot
+					&& counts
+						.waiting
+						.holding_slots
+						.get(&scope.id.tenant)
+						.copied()
+						.unwrap_or(0) >= SLOT_HOLDING_WAITERS)
 			{
 				Some(LIMITS[1].0)
 			} else if counts.waiting.global >= self.waiting_budget {
@@ -462,12 +490,20 @@ impl TunnelManager {
 				.tenants
 				.entry(scope.id.tenant.clone())
 				.or_default() += 1;
+			if holds_slot {
+				*counts
+					.waiting
+					.holding_slots
+					.entry(scope.id.tenant.clone())
+					.or_default() += 1;
+			}
 			counts.waiting.global += 1;
 			let semaphores = self.semaphores(&mut counts, scope).to_vec();
 			WaitTurn {
 				counts: self.counts.clone(),
 				scope: scope.id.clone(),
 				semaphores,
+				holds_slot,
 			}
 		};
 		let started = tokio::time::Instant::now();
@@ -1457,7 +1493,7 @@ pub(super) async fn forward(
 	};
 	// A Space that stops ends its connections' waits at once (#845 decision 2).
 	let acquired = manager
-		.acquire_watched(&scope, LIMIT_WAIT, || {
+		.acquire_watched(&scope, LIMIT_WAIT, !connect, || {
 			Some(manager.watch_space(scopes.clone(), &scope, &token))
 		})
 		.await;
@@ -2134,7 +2170,7 @@ mod tests {
 				let (manager, one, scopes) = (manager.clone(), one.clone(), scopes.clone());
 				tokio::spawn(async move {
 					manager
-						.acquire_watched(&one, super::LIMIT_WAIT, || {
+						.acquire_watched(&one, super::LIMIT_WAIT, false, || {
 							Some(manager.watch_space(scopes, &one, "token"))
 						})
 						.await
@@ -2159,6 +2195,80 @@ mod tests {
 		assert!(started.elapsed() <= super::WAIT_RECHECK);
 		assert_eq!(manager.counts.lock().unwrap().waiting.global, 0);
 		assert!(manager.watched.lock().unwrap().is_empty());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_tenant_s_waiting_plain_http_holds_at_most_a_quarter_of_the_listener_slots() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits {
+				waiting: 1 << 16,
+				..Default::default()
+			},
+		));
+		let one = limited(1);
+		let _held = manager.try_acquire(&one).unwrap();
+		let wait = |settings: ScopeSettings, holds_slot: bool| {
+			let manager = manager.clone();
+			tokio::spawn(async move {
+				manager
+					.acquire_watched(&settings, super::LIMIT_WAIT, holds_slot, || None)
+					.await
+					.err()
+			})
+		};
+		let quarter: Vec<_> = (0..super::SLOT_HOLDING_WAITERS)
+			.map(|_| wait(one.clone(), true))
+			.collect();
+		tokio::task::yield_now().await;
+		assert_eq!(
+			super::SLOT_HOLDING_WAITERS,
+			super::super::CONNECTION_SLOTS / 4
+		);
+		let started = tokio::time::Instant::now();
+		assert_eq!(
+			wait(one.clone(), true).await.unwrap(),
+			Some(super::NotAdmitted::Limit("egress_tenant_tunnel_limit")),
+			"the next waiting plain request of the Tenant is refused at once"
+		);
+		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+		let connect = wait(one.clone(), false);
+		let mut other = limited(1);
+		other.id.tenant = "other".into();
+		let _other = manager.try_acquire(&other).unwrap();
+		let other_plain = wait(other, true);
+		tokio::task::yield_now().await;
+		assert!(!connect.is_finished(), "CONNECT still waits");
+		assert!(
+			!other_plain.is_finished(),
+			"another Tenant's plain request still waits"
+		);
+		assert!(quarter.iter().all(|waiter| !waiter.is_finished()));
+		let mut free = limited(1);
+		free.id.tenant = "free".into();
+		assert_eq!(
+			wait(free, true).await.unwrap(),
+			None,
+			"another Tenant still gets a slot"
+		);
+		assert_eq!(
+			manager.counts.lock().unwrap().waiting.holding_slots["t"],
+			super::SLOT_HOLDING_WAITERS
+		);
+		for waiter in quarter.into_iter().chain([connect, other_plain]) {
+			waiter.abort();
+			let _ = waiter.await;
+		}
+		assert!(
+			manager
+				.counts
+				.lock()
+				.unwrap()
+				.waiting
+				.holding_slots
+				.is_empty()
+		);
 	}
 
 	#[tokio::test(start_paused = true)]
