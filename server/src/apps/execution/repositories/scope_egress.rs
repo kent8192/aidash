@@ -480,6 +480,9 @@ impl EgressScopes for DurableScopes {
 				.or_default()
 				.push(tally);
 		}
+		// Each Tenant is written on its own, so that one Tenant's failure (such
+		// as a scope whose Node was purged meanwhile) loses only its own counts.
+		let mut failed = None;
 		for (tenant, tallies) in by_tenant {
 			let result: Result<()> = async {
 				let mut tx = self
@@ -506,9 +509,11 @@ impl EgressScopes for DurableScopes {
 				tx.commit().await
 			}
 			.await;
-			result.map_err(application_error)?;
+			if let Err(error) = result {
+				failed.get_or_insert(application_error(error));
+			}
 		}
-		Ok(())
+		failed.map_or(Ok(()), Err)
 	}
 	async fn notify_many_hosts(
 		&self,

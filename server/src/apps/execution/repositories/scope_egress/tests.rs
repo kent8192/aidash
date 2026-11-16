@@ -400,6 +400,43 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			("denied.example".into(), "egress_host_forbidden".into(), 3),
 		]
 	);
+	// A Tenant whose tallies cannot be written (here one that does not exist,
+	// written first) does not lose another Tenant's counts.
+	let gone = ScopeId {
+		tenant: "aaa-gone".into(),
+		node: "gone".into(),
+		scratch_space: Uuid::new_v4(),
+	};
+	assert!(
+		durable
+			.record_refusals(vec![
+				aidash_application::egress::RefusalTally {
+					scope: gone,
+					minute,
+					host: String::new(),
+					reason: "egress_client_closed".into(),
+					count: 1,
+				},
+				aidash_application::egress::RefusalTally {
+					scope: scope.id.clone(),
+					minute,
+					host: "later.example".into(),
+					reason: "egress_host_forbidden".into(),
+					count: 4,
+				},
+			])
+			.await
+			.is_err(),
+		"the failed Tenant is still reported"
+	);
+	let later: i64 = sqlx::query_scalar(
+		"SELECT count FROM egress_scope_refusals WHERE scope_id = $1 AND host = 'later.example'",
+	)
+	.bind(scope.id.scratch_space)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(later, 4);
 	durable.notify_many_hosts(&scope.id, 101).await.unwrap();
 	let events: i64 = sqlx::query_scalar(
 		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'many_hosts'",
