@@ -193,7 +193,7 @@ test("observer selection is an explicit approved Shadow version separate from Au
   expect(state.errors).toEqual([]);
 });
 
-test("aggregate report shows five kinds, 2x2, missingness and zero-denominator N/A", async ({
+test("aggregate report shows every kind, 2x2, missingness and zero-denominator N/A", async ({
   page,
 }) => {
   const state = await observationAdmin(page, ["approval.read"]);

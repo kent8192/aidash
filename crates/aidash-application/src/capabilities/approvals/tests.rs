@@ -470,7 +470,7 @@ async fn without_an_eligible_approver_a_tool_call_is_blocked() {
 	scope
 		.bundle
 		.policies
-		.retain(|policy| policy.id != "approve-tools");
+		.retain(|policy| !matches!(policy.id.as_str(), "approve" | "approve-tools"));
 
 	assert_eq!(
 		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
@@ -551,7 +551,7 @@ async fn a_tool_call_approval_admits_nothing_once_its_approver_is_ineligible() {
 	scope
 		.bundle
 		.policies
-		.retain(|policy| policy.id != "approve-tools");
+		.retain(|policy| !matches!(policy.id.as_str(), "approve" | "approve-tools"));
 
 	assert_eq!(
 		ask(
