@@ -813,7 +813,12 @@ async fn remote_preview_recheck_stops_when_the_peer_mapping_is_disabled(
 		.await
 		.unwrap();
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-	repository.stop_refused(target).await.unwrap();
+	// The Pod stop of the Run's processes needs a Runner (ADR 0136); the preview row
+	// stops regardless.
+	assert!(
+		repository.stop_refused(target).await.is_err(),
+		"no Runner is configured"
+	);
 	assert_eq!(
 		preview_stop(&fixture, preview).await,
 		("stopped".into(), Some("run_authority_revoked".into()))
