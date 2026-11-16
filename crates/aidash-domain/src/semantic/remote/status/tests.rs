@@ -25,8 +25,6 @@ fn binding() -> Binding {
 			digest: "provider-digest".into(),
 			configuration_digest: "configuration-digest".into(),
 		}),
-		decider: None,
-		summarizer: None,
 	}
 }
 #[fixture]
@@ -67,6 +65,7 @@ fn receipt(binding: Binding) -> Receipt {
 			}],
 			estimated_tokens: 10,
 			truncated: false,
+			unconfirmed: vec![],
 		},
 		estimated_tokens: 10,
 	}
@@ -179,7 +178,7 @@ fn disabled_and_unstarted_bindings_keep_their_original_initial_state(
 ) {
 	record.receipt = Some(Value::Null);
 	let disabled = project(
-		&Binding::Disabled { summarizer: None },
+		&Binding::Disabled {},
 		Some(Failure::Authority),
 		Some(record),
 	)

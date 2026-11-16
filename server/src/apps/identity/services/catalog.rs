@@ -99,16 +99,21 @@ pub(crate) async fn tool_entry(
 /// A pinned dormant Decider still needs readable immutable Registry metadata.
 /// This path neither acquires Catalog Approval nor records an invocation/read
 /// grant; the decision gate must separately authorize every disclosure.
-pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
-	let entry = crate::apps::registry::models::Definition::read_in(
+async fn read_definition(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
+	if let Some(entry) = access.state_definition(reference) {
+		return entry;
+	}
+	crate::apps::registry::models::Definition::read_in(
 		&mut **access.tx,
 		&reference.id,
 		&reference.version,
 	)
-	.await?;
-	if !aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry)
-		&& !aidash_domain::registry::bindings::sources::is_selection_decider(&entry)
-	{
+	.await
+}
+
+pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
+	let entry = read_definition(access, reference).await?;
+	if !aidash_domain::registry::bindings::sources::is_selection_decider(&entry) {
 		return Err(crate::Error::Forbidden);
 	}
 	if let Some(projection) = &entry.installation
@@ -129,16 +134,6 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 		access.tx.admit(read_check, entry.clone());
 	}
 	crate::marketplace::check_pinned(access, &entry).await?;
-	if aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry) {
-		// A child Run admitted under this lease starts only with its own
-		// compaction Decider approved (#540). The inherited-lease fence admits
-		// a definition only when the parent's closure names it; this one is a
-		// closure member although its approval is checked when needed. The
-		// current approval is still read by the child's own start check.
-		access
-			.approved_catalog
-			.insert((reference.id.clone(), reference.version.clone()));
-	}
 	Ok(entry)
 }
 
@@ -164,16 +159,12 @@ pub(crate) async fn readable(access: &mut Access, reference: &EntityRef) -> Resu
 	{
 		return Ok(entry);
 	}
-	let entry = crate::apps::registry::models::Definition::read_in(
-		&mut **access.tx,
-		&reference.id,
-		&reference.version,
-	)
-	.await
-	.map_err(|error| match error {
-		crate::Error::NotFound(_) => crate::Error::Forbidden,
-		other => other,
-	})?;
+	let entry = read_definition(access, reference)
+		.await
+		.map_err(|error| match error {
+			crate::Error::NotFound(_) => crate::Error::Forbidden,
+			other => other,
+		})?;
 	if let Some(projection) = &entry.installation
 		&& (projection.contract != 1 || projection.tenant != access.identity.tenant)
 	{

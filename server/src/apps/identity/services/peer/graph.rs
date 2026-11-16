@@ -186,6 +186,9 @@ pub(crate) async fn project(
 	}
 	let node = admitted.sender.to_string();
 	let mut access = super::access(&f, &admitted).await?;
+	// A graph page is a list: a Node that did not answer is left alone for a
+	// while, so a refresh answers from that memory (#770, Q16; #799).
+	access.lists = true;
 	let result = async {
 		let receiving = crate::apps::identity::repositories::nodes::get(
 			&mut *access.tx,

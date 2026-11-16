@@ -20,12 +20,14 @@ pub(crate) mod desktop_cors;
 
 pub mod approval_preferences;
 
+pub mod bootstrap_command;
 pub mod demo_data;
 pub mod invitations;
 pub mod node_registrations;
 pub mod nodes;
 pub mod plan_connections;
 pub mod provider_authorizations;
+pub mod provider_credential_command;
 pub mod provider_credentials;
 pub(crate) mod receiving_keys;
 pub mod secret_store_recovery;
@@ -42,6 +44,7 @@ pub mod node_purge;
 
 pub(crate) mod data_protection;
 pub(crate) mod manual_keys;
+pub(crate) mod memory_scope;
 pub mod oauth_clients;
 
 pub mod oauth_connections;

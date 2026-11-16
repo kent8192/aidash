@@ -48,11 +48,20 @@ pub struct ModelConfig {
 	pub stream_stall_timeout_secs: Option<u32>,
 	#[serde(default)]
 	pub reasoning_effort: Option<ReasoningEffort>,
+	/// Record the provider's reasoning with each Model Turn and resend it on
+	/// every later request of a Native Run (#942). Omitted means `true` and is
+	/// not serialized, so existing model definitions keep their bytes; `false`
+	/// turns a route off without code changes. A Run's model version is
+	/// immutable, so the choice holds for the whole Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reasoning_passback: Option<bool>,
 	pub context_window: usize,
-	/// Maximum completion tokens reported by the selected provider model.
-	/// Missing values are accepted only while reading legacy model versions.
+	/// Output token budget for an ordinary Agent step.
 	#[serde(default)]
 	pub max_output_tokens: Option<u32>,
+	/// Provider's maximum completion size, when independently known.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_max_output_tokens: Option<u32>,
 	pub modalities: Vec<String>,
 	/// Administrator-approved evidence for exact OpenRouter route tags. The
 	/// catalog and ZDR APIs are checked again before every media inference.
@@ -675,6 +684,11 @@ impl ModelConfig {
 		self.streaming.unwrap_or(STREAMING_DEFAULT)
 	}
 
+	/// Whether this route passes the provider's reasoning back (#942).
+	pub fn reasoning_passback(&self) -> bool {
+		self.reasoning_passback.unwrap_or(true)
+	}
+
 	/// Resolve the streamed-response stall timeout. Validate at registration and
 	/// before use.
 	pub fn stream_stall_timeout(&self) -> Result<Duration> {
@@ -692,6 +706,7 @@ impl ModelConfig {
 	pub fn output_token_limit(&self) -> u32 {
 		self.max_output_tokens
 			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
+			.min(self.provider_max_output_tokens.unwrap_or(u32::MAX))
 	}
 }
 

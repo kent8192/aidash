@@ -71,11 +71,13 @@ fn compile_context_source_plan(
 			.any(|plugin| !plugin.skills.is_empty());
 	let snapshot_digest = digest(&serde_json::to_value(snapshot)?);
 	if remote {
-		for binding in snapshot
-			.bindings
-			.iter()
-			.filter(|binding| Slot::Semantic.matches(binding))
-		{
+		for binding in snapshot.bindings.iter().filter(|binding| {
+			Slot::Semantic.matches(binding)
+				&& !(binding.identity.id
+					== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+					&& binding.identity.version
+						== aidash_domain::registry::bindings::memory_defaults::VERSION)
+		}) {
 			if binding
 				.definition
 				.config
@@ -271,7 +273,7 @@ impl Environment<'_> {
 			Slot::Skills => self.skill_context(run).await.map(|text| Some(json!(text))),
 			Slot::Observation => self
 				.home(run)
-				.observation(0, aidash_domain::context::observation::DEFAULT_LIMIT)
+				.step_observation(0, aidash_domain::context::observation::DEFAULT_LIMIT)
 				.await
 				.map(Some),
 			Slot::Semantic => {

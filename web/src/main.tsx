@@ -18,7 +18,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { state as getState, session as getSession } from "./generated/aidash";
+import {
+  session as getSession,
+  suspendedRuns,
+  suspendedRunsResume,
+  workspaceGet,
+} from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
 import { AdministratorTenantNotice } from "./administrator-notice";
@@ -27,6 +32,7 @@ import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
   sessionFetch,
+  authenticatedFetch,
   signIn,
   signOut,
   dashboardContext,
@@ -45,6 +51,38 @@ const Configuration = lazy(() =>
   })),
 );
 
+import type { TenantState, HumanRequest, Workspace } from "./types";
+import { mergeWindow } from "./window-pages";
+import { useWindowPages } from "./use-window-pages";
+
+const noWorkspaces: Workspace[] = [];
+
+/** One page of a Node's Workspaces beyond the `/api/state` window. */
+async function readWorkspacePage(
+  node: string | undefined,
+  cursor: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ cursor });
+  if (node) params.set("node", node);
+  return (await (
+    await authenticatedFetch(`/api/workspaces?${params}`, { signal })
+  ).json()) as { items: Workspace[]; next_cursor: string | null };
+}
+
+/** One page of a Node's pending Human Requests (`GET /api/human-requests`). */
+async function readHumanPage(
+  node: string | undefined,
+  cursor: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ cursor });
+  if (node) params.set("node", node);
+  return (await (
+    await authenticatedFetch(`/api/human-requests?${params}`, { signal })
+  ).json()) as { items: HumanRequest[]; next_cursor: string | null };
+}
+const noHumanRequests: HumanRequest[] = [];
 import type { Selection } from "./collaboration/details";
 const OperationsDialog = lazy(() =>
   import("./collaboration/details").then((module) => ({
@@ -143,6 +181,7 @@ const queryClient = new QueryClient({
 type Search = { channel?: string; focus?: string; view?: string };
 type BrowserSession = {
   id: string;
+  sign_in_method_prompt?: { identity_id: string; account_url: string };
   deployment_administrator: boolean;
   personal_account?: boolean;
   /** Whether the Tenancy Rules let this identity create Tenants now. */
@@ -162,6 +201,110 @@ type BrowserSession = {
   /** Whether this identity's Personal Tenant is deleted and it may start a new one. */
   personal_tenant_deleted?: boolean;
 };
+
+function SignInMethodPrompt({
+  prompt,
+}: {
+  prompt: { identity_id: string; account_url: string };
+}) {
+  const { t } = useI18n();
+  const storageKey = `aidash.sign-in-method-prompt.${prompt.identity_id}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return Number(localStorage.getItem(storageKey) ?? 0) > Date.now();
+    } catch {
+      return false;
+    }
+  });
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
+    >
+      <span>
+        {t("signInMethodPrompt")}{" "}
+        <a className="underline" href={prompt.account_url}>
+          {t("signInMethodPromptAccount")}
+        </a>
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          try {
+            localStorage.setItem(
+              storageKey,
+              String(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            );
+          } catch {
+            /* Keep the prompt dismissed for this page. */
+          }
+          setDismissed(true);
+        }}
+      >
+        {t("signInMethodPromptDismiss")}
+      </button>
+    </div>
+  );
+}
+/**
+ * One action that resumes every Run of this person that an Account suspension
+ * paused (#876). The server lists them, since `/api/state` holds only a window
+ * of Runs (#664) and does not say who started one.
+ */
+function SuspendedRunsPrompt() {
+  const { t } = useI18n();
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState("");
+  const listed = useQuery({
+    queryKey: ["suspended-runs"],
+    queryFn: () => suspendedRuns(),
+    refetchInterval: 60_000,
+  });
+  const paused = listed.data?.runs ?? [];
+  if (paused.length === 0) return null;
+  async function resume() {
+    setBusy(true);
+    setOutcome("");
+    try {
+      const { runs: results } = await suspendedRunsResume();
+      const resumed = results.filter(
+        (result) => result.outcome === "resumed",
+      ).length;
+      if (results.length > 0)
+        setOutcome(
+          t("suspendedRunsResumed")
+            .replace("{resumed}", String(resumed))
+            .replace("{total}", String(results.length)),
+        );
+    } catch (reason) {
+      setOutcome(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["suspended-runs"] }),
+        client.invalidateQueries({ queryKey: ["state"] }),
+      ]);
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
+    >
+      <span>{outcome || t("suspendedRunsPaused")}</span>
+      <Button
+        type="button"
+        size="sm"
+        disabled={busy}
+        onClick={() => void resume()}
+      >
+        {t("suspendedRunsResume")}
+      </Button>
+    </div>
+  );
+}
 type Registration = { status: string; expires_at: string } | null;
 function sessionContext(session: BrowserSession, selected: string | null) {
   // An inactive credential fails with 401 and ends the browser session, so
@@ -298,12 +441,6 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 5000,
   });
-  const state = useQuery({
-    queryKey: ["state"],
-    queryFn: () => getState(),
-    enabled: connected,
-    refetchInterval: 5000,
-  });
   // A Deployment Administrator's role grants no Tenant content authority
   // (ADR 0102): the server refuses Tenant content routes and event streams in
   // this context, so the dashboard does not ask for them.
@@ -323,10 +460,127 @@ function Dashboard({
       (mapping) => mappingContext(mapping) === context,
     )?.tenant ?? null;
   const remembered = useNodeSelection(subjectTenant ?? mappedTenant);
-  // State lists every Node of the Tenant; the dashboard works in one: the Node
-  // of the open Workspace, whichever way it was reached, and otherwise the
-  // Node this browser remembers.
-  const everything = state.isError ? undefined : state.data;
+  const nodeGeneration = useRef(0);
+  useEffect(() => {
+    nodeGeneration.current += 1;
+  }, [remembered.selected?.name]);
+  const state = useQuery({
+    queryKey: ["state", remembered.selected?.name],
+    queryFn: async (): Promise<TenantState> => {
+      const params = new URLSearchParams();
+      if (remembered.selected?.name)
+        params.set("node", remembered.selected.name);
+      const result = (await (
+        await authenticatedFetch(`/api/state?${params}`)
+      ).json()) as TenantState;
+      return result;
+    },
+    enabled: connected && (administratorContext || !remembered.pending),
+    refetchInterval: 60_000,
+  });
+  // "Show more" pages beyond the Workspace and pending Human Request windows
+  // of `/api/state` (#664) belong to one Node: a refresh re-reads them from
+  // the fresh window's cursor instead of dropping them, and only a Node
+  // change resets them. The pending list is how the dashboard learns that a
+  // request was answered (a request leaves it once answered), and a new
+  // Workspace moves the Workspace window's boundary, so each fresh window
+  // re-reads the loaded range rather than keeping pages read after the old
+  // boundary.
+  const pagesKey = `${context ?? ""}:${remembered.selected?.name ?? ""}`;
+  const selectedNode = remembered.selected?.name;
+  const workspacePages = useWindowPages<Workspace>({
+    key: pagesKey,
+    windowCursor: state.data?.next_cursors.workspaces ?? null,
+    freshAt: state.dataUpdatedAt,
+    readPage: (cursor, signal) =>
+      readWorkspacePage(selectedNode, cursor, signal),
+    none: noWorkspaces,
+  });
+  const olderWorkspaces = workspacePages.older;
+  const workspaceCursor = workspacePages.cursor;
+  const humanPages = useWindowPages<HumanRequest>({
+    key: pagesKey,
+    windowCursor: state.data?.next_cursors.human_requests ?? null,
+    freshAt: state.dataUpdatedAt,
+    readPage: (cursor, signal) => readHumanPage(selectedNode, cursor, signal),
+    none: noHumanRequests,
+  });
+  const olderHumans = humanPages.older;
+  const humanCursor = humanPages.cursor;
+  // State is scoped to the selected Node.
+  const projected = useMemo(() => {
+    const fresh = state.isError ? undefined : state.data;
+    if (!fresh) return fresh;
+    return {
+      ...fresh,
+      workspaces: mergeWindow(fresh.workspaces, olderWorkspaces),
+      next_cursors: {
+        ...fresh.next_cursors,
+        workspaces: workspaceCursor,
+        human_requests: humanCursor,
+      },
+    };
+  }, [
+    state.isError,
+    state.data,
+    olderWorkspaces,
+    workspaceCursor,
+    humanCursor,
+  ]);
+  const selectedWorkspace = useQuery({
+    queryKey: ["workspace", route.channel],
+    queryFn: () => workspaceGet(route.channel),
+    enabled: Boolean(
+      projected &&
+        route.channel &&
+        !projected.workspaces.some((row) => row.id === route.channel),
+    ),
+  });
+  // React Query keeps the last snapshot after a failed re-read (for example
+  // 403 once access is withdrawn), so a failed snapshot counts as none: it
+  // must not move the Node or bring the Workspace, its Tasks and Artifacts
+  // back into State.
+  const selectedSnapshot = selectedWorkspace.isError
+    ? undefined
+    : selectedWorkspace.data;
+  useEffect(() => {
+    const workspace = selectedSnapshot?.workspace;
+    if (
+      workspace &&
+      workspace.id === route.channel &&
+      workspace.node !== remembered.selected?.name &&
+      remembered.nodes.some((node) => node.name === workspace.node)
+    ) {
+      remembered.select(workspace.node);
+    }
+  }, [selectedSnapshot, route.channel, remembered]);
+  const everything = useMemo(() => {
+    const snapshot = selectedSnapshot;
+    if (
+      !projected ||
+      !snapshot ||
+      snapshot.workspace.node !== remembered.selected?.name ||
+      projected.workspaces.some((row) => row.id === snapshot.workspace.id)
+    )
+      return projected;
+    return {
+      ...projected,
+      workspaces: [...projected.workspaces, snapshot.workspace],
+      tasks: [
+        ...new Map(
+          [...projected.tasks, ...snapshot.tasks].map((row) => [row.id, row]),
+        ).values(),
+      ],
+      artifacts: [
+        ...new Map(
+          [...projected.artifacts, ...snapshot.artifacts].map((row) => [
+            row.id,
+            row,
+          ]),
+        ).values(),
+      ],
+    };
+  }, [projected, selectedSnapshot, remembered.selected?.name]);
   const channelNode = route.channel
     ? everything?.workspaces.find((value) => value.id === route.channel)?.node
     : undefined;
@@ -338,8 +592,14 @@ function Dashboard({
     [remembered, current],
   );
   const nodeState = useMemo(
-    () => (everything ? nodeView(everything, current) : undefined),
-    [everything, current],
+    () =>
+      everything
+        ? {
+            ...nodeView(everything, current),
+            human_requests: mergeWindow(everything.human_requests, olderHumans),
+          }
+        : undefined,
+    [everything, current, olderHumans],
   );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
@@ -555,34 +815,38 @@ function Dashboard({
   }, [browserSessionId, client]);
   useEffect(() => {
     if (!connected) return;
-    if (administratorContext) return;
     const controller = new AbortController();
     const refresher = coalescedRefresh(client);
+    const onFocus = () => refresher.refresh("state");
+    window.addEventListener("focus", onFocus);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    void subscribe(
-      controller.signal,
-      () => {
-        if (timer) return;
-        timer = setTimeout(() => {
-          for (const key of [
-            "state",
-            "workspace",
-            "channel-history",
-            "run",
-            "marketplace",
-            "generation",
-            "provider-credentials",
-            "provider-credential-bindings",
-            "scratch-space",
-          ]) {
-            refresher.refresh(key);
-          }
-          timer = undefined;
-        }, 250);
-      },
-      setStreamStatus,
-    );
+    if (!administratorContext)
+      void subscribe(
+        controller.signal,
+        () => {
+          if (timer) return;
+          timer = setTimeout(() => {
+            for (const key of [
+              "state",
+              "human-request",
+              "workspace",
+              "channel-history",
+              "run",
+              "marketplace",
+              "generation",
+              "provider-credentials",
+              "provider-credential-bindings",
+              "scratch-space",
+            ]) {
+              refresher.refresh(key);
+            }
+            timer = undefined;
+          }, 250);
+        },
+        setStreamStatus,
+      );
     return () => {
+      window.removeEventListener("focus", onFocus);
       controller.abort();
       refresher.close();
       clearTimeout(timer);
@@ -804,9 +1068,8 @@ function Dashboard({
   const runs = data
     ? data.runs.map((run) => ({ run, node: data.node.id }))
     : [];
-  // What awaits the person is Tenant-wide: a request in another Node's
-  // Workspace is as pending as one in the selected Node's.
-  const requests = (everything?.human_requests ?? []).map((request) => {
+  // The queue includes the selected Node's pending requests.
+  const requests = (data?.human_requests ?? []).map((request) => {
     const owner = everything?.workspaces.find(
       (value) => value.id === request.workspace_id,
     );
@@ -815,6 +1078,7 @@ function Dashboard({
       request,
       node:
         nodes.nodes.find((value) => value.name === owner?.node)?.address ??
+        current?.address ??
         everything?.deployment.id ??
         "",
       workspace:
@@ -823,9 +1087,11 @@ function Dashboard({
           : title,
     };
   });
-  const visit = (target: NoticeTarget) => {
+  const visit = async (target: NoticeTarget) => {
     // An approval is decided in the decision queue, where its card lives.
     if (target.kind === "approval") return setQueueOpen(true);
+    if (target.kind === "administration")
+      return window.location.assign("/trust?view=authorization");
     const item =
       target.kind === "human"
         ? requests.find(
@@ -833,14 +1099,54 @@ function Dashboard({
               item.request.id === target.id && item.request.response === null,
           )
         : undefined;
-    const task =
+    let task =
       target.kind === "task"
         ? everything?.tasks.find((task) => task.id === target.id)
         : undefined;
-    const owner = everything?.workspaces.find(
+    let owner = everything?.workspaces.find(
       (workspace) => workspace.id === target.workspace,
     );
-    if ((!item && !task) || !owner) return;
+    if (target.kind === "human" && !item) return;
+    if ((!owner && item) || (target.kind === "task" && !task)) {
+      const generation = nodeGeneration.current;
+      try {
+        const snapshot = await workspaceGet(target.workspace);
+        if (
+          nodeGeneration.current !== generation ||
+          client.getQueryState(["state", remembered.selected?.name])
+            ?.dataUpdatedAt !== state.dataUpdatedAt
+        )
+          return;
+        owner = snapshot.workspace;
+        if (target.kind === "task") {
+          task = snapshot.tasks.find((value) => value.id === target.id);
+          if (!task) return;
+          client.setQueryData(["workspace", target.workspace], snapshot);
+        }
+        client.setQueryData<TenantState>(
+          ["state", remembered.selected?.name],
+          (old) =>
+            old
+              ? {
+                  ...old,
+                  workspaces: [
+                    ...new Map(
+                      [...old.workspaces, snapshot.workspace].map((row) => [
+                        row.id,
+                        row,
+                      ]),
+                    ).values(),
+                  ],
+                }
+              : old,
+          { updatedAt: state.dataUpdatedAt },
+        );
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      }
+    }
+    if (!owner) return;
     nodes.select(owner.node);
     go("collaboration", { channel: owner.id, focus: "" });
     if (item) open({ kind: "human", request: item.request, node: item.node });
@@ -851,11 +1157,19 @@ function Dashboard({
       <NotificationProvider
         key={`${browserSessionId}:${context}`}
         data={everything}
+        node={remembered.selected?.name ?? ""}
         approvals={inbox.pending}
         locale={locale}
         theme={theme}
         onSelect={visit}
       >
+        {browserSession?.sign_in_method_prompt && (
+          <SignInMethodPrompt
+            key={browserSession.sign_in_method_prompt.identity_id}
+            prompt={browserSession.sign_in_method_prompt}
+          />
+        )}
+        {subjectTenant !== null && <SuspendedRunsPrompt />}
         <AppShell
           section={route.section}
           settings={route.settings}
@@ -864,6 +1178,18 @@ function Dashboard({
           deploymentAdministrator={deploymentAdministrator}
           streamStatus={administratorContext ? "live" : streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
+          workspaceMore={{
+            available: workspaceCursor !== null,
+            loading: workspacePages.loading,
+            error: workspacePages.error,
+            load: () => void workspacePages.loadMore(),
+          }}
+          humanMore={{
+            available: humanCursor !== null,
+            loading: humanPages.loading,
+            error: humanPages.error,
+            load: humanPages.loadMore,
+          }}
           inbox={inbox}
           queueOpen={queueOpen}
           setQueueOpen={setQueueOpen}

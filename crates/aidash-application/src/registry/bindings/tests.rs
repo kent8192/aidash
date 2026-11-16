@@ -35,7 +35,6 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 struct Catalog {
 	entries: BTreeMap<QualifiedRef, Entry>,
 	reject_installations: bool,
-	foreign: BTreeMap<QualifiedRef, ForeignAgentSnapshot>,
 	plugins: BTreeMap<String, StoredAgentPlugin>,
 }
 impl Catalog {
@@ -43,19 +42,25 @@ impl Catalog {
 		let mut result = Self {
 			entries: BTreeMap::new(),
 			reject_installations: false,
-			foreign: BTreeMap::new(),
 			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
-		result.insert(crate::registry::system::compaction_decider().unwrap());
 		result.insert(
 			aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap(),
 		);
+		for definition in aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
+		{
+			result.insert(definition);
+		}
 		for operation in crate::registry::system::operations() {
 			result.core(operation);
 			if matches!(
 				operation,
-				"workspace_read" | "workspace_observe" | "workspace_message"
+				"workspace_read"
+					| "workspace_observe"
+					| "workspace_message"
+					| "memory_mutate"
+					| "subnode_task"
 			) {
 				result.insert(entry(
 					&format!("aidash.{operation}"),
@@ -97,9 +102,6 @@ impl Catalog {
 impl BindingCatalog for Catalog {
 	async fn agent_plugin(&mut self, digest: &str) -> Result<Option<StoredAgentPlugin>> {
 		Ok(self.plugins.get(digest).cloned())
-	}
-	async fn foreign_agent(&mut self, reference: &QualifiedRef) -> Result<ForeignAgentSnapshot> {
-		self.foreign.get(reference).cloned().ok_or(Error::Forbidden)
 	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		self.entries
@@ -174,6 +176,54 @@ async fn snapshot(
 }
 
 #[tokio::test]
+async fn develop_normalization_keeps_legacy_tool_versions() {
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(aidash_domain::registry::bindings::Binding::tool(reference(
+			"aidash.subnode_task",
+		)));
+	let mut agent = agent_entry(&config);
+	agent.normalize_agent(NODE).unwrap();
+	for binding in &mut agent.binding_normalization.as_mut().unwrap().bindings {
+		if matches!(
+			binding.binding.target.id.as_str(),
+			"aidash.memory_mutate" | "aidash.subnode_task"
+		) {
+			binding.binding.target.version = "1.0.0".into();
+		}
+	}
+	let original = agent.binding_normalization.clone();
+	let resolved = resolve(
+		&mut Catalog::new(),
+		&providers(),
+		reference("agent"),
+		&agent,
+		false,
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		resolved
+			.definitions
+			.iter()
+			.find(|definition| definition.identity == resolved.agent)
+			.unwrap()
+			.definition
+			.binding_normalization,
+		original
+	);
+	for id in ["aidash.memory_mutate", "aidash.subnode_task"] {
+		assert!(
+			resolved
+				.bindings
+				.iter()
+				.any(|binding| binding.identity.id == id && binding.identity.version == "1.0.0")
+		);
+	}
+}
+
+#[tokio::test]
 async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bindings() {
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
@@ -188,7 +238,11 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	for binding in &mut saved.bindings {
 		if matches!(
 			binding.binding.target.id.as_str(),
-			"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+			"aidash.workspace_read"
+				| "aidash.workspace_observe"
+				| "aidash.workspace_message"
+				| "aidash.memory_mutate"
+				| "aidash.subnode_task"
 		) {
 			binding.binding.target.version = "1.0.0".into();
 		}
@@ -305,6 +359,8 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 		saved.bindings.len(),
 		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 2
 	);
+	// Model and workspace source dependencies remain pinned; the built-in
+	// memory's RRF and UTF-8 algorithms are internal implementation details.
 	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
 	recovered.validate().unwrap();
@@ -451,7 +507,7 @@ async fn alias_collisions_are_checked_after_expansion() {
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 #[test]
-fn memory_builtins_are_excluded_without_a_memory_provider() {
+fn memory_builtins_use_the_default_provider_without_an_explicit_provider() {
 	use crate::test_support::{agent, binding, entry, native_memory_entries, resolve, try_resolve};
 	let node = "aidash://node-a";
 	let memory_tools = |saved: &BindingSnapshot| -> Vec<Option<String>> {
@@ -476,16 +532,10 @@ fn memory_builtins_are_excluded_without_a_memory_provider() {
 	let mut entries = crate::test_support::builtin_entries(node);
 	let saved = resolve(node, &agent("agent"), false, entries.clone());
 	let reasons = memory_tools(&saved);
-	assert_eq!(reasons.len(), 3);
-	assert!(
-		reasons
-			.iter()
-			.all(|reason| reason.as_deref() == Some("memory tools need a memory provider"))
-	);
-	assert!(saved.operation("memory_recall").is_err());
+	assert_eq!(reasons, vec![None; 3]);
+	saved.operation("memory_recall").unwrap();
 
-	// A native memory source is a `memory` Binding without a provider: it only
-	// feeds automatic context, so the tools stay excluded (#617).
+	// Native memory sources are not providers; they coexist with the default.
 	for adapter in ["semantic_memory", "conversation_memory"] {
 		let mut entries = entries.clone();
 		entries.push(entry(
@@ -496,26 +546,22 @@ fn memory_builtins_are_excluded_without_a_memory_provider() {
 		let mut root = agent("agent");
 		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
 		let saved = resolve(node, &root, false, entries.clone());
-		assert_eq!(
-			memory_tools(&saved),
-			vec![Some("memory tools need a memory provider".into()); 3],
-			"{adapter}"
-		);
-		assert!(saved.operation("memory_recall").is_err(), "{adapter}");
+		assert_eq!(memory_tools(&saved), vec![None; 3], "{adapter}");
+		saved.operation("memory_recall").unwrap();
 		let settings = aidash_domain::registry::AgentConfig::from_snapshot(&saved).unwrap();
-		assert!(settings.memory.is_none(), "{adapter}");
+		assert_eq!(settings.memory.unwrap().id, "aidash.memory", "{adapter}");
 
-		// An explicit memory tool cannot be bound without a provider either.
+		// Explicitly binding the tool still uses the default provider.
 		root.config["bindings"] = serde_json::json!([
 			binding("memory", node, adapter),
 			binding("tool", node, "aidash.memory_recall"),
 		]);
 		assert!(
-			try_resolve(node, &root, false, entries.clone()).is_err(),
+			try_resolve(node, &root, false, entries.clone()).is_ok(),
 			"{adapter}"
 		);
 
-		// Nor can a context source declaration that names one.
+		// A source declaration may name the now-available memory tools.
 		let mut declared = entries;
 		let source = declared.last_mut().unwrap();
 		let mut native: aidash_domain::registry::bindings::sources::NativeContext =
@@ -528,7 +574,7 @@ fn memory_builtins_are_excluded_without_a_memory_provider() {
 		source.config = serde_json::to_value(native).unwrap();
 		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
 		assert!(
-			try_resolve(node, &root, false, declared).is_err(),
+			try_resolve(node, &root, false, declared).is_ok(),
 			"{adapter}"
 		);
 	}
@@ -822,37 +868,25 @@ async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kin
 }
 
 #[tokio::test]
-async fn context_policy_summarizer_is_pinned_in_the_snapshot_and_must_be_a_model() {
+async fn context_recovery_uses_the_agents_pinned_model() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	config.context_policy = Some(
-		serde_json::from_value(json!({
-			"version":"context-recovery/1",
-			"summary":{"model":reference("summarizer").local()}
-		}))
-		.unwrap(),
-	);
-	catalog.insert(entry("summarizer", "model", json!({})));
+	config.context_policy =
+		Some(serde_json::from_value(json!({"version":"context-recovery/1","summary":{}})).unwrap());
 	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
 	graph.validate().unwrap();
-	let pinned = graph
-		.definitions
-		.iter()
-		.find(|d| d.identity == reference("summarizer"))
-		.expect("the summarizer is part of the admitted Binding closure");
-	assert_eq!(pinned.definition.kind, "model");
-	// A Run resolves the summarizer only from its admitted closure.
-	let mut incomplete = graph.clone();
-	incomplete
-		.definitions
-		.retain(|d| d.identity != reference("summarizer"));
-	assert!(incomplete.validate().is_err());
-	catalog
-		.entries
-		.get_mut(&reference("summarizer"))
-		.unwrap()
-		.kind = "skill".into();
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	assert!(
+		graph
+			.definitions
+			.iter()
+			.any(|item| item.identity.id == config.model.id && item.definition.kind == "model")
+	);
+	assert!(
+		!graph
+			.definitions
+			.iter()
+			.any(|item| item.identity.id == "summarizer")
+	);
 }
 
 #[tokio::test]
@@ -902,8 +936,20 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		initial
 			.bindings
 			.iter()
-			.all(|b| b.definition.kind != "memory")
+			.any(|b| b.identity.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID)
 	);
+	assert!(
+		initial
+			.bindings
+			.iter()
+			.all(|b| b.identity != reference("memory"))
+	);
+	let automatic = aidash_domain::registry::AgentConfig::automatic_context(&initial).unwrap();
+	assert_eq!(
+		automatic.memory.as_ref().unwrap().id,
+		aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+	);
+	assert!(!automatic.semantic_memory && !automatic.conversation_memory);
 	config.bindings.push(Binding {
 		kind: BindingKind::Memory,
 		target: reference("memory"),
@@ -1701,73 +1747,17 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 	assert!(!settings.core_capabilities.skills);
 }
 
-async fn public_foreign_snapshot() -> ForeignAgentSnapshot {
-	let node = "aidash://node-b";
-	let mut catalog = Catalog::new();
-	catalog.entries = catalog
-		.entries
-		.into_iter()
-		.map(|(mut identity, mut entry)| {
-			identity.registry_deployment = node.into();
-			if entry.kind == "tool" {
-				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
-				entry.config =
-					serde_json::to_value(core_descriptor(node, &descriptor.operation).unwrap())
-						.unwrap();
-			}
-			(identity, entry)
-		})
-		.collect();
-	let saved = resolve(
-		&mut catalog,
-		&providers(),
-		QualifiedRef {
-			registry_deployment: node.into(),
-			..reference("agent")
-		},
-		&agent_entry(&agent_config()),
-		true,
-	)
-	.await
-	.unwrap();
-	ForeignAgentSnapshot::from_snapshot(saved).unwrap()
-}
-
+/// An Agent cannot bind an Agent on another Node (#373): the resolver asks the
+/// catalog for it like any other definition, and a snapshot that still pins one
+/// is refused.
 #[tokio::test]
-async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_identity() {
-	use aidash_domain::{
-		context::source::QueryPolicy,
-		registry::bindings::{source_defaults, sources},
+async fn an_agent_transport_to_another_node_is_resolved_like_any_other_reference() {
+	let node = "aidash://node-b";
+	let child = QualifiedRef {
+		registry_deployment: node.into(),
+		..reference("child")
 	};
 	let mut catalog = Catalog::new();
-	let identity = source_defaults::workspace_observation_reference(NODE);
-	let source = catalog.entries.get_mut(&identity).unwrap();
-	let mut native: sources::NativeContext = serde_json::from_value(source.config.clone()).unwrap();
-	let mut custom = native.declaration(&identity);
-	custom.query = QueryPolicy::AcceptedInputsFirstV1;
-	native.context_source = Some(custom);
-	source.config = serde_json::to_value(native).unwrap();
-	// This is a valid, freshly admitted graph with correct digests, so rejection
-	// comes from the receiver export boundary rather than corrupt snapshot bytes.
-	let mut config = agent_config();
-	config
-		.bindings
-		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
-	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
-	saved.validate().unwrap();
-	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("unsupported private or cross-Node dependency")
-	);
-}
-
-#[tokio::test]
-async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child_tools() {
-	let child = public_foreign_snapshot().await;
-	let mut catalog = Catalog::new();
-	catalog.foreign.insert(child.agent.clone(), child.clone());
 	let descriptor = ToolDescriptor {
 		registry_deployment: NODE.into(),
 		provider: "integration.agent@1".into(),
@@ -1777,8 +1767,8 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 		narrow: Default::default(),
 		lifecycle: None,
 		transport: Some(aidash_domain::tool::ToolConfig::Agent {
-			node_id: child.agent.registry_deployment.clone(),
-			agent: child.agent.local(),
+			node_id: child.registry_deployment.clone(),
+			agent: child.local(),
 		}),
 	};
 	catalog.insert(entry(
@@ -1790,87 +1780,32 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 	config
 		.bindings
 		.push(Binding::tool(reference("foreign-transport")));
-	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert_eq!(
-		graph.foreign_agents.as_slice(),
-		std::slice::from_ref(&child)
-	);
-	assert!(
-		graph
-			.definitions
-			.iter()
-			.any(|definition| definition.identity == child.agent)
-	);
-	assert!(
-		graph
-			.bindings
-			.iter()
-			.all(|binding| binding.identity.registry_deployment == NODE)
-	);
-	assert_eq!(
-		graph
-			.bindings
-			.iter()
-			.filter(|binding| binding.alias.as_deref() == Some("remote_child"))
-			.count(),
-		1
-	);
-	let mut recovered: BindingSnapshot =
-		serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
-	recovered.validate().unwrap();
-	recovered.foreign_agents.clear();
-	assert!(recovered.validate().is_err());
-	let mut forged = graph.clone();
-	forged.foreign_agents[0].agent.registry_deployment = NODE.into();
-	assert!(forged.validate().is_err());
-	let mut forged = graph.clone();
-	forged.foreign_agents[0].definitions[0].digest = "forged".into();
-	assert!(forged.validate().is_err());
-	let mut duplicated = graph;
-	duplicated.foreign_agents.push(child.clone());
-	assert!(duplicated.validate().is_err());
-	catalog.foreign.clear();
 	assert!(matches!(
 		snapshot(&mut catalog, &config, false).await,
-		Err(Error::Forbidden)
+		Err(Error::NotFound(id)) if id == "child"
 	));
-}
 
-#[tokio::test]
-async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
-	let saved = public_foreign_snapshot().await;
-	for kind in ["memory", "source", "skill"] {
-		let mut changed = saved.clone();
-		changed.definitions.push(
-			ResolvedDefinition::new(
-				QualifiedRef {
-					registry_deployment: saved.agent.registry_deployment.clone(),
-					..reference("private")
-				},
-				entry("private", kind, json!({})),
-			)
-			.unwrap(),
-		);
-		assert!(changed.validate().is_err(), "{kind}");
+	// Even a catalog that hands out the other Node's whole closure cannot get
+	// it pinned.
+	let peer = Catalog::new();
+	for (mut identity, mut entry) in peer.entries {
+		identity.registry_deployment = node.into();
+		if entry.kind == "tool" {
+			let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
+			entry.config =
+				serde_json::to_value(core_descriptor(node, &descriptor.operation).unwrap())
+					.unwrap();
+		}
+		catalog.entries.insert(identity, entry);
 	}
-	let mut installed = saved.clone();
-	installed.definitions[0].definition.installation = Some(aidash_domain::registry::Projection {
-		contract: 1,
-		tenant: "private".into(),
-		installation: "installed".into(),
-		revision: 1,
-	});
-	assert!(installed.validate().is_err());
-	let mut changed = saved.clone();
-	changed.definitions[0].identity.registry_deployment = NODE.into();
-	assert!(changed.validate().is_err());
-	let mut local = saved.snapshot();
-	local.remote = false;
-	assert!(ForeignAgentSnapshot::from_snapshot(local).is_err());
-	// Additional pinned roots cannot turn this protocol into a multi-hop export.
-	let mut recursive = saved.snapshot();
-	recursive.foreign_agents.push(saved);
-	assert!(ForeignAgentSnapshot::from_snapshot(recursive).is_err());
+	let mut remote = agent_entry(&agent_config());
+	remote.id = child.id.clone();
+	catalog.entries.insert(child.clone(), remote);
+	let result = snapshot(&mut catalog, &config, false).await;
+	assert!(
+		matches!(&result, Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message == "snapshot binds an Agent on another Node"),
+		"{result:?}"
+	);
 }
 
 #[tokio::test]
@@ -1940,12 +1875,10 @@ fn native_memory_binding_preserves_removed_read_operations() {
 }
 
 fn decider_config() -> Value {
-	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
-        "provider_credential":"openrouter",
-        "routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}],
-        "builder":"aidash.compaction/3","option_source":"history_event/1",
-        "rule":"compaction.keep/1","mode":"enforce",
-        "max_calls_per_run":20})
+	let mut entry = crate::registry::system::approval_decider().unwrap();
+	entry.config["routes"] = json!([{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}]);
+	entry.config["max_calls_per_run"] = json!(20);
+	entry.config
 }
 fn decider_binding(id: &str) -> Binding {
 	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()
@@ -1983,7 +1916,7 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 		assert!(corrupt.validate().is_err());
 	}
 	let bound = recovered
-		.decider(aidash_domain::decision::Hook::Compaction)
+		.decider(aidash_domain::decision::Hook::Approval)
 		.unwrap();
 	assert_eq!(bound.pin.identity, reference("decider"));
 	assert_eq!(
@@ -2000,7 +1933,7 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 		.config["routes"][0]["model"] = json!("typesafe/jev-1.14");
 	assert_eq!(
 		saved
-			.decider(aidash_domain::decision::Hook::Compaction)
+			.decider(aidash_domain::decision::Hook::Approval)
 			.unwrap()
 			.config
 			.routes[0]
@@ -2055,7 +1988,7 @@ async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admis
 	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
 	assert_eq!(
 		saved
-			.decider(aidash_domain::decision::Hook::Compaction)
+			.decider(aidash_domain::decision::Hook::Approval)
 			.unwrap()
 			.pin
 			.identity
@@ -2458,132 +2391,6 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 			.to_string()
 			.contains("required-Home semantic contribution"),
 		"{error}"
-	);
-}
-
-#[tokio::test]
-async fn ordinary_compaction_default_is_pinned_removed_or_replaced_by_exact_hook() {
-	use aidash_domain::decision::Hook;
-	let mut catalog = Catalog::new();
-	let ordinary = snapshot(&mut catalog, &agent_config(), false)
-		.await
-		.unwrap();
-	let (bound, definition) = ordinary.bound_decider(Hook::Compaction).unwrap().unwrap();
-	assert_eq!(bound.pin.identity, defaults::compaction_reference(NODE));
-	assert_eq!(
-		definition,
-		crate::registry::system::compaction_decider().unwrap()
-	);
-	assert_eq!(
-		ordinary
-			.bindings
-			.iter()
-			.find(|binding| binding.identity == bound.pin.identity)
-			.unwrap()
-			.origin,
-		BindingOrigin::Default
-	);
-
-	let mut removed = agent_config();
-	removed.remove_default.push(COMPACTION_DEFAULT.into());
-	let opted_out = snapshot(&mut catalog, &removed, false).await.unwrap();
-	assert!(opted_out.bound_decider(Hook::Compaction).unwrap().is_none());
-	assert!(
-		!opted_out
-			.definitions
-			.iter()
-			.any(|definition| definition.identity == bound.pin.identity)
-	);
-
-	let mut approval = crate::registry::system::approval_decider().unwrap();
-	approval.id = "judge".into();
-	catalog.insert(approval);
-	let mut config = agent_config();
-	config.bindings.push(Binding {
-		kind: BindingKind::Decider,
-		target: reference("judge"),
-		alias: None,
-		narrow: Default::default(),
-		members: vec![],
-		exposure: None,
-	});
-	let with_approval = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert!(
-		with_approval
-			.bound_decider(Hook::Compaction)
-			.unwrap()
-			.is_some()
-	);
-	assert!(
-		with_approval
-			.bound_decider(Hook::Approval)
-			.unwrap()
-			.is_some()
-	);
-
-	let mut replacement = crate::registry::system::compaction_decider().unwrap();
-	replacement.id = "tenant.compaction".into();
-	catalog.insert(replacement);
-	config.bindings.push(Binding {
-		kind: BindingKind::Decider,
-		target: reference("tenant.compaction"),
-		alias: None,
-		narrow: Default::default(),
-		members: vec![],
-		exposure: None,
-	});
-	let replaced = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert_eq!(
-		replaced
-			.bound_decider(Hook::Compaction)
-			.unwrap()
-			.unwrap()
-			.0
-			.pin
-			.identity,
-		reference("tenant.compaction")
-	);
-	assert!(
-		!replaced
-			.definitions
-			.iter()
-			.any(|definition| definition.identity == bound.pin.identity)
-	);
-	let root = replaced
-		.definitions
-		.iter()
-		.find(|definition| definition.identity == replaced.agent)
-		.unwrap();
-	assert_eq!(
-		root.definition
-			.binding_normalization
-			.as_ref()
-			.unwrap()
-			.compaction_override,
-		Some(reference("tenant.compaction"))
-	);
-
-	// A fabricated hook claim cannot hide the default in a durable snapshot.
-	let mut forged = with_approval;
-	let root = forged
-		.definitions
-		.iter_mut()
-		.find(|definition| definition.identity == forged.agent)
-		.unwrap();
-	root.definition
-		.normalize_agent_with_compaction(NODE, Some(&reference("judge")))
-		.unwrap();
-	root.digest =
-		aidash_domain::registry::rules::digest(&serde_json::to_value(&root.definition).unwrap());
-	// Match the fabricated closure so only its false hook claim can reject it.
-	forged
-		.bindings
-		.retain(|binding| binding.identity != bound.pin.identity);
-	forged
-		.definitions
-		.retain(|definition| definition.identity != bound.pin.identity);
-	assert!(
-		matches!(forged.validate(), Err(aidash_domain::Error::Invalid(message)) if message == "compaction replacement differs from its exact Decider hook")
 	);
 }
 

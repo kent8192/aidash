@@ -258,6 +258,11 @@ async fn a_summary_that_absorbed_an_expired_result_is_restored_with_the_placehol
 		&context.history[0].event,
 		ContextEvent::Tool { result, .. } if *result == ContextEvent::expired_result("searched")
 	));
+	// Reasoning from the expired result on is no longer resent (#942).
+	assert_eq!(
+		context.reasoning_withheld_from_seq,
+		Some(context.history[0].seq)
+	);
 	// The same purges again change nothing.
 	assert!(
 		!expire_projection(&mut context, &expired(day(1)), &journal)
@@ -318,4 +323,51 @@ async fn every_purge_batch_reads_as_fresh_against_the_watermark() {
 	let times = results.purge_times.lock().unwrap().clone();
 	assert_eq!(times.len(), 2);
 	assert!(times[0] == day(31) && times[1] > times[0], "{times:?}");
+}
+
+/// A projection whose research result at seq 1 was offloaded to a marker,
+/// and a Journal that resolves the original to `placeholder` while keeping
+/// its Research reference, as the server's Journal does once the result is
+/// revoked or expired.
+fn offloaded(placeholder: Value) -> (Context, Journal) {
+	let original = search(SOURCE);
+	let mut context = Context::default();
+	context.push(call("searched", original.clone()));
+	let ContextEvent::Tool { result, .. } = &mut context.history[0].event else {
+		unreachable!()
+	};
+	*result = crate::context::offload::marker(1, &original);
+	context.history[0].research = None;
+	let mut resolved = HistoryEntry::new(1, call("searched", placeholder));
+	resolved.research =
+		aidash_domain::context::research::ResearchReference::from_result("searched", &original);
+	(context, Journal(vec![resolved]))
+}
+
+#[tokio::test]
+async fn an_offloaded_marker_of_an_expired_result_becomes_the_placeholder() {
+	let (mut context, journal) = offloaded(ContextEvent::expired_result("searched"));
+	assert!(
+		expire_projection(&mut context, &expired(day(1)), &journal)
+			.await
+			.unwrap()
+	);
+	assert!(matches!(
+		&context.history[0].event,
+		ContextEvent::Tool { result, .. } if *result == ContextEvent::expired_result("searched")
+	));
+}
+
+#[tokio::test]
+async fn an_offloaded_marker_of_a_revoked_result_is_redacted_with_its_arguments() {
+	let (mut context, journal) = offloaded(ContextEvent::revoked_result("searched"));
+	super::super::revocation::revoke_projection(&mut context, &journal)
+		.await
+		.unwrap();
+	assert!(matches!(
+		&context.history[0].event,
+		ContextEvent::Tool { call, result }
+			if *result == ContextEvent::revoked_result("searched")
+				&& call.arguments == ContextEvent::revoked_arguments()
+	));
 }

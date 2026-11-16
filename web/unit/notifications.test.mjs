@@ -4,6 +4,8 @@ import {
   NoticeStore,
   NOTICE_INTERVAL,
   NOTICE_HISTORY_LIMIT,
+  storedWatermarks,
+  taskEventScope,
 } from "../src/notifications/model.ts";
 
 function entry(id, kind = null, scope = "home:one", signature = String(kind)) {
@@ -32,6 +34,39 @@ test("initial pending requests remain reachable without announcing history", () 
   assert.equal(store.getSnapshot().pending.length, 1);
   assert.deepEqual(store.takeBatch(100), []);
   assert.equal(store.getSnapshot().recent.length, 0);
+});
+test("a newly observed completion event for an older task announces only once", () => {
+  const store = new NoticeStore();
+  const completed = { ...entry("old-task", "completed"), eventId: "event-1" };
+  store.observe(frame([]));
+  store.observe(frame([completed]));
+  assert.equal(store.takeBatch(0).length, 1);
+  store.observe(frame([completed]));
+  assert.equal(store.takeBatch(NOTICE_INTERVAL).length, 0);
+  const initial = new NoticeStore();
+  initial.observe(frame([completed]));
+  assert.equal(initial.takeBatch(0).length, 0);
+});
+test("a recovered task can fail again without reannouncing replayed failures", () => {
+  const store = new NoticeStore();
+  const failed = (revision, eventId) => ({
+    ...entry("task", "failed", "home:one", `${revision}:FAILED`),
+    eventId,
+  });
+  store.observe(frame([entry("task", null, "home:one", "1:OPEN")]));
+  store.observe(frame([failed(2, "failure-2")]));
+  assert.equal(store.takeBatch(0).length, 1);
+  store.observe(frame([entry("task", null, "home:one", "3:OPEN")]));
+  store.observe(frame([failed(4, "failure-4")]));
+  assert.equal(store.takeBatch(NOTICE_INTERVAL).length, 1);
+  store.observe(frame([failed(4, "failure-4")]));
+  assert.equal(store.takeBatch(2 * NOTICE_INTERVAL).length, 0);
+  store.observe(frame([entry("task", null, "home:one", "3:OPEN")]));
+  store.observe(frame([failed(4, "duplicate-event-4")]));
+  assert.equal(store.takeBatch(2 * NOTICE_INTERVAL).length, 0);
+  store.observe(frame([entry("task", null, "home:one", "3:OPEN")]));
+  store.observe(frame([failed(2, "failure-2")]));
+  assert.equal(store.takeBatch(3 * NOTICE_INTERVAL).length, 0);
 });
 test("new inputs deduplicate across polls, missing rows and reconnects", () => {
   const store = new NoticeStore();
@@ -293,5 +328,161 @@ test("connection notifications carry the complete resource and consent scopes in
       "acme",
     ),
     null,
+  );
+});
+
+test("an invitation approval is announced to an administrator once", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  store.observe(frame([], [scope]));
+  const approval = {
+    ...entry("invitation-1", "completed", scope),
+    target: {
+      kind: "administration",
+      node: "home",
+      id: "invitation-1",
+      workspace: "",
+    },
+  };
+  store.observe(frame([approval], [scope]));
+  assert.equal(store.takeBatch(0).length, 1);
+  assert.equal(store.getSnapshot().recent.length, 1);
+  store.observe(frame([approval], [scope]));
+  assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), []);
+});
+
+test("an existing invitation approval remains visible after a notification center loads", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  const approval = {
+    ...entry("old-invitation", "joined", scope),
+    target: {
+      kind: "administration",
+      node: "home",
+      id: "old-invitation",
+      workspace: "",
+    },
+  };
+  store.observe(frame([approval], [scope]));
+  assert.equal(store.getSnapshot().recent.length, 1);
+  assert.equal(store.getSnapshot().unread, true);
+  assert.deepEqual(store.takeBatch(0), []);
+});
+
+function join(id, occurredAt, scope = "tenant:team") {
+  return {
+    ...entry(id, "joined", scope),
+    occurredAt,
+    target: { kind: "administration", node: "home", id, workspace: "" },
+  };
+}
+
+test("a read join stays read across a failed invitation-approvals poll", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  const old = join("join-1", "2026-11-01T00:00:00Z");
+  store.observe(frame([old], [scope]));
+  assert.equal(store.getSnapshot().unread, true);
+  store.markRead();
+  // The failed poll leaves the join scope out of the frame.
+  store.observe(frame([], []));
+  store.observe(frame([old], [scope]));
+  assert.equal(store.getSnapshot().unread, false);
+  assert.equal(store.getSnapshot().recent.length, 1);
+  const later = join("join-2", "2026-11-02T00:00:00Z");
+  store.observe(frame([old, later], []));
+  store.observe(frame([old, later], [scope]));
+  assert.equal(store.getSnapshot().unread, true);
+});
+
+test("read joins stay read after a reload, newer ones are unread", () => {
+  const saved = new Map();
+  const storage = {
+    getItem: (key) => saved.get(key) ?? null,
+    setItem: (key, value) => void saved.set(key, value),
+  };
+  const key = "notice-watermarks";
+  const scope = "tenant:team";
+  const old = join("join-1", "2026-11-01T00:00:00Z");
+  const first = new NoticeStore(storedWatermarks(storage, key));
+  first.observe(frame([old], [scope]));
+  first.markRead();
+  const reloaded = new NoticeStore(storedWatermarks(storage, key));
+  reloaded.observe(frame([old], [scope]));
+  assert.equal(reloaded.getSnapshot().unread, false);
+  assert.equal(reloaded.getSnapshot().recent.length, 1);
+  const later = join("join-2", "2026-11-02T00:00:00Z");
+  const again = new NoticeStore(storedWatermarks(storage, key));
+  again.observe(frame([later, old], [scope]));
+  assert.equal(again.getSnapshot().unread, true);
+  again.markRead(`${later.key}:joined`);
+  assert.equal(again.getSnapshot().unread, false);
+});
+
+test("reading one join does not acknowledge an older unread one", () => {
+  const saved = new Map();
+  const storage = {
+    getItem: (key) => saved.get(key) ?? null,
+    setItem: (key, value) => void saved.set(key, value),
+  };
+  const scope = "tenant:team";
+  const older = join("join-1", "2026-11-01T00:00:00Z");
+  const newer = join("join-2", "2026-11-02T00:00:00Z");
+  const store = new NoticeStore(storedWatermarks(storage, "marks"));
+  store.observe(frame([newer, older], [scope]));
+  store.markRead(`${newer.key}:joined`);
+  assert.equal(saved.has("marks"), false);
+  const reloaded = new NoticeStore(storedWatermarks(storage, "marks"));
+  reloaded.observe(frame([newer, older], [scope]));
+  assert.equal(reloaded.getSnapshot().unread, true);
+});
+
+test("each Node's task events have their own baseline, seeded silently", () => {
+  // Mirrors the frames notifications.tsx builds from Node-scoped State.
+  const nodeFrame = (node, events) => {
+    const eventScope = taskEventScope("home", node);
+    const workspace = `home:${node}-workspace`;
+    return {
+      scopes: [workspace, eventScope],
+      entries: events.map(([id, sequence]) => ({
+        ...entry(id, "completed", workspace),
+        eventId: `${node}-${id}`,
+        eventScope,
+        eventSequence: sequence,
+      })),
+      eventWatermark: {
+        scope: eventScope,
+        sequence: Math.max(0, ...events.map(([, sequence]) => sequence)),
+      },
+    };
+  };
+  const store = new NoticeStore();
+  store.observe(nodeFrame("a", [["a1", 10]]));
+  store.observe(
+    nodeFrame("a", [
+      ["a1", 10],
+      ["a2", 11],
+    ]),
+  );
+  assert.equal(store.takeBatch(0).length, 1);
+  // Switching to Node b: its earlier completions are history, even those
+  // with a sequence above Node a's watermark.
+  store.observe(
+    nodeFrame("b", [
+      ["b1", 5],
+      ["b2", 12],
+    ]),
+  );
+  assert.equal(store.takeBatch(NOTICE_INTERVAL).length, 0);
+  store.observe(
+    nodeFrame("b", [
+      ["b1", 5],
+      ["b2", 12],
+      ["b3", 13],
+    ]),
+  );
+  assert.deepEqual(
+    store.takeBatch(2 * NOTICE_INTERVAL).map((item) => item.detail),
+    ["b3"],
   );
 });

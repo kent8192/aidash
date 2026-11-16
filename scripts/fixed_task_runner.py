@@ -10,9 +10,10 @@ import json
 import time
 from urllib.parse import quote
 import uuid
+from urllib.request import urlopen
 
 import tool_call_approvals
-from fixed_task_evaluation import (COMPACTION_DEFAULT, DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
+from fixed_task_evaluation import (DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
                                    task_tools, execution_schedule)
 
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
@@ -242,18 +243,7 @@ def minimal_defaults(config):
     support = (SKILL_ASSET_READ,) if deferred else SKILL_TOOLS
     skills = any(binding["kind"] == "skill" for binding in config["bindings"])
     removed = [name for name in defaults if not (skills and name in support)]
-    return with_compaction_removed(config, removed)
-
-
-def with_compaction_removed(config, removed):
-    """`removed` plus the default compaction binding, unless the Agent binds an explicit Decider.
-
-    Every ordinary Agent is bound to the built-in compaction Decider by default. The evaluator
-    never approves it, so keeping it would pause the Run with `decider_unapproved`; without a
-    Decider an overflow pauses with `context_unreducible` instead.
-    """
-    explicit = any(binding["kind"] == "decider" for binding in config["bindings"])
-    return list(removed) if explicit or COMPACTION_DEFAULT in removed else [*removed, COMPACTION_DEFAULT]
+    return removed
 
 
 def agent_id(prefix, planned):
@@ -400,9 +390,22 @@ def record_final_state(observation, run):
                         "summary_recovered": bool(context.get("execution_summary"))})
 
 
+def read_fixture_ledger(endpoint, run_id):
+    """Read only the approved fixture's synthetic, per-Run side-effect ledger."""
+    run_id = str(uuid.UUID(run_id))
+    with urlopen(f"{endpoint.rstrip('/')}/observations/{run_id}", timeout=10) as response:
+        data = json.loads(response.read(65537))
+    if not isinstance(data, dict) or data.get("run_id") != run_id or data.get("complete") is not True:
+        raise ValueError("fixture ledger is incomplete or names a different Run")
+    pages = data.get("pages")
+    if not isinstance(pages, list) or any(type(page) is not int for page in pages):
+        raise ValueError("invalid fixture ledger")
+    return pages
+
+
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
              interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False, observation=None,
-             after_claim=None):
+             after_claim=None, side_effect_reader=None):
     """Execute one Task Run end to end and return raw observations; never raises for Run failures.
 
     Every request ends by the Run's deadline. When the deadline passes, even
@@ -540,8 +543,19 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             observation["final_answer"] = final_answer(reader, token, observation["workspace"], run)
         if fixture is not None:
             observation["requests"] = fixture.observed(task_uuid)
-        if usage_reader is not None:
-            observation["usage_records"] = usage_reader(observation["run_id"])
+        if task.get("fixture_record_pages"):
+            try:
+                ledger = fixture.ledger(run_id) if fixture is not None else (
+                    side_effect_reader(run_id) if side_effect_reader is not None else None)
+                if isinstance(ledger, dict):
+                    if ledger.get("run_id") != run_id or ledger.get("complete") is not True:
+                        raise ValueError("fixture ledger is incomplete")
+                    ledger = ledger.get("pages")
+                if not isinstance(ledger, list) or any(type(page) is not int for page in ledger):
+                    raise ValueError("fixture ledger is unavailable or invalid")
+                observation["fixture_record_pages"] = ledger
+            except (OSError, ValueError, TypeError):
+                observation["fixture_record_pages"] = None
     except Exception as error:  # Counted as an infrastructure failure, never dropped.
         observation["infrastructure_error"] = f"{type(error).__name__}: {error}"
         # A failed request says nothing about the Run: it may still be active, so stop it
@@ -568,6 +582,18 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                                                   f"{error}"
         observation["wall_ms"] = round((clock() - started) * 1000, 3)
         raise
+    finally:
+        if usage_reader is not None and observation.get("run_id"):
+            try:
+                observation["usage_records"] = usage_reader(observation["run_id"])
+                try:
+                    events = compaction_events(api, token, observation["workspace"], observation["run_id"])
+                except Exception:
+                    events = []
+                mark_compaction(observation["usage_records"], events)
+            except Exception as error:
+                detail = f"usage read failed: {type(error).__name__}: {error}"
+                observation["infrastructure_error"] = "; ".join(filter(None, (observation.get("infrastructure_error"), detail)))
     observation["wall_ms"] = round((clock() - started) * 1000, 3)
     return observation
 
@@ -612,21 +638,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         config = agent_config(corpus, task, model_ref, bindings, planned["agent_fields"])
         config["bindings"] += [{"kind": "skill", "target": experiment.ref(ref["id"]), "narrow": {}}
                                for ref in skills[task["id"]]]
-        auxiliary = planned.get("auxiliary")
-        if auxiliary and auxiliary.get("decider"):
-            reference = auxiliary["decider"]["reference"]
-            identifier, _, version = reference.partition("@")
-            config["bindings"].append({"kind": "decider", "target": {
-                "registry_deployment": experiment.node, "id": identifier, "version": version},
-                "narrow": {"decision": {"max_calls_per_run": auxiliary["decider"]["max_calls_per_run"]}}})
-        config["remove_default"] = minimal_defaults(config) if remove_all_defaults else \
-            with_compaction_removed(config, config["remove_default"])
-        if task.get("requires_summary") and auxiliary and auxiliary.get("summary"):
-            identifier, _, version = auxiliary["summary"]["reference"].partition("@")
-            config.setdefault("context_policy", {"version": "context-recovery/1"})["summary"] = {
-                # A reasoning or verbose summary model may need more than the default; at most 4096.
-                "model": {"id": identifier, "version": version}, "max_tokens": task.get("summary_max_tokens", 1024),
-                "call_budget": auxiliary["summary"]["max_calls_per_run"]}
+        if remove_all_defaults:
+            config["remove_default"] = minimal_defaults(config)
         identifier = agent_id(experiment.prefix, planned)
         try:
             agent = experiment.register("agent", identifier, config)
@@ -690,7 +703,7 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
         name = action.get("label") or f"{index}:{op}"
         if op == "query":
             listed = api.post(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank},
-                              token)
+                              token)["units"]
             visible = {}
             for unit in listed:
                 symbol = next((key for key, value in units.items() if value == unit["id"]), unit["id"])
@@ -745,6 +758,11 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
 # ------------------------------------------------------------ live tier
 
 
+# crates/aidash-domain/src/context/policy.rs: MAX_SUMMARY_TOKENS and DEFAULT_SUMMARY_CALLS.
+MAX_SUMMARY_TOKENS = 4096
+DEFAULT_SUMMARY_CALLS = 8
+
+
 def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     """Worst-case nanocredits for one Run.
 
@@ -757,8 +775,19 @@ def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     per_attempt = (model_config["context_window"] * prompt_rate
                    + model_config["max_output_tokens"] * price["output_nanocredits_per_token"])
     main = steps * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
-    # Every enabled auxiliary call is reserved even if pruning or Summary never becomes necessary.
-    return main + (auxiliary or {}).get("worst_case_nanocredits", 0)
+    # Every Agent may spend its Summary calls (eight by default) on its own model.
+    # Reserve them even when the Run never needs the Summary Stage. The harness
+    # sizes a Summary's output by the policy and window, not by the ordinary
+    # max_output_tokens: min(summary.max_tokens, window / 8, provider limit).
+    policy_summary = (task.get("context_policy") or {}).get("summary") or {}
+    summary_tokens = min(policy_summary.get("max_tokens", MAX_SUMMARY_TOKENS),
+                         model_config["context_window"] // 8,
+                         model_config.get("provider_max_output_tokens") or float("inf"))
+    per_summary = (model_config["context_window"] * prompt_rate
+                   + summary_tokens * price["output_nanocredits_per_token"])
+    summary_calls = policy_summary.get("call_budget", DEFAULT_SUMMARY_CALLS)
+    summary = summary_calls * PROVIDER_ATTEMPTS_PER_STEP * per_summary
+    return main + summary + (auxiliary or {}).get("worst_case_nanocredits", 0)
 
 
 def observed_provider_work(api, token, workspace, run_id):
@@ -777,13 +806,55 @@ def observed_provider_work(api, token, workspace, run_id):
             continue
         usage = data.get("context_usage") or {}
         attempts.append({"step": data.get("step"), "input_tokens": usage.get("input_tokens"),
-                         "output_tokens": usage.get("output_tokens")})
+                         "output_tokens": usage.get("output_tokens"), "context_usage": usage})
     return attempts
+
+
+def compaction_events(api, token, workspace, run_id):
+    """Read chronological events past the snapshot's 100-event limit."""
+    cursor = 0
+    completed = []
+    while True:
+        events = api.get(f"/api/events?workspace_id={quote(str(workspace), safe='')}&after={cursor}", token)
+        if not isinstance(events, list):
+            raise ValueError("invalid workspace event page")
+        if not events:
+            return completed
+        for event in events:
+            sequence = event.get("sequence")
+            if type(sequence) is not int or sequence <= cursor:
+                raise ValueError("workspace events are not ordered")
+            cursor = sequence
+            data = event.get("data") or {}
+            if event.get("kind") == "model.completed" and data.get("run_id") == run_id:
+                completed.append({"context_usage": data.get("context_usage")})
+
+
+def mark_compaction(records, events):
+    """Match accepted attempts to workspace events; leave uncertain matches unknown."""
+    main = [r for r in records if r.get("purpose") == "main"]
+    for record in main:
+        record["after_compaction"] = None
+    accepted = [r for r in main if r.get("outcome") == "completed"]
+    counts = [(event.get("context_usage") or {}).get("compactions") for event in events]
+    if len(accepted) != len(counts) or any(type(n) is not int for n in counts):
+        return
+    previous = 0
+    uncertain = False
+    completed = iter(counts)
+    for record in main:
+        if record.get("outcome") != "completed":
+            uncertain = True
+            continue
+        count = next(completed)
+        record["after_compaction"] = count > previous if not uncertain and count >= previous else None
+        previous = count
+        uncertain = False
 
 
 def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout, observations,
               clock=time.monotonic, sleep=time.sleep, binding_check=None, *, execution_seed=None, fixture=None,
-              usage_reader=None, auxiliary=None, approve_fixture_tools=False):
+              usage_reader=None, auxiliary=None, approve_fixture_tools=False, side_effect_reader=None):
     """Dispatch live Runs only inside the ledger's spend and time ceilings.
 
     Each Run is reserved at its worst case before dispatch; a refusal stops all
@@ -841,18 +912,17 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
             run_task(api, experiment, planned, repeat, planned["agent_ref"],
                      fixture=fixture, usage_reader=usage_reader, timeout=min(timeout, ledger.remaining()),
                      clock=clock, sleep=sleep, observation=observation, approve_fixture_tools=approve_fixture_tools,
-                     after_claim=after_claim if binding_check is not None else None)
+                     after_claim=after_claim if binding_check is not None else None,
+                     side_effect_reader=side_effect_reader)
             if observation.get("cancellation_failed"):
                 stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
                              "or the Deployment Administrator token")
-            if observation.get("compactions") and not (auxiliary or {}).get("decider"):
-                stops.append(f"Run {key} applied {observation['compactions']} compaction(s), so the Node's Jev "
-                             "compaction Decider answered although the approval attests external compaction is disabled")
             if observation["run_id"] and observation.get("workspace"):
                 try:
-                    attempt["provider_work"] = observed_provider_work(api, experiment.token,
-                                                                      observation["workspace"],
-                                                                      observation["run_id"])
+                    attempt["provider_work"] = [{k: v for k, v in item.items() if k != "context_usage"}
+                                                for item in observed_provider_work(api, experiment.token,
+                                                                                   observation["workspace"],
+                                                                                   observation["run_id"])]
                 except Exception as error:  # Informational only; the reservation stays charged.
                     attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
         except BaseException:  # Ctrl-C, SIGTERM and the like: the in-flight Run is counted, never dropped.

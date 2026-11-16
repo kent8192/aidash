@@ -102,9 +102,12 @@ impl Access {
 			&run,
 			workspace.attributes,
 		);
-		let id = if let Some(binding) =
+		let binding = if self.state_binding_exists(run.id) == Some(false) {
+			None
+		} else {
 			crate::apps::knowledge::repositories::bindings::load(&mut **self.tx, &run).await?
-		{
+		};
+		let id = if let Some(binding) = binding {
 			attributes["participant_id"] = serde_json::json!(binding.bank.participant);
 			attributes["participant_revision"] = serde_json::json!(binding.participant_revision);
 			attributes["shared"] = serde_json::json!(false);
@@ -173,6 +176,30 @@ impl Access {
 		)
 		.await
 		.map_err(Into::into)
+	}
+
+	/// Fixed built-in memory algorithms are internal to that exact provider;
+	/// custom providers and other Registry reads retain their full provenance.
+	pub(crate) async fn track_memory_registry(
+		&mut self,
+		entries: &[crate::registry::Entry],
+	) -> Result<()> {
+		let built_in = entries
+			.iter()
+			.any(aidash_domain::registry::bindings::memory_defaults::is_builtin_memory)
+			&& !entries.iter().any(|entry| {
+				entry.kind == "memory"
+					&& !aidash_domain::registry::bindings::memory_defaults::is_builtin_memory(entry)
+			});
+		let visible: Vec<_> = entries
+			.iter()
+			.filter(|entry| {
+				!built_in
+					|| !aidash_domain::registry::bindings::memory_defaults::is_internal_role(entry)
+			})
+			.cloned()
+			.collect();
+		self.track_registry(&visible).await
 	}
 
 	/// See [`ReadProvenanceScope::open_run_reads`]. An authority that is not

@@ -10,6 +10,8 @@ use reinhardt::query::{
 use std::collections::{BTreeSet, VecDeque};
 
 mod dependencies;
+#[cfg(test)]
+mod tests;
 pub(crate) use dependencies::validate_impact;
 use uuid::Uuid;
 
@@ -23,8 +25,12 @@ pub(crate) async fn lock_workspace(
 			.column(Alias::new("id"))
 			.from(Alias::new("workspaces"))
 			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			// Memory locks the Workspace before reading Runs; a Run step may
+			// lock its Run before inserting an event referencing the Workspace.
+			// NO KEY UPDATE still serializes memory writers but permits the
+			// foreign key's KEY SHARE, avoiding the inverse-order deadlock.
 			.lock(if exclusive {
-				LockType::Update
+				LockType::NoKeyUpdate
 			} else {
 				LockType::Share
 			})
@@ -156,11 +162,12 @@ pub(crate) async fn mutate_origin(
 			}
 			if !unit.deleted {
 				units::unexpired(lease, &unit).await?;
-				units::current(
+				units::current_for_run(
 					lease,
 					bank.workspace,
 					&unit.content.evidence,
 					bounds.max_graph_visits,
+					origin,
 				)
 				.await?;
 			}
@@ -225,12 +232,44 @@ pub(crate) async fn mutate_origin(
 	let mut retained =
 		usize::try_from(count).map_err(|_| Error::Invalid("corrupt memory count".into()))?;
 	let mut result = Vec::new();
+	// Units a write left exactly as they were (#127): returned and receipted,
+	// but never saved, fenced or reindexed.
+	let mut unchanged = Vec::new();
 	// PostgreSQL's timestamp input rounds nanoseconds. Canonicalize before
 	// admission so the pending fence, returned unit and persisted row agree.
 	let now = Utc::now().trunc_subsecs(6);
 	for change in &mutation.changes {
 		let id = change.id();
 		let existing = units::load(lease, id, true).await?;
+		if let Change::Correct {
+			expected_revision,
+			content,
+			..
+		} = change && let Some(current) = existing.as_ref()
+			&& current.bank == mutation.bank
+			&& current.revision == *expected_revision
+			&& !current.deleted
+			&& !current.stale
+			&& canonical(content, &mutation.provider) == current.content
+		{
+			// A write identical to the current revision is not a change: the
+			// revision stays, so no Run that read it stops. A stale Unit is
+			// refreshed by any correction, so it never takes this path. The
+			// body is returned only after the expiry and evidence checks a
+			// changed one meets, read as the same originating Run.
+			units::unexpired(lease, current).await?;
+			units::current_for_run(
+				lease,
+				current.bank.workspace,
+				&current.content.evidence,
+				bounds.max_graph_visits,
+				origin,
+			)
+			.await?;
+			unchanged.push(current.id);
+			result.push(current.clone());
+			continue;
+		}
 		let mut unit = match change {
 			Change::Add { content, .. } => {
 				if existing.is_some() {
@@ -288,17 +327,30 @@ pub(crate) async fn mutate_origin(
 				unit
 			}
 		};
-		if let Some(range) = unit.content.occurred.as_mut() {
-			range.start = range.start.trunc_subsecs(6);
-			range.end = range.end.trunc_subsecs(6);
+		unit.content = canonical(&unit.content, &mutation.provider);
+		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			&& mutation.provider.version
+				== aidash_domain::registry::bindings::memory_defaults::VERSION
+			&& !unit.deleted
+			&& !unit.content.kind.derived()
+			&& !unit
+				.content
+				.evidence
+				.iter()
+				.any(|source| matches!(source, Evidence::JournalRange { .. }))
+		{
+			return Err(Error::Invalid(
+				"built-in memory facts require Journal provenance".into(),
+			));
 		}
 		if !unit.deleted {
 			units::unexpired(lease, &unit).await?;
-			units::current(
+			units::current_for_run(
 				lease,
 				unit.bank.workspace,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
+				origin,
 			)
 			.await?;
 			for link in &unit.content.links {
@@ -364,45 +416,138 @@ pub(crate) async fn mutate_origin(
 		super::purge::history(lease, &unit, &policy.retention).await?;
 		result.push(unit);
 	}
-	// Capacity applies to the atomic final state, including batched replacements.
+	// The built-in bank evicts least recently updated units atomically. Explicit
+	// providers retain their configured rejection behavior.
 	if retained > bounds.max_units {
-		return Err(Error::Conflict("memory bank storage limit reached".into()));
+		use aidash_domain::registry::bindings::memory_defaults;
+		if mutation.provider.id != memory_defaults::MEMORY_ID
+			|| mutation.provider.version != memory_defaults::VERSION
+		{
+			return Err(Error::Conflict("memory bank storage limit reached".into()));
+		}
+		// Evicting a Unit that supports an added or corrected Unit would stale
+		// the very Unit this request admits, so its support is never a candidate.
+		let mut protected: BTreeSet<_> = mutation.changes.iter().map(Change::id).collect();
+		for unit in result.iter().filter(|unit| !unit.deleted) {
+			protected.extend(supporting_units(lease, unit, bounds.max_graph_visits).await?);
+		}
+		let needed = retained - bounds.max_units;
+		let rows = native::query(
+			&Query::select()
+				.columns(["id", "revision"].map(Alias::new))
+				.from(Alias::new("memory_units"))
+				.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
+				.and_where(Expr::col("deleted").eq(false))
+				.order_by(Alias::new("updated_at"), Order::Asc)
+				.order_by(Alias::new("id"), Order::Asc)
+				.limit(retained as u64)
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(&mut **lease.tx())
+		.await?;
+		let mut changes = Vec::with_capacity(needed);
+		for row in rows {
+			let id: Uuid = row.try_get("id")?;
+			if !protected.contains(&id) {
+				let unit = units::load(lease, id, false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				match units::current_for_run(
+					lease,
+					mutation.bank.workspace,
+					&unit.content.evidence,
+					bounds.max_graph_visits,
+					origin,
+				)
+				.await
+				{
+					Ok(()) | Err(Error::Conflict(_)) => {}
+					Err(Error::Forbidden) => continue,
+					Err(error) => return Err(error),
+				}
+				changes.push(Change::Delete {
+					id,
+					expected_revision: row.try_get("revision")?,
+				});
+				if changes.len() == needed {
+					break;
+				}
+			}
+		}
+		if changes.len() != needed {
+			return Err(Error::Conflict(
+				"memory bank cannot evict protected units".into(),
+			));
+		}
+		let eviction = Mutation {
+			operation_id: crate::semantic::native_memory::request_id(
+				mutation.operation_id,
+				"builtin-eviction",
+			)?,
+			provider: mutation.provider.clone(),
+			bank: mutation.bank.clone(),
+			changes,
+		};
+		Box::pin(mutate_origin(lease, &eviction, bounds, origin)).await?;
 	}
+	let changed: Vec<Unit> = result
+		.iter()
+		.filter(|unit| !unchanged.contains(&unit.id))
+		.cloned()
+		.collect();
 	// Admission must leave every source correctable within its pinned impact cap.
-	for unit in result.iter().filter(|unit| !unit.deleted) {
+	for unit in changed.iter().filter(|unit| !unit.deleted) {
 		dependencies::validate_admission(lease, unit, bounds).await?;
 	}
 	// Impact discovery is bounded and complete before any result may leave the transaction.
 	fence_dependents(
 		lease,
 		mutation.bank.workspace,
-		&result,
+		&changed,
 		mutation.operation_id,
 		&actor,
 		bounds,
 	)
 	.await?;
-	for unit in &result {
+	// A repeated Unit that cites one this batch changed was just fenced: its
+	// returned body is no longer current, so the batch fails as a changed
+	// write citing the old revision would.
+	for id in &unchanged {
+		let now = units::load(lease, *id, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let returned = result.iter().find(|unit| unit.id == *id);
+		if returned.is_none_or(|unit| unit.revision != now.revision) || now.stale {
+			return Err(Error::Conflict(
+				"memory unit changed by another change in this batch".into(),
+			));
+		}
+	}
+	for unit in &changed {
 		if !unit.deleted {
-			units::current(
+			units::current_for_run(
 				lease,
 				unit.bank.workspace,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
+				origin,
 			)
 			.await?;
 		}
 	}
-	bump_bank(lease, bank_id).await?;
-	super::engine_jobs::changed(
-		lease,
-		&mutation.bank,
-		&mutation.provider,
-		&policy,
-		&result,
-		origin,
-	)
-	.await?;
+	if !changed.is_empty() {
+		bump_bank(lease, bank_id).await?;
+		super::engine_jobs::changed(
+			lease,
+			&mutation.bank,
+			&mutation.provider,
+			&policy,
+			&changed,
+			origin,
+		)
+		.await?;
+	}
 	let outcome: Vec<_> = result.iter().map(Unit::evidence).collect();
 	super::memory_receipts::reserve(
 		lease,
@@ -414,6 +559,29 @@ pub(crate) async fn mutate_origin(
 	)
 	.await?;
 	Ok(result)
+}
+
+/// `content` as it would be stored: the built-in provider records an
+/// unverified fact as `recorded`, and PostgreSQL keeps microseconds, so an
+/// incoming time with nanoseconds equals the stored one only once truncated.
+/// A changed write stores exactly this, and an identical write compares it.
+fn canonical(
+	content: &aidash_domain::memory::Content,
+	provider: &aidash_domain::registry::EntityRef,
+) -> aidash_domain::memory::Content {
+	use aidash_domain::registry::bindings::memory_defaults;
+	let mut content = content.clone();
+	if provider.id == memory_defaults::MEMORY_ID
+		&& provider.version == memory_defaults::VERSION
+		&& content.verification == Verification::Unverified
+	{
+		content.verification = Verification::Recorded;
+	}
+	if let Some(range) = content.occurred.as_mut() {
+		range.start = range.start.trunc_subsecs(6);
+		range.end = range.end.trunc_subsecs(6);
+	}
+	content
 }
 
 pub(crate) fn content_columns() -> Vec<Alias> {
@@ -513,7 +681,9 @@ async fn save_origin(
 	provider: Option<&aidash_domain::registry::EntityRef>,
 	origin: Option<Uuid>,
 ) -> Result<()> {
-	lease.tx().observe_memory(unit)?;
+	if !super::bank_settings::is_builtin(lease, &unit.bank).await? {
+		lease.tx().observe_memory(unit)?;
+	}
 	let mut columns = ["id", "bank_id", "revision"].map(Alias::new).to_vec();
 	columns.extend(content_columns());
 	columns.extend(["learned_at", "updated_at", "deleted", "stale", "tenant"].map(Alias::new));
@@ -593,8 +763,26 @@ pub(crate) async fn refresh_dependencies(
 	.execute(&mut **lease.tx())
 	.await?;
 	if !unit.deleted {
+		let mut dependencies = BTreeSet::new();
 		for evidence in unit.content.evidence.iter().collect::<BTreeSet<_>>() {
 			let (kind, id, revision) = match evidence {
+				// The Run is the revocation root; the range itself is immutable,
+				// so its dependency uses a stable sentinel rather than Run CAS.
+				Evidence::JournalRange {
+					run_id,
+					from_seq,
+					through_seq,
+				} => {
+					super::journal_proofs::record(
+						lease,
+						&unit.bank.tenant,
+						*run_id,
+						*from_seq,
+						*through_seq,
+					)
+					.await?;
+					("run", *run_id, 1)
+				}
 				Evidence::Publication { id, revision } => {
 					let (source, revision) = if unit.stale {
 						super::publications::retained_source(lease, *id).await?
@@ -608,6 +796,9 @@ pub(crate) async fn refresh_dependencies(
 				Evidence::Artifact { id, revision, .. } => ("artifact", *id, *revision),
 				Evidence::Run { id, revision, .. } => ("run", *id, *revision),
 			};
+			if !dependencies.insert((kind, id, revision)) {
+				continue;
+			}
 			native::query(
 				&Query::insert()
 					.into_table(Alias::new("memory_dependencies"))
@@ -655,6 +846,33 @@ pub(crate) async fn project(
 ) -> Result<()> {
 	use crate::apps::knowledge::services::core;
 	use aidash_domain::semantic::{Source, mutations::Entry};
+	let policy_provider = match provider {
+		Some(provider) => Some(provider.clone()),
+		None => super::bank_settings::get(lease, &unit.bank)
+			.await?
+			.map(|settings| settings.provider),
+	};
+	if let Some(provider) = &policy_provider {
+		// Fencing can update a dependent bank whose provider the initiating
+		// subject cannot read. This internal projection decision needs only the
+		// pinned definition; it must not grant or disclose that definition.
+		let entry = crate::apps::registry::models::Definition::read_of(
+			&mut **lease.tx(),
+			&unit.bank.tenant,
+			&provider.id,
+			&provider.version,
+		)
+		.await?;
+		if entry.kind != "memory" {
+			return Err(Error::Invalid(
+				"memory provider definition changed kind".into(),
+			));
+		}
+		let config: ProviderConfig = serde_json::from_value(entry.config)?;
+		if config.policy.embedding.is_none() {
+			return Ok(());
+		}
+	}
 	let Some(index) = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
 		unit.bank.workspace,
@@ -817,6 +1035,61 @@ pub(crate) async fn bump_bank(lease: &mut Lease<'_>, id: Uuid) -> Result<()> {
 	.await?;
 	Ok(())
 }
+/// Every Unit that transitively supports `unit`, following the same edges as
+/// [`units::current_for_run`]: Unit evidence, a Publication's source Unit and
+/// the Units a Run evidence read. It visits at most `max_visits` evidence
+/// entries, the bound admission's provenance check already passed.
+async fn supporting_units(
+	lease: &mut Lease<'_>,
+	unit: &Unit,
+	max_visits: usize,
+) -> Result<BTreeSet<Uuid>> {
+	let mut pending: VecDeque<Evidence> = unit.content.evidence.iter().cloned().collect();
+	let mut support = BTreeSet::new();
+	let mut visits = 0_usize;
+	while let Some(evidence) = pending.pop_front() {
+		visits += 1;
+		if visits > max_visits {
+			return Err(Error::Invalid(
+				"memory evidence traversal exceeds its bound".into(),
+			));
+		}
+		let id = match evidence {
+			Evidence::Unit { id, .. } => id,
+			Evidence::Publication { id, revision } => {
+				super::publications::source(lease, id, revision).await?.0
+			}
+			Evidence::Run { id, .. } => {
+				let reads = native::query(
+					&Query::select()
+						.column(Alias::new("unit_id"))
+						.from(Alias::new("memory_run_reads"))
+						.and_where(Expr::col("run_id").eq(Expr::value(id)))
+						.limit(max_visits as u64 + 1)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **lease.tx())
+				.await?;
+				for read in reads {
+					if let Some(source) =
+						units::load(lease, read.try_get("unit_id")?, false).await?
+					{
+						pending.push_back(source.evidence());
+					}
+				}
+				continue;
+			}
+			_ => continue,
+		};
+		if !support.insert(id) {
+			continue;
+		}
+		if let Some(source) = units::load(lease, id, false).await? {
+			pending.extend(source.content.evidence);
+		}
+	}
+	Ok(support)
+}
 async fn fence_dependents(
 	lease: &mut Lease<'_>,
 	workspace: Uuid,
@@ -963,6 +1236,7 @@ async fn load_snapshot(
 ) -> Result<Vec<Unit>> {
 	let mut result = Vec::new();
 	for &id in ids {
+		lease.begin_row();
 		let unit = units::load(lease, id, false)
 			.await?
 			.ok_or(Error::Forbidden)?;
@@ -978,7 +1252,28 @@ async fn load_snapshot(
 		}
 		.await;
 		match current {
-			Err(Error::Conflict(_) | Error::Forbidden) => continue,
+			Err(Error::Conflict(_) | Error::Forbidden) => {
+				// A unit whose support a Node did not confirm is left out and
+				// counted; one that was refused or has changed is not (#770).
+				if let Some(node) = lease.take_row_silence() {
+					lease.leave_out(
+						&node,
+						aidash_domain::unconfirmed::Kind::MemoryUnit,
+						bank.workspace,
+					);
+				}
+				continue;
+			}
+			// A source read that names the silent Node as an error is the same
+			// silence, and must not fail the whole list (#751).
+			Err(Error::NodeUnreachable { node, .. }) => {
+				lease.leave_out(
+					&node,
+					aidash_domain::unconfirmed::Kind::MemoryUnit,
+					bank.workspace,
+				);
+				continue;
+			}
 			result => result?,
 		}
 		result.push(unit);

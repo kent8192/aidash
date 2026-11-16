@@ -32,6 +32,20 @@ struct Scope<'a> {
 	federation: &'a Federation,
 	access: Access,
 }
+/// The local permissions a manual resume checks, under `access`, for the automatic resume that
+/// an Authentication Administrator's choice stands in for (#876 decision 16). The access comes
+/// back for the resume itself.
+pub(crate) async fn recheck_resume(
+	federation: &Federation,
+	access: Access,
+	id: Uuid,
+) -> (Access, Result<()>) {
+	let mut scope = Scope { federation, access };
+	let result = aidash_application::authorization::runs::authorize_resume(&mut scope, id)
+		.await
+		.map(|_| ());
+	(scope.access, result)
+}
 #[async_trait]
 impl RunControlRepository for Controls<'_> {
 	async fn begin(&self) -> Result<Box<dyn RunControlScope + '_>> {
@@ -216,11 +230,16 @@ impl RunControlScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn decline_call(&mut self, id: Uuid, call: &str) -> Result<RunInspection> {
+	async fn decline_call(
+		&mut self,
+		id: Uuid,
+		call: &str,
+		rest_of_run: bool,
+	) -> Result<RunInspection> {
 		let by = self.access.identity.subject.clone();
 		self.federation
 			.store
-			.decline_call_in(&mut self.access.tx, id, call, &by)
+			.decline_call_in(&mut self.access.tx, id, call, &by, rest_of_run)
 			.await
 			.map(|declined| declined.run)
 			.map_err(Into::into)

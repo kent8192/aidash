@@ -48,6 +48,7 @@ struct State {
 	grant_root: Option<&'static str>,
 	/// The Home events written for a declined call.
 	declined: Vec<Value>,
+	requests: Vec<(String, Value)>,
 }
 #[derive(Clone, Default)]
 struct Repository {
@@ -95,7 +96,7 @@ fn grant(required: bool) -> Grant {
 	let binding: Binding = if required {
 		serde_json::from_value(json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":{"node_id":"aidash://home","entry":{"id":"embedding","version":"1"},"digest":"digest","configuration_digest":"config"}})).unwrap()
 	} else {
-		Binding::Disabled { summarizer: None }
+		Binding::Disabled {}
 	};
 	Grant {
 		id: Uuid::from_u128(4),
@@ -123,7 +124,7 @@ fn description() -> Description {
 		task: task(),
 		inspection: serde_json::from_value::<Inspection>(grant(false).inspection).unwrap(),
 		expires_at: grant(false).expires_at,
-		semantic: Binding::Disabled { summarizer: None },
+		semantic: Binding::Disabled {},
 	}
 }
 fn activation() -> Value {
@@ -190,6 +191,7 @@ impl HomeRepository for Repository {
 			state.rpcs += 1;
 			state.max_rpcs = state.max_rpcs.max(state.rpcs);
 			state.calls.push(format!("rpc:{path}"));
+			state.requests.push((path.to_owned(), input.clone()));
 			state.delay_status
 		};
 		let _guard = RpcGuard(self.clone());
@@ -249,6 +251,9 @@ impl HomeScope for Scope {
 	) -> Result<Vec<aidash_domain::HumanRequest>> {
 		self.repository.call("human_requests");
 		Ok(self.repository.state.lock().unwrap().human_requests.clone())
+	}
+	async fn close_human_requests(&mut self, _: Uuid, _: Uuid) -> Result<()> {
+		Ok(())
 	}
 	async fn answer_human(
 		&mut self,
@@ -1003,14 +1008,24 @@ fn declined_reply() -> Value {
 	json!({"activation":activation(),"tool":"task_delegate","kind":"policy"})
 }
 #[rstest]
+#[case::single_call(false)]
+#[case::rest_of_run(true)]
 #[tokio::test]
-async fn the_requester_declines_under_what_resuming_needs_and_the_home_names_them() {
+async fn the_requester_declines_under_what_resuming_needs_and_the_home_names_them(
+	#[case] rest_of_run: bool,
+) {
 	let repository = Repository::default();
 	repository.state.lock().unwrap().semantic = true;
 	repository.state.lock().unwrap().replies = vec![declined_reply()];
-	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
-		.await
-		.unwrap();
+	decline_call(
+		&repository,
+		task().id,
+		Uuid::from_u128(4),
+		"run:7:0",
+		rest_of_run,
+	)
+	.await
+	.unwrap();
 	let calls = repository.calls();
 	// The same checks as resuming: the requester's `task.delegate`, then `run.control`.
 	assert!(calls.contains(&"task.delegate".into()));
@@ -1030,6 +1045,17 @@ async fn the_requester_declines_under_what_resuming_needs_and_the_home_names_the
 		1
 	);
 	let state = repository.state.lock().unwrap();
+	let request = &state
+		.requests
+		.iter()
+		.find(|(path, _)| path.ends_with("/declined-calls"))
+		.unwrap()
+		.1;
+	assert_eq!(
+		request.get("rest_of_run"),
+		rest_of_run.then_some(&json!(true)),
+		"{request}"
+	);
 	let event = &state.declined[0];
 	assert_eq!(event["by"], "requester");
 	assert_eq!(event["tool"], "task_delegate");
@@ -1046,7 +1072,7 @@ async fn someone_else_declines_under_run_decline_call_alone() {
 		state.grant_root = Some("other");
 		state.replies = vec![declined_reply()];
 	}
-	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0", false)
 		.await
 		.unwrap();
 	let calls = repository.calls();
@@ -1071,7 +1097,7 @@ async fn nobody_declines_without_the_right_for_their_relation(
 		state.grant_root = root;
 		state.denied = Some(denied);
 	}
-	let result = decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0").await;
+	let result = decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0", false).await;
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 	assert!(!repository.calls().iter().any(|c| c.starts_with("rpc:")));
 }

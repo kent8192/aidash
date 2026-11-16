@@ -147,8 +147,10 @@ impl AgentConfig {
 									"Agent requires one primary memory provider".into(),
 								));
 							}
-							result.conversation_memory |= !on_demand;
-							result.semantic_memory |= !on_demand;
+							if binding.identity.id != super::bindings::memory_defaults::MEMORY_ID {
+								result.conversation_memory |= !on_demand;
+								result.semantic_memory |= !on_demand;
+							}
 						} else if !on_demand {
 							result.sources.push(binding.identity.local());
 							if automatic {
@@ -202,7 +204,11 @@ impl AgentConfig {
 			&& workspace_policies
 				.iter()
 				.all(|policy| *policy == OnUnavailable::Degrade)
-			&& !(result.semantic_memory && result.memory.is_none());
+			&& !(result.semantic_memory
+				&& result
+					.memory
+					.as_ref()
+					.is_none_or(|memory| memory.id == super::bindings::memory_defaults::MEMORY_ID));
 		crate::capabilities::references::validate_config(&result)?;
 		crate::capabilities::skills::validate_config(&result)?;
 		Ok(result)

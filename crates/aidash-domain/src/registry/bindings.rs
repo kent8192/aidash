@@ -11,12 +11,14 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
-pub mod defaults;
-pub use defaults::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION, COMPACTION_DEFAULT};
+pub mod memory_defaults;
 mod snapshot;
 pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
+/// Default Tool sets an Agent version may have been normalized with: today's
+/// (0) and four historical ones (see `AgentBindings::normalize_mode`).
+const HISTORICAL_DEFAULT_SETS: u8 = 5;
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
 pub const MAX_TOOL_PARALLELISM: u8 = 16;
 fn sequential_tools() -> u8 {
@@ -48,7 +50,8 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 ];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
-/// offering them (#600, #617).
+/// offering them (#600, #617). Binding resolution gives an Agent that binds
+/// no provider Built-in Memory (#852).
 pub const MEMORY_TOOLS: &[&str] = &["memory_mutate", "memory_recall", "memory_reflect"];
 /// Whether a resolved definition is a memory provider. A native conversation
 /// or semantic memory source (a definition with `schema_version`) is a
@@ -89,9 +92,6 @@ pub fn definition_references(
 			result.push((local(&config.model), "model".into()));
 			if let Some(embedding) = &config.reference_embedding {
 				result.push((local(embedding), "embedding".into()));
-			}
-			if let Some(summary) = config.context_summary() {
-				result.push((local(&summary.model), "model".into()));
 			}
 			for normalized in entry.normalized_bindings(&identity.registry_deployment)? {
 				let kind = match normalized.binding.kind {
@@ -160,18 +160,24 @@ pub fn definition_references(
 				declaration.validate()?;
 				result.extend(declaration.references());
 			}
-			result.extend(
-				[
-					(provider.policy.extraction, "model"),
-					(provider.policy.derivation, "model"),
-					(provider.policy.reflection, "model"),
-					(provider.policy.embedding, "embedding"),
-					(provider.policy.reranker, "reranker"),
-					(provider.policy.tokenizer, "tokenizer"),
-				]
-				.into_iter()
-				.map(|(r, k)| (local(&r), k.into())),
-			);
+			for role in [
+				provider.policy.extraction,
+				provider.policy.derivation,
+				provider.policy.reflection,
+			] {
+				if let crate::memory::RoleModel::Entry(reference) = role {
+					result.push((local(&reference), "model".into()));
+				}
+			}
+			if let Some(reference) = provider.policy.embedding {
+				result.push((local(&reference), "embedding".into()));
+			}
+			// The built-in provider's fixed local algorithms are implementation
+			// details, rather than independent user-selected Registry dependencies.
+			if !memory_defaults::is_builtin_memory(entry) {
+				result.push((local(&provider.policy.reranker), "reranker".into()));
+				result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
+			}
 		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
@@ -282,7 +288,7 @@ impl AgentBindings {
 			|| self
 				.remove_default
 				.iter()
-				.any(|name| name != COMPACTION_DEFAULT && !defaults.contains(&name.as_str()))
+				.any(|name| !defaults.contains(&name.as_str()))
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
@@ -327,18 +333,6 @@ impl AgentBindings {
 			if !targets.insert(&binding.target) {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
-		}
-		if !self.has_memory_binding()
-			&& self.bindings.iter().any(|b| {
-				b.kind == BindingKind::Tool
-					&& b.target
-						.id
-						.strip_prefix("aidash.")
-						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
-			}) {
-			return Err(Error::Invalid(
-				"memory tools require a memory provider".into(),
-			));
 		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self
@@ -396,36 +390,17 @@ impl AgentBindings {
 	fn has_memory_binding(&self) -> bool {
 		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
 	}
-	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
-		match self.context_policy.as_ref()? {
-			crate::context::policy::ContextPolicy::RecoveryV1 { summary, .. } => summary.as_ref(),
-		}
-	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_with_compaction(node, None)
+		self.normalize_mode(node, 0)
 	}
-	pub fn normalize_with_compaction(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-	) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, compaction_override, 0)
-	}
-	fn normalize_version(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-		legacy: bool,
-	) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, compaction_override, if legacy { 1 } else { 0 })
-	}
-	fn normalize_mode(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-		mode: u8,
-	) -> Result<Vec<NormalizedBinding>> {
+	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
+	/// version was normalized with (0 today, 1–4 historical); `mode >=
+	/// HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and `subnode_task`
+	/// at the 1.0.0 they had before they moved to 1.1.0.
+	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
+		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
+		let mode = mode % HISTORICAL_DEFAULT_SETS;
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
@@ -452,18 +427,30 @@ impl AgentBindings {
 				continue;
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
+			// Mode 2 predates image retrieval and mode 4 predates Thread
+			// Attachment images (#622). `workspace_read` keeps the version each
+			// pinned; `workspace_message` and `workspace_search` move to 1.1.0,
+			// which only adds inputs (see `upgraded`).
 			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
 				target.version = "1.0.0".into();
 			} else if mode == 2 && *operation == "workspace_read" {
 				target.version = "1.0.1".into();
-			} else if (mode == 0 || mode == 3)
-				&& *operation == "workspace_read"
-				&& let Some(binding) = self.bindings.iter().find(|b| {
-					b.target.id == target.id
-						&& b.target.registry_deployment == node
-						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
-				}) {
+			}
+			let pinned: &[&str] = match *operation {
+				"workspace_read" if matches!(mode, 0 | 3 | 4) => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_message" if mode == 0 => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_search" if mode == 0 => &["1.0.0", "1.1.0"],
+				_ => &[],
+			};
+			if let Some(binding) = self.bindings.iter().find(|b| {
+				b.target.id == target.id
+					&& b.target.registry_deployment == node
+					&& pinned.contains(&b.target.version.as_str())
+			}) {
 				target = binding.target.clone();
+			}
+			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
+				target.version = "1.0.0".into();
 			}
 			let explicit = self
 				.bindings
@@ -499,7 +486,9 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
-		defaults::add_compaction(self, node, compaction_override, &mut result)?;
+		if !self.has_memory_binding() {
+			result.push(memory_defaults::binding(node));
+		}
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),
@@ -515,23 +504,10 @@ impl AgentBindings {
 pub struct AgentNormalization {
 	pub schema_version: u8,
 	pub registry_deployment: String,
-	/// Exact explicit compaction replacement, resolved by trusted registration.
-	pub compaction_override: Option<QualifiedRef>,
 	pub bindings: Vec<NormalizedBinding>,
 }
 impl Entry {
 	pub fn normalize_agent(&mut self, node: &str) -> Result<()> {
-		let replacement = self
-			.binding_normalization
-			.as_ref()
-			.and_then(|saved| saved.compaction_override.clone());
-		self.normalize_agent_with_compaction(node, replacement.as_ref())
-	}
-	pub fn normalize_agent_with_compaction(
-		&mut self,
-		node: &str,
-		replacement: Option<&QualifiedRef>,
-	) -> Result<()> {
 		if self.kind != "agent" {
 			if self.binding_normalization.is_some() {
 				return Err(Error::Invalid(
@@ -544,41 +520,34 @@ impl Entry {
 		self.binding_normalization = Some(AgentNormalization {
 			schema_version: BINDING_SCHEMA,
 			registry_deployment: node.into(),
-			compaction_override: replacement.cloned(),
-			bindings: config.normalize_with_compaction(node, replacement)?,
+			bindings: config.normalize(node)?,
 		});
 		Ok(())
 	}
 	pub fn normalized_bindings(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
-		let replacement = self
-			.binding_normalization
-			.as_ref()
-			.and_then(|saved| saved.compaction_override.as_ref());
 		if let Some(saved) = &self.binding_normalization {
 			if saved.schema_version != BINDING_SCHEMA || saved.registry_deployment != node {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			let current = config.normalize_with_compaction(node, replacement);
-			let legacy = config.normalize_version(node, replacement, true);
-			if !current.is_ok_and(|expected| saved.bindings == expected)
-				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, replacement, 2)
-					.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, replacement, 3)
-					.is_ok_and(|expected| saved.bindings == expected)
-			{
+			// A saved normalization is compared, and resolved, with the tool
+			// versions it would bind today.
+			let saved_bindings = upgraded(node, saved.bindings.clone());
+			let matches = |mode: u8| {
+				config
+					.normalize_mode(node, mode)
+					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+			};
+			if !(0..2 * HISTORICAL_DEFAULT_SETS).any(matches) {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			return Ok(saved.bindings.clone());
+			return Ok(saved_bindings);
 		}
-		config.normalize_with_compaction(node, replacement)
+		config.normalize(node)
 	}
 
 	/// Whether this Agent version pins the builtin Tool that can select Thread Attachments.
@@ -592,6 +561,28 @@ impl Entry {
 				&& attachment_selection_tool(&item.binding.target, &item.binding.narrow, node)
 		}))
 	}
+}
+
+/// Bind `workspace_message` 1.0.1 and `workspace_search` 1.0.0 as 1.1.0, in
+/// Agent versions normalized before #622 part 2 too. 1.1.0 only adds inputs
+/// (Image Descriptions, and a selected Thread Attachment as an image query),
+/// so earlier calls behave the same; without it a pinned 1.0.1 could not post
+/// an image, since every posted image needs a description. This is an owner
+/// decision (2026-11-13) that departs, for these two tools only, from #640's
+/// rule that a pinned tool does not change. `workspace_read` keeps its pins:
+/// its versions decide whether an Agent can select a Thread Attachment at all.
+fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
+	for item in &mut bindings {
+		let target = &mut item.binding.target;
+		if target.registry_deployment == node
+			&& matches!(
+				(target.id.as_str(), target.version.as_str()),
+				("aidash.workspace_message", "1.0.1") | ("aidash.workspace_search", "1.0.0")
+			) {
+			target.version = "1.1.0".into();
+		}
+	}
+	bindings
 }
 
 fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
@@ -647,9 +638,16 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if operation == "workspace_read" {
+			version: if matches!(
+				operation,
+				"workspace_read"
+					| "workspace_search"
+					| "workspace_message"
+					| "memory_mutate"
+					| "subnode_task"
+			) {
 				"1.1.0"
-			} else if matches!(operation, "workspace_observe" | "workspace_message") {
+			} else if operation == "workspace_observe" {
 				"1.0.1"
 			} else {
 				"1.0.0"
@@ -987,9 +985,6 @@ pub struct BindingSnapshot {
 	pub remote: bool,
 	pub bindings: Vec<ResolvedBinding>,
 	pub definitions: Vec<ResolvedDefinition>,
-	/// Public Deployment Administrator Agent transports retain the receiver's complete admitted closure.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub foreign_agents: Vec<ForeignAgentSnapshot>,
 	/// The Skills of each Agent Plugin copy the Agent definition takes in, in its order.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub agent_plugins: Vec<crate::agent_plugin::PinnedAgentPlugin>,
@@ -1038,65 +1033,6 @@ impl BindingSnapshot {
 				model.modalities.iter().any(|modality| modality == "image")
 					&& model.has_current_media_route_for_type("image/png")
 			})
-	}
-}
-
-/// One authenticated receiver's public closure. Nested foreign or private
-/// dependencies require their own supported disclosure/admission protocol.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ForeignAgentSnapshot {
-	pub schema_version: u8,
-	pub agent: QualifiedRef,
-	pub bindings: Vec<ResolvedBinding>,
-	pub definitions: Vec<ResolvedDefinition>,
-}
-
-impl ForeignAgentSnapshot {
-	pub fn snapshot(&self) -> BindingSnapshot {
-		BindingSnapshot {
-			schema_version: self.schema_version,
-			agent: self.agent.clone(),
-			remote: true,
-			bindings: self.bindings.clone(),
-			definitions: self.definitions.clone(),
-			foreign_agents: vec![],
-			agent_plugins: vec![],
-		}
-	}
-	pub fn from_snapshot(snapshot: BindingSnapshot) -> Result<Self> {
-		if !snapshot.remote || !snapshot.foreign_agents.is_empty() {
-			return Err(Error::Invalid(
-				"foreign Agent requires a single receiver closure".into(),
-			));
-		}
-		let result = Self {
-			schema_version: snapshot.schema_version,
-			agent: snapshot.agent,
-			bindings: snapshot.bindings,
-			definitions: snapshot.definitions,
-		};
-		result.validate()?;
-		Ok(result)
-	}
-	pub fn validate(&self) -> Result<()> {
-		if self.definitions.iter().any(|definition| {
-			definition.identity.registry_deployment != self.agent.registry_deployment
-				|| definition.definition.installation.is_some()
-				|| matches!(
-					definition.definition.kind.as_str(),
-					"memory" | "source" | "skill"
-				) && !source_defaults::workspace_observation()
-					.is_ok_and(|source| source == definition.definition)
-				|| definition.definition.kind == "agent"
-					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
-						.is_ok_and(|agent| !agent.agent_plugins.is_empty())
-		}) {
-			return Err(Error::Invalid(
-				"foreign Agent has an unsupported private or cross-Node dependency".into(),
-			));
-		}
-		self.snapshot().validate()
 	}
 }
 
@@ -1227,47 +1163,19 @@ impl BindingSnapshot {
 			serde_json::from_value(agent_definition.definition.config.clone())?;
 		config.validate()?;
 		self.validate_closure(&config, &definitions)?;
-		let expected_foreign =
-			self.definitions
-				.iter()
-				.try_fold(BTreeSet::new(), |mut roots, definition| {
-					for (reference, kind) in
-						definition_references(&definition.identity, &definition.definition)?
-					{
-						if kind == "agent"
-							&& reference.registry_deployment
-								!= definition.identity.registry_deployment
-						{
-							roots.insert(reference);
-						}
-					}
-					Ok::<_, Error>(roots)
-				})?;
-		let mut foreign = BTreeSet::new();
-		for snapshot in &self.foreign_agents {
-			snapshot.validate()?;
-			if !expected_foreign.contains(&snapshot.agent)
-				|| !foreign.insert(snapshot.agent.clone())
-			{
+		// An Agent cannot bind an Agent on another Node; work for one is handed
+		// over with a Remote Grant instead.
+		for definition in &self.definitions {
+			if definition_references(&definition.identity, &definition.definition)?
+				.into_iter()
+				.any(|(reference, kind)| {
+					kind == "agent"
+						&& reference.registry_deployment != definition.identity.registry_deployment
+				}) {
 				return Err(Error::Invalid(
-					"foreign Agent snapshot has an unrelated or duplicate root".into(),
+					"snapshot binds an Agent on another Node".into(),
 				));
 			}
-			for definition in &snapshot.definitions {
-				if definitions
-					.get(&definition.identity)
-					.is_none_or(|saved| **saved != *definition)
-				{
-					return Err(Error::Invalid(
-						"foreign Agent closure differs from the pinned definitions".into(),
-					));
-				}
-			}
-		}
-		if foreign != expected_foreign {
-			return Err(Error::Invalid(
-				"snapshot lacks an exact foreign Agent closure".into(),
-			));
 		}
 		if config.instructions.trim().is_empty()
 			&& !config.has_plugin_skills()

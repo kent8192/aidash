@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 /// Revoke all of one Run's Research evidence. Revocation is irreversible:
 /// revoking a Run again returns its first record unchanged. When `expected`
-/// names a Tenant, a Run of any other Tenant is unavailable, so a Run ID
-/// pasted into the wrong Tenant's form revokes nothing.
+/// names a Tenant, a Run of any other Tenant is unavailable, so a caller that
+/// names the wrong Tenant revokes nothing.
 pub async fn revoke(
 	repository: &dyn RevocationRepository,
 	run: Uuid,
@@ -171,7 +171,18 @@ impl Journal for RunJournal<'_> {
 /// arguments: only the journaled original tells whether it was research.
 fn cut(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { result, .. }
-		if crate::context::truncated_result(result) || ContextEvent::is_elided_result(result))
+		if crate::context::truncated_result(result) || ContextEvent::is_elided_result(result) || crate::context::offload::is_marker(result))
+}
+
+/// Whether a journaled original was a research result. The Journal resolves
+/// a revoked or expired original to its placeholder, which no longer looks
+/// like research, but keeps its Research reference: an offloaded marker or a
+/// summary built from it still carries the source text.
+fn research_original(entry: &HistoryEntry) -> bool {
+	revocation::carries_research(&entry.event)
+		|| entry.research_reference().is_some()
+		|| matches!(&entry.event, ContextEvent::Tool { result, .. }
+			if ContextEvent::is_revoked_result(result) || ContextEvent::is_expired_result(result))
 }
 
 /// Whether a projection not yet revoked may hold research content: a research
@@ -207,18 +218,17 @@ pub async fn revoke_projection(context: &mut Context, journal: &dyn Journal) -> 
 				.entries(from, through)
 				.await?
 				.into_iter()
-				.filter(|entry| {
-					cut.contains(&entry.seq) && revocation::carries_research(&entry.event)
-				})
+				.filter(|entry| cut.contains(&entry.seq) && research_original(entry))
 				.map(|entry| entry.seq)
 				.collect();
 		}
 		if let Some(summary) = context.execution_summary.as_deref() {
 			let source = summary.source.clone();
 			let entries = journal.entries(source.from_seq, source.through_seq).await?;
-			if entries.iter().any(|entry| {
-				source.absorbs(entry.seq) && revocation::carries_research(&entry.event)
-			}) {
+			if entries
+				.iter()
+				.any(|entry| source.absorbs(entry.seq) && research_original(entry))
+			{
 				crate::context::restore_summarized(context, entries)?;
 				crate::context::record_stage("summary", "research_revoked");
 			}
@@ -226,6 +236,8 @@ pub async fn revoke_projection(context: &mut Context, journal: &dyn Journal) -> 
 		context.research_revoked = true;
 	}
 	revocation::redact(&mut context.history, &originals);
+	// Later turns stop resending reasoning that may quote it (#942).
+	context.withhold_reasoning_after_withheld_results();
 	Ok(())
 }
 

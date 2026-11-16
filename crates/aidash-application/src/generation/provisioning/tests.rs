@@ -395,9 +395,7 @@ impl GenerationActivationScope for Session {
 			spec,
 			generated_count: 1,
 			allocated_tokens: 10000,
-			allocated_compaction_calls: 0,
 			allocated_embedding_calls: 0,
-			allocated_summary_calls: 0,
 		})
 	}
 	async fn pinned_policy(&mut self, job: &Request) -> Result<Value> {
@@ -507,14 +505,6 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 			crate::test_support::binding("tool", "aidash://local", "tool"),
 			crate::test_support::binding("skill", "aidash://local", "skill")
 		]);
-		state.spec.compaction = Some(aidash_domain::generation::policy::Compaction {
-			provider: EntityRef {
-				id: "compact".into(),
-				version: "1.0.0".into(),
-			},
-			calls_per_agent: 1,
-			call_budget: 2,
-		});
 		state.spec.embedding = Some(aidash_domain::generation::policy::Embedding {
 			provider: EntityRef {
 				id: "embed".into(),
@@ -544,8 +534,6 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 			"catalog:skill:skill.use",
 			"catalog:tool:registry.read",
 			"catalog:tool:tool.invoke",
-			"catalog:compact:registry.read",
-			"catalog:compact:decision.invoke",
 			"catalog:embed:registry.read",
 			"catalog:embed:embedding.invoke"
 		]

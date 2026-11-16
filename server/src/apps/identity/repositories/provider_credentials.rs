@@ -142,7 +142,7 @@ impl Scope for NativeScope {
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(crate::Error::from)?;
-		crate::apps::execution::models::event_records::append(self.tx.as_mut(),None,event,json!({"tenant":value.tenant,"id":value.id,"provider":value.provider,"state":value.state,"revision":value.revision,"actor":actor})).await?;
+		crate::apps::execution::models::event_records::append(self.tx.as_mut(),None,event,json!({"tenant":value.tenant,"id":value.id,"provider":value.provider,"key_origin":value.key_origin,"state":value.state,"revision":value.revision,"actor":actor})).await?;
 		Ok(())
 	}
 	async fn bindings(&mut self) -> Result<Vec<Binding>> {
@@ -275,19 +275,28 @@ pub(crate) fn selected_providers(
 		if entry.config.get("schema_version").is_some() {
 			continue;
 		}
+		let built_in_memory =
+			aidash_domain::registry::bindings::memory_defaults::is_builtin_memory(entry);
 		let memory: aidash_domain::memory::ProviderConfig =
 			serde_json::from_value(entry.config.clone())?;
-		definitions.extend([
+		for role in [
 			memory.policy.extraction,
 			memory.policy.derivation,
 			memory.policy.reflection,
-			memory.policy.embedding,
-		]);
-		let reranker = definition(&memory.policy.reranker)?;
-		if let aidash_domain::memory::RerankerConfig::Model { model } =
-			serde_json::from_value(reranker.config.clone())?
-		{
-			definitions.push(model);
+		] {
+			if let aidash_domain::memory::RoleModel::Entry(reference) = role {
+				definitions.push(reference);
+			}
+		}
+		definitions.extend(memory.policy.embedding);
+		// The built-in memory's RRF algorithm has no model or credential.
+		if !built_in_memory {
+			let reranker = definition(&memory.policy.reranker)?;
+			if let aidash_domain::memory::RerankerConfig::Model { model } =
+				serde_json::from_value(reranker.config.clone())?
+			{
+				definitions.push(model);
+			}
 		}
 	}
 	let mut providers = std::collections::BTreeSet::new();

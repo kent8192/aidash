@@ -168,15 +168,12 @@ pub const TABLES: &[Table] = &[
 	table("execution", "approval_observation_population", TenantOwned),
 	table("execution", "decision_attempts", TenantOwned),
 	table("execution", "decision_evidence", TenantOwned),
-	table("execution", "decision_outcomes", TenantOwned),
-	table("execution", "decision_states", TenantOwned),
 	// One immutable trusted runner pin per Deployment; configuration, not Tenant data or audit.
 	table("execution", "runner_allocation_journals", DeploymentWide),
 	// per-model token statistics without Tenant content
 	table("execution", "estimate_calibration_samples", DeploymentWide),
 	table("execution", "events", TenantOwned),
 	table("execution", "generation_budgets", TenantOwned),
-	table("execution", "generation_compaction_usage", TenantOwned),
 	table("execution", "generation_embedding_usage", TenantOwned),
 	table("execution", "generation_history", TenantOwned),
 	table("execution", "generation_policies", TenantOwned),
@@ -192,7 +189,6 @@ pub const TABLES: &[Table] = &[
 	),
 	table("execution", "generation_remote_usage", TenantOwned),
 	table("execution", "generation_requests", TenantOwned),
-	table("execution", "generation_summary_usage", TenantOwned),
 	table("execution", "generation_usage", TenantOwned),
 	table("execution", "human_requests", TenantOwned),
 	// inbound event deduplication
@@ -285,6 +281,12 @@ pub const TABLES: &[Table] = &[
 	// back-channel logout
 	table("identity", "dashboard_logout_tokens", DeploymentWide),
 	table("identity", "dashboard_mappings", TenantOwned),
+	// Host Access reservations are Deployment-wide.
+	table(
+		"identity",
+		"bootstrap_deployment_administrator_reservations",
+		DeploymentWide,
+	),
 	// Deployment Administrator grants
 	table(
 		"identity",
@@ -301,7 +303,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "dashboard_sessions", DeploymentWide),
 	// the digests of the Demo data the `demo-data` command finished loading
 	table("identity", "demo_data_loads", DeploymentWide),
-	// a Demo Reservation, spent by the sign-in of the email it names
+	// a Tenant reservation from Demo data or Host Access, spent by sign-in
 	table("identity", "demo_reservations", TenantOwned),
 	// The Tenant each Demo data structure key was assigned. Purge keeps this
 	// pointer: a later load resolves the purged Tenant through it and, seeing
@@ -365,6 +367,7 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_dependencies", TenantOwned),
 	table("knowledge", "memory_engine_jobs", TenantOwned),
 	table("knowledge", "memory_history", TenantOwned),
+	table("knowledge", "memory_journal_proofs", TenantOwned),
 	// the learning discovery cursor
 	table("knowledge", "memory_learning_discovery", DeploymentWide),
 	table("knowledge", "memory_model_attempts", TenantOwned),
@@ -380,6 +383,7 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_run_read_gates", TenantOwned),
 	table("knowledge", "memory_run_reads", TenantOwned),
 	table("knowledge", "memory_task_participants", TenantOwned),
+	table("knowledge", "memory_tenant_scope", TenantOwned),
 	table("knowledge", "memory_unit_origins", TenantOwned),
 	table("knowledge", "memory_unit_retention", TenantOwned),
 	table("knowledge", "memory_unit_run_origins", TenantOwned),

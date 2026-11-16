@@ -209,11 +209,6 @@ impl SemanticConfigurationSession for Configuration {
 				break;
 			}
 			for row in rows {
-				if !proposed.enabled {
-					return Err(aidash_application::Error::Conflict(
-						"Workspace index must remain enabled for pinned memory banks".into(),
-					));
-				}
 				after = row.try_get("bank_id")?;
 				let reference = (
 					row.try_get::<String>("tenant")?,
@@ -232,7 +227,14 @@ impl SemanticConfigurationSession for Configuration {
 				.await?;
 				let config: aidash_domain::memory::ProviderConfig =
 					serde_json::from_value(provider.config)?;
-				let role = &config.policy.embedding;
+				let Some(role) = &config.policy.embedding else {
+					continue;
+				};
+				if !proposed.enabled {
+					return Err(aidash_application::Error::Conflict(
+						"Workspace index must remain enabled for pinned memory banks".into(),
+					));
+				}
 				let embedding = crate::apps::registry::models::Definition::read_of(
 					self.tx()?,
 					&reference.0,
@@ -297,7 +299,13 @@ impl SemanticConfigurationSession for Configuration {
 			.lease
 			.as_mut()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
-		super::image_publications::rebuild(lease, workspace, max_images)
+		// Posted images first take back their places in posting order, so the
+		// ledger rebuilds Working Area images into the room they leave.
+		super::attachment_images::relimit(lease, workspace, max_images).await?;
+		super::image_publications::rebuild(lease, workspace, max_images).await?;
+		// Images posted before the index existed or was enabled enter it now,
+		// under the authority of the person configuring it (#622).
+		super::attachment_images::backfill(lease, workspace, max_images)
 			.await
 			.map_err(Into::into)
 	}
@@ -320,6 +328,17 @@ impl SemanticConfigurationSession for Configuration {
 			.finish(Ok(()))
 			.await
 			.map_err(Into::into)
+	}
+}
+impl aidash_application::ports::authorization::visibility::RowOutcome for Entries<'_, '_> {
+	fn begin_row(&mut self) {
+		self.lease.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.lease.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.lease.take_row_silence()
 	}
 }
 #[async_trait]
@@ -351,6 +370,11 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			.map_err(Into::into)
 	}
 	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		if matches!(source, Source::AttachmentImage { .. }) {
+			return super::attachment_images::visible(self.lease, workspace, source)
+				.await
+				.map_err(Into::into);
+		}
 		let Some(access) = self.lease.access() else {
 			return Ok(false);
 		};
@@ -430,7 +454,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						.expr(Expr::cust("COUNT(*)"))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted AND source->>'kind' <> 'working_image')".to_owned(),
+							"(workspace_id = ? AND NOT deleted AND source->>'kind' NOT IN ('working_image', 'attachment_image'))".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.to_string(PostgresQueryBuilder),

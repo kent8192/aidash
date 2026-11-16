@@ -250,6 +250,7 @@ impl RawRun {
 		// Resuming lifts the refusal, so the call is paused on no longer. Declined calls stay
 		// until the worker has answered them.
 		let had_call = recovery.paused_call.take().is_some();
+		let had_suspension = recovery.account_suspension_epoch.take().is_some();
 		if recovery.semantic_reason.is_some() || recovery.context_reason.is_some() {
 			recovery.retry = None;
 			recovery.semantic_reason = None;
@@ -260,12 +261,12 @@ impl RawRun {
 			Ok(Some(encode(&state, &recovery)?))
 		} else if self.control == RunControl::Paused && recovery.node_retry > 0 {
 			// A pause after a Node did not answer (#751): resuming checks again
-			// with a fresh set of retries. It is not a compaction decision, so
+			// with a fresh set of retries. It is not a Decider pause, so
 			// the decision cycle stays where it was.
 			recovery.retry = None;
 			recovery.node_retry = 0;
 			Ok(Some(encode(&state, &recovery)?))
-		} else if had_call {
+		} else if had_call || had_suspension {
 			Ok(Some(encode(&state, &recovery)?))
 		} else {
 			Ok(None)

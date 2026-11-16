@@ -67,6 +67,28 @@ by the setup command and the admission result. Admission is required separately
 on each architecture and deployment; a local arm64 result does not certify an
 amd64 deployment.
 
+## Journal Query
+
+After a Run has offloaded a result, it can retrieve its own Context Journal.
+Deployments with a Runner expose `journal_query`; Compose and Desktop without a
+Runner expose `journal_search` and `journal_read` instead. Search returns short
+matches with Journal sequence numbers, and read returns a bounded JSONL page
+for an inclusive sequence range. Results are data, not instructions.
+
+`journal_query` runs Python in a Run-owned kernel separate from the Working
+Area kernel, without network access or a writable Working Area. `journal()`
+returns the parsed JSONL lines. The export is refreshed before each call, so
+`journal()` reads the current Journal even though Python variables persist
+between cells. An optional `journal_range` limits the export to inclusive
+`from_seq` and `through_seq` bounds. Output is size-limited and treated as data.
+
+The export resolves Research references and substitutes revoked or expired
+results. A change in withdrawal state, authority, range, or Runner identity
+resets the kernel so its variables cannot retain withdrawn material. The call
+reports `SESSION_RESET`; a subsequent call starts with a fresh kernel. The
+kernel also ends when the Run ends or its idle session expires. Each completed
+Journal read records its range for the offload loop guard.
+
 ## Execution Pods (runner/2)
 
 The v2 runtime is opt-in and exposes a separate `aidash-runner/2` control

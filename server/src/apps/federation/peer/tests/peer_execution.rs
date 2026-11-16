@@ -273,8 +273,8 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	let definitions = result["definitions"].as_array().unwrap();
 	assert_eq!(
 		definitions.len(),
-		// Agent, model and HTTP Tool, plus the required workspace Source
-		// and dormant default compaction Decider.
+		// Agent, model and HTTP Tool, plus the required workspace Source and
+		// the default Built-in Memory provider (#852).
 		5 + aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
 			+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len()
 	);
@@ -395,7 +395,9 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 
 #[rstest::rstest]
 #[tokio::test]
-async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import(
+/// An Agent bound to an Agent on another Node is refused like any other
+/// reference to another Node's definition (#373).
+async fn an_agent_bound_to_an_agent_on_another_node_is_refused_like_any_foreign_reference(
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-home")]
 	home: endpoint::EndpointFuture,
@@ -443,11 +445,25 @@ async fn an_agent_cannot_bind_a_foreign_agent_without_the_removed_closure_import
 		.unwrap();
 	parent.version = "1.0.1".into();
 	parent.binding_normalization = None;
-	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":home.runtime.config.deployment,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
-	assert!(matches!(
-		home.runtime.registry.register(&acme, parent).await,
-		Err(aidash_server::Error::Forbidden)
-	));
+	let foreign_reference = |bindings: Value| {
+		let mut parent = parent.clone();
+		parent.config["bindings"] = bindings;
+		parent
+	};
+	let through_agent = foreign_reference(
+		json!([{"kind":"tool","target":{"registry_deployment":home.runtime.config.deployment,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]),
+	);
+	let direct = foreign_reference(
+		json!([{"kind":"tool","target":{"registry_deployment":child.runtime.config.deployment,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]),
+	);
+	let refusal = |result: aidash_server::Result<_>| match result {
+		Err(aidash_server::Error::Invalid(message)) => message,
+		other => panic!("expected Invalid, got {other:?}"),
+	};
+	let through_agent = refusal(home.runtime.registry.register(&acme, through_agent).await);
+	let direct = refusal(home.runtime.registry.register(&acme, direct).await);
+	assert_eq!(through_agent, "Binding origin is unavailable on this Node");
+	assert_eq!(through_agent, direct);
 	assert!(
 		home.runtime
 			.registry

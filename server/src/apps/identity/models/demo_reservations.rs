@@ -1,5 +1,5 @@
-//! Spending Demo Reservations (ADR 0079): the only path from a verified email
-//! address to a Mapping. Sign-in and loading Demo data both end here, so a
+//! Spending Demo and Host Access reservations: the path from a verified email
+//! address to a Mapping. Sign-in, bootstrap, and Demo data loading end here, so a
 //! Reservation is spent under the same locks and checks as a registration
 //! approval, without the Registration Request.
 
@@ -53,7 +53,7 @@ pub enum Skip {
 	SharedHolder,
 	/// The External Identity is gone or disabled.
 	IdentityUnavailable,
-	/// The External Identity's issuer is refused, or has a Tenant Binding.
+	/// The issuer is refused, bound to another Tenant, or bound for Demo data.
 	Restricted,
 }
 
@@ -77,7 +77,7 @@ impl DemoReservation {
 		let email = email.to_lowercase();
 		let scope = TenancyScope::tenant(tenant)?;
 		db.atomic(&scope, async |tx| {
-			let reservation = Self::hold(tx, tenant, &email, subject).await?;
+			let reservation = Self::hold(tx, tenant, &email, subject, "demo_data").await?;
 			if reservation.spent_at.is_some() || policy.is_none() {
 				return Ok(());
 			}
@@ -94,7 +94,7 @@ impl DemoReservation {
 	/// The unspent Reservations held for `email`, oldest first, across every
 	/// Tenant. `email` is lowercased.
 	pub(crate) async fn unspent(db: &Pool, email: &str) -> Result<Vec<Self>> {
-		let scope = TenancyScope::Deployment(DeploymentScopeReason::DemoData);
+		let scope = TenancyScope::Deployment(DeploymentScopeReason::IdentityTenants);
 		db.atomic(&scope, async |tx| {
 			Ok(Self::objects()
 				.filter(Self::field_email().eq(email.to_owned()))
@@ -106,17 +106,19 @@ impl DemoReservation {
 		.await
 	}
 
-	/// The Reservation of `email` in `tenant`, or a new unspent one for
-	/// `subject`. A Reservation never changes its subject: loading only adds.
+	/// The Reservation of `email` and `source` in `tenant`, or a new unspent
+	/// one for `subject`. A Reservation never changes its subject.
 	pub(crate) async fn hold(
 		tx: &mut AtomicTransaction,
 		tenant: &str,
 		email: &str,
 		subject: &str,
+		source: &str,
 	) -> Result<Self> {
 		let existing = Self::objects()
 			.filter(Self::field_tenant().eq(tenant.to_owned()))
 			.filter(Self::field_email().eq(email.to_owned()))
+			.filter(Self::field_source().eq(source.to_owned()))
 			.all_with_db(tx)
 			.await?
 			.pop();
@@ -127,6 +129,7 @@ impl DemoReservation {
 		let reservation = Self::build()
 			.id(Uuid::new_v4())
 			.tenant(tenant.to_owned())
+			.source(source.to_owned())
 			.email(email.to_owned())
 			.subject(subject.to_owned())
 			.created_at(now)
@@ -187,18 +190,6 @@ impl DemoReservation {
 		else {
 			return Ok(Fulfilment::Skipped(Skip::IdentityUnavailable));
 		};
-		// The Binding is checked on the row, not only at sign-in, because a
-		// load maps identities that signed in earlier.
-		if policy.is_some_and(|policy| !policy.unrestricted(&identity.issuer))
-			|| crate::authorization::identity::require_dashboard_mapping(
-				policy,
-				&identity.issuer,
-				tenant,
-			)
-			.is_err()
-		{
-			return Ok(Fulfilment::Skipped(Skip::Restricted));
-		}
 		let Some(reservation) = Self::objects()
 			.filter(Self::field_id().eq(id))
 			.select_for_update()
@@ -210,6 +201,19 @@ impl DemoReservation {
 		else {
 			return Ok(Fulfilment::Skipped(Skip::Spent));
 		};
+		// Demo data never maps a bound issuer; Host Access may reserve for a
+		// bound issuer only in that issuer's own Tenant.
+		if (reservation.source != "host_access"
+			&& policy.is_some_and(|p| !p.unrestricted(&identity.issuer)))
+			|| crate::authorization::identity::require_dashboard_mapping(
+				policy,
+				&identity.issuer,
+				tenant,
+			)
+			.is_err()
+		{
+			return Ok(Fulfilment::Skipped(Skip::Restricted));
+		}
 		if dashboard_rules::require_user_mapping(&snapshot, &reservation.subject).is_err() {
 			return Ok(Fulfilment::Skipped(Skip::SubjectUnavailable));
 		}
@@ -251,20 +255,24 @@ impl DemoReservation {
 			.update_fields_with_conn(tx, spent)
 			.await?;
 		if let Fulfilment::Mapped(mapping) = &outcome {
-			AdministrationActor::DemoData
-				.record(
-					tx,
-					AdministrationEvent {
-						action: DEMO_RESERVATION_FULFIL,
-						identity: Some(identity.id),
-						registration: None,
-						mapping: Some(*mapping),
-						tenant: Some(tenant),
-						subject: Some(&reservation.subject),
-						invitation: None,
-					},
-				)
-				.await?;
+			(if reservation.source == "host_access" {
+				AdministrationActor::HostAccess
+			} else {
+				AdministrationActor::DemoData
+			})
+			.record(
+				tx,
+				AdministrationEvent {
+					action: DEMO_RESERVATION_FULFIL,
+					identity: Some(identity.id),
+					registration: None,
+					mapping: Some(*mapping),
+					tenant: Some(tenant),
+					subject: Some(&reservation.subject),
+					invitation: None,
+				},
+			)
+			.await?;
 		}
 		Ok(outcome)
 	}
@@ -272,7 +280,7 @@ impl DemoReservation {
 
 /// Every External Identity holding `email` as its verified address, with
 /// whether it is enabled.
-async fn holders(tx: &mut AtomicTransaction, email: &str) -> Result<Vec<(Uuid, bool)>> {
+pub(crate) async fn holders(tx: &mut AtomicTransaction, email: &str) -> Result<Vec<(Uuid, bool)>> {
 	let lowered = SimpleExpr::FunctionCall(
 		"lower".into_iden(),
 		vec![Expr::col(Alias::new("verified_email")).into()],

@@ -23,10 +23,6 @@ pub mod inference;
 
 pub mod embedding;
 
-pub mod compaction;
-
-pub mod summary;
-
 pub mod protocol;
 
 pub mod foreign;

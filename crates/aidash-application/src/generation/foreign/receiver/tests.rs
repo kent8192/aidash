@@ -105,9 +105,7 @@ fn repository() -> Repository {
 		spec: serde_json::from_value(test_support::specification()).unwrap(),
 		generated_count: 0,
 		allocated_tokens: 0,
-		allocated_compaction_calls: 0,
 		allocated_embedding_calls: 0,
-		allocated_summary_calls: 0,
 	};
 	Repository(Arc::new(Mutex::new(World {
 		intent,
@@ -228,7 +226,6 @@ impl ForeignGenerationReceiverScope for Scope {
 					node_id: "aidash://executor/brave-otter-k3m9q2xa".into(),
 					agent_id: "existing".into(),
 					agent_version: "1.0.0".into(),
-					delivered: false,
 				},
 			})
 		} else {

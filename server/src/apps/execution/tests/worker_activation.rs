@@ -1441,6 +1441,7 @@ async fn child_runtime(
 		store,
 		config: aidash_server::config::Config {
 			scratch_policy: Default::default(),
+			credential_max_seconds: 90 * 24 * 60 * 60,
 			deployment: aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
 			endpoint: "http://127.0.0.1:8080".into(),
 			database_url: database,

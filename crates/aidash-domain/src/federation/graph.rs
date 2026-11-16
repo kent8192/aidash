@@ -56,6 +56,9 @@ pub struct GraphPage {
 	pub nodes: Vec<GraphNode>,
 	pub edges: Vec<GraphEdge>,
 	pub activity: Vec<GraphActivity>,
+	/// Rows the answering Node could not confirm; node identifies the answering Node.
+	#[serde(default)]
+	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 	pub next_cursor: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -457,7 +460,24 @@ impl Candidate {
 	}
 }
 pub fn valid_remote_page(page: &GraphPage, node_id: &str, options: &GraphOptions) -> bool {
-	if page.node_id != node_id
+	if page.unconfirmed.len() > 4096
+		|| page.unconfirmed.iter().any(|entry| {
+			entry.node != node_id
+				|| entry.count == 0
+				|| !matches!(
+					entry.kind,
+					crate::unconfirmed::Kind::Task
+						| crate::unconfirmed::Kind::Run
+						| crate::unconfirmed::Kind::Artifact
+				) || options
+				.scope_workspace
+				.is_some_and(|workspace| workspace != entry.workspace_id)
+		}) || page
+		.unconfirmed
+		.iter()
+		.try_fold(0_u64, |sum, entry| sum.checked_add(entry.count))
+		.is_none_or(|total| total > 4096)
+		|| page.node_id != node_id
 		|| page.nodes.len() > 80
 		|| page.edges.len() > 600
 		|| page.activity.len() > 80

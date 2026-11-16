@@ -11,7 +11,6 @@ test("same-name generation policies stay distinguishable without showing IDs", a
     revision: 1,
     generated_count: 0,
     allocated_tokens: 0,
-    allocated_compaction_calls: 0,
     allocated_embedding_calls: 0,
     spec: {
       enabled: true,
@@ -113,7 +112,7 @@ test("semantic sources can page older messages and select remote agents", async 
   );
   await page.route(
     "**/api/workspaces/workspace-one/semantic/entries",
-    (route) => route.fulfill({ json: [] }),
+    (route) => route.fulfill({ json: { entries: [], unconfirmed: [] } }),
   );
   await page.route(
     "**/api/workspaces/workspace-one/semantic/history",
@@ -148,6 +147,7 @@ test("semantic sources can page older messages and select remote agents", async 
             },
           ],
           next_before: older ? null : "cursor",
+          unconfirmed: [],
         },
       });
     },

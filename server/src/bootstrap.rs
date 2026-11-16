@@ -24,6 +24,7 @@ pub mod management;
 
 pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	let mut registry = reinhardt::commands::CommandRegistry::new();
+	registry.register_capability(Box::new(crate::database::setup_roles::Command));
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::worker::RunWorker,
 	));
@@ -52,10 +53,16 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		crate::apps::identity::services::secret_store_recovery::Command,
 	));
 	registry.register_capability(Box::new(
+		crate::apps::identity::services::bootstrap_command::Command,
+	));
+	registry.register_capability(Box::new(
 		crate::apps::identity::services::demo_data::Command,
 	));
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::subject_credential_command::Command,
+	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::provider_credential_command::Command,
 	));
 	registry
 }
@@ -808,7 +815,7 @@ pub fn deployment_observations(
 	)
 }
 
-/// Semantic transports share rotating credentials with inference and compaction.
+/// Semantic transports share rotating credentials with inference and Summary requests.
 pub fn semantic_transport(
 	store: &Store,
 ) -> crate::apps::knowledge::repositories::postgres_vector::Transport {
@@ -920,11 +927,11 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 			.as_ref()
 			.is_some_and(|s| s.provider_credentials.offers_tenant_secrets()),
 	)
-	.with_preview_available(
-		settings
-			.as_ref()
-			.is_some_and(|s| s.preview.domain.is_some()),
-	)
+	.with_preview_available(settings.as_ref().is_some_and(|s| {
+		let origin = s.dashboard.oidc.as_ref().map(|oidc| oidc.public_origin.as_str())
+			.unwrap_or(&s.deployment.endpoint);
+		s.preview.configured(origin).ok().flatten().is_some()
+	}))
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -1359,31 +1366,6 @@ pub(crate) fn generation_embedding_repository(
 	}
 }
 
-pub(crate) fn generation_compaction_authority_scope(
-	access: &mut crate::authorization::access::Access,
-) -> impl aidash_application::ports::generation::compaction::GenerationCompactionAuthority + '_ {
-	crate::apps::execution::generation::repositories::compaction::NativeCompactionAuthority {
-		catalog: catalog_scope(access),
-	}
-}
-pub(crate) fn generation_compaction_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
-	crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
-		store: store.clone(),
-		scope,
-	}
-}
-pub(crate) fn generation_summary_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
-	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
-		store: store.clone(),
-		scope,
-	}
-}
 pub(crate) fn generation_protocol_authority(
 	federation: &crate::federation::Federation,
 ) -> crate::apps::execution::generation::repositories::protocol::NativeProtocolAuthority {
@@ -1410,16 +1392,6 @@ pub(crate) fn generation_protocol_repository(
 	}
 }
 
-pub(crate) fn generation_remote_compaction_scope<'a>(
-	access: &'a mut crate::authorization::access::Access,
-	federation: &crate::federation::Federation,
-) -> crate::apps::execution::generation::repositories::compaction::remote::NativeRemoteCompaction<'a>
-{
-	crate::apps::execution::generation::repositories::compaction::remote::NativeRemoteCompaction {
-		catalog: catalog_scope(access),
-		federation: federation.clone(),
-	}
-}
 pub(crate) fn generation_foreign_guard(
 	access: &mut crate::authorization::access::Access,
 ) -> crate::apps::execution::generation::repositories::foreign::NativeForeignGuard<'_> {
@@ -1780,23 +1752,6 @@ pub(crate) fn inference_admission_repository<'a>(
 		access,
 		run,
 		purpose: crate::generation::remote::Purpose::Inference,
-	}
-}
-
-/// Summary Stage admission charges model tokens locally and the `summary`
-/// purpose (with its call allowance) at the Home.
-pub(crate) fn summary_admission_repository<'a>(
-	store: &'a Store,
-	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
-	run: &'a crate::domain::Run,
-) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
-	crate::apps::identity::repositories::execution::admission::Admissions {
-		store,
-		remote,
-		access,
-		run,
-		purpose: crate::generation::remote::Purpose::Summary,
 	}
 }
 
@@ -2671,6 +2626,7 @@ pub(crate) fn worker_step(
 		_active: crate::http::ActiveExecution::begin(),
 		visibility,
 		tenant: None,
+		offloaded: Vec::new(),
 	})
 }
 
@@ -2735,8 +2691,9 @@ pub(crate) fn dashboard_logout(
 pub(crate) fn dashboard_login(
 	pool: crate::database::native::Pool,
 	node: &str,
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(pool, node.into())
+	crate::apps::identity::repositories::dashboard::Login(pool, node.into(), policy)
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(
@@ -2879,6 +2836,9 @@ pub async fn configure_provider_credentials(
 			),
 			fingerprint_key,
 			max_per_tenant: settings.max_per_tenant,
+			// A Self-hosted host already reads the Secret Store (ADR 0008), so
+			// a key a person pastes trusts nothing new (#877).
+			supplied_keys: build::offering() == aidash_domain::offering::Offering::SelfHosted,
 		},
 	));
 	store.provider_key_material_reader = reader;

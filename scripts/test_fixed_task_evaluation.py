@@ -311,42 +311,13 @@ class ProjectionCampaignTest(unittest.TestCase):
                 self.assertEqual(evaluation.grade(value, item, observation(final_answer=answer,
                     compactions=compactions), False)["passed"], passed)
 
-    def test_live_auxiliary_contract_reserves_all_permitted_calls_and_rejects_digest_drift(self):
-        config = {"hook": "compaction", "mode": "enforce", "provider_credential": "openrouter",
-                  "max_calls_per_run": 3, "routes": [{"model": "decision/model", "hosts": ["one"]}]}
-        allowance = {"reference": "decider@1", "config_sha256": evaluation.canonical_sha256(config),
-                     "max_calls_per_run": 3, "max_nanocredits_per_call": 900}
-        approval = {"external_compaction": {"mode": "bounded", "decider": allowance, "summary": None}}
-        auxiliary = evaluation.auxiliary_allowance(approval)
-        value = corpus()
-        item = task(value, "structured-data-overdue-totals")
-        model = {"context_window": 100, "max_output_tokens": 10}
-        prices = {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 2,
-                  "output_nanocredits_per_token": 3}
-        main = runner.run_worst_case(item, value, model, prices)
-        self.assertEqual(runner.run_worst_case(item, value, model, prices, auxiliary), main + 2700)
-        evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": config}, "openrouter")
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
-            evaluation.require_enforceable_auxiliary_bound(auxiliary)
-        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
-        accepted = {"external_compaction": dict(approval["external_compaction"],
-                                                cost_enforcement="declared-reservation-accepted")}
-        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
-        self.assertEqual(runner.run_worst_case(item, value, model, prices, evaluation.auxiliary_allowance(accepted)),
-                         main + 2700)
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "cost_enforcement must be"):
-            evaluation.auxiliary_allowance({"external_compaction": dict(approval["external_compaction"],
-                                                                        cost_enforcement="provider-capped")})
-        larger = dict(config, max_calls_per_run=5)
-        oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
-            evaluation.verify_auxiliary_configs(oversized, {"decider@1": larger}, "openrouter")
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "exact digest"):
-            evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": dict(config, max_calls_per_run=100)},
-                                                 "openrouter")
-        del allowance["max_nanocredits_per_call"]
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "unpriced auxiliary"):
+    def test_removed_compaction_decider_is_rejected_before_dispatch(self):
+        approval = {"external_compaction": {"mode": "bounded", "decider": {"reference": "judge@1"}, "summary": None}}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "compaction Deciders were removed"):
             evaluation.auxiliary_allowance(approval)
+        disabled = evaluation.auxiliary_allowance({"external_compaction": "disabled"})
+        self.assertEqual(disabled["worst_case_nanocredits"], 0)
+        evaluation.require_enforceable_auxiliary_bound(disabled)
 
     def test_live_fixture_and_container_support_require_exact_explicit_approval(self):
         value = evaluation.load_corpus()
@@ -799,8 +770,7 @@ def full_result(value, runs_override=None, ceiling=None, tier="deterministic"):
                                                 "binary_sha256": None, "server_revision": None},
         {"kind": "scripted-fixture", "registrations": {}, "reported_identities": [], "route": None,
          "mutable_alias": False},
-        {"compaction": "x", "cache_salt": True, "provider_credential": None, "disclosure_approval": None,
-         "jev_classifier": "fixture"}, variants, 2,
+        {"compaction": "x", "cache_salt": True, "provider_credential": None, "disclosure_approval": None}, variants, 2,
         {"run_timeout_seconds": 1, "wall_seconds": 1, "max_output_tokens": 1, "spend_ceiling_nanocredits": ceiling},
         [], evaluator=evaluation.evaluator_identity())
     return cli.assemble(value, experiment, runs, evaluation.feature_availability(value),
@@ -894,7 +864,7 @@ class FixtureTest(unittest.TestCase):
         _, pruned = chat(self.fixture, "task-1", history=[{"result": "BUDGET-USD=500 EXCLUDE-VENDOR=Northwind"}])
         self.assertIn('"budget_usd": 500', pruned["choices"][0]["message"]["content"])
         _, kept = chat(self.fixture, "task-1", history=[
-            {"result": "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso."}])
+            {"result": "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso."}])
         self.assertIn('"budget_usd": 300', kept["choices"][0]["message"]["content"])
 
     def test_cost_is_rendered_as_an_exact_decimal_and_overflow_is_rejected(self):
@@ -994,6 +964,200 @@ class OfflineCalibrationTest(unittest.TestCase):
                 planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
                 result = evaluation.run_result(value, planned, 1, observed, "deterministic", True)
                 self.assertEqual(evaluation.calibrate(value, [result]), [])
+
+
+class CacheReuseTest(unittest.TestCase):
+    def test_compaction_events_paginate_past_snapshot_limit(self):
+        class Api:
+            def get(self, path, token):
+                after = int(path.split("after=")[1])
+                if after == 0:
+                    return [{"sequence": i, "kind": "model.completed", "data": {"run_id": "r", "context_usage": {"compactions": 0}}} for i in range(1, 151)]
+                return []
+        events = runner.compaction_events(Api(), "token", "w", "r")
+        self.assertEqual(len(events), 150)
+
+    def test_probe_dry_run_preserves_reasoning_and_pins_route(self):
+        script = Path(__file__).resolve().parent / "prompt_cache_route_probe.py"
+        completed = subprocess.run([sys.executable, str(script), "--route", "example/model@Example", "--max-spend-usd", "1", "--echo-upstream-body"],
+                                   text=True, capture_output=True, check=True, env={"PATH": os.environ["PATH"]})
+        value = json.loads(completed.stdout)
+        self.assertEqual(len(value["requests"]), 4)
+        request = value["requests"][1]
+        self.assertEqual(request["provider"]["only"], ["Example"])
+        self.assertEqual(request["debug"], {"echo_upstream_body": True})
+        assistant = next(m for m in request["messages"] if m["role"] == "assistant")
+        self.assertEqual(assistant["reasoning_details"], [{"type": "reasoning.text", "text": "dry-run reasoning"}])
+        self.assertEqual(len([m for m in value["requests"][-1]["messages"] if m["role"] == "tool"]), 3)
+
+    def test_local_usage_reader_filters_run_and_never_passes_url_as_argument(self):
+        run_id = str(uuid.uuid4())
+        url = "postgresql://reader:secret@127.0.0.1:54391/bench"
+        with mock.patch.object(cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"purpose":"main"}\n', '')) as execute:
+            result = cli.local_usage_reader_for(url)(run_id)
+        self.assertEqual(result, [{"purpose": "main"}])
+        args, kwargs = execute.call_args
+        self.assertNotIn(url, args[0])
+        self.assertIn(run_id, kwargs["input"])
+        self.assertIn("WHERE run_id", kwargs["input"])
+        # psql does not expand a URL given through PGDATABASE, so the parts travel separately.
+        self.assertEqual({k: kwargs["env"][k] for k in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")},
+                         {"PGHOST": "127.0.0.1", "PGPORT": "54391", "PGUSER": "reader", "PGPASSWORD": "secret",
+                          "PGDATABASE": "bench"})
+        self.assertNotIn("secret", " ".join(args[0]))
+        with self.assertRaises(ValueError):
+            cli.local_usage_reader_for("postgresql://remote.example/db")
+
+    def test_fixture_ledger_endpoint_defaults_to_the_tool_endpoint_and_stays_on_loopback(self):
+        # The backend reaches the fixture as host.docker.internal; the evaluator on the host may not (#942).
+        tool = "http://host.docker.internal:18780"
+        self.assertEqual(cli.fixture_ledger_endpoint(tool, None), tool)
+        self.assertEqual(cli.fixture_ledger_endpoint(tool, "http://127.0.0.1:18780"), "http://127.0.0.1:18780")
+        self.assertIsNone(cli.fixture_ledger_endpoint(None, "http://127.0.0.1:18780"))
+        for unsafe in ("http://example.com:18780", "https://10.0.0.5:18780", "file:///tmp/x", "http://127.0.0.1:18780/?q=1"):
+            with self.assertRaises(ValueError):
+                cli.fixture_ledger_endpoint(tool, unsafe)
+
+    def test_local_usage_reader_can_use_bench_container_psql(self):
+        url = "postgresql://reader:secret@127.0.0.1:54391/bench"
+        results = [subprocess.CompletedProcess([], 0, "127.0.0.1:54391\n", ""),
+                   subprocess.CompletedProcess([], 0, "", "")]
+        with mock.patch.object(cli.subprocess, "run", side_effect=results) as execute:
+            cli.local_usage_reader_for(url, "bench-postgres")(str(uuid.uuid4()))
+        args, kwargs = execute.call_args
+        self.assertEqual(args[0][:3], ["docker", "exec", "-i"])
+        self.assertNotIn(url, args[0])
+        self.assertEqual({k: kwargs["env"][k] for k in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")},
+                         {"PGHOST": "127.0.0.1", "PGPORT": "5432", "PGUSER": "reader", "PGPASSWORD": "secret",
+                          "PGDATABASE": "bench"})
+        for name in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"):
+            self.assertIn(name, args[0])
+        self.assertNotIn("secret", " ".join(args[0]))
+
+    def test_reuse_excludes_compaction_and_separates_summary(self):
+        records = [
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "after_compaction": False},
+            {"purpose": "summary", "outcome": "accepted", "input_tokens": 120, "output_tokens": 5, "cache_read_tokens": 100},
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 130, "output_tokens": 10, "cache_read_tokens": 110, "after_compaction": False},
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 80, "output_tokens": 10, "cache_read_tokens": 30, "after_compaction": True},
+            {"purpose": "main", "outcome": "accepted", "input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 90, "after_compaction": False},
+        ]
+        metric = evaluation.summarize_usage(records)["cache_reuse"]
+        self.assertEqual([call["reuse"] for call in metric["main_calls"]], [None, 1.0, 30 / 140, 1.0])
+        self.assertEqual(metric["eligible_calls"], 2)
+        self.assertEqual(metric["reuse_at_least_999_share"], 1.0)
+        self.assertAlmostEqual(metric["overall_hit"], 330 / 530)
+        self.assertAlmostEqual(metric["summary_hit"], 100 / 120)
+        self.assertIsNone(evaluation.summarize_usage(None)["cache_reuse"]["overall_hit"])
+
+    def test_compaction_markers_follow_accepted_workspace_events(self):
+        records = [{"purpose": "main", "outcome": "completed"} for _ in range(3)]
+        events = [{"context_usage": {"compactions": n}} for n in (0, 1, 1)]
+        runner.mark_compaction(records, events)
+        self.assertEqual([r["after_compaction"] for r in records], [False, True, False])
+        runner.mark_compaction(records, events[:2])
+        self.assertEqual([r["after_compaction"] for r in records], [None, None, None])
+        records.insert(1, {"purpose": "main", "outcome": "unknown"})
+        runner.mark_compaction(records, events)
+        self.assertIsNone(records[2]["after_compaction"])
+
+
+class RecoveryCorpusTest(unittest.TestCase):
+    def test_long_cache_ledger_requires_late_correction_and_every_side_effect(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "long-cache-ledger")
+        fixture = fixture_module.Fixture({})
+        probe = fixture_module.Probe(item, "run")
+        for page in range(1, 76):
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("reference_lookup", {"page": page})])
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("record_note", {"page": page})])
+        status, result = fixture.tool(item, "reference_lookup", {"page": 45})
+        self.assertEqual(status, 200)
+        self.assertIn("BUDGET-USD=300", result["content"])
+        self.assertEqual(len(result["content"]), 150000)
+        self.assertEqual(len(fixture.tool(item, "reference_lookup", {"page": 46})[1]["content"]), 1200)
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        for pages, expected in [(list(range(1, 76)), True), (list(range(1, 75)), False),
+                                (list(range(1, 76)) + [75], False)]:
+            result = evaluation.grade(value, item, observation(final_answer=answer, fixture_record_pages=pages), False)
+            self.assertEqual(result["passed"], expected)
+
+    def test_fixture_corrections_and_ledger(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        fixture = fixture_module.Fixture({})
+        for identifier, alias, args in (("correction-mid-page", "reference_lookup", {"page": 2}),
+                                        ("relevance-visible-in-input", "document_lookup",
+                                         {"document": "procurement-budget-policy-update"})):
+            item = task(value, identifier)
+            status, result = fixture.tool(item, alias, args)
+            self.assertEqual(status, 200)
+            content = result["content"]
+            self.assertEqual(len(content), 3000)
+            # The correction starts at the first word boundary from the offset and is
+            # bounded by spaces, so no filler fragment joins it (not "Contoso.ms").
+            correction = item.get("reference_corrections", {}).get("2") or next(
+                iter(item.get("document_corrections", {}).values()))
+            start = content.index(correction)
+            self.assertGreaterEqual(start, 1500)
+            self.assertEqual(content[start - 1], " ")
+            self.assertEqual(content[start + len(correction)], " ")
+            self.assertEqual(sorted(set(re.findall(r"EXCLUDE-VENDOR=(\S+)", content))), ["Contoso.", "Northwind"])
+        item = task(value, "side-effect-ledger")
+        probe = fixture_module.Probe(item, "run")
+        for page in range(1, 21):
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("reference_lookup", {"page": page})])
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("record_note", {"page": page})])
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        calls = [{"name": "record_note", "arguments": {"page": page}} for page in range(1, 21)]
+        self.assertTrue(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls,
+                                                               fixture_record_pages=list(range(1, 21))), False)["passed"])
+        calls.append(calls[0])
+        self.assertFalse(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls,
+                                                                fixture_record_pages=list(range(1, 21)) + [1]), False)["passed"])
+
+    def test_ledger_grades_receiver_records_after_projection_is_summarized(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "side-effect-ledger")
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        projected = [{"name": "record_note", "arguments_sha256": "0" * 64}]
+        for pages, expected in [(list(range(1, 21)), True),
+                                (list(range(1, 21)) + [20], False),
+                                (list(range(1, 20)), False)]:
+            with self.subTest(pages=pages):
+                observed = observation(final_answer=answer, tool_calls=projected, fixture_record_pages=pages)
+                self.assertEqual(evaluation.grade(value, item, observed, False)["passed"], expected)
+
+    def test_fixture_http_ledger_is_run_scoped_and_reports_missing_identity(self):
+        from urllib.request import Request, urlopen
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "side-effect-ledger")
+        fixture = fixture_module.Fixture({})
+        server = fixture.serve({item["id"]: item})
+        endpoint = f"http://127.0.0.1:{server.server_port}"
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        try:
+            for run_id, page in [(first, 1), (second, 9), (first, 2), (first, 2)]:
+                request = Request(f"{endpoint}/tools/{item['id']}/record_note", method="POST",
+                                  data=json.dumps({"page": page}).encode(),
+                                  headers={"Idempotency-Key": f"{run_id}:1:{page}"})
+                with urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+            self.assertEqual(runner.read_fixture_ledger(endpoint, first), [1, 2, 2])
+            self.assertEqual(runner.read_fixture_ledger(endpoint, second), [9])
+            fixture.record_delivery(None, "record_note", {"page": 3}, 200)
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                runner.read_fixture_ledger(endpoint, first)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_document_fixture_reads_documents_in_order(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "relevance-visible-in-input")
+        fixture = fixture_module.Fixture({})
+        probe = fixture_module.Probe(item, "run")
+        for name in item["fixture_documents"]:
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("document_lookup", {"document": name})])
 
 
 class FakeNode:
@@ -1315,16 +1479,11 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(evaluation.CorpusError, "unknown expected context_reason"):
                 evaluation.load_corpus(path)
 
-    def test_agents_remove_the_default_compaction_unless_they_bind_a_decider(self):
+    def test_minimal_defaults_only_removes_built_in_tools(self):
         plain = {"bindings": [{"kind": "tool"}]}
-        self.assertIn(evaluation.COMPACTION_DEFAULT, runner.minimal_defaults(plain))
-        explicit = {"bindings": [{"kind": "tool"}, {"kind": "decider"}]}
-        removed = runner.minimal_defaults(explicit)
-        self.assertNotIn(evaluation.COMPACTION_DEFAULT, removed)
+        removed = runner.minimal_defaults(plain)
+        self.assertNotIn("compaction", removed)
         self.assertTrue(set(evaluation.DEFAULT_TOOLS) <= set(removed))
-        self.assertEqual(runner.with_compaction_removed(plain, ["file_read"]), ["file_read", "compaction"])
-        self.assertEqual(runner.with_compaction_removed(explicit, ["file_read"]), ["file_read"])
-        self.assertEqual(runner.with_compaction_removed(plain, ["compaction"]), ["compaction"])
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
@@ -1544,7 +1703,8 @@ class MemoryTest(unittest.TestCase):
 
         def call(method, path, body, token, timeout=None):
             if path.endswith("/query"):
-                return 200, [{"id": key, "content": {"text": value[1]}} for key, value in units.items()]
+                return 200, {"units": [{"id": key, "content": {"text": value[1]}} for key, value in units.items()],
+                             "unconfirmed": []}
             change = body["changes"][0]
             current = units.get(change["id"])
             if change["operation"] == "add":
@@ -1862,7 +2022,8 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(observed, [self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]])
 
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
-        # One Run's worst case is 24 steps * 6 attempts * (1000 * max(1, 1) + 100 * 5) = 216000 nanocredits.
+        # Reserve 24 steps and eight possible Summary calls, with six attempts each.
+        # A Summary call may output window / 8 = 125 tokens, past the ordinary 100.
         for phase in ("FAILED", "COMPLETED"):
             with self.subTest(phase):
                 call, _ = self.live_node(phase=phase)
@@ -1873,7 +2034,7 @@ class LiveGuardTest(unittest.TestCase):
                 self.assertEqual(len(spend["attempts"]), 1)
                 self.assertEqual(spend["attempts"][0]["provider_work"][0]["input_tokens"], 10)
                 # Even a completed Run keeps its whole reservation: its usage is not readable over HTTP.
-                self.assertEqual(spend["committed_nanocredits"], 216000)
+                self.assertEqual(spend["committed_nanocredits"], 294000)
                 self.assertEqual(spend["uncertain_attempts"], 1)
                 self.assertIn("exceed the ceiling", spend["refusal"])
                 self.assertEqual(result["runs"][0]["evidence"]["content_class"], "restricted-live")
@@ -1991,7 +2152,7 @@ class LiveGuardTest(unittest.TestCase):
             signal.raise_signal(signal.SIGINT)
             return run_result(*args)
         with mock.patch.object(evaluation, "run_result", side_effect=interrupted):
-            status, result = self.run_live(call, ceiling="500000")
+            status, result = self.run_live(call, ceiling="700000")
         self.assertEqual(status, 130)
         self.assertIsNotNone(result, "the record of paid work must be written")
         self.assertEqual(len(result["runs"]), 2, "every observed Run is graded despite the interrupt")
@@ -2021,7 +2182,7 @@ class LiveGuardTest(unittest.TestCase):
                          ["structured-data-overdue-totals/projection/candidate/1"])
         evaluation.validate_result(result)
 
-    def test_an_applied_compaction_stops_dispatch(self):
+    def test_an_applied_compaction_does_not_stop_dispatch(self):
         call, _ = self.live_node()
 
         def compacting(method, path, body, token, timeout=None):
@@ -2029,12 +2190,10 @@ class LiveGuardTest(unittest.TestCase):
             if path == "/api/runs/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
-        status, result = self.run_live(compacting, ceiling="500000")
-        self.assertEqual(status, 1)
-        self.assertIn("Jev compaction Decider answered", result["error"])
-        self.assertEqual(len(result["runs"]), 1)
-        self.assertEqual(len(result["skipped_runs"]), 1)
-        self.assertIn("approval attests", result["experiment"]["harness"]["jev_classifier"])
+        status, result = self.run_live(compacting, ceiling="700000")
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(len(result["skipped_runs"]), 0)
+        self.assertEqual(result["runs"][0]["compactions"], 1)
 
     def test_live_agents_remove_every_unbudgeted_default(self):
         call, _ = self.live_node()
@@ -2048,7 +2207,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertTrue(agents)
         for config in agents:
             self.assertEqual(sorted(config["remove_default"]),
-                             sorted([*evaluation.DEFAULT_TOOLS, evaluation.COMPACTION_DEFAULT]))
+                             sorted(evaluation.DEFAULT_TOOLS))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
         self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
                          set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")
@@ -2153,7 +2312,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(seen, {"proxy": [], "target": ["Bearer secret-token"]})
 
-    def test_compactions_seen_while_cancelling_after_a_failure_stop_dispatch(self):
+    def test_compactions_seen_while_cancelling_after_a_failure_are_recorded(self):
         call, _ = self.live_node(phase="RUNNING")
         failed = []
 
@@ -2165,12 +2324,11 @@ class LiveGuardTest(unittest.TestCase):
             if path == "/api/runs/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
-        status, result = self.run_live(failing_then_compacted, ceiling="500000")
-        self.assertEqual(status, 1)
-        self.assertIn("Jev compaction Decider answered", result["error"])
-        self.assertEqual([run["outcome"] for run in result["runs"]], ["infrastructure_failure"])
+        status, result = self.run_live(failing_then_compacted, ceiling="700000")
+        self.assertEqual(status, 0)
+        self.assertEqual(result["runs"][0]["outcome"], "infrastructure_failure")
         self.assertEqual(result["runs"][0]["compactions"], 1)
-        self.assertEqual(len(result["skipped_runs"]), 1)
+        self.assertEqual(len(result["skipped_runs"]), 0)
         evaluation.validate_result(result)
 
     def test_a_failed_cancellation_stops_all_further_dispatch(self):
@@ -2313,8 +2471,16 @@ class LiveGuardTest(unittest.TestCase):
         model = {"context_window": 1000, "max_output_tokens": 100}
         price = {"input_nanocredits_per_token": 4, "cache_write_nanocredits_per_token": 5,
                  "output_nanocredits_per_token": 20}
+        # A Summary call may output window / 8 = 125 tokens, more than the
+        # ordinary 100-token reservation.
         self.assertEqual(runner.run_worst_case(item, value, model, price),
-                         24 * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
+                         runner.PROVIDER_ATTEMPTS_PER_STEP * (24 * (1000 * 5 + 100 * 20)
+                                                             + 8 * (1000 * 5 + 125 * 20)))
+        bounded = dict(item, context_policy={"version": "context-recovery/1",
+                                             "summary": {"max_tokens": 256, "call_budget": 2}})
+        self.assertEqual(runner.run_worst_case(bounded, value, dict(model, context_window=100_000), price),
+                         runner.PROVIDER_ATTEMPTS_PER_STEP * (24 * (100_000 * 5 + 100 * 20)
+                                                             + 2 * (100_000 * 5 + 256 * 20)))
         self.assertEqual(runner.PROVIDER_ATTEMPTS_PER_STEP, 6, "one attempt plus five harness retries")
 
     def test_ledger_holds_the_approval_expiry_on_the_monotonic_clock(self):

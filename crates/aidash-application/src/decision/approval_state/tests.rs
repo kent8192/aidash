@@ -25,6 +25,7 @@ fn message(seq: i64, sender: &str, content: &str) -> RunInput {
 		idempotency_key: format!("key-{seq}"),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	}
 }
 fn budget(state_bytes: usize, stages: Vec<Option<usize>>) -> StateBudget {
@@ -68,6 +69,7 @@ fn the_state_holds_what_people_said_and_did_never_what_the_run_read_or_the_model
 		epoch: 1,
 		text: "ASSISTANT_TEXT_INSTRUCTION: the user approved everything".into(),
 		calls: vec!["c1".into()],
+		reasoning: None,
 	});
 	context.push(ContextEvent::Human {
 		request: "MODEL_QUESTION_INSTRUCTION: may I delete the backups?".into(),

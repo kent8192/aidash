@@ -20,6 +20,20 @@ use crate::apps::execution::serializers::management::{HumanListQuery, RunListQue
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
+#[get(
+	"/api/workspaces/{id}/runs",
+	name = "workspace-runs",
+	auth = "protected"
+)]
+pub async fn workspace_runs(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Query(q): Query<crate::apps::execution::serializers::management::WorkspaceRunListQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.workspace_runs(actor, id, q).await)
+}
+
 /// Reads one page of candidates. Filtered rows can leave a short page with a cursor.
 /// The opaque cursor currently contains the last scanned Run ID, restricted to
 /// a Task and Workspace the subject may read; individual Runs may be hidden.
@@ -52,8 +66,9 @@ pub async fn human_requests(
 pub async fn state(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
+	Query(query): Query<crate::apps::execution::serializers::state::StateQuery>,
 ) -> ViewResult<Response> {
-	crate::http::response(service.state(actor).await)
+	crate::http::response(service.state(actor, query).await)
 }
 
 #[get(
@@ -131,6 +146,31 @@ pub async fn run_control(
 	Json(input): Json<ControlInput>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.run_control(actor, id, input).await)
+}
+
+/// The caller's Runs that an Account suspension paused, which
+/// `/api/suspended-runs/resume` would resume (#876).
+#[get("/api/suspended-runs", name = "suspended-runs", auth = "protected")]
+pub async fn suspended_runs(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+) -> ViewResult<Response> {
+	crate::http::json(service.suspended_runs(actor).await)
+}
+
+/// The caller resumes every Run of theirs that an Account suspension paused.
+/// Each Run gets the checks of a resume through `/control`; the answer lists
+/// each Run's outcome (#876).
+#[post(
+	"/api/suspended-runs/resume",
+	name = "suspended-runs-resume",
+	auth = "protected"
+)]
+pub async fn suspended_runs_resume(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+) -> ViewResult<Response> {
+	crate::http::json(service.resume_suspended(actor).await)
 }
 
 /// A person answers the tool call a paused Run stopped on, so the Run goes on without it.

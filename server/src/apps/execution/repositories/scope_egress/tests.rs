@@ -400,6 +400,43 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			("denied.example".into(), "egress_host_forbidden".into(), 3),
 		]
 	);
+	// A Tenant whose tallies cannot be written (here one that does not exist,
+	// written first) does not lose another Tenant's counts.
+	let gone = ScopeId {
+		tenant: "aaa-gone".into(),
+		node: "gone".into(),
+		scratch_space: Uuid::new_v4(),
+	};
+	assert!(
+		durable
+			.record_refusals(vec![
+				aidash_application::egress::RefusalTally {
+					scope: gone,
+					minute,
+					host: String::new(),
+					reason: "egress_client_closed".into(),
+					count: 1,
+				},
+				aidash_application::egress::RefusalTally {
+					scope: scope.id.clone(),
+					minute,
+					host: "later.example".into(),
+					reason: "egress_host_forbidden".into(),
+					count: 4,
+				},
+			])
+			.await
+			.is_err(),
+		"the failed Tenant is still reported"
+	);
+	let later: i64 = sqlx::query_scalar(
+		"SELECT count FROM egress_scope_refusals WHERE scope_id = $1 AND host = 'later.example'",
+	)
+	.bind(scope.id.scratch_space)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(later, 4);
 	durable.notify_many_hosts(&scope.id, 101).await.unwrap();
 	let events: i64 = sqlx::query_scalar(
 		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'many_hosts'",
@@ -438,6 +475,67 @@ fn storage_counter_ceiling_cannot_turn_a_budget_into_unlimited_traffic() {
 		.received_bytes(0)
 		.finish();
 	assert!(budget_available(&row, u64::MAX, u64::MAX).is_err());
+}
+
+/// Admission takes no state lock (#845), so a burst of a Space's first
+/// connections of a day must not race each other to create the day's counter.
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn concurrent_first_admissions_of_a_day_write_no_counter_and_all_pass(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let scope = ScopeSettings {
+		id: ScopeId {
+			tenant: "acme".into(),
+			node: tenant_roots::fixture_node_name("acme").to_string(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget {
+			sent_bytes: 10,
+			received_bytes: 10,
+		},
+		anomaly: AnomalyRule::default(),
+		operator_allows_all: false,
+		tunnel_limits: Default::default(),
+	};
+	let durable = DurableScopes::new(federation.store.clone(), Arc::new(Authority(scope.clone())));
+	durable.resolve("credential").await.unwrap();
+	let admissions =
+		futures_util::future::join_all((0..16).map(|_| durable.admit_connection(&scope)));
+	for admitted in admissions.await {
+		admitted.unwrap();
+	}
+	let rows: (i64,) =
+		sqlx::query_as("SELECT count(*) FROM egress_scope_daily WHERE scope_id = $1")
+			.bind(scope.id.scratch_space)
+			.fetch_one(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(rows.0, 0, "admission only reads the day's counter");
+	// A day with nothing charged still counts against a zero budget.
+	let mut empty = scope.clone();
+	empty.budget = DailyBudget {
+		sent_bytes: 0,
+		received_bytes: 10,
+	};
+	let durable = DurableScopes::new(federation.store.clone(), Arc::new(Authority(empty.clone())));
+	assert!(
+		durable
+			.admit_connection(&empty)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_budget_exhausted")
+	);
 }
 
 const KEY: &str = "scope-test-key";

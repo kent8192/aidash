@@ -54,6 +54,9 @@ pub struct ChannelAttachment {
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(db_column = "message_id", null = true)]
 	pub message_key: Option<uuid::Uuid>,
+	/// The Image Description its uploader wrote for an image (#622).
+	#[field(field_type = "text", null = true)]
+	pub description: Option<String>,
 }
 
 use crate::{Error, Result};
@@ -178,6 +181,7 @@ impl crate::database::Record for ChannelAttachment {
 			wav_sha256: row.try_get("wav_sha256")?,
 			wav_size_bytes: row.try_get("wav_size_bytes")?,
 			message_key: row.try_get("message_id")?,
+			description: row.try_get("description")?,
 		})
 	}
 }
@@ -195,6 +199,7 @@ impl From<ChannelAttachment> for aidash_domain::workspaces::channels::Attachment
 			content: row.content,
 			object_id: row.object_id,
 			message_id: row.message_key,
+			description: row.description,
 		}
 	}
 }

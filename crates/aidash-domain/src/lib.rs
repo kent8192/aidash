@@ -35,6 +35,7 @@ pub mod unassigned;
 pub mod semantic;
 pub mod tenancy;
 pub mod tenant_secrets;
+pub mod unconfirmed;
 
 pub use entities::*;
 

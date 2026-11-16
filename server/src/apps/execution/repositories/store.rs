@@ -36,6 +36,8 @@ use uuid::Uuid;
 pub struct RunStore {
 	pub store: Store,
 	pub scope: TenancyScope,
+	pub(crate) offloaded:
+		std::sync::Arc<std::sync::Mutex<Vec<aidash_application::context::offload::JournalRange>>>,
 }
 
 pub(crate) struct WorkspaceInsert<'a> {
@@ -123,6 +125,10 @@ pub struct Store {
 	/// reaches the other Nodes of its Deployment (#751). Empty in a process
 	/// that never built a `Federation`. Shared by every clone of this Store.
 	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
+	/// Nodes that did not answer a list read, so the next list does not wait on
+	/// them again (#770). Shared by every clone of this Store.
+	pub(crate) silent_nodes:
+		std::sync::Arc<crate::apps::federation::remote::services::wire::SilentNodes>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -463,6 +469,7 @@ impl Store {
 		RunStore {
 			store: self.clone(),
 			scope,
+			offloaded: Default::default(),
 		}
 	}
 
@@ -539,6 +546,7 @@ impl Store {
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 			in_process: Default::default(),
+			silent_nodes: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -686,6 +694,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
 
@@ -746,6 +755,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
 	pub async fn event(
@@ -2528,6 +2538,7 @@ impl Store {
 						.into_iter()
 						.map(Into::into)
 						.collect(),
+					unconfirmed: vec![],
 				})
 			})
 			.await
@@ -2760,16 +2771,20 @@ impl Store {
 		max_input_tokens: usize,
 	) -> Result<Option<(Uuid, Uuid)>> {
 		let deployment = self.deployment.as_str();
+		let result_key = format!(
+			"{}{creator}:{key}",
+			aidash_domain::run_input::SUBNODE_RESULT_PREFIX
+		);
 		InputRecord::admit_from_run(
 			tx,
 			deployment,
 			creator,
 			member.id,
-			(&member.executor_subject(deployment), content, key),
+			(&member.executor_subject(deployment), content, &result_key),
 			max_input_tokens,
 		)
 		.await?;
-		InputRecord::local_message_of(tx, creator, key).await
+		InputRecord::local_message_of(tx, creator, &result_key).await
 	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(
@@ -3496,6 +3511,7 @@ impl Store {
 		if saved.phase().is_terminal() {
 			// Closing an open attempt appends an event, so lock first; see `lock_end`.
 			super::subnodes::lock_for_end(tx, saved.id).await?;
+			HumanRequestRecord::close_for_run(tx.as_mut(), saved.id).await?;
 		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
@@ -3581,7 +3597,16 @@ impl Store {
 		event_kind: &str,
 		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
+		let suspension = reason
+			.strip_prefix("account_suspended:")
+			.and_then(|value| value.parse::<u64>().ok());
+		let recovery = suspension.map(|epoch| ("account_suspension_epoch", json!(epoch)));
+		let reason = if suspension.is_some() {
+			"account_suspended"
+		} else {
+			reason
+		};
+		self.pause_for_execution_reason(run, worker, reason, event_kind, recovery, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(
@@ -3623,6 +3648,7 @@ impl Store {
 		}
 		// Before the first event below; see `lock_end`.
 		super::subnodes::lock_for_end(&mut tx, run.id).await?;
+		HumanRequestRecord::close_for_run(tx.as_mut(), run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3960,6 +3986,7 @@ impl Store {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
 		if action == RunControlAction::Cancel {
+			HumanRequestRecord::close_for_run(tx, id).await?;
 			crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
 				tx,
 				id,
@@ -4043,7 +4070,11 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		// Match a Subnode end, which locks the Subnode before its member Runs:
+		// take the Subnode's share lock first, then the Run. An ended Subnode
+		// therefore refuses as Forbidden ahead of the Run's own end.
 		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -4209,6 +4240,12 @@ impl Store {
 		actor: &str,
 	) -> Result<HumanRequest> {
 		human_interaction::validate_response(&response)?;
+		let original = HumanRequestRecord::read_in(tx, id, false)
+			.await?
+			.ok_or_else(|| Error::NotFound("human request".into()))?;
+		if original.response.is_none() {
+			HumanRequestRecord::require_active_run(tx, original.run_id).await?;
+		}
 		let old = HumanRequestRecord::read_in(tx, id, true)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
@@ -4748,6 +4785,8 @@ impl Store {
 		}
 		// A research result whose Provider result account terms expired
 		// meanwhile is stored as its tombstone (ADR 0058).
+		let journal_query =
+			result["contract"] == aidash_domain::context::research::JOURNAL_QUERY_CONTRACT;
 		let expired = crate::apps::execution::models::research::ResearchAttempt::expired_result(
 			tx.as_mut(),
 			run.id,
@@ -4777,6 +4816,9 @@ impl Store {
 		}
 		tx.commit().await?;
 		// The caller carries on with what was stored, never the expired copy.
+		if journal_query && let Err(error) = super::journal_query::acknowledge(self, run).await {
+			tracing::warn!(%error, run = %run.id, "Journal Query receipt remains pending");
+		}
 		Ok(result.clone())
 	}
 	/// Durable before provider I/O. Like other worker writes, a lost lease
@@ -5658,7 +5700,27 @@ impl Store {
 		// that decides it; `STARTED` and `COMPLETED` rows record nothing.
 		let recovery_reason = match (recovery_reason, refusal) {
 			(None, Some(refusal)) => match self.declinable_pause(&mut tx, run.id, refusal).await? {
-				Some(paused) => Some(("paused_call", serde_json::to_value(paused)?)),
+				Some(paused) => {
+					if self
+						.standing_decline_in(&mut tx, run.id, worker, &paused)
+						.await?
+					{
+						let closed =
+							crate::apps::execution::repositories::inference::close_pending(
+								tx.as_mut(),
+								self.deployment.as_str(),
+								run.id,
+								None,
+							)
+							.await?;
+						tx.commit().await?;
+						crate::apps::execution::repositories::inference::record_interruptions(
+							&closed,
+						);
+						return Ok(());
+					}
+					Some(("paused_call", serde_json::to_value(paused)?))
+				}
 				None => None,
 			},
 			(reason, _) => reason,
@@ -5817,6 +5879,7 @@ impl Store {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
+		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		if !matches!(
 			kind,
 			"QUESTION" | "APPROVAL_REQUIRED" | "CONFIRMATION" | "INFORMATION_REQUEST"

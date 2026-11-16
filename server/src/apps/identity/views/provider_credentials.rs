@@ -20,6 +20,20 @@ pub async fn list(
 ) -> ViewResult<Response> {
 	response(service.list(actor, tenant, page).await)
 }
+/// Pasted Key Material, accepted only on a Self-hosted Deployment (#892).
+#[post(
+	"/api/tenants/{tenant}/provider-credentials",
+	name = "provider-credential-supply",
+	auth = "protected"
+)]
+pub async fn supply(
+	#[inject] service: Depends<Management>,
+	#[inject] actor: Actor,
+	Path(tenant): Path<String>,
+	Json(input): Json<Supply>,
+) -> ViewResult<Response> {
+	response(service.supply(actor, tenant, input).await)
+}
 #[get(
 	"/api/tenants/{tenant}/provider-credentials/{id}",
 	name = "provider-credential-get",

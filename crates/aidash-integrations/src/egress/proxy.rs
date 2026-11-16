@@ -147,8 +147,16 @@ struct Waiting {
 	/// Not capped: only read so that a Space's idle tunnels make way (#845).
 	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
 	tenants: std::collections::HashMap<String, usize>,
+	/// A Tenant's waiting plain HTTP requests, which keep their listener slot
+	/// while they wait (#845 decision 8), capped at `SLOT_HOLDING_WAITERS`.
+	holding_slots: std::collections::HashMap<String, usize>,
 	global: usize,
 }
+/// The listener slots one Tenant's waiting plain HTTP requests may hold: a
+/// quarter, so that the rest of the slots still accept other Tenants'
+/// connections. CONNECT gives its slot back before it waits, so it is not
+/// counted (lead decision on PR #912, layered on #845 decision 8).
+const SLOT_HOLDING_WAITERS: usize = super::CONNECTION_SLOTS / 4;
 impl CapacityCounts {
 	/// Forget a semaphore that nothing holds or waits on any longer.
 	fn prune(&mut self, scope: &aidash_domain::egress::ScopeId) {
@@ -179,6 +187,24 @@ const RECLAIM_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
 const RECLAIM_CHECK: std::time::Duration = std::time::Duration::from_millis(500);
 /// A tunnel closed to make way. The client opens another when it needs one.
 const RECLAIMED: &str = "egress_idle_reclaimed";
+
+/// How often a Scratch Space with waiting connections is checked, so that a
+/// stopped Space ends their wait at once (#845 decision 2). One check serves
+/// every waiting connection of a credential.
+const WAIT_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The answer to a connection whose Scratch Space stopped while it waited.
+type Stopped = (hyper::StatusCode, &'static str);
+
+/// Why a connection did not get its limits.
+#[derive(Debug, PartialEq)]
+enum NotAdmitted {
+	/// A limit stayed full; the code names it.
+	Limit(&'static str),
+	/// Its Scratch Space stopped, or its credential or budget ran out, while it
+	/// waited.
+	Stopped(Stopped),
+}
 
 /// What lets a tunnel make way for its Scratch Space's waiting connections.
 #[derive(Clone)]
@@ -231,6 +257,31 @@ impl Drop for PendingTally {
 	}
 }
 
+type Watched = Arc<
+	std::sync::Mutex<
+		std::collections::HashMap<String, tokio::sync::watch::Receiver<Option<Stopped>>>,
+	>,
+>;
+
+/// Whether a check of a waiting connection's Scratch Space decided that it may
+/// not go on. A transient failure decides nothing: the connection keeps waiting
+/// and is checked once more before it is forwarded.
+fn stopped_by(
+	checked: Result<aidash_application::Result<ScopeSettings>, tokio::time::error::Elapsed>,
+) -> Option<Stopped> {
+	use aidash_application::Error;
+	use hyper::StatusCode;
+	match checked {
+		Ok(Err(Error::Refused(code))) if code == "egress_budget_exhausted" => {
+			Some((StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"))
+		}
+		Ok(Err(Error::Forbidden | Error::Unauthorized)) => {
+			Some((StatusCode::FORBIDDEN, "egress_credential_revoked"))
+		}
+		_ => None,
+	}
+}
+
 /// Scope tunnel capacity is separate from the HTTP listener's request pool.
 pub(super) struct TunnelManager {
 	global: Arc<tokio::sync::Semaphore>,
@@ -243,6 +294,9 @@ pub(super) struct TunnelManager {
 	resolved:
 		std::sync::Mutex<std::collections::HashMap<String, (tokio::time::Instant, ScopeSettings)>>,
 	reach: std::sync::Mutex<std::collections::HashMap<aidash_domain::egress::ScopeId, Reach>>,
+	/// The check of each credential that has connections waiting, which tells
+	/// them when their Scratch Space stopped.
+	watched: Watched,
 	tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
 	stopping: tokio::sync::watch::Receiver<bool>,
 	failures: Arc<FailureLog>,
@@ -267,6 +321,8 @@ struct WaitTurn {
 	counts: ScopeCounts,
 	scope: aidash_domain::egress::ScopeId,
 	semaphores: Vec<Arc<tokio::sync::Semaphore>>,
+	/// Whether the waiting connection holds a listener slot.
+	holds_slot: bool,
 }
 impl Drop for WaitTurn {
 	fn drop(&mut self) {
@@ -283,6 +339,14 @@ impl Drop for WaitTurn {
 			*n -= 1;
 			if *n == 0 {
 				waiting.tenants.remove(&self.scope.tenant);
+			}
+		}
+		if self.holds_slot
+			&& let Some(n) = waiting.holding_slots.get_mut(&self.scope.tenant)
+		{
+			*n -= 1;
+			if *n == 0 {
+				waiting.holding_slots.remove(&self.scope.tenant);
 			}
 		}
 		waiting.global -= 1;
@@ -322,6 +386,7 @@ impl TunnelManager {
 			tallies: Default::default(),
 			resolved: Default::default(),
 			reach: Default::default(),
+			watched: Default::default(),
 			tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
 			stopping,
 			failures: Arc::default(),
@@ -372,17 +437,35 @@ impl TunnelManager {
 	/// Take the three limits, waiting up to `LIMIT_WAIT` for a full one, and
 	/// say how long the connection waited. A limit of zero never frees up, and
 	/// a stopping gateway takes no new connections, so neither waits.
+	#[cfg(test)]
 	async fn acquire(
 		&self,
 		scope: &ScopeSettings,
 		wait: std::time::Duration,
 	) -> Result<(TunnelPermit, std::time::Duration), &'static str> {
+		self.acquire_watched(scope, wait, false, || None)
+			.await
+			.map_err(|refused| match refused {
+				NotAdmitted::Limit(code) | NotAdmitted::Stopped((_, code)) => code,
+			})
+	}
+	/// As `acquire`, and a connection that has to wait also ends its wait as
+	/// soon as `watch`, made only then, says its Scratch Space stopped. A
+	/// connection that `holds_slot` of the listener while it waits (plain HTTP)
+	/// is refused at once beyond its Tenant's `SLOT_HOLDING_WAITERS`.
+	async fn acquire_watched(
+		&self,
+		scope: &ScopeSettings,
+		wait: std::time::Duration,
+		holds_slot: bool,
+		watch: impl FnOnce() -> Option<tokio::sync::watch::Receiver<Option<Stopped>>>,
+	) -> Result<(TunnelPermit, std::time::Duration), NotAdmitted> {
 		let code = match self.try_acquire(scope) {
 			Ok(permit) => return Ok((permit, std::time::Duration::ZERO)),
 			Err(code) => code,
 		};
 		if scope.tunnel_limits.concurrent == 0 || is_stopping(&self.stopping) {
-			return Err(limit_refused(code));
+			return Err(NotAdmitted::Limit(limit_refused(code)));
 		}
 		let mut turn = {
 			let mut counts = self.counts.lock().unwrap();
@@ -396,6 +479,13 @@ impl TunnelManager {
 				.copied()
 				.unwrap_or(0)
 				>= (self.waiting_budget / 4).max(1)
+				|| (holds_slot
+					&& counts
+						.waiting
+						.holding_slots
+						.get(&scope.id.tenant)
+						.copied()
+						.unwrap_or(0) >= SLOT_HOLDING_WAITERS)
 			{
 				Some(LIMITS[1].0)
 			} else if counts.waiting.global >= self.waiting_budget {
@@ -405,7 +495,7 @@ impl TunnelManager {
 			};
 			if let Some(code) = full {
 				counts.prune(&scope.id);
-				return Err(limit_refused(code));
+				return Err(NotAdmitted::Limit(limit_refused(code)));
 			}
 			*counts.waiting.scopes.entry(scope.id.clone()).or_default() += 1;
 			*counts
@@ -413,26 +503,46 @@ impl TunnelManager {
 				.tenants
 				.entry(scope.id.tenant.clone())
 				.or_default() += 1;
+			if holds_slot {
+				*counts
+					.waiting
+					.holding_slots
+					.entry(scope.id.tenant.clone())
+					.or_default() += 1;
+			}
 			counts.waiting.global += 1;
 			let semaphores = self.semaphores(&mut counts, scope).to_vec();
 			WaitTurn {
 				counts: self.counts.clone(),
 				scope: scope.id.clone(),
 				semaphores,
+				holds_slot,
 			}
 		};
 		let started = tokio::time::Instant::now();
 		let deadline = started + wait;
 		let mut stopping = self.stopping.clone();
+		let watched = watch();
+		let space_stopped = async move {
+			if let Some(mut watched) = watched
+				&& let Ok(stopped) = watched.wait_for(Option::is_some).await
+				&& let Some(stopped) = *stopped
+			{
+				return stopped;
+			}
+			std::future::pending().await
+		};
+		tokio::pin!(space_stopped);
 		let mut permits = Vec::with_capacity(3);
 		for (semaphore, (code, label)) in turn.semaphores.iter().zip(LIMITS) {
 			let waited = tokio::time::Instant::now();
 			let permit = tokio::select! {
 				permit = tokio::time::timeout_at(deadline, semaphore.clone().acquire_owned()) => permit,
-				_ = async { while stopping.changed().await.is_ok() && !*stopping.borrow() {} } => return Err(limit_refused(code)),
+				_ = async { while stopping.changed().await.is_ok() && !*stopping.borrow() {} } => return Err(NotAdmitted::Limit(limit_refused(code))),
+				stopped = &mut space_stopped => return Err(NotAdmitted::Stopped(stopped)),
 			};
 			let Ok(Ok(permit)) = permit else {
-				return Err(limit_refused(code));
+				return Err(NotAdmitted::Limit(limit_refused(code)));
 			};
 			let waited = waited.elapsed();
 			if !waited.is_zero() {
@@ -564,6 +674,51 @@ impl TunnelManager {
 			(tokio::time::Instant::now(), settings.clone()),
 		);
 		Ok(settings)
+	}
+	/// The check that tells a credential's waiting connections their Scratch
+	/// Space stopped. One task checks every `WAIT_RECHECK` for all of them, so
+	/// a burst of waiters costs the store one read a second (#845 decision 28),
+	/// and it ends once none of them waits any longer.
+	fn watch_space(
+		&self,
+		scopes: Arc<dyn EgressScopes>,
+		scope: &ScopeSettings,
+		token: &str,
+	) -> tokio::sync::watch::Receiver<Option<Stopped>> {
+		let mut watched = self.watched.lock().unwrap();
+		if let Some(receiver) = watched.get(token) {
+			return receiver.clone();
+		}
+		let (sender, receiver) = tokio::sync::watch::channel(None);
+		watched.insert(token.to_owned(), receiver.clone());
+		let all = self.watched.clone();
+		let (scope, token) = (scope.clone(), token.to_owned());
+		tokio::spawn(async move {
+			let mut checks = tokio::time::interval(WAIT_RECHECK);
+			checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+			checks.tick().await;
+			loop {
+				checks.tick().await;
+				{
+					// Waiters subscribe under this lock, so none can join a
+					// check that is about to end.
+					let mut watched = all.lock().unwrap();
+					if sender.receiver_count() <= 1 {
+						watched.remove(&token);
+						return;
+					}
+				}
+				let checked =
+					tokio::time::timeout(WAIT_RECHECK * 5, scopes.check_active(&scope, &token))
+						.await;
+				if let Some(stopped) = stopped_by(checked) {
+					sender.send_replace(Some(stopped));
+					all.lock().unwrap().remove(&token);
+					return;
+				}
+			}
+		});
+		receiver
 	}
 	/// Whether a connection of this Scratch Space waits for a limit now.
 	fn has_waiters(&self, scope: &aidash_domain::egress::ScopeId) -> bool {
@@ -1395,11 +1550,19 @@ pub(super) async fn forward(
 		host: host.clone(),
 		armed: true,
 	};
-	let acquired = manager.acquire(&scope, LIMIT_WAIT).await;
+	// A Space that stops ends its connections' waits at once (#845 decision 2).
+	let acquired = manager
+		.acquire_watched(&scope, LIMIT_WAIT, !connect, || {
+			Some(manager.watch_space(scopes.clone(), &scope, &token))
+		})
+		.await;
 	pending.armed = false;
 	let (permit, waited) = match acquired {
 		Ok((permit, waited)) => (Arc::new(permit), waited),
-		Err(code) => return refuse(&host, StatusCode::TOO_MANY_REQUESTS, code),
+		Err(NotAdmitted::Limit(code)) => {
+			return refuse(&host, StatusCode::TOO_MANY_REQUESTS, code);
+		}
+		Err(NotAdmitted::Stopped((status, code))) => return refuse(&host, status, code),
 	};
 	let mut audit = Audit {
 		id: uuid::Uuid::new_v4(),
@@ -1618,10 +1781,11 @@ async fn forward_http(
 	let received = audit.received.clone();
 	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
 	let stopping = manager.stopping.clone();
-	let reclaim = Some(Reclaim {
-		manager: manager.clone(),
-		scope: scope.id.clone(),
-	});
+	// Idle reclamation is for CONNECT tunnels kept open between requests
+	// (#845 decision 27). This connection carries one request with
+	// `Connection: close`, so a quiet one is a request still in flight, which
+	// it would only cut.
+	let reclaim = None;
 	{
 		let mut tasks = manager.tasks.lock().unwrap();
 		while tasks.try_join_next().is_some() {}
@@ -2050,6 +2214,123 @@ mod tests {
 		stop.send(true).unwrap();
 		assert_eq!(waiting.await.unwrap(), Some("egress_tunnel_limit"));
 		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_space_that_stops_ends_its_waits_at_once_with_one_check_for_all() {
+		let one = limited(1);
+		let memory = Arc::new(MemoryScopes::new("token".into(), one.clone()));
+		let scopes: Arc<dyn EgressScopes> = memory.clone();
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let _held = manager.try_acquire(&one).unwrap();
+		let waiters: Vec<_> = (0..3)
+			.map(|_| {
+				let (manager, one, scopes) = (manager.clone(), one.clone(), scopes.clone());
+				tokio::spawn(async move {
+					manager
+						.acquire_watched(&one, super::LIMIT_WAIT, false, || {
+							Some(manager.watch_space(scopes, &one, "token"))
+						})
+						.await
+						.err()
+				})
+			})
+			.collect();
+		tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+		assert_eq!(memory.checks(), 1, "one check serves every waiter");
+		assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
+		let started = tokio::time::Instant::now();
+		memory.revoke();
+		for waiter in waiters {
+			assert_eq!(
+				waiter.await.unwrap(),
+				Some(super::NotAdmitted::Stopped((
+					hyper::StatusCode::FORBIDDEN,
+					"egress_credential_revoked"
+				)))
+			);
+		}
+		assert!(started.elapsed() <= super::WAIT_RECHECK);
+		assert_eq!(manager.counts.lock().unwrap().waiting.global, 0);
+		assert!(manager.watched.lock().unwrap().is_empty());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_tenant_s_waiting_plain_http_holds_at_most_a_quarter_of_the_listener_slots() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits {
+				waiting: 1 << 16,
+				..Default::default()
+			},
+		));
+		let one = limited(1);
+		let _held = manager.try_acquire(&one).unwrap();
+		let wait = |settings: ScopeSettings, holds_slot: bool| {
+			let manager = manager.clone();
+			tokio::spawn(async move {
+				manager
+					.acquire_watched(&settings, super::LIMIT_WAIT, holds_slot, || None)
+					.await
+					.err()
+			})
+		};
+		let quarter: Vec<_> = (0..super::SLOT_HOLDING_WAITERS)
+			.map(|_| wait(one.clone(), true))
+			.collect();
+		tokio::task::yield_now().await;
+		assert_eq!(
+			super::SLOT_HOLDING_WAITERS,
+			super::super::CONNECTION_SLOTS / 4
+		);
+		let started = tokio::time::Instant::now();
+		assert_eq!(
+			wait(one.clone(), true).await.unwrap(),
+			Some(super::NotAdmitted::Limit("egress_tenant_tunnel_limit")),
+			"the next waiting plain request of the Tenant is refused at once"
+		);
+		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+		let connect = wait(one.clone(), false);
+		let mut other = limited(1);
+		other.id.tenant = "other".into();
+		let _other = manager.try_acquire(&other).unwrap();
+		let other_plain = wait(other, true);
+		tokio::task::yield_now().await;
+		assert!(!connect.is_finished(), "CONNECT still waits");
+		assert!(
+			!other_plain.is_finished(),
+			"another Tenant's plain request still waits"
+		);
+		assert!(quarter.iter().all(|waiter| !waiter.is_finished()));
+		let mut free = limited(1);
+		free.id.tenant = "free".into();
+		assert_eq!(
+			wait(free, true).await.unwrap(),
+			None,
+			"another Tenant still gets a slot"
+		);
+		assert_eq!(
+			manager.counts.lock().unwrap().waiting.holding_slots["t"],
+			super::SLOT_HOLDING_WAITERS
+		);
+		for waiter in quarter.into_iter().chain([connect, other_plain]) {
+			waiter.abort();
+			let _ = waiter.await;
+		}
+		assert!(
+			manager
+				.counts
+				.lock()
+				.unwrap()
+				.waiting
+				.holding_slots
+				.is_empty()
+		);
 	}
 
 	#[tokio::test(start_paused = true)]
@@ -3206,6 +3487,109 @@ mod tests {
 		assert!(records[0].sent_bytes > 5);
 		assert!(records[0].received_bytes > 5);
 	}
+	/// A plain HTTP request is never idle between requests, so a slow answer
+	/// is not cut to make way for a waiting connection of its Space (#845).
+	#[tokio::test]
+	async fn a_slow_plain_http_answer_is_not_reclaimed_for_a_waiting_connection() {
+		use hyper::{Request, Response, service::service_fn};
+		use std::convert::Infallible;
+		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let upstream_address = upstream.local_addr().unwrap();
+		let upstream_task = tokio::spawn(async move {
+			let (socket, _) = upstream.accept().await.unwrap();
+			let service = service_fn(|_: Request<hyper::body::Incoming>| async move {
+				// Quiet for longer than a tunnel may be before it makes way.
+				tokio::time::sleep(super::RECLAIM_IDLE + std::time::Duration::from_secs(1)).await;
+				Ok::<_, Infallible>(Response::new(http_body_util::Full::new(
+					bytes::Bytes::from_static(b"hello"),
+				)))
+			});
+			hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.await
+				.unwrap();
+		});
+		let settings = limited(1);
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let gateway_address = gateway.local_addr().unwrap();
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let gateway_manager = manager.clone();
+		let gateway_settings = settings.clone();
+		let waiter = Arc::new(std::sync::Mutex::new(None));
+		let gateway_waiter = waiter.clone();
+		let gateway_task = tokio::spawn(async move {
+			let (socket, _) = gateway.accept().await.unwrap();
+			let service = service_fn(move |request| {
+				let manager = gateway_manager.clone();
+				let scopes = scopes.clone();
+				let settings = gateway_settings.clone();
+				let waiter = gateway_waiter.clone();
+				async move {
+					let audit = super::Audit {
+						id: uuid::Uuid::new_v4(),
+						manager: manager.clone(),
+						scopes: scopes.clone(),
+						scope: settings.id.clone(),
+						host: "test.invalid".into(),
+						port: 80,
+						started: std::time::Instant::now(),
+						sent: Arc::new(super::AtomicU64::new(0)),
+						received: Arc::new(super::AtomicU64::new(0)),
+						outcome: "refused",
+						error: None,
+						wait_ms: 0,
+						finished: false,
+						started_record: false,
+					};
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
+					// Another connection of the Space waits for this one's slot.
+					*waiter.lock().unwrap() = Some(tokio::spawn({
+						let (manager, settings) = (manager.clone(), settings.clone());
+						async move { manager.acquire(&settings, super::LIMIT_WAIT).await.is_ok() }
+					}));
+					let result = super::forward_http(
+						request,
+						url::Url::parse("http://test.invalid/slow").unwrap(),
+						vec![upstream_address],
+						scopes,
+						settings,
+						"token".into(),
+						audit,
+						super::TunnelLease { permit, manager },
+					)
+					.await;
+					Ok::<_, Infallible>(result)
+				}
+			});
+			hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.await
+				.unwrap();
+		});
+		let mut client = tokio::net::TcpStream::connect(gateway_address)
+			.await
+			.unwrap();
+		client.write_all(b"GET http://test.invalid/slow HTTP/1.1\r\nHost: test.invalid\r\nConnection: close\r\n\r\n").await.unwrap();
+		let mut response = Vec::new();
+		client.read_to_end(&mut response).await.unwrap();
+		let response = String::from_utf8_lossy(&response);
+		assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+		assert!(response.ends_with("hello"), "response: {response}");
+		upstream_task.await.unwrap();
+		gateway_task.await.unwrap();
+		let waiter = waiter.lock().unwrap().take().unwrap();
+		assert!(
+			waiter.await.unwrap(),
+			"the waiter gets the slot once the answer is done"
+		);
+		manager.drain().await;
+	}
+
 	#[tokio::test]
 	async fn interrupted_close_delimited_http_response_does_not_end_cleanly() {
 		exercise_close_delimited_response(true).await;

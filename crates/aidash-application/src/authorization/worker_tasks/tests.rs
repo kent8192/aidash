@@ -58,7 +58,6 @@ fn delegated() -> Delegation {
 		node_id: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "coordinator".into(),
 		agent_version: "1".into(),
-		delivered: false,
 	}
 }
 fn generated() -> Request {
@@ -547,7 +546,7 @@ async fn worker_delegation_remains_local_and_denies_foreign_nodes_before_task_io
 }
 #[rstest]
 #[tokio::test]
-async fn a_matching_existing_grant_returns_the_original_delivered_reply_without_readmitting(
+async fn a_matching_existing_grant_returns_the_original_delegation_without_readmitting(
 	mut scope: Scope,
 	run: RunMetadata,
 ) {
@@ -559,7 +558,6 @@ async fn a_matching_existing_grant_returns_the_original_delivered_reply_without_
 	assert_eq!(result.agent_id, "coordinator");
 	assert_eq!(result.agent_version, "1");
 	assert_eq!(result.node_id, "aidash://local/brave-otter-k3m9q2xa");
-	assert!(result.delivered);
 	assert!(!scope.calls.contains(&"delegate"));
 	assert_eq!(
 		scope.outputs,
@@ -616,7 +614,7 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 	let result = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.unwrap();
-	assert!(!result.delivered);
+	assert_eq!(result.task_id, id(4));
 	assert_eq!(
 		scope.outputs,
 		vec![(id(1), id(3), "delegated_task".into(), id(4))]

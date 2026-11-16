@@ -626,6 +626,48 @@ async fn embeddings_admit_only_a_single_inline_image() {
 }
 
 #[tokio::test]
+async fn an_image_may_carry_one_bounded_description_before_it() {
+	// Arrange
+	let f = Fixture::new().await;
+	let image =
+		json!({"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}});
+	let text = |words: &str| json!({"type":"text","text":words});
+	let refused = [
+		json!([{"content":[image.clone(), text("after the image")]}]),
+		json!([{"content":[text("one"), text("two")]}]),
+		json!([{"content":[text(" "), image.clone()]}]),
+		json!([{"content":[text(&"x".repeat(8001)), image.clone()]}]),
+		json!([{"content":[{"type":"text","text":"extra","cache_control":{"type":"ephemeral"}}, image.clone()]}]),
+		json!([{"content":[text("one"), text("two"), image.clone()]}]),
+	];
+
+	// Act and Assert: every other shape is refused before any key lookup.
+	for input in refused {
+		let response = f
+			.request(
+				&f.claims(),
+				"POST",
+				"/api/v1/embeddings",
+				json!({"model":"author/model","provider":{"zdr":true},"input":input}),
+			)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+	let response = f
+		.request(
+			&f.claims(),
+			"POST",
+			"/api/v1/embeddings",
+			json!({"model":"author/model","provider":{"zdr":true},"input":[{"content":[text("A red bicycle"), image]}]}),
+		)
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn image_embedding_accepts_media_above_the_text_request_limit() {
 	use base64::Engine;
 	let f = Fixture::new().await;

@@ -367,6 +367,15 @@ pub trait ExecutionStore: Send + Sync {
 	/// by the lease and without saving the Run. A projection imported from a
 	/// pre-journal Run is journaled whole here before any lossy compaction.
 	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()>;
+	/// Hook for memory extraction after an offloaded projection is saved. The
+	/// ranges refer to originals in this Run's Context Journal.
+	async fn results_offloaded(
+		&self,
+		_run: &Run,
+		_ranges: &[crate::context::offload::JournalRange],
+	) -> Result<()> {
+		Ok(())
+	}
 	/// Record a Compaction Attempt before provider I/O, fenced by the lease.
 	/// Unsettled earlier attempts of the Run become `abandoned` in the same
 	/// transaction. Returns `Error::Context(SummaryUnavailable)` once the Run
@@ -397,7 +406,6 @@ pub trait ExecutionStore: Send + Sync {
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
-		staged: Option<&crate::decision::StagedDecision>,
 	) -> Result<()>;
 }
 #[async_trait]
@@ -459,7 +467,12 @@ pub trait ExecutionHome: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
+	/// The Workspace view the model's observe tool reads: every event.
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value>;
+	/// The Workspace view a step pins as evidence: `observation` without the
+	/// Run's own events, which its history already holds and every step
+	/// renews (#942).
+	async fn step_observation(&self, offset: usize, limit: usize) -> Result<Value>;
 	async fn observation_fitted(
 		&self,
 		offset: usize,
@@ -640,31 +653,6 @@ pub trait ExecutionAuthority: Send + Sync {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>>;
-	/// Authorize one Summary Stage request for the exact pinned summarizer and
-	/// charge its allowance before I/O: catalog approval, remote RequiredHome
-	/// summarizer pin and disclosure, and every generated ancestor's summary
-	/// allowance. Returns `Error::Context(SummaryUnavailable)` when any approval
-	/// is missing; it never substitutes another provider.
-	async fn reserve_summary(
-		&self,
-		token: Uuid,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		window: usize,
-		output: u32,
-		request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>>;
-	/// Repeat `reserve_summary`'s approval checks for the exact summarizer,
-	/// without charging another call, after authority is resumed and before a
-	/// Summary Stage candidate is adopted.
-	async fn recheck_summary(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()>;
-	/// Repeat the Catalog Approval check of the exact pinned Decider version
-	/// after a Summary Stage, before the staged decision it completes is
-	/// adopted (ADR 0056). Returns `Error::Context(DeciderUnapproved)` when
-	/// the approval was withdrawn.
-	async fn recheck_decider(&self, decider: &aidash_domain::decision::DeciderPin) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
 	/// While suspended for inference, briefly reacquire the authority boundary,
 	/// authorize inference again, and release it. Failure means the Run may no
@@ -698,6 +686,12 @@ pub use super::context_source::{
 	ContextSourceTarget, PlannedContextSource,
 };
 
+/// References and transient data from the Run's one initial memory search.
+pub struct StartMemory {
+	pub sources: Vec<aidash_domain::memory::Evidence>,
+	pub content: Value,
+}
+
 /// Composition supplies concrete adapters without exposing their framework types.
 /// A native authority owns its policy scope for the complete step, suspends only
 /// around inference, and rechecks before provider output is accepted.
@@ -712,20 +706,23 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn authority(&self) -> Option<&dyn ExecutionAuthority>;
 	fn home(&self, run: &Run) -> Box<dyn ExecutionHome>;
 	fn agent(&self, entry: &Entry) -> Result<ExecutionAgent>;
+	/// One bounded data recall at Run start; explicit memory providers opt out.
+	async fn run_start_memory(&self, _run: &Run, _task: &Task) -> Result<Option<StartMemory>> {
+		Ok(None)
+	}
+	/// Recheck and hydrate only the exact Units recalled at Run start.
+	async fn hydrate_start_memory(
+		&self,
+		_run: &Run,
+		_sources: &[aidash_domain::memory::Evidence],
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	/// The process's Tool Parallelism ceiling. `None` keeps every call sequential.
 	fn tool_slots(&self) -> Option<&ToolSlots> {
 		None
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
-	/// The Run's compaction Decider and the ports its decisions use under the
-	/// current lease, or `None` when the Run has no compaction Decider.
-	async fn compaction_decider(
-		&self,
-		_run: &Run,
-		_token: Uuid,
-	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
-		Ok(None)
-	}
 	/// The approval Decider the Tenant chose for `run`, with the Agent Binding's
 	/// narrowing of its thresholds, and the ports its decisions use under the
 	/// current lease. `None` when Auto is not available to the Run, which then
@@ -852,8 +849,6 @@ pub mod cancellation;
 pub mod completion;
 
 pub mod admission;
-
-pub mod summary;
 
 pub mod terminal;
 pub mod worker;

@@ -100,9 +100,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         .locator("select[name=embedding]")
         .selectOption("home-embedding@1.0.0");
       await dialog
-        .locator("input[name=decider]")
-        .fill("approved-decider@2.0.0");
-      await dialog
         .getByRole("button", {
           name: ja ? "担当を割り当て" : "Assign agent",
           exact: true,
@@ -125,7 +122,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         } else {
           await expect(dialog.locator("select[name=agent]")).toBeEnabled();
           await expect(dialog.locator("select[name=embedding]")).toBeEnabled();
-          await dialog.locator("input[name=decider]").fill("replacement@2.0.0");
           await dialog
             .getByRole("button", {
               name: ja ? "担当を割り当て" : "Assign agent",
@@ -143,13 +139,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         semantic: {
           mode: "required_home",
           embedding: { id: "home-embedding", version: "1.0.0" },
-          decider: {
-            id:
-              failure === "create" || failure === "activate"
-                ? "replacement"
-                : "approved-decider",
-            version: "2.0.0",
-          },
           ...(native
             ? {
                 native: {
@@ -673,8 +662,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
                     token_limit: 800000,
                     embedding_calls: 2,
                     embedding_call_limit: 10,
-                    compaction_calls: 1,
-                    compaction_call_limit: 4,
                   },
                 ],
                 sources: [
@@ -1567,6 +1554,7 @@ test("a question closed at the Answer Deadline reads as unanswered", async ({
   ).toBeVisible();
 
   passAnswerDeadline();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(dialog.getByRole("status")).toHaveText(
     "No answer before the Answer Deadline",
     { timeout: 15_000 },
@@ -2200,6 +2188,38 @@ test("channel controls scope run changes and persist approval responses", async 
   expect(errors).toEqual([]);
 });
 
+test("channel can resume a paused run outside the state window", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        runs: [],
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, runs: "older" },
+      },
+    }),
+  );
+  await page.route("**/api/workspaces/workspace-one/runs?**", (route) =>
+    route.fulfill({
+      json: {
+        items: [{ ...data.runs[0], control: "PAUSED" }],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Resume runs in this channel" }),
+  ).toBeEnabled();
+});
+
 test("search, notifications, thread navigation and persisted theme work", async ({
   page,
 }) => {
@@ -2803,7 +2823,7 @@ test("topology renders each discovered Node once with its agents and cross-Node 
   const entity = data.registry.find((entry) => entry.kind === "agent")!;
   data.tasks[0].created_by = `${local}/agents/${entity.id}@${entity.version}`;
   data.tasks[0].owner = `${remote}/agents/${entity.id}@${entity.version}`;
-  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
   await page.route("**/api/discover**", (route) =>
     route.fulfill({
       json: {
@@ -3231,6 +3251,11 @@ for (const failDecline of [false, true]) {
       .click();
     await expect(dialog.getByText("task_delegate")).toBeVisible();
     await dialog
+      .getByLabel(
+        "Decline later calls to this tool for the same reason in this Run",
+      )
+      .check();
+    await dialog
       .getByLabel("Tell the Agent why (optional)")
       .fill("Use the shared notes instead.");
     await dialog
@@ -3250,7 +3275,7 @@ for (const failDecline of [false, true]) {
     expect(
       submissions.find((item) => item.path === "/api/runs/run-0/declined-calls")
         ?.body,
-    ).toEqual({ call: "run-0:3:0" });
+    ).toEqual({ call: "run-0:3:0", rest_of_run: true });
     if (failDecline) {
       // The message stays sent, the Run stays paused and the form is still open to retry.
       await expect(
@@ -3409,6 +3434,7 @@ for (const failMessage of [false, true]) {
       recovery: null,
     };
     const order: string[] = [];
+    const declinedBodies: unknown[] = [];
     let failures = failMessage ? 1 : 0;
     await page.route("**/api/tasks/task-0/remote-**", async (route) => {
       const path = new URL(route.request().url()).pathname;
@@ -3417,6 +3443,7 @@ for (const failMessage of [false, true]) {
           json: [{ grant, execution, semantic, unavailable: false }],
         });
       if (path.endsWith("/declined-calls")) {
+        declinedBodies.push(route.request().postDataJSON());
         order.push("decline");
         execution.control = "ACTIVE";
         delete execution.declinable_call;
@@ -3449,6 +3476,11 @@ for (const failMessage of [false, true]) {
     await panel
       .getByRole("button", { name: "Decline this call", exact: true })
       .click();
+    await panel
+      .getByLabel(
+        "Decline later calls to this tool for the same reason in this Run",
+      )
+      .check();
     // The hint says plainly that the sentence goes after the decline on another Node.
     await expect(panel).toContainText("sent after it");
     await panel
@@ -3475,9 +3507,299 @@ for (const failMessage of [false, true]) {
           ? ["decline", "message", "message"]
           : ["decline", "message"],
       );
+    expect(declinedBodies).toEqual([
+      { call: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70:5:0", rest_of_run: true },
+    ]);
     expect(errors.filter((error) => !error.includes("503"))).toEqual([]);
   });
 }
+
+test("workspace history continues from its candidate cursor", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, workspaces: "next-page" },
+      },
+    }),
+  );
+  let requested = "";
+  await page.route("**/api/workspaces?**", (route) => {
+    requested = route.request().url();
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            ...data.workspaces[0],
+            id: "older-workspace",
+            title: "Older workspace",
+          },
+        ],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Switch request/ }).click();
+  await page.getByRole("button", { name: "Show more" }).click();
+  await expect(
+    page.getByRole("link", { name: "# Older workspace" }),
+  ).toBeVisible();
+  expect(new URL(requested).searchParams.get("cursor")).toBe("next-page");
+  expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
+  await expect(page.getByRole("button", { name: "Show more" })).toHaveCount(0);
+  await page.getByRole("link", { name: "# Older workspace" }).click();
+  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(
+    page.getByRole("heading", { name: "# Older workspace" }),
+  ).toBeVisible();
+});
+
+test("pending requests continue within the selected node", async ({ page }) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, human_requests: "next-human" },
+      },
+    }),
+  );
+  let requested = "";
+  await page.route("**/api/human-requests?**", (route) => {
+    requested = route.request().url();
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            ...data.human_requests[0],
+            id: "older-question",
+            run_id: "old-run",
+            workspace_id: "older-workspace",
+            prompt: "Older request from an old run",
+          },
+        ],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.route("**/api/workspaces/older-workspace", (route) =>
+    route.fulfill({
+      json: {
+        workspace: {
+          ...data.workspaces[0],
+          id: "older-workspace",
+          title: "Older workspace",
+        },
+        tasks: [],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Decisions 1/ }).click();
+  expect(requested).toBe("");
+  await page.getByRole("button", { name: "Show more" }).click();
+  await expect(
+    page.getByRole("button", {
+      name: /Information requested.*Older request from an old run/,
+    }),
+  ).toBeVisible();
+  expect(new URL(requested).searchParams.get("cursor")).toBe("next-human");
+  expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
+  await page
+    .getByRole("button", {
+      name: /Information requested.*Older request from an old run/,
+    })
+    .last()
+    .click();
+  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(page.getByRole("dialog", { name: "Human input" })).toContainText(
+    "Older request from an old run",
+  );
+});
+
+test("an empty pending-request page can continue", async ({ page }) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        human_requests: [],
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, human_requests: "hidden-page" },
+      },
+    }),
+  );
+  await page.route("**/api/human-requests?**", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            ...data.human_requests[0],
+            prompt: "Request beyond hidden candidates",
+          },
+        ],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Decisions 0/ }).click();
+  await page.getByRole("button", { name: "Show more" }).click();
+  await expect(
+    page
+      .getByRole("button", {
+        name: /Information requested.*Request beyond hidden candidates/,
+      })
+      .last(),
+  ).toBeVisible();
+});
+
+test("an opened older workspace survives a fresh state window", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/workspaces/older-workspace", (route) =>
+    route.fulfill({
+      json: {
+        workspace: {
+          ...data.workspaces[0],
+          id: "older-workspace",
+          title: "Older workspace",
+        },
+        tasks: [],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=older-workspace");
+  await expect(
+    page.getByRole("heading", { name: "# Older workspace" }),
+  ).toBeVisible();
+});
+
+test("task dependency picker can load older tasks on demand", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, tasks: "next-task" },
+      },
+    }),
+  );
+  let reads = 0;
+  await page.route("**/api/tasks?**", (route) => {
+    reads += 1;
+    return route.fulfill({
+      json: {
+        tasks: [
+          { ...data.tasks[0], id: "old-task", title: "Older prerequisite" },
+        ],
+        next_offset: null,
+      },
+    });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("tab", { name: "Tasks and results", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Add task", exact: true }).click();
+  expect(reads).toBe(0);
+  await page.getByRole("button", { name: "Show more tasks" }).click();
+  await expect(
+    page.getByRole("option", { name: "Older prerequisite" }).first(),
+  ).toBeAttached();
+  expect(reads).toBe(1);
+  const dependencies = page.locator('select[name="dependencies"]');
+  await dependencies.selectOption("old-task");
+  const refreshed = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/state",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await refreshed;
+  await expect(dependencies).toHaveValues(["old-task"]);
+});
+
+test("failed task can be abandoned even when older runs exist", async ({
+  page,
+}) => {
+  await setup(page, { subject: true, locale: "en-US" });
+  const data = fixture();
+  const task = { ...data.tasks[0], status: "FAILED" };
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        tasks: [task],
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, runs: "older" },
+      },
+    }),
+  );
+  await page.route("**/api/workspaces/workspace-one", (route) =>
+    route.fulfill({
+      json: {
+        workspace: data.workspaces[0],
+        tasks: [task],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("tab", { name: "Tasks and results", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: task.title })
+    .click();
+  await expect(page.getByRole("button", { name: /abandon/i })).toBeVisible();
+});
+
+test("returning focus refreshes the current state", async ({ page }) => {
+  await setup(page, { locale: "en-US" });
+  let reads = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/state") reads += 1;
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await expect(
+    page.getByRole("heading", { name: "# Research", exact: true }),
+  ).toBeVisible();
+  const before = reads;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => reads).toBeGreaterThan(before);
+});
 
 test("a remote decline holder sees only the paused call and cannot send a sentence", async ({
   page,

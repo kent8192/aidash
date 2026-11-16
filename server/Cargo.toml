@@ -248,10 +248,6 @@ name = "generation"
 path = "src/apps/execution/generation/tests/generation.rs"
 
 [[test]]
-name = "generation_compaction"
-path = "src/apps/execution/generation/tests/generation_compaction.rs"
-
-[[test]]
 name = "generation_semantic"
 path = "src/apps/execution/generation/tests/generation_semantic.rs"
 
@@ -459,3 +455,15 @@ path = "src/apps/identity/tests/secret_readiness.rs"
 [[test]]
 name = "oauth_clients"
 path = "src/apps/identity/tests/oauth_clients.rs"
+
+[[test]]
+name = "state_latency"
+path = "src/apps/identity/tests/state_latency.rs"
+
+[[test]]
+name = "state_statement_count"
+path = "src/apps/identity/tests/state_statement_count.rs"
+
+[[test]]
+name = "state_light_runs"
+path = "src/apps/identity/tests/state_light_runs.rs"

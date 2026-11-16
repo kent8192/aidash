@@ -27,6 +27,14 @@ pub struct TenantInvitation {
 	pub issued_by_kind: String,
 	#[field(null = true)]
 	pub issued_by_identity: Option<uuid::Uuid>,
+	/// The Mapping whose authority must still allow approval at redemption.
+	#[field(null = true)]
+	pub issued_by_mapping: Option<uuid::Uuid>,
+	/// Domain-separated fingerprint of a Deployment Administrator bearer.
+	#[field(null = true)]
+	pub issued_by_token_hash: Option<Vec<u8>>,
+	#[field(default = false)]
+	pub join_directly: bool,
 	#[field(null = true)]
 	pub revoked_at: Option<DateTime<Utc>>,
 	#[field(null = true)]

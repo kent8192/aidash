@@ -118,7 +118,6 @@ class NativeMemory(RemoteMemory):
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": revision, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            self.approve_decider(node)
             # The other Node's alice acts here as a service subject. The Tenant's
             # administrator writes the Peer Mapping, through a browser Mapping (#484).
             peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)
@@ -167,7 +166,7 @@ class NativeMemory(RemoteMemory):
                 source = value[0]
         # Start Home maintenance only to finish these projections.
         self.scale(0, "worker", 1)
-        self.until(lambda: len([entry for entry in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries")) if entry["state"] == "READY"]) == 3, "native index ready")
+        self.until(lambda: len([entry for entry in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))["entries"] if entry["state"] == "READY"]) == 3, "native index ready")
         self.scale(0, "worker", 0)
         return workspace, source
 
@@ -323,7 +322,7 @@ class NativeMemory(RemoteMemory):
             reviewed = operate(action, operation)["value"]
         assert operate(action, operation)["value"] == reviewed, "human review replay duplicated admission"
         assert reviewed["content"]["verification"] == "unverified", reviewed
-        self.until(lambda: any(row["id"] == reviewed["id"] and row["state"] == "READY" for row in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))), "reviewed unit indexed under original allowance")
+        self.until(lambda: any(row["id"] == reviewed["id"] and row["state"] == "READY" for row in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))["entries"]), "reviewed unit indexed under original allowance")
         # The second pending candidate keeps natural retirement from racing
         # these authorized reads. Human review remains explicit and bounded.
         history_action = {"action": "history", "id": reviewed["id"], "expected_revision": reviewed["revision"], "before": None}

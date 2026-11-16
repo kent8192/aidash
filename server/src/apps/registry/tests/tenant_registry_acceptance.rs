@@ -95,7 +95,7 @@ fn model(id: &str) -> Value {
 }
 fn agent(id: &str, version: &str, model: &str) -> Value {
 	json!({"id":id,"version":version,"kind":"agent","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":["compaction"]}})
+		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":[]}})
 }
 /// The same agent keeping the Node's default compaction Binding, which needs
 /// its Decider approved first (#540).
@@ -182,9 +182,7 @@ async fn a_tenant_registers_approves_and_runs_its_own_agent_without_a_deployment
 		"acme",
 		json!([
 			approval("helper", "1.1.0", true),
-			approval("model", "1.0.0", true),
-			// The Node binds its compaction Decider to the Agent by default.
-			approval("aidash.compaction-decider", "1.0.0", true)
+			approval("model", "1.0.0", true)
 		]),
 	)
 	.await;
@@ -1583,6 +1581,8 @@ async fn library_account_authority(
 		account_id: account.to_string(),
 		suspension_epoch: Some(0),
 		source_disable_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
+		usable_sign_in_method_count: None,
 		source_issuer: "personal-upstream".into(),
 		source_subject: "personal".into(),
 	}));

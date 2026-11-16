@@ -12,12 +12,14 @@ use uuid::Uuid;
 mod capability;
 mod reads;
 mod row;
+mod summary;
 #[cfg(test)]
 mod tests;
 pub use capability::{LeaseWait, PersistedCapability, StateRequirements};
 pub use reads::RunReadsBlock;
 pub use row::RawRun;
 pub use row::{RunInspection, RunMetadata};
+pub use summary::RunSummary;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -449,6 +451,9 @@ pub struct RecoveryState {
 	/// Typed context-recovery reason for a paused Run; cleared on resume.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
+	/// The common Account suspension that paused this Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub account_suspension_epoch: Option<u64>,
 	/// The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on
 	/// resume; people never read it, only whether they may decline.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -460,6 +465,9 @@ pub struct RecoveryState {
 	/// `paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub declined_calls: Vec<DeclinedCall>,
+	/// Refusals a person declined for the rest of this Run.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub standing_declines: Vec<StandingDecline>,
 	pub retry: Option<RetryState>,
 	// A claim after a lost lease sets it to at least 1, which isolates the
 	// step; each Isolated Step adds one when it acquires the gate, so a claim
@@ -467,12 +475,12 @@ pub struct RecoveryState {
 	/// Consecutive Lease Recoveries of the current step.
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub lease_recoveries: u32,
-	/// How many times a person resumed this Run from a pause. A compaction
-	/// decision commits to it, so a resume starts a new decision while a
+	/// How many times a person resumed this Run from a pause. A decision
+	/// commits to it, so a resume starts a new decision while a
 	/// recovered lease continues the same one (#108).
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub decision_cycle: u32,
-	/// Outage retries of the current step's compaction decision after every
+	/// Outage retries of the current step's decision after every
 	/// Decider Route failed. A decision commits to it, so each retry asks the
 	/// Routes again; it is reset once the step saves anything else (ADR 0066).
 	#[serde(default, skip_serializing_if = "is_zero")]
@@ -520,6 +528,15 @@ impl PausedCall {
 		}
 	}
 }
+/// A decision scoped to this Run, matched only after the same refusal occurs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StandingDecline {
+	pub tool: String,
+	pub kind: crate::tool::RefusalKind,
+	/// The subject on this Node, or `home` for a decision from the Run's Home.
+	pub by: String,
+}
 /// A call a person declined; the worker answers it with the kind's fixed sentence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -536,6 +553,7 @@ impl RecoveryState {
 	pub fn hide_declines(mut self) -> Self {
 		self.paused_call = None;
 		self.declined_calls.clear();
+		self.standing_declines.clear();
 		self
 	}
 	/// Whether this attempt may degrade an unavailable workspace slot: it is

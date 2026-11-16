@@ -21,7 +21,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Loading } from "../components/patterns";
+import { Loading, Notice } from "../components/patterns";
 import {
   Focus,
   List,
@@ -43,6 +43,7 @@ import {
   type GraphPage,
   type RemoteExpansion,
 } from "./federated-graph";
+import { graphEmptyText, graphUnconfirmed } from "./graph-unconfirmed";
 import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
 import { floatingToolbar, MeshIcon } from "./mesh-icons";
@@ -773,6 +774,33 @@ export function Graph({
       )}
       aria-label="Graph View"
     >
+      {mode !== "neighborhood" &&
+        graphUnconfirmed(expansions, scope).map(({ node: peer, count }) => (
+          <Notice key={peer} tone="warning" role="status">
+            {locale === "ja-JP"
+              ? `${peer} は ${count} 件を確認できませんでした。`
+              : `${peer} could not confirm ${count} items.`}
+          </Notice>
+        ))}
+      {data.next_cursors.conversations && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の会話があります"
+            : "Older conversations exist"}
+        </p>
+      )}
+      {data.next_cursors.runs && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP" ? "以前の実行があります" : "Older runs exist"}
+        </p>
+      )}
+      {data.next_cursors.artifacts && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の成果物があります"
+            : "Older artifacts exist"}
+        </p>
+      )}
       {mode === "neighborhood" ? (
         <>
           <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
@@ -1050,9 +1078,11 @@ export function Graph({
                             state === "loading"
                               ? copy.peerLoading
                               : state === "empty"
-                                ? expansion?.page?.next_cursor
-                                  ? copy.peerEmptyPage
-                                  : copy.peerEmpty
+                                ? {
+                                    page: copy.peerEmptyPage,
+                                    view: copy.peerEmpty,
+                                    none: "",
+                                  }[graphEmptyText(expansion?.page) ?? "none"]
                                 : state === "denied"
                                   ? copy.peerDenied
                                   : state === "unsupported"

@@ -13,6 +13,11 @@ pub async fn permits(
 	}
 	if scope.scoped() && action == "semantic.read" && !entry.deleted {
 		let decoded = serde_json::from_value(entry.source.clone())?;
+		// An attachment image is readable only with the message it was posted in.
+		let decoded = match decoded {
+			Source::AttachmentImage { message_id, .. } => Source::Message { id: message_id },
+			other => other,
+		};
 		if !matches!(decoded, Source::Memory { .. } | Source::WorkingImage { .. })
 			&& source(scope, entry.workspace_id, &decoded).await?.is_none()
 		{
@@ -59,8 +64,8 @@ pub async fn source(
 	}
 	match source {
 		Source::Unit { id } => scope.unit(*id, workspace).await,
-		// Image disclosure is admitted only after the Working Area authority path is wired.
-		Source::WorkingImage { .. } => Ok(None),
+		// Images are disclosed only as pointers, through their own read paths.
+		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => Ok(None),
 		Source::Memory { text } => Ok(Some(text.clone())),
 		Source::Artifact { id } => {
 			let Some(row) = scope.artifact(*id, workspace).await? else {

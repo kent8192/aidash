@@ -19,15 +19,20 @@ ROUTE = re.compile(
 )
 NODE_PATH = "/api/tenants/{tenant}/nodes/{node}"
 REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
-# Only reviewed dispatch metadata for the six source-defined additions.
+# Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
+    ("GET", "/api/tenants/{tenant}/invitation-approvals"): ("tenant-invitation-approvals", "tenant_administration"),
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),
     ("POST", NODE_PATH + "/deletion"): ("tenant-node-deletion", "nodes"),
     ("POST", NODE_PATH + "/restore"): ("tenant-node-restore", "nodes"),
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
+    ("GET", "/api/workspaces"): ("workspace-list", "workspaces/management"),
+    ("GET", "/api/workspaces/{id}/runs"): ("workspace-runs", "execution/management"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
+    ("GET", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope", "memory_scope"),
+    ("PUT", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope-update", "memory_scope"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.
@@ -184,7 +189,7 @@ def project(showurls, document, reviewed):
             if addition is None or native_name != addition[0]:
                 raise ValueError(f"unannotated native route: {method} {path}")
             name, module = addition
-            prior = {"name": name, "source": f"server/src/apps/identity/views/{module}.rs"}
+            prior = {"name": name, "source": (f"server/src/apps/{module.rsplit('/', 1)[0]}/views/{module.rsplit('/', 1)[1]}.rs" if '/' in module else f"server/src/apps/identity/views/{module}.rs")}
             if identity not in public:
                 raise ValueError(f"new typed operation missing from native OpenAPI: {identity}")
         name = prior["name"]

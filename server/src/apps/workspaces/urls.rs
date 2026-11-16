@@ -26,6 +26,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::workspace_list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::workspace_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::workspace_get)
@@ -53,6 +55,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(channels::channel_attachment_upload)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_attachment_download)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(channels::channel_attachment_description)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 	})
 }

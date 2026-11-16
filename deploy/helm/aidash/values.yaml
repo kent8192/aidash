@@ -266,8 +266,8 @@ execution:
     maximum_seconds: 600
     idle_seconds: 1800
 
-# Previews (ADR 0068). Disabled by default: no Live previews and no HTML/PDF
-# File previews. `domain` must be a registrable domain separate from the
+# Previews (ADR 0068). Without a domain, Live previews are unavailable; local
+# PDF and HTML source previews remain available. `domain` must be separate from the
 # dashboard's; a local cluster uses `localhost`. The gateway runs in the API
 # process unless `inProcess` is false, when this chart deploys it apart.
 preview:

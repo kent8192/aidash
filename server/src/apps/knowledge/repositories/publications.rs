@@ -49,6 +49,7 @@ pub(crate) async fn check(
 	revision: i64,
 	max_visits: usize,
 	visits: &mut usize,
+	reader: Option<Uuid>,
 ) -> Result<()> {
 	let row = native::query(
 		&Query::select()
@@ -107,13 +108,15 @@ pub(crate) async fn check(
 				source_revision,
 				max_visits,
 				visits,
+				reader,
 			))
 			.await;
-			// A Node the publisher found silent is the reader's silence too,
-			// if the reader may discover it; it is not a refusal (#751).
+			// Preserve all peer marks for retry behavior, but only the final
+			// row outcome can make this publication unconfirmed (#770).
+			let row_silence = publisher.take_row_silence();
 			let silent = publisher.take_peer_marks();
 			drop(publisher);
-			access.adopt_silent_peers(silent).await?;
+			access.adopt_silent_peers(silent, row_silence).await?;
 			return result;
 		}
 		// Deployment Administrator views use the same physical transaction too: a queued source
@@ -150,6 +153,7 @@ pub(crate) async fn check(
 			source_revision,
 			max_visits,
 			visits,
+			reader,
 		))
 		.await;
 		let audit = publisher.access.flush_audit().await;
@@ -175,6 +179,7 @@ pub(crate) async fn check(
 			source_revision,
 			max_visits,
 			visits,
+			reader,
 		))
 		.await
 	}
@@ -196,6 +201,7 @@ async fn check_source(
 	revision: i64,
 	max_visits: usize,
 	visits: &mut usize,
+	reader: Option<Uuid>,
 ) -> Result<()> {
 	let source = units::load(lease, id, false)
 		.await?
@@ -210,12 +216,13 @@ async fn check_source(
 		return Err(Error::Conflict("published memory source changed".into()));
 	}
 	units::authorize(lease, &source.bank, "memory.publish").await?;
-	Box::pin(units::current_in(
+	Box::pin(units::current_in_reader(
 		lease,
 		destination.workspace,
 		&[source.evidence()],
 		max_visits,
 		visits,
+		reader,
 	))
 	.await
 }

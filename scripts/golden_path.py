@@ -36,8 +36,6 @@ TOKEN = "acceptance-access-token"
 
 # Leave room for heavily loaded CI runners to serve authorized reads (#404).
 API_TIMEOUT = 60
-# Every Agent depends on the compaction Decider its Node binds by default (ADR 0102).
-COMPACTION_DECIDER = {"id": "aidash.compaction-decider", "version": "1.0.0"}
 
 
 def api_request(base, path, body=None, token=TOKEN, headers=None, timeout=API_TIMEOUT):
@@ -86,8 +84,7 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
     Only Tenant subjects register definitions and run work (#371). The
     Deployment Administrator creates the Tenant and writes its policy, but holds
     no Tenant authority (#484): `issue(tenant, subject)` mints the credential
-    from the host, which then approves the compaction Decider every Agent
-    depends on. `agents` name Agents as subjects: `id@version` for one that
+    from the host. `agents` name Agents as subjects: `id@version` for one that
     executes on the Tenant's default Node, or the full subject of one that
     executes elsewhere. Every Agent subject belongs to this Tenant's local
     default Node, even when its subject name identifies a remote Agent. The
@@ -113,7 +110,6 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
         node, address = default_node(base, tenant, token=credential["token"])
         subjects.update({(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent", "node": node} for agent in agents})
         replace(subjects, api_request(base, f"/api/authorization/{tenant}")["revision"])
-    approve(base, tenant, credential["token"], [COMPACTION_DECIDER])
     return tenant, credential
 
 
@@ -636,9 +632,7 @@ def main():
         profile = directory / "profile.json"
         profile.write_text(json.dumps({"admission": True, "storage": str(directory / "storage")}))
         profiles[node] = profile
-    # Compaction Deciders name the Tenant's OpenRouter Provider Credential
-    # (ADR 0041), so each Node runs a disposable PostgreSQL Provider Credential
-    # Store whose keys exist only for this run.
+    # Each Node uses a disposable PostgreSQL Provider Credential Store.
     # The private OIDC issuer lets this script log in as a Tenant Administrator:
     # Node Registrations and Peer Mappings need a browser Mapping, which neither
     # the shared api_token nor a Subject Credential can stand in for (#484).
@@ -994,7 +988,7 @@ def main():
         snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
         recovered = wait_for(lambda: completed_run(base_a, before["id"], tokens[base_a]), label="same durable research run")
         assert recovered["id"] == before["id"]
-        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a]))
+        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a])["events"])
         assert len(snapshot["artifacts"]) == 4
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
@@ -1011,7 +1005,7 @@ def main():
         wait_for(lambda: int(psql(db_a, queries["inbox"])) > 0, label="JetStream durable consumption")
         assert len({e["id"] for e in stream_events}) == len(stream_events)
         last_sequence = stream_events[-1]["sequence"]
-        replay = api_request(base_a, f"/api/events?after={last_sequence - 1}", token=tokens[base_a])
+        replay = api_request(base_a, f"/api/events?after={last_sequence - 1}", token=tokens[base_a])["events"]
         assert replay[0]["sequence"] == last_sequence
         plugin_runs = []
         for base, agent_id, tool_config in [

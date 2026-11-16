@@ -748,7 +748,11 @@ fn request_body(
 	}
 	body["provider"] = provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
-		body["reasoning"] = json!({"effort": effort});
+		body["reasoning"] = if matches!(effort, aidash_domain::model::ReasoningEffort::None) {
+			json!({"enabled": false})
+		} else {
+			json!({"effort": effort})
+		};
 	}
 	if let Some(session) = session {
 		body["session_id"] = json!(session);
@@ -997,6 +1001,8 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 		} else {
 			content.to_owned()
 		},
+		// Kept as received; the harness decides whether the Run records it.
+		reasoning: aidash_domain::provider::reasoning::Reasoning::from_chat_message(message),
 		..usage
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {

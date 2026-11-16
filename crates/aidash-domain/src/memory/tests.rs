@@ -2,6 +2,64 @@ use super::*;
 use crate::memory::recall::{Rankings, fuse, graph, temporal};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn tenant_memory_scope_widens_only_for_the_same_agent_and_tenant() {
+	assert!(SharingScope::Workspace.permits(true, true, false));
+	assert!(!SharingScope::Workspace.permits(true, false, true));
+	assert!(SharingScope::TenantAgent.permits(true, false, true));
+	assert!(!SharingScope::TenantAgent.permits(true, false, false));
+	assert!(!SharingScope::TenantAgent.permits(false, true, true));
+}
+
+#[test]
+fn policy_accepts_agent_roles_without_embedding() {
+	let mut value: serde_json::Value = serde_json::from_str(include_str!(
+		"../../../../tests/fixtures/native_memory_policy_baseline.json"
+	))
+	.unwrap();
+	for role in ["extraction", "derivation", "reflection"] {
+		value[role] = serde_json::json!("agent_model");
+	}
+	value["embedding"] = serde_json::Value::Null;
+	let policy: Policy = serde_json::from_value(value).unwrap();
+	assert!(policy.validate().is_ok());
+}
+
+#[test]
+fn role_model_accepts_agent_model_or_a_pinned_entry() {
+	let own: RoleModel = serde_json::from_str("\"agent_model\"").unwrap();
+	assert!(own.validate().is_ok());
+	assert_eq!(
+		serde_json::to_value(&own).unwrap(),
+		serde_json::json!("agent_model")
+	);
+	let entry: RoleModel =
+		serde_json::from_value(serde_json::json!({"id":"model","version":"1.0.0"})).unwrap();
+	assert!(entry.validate().is_ok());
+	assert_eq!(
+		serde_json::to_value(&entry).unwrap(),
+		serde_json::json!({"id":"model","version":"1.0.0"})
+	);
+	let invalid: RoleModel =
+		serde_json::from_value(serde_json::json!({"id":"model","version":""})).unwrap();
+	assert!(invalid.validate().is_err());
+	assert!(serde_json::from_str::<RoleModel>("\"other\"").is_err());
+}
+
+#[test]
+fn journal_evidence_accepts_only_a_nonempty_ordered_range() {
+	let run = Uuid::from_u128(42);
+	let mut fact = unit(1).content;
+	for (from, through, valid) in [(1, 1, true), (1, 5, true), (0, 1, false), (5, 4, false)] {
+		let source: Evidence = serde_json::from_value(serde_json::json!({
+			"kind": "journal_range", "run_id": run, "from_seq": from, "through_seq": through
+		}))
+		.unwrap();
+		fact.evidence = vec![source];
+		assert_eq!(fact.validate(&bounds()).is_ok(), valid);
+	}
+}
+
 fn bounds() -> Bounds {
 	Bounds {
 		max_unit_bytes: 1024,
@@ -1257,4 +1315,69 @@ fn diversity_lambda_is_optional_validated_and_omitted_when_unset() {
 	}
 	policy.diversity_lambda_millionths = None;
 	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
+}
+
+#[test]
+fn mutated_flags_only_a_correct_that_kept_its_expected_revision() {
+	// Arrange: a repeated Unit kept revision 1; a corrected one moved to 2; an
+	// added one starts at 1; a deleted one moved to 3.
+	let (kept, edited, added, deleted) = (unit(1), unit(2), unit(3), unit(4));
+	let mut edited = edited;
+	edited.revision = 2;
+	let mut deleted = deleted;
+	deleted.revision = 3;
+	deleted.deleted = true;
+	let changes = [
+		Change::Correct {
+			id: kept.id,
+			expected_revision: 1,
+			content: kept.content.clone(),
+		},
+		Change::Correct {
+			id: edited.id,
+			expected_revision: 1,
+			content: edited.content.clone(),
+		},
+		Change::Add {
+			id: added.id,
+			content: added.content.clone(),
+		},
+		Change::Delete {
+			id: deleted.id,
+			expected_revision: 2,
+		},
+	];
+
+	// Act
+	let flags: Vec<_> = Mutated::of(&changes, vec![kept, edited, added, deleted])
+		.into_iter()
+		.map(|mutated| mutated.unchanged)
+		.collect();
+
+	// Assert
+	assert_eq!(flags, vec![true, false, false, false]);
+}
+
+#[test]
+fn mutated_serializes_every_unit_field_beside_its_flag() {
+	// Arrange
+	let mutated = Mutated {
+		unit: unit(1),
+		unchanged: true,
+	};
+
+	// Act
+	let value = serde_json::to_value(&mutated).unwrap();
+	let schema = serde_json::to_value(schemars::schema_for!(Mutated)).unwrap();
+
+	// Assert: a Unit reader sees the same fields, and the flag is declared.
+	assert_eq!(value["unchanged"], serde_json::json!(true));
+	assert_eq!(value["revision"], serde_json::json!(1));
+	assert_eq!(
+		serde_json::from_value::<Mutated>(value).unwrap(),
+		mutated,
+		"the flattened Unit round-trips despite its closed field set"
+	);
+	assert!(schema["properties"]["unchanged"].is_object(), "{schema}");
+	assert!(schema["properties"]["revision"].is_object(), "{schema}");
 }

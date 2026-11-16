@@ -59,8 +59,7 @@ fn pinned_for(plugins: &[(&str, &[&str])]) -> Vec<PinnedAgentPlugin> {
 /// A closure that is valid by construction: the Agent, its model and exactly the builtin Tools its
 /// normalization asks for.
 fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> BindingSnapshot {
-	let mut config = agent.clone();
-	config.remove_default.push(COMPACTION_DEFAULT.into());
+	let config = agent.clone();
 	let mut root = entry("agent", "agent", serde_json::to_value(config).unwrap());
 	root.normalize_agent(NODE).unwrap();
 	let mut definitions = vec![
@@ -70,6 +69,29 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 	let mut bindings = vec![];
 	for normalized in root.normalized_bindings(NODE).unwrap() {
 		let target = normalized.binding.target;
+		if normalized.binding.kind == BindingKind::Memory {
+			for definition in memory_defaults::definitions().unwrap() {
+				let identity = qualified(&definition.id);
+				if identity == target {
+					bindings.push(ResolvedBinding {
+						identity: target.clone(),
+						digest: crate::registry::rules::digest(
+							&serde_json::to_value(&definition).unwrap(),
+						),
+						installation: None,
+						definition: definition.clone(),
+						origin: normalized.origin,
+						alias: None,
+						narrow: Narrowing::default(),
+						provider_contract_digest: None,
+						provider_implementation: None,
+						excluded_reason: None,
+					});
+				}
+				definitions.push(ResolvedDefinition::new(identity, definition).unwrap());
+			}
+			continue;
+		}
 		if normalized.binding.kind == BindingKind::Source {
 			let source = source_defaults::workspace_observation().unwrap();
 			bindings.push(ResolvedBinding {
@@ -95,9 +117,8 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 			serde_json::to_value(&descriptor).unwrap(),
 		);
 		tool.version.clone_from(&target.version);
-		// The fixture Agent binds no memory, so its memory defaults are excluded.
 		let excluded_reason =
-			crate::tool::providers::memory_exclusion(normalized.origin, operation, false).unwrap();
+			crate::tool::providers::memory_exclusion(normalized.origin, operation, true).unwrap();
 		let promoted = agent.has_plugin_skills()
 			&& normalized.origin == BindingOrigin::Default
 			&& support.contains(&operation);
@@ -134,7 +155,6 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 		remote: false,
 		bindings,
 		definitions,
-		foreign_agents: vec![],
 		agent_plugins,
 	}
 }
@@ -465,25 +485,6 @@ fn a_remote_run_pins_no_plugins() {
 	snapshot.remote = true;
 
 	assert!(refusal(&snapshot).contains("unavailable remotely"));
-}
-
-#[test]
-fn a_foreign_agent_with_plugins_is_an_unsupported_dependency() {
-	let plugins = [("acme-tools", &["lint"][..])];
-	let snapshot = snapshot_of(&agent_with(&plugins), pinned_for(&plugins));
-	let foreign = ForeignAgentSnapshot {
-		schema_version: snapshot.schema_version,
-		agent: snapshot.agent,
-		bindings: snapshot.bindings,
-		definitions: snapshot.definitions,
-	};
-
-	let error = foreign.validate().unwrap_err().to_string();
-
-	assert!(
-		error.contains("unsupported private or cross-Node dependency"),
-		"{error}"
-	);
 }
 
 #[test]

@@ -77,8 +77,8 @@ pub async fn recheck(
 	let snapshot = scope.binding_snapshot(run).await?;
 	let agent = AgentConfig::from_snapshot(&snapshot)?;
 	// Current local approval applies independently of a newer active pointer.
-	// Foreign Agent closures are refreshed at their owning Node by the Binding
-	// authority; never resolve their unqualified IDs through this local catalog.
+	// Never resolve another Node's definition by its unqualified ID through
+	// this local catalog.
 	// A delegated agent's own dependencies are pinned here as metadata and are
 	// restricted to that agent, who uses them directly in its own Run.
 	let delegated = snapshot.delegated_users()?;
@@ -97,28 +97,26 @@ pub async fn recheck(
 		{
 			return Ok(UseRecheck::EmbeddingUnavailable(saved.identity.local()));
 		}
-		let current =
-			if aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
-				|| aidash_domain::registry::bindings::defaults::is_compaction_decider(
-					&saved.definition,
-				) {
-				// Dispatch approval may be deferred; readable immutable metadata may not.
-				scope.metadata(&saved.identity.local()).await
-			} else {
-				match delegated.get(&saved.identity) {
-					Some(users) => {
-						let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
-						scope
-							.closure_catalog(&saved.identity.local(), "registry.read", &users)
-							.await
-					}
-					None => {
-						scope
-							.catalog(&saved.identity.local(), "registry.read")
-							.await
-					}
+		let current = if aidash_domain::registry::bindings::sources::is_selection_decider(
+			&saved.definition,
+		) {
+			// Dispatch approval may be deferred; readable immutable metadata may not.
+			scope.metadata(&saved.identity.local()).await
+		} else {
+			match delegated.get(&saved.identity) {
+				Some(users) => {
+					let users = users.iter().map(|user| user.local()).collect::<Vec<_>>();
+					scope
+						.closure_catalog(&saved.identity.local(), "registry.read", &users)
+						.await
 				}
-			};
+				None => {
+					scope
+						.catalog(&saved.identity.local(), "registry.read")
+						.await
+				}
+			}
+		};
 		let current = match current {
 			Ok(current) => current,
 			Err(Error::Forbidden) => return Ok(UseRecheck::Blocked(saved.identity.local())),

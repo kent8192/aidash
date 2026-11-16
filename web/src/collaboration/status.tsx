@@ -10,6 +10,8 @@ import { Badge, useI18n, useAgentLabel } from "../ui";
 import { taskProgress } from "./model";
 import { workspaceCopy } from "./workspace-copy";
 import { Avatar } from "./avatar";
+import type { UnconfirmedLine } from "../unconfirmed";
+import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { SegmentedProgress } from "./request/progress";
 import { runDisplayStatus } from "./request/canvas-model";
 import {
@@ -55,6 +57,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
       client.invalidateQueries({ queryKey: ["state"] }),
       client.invalidateQueries({ queryKey: ["mesh"] }),
       client.invalidateQueries({ queryKey: ["run"] }),
+      client.invalidateQueries({ queryKey: ["workspace-live-runs"] }),
     ]);
     if (failed) setError(words.partialFailure);
     inFlight.current = false;
@@ -85,6 +88,7 @@ export function ChannelStatus({
   discovery,
   open,
   showTasks,
+  unconfirmed = [],
 }: {
   workspace: Workspace;
   data: State;
@@ -94,6 +98,8 @@ export function ChannelStatus({
   discovery?: Discovery;
   open: (value: Selection) => void;
   showTasks: () => void;
+  /** Tasks a silent Node kept out of `tasks`. */
+  unconfirmed?: UnconfirmedLine[];
 }) {
   const { locale } = useI18n();
   const words = workspaceCopy[locale];
@@ -143,7 +149,8 @@ export function ChannelStatus({
               {words.showAll}
             </Button>
           </div>
-          {tasks.length === 0 && (
+          <UnconfirmedNotice lines={unconfirmed} />
+          {tasks.length === 0 && unconfirmed.length === 0 && (
             <p className="text-xs text-muted-foreground">
               {locale === "ja-JP"
                 ? "まだタスクはありません。"

@@ -26,6 +26,8 @@ import {
   channelMessageHistory,
 } from "./generated/aidash";
 import { discoveryQuery, useNodes } from "./nodes";
+import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
+import { UnconfirmedNotice } from "./unconfirmed-notice";
 import type {
   SemanticEntry,
   SemanticIndexSpec,
@@ -45,6 +47,20 @@ import {
 } from "./ui";
 
 import { Alert, Check, Hint } from "./components/patterns";
+
+type EditableKind = Exclude<
+  SemanticSource["kind"],
+  "working_image" | "attachment_image"
+>;
+/** Images enter the index with their File or Thread Attachment; they are never edited here. */
+function isImageSource(kind: string): boolean {
+  return kind === "working_image" || kind === "attachment_image";
+}
+function hasRecordId(
+  source: SemanticSource,
+): source is Extract<SemanticSource, { id: string }> {
+  return "id" in source && typeof source.id === "string";
+}
 
 const semanticMessages: Record<string, string> = {
   "semantic backend unavailable or invalid; inspect index status and retry":
@@ -176,10 +192,18 @@ function SemanticWorkspace({
     agent
       ? (labels.get(agent) ?? t("unavailableEntity"))
       : t("semanticWorkspaceScope");
-  const entryName = (entry: SemanticEntry) =>
-    entry.key.startsWith("agent-memory:")
-      ? `${scopeLabel(entry.agent)} · ${t("semanticMemoryText")}`
-      : entry.key;
+  const entryName = (entry: SemanticEntry) => {
+    const metadata = entry.metadata as { name?: unknown } | null;
+    if (entry.key.startsWith("agent-memory:"))
+      return `${scopeLabel(entry.agent)} · ${t("semanticMemoryText")}`;
+    // A posted image is named by its file, with the message it came in.
+    if (
+      entry.key.startsWith("attachment-image:") &&
+      typeof metadata?.name === "string"
+    )
+      return `${metadata.name} · ${t("message")}`;
+    return entry.key;
+  };
   const describe = (message: string) => t(semanticMessages[message] ?? message);
   const client = useQueryClient();
   const [error, setError] = useState("");
@@ -221,7 +245,10 @@ function SemanticWorkspace({
   });
   const entries = useQuery({
     queryKey: ["semantic", workspace, "entries"],
-    queryFn: () => semanticEntries(workspace),
+    queryFn: async () => {
+      const list = await semanticEntries(workspace);
+      return { items: list.entries, unconfirmed: list.unconfirmed };
+    },
     enabled: !!index.data && !index.isError,
     refetchInterval: 2000,
   });
@@ -264,9 +291,19 @@ function SemanticWorkspace({
     cleanup.error,
   ].filter(Boolean);
   const knownScopes =
-    (entries.isError ? [] : entries.data)
+    (entries.isError ? [] : entries.data?.items)
       ?.map((entry) => entry.agent)
       .filter((agent): agent is string => !!agent) ?? [];
+  const missingEntries = unconfirmedFor(
+    entries.data?.unconfirmed,
+    ["semantic_entry"],
+    [workspace],
+  );
+  const missingMatches = unconfirmedFor(
+    readUnconfirmed(result),
+    ["semantic_entry"],
+    [workspace],
+  );
   const dialogAlert = error && <Alert>{describe(error)}</Alert>;
   return (
     <>
@@ -349,12 +386,13 @@ function SemanticWorkspace({
             </form>
             {result && !entries.isError && (
               <div aria-live="polite" className="grid gap-2">
+                <UnconfirmedNotice lines={missingMatches} />
                 <p className="font-mono text-[11px] text-faint tabular">
                   {result.model} · {result.model_version} ·{" "}
                   {result.estimated_tokens} {t("semanticTokens")}
                   {result.truncated ? ` · ${t("semanticTruncated")}` : ""}
                 </p>
-                {result.matches.length === 0 && (
+                {result.matches.length === 0 && missingMatches.length === 0 && (
                   <Hint>{t("semanticNoMatches")}</Hint>
                 )}
                 {result.matches.length > 0 && (
@@ -399,9 +437,10 @@ function SemanticWorkspace({
               </Button>
             }
           >
-            {!entries.isError && !!entries.data?.length && (
+            {!entries.isError && <UnconfirmedNotice lines={missingEntries} />}
+            {!entries.isError && !!entries.data?.items.length && (
               <ul className="divide-y divide-border border-y border-border">
-                {entries.data.map((entry) => (
+                {entries.data.items.map((entry) => (
                   <li key={entry.id}>
                     <article className="semantic-entry flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
                       <div className="grid min-w-0 flex-1 gap-0.5">
@@ -431,8 +470,7 @@ function SemanticWorkspace({
                           size="sm"
                           disabled={
                             busy ||
-                            (entry.source as SemanticSource).kind ===
-                              "working_image"
+                            isImageSource((entry.source as SemanticSource).kind)
                           }
                           onClick={() => openEditing(entry)}
                         >
@@ -467,7 +505,9 @@ function SemanticWorkspace({
                 ))}
               </ul>
             )}
-            {!entries.isError && entries.data?.length === 0 && <Empty />}
+            {!entries.isError &&
+              entries.data?.items.length === 0 &&
+              missingEntries.length === 0 && <Empty />}
           </Panel>
           {cleanup.data && !cleanup.isError && (
             <Panel title={t("semanticCleanup")}>
@@ -805,9 +845,9 @@ function EntryForm({
 }) {
   const { t } = useI18n();
   const source = entry?.source as SemanticSource | undefined;
-  const [kind, setKind] = useState<
-    Exclude<SemanticSource["kind"], "working_image">
-  >(source?.kind === "working_image" ? "memory" : (source?.kind ?? "memory"));
+  const [kind, setKind] = useState<EditableKind>(
+    source && hasRecordId(source) ? source.kind : "memory",
+  );
   const [metadataError, setMetadataError] = useState("");
   const olderMessages = useInfiniteQuery({
     queryKey: ["workspace", workspace, "semantic-message-sources"],
@@ -875,14 +915,7 @@ function EntryForm({
         <NativeSelect
           value={kind}
           disabled={!!entry}
-          onChange={(e) =>
-            setKind(
-              e.target.value as Exclude<
-                SemanticSource["kind"],
-                "working_image"
-              >,
-            )
-          }
+          onChange={(e) => setKind(e.target.value as EditableKind)}
         >
           <option value="memory">{t("semanticMemoryText")}</option>
           <option value="artifact">{t("artifact")}</option>
@@ -903,13 +936,7 @@ function EntryForm({
           <NativeSelect
             name="sourceId"
             required
-            defaultValue={
-              source &&
-              source.kind !== "memory" &&
-              source.kind !== "working_image"
-                ? source.id
-                : ""
-            }
+            defaultValue={source && hasRecordId(source) ? source.id : ""}
           >
             <option value="">{t("choose")}</option>
             {(kind === "artifact"
@@ -925,10 +952,7 @@ function EntryForm({
               .filter(
                 (option) =>
                   !entry ||
-                  (source &&
-                    source.kind !== "memory" &&
-                    source.kind !== "working_image" &&
-                    option.id === source.id),
+                  (source && hasRecordId(source) && option.id === source.id),
               )
               .map((option) => (
                 <option key={option.id} value={option.id}>
@@ -936,8 +960,7 @@ function EntryForm({
                 </option>
               ))}
             {source &&
-              source.kind !== "memory" &&
-              source.kind !== "working_image" &&
+              hasRecordId(source) &&
               !(kind === "artifact" ? sources.artifacts : messages).some(
                 (option) => option.id === source.id,
               ) && <option value={source.id}>{t("unavailableEntity")}</option>}

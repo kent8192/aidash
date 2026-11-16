@@ -77,6 +77,40 @@ pub(crate) fn run_model(run: &aidash_domain::Run) -> Result<aidash_domain::model
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn journal_query(
+		&self,
+		code: &str,
+		target_run: Option<Uuid>,
+		range: Option<(u64, u64)>,
+		key: &str,
+	) -> Result<Value> {
+		super::journal_query::execute(
+			&self.0.store,
+			&self.0.run,
+			&self.0.scope,
+			code,
+			target_run,
+			range,
+			key,
+		)
+		.await
+	}
+	async fn journal(
+		&self,
+		target_run: Option<Uuid>,
+		range: Option<(u64, u64)>,
+	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
+		use aidash_application::ports::journal_export::JournalSource;
+		self.0
+			.store
+			.export(
+				&self.0.scope,
+				self.0.run.id,
+				target_run.unwrap_or(self.0.run.id),
+				range,
+			)
+			.await
+	}
 	async fn subnode_command(
 		&self,
 		key: &str,
@@ -206,7 +240,13 @@ impl ToolOperations for Operations {
 	async fn message(&self, key: &str, content: &str) -> Result<()> {
 		self.0.home.message(key, content).await.map_err(Into::into)
 	}
-	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+	async fn message_with_files(
+		&self,
+		key: &str,
+		content: &str,
+		files: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
+	) -> Result<()> {
 		if files.is_empty() {
 			return self.message(key, content).await;
 		}
@@ -220,16 +260,26 @@ impl ToolOperations for Operations {
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
-			.message_with_files(&self.0.store, &self.0.run, key, content, files)
+			.message_with_files(
+				&self.0.store,
+				&self.0.run,
+				key,
+				content,
+				files,
+				descriptions,
+			)
 			.await
 			.map_err(operation_error)
 	}
 	async fn attachment(&self, id: &str, model_input: bool) -> Result<Value> {
+		use aidash_application::execution::media::{describes_instead, thread_attachment_wav};
 		let model = if model_input {
 			let model = run_model(&self.0.run)?;
 			let observed = observed_media_type(&self.0.run, id);
-			if let Some(media_type) = observed {
-				aidash_application::execution::media::thread_attachment_wav(&model, &media_type)?;
+			if let Some(media_type) = observed
+				&& !describes_instead(&model, &media_type)
+			{
+				thread_attachment_wav(&model, &media_type)?;
 			}
 			Some(model)
 		} else {
@@ -244,7 +294,25 @@ impl ToolOperations for Operations {
 			.as_str()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		let model = model.ok_or(aidash_application::Error::Forbidden)?;
-		let wav = aidash_application::execution::media::thread_attachment_wav(&model, media_type)?;
+		if describes_instead(&model, media_type) {
+			// A model that cannot read images gets the words instead: the
+			// Image Description, file name and message text, and no selection,
+			// so the next inference carries no image (#622 decision 6).
+			let message_id = record["message_id"]
+				.as_str()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let message = self.0.home.read_record("message", message_id).await?;
+			let message_text: String = message["content"]
+				.as_str()
+				.unwrap_or_default()
+				.chars()
+				.take(aidash_application::semantic::retrieval::ATTACHMENT_MESSAGE_TEXT_CHARS)
+				.collect();
+			return Ok(json!({"status":"completed", "metadata":metadata,
+				"described_instead":{"reason":"this model cannot read images",
+					"description":metadata["description"], "message_text":message_text}}));
+		}
+		let wav = thread_attachment_wav(&model, media_type)?;
 		Ok(
 			json!({"status":"completed", "metadata":metadata, "selection":{
 				"attachment_id":id, "message_id":record["message_id"], "expected_digest":record["sha256"], "wav":wav
@@ -368,11 +436,12 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		let ctx = &self.0;
 		if let Some(authority) = &ctx.home.authority {
-			return Ok(json!(
-				authority
-					.memory_recall(&ctx.store, &ctx.run, key, query.clone(), reflect)
-					.await?
-			));
+			let (outcome, left_out) = authority
+				.memory_recall(&ctx.store, &ctx.run, key, query.clone(), reflect)
+				.await?;
+			let mut result = json!(outcome);
+			aidash_domain::unconfirmed::attach(&mut result, left_out);
+			return Ok(result);
 		}
 		let mut lease = crate::semantic::service::Lease::within(&ctx.store, &ctx.scope).await?;
 		let result = crate::semantic::native_memory::run_recall(
@@ -402,26 +471,42 @@ impl ToolOperations for Operations {
 		.specifications(&self.0.run)
 	}
 	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
-		let Some(authority) = &self.0.home.authority else {
-			return Ok(BTreeMap::new());
-		};
-		if !authority.is_subnode_member(&self.0.run).await? {
-			return Ok(BTreeMap::new());
-		}
 		let providers = super::bindings::Providers {
 			federation: self.0.home.federation.clone(),
 			home: self.0.home.clone(),
 			scope: self.0.scope.clone(),
 		};
-		aidash_domain::subnodes::COORDINATION_TOOLS
-			.iter()
-			.map(|name| {
-				Ok((
+		let mut specifications = BTreeMap::new();
+		// Journal retrieval, as the Run's tool map receives it (#850 decision 6).
+		let handed =
+			super::context_journal::handed_to_run(&self.0.store, &self.0.scope, &self.0.run)
+				.await?;
+		if handed.is_some()
+			|| aidash_domain::context::journal_query::offloaded_any(&self.0.run.context)
+		{
+			for name in aidash_application::registry::system::journal_tools(
+				self.0.store.capabilities.0.runner.is_some(),
+			) {
+				let note = handed.map(|(creator, range)| format!(" The creating Run handed this Task journal range {} through {}. Set run_id to {} and request only this range to inspect it. Omit run_id to inspect your own Journal.", range.from_seq, range.through_seq, creator));
+				specifications.insert(
 					(*name).to_owned(),
-					providers.coordination_tool(name)?.specification(),
-				))
-			})
-			.collect()
+					providers.intrinsic_tool(name, note)?.specification(),
+				);
+			}
+		}
+		let Some(authority) = &self.0.home.authority else {
+			return Ok(specifications);
+		};
+		if !authority.is_subnode_member(&self.0.run).await? {
+			return Ok(specifications);
+		}
+		for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+			specifications.insert(
+				(*name).to_owned(),
+				providers.coordination_tool(name)?.specification(),
+			);
+		}
+		Ok(specifications)
 	}
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
 		match &self.0.home.authority {

@@ -54,6 +54,41 @@ pub async fn provide(
 	}
 }
 impl HarnessManagement {
+	pub(crate) async fn workspace_runs(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		q: crate::apps::execution::serializers::management::WorkspaceRunListQuery,
+	) -> Result<aidash_application::authorization::bounded_reads::RunPage> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = q
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		// A list: a silent Node leaves its Runs unconfirmed instead of failing it (#770).
+		access.lists = true;
+		let result = aidash_application::authorization::bounded_reads::workspace_runs(
+			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
+				federation: &self.runtime,
+				access: &mut access,
+				task_workspace: None,
+				selected_run: None,
+				node: None,
+			},
+			id,
+			q.live,
+			cursor,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
+	}
 	pub(crate) async fn task_runs(
 		&self,
 		actor: Actor,
@@ -71,12 +106,14 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::runs(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
 				access: &mut access,
 				task_workspace: None,
 				selected_run: None,
+				node: None,
 			},
 			id,
 			cursor,
@@ -101,12 +138,14 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::humans(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
 				access: &mut access,
 				task_workspace: None,
 				selected_run: None,
+				node: q.node.as_deref(),
 			},
 			q.run,
 			q.state,
@@ -116,12 +155,20 @@ impl HarnessManagement {
 		.map_err(Into::into);
 		access.finish(result).await
 	}
-	pub(crate) async fn state(&self, actor: Actor) -> Result<Response> {
+	pub(crate) async fn state(
+		&self,
+		actor: Actor,
+		query: crate::apps::execution::serializers::state::StateQuery,
+	) -> Result<Response> {
 		let f = self.runtime.clone();
 
 		if let Some(scope) = scoped(&f, actor) {
 			let state = scope
-				.state(crate::apps::federation::peer::services::identity::publication(&f).await?)
+				.state(
+					crate::apps::federation::peer::services::identity::publication(&f).await?,
+					&f,
+					query.node.as_deref(),
+				)
 				.await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
@@ -139,8 +186,52 @@ impl HarnessManagement {
 			conversations: Vec::new(),
 			events: Vec::new(),
 			artifacts: Vec::new(),
+			unconfirmed: Vec::new(),
+			next_cursors: Default::default(),
 		};
 		Ok(Response::ok().with_json(&state)?)
+	}
+	pub(crate) async fn workspace_page(
+		&self,
+		actor: Actor,
+		query: crate::apps::execution::serializers::state::WorkspacePageQuery,
+	) -> Result<crate::apps::execution::serializers::state::WorkspacePage> {
+		use aidash_application::ports::authorization::state::WorkspaceStateScope;
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = query
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		let result: Result<_> = async {
+			let mut scope = crate::apps::identity::repositories::visibility::state::StateReads {
+				access: &mut access,
+				federation: &self.runtime,
+			};
+			let ids = scope
+				.workspace_candidates(query.node.as_deref(), cursor)
+				.await?;
+			let next_cursor = (ids.len()
+				== aidash_application::authorization::bounded_reads::PAGE_SIZE)
+				.then(|| ids.last().unwrap().to_string());
+			let mut visible = Vec::new();
+			for id in ids {
+				if scope.allowed(id, "workspace.read").await? {
+					visible.push(id);
+				}
+			}
+			Ok(crate::apps::execution::serializers::state::WorkspacePage {
+				items: scope.workspace_rows(&visible).await?,
+				next_cursor,
+			})
+		}
+		.await;
+		access.finish(result).await
 	}
 	/// The OpenRouter catalog for model definitions, which any member may
 	/// read, from one process-wide copy (#362).
@@ -403,6 +494,45 @@ impl HarnessManagement {
 		};
 		management::control(f, actor, id, RunManagementInput { action }).await
 	}
+	/// The caller's Runs that an Account suspension paused. A Deployment
+	/// Administrator has no Runs of its own and is refused, as on resume.
+	pub(crate) async fn suspended_runs(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::management::SuspendedRuns> {
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		Ok(
+			crate::apps::execution::serializers::management::SuspendedRuns {
+				runs: execution::suspension_paused(&self.runtime, identity).await?,
+			},
+		)
+	}
+	/// Resumes each of the caller's Runs that an Account suspension paused,
+	/// one at a time through the manual resume and all of its checks, and
+	/// reports each Run (#876 decision 17). A Deployment Administrator has no
+	/// Runs of its own and is refused, as on `/control`.
+	pub(crate) async fn resume_suspended(
+		&self,
+		actor: Actor,
+	) -> Result<crate::apps::execution::serializers::management::SuspendedRunsResume> {
+		use crate::apps::execution::serializers::management::{
+			SuspendedRunResume, SuspendedRunsResume,
+		};
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		let f = &self.runtime;
+		let mut runs = Vec::new();
+		for id in execution::suspension_paused(f, identity).await? {
+			runs.push(match execution::resume(f, identity, id).await {
+				Ok(_) => SuspendedRunResume::resumed(id),
+				Err(error) => SuspendedRunResume::refused(id, error),
+			});
+		}
+		Ok(SuspendedRunsResume { runs })
+	}
 	/// Declining answers as `/control` does. A Deployment Administrator never declines.
 	pub(crate) async fn run_decline_call(
 		&self,
@@ -414,7 +544,7 @@ impl HarnessManagement {
 			return Err(Error::Forbidden);
 		};
 		Ok(
-			execution::decline_call(&self.runtime, identity, id, &input.call)
+			execution::decline_call(&self.runtime, identity, id, &input.call, input.rest_of_run)
 				.await?
 				.into(),
 		)
@@ -455,11 +585,16 @@ impl HarnessManagement {
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		let (events, cursor) = scope
+		let (events, cursor, unconfirmed) = scope
 			.events_with_cursor(q.after, q.workspace_id, 500)
 			.await?;
-		let mut response =
-			crate::marketplace::events::response(&scope.store, &scope.identity, events).await?;
+		let mut response = crate::marketplace::events::response(
+			&scope.store,
+			&scope.identity,
+			events,
+			unconfirmed,
+		)
+		.await?;
 		response
 			.headers
 			.insert("x-aidash-event-cursor", cursor.into());

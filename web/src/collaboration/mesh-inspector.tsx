@@ -199,20 +199,17 @@ export function MeshInspector({
             ? `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m`
             : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`,
         ],
-        run.context?.usage && [
+        run.input_tokens != null && [
           copy.inputTokens,
-          number.format(run.context.usage.input_tokens),
+          number.format(run.input_tokens),
         ],
-        run.context?.usage && [
+        run.output_tokens != null && [
           copy.outputTokens,
-          number.format(run.context.usage.output_tokens),
+          number.format(run.output_tokens),
         ],
-        run.context?.history && [
+        run.tool_calls != null && [
           copy.toolCalls,
-          number.format(
-            run.context.history.filter((entry) => entry.event.kind === "tool")
-              .length,
-          ),
+          number.format(run.tool_calls),
         ],
       ].filter(Boolean) as [string, string][])
     : [];

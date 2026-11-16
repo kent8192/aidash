@@ -2,17 +2,21 @@
 use super::super::views;
 use crate::apps::execution::serializers::human_requests::HumanRequest;
 use crate::apps::execution::serializers::management::ClaimInput;
+use crate::apps::execution::serializers::management::EventPage;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
-use crate::apps::execution::serializers::management::{ControlInput, DeclineCallInput};
+use crate::apps::execution::serializers::management::{
+	ControlInput, DeclineCallInput, SuspendedRuns, SuspendedRunsResume,
+};
 use crate::apps::execution::serializers::research::{
 	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
 	TenantRetentionView,
 };
 use crate::apps::execution::serializers::runs::RunDetails;
-use crate::apps::execution::serializers::state::StateResponse;
+use crate::apps::execution::serializers::state::{
+	StateQuery, StateResponse, WorkspacePage, WorkspacePageQuery,
+};
 use crate::apps::federation::remote::serializers::actions::SentResponse;
-use crate::apps::workspaces::serializers::entities::Event;
 use crate::apps::workspaces::serializers::entities::Task;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
@@ -46,6 +50,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.query::<_, super::management::RunListQuery>(document, views::management::task_runs)?;
 	contracts.path(document, views::management::task_runs, &["Uuid"])?;
+	contracts.response::<_, aidash_application::authorization::bounded_reads::RunPage>(
+		document,
+		views::management::workspace_runs,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, super::management::WorkspaceRunListQuery>(
+		document,
+		views::management::workspace_runs,
+	)?;
+	contracts.path(document, views::management::workspace_runs, &["Uuid"])?;
 	contracts.response::<_, aidash_application::authorization::bounded_reads::HumanPage>(
 		document,
 		views::management::human_requests,
@@ -62,6 +77,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::state,
 		200,
 		"application/json",
+	)?;
+	contracts.query::<_, StateQuery>(document, views::management::state)?;
+	contracts.response::<_, WorkspacePage>(
+		document,
+		crate::apps::workspaces::views::management::workspace_list,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, WorkspacePageQuery>(
+		document,
+		crate::apps::workspaces::views::management::workspace_list,
 	)?;
 	contracts.response::<_, aidash_domain::catalog::CatalogSnapshot>(
 		document,
@@ -159,6 +185,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts.request::<_, DeclineCallInput>(document, views::management::run_decline_call)?;
+	contracts.response::<_, SuspendedRuns>(
+		document,
+		views::management::suspended_runs,
+		200,
+		"application/json",
+	)?;
+	contracts.response::<_, SuspendedRunsResume>(
+		document,
+		views::management::suspended_runs_resume,
+		200,
+		"application/json",
+	)?;
 	contracts.path(document, views::management::run_decline_call, &["Uuid"])?;
 	contracts.response::<_, SentResponse>(
 		document,
@@ -177,7 +215,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, Value>(document, views::management::human_answer)?;
 	contracts.path(document, views::management::human_answer, &["Uuid"])?;
-	contracts.response::<_, Vec<Event>>(
+	contracts.response::<_, EventPage>(
 		document,
 		views::management::events,
 		200,

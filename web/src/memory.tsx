@@ -1,3 +1,4 @@
+import { useTaskPickerPages } from "./task-picker-pages";
 import { nativeMemoryProvider } from "./agent-bindings";
 import { useState } from "react";
 import {
@@ -28,6 +29,8 @@ import {
   unitAnchor,
 } from "./memory-view";
 import { MemoryImpactView } from "./memory-impact";
+import { type Unconfirmed, unconfirmedFor } from "./unconfirmed";
+import { UnconfirmedNotice } from "./unconfirmed-notice";
 
 type Bank = {
   home: string;
@@ -133,6 +136,7 @@ export function MemoryWorkspace({
   const [observed, setObserved] = useState({ scope: "", units: "" });
   const [query, setQuery] = useState("");
   const [taskId, setTaskId] = useState("");
+  const taskPages = useTaskPickerPages(data, workspace);
   const [questionSource, setQuestionSource] = useState<Unit | null>(null);
   const [question, setQuestion] = useState("");
   const [questionTarget, setQuestionTarget] = useState<Unit | null>(null);
@@ -220,11 +224,23 @@ export function MemoryWorkspace({
   const blocked = busy || retry !== null;
   const units = useQuery({
     queryKey: ["memory", workspace, "units", read],
-    queryFn: () => post<Unit[]>(`${base}/units/query`, read),
+    queryFn: async () => {
+      const list = await post<{ units: Unit[]; unconfirmed: Unconfirmed[] }>(
+        `${base}/units/query`,
+        read,
+      );
+      return { items: list.units, unconfirmed: list.unconfirmed };
+    },
     enabled: !!read,
     retry: false,
     refetchInterval: 5000,
   });
+  const unitRows = units.data?.items;
+  const missingUnits = unconfirmedFor(
+    units.data?.unconfirmed,
+    ["memory_unit"],
+    [workspace],
+  );
   const settings = useQuery({
     queryKey: ["memory", workspace, "settings", read],
     queryFn: () =>
@@ -287,7 +303,7 @@ export function MemoryWorkspace({
     read,
   ]);
   const unitStamp = JSON.stringify(
-    units.data?.map((unit) => [unit.id, unit.revision]) ?? null,
+    unitRows?.map((unit) => [unit.id, unit.revision]) ?? null,
   );
   // Reset snapshots before committing a changed scope/revision render. An
   // effect would first paint the old result, then trigger another render.
@@ -300,7 +316,7 @@ export function MemoryWorkspace({
     !!historyUnit &&
     observed.scope === scope &&
     !units.error &&
-    (units.data ?? []).some(
+    (unitRows ?? []).some(
       (unit) =>
         unit.id === historyUnit.id && unit.revision === historyUnit.revision,
     );
@@ -410,7 +426,7 @@ export function MemoryWorkspace({
       </div>
     </Alert>
   );
-  const visibleUnits = units.error ? [] : (units.data ?? []);
+  const visibleUnits = units.error ? [] : (unitRows ?? []);
   return (
     <Panel
       title={text("Hindsight memory", "Hindsight メモリ")}
@@ -577,16 +593,29 @@ export function MemoryWorkspace({
                 onChange={(e) => setTaskId(e.target.value)}
               >
                 <option value="">{text("Choose a Task", "Taskを選択")}</option>
-                {data.tasks
-                  .filter((task) => task.workspace_id === workspace)
-                  .map((task) => (
-                    <option key={task.id} value={task.id}>
-                      {task.title}
-                    </option>
-                  ))}
+                {taskPages.tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
               </NativeSelect>
             </Field>
           </div>
+          {taskPages.more && (
+            <Button
+              variant="outline"
+              type="button"
+              disabled={taskPages.loading}
+              onClick={taskPages.load}
+            >
+              {text("Show more tasks", "タスクをさらに表示")}
+            </Button>
+          )}
+          {taskPages.error && (
+            <p role="alert">
+              {text("Unable to load tasks.", "タスクを読み込めませんでした。")}
+            </p>
+          )}
           <Button
             variant="outline"
             type="button"
@@ -819,11 +848,12 @@ export function MemoryWorkspace({
           <MemoryRecord value={result} />
         </Disclosure>
       )}
-      {units.data?.length === 0 && <Empty />}
-      {!units.error && units.data && <MemoryOverview units={units.data} />}
+      {!units.error && <UnconfirmedNotice lines={missingUnits} />}
+      {unitRows?.length === 0 && missingUnits.length === 0 && <Empty />}
+      {!units.error && unitRows && <MemoryOverview units={unitRows} />}
       <div className="grid gap-3">
         {!units.error &&
-          units.data?.map((unit) => (
+          unitRows?.map((unit) => (
             <article
               className="grid min-w-0 gap-3 rounded-lg border border-border bg-surface p-4 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring focus:border-brand-line"
               id={unitAnchor(unit.id)}
@@ -1114,7 +1144,7 @@ export function MemoryWorkspace({
             onSubmit={(e) => {
               e.preventDefault();
               const operation = crypto.randomUUID();
-              const sources: Evidence[] = (units.data ?? [])
+              const sources: Evidence[] = (unitRows ?? [])
                 .filter(
                   (unit) =>
                     questionSources.includes(unit.id) &&
@@ -1180,7 +1210,7 @@ export function MemoryWorkspace({
                 "採用済みの根拠を現在のrevisionで選択",
               )}
             >
-              {(units.data ?? [])
+              {(unitRows ?? [])
                 .filter((unit) => unit.id !== questionTarget?.id)
                 .map((unit) => (
                   <Check
@@ -1215,7 +1245,7 @@ export function MemoryWorkspace({
                 disabled={
                   blocked ||
                   !question.trim() ||
-                  !(units.data ?? []).some(
+                  !(unitRows ?? []).some(
                     (unit) =>
                       questionSources.includes(unit.id) &&
                       unit.id !== questionTarget?.id,

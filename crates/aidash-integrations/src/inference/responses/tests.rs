@@ -42,6 +42,17 @@ fn request() -> ModelRequest {
 		..Default::default()
 	}
 }
+
+#[rstest::rstest]
+#[case("none", json!({"enabled": false}))]
+#[case("medium", json!({"effort": "medium"}))]
+fn openrouter_responses_reasoning_request_shape(#[case] effort: &str, #[case] expected: Value) {
+	let mut config = config();
+	config.reasoning_effort = serde_json::from_value(json!(effort)).unwrap();
+	let body = openrouter_request_body(&config, &request(), None, None, vec![], Default::default())
+		.unwrap();
+	assert_eq!(body["reasoning"], expected);
+}
 fn sse(events: &[Value]) -> String {
 	events
 		.iter()
@@ -80,7 +91,7 @@ fn plan_keeps_its_request_bytes_and_ignores_openrouter_only_events_and_usage() {
 	let body = request_body(&config(), &request(), Some("salt-line\n")).unwrap();
 	assert_eq!(
 		body.to_string(),
-		r#"{"input":[{"content":[{"text":"{\"task\":\"summarize\"}","type":"input_text"}],"role":"user"}],"instructions":"salt-line\nBe precise.","model":"gpt-fixture","reasoning":{"effort":"high"},"store":false,"stream":true,"tools":[{"description":"Tools of this Aidash agent.","name":"aidash","tools":[{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"},"type":"function"}],"type":"namespace"}]}"#
+		r#"{"include":["reasoning.encrypted_content"],"input":[{"content":[{"text":"{\"task\":\"summarize\"}","type":"input_text"}],"role":"user"}],"instructions":"salt-line\nBe precise.","model":"gpt-fixture","reasoning":{"effort":"high"},"store":false,"stream":true,"tools":[{"description":"Tools of this Aidash agent.","name":"aidash","tools":[{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"},"type":"function"}],"type":"namespace"}]}"#
 	);
 	let mut terminal = completed_event(
 		json!([{"type":"message","content":[{"type":"output_text","text":"complete"}]}]),
@@ -219,6 +230,7 @@ fn native_requests_preserve_all_messages_calls_results_and_media_in_order() {
 					arguments: json!({"q":"second"}),
 				},
 			],
+			reasoning: None,
 		},
 		NativeMessage::Tool {
 			tool_call_id: "call-a".into(),
@@ -235,6 +247,7 @@ fn native_requests_preserve_all_messages_calls_results_and_media_in_order() {
 		NativeMessage::Assistant {
 			text: Some("Continuing after approval.".into()),
 			tool_calls: vec![],
+			reasoning: None,
 		},
 		NativeMessage::Data {
 			envelope: envelope(NativeSource::ModelMediaObservation, json!("observed image")),
@@ -291,8 +304,100 @@ fn native_requests_preserve_all_messages_calls_results_and_media_in_order() {
 		json!({"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="})
 	);
 	assert!(body.get("previous_response_id").is_none());
-	assert!(body.get("include").is_none());
+	assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
 	assert!(input.iter().all(|item| item["type"] != "reasoning"));
+}
+
+/// Under `store: false` a reasoning item without encrypted content names an
+/// ID the provider never stored, so the plan body leaves it out and keeps the
+/// encrypted one and the turn's output in order (#942).
+#[test]
+fn plan_requests_replay_only_reasoning_with_encrypted_content() {
+	// Arrange
+	let mut request = native_request();
+	let ModelContext::Native(native) = &mut request.context else {
+		unreachable!()
+	};
+	let encrypted =
+		json!({"type":"reasoning","id":"rs_2","encrypted_content":"opaque","summary":[]});
+	native.history = vec![
+		NativeMessage::Assistant {
+			text: Some("Looking it up.".into()),
+			tool_calls: vec![ToolCall {
+				id: "call-a".into(),
+				name: "search".into(),
+				arguments: json!({"q":"first"}),
+			}],
+			reasoning: Some(aidash_domain::provider::reasoning::Reasoning::Responses {
+				items: vec![
+					json!({"type":"reasoning","id":"rs_1","summary":[]}),
+					encrypted.clone(),
+					json!({"type":"reasoning","id":"rs_3","encrypted_content":"","summary":[]}),
+				],
+			}),
+		},
+		NativeMessage::Tool {
+			tool_call_id: "call-a".into(),
+			envelope: envelope(NativeSource::Tool, json!({"found":"first"})),
+		},
+	];
+	request.validate().unwrap();
+	// Act
+	let body = request_body(&config(), &request, None).unwrap();
+	// Assert
+	let input = body["input"].as_array().unwrap();
+	let kinds = input
+		.iter()
+		.map(|item| item["type"].as_str().or(item["role"].as_str()).unwrap())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		kinds,
+		[
+			"user",
+			"reasoning",
+			"assistant",
+			"function_call",
+			"function_call_output",
+			"user"
+		]
+	);
+	assert_eq!(input[1], encrypted);
+	// The OpenRouter body still resends what the route returned.
+	let openrouter =
+		openrouter_request_body(&config(), &request, None, None, vec![], Default::default())
+			.unwrap();
+	assert_eq!(
+		openrouter["input"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|item| item["type"] == "reasoning")
+			.count(),
+		3
+	);
+}
+
+/// The plan body asks for encrypted reasoning whenever reasoning is passed
+/// back, and not when the model turns passback off (#942).
+#[test]
+fn plan_requests_ask_for_encrypted_reasoning_only_with_passback() {
+	let body = request_body(&config(), &request(), None).unwrap();
+	assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+	let mut off = config();
+	off.reasoning_passback = Some(false);
+	let body = request_body(&off, &request(), None).unwrap();
+	assert!(body.get("include").is_none());
+	// OpenRouter is stateless and never sends it.
+	let body = openrouter_request_body(
+		&config(),
+		&request(),
+		None,
+		None,
+		vec![],
+		Default::default(),
+	)
+	.unwrap();
+	assert!(body.get("include").is_none());
 }
 
 #[test]
@@ -718,7 +823,9 @@ async fn plan_calls_stream_from_the_responses_endpoint_with_the_plan_bearer() {
 
 /// The provider's streamed calls survive a complete tool step and a persisted
 /// request reload, including an assistant turn containing calls without text.
-/// Reasoning can contribute usage, but never enters the replay or progress.
+/// Reasoning items are captured from the completed response and replayed
+/// unchanged before their turn's output on every later request (#942), but
+/// never enter progress.
 #[tokio::test]
 async fn native_streamed_tool_steps_resume_with_the_complete_observable_history() {
 	let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -732,7 +839,7 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 				seen.push(body);
 				let output = match seen.len() {
 					1 => json!([
-						{"type":"reasoning","encrypted_content":"opaque-reasoning-never-retained","summary":[{"text":"hidden-summary"}]},
+						{"type":"reasoning","id":"rs_1","encrypted_content":"opaque-reasoning-replayed","summary":[{"type":"summary_text","text":"hidden-summary"}]},
 						{"type":"message","content":[{"type":"output_text","text":"Checking two sources."}]},
 						{"type":"function_call","namespace":"aidash","call_id":"step-1-a","name":"search","arguments":"{\"q\":\"one\"}"},
 						{"type":"function_call","namespace":"aidash","call_id":"step-1-b","name":"search","arguments":"{\"q\":\"two\"}"}
@@ -782,9 +889,11 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 		let ModelContext::Native(native) = &mut request.context else {
 			unreachable!()
 		};
+		assert_eq!(result.reasoning.is_some(), step == 1);
 		native.history.push(NativeMessage::Assistant {
 			text: (!result.text.is_empty()).then_some(result.text),
 			tool_calls: result.tool_calls.clone(),
+			reasoning: result.reasoning,
 		});
 		for call in result.tool_calls {
 			native.history.push(NativeMessage::Tool {
@@ -793,8 +902,8 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 			});
 		}
 		native.volatile = json!({"step":step+1}).to_string();
-		// A resumed Run rehydrates the projected messages rather than a
-		// provider response ID or opaque reasoning blob.
+		// A resumed Run rehydrates the projected messages and the recorded
+		// reasoning items, never a provider response ID.
 		request = serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
 	}
 	let result = plan.infer(request, &recorder).await.unwrap();
@@ -806,29 +915,41 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 	let second = seen[1]["input"].as_array().unwrap();
 	let third = seen[2]["input"].as_array().unwrap();
 	assert_eq!(first.len(), 2);
-	assert_eq!(second.len(), 7);
-	assert_eq!(third.len(), 9);
+	assert_eq!(second.len(), 8);
+	assert_eq!(third.len(), 10);
 	assert_eq!(first[0], second[0]);
-	assert_eq!(second[..6], third[..6]);
-	assert_eq!(second[1]["role"], "assistant");
+	// Everything before the volatile step message is resent byte for byte.
+	assert_eq!(
+		serde_json::to_string(&second[..7]).unwrap(),
+		serde_json::to_string(&third[..7]).unwrap()
+	);
+	assert_eq!(
+		second[1],
+		json!({"type":"reasoning","id":"rs_1","encrypted_content":"opaque-reasoning-replayed","summary":[{"type":"summary_text","text":"hidden-summary"}]})
+	);
+	assert_eq!(second[2]["role"], "assistant");
 	for (index, kind, id) in [
-		(2, "function_call", "step-1-a"),
-		(3, "function_call", "step-1-b"),
-		(4, "function_call_output", "step-1-a"),
-		(5, "function_call_output", "step-1-b"),
-		(6, "function_call", "step-2-a"),
-		(7, "function_call_output", "step-2-a"),
+		(3, "function_call", "step-1-a"),
+		(4, "function_call", "step-1-b"),
+		(5, "function_call_output", "step-1-a"),
+		(6, "function_call_output", "step-1-b"),
+		(7, "function_call", "step-2-a"),
+		(8, "function_call_output", "step-2-a"),
 	] {
 		assert_eq!(third[index]["type"], kind);
 		assert_eq!(third[index]["call_id"], id);
 	}
-	for body in seen.iter() {
+	for (step, body) in seen.iter().enumerate() {
 		assert_eq!(body["store"], false);
 		assert_eq!(body["stream"], true);
 		assert!(body.get("previous_response_id").is_none());
-		assert!(body.get("include").is_none());
-		assert!(!body.to_string().contains("opaque-reasoning-never-retained"));
-		assert!(!body.to_string().contains("hidden-summary"));
+		// The provider stores nothing, so every step asks for the encrypted
+		// reasoning a later step replays (#942).
+		assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+		assert_eq!(
+			body.to_string().contains("opaque-reasoning-replayed"),
+			step > 0
+		);
 	}
 	let progress = recorder.0.lock().unwrap();
 	assert!(progress.iter().any(
@@ -836,7 +957,7 @@ async fn native_streamed_tool_steps_resume_with_the_complete_observable_history(
 	));
 	assert!(progress.iter().any(|item| matches!(item, InferenceProgress::ToolCall { id:Some(id), argument_bytes, .. } if id == "step-1-b" && *argument_bytes > 0)));
 	assert!(!format!("{progress:?}").contains("hidden-summary"));
-	assert!(!format!("{progress:?}").contains("opaque-reasoning-never-retained"));
+	assert!(!format!("{progress:?}").contains("opaque-reasoning-replayed"));
 }
 
 #[tokio::test]
@@ -1677,6 +1798,7 @@ fn warning_activity_retains_observable_results_and_replays_advisor_identity() {
 		text: response.text,
 		calls: vec![],
 		provider_activity: response.provider_activity.clone(),
+		reasoning: None,
 	});
 	let request = ModelRequest {
 		context: aidash_domain::provider::ModelContext::Native(

@@ -86,7 +86,9 @@ function fixture() {
         phase: "COMPLETED",
         control: "ACTIVE",
         step: 3,
-        context: {},
+        input_tokens: null,
+        output_tokens: null,
+        tool_calls: 0,
         error: null,
       },
     ],
@@ -104,6 +106,14 @@ function fixture() {
     artifacts: [],
     events: [],
     conversations: [],
+    next_cursors: {
+      workspaces: null,
+      tasks: null,
+      runs: null,
+      artifacts: null,
+      human_requests: null,
+      conversations: null,
+    },
     human_requests: [],
     installations: [],
   };
@@ -300,6 +310,7 @@ test("removes graph and stale entity metadata after an authorized snapshot revok
     dialog.getByRole("region", { name: "Agent relationship graph" }),
   ).toBeVisible();
   revoke();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(dialog.getByRole("status")).toHaveText(
     "This agent version is not available in the current authorized view.",
     { timeout: 15000 },

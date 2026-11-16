@@ -29,7 +29,7 @@ ADMIN_ADMITTED = {
     "session", "state", "run-management-get", "run-management-control",
     "authorization-snapshot", "authorization-replace", "authorization-evaluate",
     "transaction_revocations", "transaction-participants",
-    "tenant-administration", "tenant-registrations", "tenant-registration-approve",
+    "tenant-administration", "tenant-invitation-approvals", "tenant-registrations", "tenant-registration-approve",
     "tenant-registration-reject", "tenant-mappings", "tenant-mapping-disable",
     "tenant-invitations-issue", "tenant-invitations", "tenant-invitations-revoke",
     "tenants-label", "tenants-delete", "tenants-list", "tenants-purge",
@@ -158,9 +158,13 @@ TENANT_ROUTES = {
 # action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
+    "GET /api/workspaces/{id}/runs": [
+        ("Subject lists the readable Workspace's live Runs", 200, SUBJECT,
+         "/api/workspaces/{{workspace_id}}/runs?live=true", 'expect(res.getBody().items).to.be.an("array");'),
+    ],
     "GET /api/tasks/{id}/runs": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
-         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
+         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
     ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
@@ -908,7 +912,7 @@ def render():
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.
         actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
-        if route["name"] in {"task-runs", "human-requests"}:
+        if route["name"] in {"task-runs", "workspace-runs", "human-requests", "workspace-list"}:
             add(endpoint, "Deployment Administrator cannot read Tenant data", 403,
                 headers=DEPLOYMENT_ADMINISTRATOR)
         if route["name"] == "tenants-personal":
@@ -1079,6 +1083,9 @@ def render():
             body = (
                 json.dumps({"expected_revision": 0, "provider_credential_id": None})
                 if method == "PUT"
+                # Pasted Key Material (#892) names the provider and the key.
+                else json.dumps({"provider": "openrouter", "key": "sk-or-contract"})
+                if method == "POST" and path.endswith("/provider-credentials")
                 else json.dumps({"expected_revision": 0})
                 if route["json"]
                 else None
@@ -1268,6 +1275,10 @@ def render():
                             "remote_runs_may_create": False})
                 if method == "PUT" and path.endswith("/subnode-limits")
                 else
+                # One day, within any Deployment maximum, so only the caller is refused.
+                json.dumps({"seconds": 86400})
+                if method == "PUT" and path.endswith("/credential-maximum")
+                else
                 json.dumps({"groups": [], "expected_policy_revision": 1})
                 if method == "PUT"
                 else json.dumps({"subject": "carol", "groups": []})
@@ -1338,6 +1349,8 @@ def render():
                     headers=SUBJECT, body=limits, immutable=True)
             continue
         if route["source"] == "server/src/apps/execution/capabilities/views/previews.rs":
+            # A loopback origin defaults to `*.localhost` only with a
+            # `public_port` (#894); the contract server sets none.
             flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(false);expect(res.getBody().preview_domain).to.equal(null);'
             if path.endswith("/availability"):
                 add(endpoint, "Anonymous request is rejected", 401)
@@ -1490,6 +1503,7 @@ def render():
         # replace a subject or browser-bound graph grant.
         denied_reads = {
             "task-runs",
+            "workspace-runs",
             "memory-participant-current",
             "remote-semantic-home-provenance",
             "remote-semantic-run-provenance",
@@ -1521,7 +1535,9 @@ def render():
             status = 403
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
-        if route["name"] == "human-requests":
+        if route["name"] == "state":
+            checks += 'const c=res.getBody().next_cursors;for(const key of ["workspaces","tasks","runs","artifacts","human_requests","conversations"])expect(c[key]).to.equal(null);'
+        if route["name"] in {"human-requests", "workspace-list"}:
             checks += 'expect(res.getBody().items).to.be.an("array");'
         if route["name"] == "file_recipient_list":
             uri = path + "?node_id={{node_id}}/{{tenant_node}}"
@@ -1560,7 +1576,7 @@ def render():
         if path == "/api/tasks":
             checks += 'expect(res.getBody().tasks.map(value=>value.id)).to.include(bru.getVar("task_id"));'
         if path == "/api/events":
-            checks += 'expect(res.getBody()).to.be.an("array");expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
+            checks += 'expect(res.getBody().events).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
         if path == "/api/events/stream":
             add(
                 endpoint,
@@ -1610,7 +1626,7 @@ def render():
         # response the journeys fix; every other Tenant route is shown to refuse
         # the administrator (#484).
         subject_read = (
-            path in ("/api/workspaces/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
+            path in ("/api/workspaces", "/api/workspaces/{id}", "/api/tasks", "/api/events", "/api/tasks/{id}/runs", "/api/human-requests")
             or path.endswith("/message-history")
         )
         if not admitted and not core:

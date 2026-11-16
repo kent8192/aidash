@@ -1,13 +1,13 @@
 # Provider Credentials
 
-Provider Credentials are Tenant-owned metadata records obtained only through
-Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
-Key Material passes from the server-side exchange into the Secret Store
-write port. Pinned reads use a separate narrow read port. The Store also holds
+Provider Credentials are Tenant-owned metadata records. On Cloud and Dedicated
+they are obtained only through Provider Authorization, the provider's OAuth
+flow, as decided in ADR 0006. A Self-hosted Deployment also accepts a key that
+a person pastes or that Host Access stores (ADR 0006 as amended by #877; see
+[Supplied keys on Self-hosted](#supplied-keys-on-self-hosted)).
+Key Material passes into the Secret Store write port. Pinned reads use a
+separate narrow read port. The Store also holds
 [Tenant Secrets](tenant-secrets.md) in their own resource namespace.
-Aidash exposes no HTTP create/rotate endpoint or dashboard
-form accepting typed or pasted provider keys; Provider Authorization (below) is
-the only production write path.
 The v1 Provider Catalog contains `openrouter`, with base URL
 `https://openrouter.ai/api/v1`.
 Registry model and embedding configurations use `provider_credential =
@@ -85,6 +85,33 @@ unavailable.
 Tenant's Provider Credential Binding. They are available only on opted-in
 Self-hosted Deployments with the PostgreSQL Store; Cloud and Dedicated support
 is deferred to #248 pending hosted-app approval.
+
+## Supplied keys on Self-hosted
+
+A Self-hosted Deployment's host already reads its Secret Store (ADR 0008), so it
+also accepts Key Material that did not come from Provider Authorization (#892):
+
+- **Pasted in the dashboard.** Tenant settings → Provider credentials →
+  **Paste a key** sends `POST /api/tenants/{tenant}/provider-credentials` with
+  `{"provider": "openrouter", "key": "..."}`. It is decided like a connection:
+  `provider_credential.create` under the Tenant's live policy, or
+  `.rotate` when the body also names `provider_credential_id` and
+  `expected_revision` (the dashboard does this when OpenRouter is already
+  connected). A new Provider Credential is bound when the provider has no
+  usable binding; the response says whether it is `bound`.
+- **Stored through Host Access.** On the host,
+  `printf %s "$KEY" | manage store-provider-credential --tenant <tenant> --provider openrouter`
+  stores the key and prints the metadata as JSON. `--replace <id>
+--expected-revision <n>` stores it as a new version instead. The key is read
+  from standard input only, so it stays out of shell history and process
+  listings.
+
+Each Provider Credential records `key_origin`: `authorization`, `pasted` or
+`host_access`, also in its lifecycle events. A supplied key keeps no key digest
+and therefore has no key-settings link: the same key may be stored in several
+Tenants, and a digest would correlate them. Cloud and Dedicated answer `409
+SUPPLIED_KEYS_UNAVAILABLE`. Environment-variable model keys stay removed on
+every Offering.
 
 ## Provider Authorization
 
