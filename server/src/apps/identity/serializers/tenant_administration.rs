@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CredentialMaximum {
+	pub(crate) seconds: i64,
+}
+
 /// The actions the caller's Tenant policy permits, and what it may assign.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct TenantAdministration {

@@ -713,7 +713,15 @@ impl Access {
 			}
 		}
 		if identity.credential_id != self.identity.credential_id {
-			identity.lock_credential(&mut self.tx).await?;
+			identity
+				.lock_credential(&mut self.tx)
+				.await
+				.map_err(|error| match error {
+					// A publisher's suspension is not this Run's: it stays a plain
+					// refusal rather than a pause that waits on another Account.
+					Error::AccountSuspended { .. } => Error::Forbidden,
+					error => error,
+				})?;
 		}
 		let old = PublicationContext {
 			identity: std::mem::replace(&mut self.identity, identity),
@@ -886,6 +894,7 @@ impl Access {
 			&mut **self.tx,
 			run_id,
 			policy.as_ref(),
+			aidash_application::ports::accounts::Recheck::WithinT,
 		)
 		.await?;
 		self.tx.admissions.clear();

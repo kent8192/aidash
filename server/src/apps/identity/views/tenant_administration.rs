@@ -14,6 +14,39 @@ fn response<T: serde::Serialize>(result: crate::Result<T>) -> ViewResult<Respons
 }
 
 #[get(
+	"/api/tenants/{tenant}/credential-maximum",
+	name = "tenant-credential-maximum",
+	auth = "protected"
+)]
+pub async fn credential_maximum(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	response(service.credential_maximum(actor, origin, tenant).await)
+}
+
+#[put(
+	"/api/tenants/{tenant}/credential-maximum",
+	name = "tenant-credential-maximum-update",
+	auth = "protected"
+)]
+pub async fn set_credential_maximum(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+	Json(input): Json<crate::apps::identity::serializers::tenant_administration::CredentialMaximum>,
+) -> ViewResult<Response> {
+	response(
+		service
+			.set_credential_maximum(actor, origin, tenant, input)
+			.await,
+	)
+}
+
+#[get(
 	"/api/tenants/{tenant}/administration",
 	name = "tenant-administration",
 	auth = "protected"

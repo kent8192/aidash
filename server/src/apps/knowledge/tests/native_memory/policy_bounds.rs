@@ -1327,6 +1327,7 @@ pub(super) async fn run_visible(
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
 			scratch_policy: Default::default(),
+			credential_max_seconds: 90 * 24 * 60 * 60,
 		},
 		client: reqwest::Client::new(),
 		notify: Arc::new(tokio::sync::Notify::new()),

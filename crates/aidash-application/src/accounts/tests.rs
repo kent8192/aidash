@@ -140,6 +140,7 @@ fn fixture(now: DateTime<Utc>) -> Fixture {
 			status: AccountStatus::Active,
 			session_epoch: 0,
 			suspension_epoch: 0,
+			resumable_suspension_epochs: Vec::new(),
 		},
 	);
 	state.accounts.insert(
@@ -149,6 +150,7 @@ fn fixture(now: DateTime<Utc>) -> Fixture {
 			status: AccountStatus::Active,
 			session_epoch: 0,
 			suspension_epoch: 0,
+			resumable_suspension_epochs: Vec::new(),
 		},
 	);
 	for (number, first_account, linked) in [
@@ -284,6 +286,45 @@ async fn fresh_proofs_are_required_and_cannot_be_replayed(fixture: Fixture) {
 // Catches product-admin escalation, resurrected sessions, and cross-source stop.
 #[rstest::rstest]
 #[tokio::test]
+async fn restoration_records_only_the_suspension_epochs_explicitly_authorized(fixture: Fixture) {
+	let f = fixture;
+	f.service()
+		.suspend(Administrator::Authentication, id(10), f.now)
+		.await
+		.unwrap();
+	f.service()
+		.restore(Administrator::Authentication, id(10), false)
+		.await
+		.unwrap();
+	assert!(
+		f.store.0.lock().await.accounts[&id(10)]
+			.resumable_suspension_epochs
+			.is_empty()
+	);
+	f.service()
+		.suspend(Administrator::Authentication, id(10), f.now)
+		.await
+		.unwrap();
+	f.service()
+		.restore(Administrator::Authentication, id(10), true)
+		.await
+		.unwrap();
+	assert_eq!(
+		f.store.0.lock().await.accounts[&id(10)].resumable_suspension_epochs,
+		vec![2]
+	);
+	f.service()
+		.restore(Administrator::Authentication, id(10), true)
+		.await
+		.unwrap();
+	assert_eq!(
+		f.store.0.lock().await.accounts[&id(10)].resumable_suspension_epochs,
+		vec![2]
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn account_stops_need_auth_admin_and_restore_does_not_revive_sessions(fixture: Fixture) {
 	let f = fixture;
 	f.session(30, 1).await;
@@ -312,7 +353,7 @@ async fn account_stops_need_auth_admin_and_restore_does_not_revive_sessions(fixt
 		Validity::Denied(Denial::AccountSuspended)
 	);
 	f.service()
-		.restore(Administrator::Authentication, id(10))
+		.restore(Administrator::Authentication, id(10), false)
 		.await
 		.unwrap();
 	assert_eq!(
