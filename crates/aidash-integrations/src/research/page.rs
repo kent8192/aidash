@@ -131,9 +131,6 @@ impl PageReader {
 
 #[async_trait]
 impl PageProvider for PageReader {
-	fn deployment_hosted(&self) -> bool {
-		true
-	}
 	fn admit(&self, url: &Url) -> Result<(), Failure> {
 		(self.admit)(url)
 	}

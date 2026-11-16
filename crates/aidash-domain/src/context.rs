@@ -11,21 +11,49 @@ pub struct MessageReadCoverage {
 	pub ranges: Vec<[usize; 2]>,
 }
 
-/// The contract marker of a revoked research result placeholder, which no
-/// other tool result carries (ADR 0046).
+/// The contract marker of a revoked research result placeholder (ADR 0046).
+/// Nothing writes one since #987 removed Research evidence; a Context Journal
+/// recorded before then may still hold one.
 pub const REVOKED_RESULT_CONTRACT: &str = "aidash.research.revoked/1";
 /// Marks the placeholder of a research result the Research account terms no
-/// longer keep (ADR 0058).
+/// longer kept (ADR 0058). Like the revoked placeholder, only a Context
+/// Journal recorded before #987 may hold one.
 pub const EXPIRED_RESULT_CONTRACT: &str = "aidash.research.expired/1";
 
 /// One Context Projection event with its durable Context Journal sequence.
 /// The journal keeps the original event; the projection may later truncate it.
-#[derive(Debug, Clone, PartialEq, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct HistoryEntry {
 	pub seq: u64,
 	pub event: ContextEvent,
-	#[schemars(skip)]
-	pub research: Option<research::ResearchReference>,
+}
+
+impl HistoryEntry {
+	pub fn new(seq: u64, event: ContextEvent) -> Self {
+		Self { seq, event }
+	}
+	/// Canonical durable bytes of the event.
+	pub fn durable_event(&self) -> Value {
+		serde_json::to_value(&self.event).expect("ContextEvent is JSON")
+	}
+}
+
+impl<'de> Deserialize<'de> for HistoryEntry {
+	fn deserialize<D: serde::Deserializer<'de>>(
+		deserializer: D,
+	) -> std::result::Result<Self, D::Error> {
+		#[derive(Deserialize)]
+		#[serde(deny_unknown_fields)]
+		struct Stored {
+			seq: u64,
+			event: ContextEvent,
+			/// Written before #987 next to an escaped Research reference.
+			#[serde(default, rename = "inline_result")]
+			_inline_result: bool,
+		}
+		let stored = Stored::deserialize(deserializer)?;
+		Ok(Self::new(stored.seq, stored.event))
+	}
 }
 
 /// Context Journal position. Entries up to `imported_through` were recovered
@@ -68,16 +96,6 @@ pub struct Context {
 	/// one is readable again.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub revoked_summary_dependencies: Option<summary::SummaryDependencies>,
-	/// The Run's Research evidence was revoked (ADR 0046). Its research results
-	/// are placeholders here and no Execution Summary holds them; the Context
-	/// Journal keeps the immutable references.
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
-	pub research_revoked: bool,
-	/// The latest purge under the Research account terms already applied
-	/// here (ADR 0058): research results it expired are placeholders and no
-	/// Execution Summary holds them. A purge after it is applied next.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
 	/// The smallest journal sequence whose content was replaced because it
 	/// was revoked or expired. Model Turns from it on never resend their
 	/// recorded reasoning, which may quote that content (#942). It only ever
@@ -153,10 +171,12 @@ struct StoredContext {
 	execution_summary: Option<Box<summary::ExecutionSummary>>,
 	#[serde(default)]
 	revoked_summary_dependencies: Option<summary::SummaryDependencies>,
-	#[serde(default)]
-	research_revoked: bool,
-	#[serde(default)]
-	research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
+	/// Written before #987; ignored.
+	#[serde(default, rename = "research_revoked")]
+	_research_revoked: bool,
+	/// Written before #987; ignored.
+	#[serde(default, rename = "research_expired_through")]
+	_research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
 	#[serde(default)]
 	reasoning_withheld_from_seq: Option<u64>,
 	#[serde(default, rename = "summary")]
@@ -264,8 +284,6 @@ impl<'de> Deserialize<'de> for Context {
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
 			revoked_summary_dependencies: stored.revoked_summary_dependencies,
-			research_revoked: stored.research_revoked,
-			research_expired_through: stored.research_expired_through,
 			reasoning_withheld_from_seq: stored.reasoning_withheld_from_seq,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
@@ -298,13 +316,6 @@ impl Context {
 		self.journal.head += 1;
 		self.history
 			.push(HistoryEntry::new(self.journal.head, event));
-	}
-
-	/// Append a tool result with its durable invocation identity.
-	pub fn push_invocation(&mut self, event: ContextEvent, invocation: &str) {
-		self.journal.head += 1;
-		self.history
-			.push(HistoryEntry::new(self.journal.head, event).with_invocation(invocation));
 	}
 
 	/// Append a Completion Gate repair request. Each repair reruns its Check,
@@ -1231,7 +1242,6 @@ pub mod journal_export;
 pub mod journal_query;
 pub mod policy;
 pub mod recovery;
-pub mod research;
 pub mod summary;
 
 #[cfg(test)]

@@ -21,7 +21,6 @@ pub mod provider_authorization;
 pub mod provider_credentials;
 pub mod recovery;
 pub mod research;
-pub mod retention;
 pub mod route_refusal;
 pub mod safety_stop;
 pub mod scratch;

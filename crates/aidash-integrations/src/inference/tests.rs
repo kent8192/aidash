@@ -1671,7 +1671,6 @@ fn provider_tools_activity_survives_acceptance_and_model_authored_history() {
 		],
 		reasoning: None,
 	});
-	assert!(context.history.iter().all(|entry| entry.research.is_none()));
 	let restored = serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();
 	let native = aidash_domain::projection::native::native_context(&restored, &json!({}));
 	let request = ModelRequest {

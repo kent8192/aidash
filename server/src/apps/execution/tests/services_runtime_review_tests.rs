@@ -72,7 +72,6 @@ async fn interruption_store(
 		plugin_sessions: crate::store::plugin_sessions(&keyless, &tool_clients),
 		keyless,
 		egress: Default::default(),
-		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 		data_protection_floor: aidash_domain::data_protection::Level::LOWEST,
 		test_limit_ceilings: Default::default(),
 		preview_limits: Default::default(),

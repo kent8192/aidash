@@ -271,12 +271,8 @@ pub(crate) async fn execute(
 		return Err(Error::Invalid("JOURNAL_EXPORT_LIMIT".into()));
 	}
 	let output_limit = (profile.output_bytes as usize).min(16 * 1024);
-	let dependency_bytes = serde_json::to_vec(&snapshot.dependencies)?.len();
-	if dependency_bytes.saturating_add(2048) >= output_limit {
-		return Err(Error::Invalid("JOURNAL_DEPENDENCIES_LIMIT".into()));
-	}
 	// A JSON control character can require six bytes in the Data envelope.
-	let text_limit = (output_limit - dependency_bytes - 2048) / 6;
+	let text_limit = (output_limit - 2048) / 6;
 	let mut access =
 		crate::apps::identity::services::execution::access_for_run(store, &run.metadata(), true)
 			.await?
@@ -394,7 +390,7 @@ pub(crate) async fn execute(
 			.request("GET", &format!("/v1/operations/{operation}"), None)
 			.await?;
 	}
-	let mut output = match runner::output(&observed, text_limit) {
+	let output = match runner::output(&observed, text_limit) {
 		Ok(output) => output,
 		Err(error) => {
 			if matches!(
@@ -406,10 +402,6 @@ pub(crate) async fn execute(
 			return Err(error);
 		}
 	};
-	if !snapshot.dependencies.is_empty() {
-		output["research_derived"] = json!(true);
-	}
-	output["dependencies"] = json!(snapshot.dependencies);
 	// Recheck the Journal the cell actually read: the same target Run and
 	// authorized range as the snapshot above. A reader that lost the target
 	// meanwhile gets nothing built from it either.

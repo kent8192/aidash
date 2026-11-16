@@ -1969,9 +1969,6 @@ mod deferred_exposure_tests;
 #[path = "core_capabilities/completion_gate.rs"]
 mod completion_gate_tests;
 
-#[path = "core_capabilities/web_research.rs"]
-mod web_research_tests;
-
 #[path = "core_capabilities/journal_query.rs"]
 mod journal_query_tests;
 

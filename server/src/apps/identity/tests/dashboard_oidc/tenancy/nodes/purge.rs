@@ -208,7 +208,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			},
 		)
 		.await;
-	// Observation and Research bodies follow the executing Run, including
+	// Observation bodies follow the executing Run, including
 	// when its Workspace belongs to the other Node. Tenant settings survive.
 	use reinhardt::db::orm::execution::convert_values;
 	let mut tx = d
@@ -218,16 +218,11 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.begin(&aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap())
 		.await
 		.unwrap();
-	let research = json!({"contract":aidash_domain::research::RESULT_CONTRACT,
-		"operation":"search","data":{"sources":[],"content":"private research"}});
-	let research_reference =
-		aidash_domain::context::research::ResearchReference::from_result("fixture", &research)
-			.unwrap();
 	for (run, workspace, credential) in [
 		(target_run, work[1].0, target_credential),
 		(sibling_run, work[0].0, sibling_credential),
 	] {
-		let rows: [(&str, Vec<&str>, Vec<reinhardt::query::Value>); 4] = [
+		let rows: [(&str, Vec<&str>, Vec<reinhardt::query::Value>); 3] = [
 			(
 				"approval_observations",
 				vec![
@@ -298,29 +293,6 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 					"tool".into(),
 					run.into(),
 					"human_allow".into(),
-					chrono::Utc::now().into(),
-				],
-			),
-			(
-				"research_journal_results",
-				vec![
-					"id",
-					"tenant",
-					"run_id",
-					"invocation_key",
-					"digest",
-					"reference",
-					"bytes",
-					"created_at",
-				],
-				vec![
-					run.into(),
-					tenant.clone().into(),
-					run.into(),
-					"fixture".into(),
-					research_reference.digest.clone().into(),
-					json!(research_reference).into(),
-					serde_json::to_vec(&research).unwrap().into(),
 					chrono::Utc::now().into(),
 				],
 			),
@@ -647,7 +619,6 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		("approval_observations", "id"),
 		("approval_observation_attempts", "id"),
 		("approval_observation_population", "approval"),
-		("research_journal_results", "id"),
 	] {
 		for (run, expected) in [(target_run, 0), (sibling_run, 1)] {
 			let count = Query::select()

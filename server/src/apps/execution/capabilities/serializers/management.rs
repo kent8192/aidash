@@ -19,8 +19,8 @@ pub struct MaterializedFile {
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct ApprovalCard {
 	pub id: Uuid,
-	/// `outbound` (an outbound read), `disclosure` (a Web disclosure),
-	/// `tool_call` (a call of a Tenant's tool) or `grant` (a Run grant).
+	/// `outbound` (an outbound read), `tool_call` (a call of a Tenant's tool
+	/// or of page reading), `sampling` or `grant` (a Run grant).
 	pub kind: String,
 	pub run_id: Uuid,
 	pub area_id: Option<Uuid>,
@@ -31,16 +31,12 @@ pub struct ApprovalCard {
 	pub action: String,
 	pub expires_at: Option<DateTime<Utc>>,
 	pub grant_id: Option<Uuid>,
-	/// For a Web disclosure approval, the exact query or page address that
-	/// would leave the Node.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub disclosure: Option<String>,
 	/// Whether the reader acts on this card as an Eligible approver: for a
 	/// pending approval, they may decide it now (ADR 0135); for a Run grant, they
 	/// may approve its kind for its destination now; for another approval, they
 	/// decided or gave it and still may approve it. Either way they may revoke it.
 	pub viewer_is_approver: bool,
-	/// The card is a pending outbound, disclosure or tool call approval that
+	/// The card is a pending outbound or tool call approval that
 	/// the reader decides as its requester and the person at the root of the
 	/// Run's delegation chain, so the Thread may offer it inline.
 	pub viewer_can_decide_inline: bool,
@@ -57,9 +53,7 @@ pub struct ApprovalCard {
 	/// `version` then hold the tool's path and the copy's digest.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub plugin_tool: Option<PluginToolCard>,
-	/// The research operation of a Web disclosure approval, or of the
-	/// approval a Web disclosure Run grant came from; for a Tool call
-	/// approval, the operation of the tool the call invokes.
+	/// For a Tool call approval, the operation of the tool the call invokes.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub operation: Option<String>,
 	/// For a Tool call approval, the exact call the approver is asked to allow.
@@ -69,17 +63,6 @@ pub struct ApprovalCard {
 	pub sampling_target: Option<aidash_domain::agent_plugin::interaction::SamplingTarget>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub sampling: Option<aidash_domain::agent_plugin::interaction::SamplingRequest>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub provider: Option<String>,
-	/// The price of this one request, recorded when approval was requested
-	/// and charged to the Research account holder: an estimate, not an
-	/// invoice. Absent for a provider without a price. The account itself is
-	/// kept with the approval for audit and never shown.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub estimated_micro_usd: Option<i64>,
-	/// The validated search query in provider-independent form.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub query: Option<serde_json::Value>,
 	pub decided_by: Option<String>,
 	pub decided_at: Option<DateTime<Utc>>,
 	/// What gave the approval in advance, under its owner's name: `{"rule": id}`
@@ -99,8 +82,7 @@ pub struct ApprovalCard {
 	/// Run's delegation chain starts at, the approval is still pending and its
 	/// kind can have a rule.
 	pub allow_always: bool,
-	/// Why a `closed` approval or Run grant was closed, such as
-	/// `evidence_revoked` or `run_ended`.
+	/// Why a `closed` approval or Run grant was closed, such as `run_ended`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub closed_reason: Option<String>,
 }

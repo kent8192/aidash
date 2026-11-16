@@ -1,81 +1,43 @@
-//! Host-owned Web research contract. Provider packages perform Web search or
-//! Page reading; the host validates their output, retains Research evidence and
-//! checks Source citations. Nothing here names a provider or a Model alias.
+//! Page reading: one public Web page, read again on every call and returned
+//! in bounded parts. Nothing is kept beyond the Run's Context Journal (#987).
+//! The module keeps the `research` name only because the built-in it serves,
+//! `research.page@1`, keeps its stored identifier.
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub mod account;
-pub mod citations;
+pub mod address;
 pub mod document;
-pub mod evidence;
-pub mod expiry;
 pub mod intent;
-pub mod revocation;
-pub mod search;
 
-/// Upper bound of one research result as recorded in a Run's history.
+/// Upper bound of one page reading result as recorded in a Run's history.
 pub const MAX_RESULT_BYTES: usize = 32 * 1024;
 
-/// The host operations of the research contract. A provider package declares
-/// which of them it implements; the operation, not the alias, selects the
-/// host behavior.
+/// The one operation of page reading. The enum keeps the stored `fetch` name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
-	/// Web search: discovers Source records, never evidence.
-	Search,
-	/// Page reading: retrieves one Document snapshot and delivers fragments.
+	/// Page reading: reads one page and returns one part of its text.
 	Fetch,
-	/// Locates passages in a retained Document snapshot. No disclosure.
-	Find,
-	/// Renders a page that carries no text from a retained original as an
-	/// image for the Run's model (ADR 0053). No disclosure.
-	View,
 }
 
 impl Operation {
-	/// Every operation, for redaction that must miss none of their results.
-	pub const ALL: [Self; 4] = [Self::Search, Self::Fetch, Self::Find, Self::View];
 	pub fn parse(operation: &str) -> Option<Self> {
-		Some(match operation {
-			"search" => Self::Search,
-			"fetch" => Self::Fetch,
-			"find" => Self::Find,
-			"view" => Self::View,
-			_ => return None,
-		})
+		(operation == "fetch").then_some(Self::Fetch)
 	}
 	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Search => "search",
-			Self::Fetch => "fetch",
-			Self::Find => "find",
-			Self::View => "view",
-		}
-	}
-	/// Search and fetch send Run-derived content outside the Node.
-	pub fn discloses(self) -> bool {
-		matches!(self, Self::Search | Self::Fetch)
+		"fetch"
 	}
 }
 
-/// Stable failure codes of the research contract. Explanations never contain
-/// provider response bodies or credentials.
+/// Stable failure codes of page reading. Explanations never contain response
+/// bodies or credentials.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
-	DataProtectionRefused,
 	InvalidInput,
-	UnknownSource,
-	UnknownDocument,
-	InvalidCursor,
-	DisclosureDenied,
+	/// The page has fewer parts than the one asked for.
+	NoSuchPart,
 	NonPublicDestination,
-	AttemptLimit,
-	SourceLimit,
-	SnapshotLimit,
-	BudgetExhausted,
-	AccountUnavailable,
 	ProviderAuth,
 	RateLimited,
 	ProviderUnavailable,
@@ -84,56 +46,27 @@ pub enum Failure {
 	ResponseTooLarge,
 	UnsupportedMedia,
 	ExtractionFailed,
-	/// A PDF that opens only with a password.
+	/// The document opens only with a password.
 	EncryptedDocument,
-	/// A PDF whose permissions forbid extracting its text.
+	/// The document's permissions forbid extracting its text.
 	ExtractionNotPermitted,
-	/// The page is not one of the document's pages that carry no text.
-	PageNotViewable,
-	/// The document's original is not retained, so its pages cannot be viewed.
-	OriginalNotRetained,
-	/// The Run viewed as many pages as it may.
-	ViewLimit,
-	/// The page could not be rendered within the image bounds.
-	RenderFailed,
-	/// The Run's model does not read images or has no current route for a
-	/// PNG, so it cannot view a page.
-	ImageInputRequired,
-	/// A page redirected to another host than the approved destination.
+	/// The page redirected to another host.
 	CrossHostRedirect,
-	/// A page redirected from https to an unencrypted address.
+	/// The page redirected from https to http.
 	InsecureRedirect,
 	Timeout,
 	TransportError,
 	ResponseStreamError,
-	/// A dispatched attempt has no recorded outcome; it is never repeated.
-	OutcomeUnknown,
-	/// The Document snapshot's contents were purged; read its Source again.
-	SnapshotPurged,
-	/// The Run's Research evidence was revoked; the Run can do no more research.
-	EvidenceRevoked,
-	/// The Research account terms no longer keep this result (ADR 0058).
-	ResultExpired,
-	/// The call was stopped before anything was sent, and no cause is given: the
-	/// Run's Subnode ended, which cancels the Run with it (ADR 0110).
+	/// The call was not carried out and nothing was sent.
 	Refused,
 }
 
 impl Failure {
 	pub fn code(self) -> &'static str {
 		match self {
-			Self::DataProtectionRefused => "data_protection_refused",
 			Self::InvalidInput => "invalid_input",
-			Self::UnknownSource => "unknown_source",
-			Self::UnknownDocument => "unknown_document",
-			Self::InvalidCursor => "invalid_cursor",
-			Self::DisclosureDenied => "disclosure_denied",
+			Self::NoSuchPart => "no_such_part",
 			Self::NonPublicDestination => "non_public_destination",
-			Self::AttemptLimit => "attempt_limit",
-			Self::SourceLimit => "source_limit",
-			Self::SnapshotLimit => "snapshot_limit",
-			Self::BudgetExhausted => "budget_exhausted",
-			Self::AccountUnavailable => "account_unavailable",
 			Self::ProviderAuth => "provider_auth",
 			Self::RateLimited => "rate_limited",
 			Self::ProviderUnavailable => "provider_unavailable",
@@ -144,44 +77,26 @@ impl Failure {
 			Self::ExtractionFailed => "extraction_failed",
 			Self::EncryptedDocument => "encrypted_document",
 			Self::ExtractionNotPermitted => "extraction_not_permitted",
-			Self::PageNotViewable => "page_not_viewable",
-			Self::OriginalNotRetained => "original_not_retained",
-			Self::ViewLimit => "view_limit",
-			Self::RenderFailed => "render_failed",
-			Self::ImageInputRequired => "image_input_required",
 			Self::CrossHostRedirect => "cross_host_redirect",
 			Self::InsecureRedirect => "insecure_redirect",
 			Self::Timeout => "timeout",
 			Self::TransportError => "transport_error",
 			Self::ResponseStreamError => "response_stream_error",
-			Self::OutcomeUnknown => "outcome_unknown",
-			Self::SnapshotPurged => "snapshot_purged",
-			Self::EvidenceRevoked => "evidence_revoked",
-			Self::ResultExpired => "result_expired",
 			Self::Refused => "refused",
 		}
 	}
 	fn explanation(self) -> &'static str {
 		match self {
-			Self::DataProtectionRefused => {
-				"The Research provider account terms do not meet the current Data Protection Level."
+			Self::InvalidInput => {
+				"The request needs an http(s) url and, optionally, a part of 1 or more."
 			}
-			Self::InvalidInput => "The request does not satisfy the research contract.",
-			Self::UnknownSource => "The source is not a Source record of this Run.",
-			Self::UnknownDocument => "The document is not a Document snapshot of this Run.",
-			Self::InvalidCursor => "The continuation does not belong to this request.",
-			Self::DisclosureDenied => "Web disclosure approval was denied or has expired.",
+			Self::NoSuchPart => "The page has fewer parts than the one asked for.",
 			Self::NonPublicDestination => "The destination is not a public Web address.",
-			Self::AttemptLimit => "The Run reached its research attempt limit.",
-			Self::SourceLimit => "The Run reached its Source record limit.",
-			Self::SnapshotLimit => "The Run reached its Document snapshot limit.",
-			Self::BudgetExhausted => "The search service account budget is exhausted.",
-			Self::AccountUnavailable => "The search service account terms are unavailable.",
-			Self::ProviderAuth => "The provider rejected the configured credential.",
-			Self::RateLimited => "The provider rate limit was reached.",
-			Self::ProviderUnavailable => "The provider is temporarily unavailable.",
-			Self::ProviderRequestRejected => "The provider rejected the request.",
-			Self::ProviderResponseInvalid => "The provider returned an invalid response.",
+			Self::ProviderAuth => "The page refused the request.",
+			Self::RateLimited => "The site's rate limit was reached.",
+			Self::ProviderUnavailable => "The site is temporarily unavailable.",
+			Self::ProviderRequestRejected => "The site rejected the request.",
+			Self::ProviderResponseInvalid => "The site returned an invalid response.",
 			Self::ResponseTooLarge => "The response exceeded the configured size limit.",
 			Self::UnsupportedMedia => "The page has an unsupported media type.",
 			Self::ExtractionFailed => "No readable text could be extracted from the page.",
@@ -189,59 +104,28 @@ impl Failure {
 			Self::ExtractionNotPermitted => {
 				"The document's permissions forbid extracting its text."
 			}
-			Self::PageNotViewable => {
-				"Only a page the document lists as carrying no text can be viewed."
-			}
-			Self::OriginalNotRetained => {
-				"The document is not retained, so its pages cannot be viewed."
-			}
-			Self::ViewLimit => "The Run reached its page view limit.",
-			Self::RenderFailed => "The page could not be rendered as an image.",
-			Self::ImageInputRequired => {
-				"Viewing a page needs a model that currently accepts PNG images."
-			}
 			Self::CrossHostRedirect => {
 				"The page redirected to another host; request that address in a new call."
 			}
 			Self::InsecureRedirect => "The page redirected from https to an unencrypted address.",
-			Self::Timeout => "The deadline expired; the provider outcome is unknown.",
-			Self::TransportError => "The transport failed; the provider outcome is unknown.",
-			Self::ResponseStreamError => {
-				"The response was interrupted; the provider outcome is unknown."
-			}
-			Self::OutcomeUnknown => {
-				"An earlier attempt of this call has no recorded outcome and is not repeated."
-			}
-			Self::SnapshotPurged => {
-				"The snapshot's contents are no longer retained; read its source again to continue."
-			}
-			Self::EvidenceRevoked => {
-				"This Run's Research evidence was revoked; it cannot be read, cited or extended."
-			}
-			Self::ResultExpired => {
-				"The research service's account terms no longer let this result be kept; search or read again to continue."
-			}
+			Self::Timeout => "The deadline expired before the page answered.",
+			Self::TransportError => "The connection to the site failed.",
+			Self::ResponseStreamError => "The response was interrupted.",
 			Self::Refused => "The call was not carried out and nothing was sent.",
 		}
 	}
 	pub fn retryable(self) -> bool {
-		matches!(self, Self::RateLimited | Self::ProviderUnavailable)
-	}
-	/// The provider may have performed the request; its cost is attributed.
-	pub fn uncertain(self) -> bool {
 		matches!(
 			self,
-			Self::Timeout | Self::TransportError | Self::ResponseStreamError | Self::OutcomeUnknown
+			Self::RateLimited | Self::ProviderUnavailable | Self::Timeout | Self::TransportError
 		)
 	}
 }
 
-/// Names the research result contract in every result, so a stored result is
-/// recognized as research by this field alone, never by fields an unrelated
-/// tool may also return.
-pub const RESULT_CONTRACT: &str = "aidash.research/1";
+/// Names the page reading result contract in every result.
+pub const RESULT_CONTRACT: &str = "aidash.page/1";
 
-/// The result envelope shared by every research operation.
+/// The result envelope of page reading.
 pub fn envelope(operation: Operation, status: &str, data: Value, truncated: bool) -> Value {
 	json!({
 		"contract": RESULT_CONTRACT,
@@ -253,13 +137,13 @@ pub fn envelope(operation: Operation, status: &str, data: Value, truncated: bool
 	})
 }
 
-/// A recoverable research error returned to the model as an ordinary result.
+/// A recoverable page reading error returned to the model as an ordinary result.
 pub fn failure(operation: Operation, failure: Failure) -> Value {
 	json!({
 		"contract": RESULT_CONTRACT,
 		"version": 1,
 		"operation": operation.as_str(),
-		"status": if failure.uncertain() { "uncertain" } else { "error" },
+		"status": "error",
 		"error": {
 			"code": failure.code(),
 			"explanation": failure.explanation(),
@@ -279,6 +163,30 @@ pub fn bounded(value: &str, max: usize) -> (&str, bool) {
 		end -= 1;
 	}
 	(&value[..end], true)
+}
+
+/// The text of a page split into parts of at most `max` bytes, at line breaks
+/// where a line fits and at character boundaries where it does not.
+pub fn parts(text: &str, max: usize) -> Vec<String> {
+	let mut parts = Vec::new();
+	let mut current = String::new();
+	for line in text.split_inclusive('\n') {
+		let mut line = line;
+		while current.len() + line.len() > max {
+			if !current.is_empty() {
+				parts.push(std::mem::take(&mut current));
+				continue;
+			}
+			let (head, _) = bounded(line, max);
+			parts.push(head.to_owned());
+			line = &line[head.len()..];
+		}
+		current.push_str(line);
+	}
+	if !current.is_empty() || parts.is_empty() {
+		parts.push(current);
+	}
+	parts
 }
 
 #[cfg(test)]

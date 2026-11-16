@@ -1,7 +1,4 @@
-//! Provider packages of the host-owned research contract. Each implements a
-//! research port; the host owns validation, evidence and citations.
-pub mod brave;
-pub mod fixture;
+//! Aidash's page reader, the one implementation of page reading (#987).
 pub mod page;
 pub mod pdf;
 

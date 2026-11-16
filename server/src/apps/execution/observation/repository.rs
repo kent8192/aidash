@@ -150,16 +150,6 @@ pub(super) async fn pending(
 			arguments: json!({"url":data["url"]}),
 			definition: json!({"operation":"network.get","method":"GET","targets":data["targets"]}),
 		},
-		"disclosure" if data["operation"] == "search" => PendingAction::WebSearch {
-			name: "web.search".into(),
-			arguments: json!({"query":data["query"],"content":data["content"]}),
-			definition: json!({"operation":data["operation"],"provider":data["provider"],"destination":data["destination"],"attribution":data["attribution"]}),
-		},
-		"disclosure" => PendingAction::PageReading {
-			name: "web.read".into(),
-			arguments: json!({"content":data["content"],"query":data["query"]}),
-			definition: json!({"operation":data["operation"],"provider":data["provider"],"destination":data["destination"],"attribution":data["attribution"]}),
-		},
 		_ => return Err(Error::Invalid("unsupported observed approval kind".into())),
 	})
 }
@@ -243,10 +233,8 @@ fn capability_kind(
 	record: &crate::apps::execution::capabilities::serializers::records::Record,
 ) -> ApprovalKind {
 	match record.kind.as_str() {
-		"tool_call" => ApprovalKind::ToolCall,
 		"outbound" => ApprovalKind::Outbound,
-		_ if record.data["operation"] == "search" => ApprovalKind::WebSearch,
-		_ => ApprovalKind::PageReading,
+		_ => ApprovalKind::ToolCall,
 	}
 }
 async fn capture_capability(
@@ -292,10 +280,8 @@ async fn capture_capability(
 		Ok(ref action) => (action.kind(), action.digest()?),
 		Err(_) => (
 			match record.kind.as_str() {
-				"tool_call" => ApprovalKind::ToolCall,
 				"outbound" => ApprovalKind::Outbound,
-				_ if record.data["operation"] == "search" => ApprovalKind::WebSearch,
-				_ => ApprovalKind::PageReading,
+				_ => ApprovalKind::ToolCall,
 			},
 			digest(&record.data),
 		),

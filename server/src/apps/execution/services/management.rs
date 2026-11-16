@@ -1,7 +1,6 @@
 //! Management use cases.
 use crate::{
 	Error, Result,
-	apps::execution::serializers::research::CitedEvidence,
 	apps::execution::serializers::runs::RunDetails,
 	apps::execution::serializers::state::StateResponse,
 	apps::federation::remote::serializers::actions::SentResponse,
@@ -29,11 +28,6 @@ use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
-use crate::apps::execution::repositories::research::Revocations;
-use crate::apps::execution::serializers::research::{
-	HistoryPage, RetentionInput, RevocationInput, RevocationRecord, TenantRetentionView,
-};
-use crate::apps::identity::repositories::retention::TenantRetention;
 use crate::apps::identity::services::http_auth::scoped;
 
 /// The one process-wide OpenRouter catalog, read by the model picker and by
@@ -295,182 +289,6 @@ impl HarnessManagement {
 		};
 		crate::apps::identity::services::execution::subnodes::dissolve(&self.runtime, &identity, id)
 			.await
-	}
-	/// One Source citation of a Run, for a reader who may read that Run now.
-	/// Every reason the reader cannot see it is the same `NotFound`.
-	pub(crate) async fn run_evidence(
-		&self,
-		actor: Actor,
-		run: Uuid,
-		reference: &str,
-	) -> Result<CitedEvidence> {
-		let f = self.runtime.clone();
-		let readers = crate::apps::execution::repositories::research::Readers {
-			federation: &f,
-			actor: &actor,
-		};
-		let Actor::Subject(identity) = &actor else {
-			return Err(Error::Forbidden);
-		};
-		let scope = identity.tenancy()?;
-		let store = crate::research::evidence_store(f.store.clone(), scope);
-		Ok(
-			aidash_application::research::reading::read(&readers, &store, run, reference)
-				.await?
-				.into(),
-		)
-	}
-	/// Revoke all of one Run's Research evidence (ADR 0046).
-	pub(crate) async fn research_revocation(
-		&self,
-		actor: Actor,
-		run: Uuid,
-		input: RevocationInput,
-	) -> Result<RevocationRecord> {
-		let f = self.runtime.clone();
-		let revocations = Revocations {
-			federation: &f,
-			actor: &actor,
-		};
-		if let Some(tenant) = &input.tenant {
-			aidash_domain::policy::identifier(tenant)?;
-		}
-		Ok(aidash_application::research::revocation::revoke(
-			&revocations,
-			run,
-			&input.reason,
-			input.tenant.as_deref(),
-			chrono::Utc::now(),
-		)
-		.await?
-		.into())
-	}
-	/// The revocation record of one Run, for the audience of its Tenant's
-	/// records.
-	pub(crate) async fn research_revocation_record(
-		&self,
-		actor: Actor,
-		run: Uuid,
-	) -> Result<RevocationRecord> {
-		let f = self.runtime.clone();
-		let revocations = Revocations {
-			federation: &f,
-			actor: &actor,
-		};
-		Ok(
-			aidash_application::research::revocation::record(&revocations, run)
-				.await?
-				.into(),
-		)
-	}
-	/// One Tenant's Evidence Revocation records, newest first.
-	pub(crate) async fn research_revocations(
-		&self,
-		actor: Actor,
-		tenant: String,
-		page: HistoryPage,
-	) -> Result<Vec<RevocationRecord>> {
-		aidash_domain::policy::identifier(&tenant)?;
-		let f = self.runtime.clone();
-		let revocations = Revocations {
-			federation: &f,
-			actor: &actor,
-		};
-		Ok(aidash_application::research::revocation::records(
-			&revocations,
-			&tenant,
-			page.offset,
-			page.limit,
-		)
-		.await?
-		.into_iter()
-		.map(Into::into)
-		.collect())
-	}
-	/// The Retention Rules that apply to one Tenant (ADR 0045).
-	pub(crate) async fn retention(
-		&self,
-		actor: Actor,
-		tenant: String,
-	) -> Result<TenantRetentionView> {
-		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor);
-		let retention = aidash_application::retention::rules(&repository, &tenant).await?;
-		self.retention_view(&actor, retention).await
-	}
-	/// What the caller may do about one Tenant's periods and its revocation
-	/// records, beside the periods themselves.
-	async fn retention_view(
-		&self,
-		actor: &Actor,
-		retention: aidash_application::retention::TenantRetention,
-	) -> Result<TenantRetentionView> {
-		let repository = self.retention_repository(actor);
-		let can_update =
-			aidash_application::retention::may_update(&repository, &retention.tenant).await?;
-		let can_read_revocations = self.may_read_revocations(actor, &retention.tenant).await?;
-		Ok(TenantRetentionView {
-			retention,
-			can_update,
-			// The same permission changes the periods and reads their history.
-			can_read_history: can_update,
-			can_read_revocations,
-		})
-	}
-	async fn may_read_revocations(&self, actor: &Actor, tenant: &str) -> Result<bool> {
-		let f = self.runtime.clone();
-		let revocations = Revocations {
-			federation: &f,
-			actor,
-		};
-		Ok(
-			aidash_application::research::revocation::may_read_records(&revocations, tenant)
-				.await?,
-		)
-	}
-	/// Store or clear one Tenant's own, shorter periods.
-	pub(crate) async fn retention_update(
-		&self,
-		actor: Actor,
-		tenant: String,
-		input: RetentionInput,
-	) -> Result<TenantRetentionView> {
-		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor);
-		// Nothing fallible may follow the commit, or a committed change would
-		// answer as an error and a retry would record it twice. The flags
-		// are therefore read first; the update itself proves the caller may
-		// update the periods and read their history.
-		let can_read_revocations = self.may_read_revocations(&actor, &tenant).await?;
-		let retention =
-			aidash_application::retention::update(&repository, &tenant, input.rules).await?;
-		Ok(TenantRetentionView {
-			retention,
-			can_update: true,
-			can_read_history: true,
-			can_read_revocations,
-		})
-	}
-	/// The history of one Tenant's periods, newest first.
-	pub(crate) async fn retention_history(
-		&self,
-		actor: Actor,
-		tenant: String,
-		page: HistoryPage,
-	) -> Result<Vec<aidash_domain::retention::RetentionChange>> {
-		aidash_domain::policy::identifier(&tenant)?;
-		let repository = self.retention_repository(&actor);
-		Ok(
-			aidash_application::retention::history(&repository, &tenant, page.offset, page.limit)
-				.await?,
-		)
-	}
-	fn retention_repository<'a>(&'a self, actor: &'a Actor) -> TenantRetention<'a> {
-		TenantRetention {
-			store: &self.runtime.store,
-			actor,
-			deployment: self.runtime.store.research_retention,
-		}
 	}
 	pub(crate) async fn run_control(
 		&self,
@@ -815,58 +633,6 @@ impl HarnessManagement {
 		lease.finish(result).await?;
 		f.notify.notify_waiters();
 		Ok(SentResponse { sent: true })
-	}
-	/// A Run's research usage, limits and estimated cost, for a reader who
-	/// may read that Run now, decided exactly as [`Self::run_get`] decides it.
-	pub(crate) async fn run_research(
-		&self,
-		actor: Actor,
-		id: Uuid,
-	) -> Result<crate::apps::execution::serializers::runs::RunResearch> {
-		let f = self.runtime.clone();
-		let Actor::Subject(identity) = &actor else {
-			return Err(Error::Forbidden);
-		};
-		let scope = identity.tenancy()?;
-		let readable = || async {
-			execution::details_page(&f, identity, id, 0).await?;
-			Ok::<_, crate::Error>(())
-		};
-		readable().await?;
-		let research = crate::apps::execution::repositories::research::run_research(
-			&f.store,
-			&scope,
-			id,
-			crate::research::providers().limits,
-		)
-		.await?;
-		let revocations = Revocations {
-			federation: &f,
-			actor: &actor,
-		};
-		let standing = aidash_application::research::revocation::standing(&revocations, id).await?;
-		// The research reads are separate transactions: authority revoked
-		// meanwhile withholds them, as for a cited fragment.
-		readable().await?;
-		Ok(crate::apps::execution::serializers::runs::RunResearch {
-			revoked_at: standing.revoked_at,
-			can_revoke: standing.may_revoke,
-			can_read_revocation: standing.may_read_record,
-			..research
-		})
-	}
-	/// The Research providers of this Deployment for a Tenant's subject.
-	pub(crate) async fn research_providers(
-		&self,
-		actor: Actor,
-		input: crate::apps::execution::serializers::runs::ResearchProvidersQuery,
-	) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
-		crate::apps::execution::capabilities::services::endpoints::research_providers(
-			self.runtime.clone(),
-			actor,
-			input,
-		)
-		.await
 	}
 }
 

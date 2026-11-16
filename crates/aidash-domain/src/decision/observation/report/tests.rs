@@ -179,7 +179,7 @@ fn reports_separate_effective_threshold_and_settings_revision_without_exposing_a
 		configuration_digest: digest(&serde_json::json!("config")),
 		definition_digest: digest(&serde_json::json!("definition")),
 		settings_revision: 1,
-		kind: ApprovalKind::WebSearch,
+		kind: ApprovalKind::Outbound,
 		operation_class: Some("read".into()),
 		effect_class: Some("external_read".into()),
 		route: Some(0),

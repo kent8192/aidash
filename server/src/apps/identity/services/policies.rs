@@ -1354,7 +1354,7 @@ impl PolicyAdministration {
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
 		tenant: String,
-		page: crate::apps::execution::serializers::research::HistoryPage,
+		page: crate::apps::execution::serializers::history::HistoryPage,
 	) -> Result<Vec<aidash_domain::safety_stop::Record>> {
 		let f = self.runtime.clone();
 		if matches!(actor, Actor::DeploymentAdministrator) {

@@ -175,26 +175,6 @@ pub struct ToolBehavior {
 	/// The output's `"exposure_update"` changes the Run's Exposure set.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub exposure_update: bool,
-	/// Research contract result kinds this operation yields. A Run that binds
-	/// any `Citations` operation has its final answer's Source citations checked.
-	#[serde(skip_serializing_if = "Vec::is_empty")]
-	pub yields: Vec<Yield>,
-	/// The provider sends Run-derived content outside the Node only after a
-	/// Web disclosure approval; the Run waits on it like any approval.
-	#[serde(skip_serializing_if = "std::ops::Not::not")]
-	pub disclosure_approval: bool,
-}
-
-/// Result kinds of the host-owned research contract, declared per operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Yield {
-	/// Source records from Web search; discovery only, never evidence.
-	Search,
-	/// A Document snapshot from Page reading.
-	Fetch,
-	/// Evidence fragments that a final answer may cite.
-	Citations,
 }
 impl ToolBehavior {
 	/// A call of a Tenant's HTTP or MCP tool, whose result is external data: it
@@ -218,21 +198,16 @@ impl ToolBehavior {
 			other => other,
 		}
 	}
-	pub fn yields(&self, kind: Yield) -> bool {
-		self.yields.contains(&kind)
-	}
 	pub fn model_media_result(&self, input: &Value, output: &Value) -> bool {
 		self.model_media_selection(input, output).is_some()
 	}
-	/// The model input selected by a completed file, Evidence, or Thread Attachment read.
+	/// The model input selected by a completed file or Thread Attachment read.
 	pub fn model_media_selection(
 		&self,
 		input: &Value,
 		output: &Value,
 	) -> Option<crate::media::ModelMedia> {
-		use crate::media::{
-			ModelFileSelection, ModelMedia, PageImageSelection, WorkingImageSelection,
-		};
+		use crate::media::{ModelFileSelection, ModelMedia, WorkingImageSelection};
 		if !(self.yields_model_media
 			|| self.fitting == Some(ResultFitting::WorkspaceRecord)
 				&& input["kind"] == "attachment")
@@ -283,21 +258,12 @@ impl ToolBehavior {
 			return (id == metadata_id && id == selection.attachment_id)
 				.then_some(ModelMedia::ThreadAttachment(selection));
 		}
-		let data = &output["data"];
-		(output["status"] == "ok")
-			.then(|| {
-				Some(ModelMedia::PageImage(PageImageSelection {
-					evidence_ref: data["evidence_ref"].as_str()?.to_owned(),
-					expected_digest: data["image"]["digest"].as_str()?.to_owned(),
-				}))
-			})
-			.flatten()
+		None
 	}
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolContract {
-	/// The model provider executes this capability inside inference. It yields
-	/// no Research evidence, so citation verification must still reject invented IDs.
+	/// The model provider executes this capability inside inference.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub provider_owned: bool,
 	pub identity: ToolIdentity,
@@ -307,10 +273,6 @@ pub struct ToolContract {
 	pub remote_exposure: bool,
 }
 impl ToolContract {
-	/// Provider-reported sources never authorize Aidash Source citations.
-	pub fn requires_citation_check(&self) -> bool {
-		self.provider_owned || self.behavior.yields(Yield::Citations)
-	}
 	pub fn replay_safe(&self) -> bool {
 		self.behavior.effect != ToolEffect::Unsafe
 	}
@@ -435,8 +397,6 @@ fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavi
 		read_only_operation: false,
 		concurrency: Concurrency::Sequential,
 		exposure_update: false,
-		yields: vec![],
-		disclosure_approval: false,
 	}
 }
 
@@ -464,8 +424,6 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
-			yields: vec![],
-			disclosure_approval: false,
 		},
 		disclosure: DisclosureBoundary::Home,
 		remote_exposure: false,
@@ -947,10 +905,8 @@ mod tests {
 		);
 	}
 	#[test]
-	fn research_attributes_leave_admitted_builtin_digests_unchanged() {
-		// Admitted Runs pin `provider_contract_digest` over these bytes; the
-		// research `yields` and `disclosure_approval` attributes are omitted
-		// when empty, so existing contracts keep their digests.
+	fn admitted_builtin_digests_stay_unchanged() {
+		// Admitted Runs pin `provider_contract_digest` over these bytes.
 		let contract = builtin_contract("workspace_read")
 			.unwrap()
 			.pinned(PINNED_WORKSPACE_READ_DIGEST)

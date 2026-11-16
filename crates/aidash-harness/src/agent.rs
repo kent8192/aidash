@@ -20,7 +20,6 @@ use aidash_domain::{
 	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
 	provider::usage::{ShadowEstimate, UsageDispatch, UsageOutcome, UsagePurpose},
 	registry::bindings::{AgentBindings, BindingSnapshot},
-	research::citations,
 	semantic::{Failure, InputRead},
 	tool::{
 		AuthorityRefusal, Continuation, DO_NOT_REPEAT, RefusalCheck, RefusedCall, RefusedToolCall,
@@ -407,21 +406,10 @@ impl<'a> Executor<'a> {
 			let call = &calls[cursor + offset];
 			let denial = denied[offset].take();
 			match outcome.status.as_str() {
-				// As on the sequential path, a revoked call's journaled result
-				// never crosses into the Context Journal.
 				"COMPLETED" => {
 					let result = outcome.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?;
-					let result = if aidash_domain::research::revocation::result_operation(&result)
-						.is_some()
-					{
-						store
-							.invocation_finish(run, token, &keys[offset], &result)
-							.await?
-					} else {
-						result
-					};
 					outputs[offset] =
 						Some(denial.map_or(result, |message| json!({"error":message})));
 					continue;
@@ -481,8 +469,6 @@ impl<'a> Executor<'a> {
 						.await?
 					}
 				};
-				// The stored result replaces a research result whose account
-				// terms ended meanwhile (ADR 0058).
 				let output = store
 					.invocation_finish(admitted, token, key, &output)
 					.await?;
@@ -565,7 +551,7 @@ impl<'a> Executor<'a> {
 			let event = ContextEvent::tool(call.clone(), output.clone());
 			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 			let growth = context::tool_event_growth(&context, &event);
-			context.push_invocation(event, &keys[offset]);
+			context.push(event);
 			let result_seq = context.journal.head;
 			aidash_application::context::offload::note_journal_result(
 				&mut context,
@@ -772,43 +758,6 @@ impl<'a> Executor<'a> {
 		)
 		.await
 	}
-	/// The answer's Source citations and the cited references the Run's
-	/// evidence store does not hold, when the Run binds an operation that
-	/// declares `yields: Citations` or exposes provider-owned tools. The latter
-	/// may report sources but cannot grant evidence authority.
-	async fn citation_check(
-		&self,
-		run: &Run,
-		tools: &Tools,
-		text: &str,
-	) -> Result<Option<(citations::Citations, Vec<citations::EvidenceRef>)>> {
-		if !tools
-			.values()
-			.any(|tool| tool.contract().requires_citation_check())
-		{
-			return Ok(None);
-		}
-		let found = citations::citations(text);
-		if found.is_empty() {
-			return Ok(None);
-		}
-		let unknown = self
-			.environment
-			.store()
-			.unknown_evidence(run, &found.references)
-			.await?;
-		Ok(Some((found, unknown)))
-	}
-	/// Text published before the final answer is never corrected, so text
-	/// citing evidence the Run never received is not published at all.
-	async fn cites_invalid_evidence(&self, run: &Run, tools: &Tools, text: &str) -> Result<bool> {
-		Ok(self
-			.citation_check(run, tools, text)
-			.await?
-			.is_some_and(|(found, unknown)| {
-				citations::verdict(&found, &unknown, true) != citations::Verdict::Accept
-			}))
-	}
 	/// Record a provider-proven Context Overflow and re-enter Thinking with a
 	/// smaller effective window, or pause once the bounded allowance is spent
 	/// or the retried request did not shrink. Only recovery state is saved.
@@ -926,25 +875,6 @@ impl<'a> Executor<'a> {
 		// main request's room for reasoning on top of the summary.
 		let mut continuation = None;
 		if fitting.native() {
-			// As before the main request: Research revoked or expired since
-			// the step began must reach no provider, so the step is redone
-			// from the redacted projection (ADR 0046, ADR 0058).
-			if aidash_application::research::revocation::may_carry_research(&run.context)
-				&& !run.context.research_revoked
-			{
-				let expired = store.expired_research(run).await?;
-				let fresh =
-					!expired.is_empty() && expired.through > run.context.research_expired_through;
-				if store.research_revoked(run).await? {
-					self.apply_research_revocation(run).await?;
-					store.save_run(run, token, "run.research_revoked").await?;
-					return Ok(());
-				}
-				if fresh && self.apply_research_expiry(run).await? {
-					store.save_run(run, token, "run.research_expired").await?;
-					return Ok(());
-				}
-			}
 			let output = max_tokens
 				.saturating_add(model_cfg.output_token_limit())
 				.min(model_cfg.provider_max_output_tokens.unwrap_or(u32::MAX));
@@ -1397,49 +1327,6 @@ impl<'a> Executor<'a> {
 			.await?;
 		Err(Error::Forbidden)
 	}
-	/// Revoked Research evidence never reaches a model provider again, not even
-	/// inside an Execution Summary (ADR 0046). Once the Run's evidence is
-	/// revoked, every research result in the projection becomes a placeholder,
-	/// and an Execution Summary that absorbed any is discarded: its range is
-	/// restored from the Context Journal and redacted the same way. Unlike a
-	/// revoked summary source this never pauses, because revoked evidence is
-	/// never readable again and the Run continues without research. The
-	/// Context Journal retains immutable references whose owned bytes are removed.
-	async fn apply_research_revocation(&self, run: &mut Run) -> Result<()> {
-		use aidash_application::research::revocation;
-		let store = self.environment.store();
-		if !run.context.research_revoked
-			&& (!revocation::may_carry_research(&run.context)
-				|| !store.research_revoked(run).await?)
-		{
-			return Ok(());
-		}
-		revocation::revoke_projection(
-			&mut run.context,
-			&revocation::RunJournal { store, run: run.id },
-		)
-		.await
-	}
-	/// Provider results the Research account terms no longer keep never reach
-	/// a model provider again (ADR 0058). Each research result built from one
-	/// becomes the expired placeholder, keeping its call's arguments, and an
-	/// Execution Summary that absorbed one is discarded and its range
-	/// restored from the Context Journal, without pausing. A revoked Run's
-	/// results are placeholders already.
-	async fn apply_research_expiry(&self, run: &mut Run) -> Result<bool> {
-		use aidash_application::research::{account_terms, revocation};
-		if run.context.research_revoked || !revocation::may_carry_research(&run.context) {
-			return Ok(false);
-		}
-		let store = self.environment.store();
-		let expired = store.expired_research(run).await?;
-		account_terms::expire_projection(
-			&mut run.context,
-			&expired,
-			&revocation::RunJournal { store, run: run.id },
-		)
-		.await
-	}
 	pub async fn advance(
 		&self,
 		run: &mut Run,
@@ -1583,7 +1470,6 @@ impl<'a> Executor<'a> {
 			.get_for_run(&*run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent = self.environment.agent(&entry)?;
-		store.resolve_research(run).await?;
 		// Separate phase poll frames to keep typed execution within the default worker stack.
 		match run.state.clone() {
 			RunState::Ready(_) => {
@@ -1671,8 +1557,6 @@ impl<'a> Executor<'a> {
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
-				self.apply_research_revocation(run).await?;
-				self.apply_research_expiry(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
@@ -1718,10 +1602,6 @@ impl<'a> Executor<'a> {
 						);
 						run.context.estimate.snapshot = Some(snapshot);
 						store.pin_estimate(run, token).await?;
-						// The saved projection contains immutable Research
-						// references. Restore model-visible values before any
-						// fitting or request construction uses the reloaded Run.
-						store.resolve_research(run).await?;
 						snapshot
 					}
 					None => EstimateSnapshot::conservative(run.step),
@@ -2075,9 +1955,6 @@ impl<'a> Executor<'a> {
 				if let Some(deferred_observation) = &thinking.deferred_workspace_observation {
 					pinned["deferred_workspace_observation"] = json!(deferred_observation);
 				}
-				let withhold_answer_text = tools
-					.values()
-					.any(|tool| tool.contract().requires_citation_check());
 				let mut specifications = tools
 					.iter()
 					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
@@ -2501,21 +2378,6 @@ impl<'a> Executor<'a> {
                     }
                 }
 
-				// Building the request awaited many reads, and evidence revoked
-				// meanwhile must not reach the provider: decide once more right
-				// before dispatch, and redo the step from the redacted projection.
-				if !run.context.research_revoked
-					&& aidash_application::research::revocation::may_carry_research(&context)
-					&& store.research_revoked(run).await?
-				{
-					self.apply_research_revocation(run).await?;
-					store.save_run(run, token, "run.research_revoked").await?;
-					return Ok(());
-				}
-				if self.apply_research_expiry(run).await? {
-					store.save_run(run, token, "run.research_expired").await?;
-					return Ok(());
-				}
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
@@ -2591,7 +2453,7 @@ impl<'a> Executor<'a> {
 				}
 				let started = tokio::time::Instant::now();
 				let progress =
-					progress::ProgressBuffer::withholding_text(started, withhold_answer_text);
+					progress::ProgressBuffer::withholding_text(started, false);
 				// Summary text may depend on a source revoked while the provider
 				// runs, and stored progress is served live and on replay. Such a
 				// Run's progress is held until the sources are rechecked after
@@ -3118,26 +2980,15 @@ connection: None,
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
-				// Text beside calls that cites evidence the Run never received is
-				// not published, and its Model Turn records no text, so Context
-				// inspection never shows what the gate withheld.
-				let withheld = !result.tool_calls.is_empty()
-					&& self.cites_invalid_evidence(run, &tools, &result.text).await?;
-				if !run_message_catchup
-					&& !result.tool_calls.is_empty()
-					&& informed_response
-					&& !withheld
-				{
+				if !run_message_catchup && !result.tool_calls.is_empty() && informed_response {
 					self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 						.await?;
 				}
 				if cursor >= result.tool_calls.len() {
 					// Preserve what the model learned from a selected Thread Attachment
 					// without advancing the cursor reserved for human Run inputs.
-					if !withheld
-						&& !result.text.trim().is_empty()
+					if !result.text.trim().is_empty()
 						&& run.state.tool()?.inferred_selected_media.iter().any(|media| matches!(media, aidash_domain::media::ModelMedia::ThreadAttachment(_)))
-						&& (!result.tool_calls.is_empty() || !self.cites_invalid_evidence(run, &tools, &result.text).await?)
 					{
 						let mut context = run.context.clone();
 						record_media_observation(&mut context, &result.text, None, media_observation_budget(run.state.tool()?));
@@ -3177,12 +3028,8 @@ connection: None,
 							unassigned::ChildrenDecision::Finish => Vec::new(),
 							unassigned::ChildrenDecision::FinishAbandoning(tasks) => tasks,
 							held => {
-								// Not the final answer: gated like text beside calls.
-								let withheld = self
-									.cites_invalid_evidence(run, &tools, &result.text)
-									.await?;
 								let answer = Answer {
-									text: if withheld { "" } else { &result.text },
+									text: &result.text,
 									calls: &result.tool_calls,
 									delivered: false,
 								};
@@ -3200,43 +3047,6 @@ connection: None,
 								return Ok(());
 							}
 						};
-						// A final answer citing unknown evidence is corrected once, then
-						// withheld.
-						if let Some((found, unknown)) =
-							self.citation_check(run, &tools, &result.text).await?
-						{
-							{
-								// One correction per user input: a later turn's answer
-								// gets its own correction.
-								let corrected = run.context.events().any(|event| {
-									matches!(event, ContextEvent::CitationCorrectionRequired { through_seq, .. } if *through_seq == run.observed_input_seq)
-								});
-								// A correction needs another inference step; at the step
-								// limit the answer is withheld instead of failing the Run.
-								let no_step_left = run.step.saturating_add(1) >= agent.max_steps;
-								match citations::verdict(&found, &unknown, corrected || no_step_left) {
-									citations::Verdict::Accept => {}
-									citations::Verdict::Correct(invalid) => {
-										let mut context = run.context.clone();
-										context.push(ContextEvent::CitationCorrectionRequired {
-											invalid,
-											instruction: citations::CORRECTION_INSTRUCTION.into(),
-											through_seq: run.observed_input_seq,
-										});
-										run.context = context;
-										run.step += 1;
-										run.state = RunState::Thinking(ThinkingState::default());
-										store
-											.save_run(run, token, "run.citation_correction_required")
-											.await?;
-										return Ok(());
-									}
-									citations::Verdict::Withhold => {
-										result.text = citations::WITHHELD_ANSWER.into();
-									}
-								}
-							}
-						}
 						// The Completion Gate: current Verification Evidence for the
 						// exact mounted content, or no applicable Check (#112).
 						if let completion::Gate::Saved = self
@@ -3278,8 +3088,7 @@ connection: None,
 							store.save_run(run, token, "run.message_received").await?;
 							return Ok(());
 						}
-						// The final answer is a Model Turn without calls. The citation
-						// gate above already replaced a withheld answer.
+						// The final answer is a Model Turn without calls.
 						record_model_turn(
 							run,
 							agent.projection_version,
@@ -3347,7 +3156,7 @@ connection: None,
 				record_model_turn(
 					run,
 					agent.projection_version,
-					if withheld { "" } else { &result.text },
+					&result.text,
 					&result.tool_calls,
 				)?;
 				// Tool Batches run only in ordinary mode: no message catch-up, no
@@ -3520,9 +3329,15 @@ connection: None,
 							version: reference.version.clone(),
 						}),
 						ToolIdentity::Registry(reference) => ToolCallTarget::Registry(reference.clone()),
+						// Page reading is the one built-in that waits for a Tool call
+						// approval (#987).
+						ToolIdentity::Builtin(name) if name == aidash_domain::tool::providers::PAGE_READING_IDENTITY => {
+							ToolCallTarget::Registry(aidash_domain::tool::providers::page_reading_target())
+						}
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
 						ToolIdentity::AgentPlugin(tool) => ToolCallTarget::AgentPlugin(tool.clone()),
 					};
+					let page_reading = matches!(&contract.identity, ToolIdentity::Builtin(name) if name == aidash_domain::tool::providers::PAGE_READING_IDENTITY);
 					if home.local() {
 						let Some(guard) = guard else {
 							return self
@@ -3536,6 +3351,10 @@ connection: None,
 							call: call.clone(),
 							area: None,
 							read_only: contract.behavior.read_only_operation,
+							// Page reading's host comes from the conversation, so its
+							// Run grant covers one host until the next user input.
+							host: page_reading.then(|| aidash_application::research::page_host(&call.arguments)).flatten(),
+							context_revision: page_reading.then_some(run.observed_input_seq),
 						};
 						let mut outcome = guard.tool_call_approval(run, request.clone()).await?;
 						if let ToolCallApproval::Pending { approval_id, .. } = outcome {
@@ -3675,12 +3494,6 @@ connection: None,
                         other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, arguments: &call.arguments, index: cursor, replay_safe: contract.replay_safe() }, (other, note)).await?,
 					}
 				};
-                // Revalidate Research before deriving any media selection. A completed
-                // replay may now be a tombstone under expired account terms.
-                let research_result = aidash_domain::research::revocation::result_operation(&output).is_some();
-                let (output, unfinished_key) = if research_result {
-                    (store.invocation_finish(run, token, &key, &output).await?, None)
-                } else { (output, unfinished_key) };
 				let mut selection = contract.behavior.model_media_selection(&call.arguments, &output);
 				if matches!(selection, Some(aidash_domain::media::ModelMedia::WorkingImage(_))) {
 					let entry = self.environment.catalog()
@@ -3771,7 +3584,7 @@ connection: None,
 					progress.deferred_selected_media = selections[..deferred_count].to_vec();
 					progress.selected_media = selections[deferred_count..].to_vec();
 				}
-                let output = if invocation.status != "COMPLETED" && !research_result && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
+                let output = if invocation.status != "COMPLETED" && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
                 } else { output };
                 let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
@@ -3855,7 +3668,7 @@ connection: None,
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
-				context.push_invocation(event, &key);
+				context.push(event);
 				let result_seq = context.journal.head;
 				aidash_application::context::offload::note_journal_result(
 					&mut context, run.id, &contract, &call.arguments, &output, result_seq,
