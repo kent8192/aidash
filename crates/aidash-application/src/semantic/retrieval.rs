@@ -608,11 +608,14 @@ pub async fn context(
 	budget: usize,
 	agent: &AgentConfig,
 ) -> Result<Option<SearchResult>> {
-	workspace_context(scope, vector, run, query, budget, agent)
+	workspace_context(scope, vector, run, query, budget, agent, false)
 		.await?
 		.required()
 }
 
+/// `partial`: return the READY part of an incomplete index as
+/// [`WorkspaceContext::Partial`] for a step that may degrade (ADR 0129). A step
+/// that may not fails before embedding, so waiting costs no provider call.
 pub async fn workspace_context(
 	scope: &mut dyn SemanticRetrievalSession,
 	vector: &dyn VectorIndex,
@@ -620,6 +623,7 @@ pub async fn workspace_context(
 	query: &str,
 	budget: usize,
 	agent: &AgentConfig,
+	partial: bool,
 ) -> Result<WorkspaceContext> {
 	// A native provider opts into its own Bank retrieval. Ordinary workspace
 	// indexing remains available only through an explicit workspace Source.
@@ -674,7 +678,7 @@ pub async fn workspace_context(
 		},
 		Some(run.id),
 		Some(agent),
-		true,
+		partial,
 	)
 	.await?;
 	Ok(match result {

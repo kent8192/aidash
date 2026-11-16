@@ -1983,6 +1983,7 @@ impl Environment<'_> {
 				aidash_domain::context::source::MAX_SOURCE_BYTES,
 			)?
 			.text;
+			let degrade = degrade_on_outage && agent.workspace_degrades;
 			let semantic = crate::semantic::service::context_in(
 				&self.federation.store,
 				&mut lease,
@@ -1990,9 +1991,9 @@ impl Environment<'_> {
 				&query,
 				crate::semantic::services::memory_context::workspace_budget(budget)?,
 				&agent,
+				degrade,
 			)
 			.await;
-			let degrade = degrade_on_outage && agent.workspace_degrades;
 			let result = async {
 				let semantic =
 					match semantic? {

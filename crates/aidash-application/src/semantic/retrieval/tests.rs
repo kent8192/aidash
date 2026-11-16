@@ -880,6 +880,7 @@ async fn a_database_outage_does_not_degrade_optional_workspace_context() {
 		"query",
 		1024,
 		&controls(true, true),
+		true,
 	)
 	.await;
 	assert!(
@@ -1307,6 +1308,7 @@ async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
 		"query",
 		1024,
 		&controls(true, true),
+		true,
 	)
 	.await;
 	match (result, expected) {

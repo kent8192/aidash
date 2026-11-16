@@ -51,7 +51,7 @@ pub async fn retrieve_with_query(
 		}));
 	}
 	let mut scope = repository.local_scope().await?;
-	let (result, incomplete) = match scope.retrieve(query, budget).await? {
+	let (result, incomplete) = match scope.retrieve(query, budget, degrade).await? {
 		// A degraded slot read no entry, so it begins no dependency journal.
 		WorkspaceContext::Unavailable(cause) if degrade => return Ok(Some(marker(cause))),
 		// The READY part of an incomplete index still depends on what it read.
