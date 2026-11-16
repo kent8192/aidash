@@ -54,6 +54,39 @@ pub async fn provide(
 	}
 }
 impl HarnessManagement {
+	pub(crate) async fn workspace_runs(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		q: crate::apps::execution::serializers::management::WorkspaceRunListQuery,
+	) -> Result<aidash_application::authorization::bounded_reads::RunPage> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = q
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		let result = aidash_application::authorization::bounded_reads::workspace_runs(
+			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
+				federation: &self.runtime,
+				access: &mut access,
+				task_workspace: None,
+				selected_run: None,
+				node: None,
+			},
+			id,
+			q.live,
+			cursor,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
+	}
 	pub(crate) async fn task_runs(
 		&self,
 		actor: Actor,
@@ -77,6 +110,7 @@ impl HarnessManagement {
 				access: &mut access,
 				task_workspace: None,
 				selected_run: None,
+				node: None,
 			},
 			id,
 			cursor,
@@ -107,6 +141,7 @@ impl HarnessManagement {
 				access: &mut access,
 				task_workspace: None,
 				selected_run: None,
+				node: q.node.as_deref(),
 			},
 			q.run,
 			q.state,
@@ -116,12 +151,20 @@ impl HarnessManagement {
 		.map_err(Into::into);
 		access.finish(result).await
 	}
-	pub(crate) async fn state(&self, actor: Actor) -> Result<Response> {
+	pub(crate) async fn state(
+		&self,
+		actor: Actor,
+		query: crate::apps::execution::serializers::state::StateQuery,
+	) -> Result<Response> {
 		let f = self.runtime.clone();
 
 		if let Some(scope) = scoped(&f, actor) {
 			let state = scope
-				.state(crate::apps::federation::peer::services::identity::publication(&f).await?)
+				.state(
+					crate::apps::federation::peer::services::identity::publication(&f).await?,
+					&f,
+					query.node.as_deref(),
+				)
 				.await?;
 			return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 		}
@@ -139,8 +182,51 @@ impl HarnessManagement {
 			conversations: Vec::new(),
 			events: Vec::new(),
 			artifacts: Vec::new(),
+			next_cursors: Default::default(),
 		};
 		Ok(Response::ok().with_json(&state)?)
+	}
+	pub(crate) async fn workspace_page(
+		&self,
+		actor: Actor,
+		query: crate::apps::execution::serializers::state::WorkspacePageQuery,
+	) -> Result<crate::apps::execution::serializers::state::WorkspacePage> {
+		use aidash_application::ports::authorization::state::WorkspaceStateScope;
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = query
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		let result: Result<_> = async {
+			let mut scope = crate::apps::identity::repositories::visibility::state::StateReads {
+				access: &mut access,
+				federation: &self.runtime,
+			};
+			let ids = scope
+				.workspace_candidates(query.node.as_deref(), cursor)
+				.await?;
+			let next_cursor = (ids.len()
+				== aidash_application::authorization::bounded_reads::PAGE_SIZE)
+				.then(|| ids.last().unwrap().to_string());
+			let mut visible = Vec::new();
+			for id in ids {
+				if scope.allowed(id, "workspace.read").await? {
+					visible.push(id);
+				}
+			}
+			Ok(crate::apps::execution::serializers::state::WorkspacePage {
+				items: scope.workspace_rows(&visible).await?,
+				next_cursor,
+			})
+		}
+		.await;
+		access.finish(result).await
 	}
 	/// The OpenRouter catalog for model definitions, which any member may
 	/// read, from one process-wide copy (#362).

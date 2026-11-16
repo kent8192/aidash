@@ -20,6 +20,20 @@ use crate::apps::execution::serializers::management::{HumanListQuery, RunListQue
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
+#[get(
+	"/api/workspaces/{id}/runs",
+	name = "workspace-runs",
+	auth = "protected"
+)]
+pub async fn workspace_runs(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Query(q): Query<crate::apps::execution::serializers::management::WorkspaceRunListQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.workspace_runs(actor, id, q).await)
+}
+
 /// Reads one page of candidates. Filtered rows can leave a short page with a cursor.
 /// The opaque cursor currently contains the last scanned Run ID, restricted to
 /// a Task and Workspace the subject may read; individual Runs may be hidden.
@@ -52,8 +66,9 @@ pub async fn human_requests(
 pub async fn state(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
+	Query(query): Query<crate::apps::execution::serializers::state::StateQuery>,
 ) -> ViewResult<Response> {
-	crate::http::response(service.state(actor).await)
+	crate::http::response(service.state(actor, query).await)
 }
 
 #[get(
