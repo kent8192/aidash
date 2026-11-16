@@ -794,6 +794,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 `registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
 `registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
 
+`registry/0071_agent_plugin_server_secrets` (after `registry/0068_reject_new_compaction_deciders`) lets an Agent definition name a pasted secret per remote server of an Agent Plugin in `agent_plugin_settings` (#954, ADR 0073 amended 2026-11-16). It wraps the Agent validator like 0061 and 0065: it checks and removes each server `secret`, then calls the earlier body. The function body is a SQL asset because Reinhardt cannot express PostgreSQL function bodies. Reversal refuses while definitions or Run snapshots name a server secret. Open PR #952 takes registry 0069 and 0070, so whichever lands second renumbers or adds a merge migration.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)

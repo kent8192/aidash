@@ -123,9 +123,13 @@ impl ToolClients {
 			Destination::PublicOnly => &self.mcp_public,
 			Destination::Forbidden => return Err(Error::Forbidden),
 		};
-		// Only a brokered connection is routed to the broker by the plugin transport.
+		// A brokered connection or Tenant Secret is routed to the broker, which is Deployment
+		// configuration and may be an in-cluster private address.
 		Ok(
-			if matches!(auth, Some(CallSecret::BrokeredConnection { .. })) {
+			if matches!(
+				auth,
+				Some(CallSecret::BrokeredConnection { .. } | CallSecret::Brokered { .. })
+			) {
 				&self.mcp_permitted
 			} else {
 				client

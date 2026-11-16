@@ -21,12 +21,16 @@ use sse_stream::{Sse, SseStream};
 use std::{collections::HashMap, sync::Arc};
 
 const LIMIT: usize = 256_000;
+/// The transport of one plugin session: the HTTP client, a person's OAuth bearer source, the
+/// call's progress, a broker route source (an OAuth Connection or a Tenant Secret forwarded by the
+/// Credential Broker) and a self-hosted pasted secret already rendered as its header.
 #[derive(Clone)]
 pub(crate) struct BoundedClient(
 	pub reqwest::Client,
 	pub Option<Arc<dyn BearerSource>>,
 	pub Arc<crate::tools::auth::CallProgress>,
 	pub Option<(Arc<dyn SecretRouteSource>, String)>,
+	pub Option<(HeaderName, HeaderValue)>,
 );
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WireError {
@@ -39,12 +43,14 @@ pub(crate) enum WireError {
 }
 pub(crate) type Failure = StreamableHttpError<WireError>;
 impl BoundedClient {
+	/// A self-hosted pasted secret whose value cannot be a header value is refused before any I/O,
+	/// so the server never receives the call without the credential it was configured with.
 	pub(crate) fn new(
 		client: reqwest::Client,
 		auth: Option<&CallSecret>,
 		progress: Arc<crate::tools::auth::CallProgress>,
-	) -> Self {
-		Self(
+	) -> aidash_application::Result<Self> {
+		Ok(Self(
 			client,
 			match auth {
 				Some(CallSecret::Connection { source, .. }) => Some(source.clone()),
@@ -52,12 +58,19 @@ impl BoundedClient {
 			},
 			progress,
 			match auth {
-				Some(CallSecret::BrokeredConnection { source, rest, .. }) => {
-					Some((source.clone(), rest.clone()))
+				Some(
+					CallSecret::BrokeredConnection { source, rest, .. }
+					| CallSecret::Brokered { source, rest, .. },
+				) => Some((source.clone(), rest.clone())),
+				_ => None,
+			},
+			match auth {
+				Some(CallSecret::Value { value, attach, .. }) => {
+					Some(secret_header(value, attach)?)
 				}
 				_ => None,
 			},
-		)
+		))
 	}
 	async fn request(
 		&self,
@@ -82,14 +95,18 @@ impl BoundedClient {
 					.header(crate::broker::SECRET_CALL, token),
 			);
 		}
-		Ok(request(
+		let request = request(
 			&self.0,
 			method,
 			uri,
 			session,
 			self.bearer(token, uri).await?,
 			headers,
-		))
+		);
+		Ok(match &self.4 {
+			Some((name, value)) => request.header(name.clone(), value.clone()),
+			None => request,
+		})
 	}
 	fn send_error(&self, error: reqwest::Error) -> Failure {
 		if self.3.is_some() && !crate::keyless::refused(&error) {
@@ -124,6 +141,29 @@ impl BoundedClient {
 		}
 	}
 }
+/// `Authorization: Bearer <value>`, or the raw value in any other header, as the broker attaches
+/// it from the same call (`aidash_capability::tenant_secret::Attach`).
+fn secret_header(
+	value: &secrecy::SecretString,
+	attach: &aidash_capability::tenant_secret::Attach,
+) -> aidash_application::Result<(HeaderName, HeaderValue)> {
+	use aidash_capability::tenant_secret::Attach;
+	let unavailable = || Error::Invalid(aidash_domain::tenant_secrets::UNAVAILABLE.into());
+	let (name, rendered) = match attach {
+		Attach::Bearer => (
+			reqwest::header::AUTHORIZATION,
+			format!("Bearer {}", value.expose_secret()),
+		),
+		Attach::Header { name } => (
+			HeaderName::from_bytes(name.as_bytes()).map_err(|_| unavailable())?,
+			value.expose_secret().to_owned(),
+		),
+	};
+	let mut rendered = HeaderValue::from_str(&rendered).map_err(|_| unavailable())?;
+	rendered.set_sensitive(true);
+	Ok((name, rendered))
+}
+
 fn send_error(error: reqwest::Error) -> Failure {
 	Failure::Client(WireError::Http(error))
 }

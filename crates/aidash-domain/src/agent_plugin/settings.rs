@@ -1,7 +1,7 @@
 //! What an Agent definition decides about the servers of the Agent Plugins it takes in. The pinned
 //! plugin copy stays exactly as imported; these choices live beside it.
 use super::{AgentPluginRef, McpServer, PluginName, ServerName, reference::valid_digest};
-use crate::{Error, Result, exposure::BindingExposure};
+use crate::{Error, Result, exposure::BindingExposure, tool::SecretOwner};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +25,65 @@ pub struct ServerSettings {
 	/// Tools declared Read-only, each with the inputSchema digest it was declared against.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub read_only: Vec<ReadOnlyTool>,
+	/// The pasted secret a remote server authenticates with when it offers no OAuth (ADR 0100).
+	/// A person's OAuth Connection to the server still comes first.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret: Option<ServerSecret>,
+}
+
+/// The header a [`ServerSecret`] travels in unless the definition names another.
+pub const SECRET_HEADER: &str = "Authorization";
+
+fn secret_header() -> String {
+	SECRET_HEADER.to_owned()
+}
+
+/// A Tenant Secret, shared or personal, that one remote server of an Agent Plugin authenticates
+/// with (ADR 0073, amended 2026-11-16). The Run's person's personal secret of this name wins over
+/// the shared one at dispatch; `owner: personal` refuses the shared one. `Authorization` carries
+/// `Bearer <value>` and any other header the raw value. It replaces a plugin header of the same
+/// name, compared without case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ServerSecret {
+	/// The Tenant Secret name, as Registry tools write it in `secret`.
+	pub name: String,
+	#[serde(default = "secret_header")]
+	pub header: String,
+	#[serde(default, skip_serializing_if = "SecretOwner::is_any")]
+	pub owner: SecretOwner,
+}
+
+impl ServerSecret {
+	/// Whether the value goes as `Bearer <value>`: only in `Authorization`.
+	pub fn bearer(&self) -> bool {
+		self.header.eq_ignore_ascii_case(SECRET_HEADER)
+	}
+
+	/// The plugin's literal headers without the one this secret replaces.
+	pub fn replace_in(&self, headers: &[super::Header]) -> Vec<super::Header> {
+		headers
+			.iter()
+			.filter(|header| !header.name.eq_ignore_ascii_case(&self.header))
+			.cloned()
+			.collect()
+	}
+
+	/// The name and header rules a definition's `secret` must meet.
+	pub fn validate(&self) -> Result<()> {
+		self.check()
+			.map_err(|reason| Error::Invalid(format!("AGENT_PLUGIN_SETTINGS: {reason}")))
+	}
+
+	fn check(&self) -> std::result::Result<(), &'static str> {
+		if crate::tenant_secrets::validate_name(&self.name).is_err() {
+			return Err("the secret name is not a valid Tenant Secret name");
+		}
+		if !super::secret_header_valid(&self.header) {
+			return Err("the secret header is owned by the transport or refused by the broker");
+		}
+		Ok(())
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -49,6 +108,12 @@ impl ServerSettings {
 			&& (tools.len() > MAX_SERVER_TOOLS || !tools.iter().all(|name| valid_tool_name(name)))
 		{
 			return Err("the tool allowlist holds at most 64 names of 1 to 128 characters");
+		}
+		if let Some(secret) = &self.secret {
+			if !remote {
+				return Err("only a remote server authenticates with a secret");
+			}
+			secret.check()?;
 		}
 		if self.read_only.is_empty() {
 			return Ok(());
@@ -76,6 +141,26 @@ impl ServerSettings {
 		}
 		Ok(())
 	}
+}
+
+/// Each remote server secret the settings name, with the server it authenticates. Registration
+/// checks a shared one against the hosts its Tenant Secret records, as for a Registry tool.
+pub fn server_secrets<'a>(
+	plugins: &'a [AgentPluginRef],
+	settings: &'a PluginSettings,
+) -> Vec<(&'a ServerSecret, &'a super::RemoteServer)> {
+	plugins
+		.iter()
+		.filter_map(|plugin| Some((plugin, settings.get(&plugin.name)?)))
+		.flat_map(|(plugin, servers)| {
+			servers.iter().filter_map(|(name, settings)| {
+				let McpServer::Remote(remote) = plugin.servers.get(name)? else {
+					return None;
+				};
+				Some((settings.secret.as_ref()?, remote))
+			})
+		})
+		.collect()
 }
 
 /// Every plugin key names an attached plugin and every server key one of its servers.

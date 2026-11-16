@@ -378,6 +378,9 @@ pub(crate) enum Listed {
 	Invalid,
 	/// An error whose text carries what a finding must never show.
 	Leaky(String),
+	/// The server's named secret could not be resolved; with `Some(name)` the definition
+	/// required the person's own secret of that name.
+	SecretUnavailable(Option<&'static str>),
 	Hang,
 }
 
@@ -471,6 +474,12 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 					Listed::Invalid => Err(Error::Invalid("not a tool list".into())),
 					Listed::Connection(cause) => Err(Error::Connection(cause.clone())),
 					Listed::Leaky(text) => Err(Error::External(text.clone())),
+					Listed::SecretUnavailable(None) => Err(Error::Invalid(
+						aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+					)),
+					Listed::SecretUnavailable(Some(name)) => {
+						Err(crate::tenant_secrets::personal_required(name))
+					}
 					Listed::Hang => std::future::pending().await,
 				}
 			}

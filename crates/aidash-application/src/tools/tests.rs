@@ -278,6 +278,7 @@ impl ToolOperations for Operations {
 				host: "api.example.test".into(),
 			},
 			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
+			attach: aidash_capability::tenant_secret::Attach::Bearer,
 		})
 	}
 }

@@ -772,6 +772,178 @@ async fn the_servers_headers_accompany_every_request() {
 	}
 }
 
+fn pasted(value: &str, attach: aidash_capability::tenant_secret::Attach) -> CallSecret {
+	CallSecret::Value {
+		record: aidash_application::tenant_secrets::SecretRecord {
+			id: Uuid::new_v4(),
+			version: "1".into(),
+			host: "127.0.0.1".into(),
+		},
+		value: secrecy::SecretString::from(value.to_owned()),
+		attach,
+	}
+}
+
+#[rstest::rstest]
+#[case::authorization_carries_bearer(
+	aidash_capability::tenant_secret::Attach::Bearer,
+	"authorization",
+	"Bearer s3cret"
+)]
+#[case::another_header_carries_the_raw_value(
+	aidash_capability::tenant_secret::Attach::Header { name: "X-Api-Key".into() },
+	"x-api-key",
+	"s3cret"
+)]
+#[case::raw_authorization(
+	aidash_capability::tenant_secret::Attach::Header { name: "Authorization".into() },
+	"authorization",
+	"s3cret"
+)]
+#[tokio::test]
+async fn a_pasted_secret_accompanies_every_request_in_its_header(
+	#[case] attach: aidash_capability::tenant_secret::Attach,
+	#[case] header: &str,
+	#[case] value: &str,
+) {
+	let fixture = Fixture::start_with(&[("X-Region", "eu")], IDLE_LIMIT, MAX_SESSIONS).await;
+	let secret = pasted("s3cret", attach);
+
+	fixture
+		.sessions
+		.list(fixture.run, &server("demo"), &fixture.config, Some(&secret))
+		.await
+		.unwrap();
+	fixture
+		.sessions
+		.call(
+			fixture.run,
+			&server("demo"),
+			&fixture.config,
+			"alpha",
+			&digest(&alpha()),
+			false,
+			json!({}),
+			"key-1",
+			Some(&secret),
+		)
+		.await
+		.unwrap();
+
+	let seen = fixture.fake.seen.lock().unwrap();
+	assert!(!seen.is_empty());
+	for seen in seen.iter() {
+		let values: Vec<_> = seen.headers.get_all(header).iter().collect();
+		assert_eq!(values, [value], "{}", seen.method);
+		assert_eq!(seen.headers["x-region"], "eu", "{}", seen.method);
+	}
+}
+
+#[tokio::test]
+async fn a_session_opened_with_one_secret_version_is_not_reused_with_another() {
+	let fixture = Fixture::start().await;
+	let first = pasted("first", aidash_capability::tenant_secret::Attach::Bearer);
+	let CallSecret::Value { record, .. } = &first else {
+		unreachable!()
+	};
+	let mut rotated_record = record.clone();
+	rotated_record.version = "2".into();
+	let rotated = CallSecret::Value {
+		record: rotated_record,
+		value: secrecy::SecretString::from("second".to_owned()),
+		attach: aidash_capability::tenant_secret::Attach::Bearer,
+	};
+
+	for secret in [&first, &rotated] {
+		fixture
+			.sessions
+			.list(fixture.run, &server("demo"), &fixture.config, Some(secret))
+			.await
+			.unwrap();
+	}
+
+	let seen = fixture.fake.seen.lock().unwrap();
+	let last = seen.last().unwrap();
+	assert_eq!(last.headers["authorization"], "Bearer second");
+	assert_eq!(fixture.fake.issued.load(SeqCst), 2);
+}
+
+/// The Credential Broker's route for one call: every request goes to `base` with `token`.
+struct StubRoute {
+	base: reqwest::Url,
+	token: &'static str,
+}
+
+#[async_trait::async_trait]
+impl aidash_application::tenant_secrets::SecretRouteSource for StubRoute {
+	async fn route(&self) -> Result<aidash_application::tenant_secrets::SecretRoute> {
+		Ok(aidash_application::tenant_secrets::SecretRoute {
+			base: self.base.clone(),
+			token: secrecy::SecretString::from(self.token.to_owned()),
+		})
+	}
+}
+
+#[tokio::test]
+async fn a_brokered_secret_sends_every_request_to_the_broker_with_its_token_and_no_value() {
+	// The fake plays the broker; the server itself is public and never reached directly.
+	let fixture = Fixture::start().await;
+	let broker = fixture.config.url.clone();
+	let sessions = sessions(&[], IDLE_LIMIT, MAX_SESSIONS);
+	let config = remote("https://docs.example.com", &[]);
+	let secret = CallSecret::Brokered {
+		record: aidash_application::tenant_secrets::SecretRecord {
+			id: Uuid::new_v4(),
+			version: "1".into(),
+			host: "docs.example.com".into(),
+		},
+		source: Arc::new(StubRoute {
+			base: broker,
+			token: "capability-token",
+		}),
+		rest: String::new(),
+	};
+
+	sessions
+		.list(Uuid::new_v4(), &server("demo"), &config, Some(&secret))
+		.await
+		.unwrap();
+
+	let seen = fixture.fake.seen.lock().unwrap();
+	assert!(!seen.is_empty());
+	for seen in seen.iter() {
+		assert_eq!(
+			seen.headers["x-aidash-secret-call"], "capability-token",
+			"{}",
+			seen.method
+		);
+		assert!(
+			!seen.headers.contains_key("authorization"),
+			"{}",
+			seen.method
+		);
+	}
+}
+
+#[tokio::test]
+async fn a_secret_that_cannot_be_a_header_value_is_refused_before_any_request() {
+	let fixture = Fixture::start().await;
+	let secret = pasted(
+		"line\nbreak",
+		aidash_capability::tenant_secret::Attach::Header {
+			name: "X-Api-Key".into(),
+		},
+	);
+
+	let listed = fixture
+		.sessions
+		.list(fixture.run, &server("demo"), &fixture.config, Some(&secret))
+		.await;
+
+	assert!(listed.is_err());
+	assert_eq!(fixture.fake.requests(), 0);
+}
+
 #[tokio::test]
 async fn an_origin_the_deployment_did_not_permit_is_refused_before_any_connection() {
 	let (listener, origin) = bind().await;

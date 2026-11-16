@@ -30,6 +30,28 @@ pub fn validate_name(name: &str) -> Result<()> {
 	Ok(())
 }
 
+/// Whether `name` may carry a Tenant Secret: a header the Credential Broker
+/// attaches (`aidash_capability::tenant_secret::Attach`). It mirrors the
+/// broker's rule exactly, because the domain cannot depend on the capability
+/// crate; a test in `aidash-application` pins the two together.
+pub fn header_valid(name: &str) -> bool {
+	let name = name.to_ascii_lowercase();
+	!name.is_empty()
+		&& name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+		&& !matches!(
+			name.as_str(),
+			"host"
+				| "connection"
+				| "transfer-encoding"
+				| "content-length"
+				| "cookie" | "proxy-authorization"
+				| "upgrade" | "te"
+				| "trailer" | "expect"
+		) && !name.starts_with("sec-")
+		&& !name.starts_with("x-forwarded-")
+		&& !name.starts_with("x-aidash-")
+}
+
 /// A recorded host: a lowercase DNS name or IP literal, without scheme, port,
 /// path or credentials. Any port of a recorded host is permitted.
 pub fn normalize_host(host: &str) -> Result<String> {

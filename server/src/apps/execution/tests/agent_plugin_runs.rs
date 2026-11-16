@@ -130,7 +130,16 @@ struct World {
 /// member under a policy that grants no direct permission to call a plugin tool. `down` points the
 /// plugin's server at an address nothing listens on.
 async fn world(fixture: ApplicationFixture, down: bool) -> World {
-	let (f, url, schema) = fixture.runtime.parts();
+	world_with(fixture, down, None).await
+}
+
+/// The Tenant Secret value the secret-authenticated server expects.
+const SECRET_VALUE: &str = "plugin-server-secret-954";
+
+/// [`world`], where the server's settings also name `secret` and the Deployment holds Tenant
+/// Secrets in PostgreSQL with one shared `docs-token` for the fixture's loopback host.
+async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Value>) -> World {
+	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let mcp = mcp::FakeMcp::new(vec![mcp::tool("lookup"), mcp::tool("update")]);
 	let model = Arc::new(Model::default());
@@ -163,6 +172,49 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 	let mut policy = policy(f.config.deployment.as_str());
 	require_tool_call_approval(&mut policy);
 	tenant_root(&f, "acme").await;
+	if secret.is_some() {
+		let store = Arc::new(
+			aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+				f.store.control_pool.clone(),
+				"11".repeat(32).into(),
+				vec![],
+			)
+			.await
+			.unwrap(),
+		);
+		let service = Arc::new(aidash_application::tenant_secrets::Service {
+			repository: Arc::new(
+				aidash_server::apps::identity::repositories::tenant_secrets::NativeRepository {
+					pool: f.store.control_pool.clone(),
+				},
+			),
+			store: store.clone(),
+			reader: Some(store),
+			calls: None,
+			fingerprint_key: "tenant-secret-fingerprint-at-least-32-bytes".into(),
+			max_per_tenant: 64,
+		});
+		let host = reqwest::Url::parse(&endpoint)
+			.unwrap()
+			.host_str()
+			.unwrap()
+			.to_owned();
+		service
+			.put(
+				"acme",
+				"docs-token",
+				aidash_application::tenant_secrets::Put {
+					expected_revision: 0,
+					value: Some(SECRET_VALUE.into()),
+					hosts: Some(vec![host]),
+				},
+				"fixture",
+			)
+			.await
+			.unwrap();
+		f.store.tenant_secrets = Some(service);
+		f.registry = f.registry.clone().with_tenant_secrets(true);
+	}
 	let deployment_administrator = &f.config.api_token;
 	let (status, snapshot) = request(
 		&app,
@@ -197,6 +249,11 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 	tx.commit().await.unwrap();
 
 	let lookup_digest = schema_digest(&mcp::schema());
+	let mut server_settings =
+		json!({"read_only":[{"name":"lookup","schema_digest":lookup_digest}]});
+	if let Some(secret) = secret {
+		server_settings["secret"] = secret;
+	}
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
@@ -214,7 +271,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 				"instructions":"Use the docs server","bindings":[],
 				"remove_default":["file_search","file_read"],
 				"agent_plugins":[reference],
-				"agent_plugin_settings":{PLUGIN:{SERVER:{"read_only":[{"name":"lookup","schema_digest":lookup_digest}]}}}
+				"agent_plugin_settings":{PLUGIN:{SERVER:server_settings}}
 			}),
 		),
 	] {
@@ -639,6 +696,77 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 	}
 	assert!(results(&finished).is_empty());
 	assert_eq!(world.mcp.sessions_issued(), 0);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_server_without_oauth_receives_the_named_secret_in_its_header_on_every_request(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world_with(
+		fixture,
+		false,
+		Some(json!({"name":"docs-token","header":"X-Api-Key"})),
+	)
+	.await;
+	world.mcp.record_header("x-api-key");
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+
+	let finished = step_until(&harness, &world, |run| run.context.plugin_tools.is_some()).await;
+
+	let plugin_tools = finished.context.plugin_tools.as_ref().unwrap();
+	assert!(plugin_tools.findings.is_empty(), "{plugin_tools:?}");
+	assert_eq!(plugin_tools.servers.len(), 1);
+	let credentials = world.mcp.credentials();
+	assert!(!credentials.is_empty());
+	assert!(
+		credentials
+			.iter()
+			.all(|value| value.as_deref() == Some(SECRET_VALUE)),
+		"{credentials:?}"
+	);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_required_personal_secret_the_person_lacks_leaves_the_server_out_without_a_request(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Only the shared `docs-token` exists; the definition refuses it.
+	let world = world_with(
+		fixture,
+		false,
+		Some(json!({"name":"docs-token","owner":"personal"})),
+	)
+	.await;
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+
+	let finished = step_until(&harness, &world, |run| run.context.plugin_tools.is_some()).await;
+
+	let plugin_tools = finished.context.plugin_tools.as_ref().unwrap();
+	assert!(plugin_tools.servers.is_empty());
+	assert_eq!(plugin_tools.findings.len(), 1, "{plugin_tools:?}");
+	assert_eq!(
+		plugin_tools.findings[0].finding.detail,
+		"secret_unavailable"
+	);
+	// The server never received an unauthenticated request in the secret's place.
+	assert_eq!(world.mcp.sessions_issued(), 0);
+	assert_eq!(world.mcp.request_count(), 0);
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

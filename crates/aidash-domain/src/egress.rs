@@ -275,23 +275,7 @@ impl ExternalService {
 		if let Some(secret) = &self.secret {
 			crate::tenant_secrets::validate_name(secret)?;
 		}
-		let header = self.authentication.header().to_ascii_lowercase();
-		if header.is_empty()
-			|| !header
-				.bytes()
-				.all(|b| b.is_ascii_alphanumeric() || b == b'-')
-			|| matches!(
-				header.as_str(),
-				"host"
-					| "connection" | "transfer-encoding"
-					| "content-length"
-					| "cookie" | "proxy-authorization"
-					| "upgrade" | "te"
-					| "trailer" | "expect"
-			) || header.starts_with("sec-")
-			|| header.starts_with("x-forwarded-")
-			|| header.starts_with("x-aidash-")
-		{
+		if !crate::tenant_secrets::header_valid(self.authentication.header()) {
 			return Err(Error::Invalid(
 				"invalid External service credential header".into(),
 			));
