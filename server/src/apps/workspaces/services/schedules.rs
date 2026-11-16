@@ -681,7 +681,7 @@ async fn fire(
 			return record_miss(
 				f,
 				tenant,
-				&schedule,
+				(&schedule, schedule.revision),
 				None,
 				now,
 				Miss::Stop(
@@ -696,7 +696,8 @@ async fn fire(
 		Err(error) => return Err(error),
 	};
 	let mut lease = Lease::from_access(access);
-	let mut claimed: Option<Claim> = None;
+	// The claimed tick and the revision it was judged on.
+	let mut claimed: Option<(Claim, i64)> = None;
 	// Set when the tick shows the Schedule must stop, before the start rolls back.
 	let mut stopping: Option<(Halt, String, TickStatus)> = None;
 	let result: Result<Fired> = async {
@@ -709,7 +710,7 @@ async fn fire(
 		let Some(claim) = schedule.timing().claim(due, now)? else {
 			return Ok(Fired::Nothing);
 		};
-		claimed = Some(claim.clone());
+		claimed = Some((claim.clone(), schedule.revision));
 		let limits = repository::limits(lease.tx(), tenant).await?;
 		let min_interval = f
 			.store
@@ -852,7 +853,7 @@ async fn fire(
 		}
 		Err(error) => lease.finish::<()>(Err(error)).await.unwrap_err(),
 	};
-	let Some(claim) = claimed else {
+	let Some((claim, revision)) = claimed else {
 		return Err(outcome);
 	};
 	let miss = match stopping {
@@ -863,7 +864,16 @@ async fn fire(
 			None => return Err(outcome),
 		},
 	};
-	record_miss(f, tenant, &schedule, Some(&claim), now, miss, report).await
+	record_miss(
+		f,
+		tenant,
+		(&schedule, revision),
+		Some(&claim),
+		now,
+		miss,
+		report,
+	)
+	.await
 }
 
 /// Moves a claimed Schedule past the tick it handled.
@@ -914,7 +924,7 @@ async fn skipped_tick(
 async fn record_miss(
 	f: &Federation,
 	tenant: &str,
-	read: &Schedule,
+	(read, revision): (&Schedule, i64),
 	claim: Option<&Claim>,
 	now: DateTime<Utc>,
 	miss: Miss,
@@ -926,8 +936,11 @@ async fn record_miss(
 		let Some(mut schedule) = repository::load(&mut tx, tenant, read.id, true).await? else {
 			return Ok(());
 		};
-		// Another replica handled this tick meanwhile, or a person changed it.
-		if schedule.halt.is_some() || schedule.next_scheduled_at != read.next_scheduled_at {
+		// Another replica handled this tick meanwhile, or a person changed the
+		// Schedule after the failed start was judged, such as moving it to a
+		// usable Agent version: the outcome no longer applies, and the next
+		// pass judges the Schedule as it is now.
+		if schedule.halt.is_some() || schedule.revision != revision {
 			return Ok(());
 		}
 		let scheduled_at = claim.map_or(now, |claim| claim.scheduled_at);
