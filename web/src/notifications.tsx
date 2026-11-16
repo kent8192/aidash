@@ -47,6 +47,7 @@ import type { Locale } from "./ui";
 import { Hint } from "./components/patterns";
 import {
   NoticeStore,
+  storedWatermarks,
   taskEventScope,
   type Notice,
   type NoticeEntry,
@@ -276,6 +277,7 @@ function frame(
           ? `${person} が招待で参加しました`
           : `${person} joined through an invitation`,
         workspaceTitle: administration.label ?? administration.tenant,
+        occurredAt: approval.occurred_at,
         target: {
           kind: "administration",
           id: approval.id,
@@ -362,7 +364,12 @@ export function NotificationProvider({
       !!administration.data?.actions?.includes("registration.read"),
     refetchInterval: 60_000,
   });
-  const [store] = useState(() => new NoticeStore());
+  const [store] = useState(
+    () =>
+      new NoticeStore(
+        storedWatermarks(localStorage, "aidash-notice-watermarks"),
+      ),
+  );
   const [centerOpen, setCenterOpen] = useState(false);
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);

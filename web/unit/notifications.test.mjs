@@ -4,6 +4,7 @@ import {
   NoticeStore,
   NOTICE_INTERVAL,
   NOTICE_HISTORY_LIMIT,
+  storedWatermarks,
   taskEventScope,
 } from "../src/notifications/model.ts";
 
@@ -366,6 +367,74 @@ test("an existing invitation approval remains visible after a notification cente
   assert.equal(store.getSnapshot().recent.length, 1);
   assert.equal(store.getSnapshot().unread, true);
   assert.deepEqual(store.takeBatch(0), []);
+});
+
+function join(id, occurredAt, scope = "tenant:team") {
+  return {
+    ...entry(id, "joined", scope),
+    occurredAt,
+    target: { kind: "administration", node: "home", id, workspace: "" },
+  };
+}
+
+test("a read join stays read across a failed invitation-approvals poll", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  const old = join("join-1", "2026-11-01T00:00:00Z");
+  store.observe(frame([old], [scope]));
+  assert.equal(store.getSnapshot().unread, true);
+  store.markRead();
+  // The failed poll leaves the join scope out of the frame.
+  store.observe(frame([], []));
+  store.observe(frame([old], [scope]));
+  assert.equal(store.getSnapshot().unread, false);
+  assert.equal(store.getSnapshot().recent.length, 1);
+  const later = join("join-2", "2026-11-02T00:00:00Z");
+  store.observe(frame([old, later], []));
+  store.observe(frame([old, later], [scope]));
+  assert.equal(store.getSnapshot().unread, true);
+});
+
+test("read joins stay read after a reload, newer ones are unread", () => {
+  const saved = new Map();
+  const storage = {
+    getItem: (key) => saved.get(key) ?? null,
+    setItem: (key, value) => void saved.set(key, value),
+  };
+  const key = "notice-watermarks";
+  const scope = "tenant:team";
+  const old = join("join-1", "2026-11-01T00:00:00Z");
+  const first = new NoticeStore(storedWatermarks(storage, key));
+  first.observe(frame([old], [scope]));
+  first.markRead();
+  const reloaded = new NoticeStore(storedWatermarks(storage, key));
+  reloaded.observe(frame([old], [scope]));
+  assert.equal(reloaded.getSnapshot().unread, false);
+  assert.equal(reloaded.getSnapshot().recent.length, 1);
+  const later = join("join-2", "2026-11-02T00:00:00Z");
+  const again = new NoticeStore(storedWatermarks(storage, key));
+  again.observe(frame([later, old], [scope]));
+  assert.equal(again.getSnapshot().unread, true);
+  again.markRead(`${later.key}:joined`);
+  assert.equal(again.getSnapshot().unread, false);
+});
+
+test("reading one join does not acknowledge an older unread one", () => {
+  const saved = new Map();
+  const storage = {
+    getItem: (key) => saved.get(key) ?? null,
+    setItem: (key, value) => void saved.set(key, value),
+  };
+  const scope = "tenant:team";
+  const older = join("join-1", "2026-11-01T00:00:00Z");
+  const newer = join("join-2", "2026-11-02T00:00:00Z");
+  const store = new NoticeStore(storedWatermarks(storage, "marks"));
+  store.observe(frame([newer, older], [scope]));
+  store.markRead(`${newer.key}:joined`);
+  assert.equal(saved.has("marks"), false);
+  const reloaded = new NoticeStore(storedWatermarks(storage, "marks"));
+  reloaded.observe(frame([newer, older], [scope]));
+  assert.equal(reloaded.getSnapshot().unread, true);
 });
 
 test("each Node's task events have their own baseline, seeded silently", () => {

@@ -22,6 +22,8 @@ export type NoticeEntry = {
   detail: string;
   workspaceTitle: string;
   target: NoticeTarget;
+  /** When an administration event happened, as an RFC 3339 time. */
+  occurredAt?: string;
 };
 export type Notice = NoticeEntry & { kind: NoticeKind; id: string };
 export type NoticeFrame = {
@@ -46,6 +48,52 @@ const emptyView = {
   recent: [] as Notice[],
   unread: false,
 };
+/**
+ * The newest administration event a person has read, per scope. It outlives a
+ * `NoticeStore` (a reload) and a scope missing from a failed poll, so events
+ * already read are not marked unread again when they reappear.
+ */
+export type NoticeWatermarks = {
+  get(scope: string): number | undefined;
+  set(scope: string, at: number): void;
+};
+export function memoryWatermarks(): NoticeWatermarks {
+  const marks = new Map<string, number>();
+  return {
+    get: (scope) => marks.get(scope),
+    set: (scope, at) => void marks.set(scope, at),
+  };
+}
+/** Watermarks kept in browser storage; unreadable storage keeps them in memory. */
+export function storedWatermarks(
+  storage: Pick<Storage, "getItem" | "setItem">,
+  key: string,
+): NoticeWatermarks {
+  const marks = new Map<string, number>();
+  try {
+    const saved: unknown = JSON.parse(storage.getItem(key) ?? "{}");
+    if (saved && typeof saved === "object")
+      for (const [scope, at] of Object.entries(saved))
+        if (typeof at === "number" && Number.isFinite(at)) marks.set(scope, at);
+  } catch {
+    // A damaged value only means old events may show as unread once more.
+  }
+  return {
+    get: (scope) => marks.get(scope),
+    set: (scope, at) => {
+      marks.set(scope, at);
+      try {
+        storage.setItem(key, JSON.stringify(Object.fromEntries(marks)));
+      } catch {
+        // Storage may be full or blocked; the watermark still holds in memory.
+      }
+    },
+  };
+}
+function occurred(item: Notice) {
+  const at = item.occurredAt === undefined ? NaN : Date.parse(item.occurredAt);
+  return Number.isNaN(at) ? undefined : at;
+}
 function notice(entry: NoticeEntry): Notice | undefined {
   return entry.kind
     ? { ...entry, kind: entry.kind, id: `${entry.key}:${entry.kind}` }
@@ -66,6 +114,12 @@ export class NoticeStore {
   private listeners = new Set<() => void>();
   private view = emptyView;
   private lastToast = -Infinity;
+
+  private watermarks: NoticeWatermarks;
+
+  constructor(watermarks: NoticeWatermarks = memoryWatermarks()) {
+    this.watermarks = watermarks;
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -98,6 +152,7 @@ export class NoticeStore {
       // First snapshots, newly granted workspaces and new remote nodes are quiet.
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
+        !this.acknowledged(item) &&
         (this.scopes.has(entry.scope) ||
           (entry.eventScope && this.scopes.has(entry.eventScope))) &&
         (newInput ||
@@ -124,7 +179,8 @@ export class NoticeStore {
       (item) =>
         item.target.kind === "administration" && !this.scopes.has(item.scope),
     );
-    for (const item of initialAdministration) this.unread.add(item.id);
+    for (const item of initialAdministration)
+      if (!this.acknowledged(item)) this.unread.add(item.id);
     for (const entry of frame.entries)
       if (entry.eventId) {
         this.seenEvents.add(entry.eventId);
@@ -199,7 +255,47 @@ export class NoticeStore {
       this.pendingToast.clear();
       this.unread.clear();
     }
+    this.acknowledge();
     this.publish(this.view.pending, this.view.recent);
+  }
+  /** An administration event at or before its scope's watermark was read. */
+  private acknowledged(item: Notice) {
+    if (item.target.kind !== "administration") return false;
+    const at = occurred(item);
+    const mark = this.watermarks.get(item.scope);
+    return at !== undefined && mark !== undefined && at <= mark;
+  }
+  /**
+   * Advance each scope's watermark to its newest read event that is older than
+   * every unread one, so reading one event never acknowledges an older one.
+   */
+  private acknowledge() {
+    const administration = [...this.current.values()].filter(
+      (item) =>
+        item.target.kind === "administration" && occurred(item) !== undefined,
+    );
+    const oldestUnread = new Map<string, number>();
+    for (const item of administration)
+      if (this.unread.has(item.id))
+        oldestUnread.set(
+          item.scope,
+          Math.min(occurred(item)!, oldestUnread.get(item.scope) ?? Infinity),
+        );
+    const newestRead = new Map<string, number>();
+    for (const item of administration) {
+      const at = occurred(item)!;
+      if (
+        !this.unread.has(item.id) &&
+        at < (oldestUnread.get(item.scope) ?? Infinity)
+      )
+        newestRead.set(
+          item.scope,
+          Math.max(at, newestRead.get(item.scope) ?? -Infinity),
+        );
+    }
+    for (const [scope, at] of newestRead)
+      if (at > (this.watermarks.get(scope) ?? -Infinity))
+        this.watermarks.set(scope, at);
   }
   private publish(pending: Notice[], recent: Notice[]) {
     const next = { pending, recent, unread: this.unread.size > 0 };
