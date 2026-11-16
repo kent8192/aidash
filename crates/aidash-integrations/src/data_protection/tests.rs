@@ -66,7 +66,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 	let present = Arc::new(AtomicBool::new(true));
 	let app = Router::new().route("/v1/chat/completions", post({ let bodies = bodies.clone(); move |Json(body): Json<Value>| { let bodies = bodies.clone(); async move { bodies.lock().unwrap().push(body); Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]})) } } }))
 		.route("/v1/responses", post({ let bodies = bodies.clone(); move |Json(body): Json<Value>| { let bodies = bodies.clone(); async move { bodies.lock().unwrap().push(body); Json(json!({"id":"resp-fixture","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]})) } } }))
-		.route("/v1/endpoints/zdr", get({ let calls = catalog_calls.clone(); let present = present.clone(); move || { let calls = calls.clone(); let present = present.clone(); async move { calls.fetch_add(1, Ordering::SeqCst); Json(json!({"data": if present.load(Ordering::SeqCst) { vec![json!({"model_id":"vendor/model","tag":"vendor/zdr"})] } else { vec![] }})) } } }));
+		.route("/v1/endpoints/zdr", get({ let calls = catalog_calls.clone(); let present = present.clone(); move || { let calls = calls.clone(); let present = present.clone(); async move { calls.fetch_add(1, Ordering::SeqCst); Json(json!({"data": if present.load(Ordering::SeqCst) { vec![json!({"model_id":"vendor/model","tag":"vendor/zdr","safety_retention":false}), json!({"model_id":"vendor/model","tag":"vendor/kept","safety_retention":true}), json!({"model_id":"vendor/kept-only","tag":"vendor/kept","safety_retention":true})] } else { vec![] }})) } } }));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
 	let _server = Server(tokio::spawn(async move {
@@ -105,46 +105,41 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 		input_format: Default::default(),
 		estimate: Default::default(),
 	};
-	for policy in [
-		DataProtection::default(),
-		DataProtection {
-			model_call_zdr: false,
-			..Default::default()
-		},
-		DataProtection {
-			level: Level::NoTraining,
-			model_call_zdr: false,
-			..Default::default()
-		},
-		DataProtection {
-			level: Level::ZeroDataRetention,
-			..Default::default()
-		},
+	for level in [
+		Level::NoTraining,
+		Level::NoRestriction,
+		Level::SafetyRetention,
+		Level::ZeroDataRetention,
 	] {
-		*access.policy.lock().unwrap() = policy;
+		*access.policy.lock().unwrap() = DataProtection {
+			level,
+			..Default::default()
+		};
 		provider.infer(request.clone(), &NoProgress).await.unwrap();
 	}
 	provider.infer(request.clone(), &NoProgress).await.unwrap();
+	use aidash_domain::data_protection::Requirement;
 	assert_eq!(
 		&access.signed.lock().unwrap()[..],
 		&[
-			aidash_domain::data_protection::Requirement::Zdr,
-			aidash_domain::data_protection::Requirement::None,
-			aidash_domain::data_protection::Requirement::NoTraining,
-			aidash_domain::data_protection::Requirement::Zdr,
-			aidash_domain::data_protection::Requirement::Zdr
+			Requirement::NoTraining,
+			Requirement::None,
+			Requirement::SafetyRetention,
+			Requirement::Zdr,
+			Requirement::Zdr
 		]
 	);
 	let sent = bodies.lock().unwrap().clone();
 	assert_eq!(
 		sent[0]["provider"],
-		json!({"zdr":true,"require_parameters":true})
+		json!({"data_collection":"deny","require_parameters":true})
 	);
 	assert_eq!(sent[1]["provider"], json!({"require_parameters":true}));
 	assert_eq!(
 		sent[2]["provider"],
-		json!({"data_collection":"deny","require_parameters":true})
+		json!({"zdr":true,"require_parameters":true,"only":["vendor/kept","vendor/zdr"],"allow_fallbacks":true})
 	);
+	// Strict zero data retention never lists a Safety Retention route (#961).
 	assert_eq!(
 		sent[3]["provider"],
 		json!({"zdr":true,"require_parameters":true,"only":["vendor/zdr"],"allow_fallbacks":true})
@@ -154,6 +149,33 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 		1,
 		"a short-lived catalog is reused, but evaluated on each call"
 	);
+	let mut kept_only = config.clone();
+	kept_only.model_id = "vendor/kept-only".into();
+	let provider = crate::inference::provider(
+		crate::semantic::clients().unwrap(),
+		kept_only,
+		access.clone(),
+		Context {
+			tenant: tenant.clone(),
+			..Default::default()
+		},
+	)
+	.unwrap();
+	let error = provider
+		.infer(request.clone(), &NoProgress)
+		.await
+		.unwrap_err();
+	assert!(
+		matches!(
+			error,
+			Error::DataProtectionRoute {
+				refusal: aidash_domain::data_protection::CatalogRefusal::SafetyRetentionOnly,
+				..
+			}
+		),
+		"{error}"
+	);
+	assert!(error.to_string().contains("only Safety Retention routes"));
 	let mut absent = config;
 	absent.model_id = "vendor/not-zdr".into();
 	let provider = crate::inference::provider(
@@ -172,7 +194,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 			.await
 			.unwrap_err()
 			.to_string()
-			.contains("no current ZDR route")
+			.contains("no current zero data retention route")
 	);
 	assert_eq!(
 		bodies.lock().unwrap().len(),
@@ -185,7 +207,7 @@ async fn existing_provider_reloads_each_send_and_refuses_a_model_absent_from_the
 #[case(None)]
 #[case(Some(aidash_domain::model::WireApi::Responses))]
 #[tokio::test]
-async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_retention(
+async fn provider_tools_reload_current_policy_and_refuse_every_level_above_no_restriction(
 	#[case] wire_api: Option<aidash_domain::model::WireApi>,
 ) {
 	let sends = Arc::new(AtomicUsize::new(0));
@@ -205,8 +227,12 @@ async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_re
 			} }
 		}));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let open = DataProtection {
+		level: Level::NoRestriction,
+		..Default::default()
+	};
 	let access = Arc::new(Current {
-		policy: Mutex::new(DataProtection::default()),
+		policy: Mutex::new(open),
 		endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
 		signed: Mutex::new(vec![]),
 	});
@@ -246,7 +272,11 @@ async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_re
 		estimate: Default::default(),
 	};
 	provider.infer(request.clone(), &NoProgress).await.unwrap();
-	for level in [Level::NoTraining, Level::ZeroDataRetention] {
+	for level in [
+		Level::NoTraining,
+		Level::SafetyRetention,
+		Level::ZeroDataRetention,
+	] {
 		*access.policy.lock().unwrap() = DataProtection {
 			level,
 			..Default::default()
@@ -258,7 +288,7 @@ async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_re
 		assert!(
 			error
 				.to_string()
-				.contains("Provider tools cannot meet this level"),
+				.contains("Provider tools need Data Protection Level No Restriction"),
 			"{error}"
 		);
 	}
@@ -273,7 +303,7 @@ async fn provider_tools_reload_current_policy_and_refuse_no_training_and_zero_re
 		"refusal precedes token issuance"
 	);
 	// Loosening policy also takes effect without rebuilding an admitted provider.
-	*access.policy.lock().unwrap() = DataProtection::default();
+	*access.policy.lock().unwrap() = open;
 	provider.infer(request, &NoProgress).await.unwrap();
 	assert_eq!(sends.load(Ordering::SeqCst), 2);
 }

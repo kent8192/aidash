@@ -82,6 +82,21 @@ impl TenantAdministrations {
 	) -> Result<Impact> {
 		policy.validate()?;
 		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let effective = policy.with_floor(self.runtime.store.data_protection_floor);
+		// Read outside the transaction: which models OpenRouter's ZDR list can
+		// serve at the previewed level (#963). Unknown when it is unavailable.
+		let zero_data_retention = if effective.requirement().checks_routes() {
+			crate::apps::execution::services::management::OPENROUTER_CATALOG
+				.get(
+					crate::bootstrap::model_catalog(self.runtime.client.clone()).as_ref(),
+					chrono::Utc::now,
+				)
+				.await
+				.map(|snapshot| snapshot.zero_data_retention)
+				.unwrap_or_default()
+		} else {
+			Default::default()
+		};
 		let result = self
 			.runtime
 			.store
@@ -92,7 +107,8 @@ impl TenantAdministrations {
 					tx,
 					&self.runtime.store,
 					&tenant,
-					policy.with_floor(self.runtime.store.data_protection_floor),
+					effective,
+					&zero_data_retention,
 				)
 				.await
 			})

@@ -494,7 +494,9 @@ function DegradedContext({ run }: { run: Pick<Run, "recovery"> }) {
           t(
             cause === "embedding_provider"
               ? "degradedCauseEmbedding"
-              : "degradedCauseVector",
+              : cause === "data_protection"
+                ? "degradedCauseDataProtection"
+                : "degradedCauseVector",
           ),
         ])}
       />

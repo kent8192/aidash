@@ -221,8 +221,8 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		let policy = TenantDataProtection::build()
 			.tenant("acme")
 			.level("no_training")
-			.model_call_zdr(true)
-			.plan_connection_exempt(true)
+			.forbid_plan_connections(false)
+			.forbid_keyless_endpoints(true)
 			.updated_at(chrono::Utc::now())
 			.updated_by("fixture")
 			.finish();
@@ -252,7 +252,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		refused["error"]
 			.as_str()
 			.unwrap()
-			.contains("Tenant Keyless endpoints"),
+			.contains("forbids Keyless endpoints"),
 		"{refused}"
 	);
 	assert_eq!(tool_hits.load(Ordering::SeqCst), 0);

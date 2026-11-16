@@ -167,10 +167,12 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			revision: 1,
 		},
 	};
+	// A new Tenant's level: one token for the call, with no ZDR list to read.
 	let context = Context {
 		tenant: "tenant-a".into(),
 		run: Some(Uuid::now_v7()),
 		provider_credential_id: Some(id),
+		data_protection: aidash_domain::data_protection::DataProtection::default(),
 		..Default::default()
 	};
 	let provider = aidash_integrations::inference::provider(

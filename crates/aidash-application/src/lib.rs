@@ -121,6 +121,13 @@ pub enum Error {
 		model: String,
 		refusal: route_refusal::RouteRefusal,
 	},
+	/// OpenRouter's ZDR catalog offers the model no route that meets the
+	/// call's Data Protection Level. Waiting does not change that.
+	#[error("Data Protection: {}", .refusal.sentence(.model))]
+	DataProtectionRoute {
+		model: String,
+		refusal: aidash_domain::data_protection::CatalogRefusal,
+	},
 	#[error("verified model media route unavailable for {model}{}", route_refusal::CandidateRefusals(.candidates))]
 	MediaRouteUnavailable {
 		model: String,

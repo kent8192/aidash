@@ -51,8 +51,9 @@ root = "staticfiles"
 # runs only the "self-hosted" Offering, the default; the Enterprise build runs
 # "cloud" or "dedicated".
 [deployment]
-# Minimum Tenant Data Protection Level: standard, no_training, zero_data_retention.
-data_protection_floor = "standard"
+# Minimum Tenant Data Protection Level: no_restriction, no_training,
+# safety_retention, zero_data_retention. It governs only OpenRouter model calls.
+data_protection_floor = "no_restriction"
 # Explicitly declare models hosted by this Deployment. A network permission alone
 # does not grant the Data Protection exception. Private hosts also need the
 # keyless_endpoints.permitted_private_origins permission below.

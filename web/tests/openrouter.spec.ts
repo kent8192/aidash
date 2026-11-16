@@ -172,7 +172,9 @@ test("searches and selects a model without credential input", async ({
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("65536");
   await expect(dialog.getByLabel("最大出力トークン数")).toHaveValue("65536");
   await expect(dialog.getByText(/1 \/ 3$/)).toBeVisible();
-  await expect(dialog.getByText(/Zero Data Retention：常時有効/)).toBeVisible();
+  await expect(
+    dialog.getByText(/Tenant のデータ保護レベルで決まります/),
+  ).toBeVisible();
   const effort = dialog.getByLabel("Reasoning Effort");
   await expect(effort.locator("option")).toHaveText([
     "モデルの既定値",

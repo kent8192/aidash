@@ -14,6 +14,10 @@ use serde_json::{Value, json};
 pub enum OutageCause {
 	EmbeddingProvider,
 	VectorBackend,
+	/// Not an outage: the embedding model cannot meet the Tenant's Data
+	/// Protection Level, so waiting never helps. A slot that may degrade
+	/// continues at once with this cause; any other slot stops the Run (#963).
+	DataProtection,
 }
 
 /// The marker that stands in the workspace slot of `semantic_memory`, in the

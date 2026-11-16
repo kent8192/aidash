@@ -28,6 +28,12 @@ pub enum Failure {
 	ProviderContract,
 	#[error("The embedding provider cannot find the configured model")]
 	EmbeddingModelNotFound,
+	/// No route of the embedding model meets the Tenant's Data Protection
+	/// Level. Waiting does not change that; switch the embedding model (#963).
+	#[error(
+		"The embedding model cannot meet this Tenant's Data Protection Level; switch the Workspace to a model that meets it"
+	)]
+	DataProtection,
 	#[error("Semantic context does not fit the available context budget")]
 	ContextBudget,
 	#[error(
@@ -63,6 +69,7 @@ impl Failure {
 		match self {
 			Self::DurableMemoryBudget => Self::ContextBudget,
 			Self::EmbeddingModelNotFound => Self::ProviderContract,
+			Self::DataProtection => Self::Configuration,
 			other => other,
 		}
 	}

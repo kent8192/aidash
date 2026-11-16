@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded in part by ADR 0137
 ---
 
 # A Data Protection Level is met by what Aidash requests and destinations publish
+
+Amended 2026-11-16 (#961): OpenRouter's `/endpoints/zdr` also lists Safety Retention endpoints, which may keep content to prevent abuse. Wherever Aidash requires zero data retention, those endpoints are excluded, and OpenRouter's screening of all traffic for child sexual abuse material is disclosed. ADR 0137 then replaced this ADR's levels, its model-call ZDR switch and its table of destinations (#962, #963): the level governs only OpenRouter calls.
 
 Decided on 2026-10-27. A Tenant's policy sets a Data Protection Level, Standard, No Training or Zero Data Retention, for what may happen to its content wherever Aidash sends it. A Deployment may set a floor, and a delegation chain is held to the strictest level of any Tenant in it. Aidash cannot verify what a destination does with content, so a level is met only by what Aidash requests of each destination and what that destination publishes about itself; anything that cannot be met is refused, never silently downgraded.
 

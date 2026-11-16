@@ -442,7 +442,14 @@ pub async fn search(
 ) -> Result<SearchResult> {
 	search_or_outage(scope, vector, workspace, input, run, controls)
 		.await?
-		.map_err(|_| Error::RemoteSemantic(Failure::Unavailable))
+		.map_err(unavailable)
+}
+
+fn unavailable(cause: OutageCause) -> Error {
+	Error::RemoteSemantic(match cause {
+		OutageCause::DataProtection => Failure::DataProtection,
+		OutageCause::EmbeddingProvider | OutageCause::VectorBackend => Failure::Unavailable,
+	})
 }
 
 /// Search, returning an outage that waiting can fix as its cause instead of an
@@ -512,6 +519,9 @@ async fn search_or_outage(
 			.await
 	} {
 		Err(error) if outage(&error) => return Ok(Err(OutageCause::EmbeddingProvider)),
+		Err(Error::RemoteSemantic(Failure::DataProtection)) => {
+			return Ok(Err(OutageCause::DataProtection));
+		}
 		embedding => embedding?,
 	};
 	let max_image_bytes = prepared.spec.max_image_bytes;
@@ -550,11 +560,13 @@ pub enum WorkspaceContext {
 	Unavailable(OutageCause),
 }
 impl WorkspaceContext {
-	/// The result, or the `Unavailable` error a Run retries and then pauses on.
+	/// The result, or the `Unavailable` error a Run retries and then pauses
+	/// on. A Data Protection refusal stops the Run instead, since waiting
+	/// never fixes it (#963).
 	pub fn required(self) -> Result<Option<SearchResult>> {
 		match self {
 			Self::Retrieved(result) => Ok(result),
-			Self::Unavailable(_) => Err(Error::RemoteSemantic(Failure::Unavailable)),
+			Self::Unavailable(cause) => Err(unavailable(cause)),
 		}
 	}
 }

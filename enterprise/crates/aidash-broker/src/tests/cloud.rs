@@ -315,8 +315,9 @@ impl Cloud {
 #[tokio::test]
 async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding() {
 	// Debug builds must serialize and parse the full 8 MiB allowance several times.
-	// The two concurrent discovery requests and chat must fit without a refill.
-	let c = Cloud::with_limits(false, Duration::from_secs(60), 3, 0.001).await;
+	// The two concurrent discovery requests, the ZDR list a Safety Retention
+	// call reads (#963) and chat must fit without a refill.
+	let c = Cloud::with_limits(false, Duration::from_secs(60), 4, 0.001).await;
 	let mut config = c.config();
 	config.context_window = 131_072;
 	config.request_timeout_secs = Some(60);
@@ -352,7 +353,8 @@ async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding()
 		provider.infer(request, &NoProgress).await.unwrap().text,
 		"ok"
 	);
-	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 3);
+	// The ZDR list may already be cached for this Tenant by another test.
+	assert!((3..=4).contains(&c.broker_calls.load(Ordering::SeqCst)));
 	assert!(
 		c.fixture
 			.provider

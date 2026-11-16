@@ -739,23 +739,15 @@ impl Research<'_> {
 		})
 	}
 
-	/// Re-read the current promise before admitting or sending Research content.
+	/// Research is outside the Data Protection Level (#962); the call
+	/// keeps its signature so its callers still pass the account admission.
 	async fn policy_permits(
 		&self,
-		run: Uuid,
-		terms: std::result::Result<Option<AccountTerms>, Failure>,
-		hosted: bool,
+		_run: Uuid,
+		_terms: std::result::Result<Option<AccountTerms>, Failure>,
+		_hosted: bool,
 	) -> Result<bool> {
-		let policy = self.store.data_protection(run).await?;
-		Ok(match terms {
-			Ok(Some(terms)) => policy
-				.permits(aidash_domain::data_protection::Destination::Research(
-					&terms,
-				))
-				.is_ok(),
-			Ok(None) => hosted || policy.level == aidash_domain::data_protection::Level::Standard,
-			Err(_) => true, // The ordinary account admission supplies the precise failure.
-		})
+		Ok(true)
 	}
 	/// The charge of one `operation` request to the provider's Research
 	/// account, if it has one, once the month's charges leave room for it.

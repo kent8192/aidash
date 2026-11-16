@@ -247,16 +247,15 @@ async fn verified_media_routes(
 	}
 	let client = clients.select(&access)?;
 	let mut endpoints = client.get(url).timeout(std::time::Duration::from_secs(15));
-	let mut zdr = (context.data_protection.requirement()
-		== aidash_domain::data_protection::Requirement::Zdr)
-		.then(|| {
-			client
-				.get(format!(
-					"{}/endpoints/zdr",
-					access.endpoint.trim_end_matches('/')
-				))
-				.timeout(std::time::Duration::from_secs(15))
-		});
+	let requirement = context.data_protection.requirement();
+	let mut zdr = requirement.checks_routes().then(|| {
+		client
+			.get(format!(
+				"{}/endpoints/zdr",
+				access.endpoint.trim_end_matches('/')
+			))
+			.timeout(std::time::Duration::from_secs(15))
+	});
 	if !access.bearer.expose_secret().is_empty() {
 		endpoints = endpoints.bearer_auth(access.bearer.expose_secret());
 		zdr = zdr.map(|request| request.bearer_auth(access.bearer.expose_secret()));
@@ -330,8 +329,14 @@ async fn verified_media_routes(
 		if !candidate.reasons.is_empty() {
 			continue;
 		}
-		candidate.reasons =
-			eligible_route(&candidate.tag, endpoints, zdr, &config.model_id, request);
+		candidate.reasons = eligible_route(
+			&candidate.tag,
+			endpoints,
+			zdr,
+			&config.model_id,
+			request,
+			requirement,
+		);
 		if candidate.reasons.is_empty() {
 			eligible.push(candidate.tag.clone());
 		} else {
@@ -394,6 +399,7 @@ fn eligible_route(
 	zdr: Option<&[Value]>,
 	model: &str,
 	request: &ModelRequest,
+	requirement: aidash_domain::data_protection::Requirement,
 ) -> Vec<RouteReason> {
 	let mut reasons = Vec::new();
 	let prefix = format!("{tag}/");
@@ -429,12 +435,10 @@ fn eligible_route(
 			reasons.push(RouteReason::ContextTooLong { estimated, limit });
 		}
 	}
-	if zdr.is_some_and(|routes| {
-		!routes
-			.iter()
-			.any(|endpoint| endpoint["model_id"] == model && endpoint["tag"] == tag)
+	if let Some(reason) = zdr.and_then(|catalog| {
+		crate::data_protection::pinned_route_refusal(catalog, model, tag, requirement)
 	}) {
-		reasons.push(RouteReason::NotZeroDataRetention);
+		reasons.push(reason);
 	}
 	reasons
 }

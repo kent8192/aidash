@@ -538,7 +538,7 @@
   "modelChoose": "一覧からモデルを選択してください。",
   "modelPricing": "100万トークンあたりの参考料金（USD、入力 / 出力）：",
   "modelMaxOutputTokens": "最大出力トークン数",
-  "modelZdr": "Zero Data Retention：常時有効。ZDR対応の接続先がないモデルは実行できません。",
+  "modelZdr": "OpenRouter への各呼び出しで何を求めるかは、Tenant のデータ保護レベルで決まります。Safety Retention と Zero Data Retention では、OpenRouter の ZDR 一覧に経路があるモデルだけを使えます。",
   "modelPromptCache": "プロンプトキャッシュ",
   "modelPromptCacheHelp": "対応するルートでは、繰り返し送る入力をプロバイダのキャッシュから安く読み取ります。書き込みは通常の入力より高くなります。",
   "agentPromptCache": "プロンプトキャッシュ",
@@ -1093,5 +1093,8 @@
   "subnodeLimitsSave": "上限を保存",
   "subnodeLimitsInvalid": "Subnodeあたりのメンバー数は1から20、実行あたりのSubnode数は1から10の整数で入力してください。",
   "subnodeLimitsForbidden": "Subnodeの上限を変更する権限がありません。",
-  "unconfirmedItems": "{node} に確認できなかったため、{count} 件を表示していません。{node} が応答したら確認し直します。"
+  "unconfirmedItems": "{node} に確認できなかったため、{count} 件を表示していません。{node} が応答したら確認し直します。",
+  "modelSafetyRetentionOnly": "Safety Retention の経路しかないため、Zero Data Retention では使えません",
+  "modelNoZdrRoute": "ゼロデータ保持の経路がないため、このデータ保護レベルでは使えません",
+  "degradedCauseDataProtection": "埋め込みモデルがデータ保護レベルを満たせません"
 }

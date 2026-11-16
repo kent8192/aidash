@@ -59,6 +59,9 @@ impl Recovery {
 			| Failure::RetriesExhausted
 			| Failure::Authority
 			| Failure::Configuration
+			// Retrying succeeds once the Workspace switches to an embedding
+			// model that meets the level, or the level is lowered (#963).
+			| Failure::DataProtection
 			| Failure::Allowance
 			| Failure::ProviderContract => vec![RetryUnchangedBinding, CreateFollowUpTask],
 		};

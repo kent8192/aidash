@@ -36,6 +36,11 @@ use crate::apps::execution::serializers::research::{
 use crate::apps::identity::repositories::retention::TenantRetention;
 use crate::apps::identity::services::http_auth::scoped;
 
+/// The one process-wide OpenRouter catalog, read by the model picker and by
+/// the Data Protection impact preview (#963).
+pub(crate) static OPENROUTER_CATALOG: aidash_application::catalog::CatalogCache =
+	aidash_application::catalog::CatalogCache::new();
+
 #[derive(Clone)]
 pub struct HarnessManagement {
 	runtime: Federation,
@@ -238,9 +243,9 @@ impl HarnessManagement {
 	pub(crate) async fn openrouter_models(
 		&self,
 	) -> Result<aidash_domain::catalog::CatalogSnapshot> {
-		static CATALOG: aidash_application::catalog::CatalogCache =
-			aidash_application::catalog::CatalogCache::new();
-		Ok(CATALOG.get(self.catalog.as_ref(), chrono::Utc::now).await?)
+		Ok(OPENROUTER_CATALOG
+			.get(self.catalog.as_ref(), chrono::Utc::now)
+			.await?)
 	}
 	pub(crate) async fn task_claim(
 		&self,

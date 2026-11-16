@@ -6,14 +6,14 @@ import { builtInApprovalDecider, defaultNode } from "./registry-fixture";
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 // A `policy.read` holder's Trust page also loads the Data Protection Level.
 const dataProtectionPolicy = {
-  level: "standard",
-  model_call_zdr: true,
-  plan_connection_exempt: true,
+  level: "no_training",
+  forbid_plan_connections: false,
+  forbid_keyless_endpoints: false,
 };
 const dataProtection = {
   policy: dataProtectionPolicy,
   effective: dataProtectionPolicy,
-  deployment_floor: "standard",
+  deployment_floor: "no_restriction",
 };
 const dataProtectionImpact = {
   effective: dataProtectionPolicy,

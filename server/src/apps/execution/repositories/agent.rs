@@ -1997,9 +1997,17 @@ impl Environment<'_> {
 				let semantic = match semantic? {
 					// Optional workspace context may degrade; memory still follows
 					// and still fails closed (ADR 0059).
+					// A Data Protection refusal never clears by waiting, so an
+					// optional slot degrades at once instead of after retries (#963).
 					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
 						cause,
-					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
+					) if degrade
+						|| (cause
+							== aidash_domain::semantic::degraded::OutageCause::DataProtection
+							&& agent.workspace_degrades) =>
+					{
+						Some(aidash_domain::semantic::degraded::marker(cause))
+					}
 					workspace => workspace
 						.required()?
 						.map(serde_json::to_value)

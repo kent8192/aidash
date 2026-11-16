@@ -32998,32 +32998,43 @@
       "200": {
         "definitions": {
           "Architecture": {
+            "type": "object",
+            "required": ["input_modalities", "output_modalities"],
             "properties": {
               "input_modalities": {
+                "type": "array",
                 "items": {
                   "type": "string"
-                },
-                "type": "array"
+                }
               },
               "output_modalities": {
+                "type": "array",
                 "items": {
                   "type": "string"
-                },
-                "type": "array"
+                }
               }
-            },
-            "required": ["input_modalities", "output_modalities"],
-            "type": "object"
+            }
           },
           "CatalogModel": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "context_length",
+              "top_provider",
+              "pricing",
+              "architecture",
+              "supported_parameters",
+              "reasoning"
+            ],
             "properties": {
               "architecture": {
                 "$ref": "#/components/schemas/Architecture"
               },
               "context_length": {
+                "type": "integer",
                 "format": "uint",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "id": {
                 "type": "string"
@@ -33045,11 +33056,11 @@
                 ]
               },
               "supported_parameters": {
-                "default": [],
+                "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "type": "array"
+                "default": []
               },
               "top_provider": {
                 "anyOf": [
@@ -33060,42 +33071,56 @@
                     "type": "null"
                   }
                 ]
+              },
+              "zero_data_retention": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ZdrRoutes"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What OpenRouter's ZDR catalog offers this model; absent when the\ncatalog could not be read. The picker uses it to say which Data\nProtection Levels the model can meet (#963)."
               }
-            },
-            "required": [
-              "id",
-              "name",
-              "context_length",
-              "top_provider",
-              "pricing",
-              "architecture",
-              "supported_parameters",
-              "reasoning"
-            ],
-            "type": "object"
+            }
           },
           "CatalogSnapshot": {
+            "type": "object",
             "description": "The eligible OpenRouter models as the server last fetched them (#362).",
+            "required": [
+              "models",
+              "stale",
+              "fetched_at",
+              "zero_data_retention"
+            ],
             "properties": {
               "fetched_at": {
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               "models": {
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/CatalogModel"
-                },
-                "type": "array"
+                }
               },
               "stale": {
-                "description": "The last refresh failed, so these are the models of an earlier one.",
-                "type": "boolean"
+                "type": "boolean",
+                "description": "The last refresh failed, so these are the models of an earlier one."
+              },
+              "zero_data_retention": {
+                "type": "object",
+                "description": "What OpenRouter's ZDR list offered every model it named, embedding\nmodels included; empty when the list could not be read (#963).",
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ZdrRoutes"
+                }
               }
-            },
-            "required": ["models", "stale", "fetched_at"],
-            "type": "object"
+            }
           },
           "Pricing": {
+            "type": "object",
+            "required": ["prompt", "completion"],
             "properties": {
               "completion": {
                 "type": "string"
@@ -33103,39 +33128,57 @@
               "prompt": {
                 "type": "string"
               }
-            },
-            "required": ["prompt", "completion"],
-            "type": "object"
+            }
           },
           "ReasoningOptions": {
+            "type": "object",
+            "required": ["supported_efforts", "default_effort", "mandatory"],
             "properties": {
               "default_effort": {
                 "type": ["string", "null"]
               },
               "mandatory": {
-                "default": false,
-                "type": "boolean"
+                "type": "boolean",
+                "default": false
               },
               "supported_efforts": {
+                "type": ["array", "null"],
                 "items": {
                   "type": "string"
-                },
-                "type": ["array", "null"]
+                }
               }
-            },
-            "required": ["supported_efforts", "default_effort", "mandatory"],
-            "type": "object"
+            }
           },
           "TopProvider": {
+            "type": "object",
+            "required": ["max_completion_tokens"],
             "properties": {
               "max_completion_tokens": {
+                "type": ["integer", "null"],
                 "format": "uint32",
-                "minimum": 0,
-                "type": ["integer", "null"]
+                "minimum": 0
               }
-            },
-            "required": ["max_completion_tokens"],
-            "type": "object"
+            }
+          },
+          "ZdrRoutes": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "At least one route meets strict zero data retention.",
+                "enum": ["strict"]
+              },
+              {
+                "type": "string",
+                "description": "Every route keeps content to prevent abuse: usable up to Safety\nRetention, never at Zero Data Retention.",
+                "enum": ["safety_retention_only"]
+              },
+              {
+                "type": "string",
+                "description": "No route at all: usable only at No Restriction and No Training.",
+                "enum": ["none"]
+              }
+            ],
+            "description": "The routes OpenRouter's ZDR catalog lists for one model."
           }
         },
         "schema": {
@@ -50006,29 +50049,58 @@
       "200": {
         "definitions": {
           "DataProtection": {
-            "additionalProperties": false,
-            "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+            "type": "object",
+            "description": "The Tenant policy.",
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
             "properties": {
+              "forbid_keyless_endpoints": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "default": false
+              },
+              "forbid_plan_connections": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "default": false
+              },
               "level": {
                 "$ref": "#/components/schemas/Level"
-              },
-              "model_call_zdr": {
-                "default": true,
-                "type": "boolean"
-              },
-              "plan_connection_exempt": {
-                "default": true,
-                "type": "boolean"
               }
             },
-            "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-            "type": "object"
+            "additionalProperties": false
           },
           "Level": {
-            "enum": ["standard", "no_training", "zero_data_retention"],
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"]
+              }
+            ],
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter."
           },
           "TenantDataProtectionSettings": {
+            "type": "object",
+            "required": ["policy", "effective", "deployment_floor"],
             "properties": {
               "deployment_floor": {
                 "$ref": "#/components/schemas/Level"
@@ -50039,9 +50111,7 @@
               "policy": {
                 "$ref": "#/components/schemas/DataProtection"
               }
-            },
-            "required": ["policy", "effective", "deployment_floor"],
-            "type": "object"
+            }
           }
         },
         "schema": {
@@ -50062,29 +50132,58 @@
       "200": {
         "definitions": {
           "DataProtection": {
-            "additionalProperties": false,
-            "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+            "type": "object",
+            "description": "The Tenant policy.",
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
             "properties": {
+              "forbid_keyless_endpoints": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "default": false
+              },
+              "forbid_plan_connections": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "default": false
+              },
               "level": {
                 "$ref": "#/components/schemas/Level"
-              },
-              "model_call_zdr": {
-                "default": true,
-                "type": "boolean"
-              },
-              "plan_connection_exempt": {
-                "default": true,
-                "type": "boolean"
               }
             },
-            "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-            "type": "object"
+            "additionalProperties": false
           },
           "Level": {
-            "enum": ["standard", "no_training", "zero_data_retention"],
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"]
+              }
+            ],
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter."
           },
           "TenantDataProtectionSettings": {
+            "type": "object",
+            "required": ["policy", "effective", "deployment_floor"],
             "properties": {
               "deployment_floor": {
                 "$ref": "#/components/schemas/Level"
@@ -50095,9 +50194,7 @@
               "policy": {
                 "$ref": "#/components/schemas/DataProtection"
               }
-            },
-            "required": ["policy", "effective", "deployment_floor"],
-            "type": "object"
+            }
           }
         },
         "schema": {
@@ -50118,25 +50215,33 @@
       "200": {
         "definitions": {
           "DataProtection": {
-            "additionalProperties": false,
-            "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+            "type": "object",
+            "description": "The Tenant policy.",
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
             "properties": {
+              "forbid_keyless_endpoints": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "default": false
+              },
+              "forbid_plan_connections": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "default": false
+              },
               "level": {
                 "$ref": "#/components/schemas/Level"
-              },
-              "model_call_zdr": {
-                "default": true,
-                "type": "boolean"
-              },
-              "plan_connection_exempt": {
-                "default": true,
-                "type": "boolean"
               }
             },
-            "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-            "type": "object"
+            "additionalProperties": false
           },
           "DataProtectionAffected": {
+            "type": "object",
+            "required": ["id", "version", "reason"],
             "properties": {
               "id": {
                 "type": "string"
@@ -50147,45 +50252,64 @@
               "version": {
                 "type": ["string", "null"]
               }
-            },
-            "required": ["id", "version", "reason"],
-            "type": "object"
+            }
           },
           "DataProtectionImpact": {
-            "properties": {
-              "agents": {
-                "items": {
-                  "$ref": "#/components/schemas/DataProtectionAffected"
-                },
-                "type": "array"
-              },
-              "catalog_approvals": {
-                "items": {
-                  "$ref": "#/components/schemas/DataProtectionAffected"
-                },
-                "type": "array"
-              },
-              "destinations": {
-                "items": {
-                  "$ref": "#/components/schemas/DataProtectionAffected"
-                },
-                "type": "array"
-              },
-              "effective": {
-                "$ref": "#/components/schemas/DataProtection"
-              }
-            },
+            "type": "object",
             "required": [
               "effective",
               "agents",
               "catalog_approvals",
               "destinations"
             ],
-            "type": "object"
+            "properties": {
+              "agents": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                }
+              },
+              "catalog_approvals": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                }
+              },
+              "destinations": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                }
+              },
+              "effective": {
+                "$ref": "#/components/schemas/DataProtection"
+              }
+            }
           },
           "Level": {
-            "enum": ["standard", "no_training", "zero_data_retention"],
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"]
+              }
+            ],
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter."
           }
         },
         "schema": {

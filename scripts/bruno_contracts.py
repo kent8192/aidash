@@ -1254,7 +1254,7 @@ def render():
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/data_protection.rs":
-            body = json.dumps({"level": "standard", "model_call_zdr": True, "plan_connection_exempt": True}) if route["json"] else None
+            body = json.dumps({"level": "no_training", "forbid_plan_connections": False, "forbid_keyless_endpoints": False}) if route["json"] else None
             for label, headers in [
                 ("Deployment Administrator bearer is never a Tenant Administrator", DEPLOYMENT_ADMINISTRATOR),
                 ("Subject Credential bearer is never a Tenant Administrator", SUBJECT),
