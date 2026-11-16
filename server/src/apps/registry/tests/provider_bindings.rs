@@ -371,13 +371,19 @@ async fn existing_workspace_tool_versions_are_preserved_when_seeding_attachment_
 				.unwrap(),
 			entry
 		);
+		// workspace_search went from 1.0.0 straight to 1.1.0 (#622 part 2).
+		let next = if entry.id == "aidash.workspace_search" {
+			"1.1.0"
+		} else {
+			"1.0.1"
+		};
 		assert_eq!(
 			registry
-				.get(&tenant, &entry.id, "1.0.1")
+				.get(&tenant, &entry.id, next)
 				.await
 				.unwrap()
 				.version,
-			"1.0.1"
+			next
 		);
 	}
 	let current = registry
@@ -488,7 +494,12 @@ async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
 			*entry
 		);
 	}
-	for operation in ["subnode_task", "memory_mutate"] {
+	for operation in [
+		"subnode_task",
+		"memory_mutate",
+		"workspace_message",
+		"workspace_search",
+	] {
 		let current = QualifiedRef::builtin("aidash://node", operation);
 		assert_eq!(
 			registry

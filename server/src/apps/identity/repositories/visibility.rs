@@ -36,6 +36,7 @@ struct AttachmentMetadataRow {
 	width: Option<i32>,
 	height: Option<i32>,
 	duration_ms: Option<i64>,
+	description: Option<String>,
 }
 crate::native_record!(AttachmentMetadataRow {
 	message_id,
@@ -45,7 +46,8 @@ crate::native_record!(AttachmentMetadataRow {
 	size_bytes,
 	width,
 	height,
-	duration_ms
+	duration_ms,
+	description
 });
 
 async fn attachment_metadata(
@@ -67,6 +69,7 @@ async fn attachment_metadata(
 				"width",
 				"height",
 				"duration_ms",
+				"description",
 			]
 			.map(Alias::new),
 		)
@@ -88,6 +91,7 @@ async fn attachment_metadata(
 			"width",
 			"height",
 			"duration_ms",
+			"description",
 		])
 		.fetch_all(&mut **access.tx)
 		.await?;
@@ -103,6 +107,7 @@ async fn attachment_metadata(
 				width: row.width,
 				height: row.height,
 				duration_ms: row.duration_ms,
+				description: row.description,
 			},
 		})
 		.collect())

@@ -25,6 +25,7 @@ struct AttachmentRecordRow {
 	height: Option<i32>,
 	duration_ms: Option<i64>,
 	sha256: String,
+	description: Option<String>,
 }
 crate::native_record!(AttachmentRecordRow {
 	message_id,
@@ -35,7 +36,8 @@ crate::native_record!(AttachmentRecordRow {
 	width,
 	height,
 	duration_ms,
-	sha256
+	sha256,
+	description
 });
 #[async_trait]
 impl WorkspaceRecordScope for Reads<'_> {
@@ -200,6 +202,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 					"height",
 					"duration_ms",
 					"sha256",
+					"description",
 				]
 				.map(Alias::new),
 			)
@@ -219,6 +222,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 				"height",
 				"duration_ms",
 				"sha256",
+				"description",
 			])
 			.fetch_optional(&mut **self.access.tx)
 			.await?;
@@ -233,6 +237,7 @@ impl WorkspaceRecordScope for Reads<'_> {
 				width: row.width,
 				height: row.height,
 				duration_ms: row.duration_ms,
+				description: row.description,
 			},
 		}))
 	}

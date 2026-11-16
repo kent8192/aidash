@@ -630,6 +630,7 @@ async fn message_record_includes_authorized_attachment_metadata(mut scope: Scope
 				width: None,
 				height: None,
 				duration_ms: Some(1000),
+				description: None,
 			},
 		});
 	let id = scope.message.id;
@@ -662,6 +663,7 @@ async fn attachment_record_requires_current_message_visibility(mut scope: Scope)
 				width: Some(2),
 				height: Some(3),
 				duration_ms: None,
+				description: None,
 			},
 		});
 	let output = record(&mut scope, Uuid::from_u128(1), "attachment", id)

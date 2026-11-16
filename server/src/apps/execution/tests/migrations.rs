@@ -208,7 +208,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(execution[0].name, "0131_scope_refusals_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
+	assert_eq!(knowledge[0].name, "0055_attachment_images");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -724,14 +724,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0028_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0029_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0027_task_journal_range".to_owned()
+			"0028_attachment_description".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -1281,6 +1281,14 @@ async fn image_policy_migrations_reverse_safely(#[future] fresh_database: Migrat
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let attachment_images = source
+		.get_migration("knowledge", "0055_attachment_images")
+		.await
+		.unwrap();
+	executor
+		.rollback_migrations(&[attachment_images])
+		.await
+		.unwrap();
 	let state = source
 		.get_migration("knowledge", "0054_memory_constraint_state")
 		.await
@@ -5159,6 +5167,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
 			("workspaces", "0027_task_journal_range"),
+			("workspaces", "0028_attachment_description"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5216,6 +5225,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
 			("workspaces", "0027_task_journal_range"),
+			("workspaces", "0028_attachment_description"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5281,6 +5291,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
 			("workspaces", "0027_task_journal_range"),
+			("workspaces", "0028_attachment_description"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

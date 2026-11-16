@@ -590,3 +590,16 @@ fn public_entry_cannot_claim_a_working_area_image() {
 		Err(Error::Invalid(_))
 	));
 }
+
+#[rstest::rstest]
+#[case("attachment-image:00000000-0000-0000-0000-000000000001")]
+#[case("working-image:00000000-0000-0000-0000-000000000001:1")]
+fn public_entry_cannot_take_a_managed_image_key(#[case] key: &str) {
+	// A text entry under an image key would hold that image's entry and slot.
+	let mut value = input();
+	value.key = key.into();
+	assert!(matches!(
+		validate_public_put(&value),
+		Err(Error::Invalid(_))
+	));
+}
