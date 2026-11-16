@@ -500,8 +500,15 @@ pub struct Pass {
 	pub settled: usize,
 }
 
+impl Pass {
+	/// Ticks this pass started, skipped, failed or stopped.
+	fn handled(&self) -> usize {
+		self.started.len() + self.skipped.len() + self.failed.len() + self.stopped.len()
+	}
+}
+
 /// Due Schedules handled per pass; the rest wait for the next one.
-const BATCH: u64 = 32;
+const BATCH: usize = 32;
 
 /// One pass of the scheduler on this replica: settle the ticks whose Runs
 /// ended, then handle the due Schedules no other replica holds. Every replica
@@ -517,9 +524,30 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 			}
 		}
 	}
-	for (tenant, id) in repository::due(&f.store.pool, now, BATCH).await? {
-		if let Err(error) = fire(f, &tenant, id, now, &mut report).await {
-			tracing::warn!(%error, schedule = %id, "a due Schedule could not be handled");
+	// A tick that failed transiently stays due, oldest first. Paging past it
+	// tries each due Schedule at most once per pass, so a few that keep
+	// failing cannot hold back the rest of the Deployment; only ticks that
+	// did something count toward the batch.
+	let mut handled = 0;
+	let mut after = None;
+	'pages: loop {
+		let page = repository::due(&f.store.pool, now, after, BATCH as u64).await?;
+		let last_page = page.len() < BATCH;
+		for (tenant, id, fire_at) in page {
+			after = Some((fire_at, id));
+			let before = report.handled();
+			if let Err(error) = fire(f, &tenant, id, now, &mut report).await {
+				tracing::warn!(%error, schedule = %id, "a due Schedule could not be handled");
+			}
+			if report.handled() > before {
+				handled += 1;
+				if handled >= BATCH {
+					break 'pages;
+				}
+			}
+		}
+		if last_page {
+			break;
 		}
 	}
 	if !report.started.is_empty() {

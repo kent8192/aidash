@@ -467,17 +467,35 @@ pub(crate) async fn settle_tick(
 	Ok(true)
 }
 
-/// Due Schedules across Tenants, oldest first. Each is claimed again, with
-/// `SKIP LOCKED`, in its Registrant's own transaction.
+/// Due Schedules across Tenants, oldest first, after the `(next_fire_at,
+/// id)` a previous page ended at. Each is claimed again, with `SKIP LOCKED`,
+/// in its Registrant's own transaction.
 pub(crate) async fn due(
 	pool: &Pool,
 	now: DateTime<Utc>,
+	after: Option<(DateTime<Utc>, Uuid)>,
 	limit: u64,
-) -> Result<Vec<(String, Uuid)>> {
+) -> Result<Vec<(String, Uuid, DateTime<Utc>)>> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::ScheduleTicks);
-	let rows: Vec<(String, Uuid)> = native::query_as(
-		&Query::select()
-			.columns([Alias::new("tenant"), Alias::new("id")])
+	let mut query = Query::select();
+	if let Some((at, id)) = after {
+		query.cond_where(
+			Condition::any()
+				.add(Expr::col("next_fire_at").gt(Expr::value(at)))
+				.add(
+					Condition::all()
+						.add(Expr::col("next_fire_at").eq(Expr::value(at)))
+						.add(Expr::col("id").gt(Expr::value(id))),
+				),
+		);
+	}
+	let rows: Vec<(String, Uuid, DateTime<Utc>)> = native::query_as(
+		&query
+			.columns([
+				Alias::new("tenant"),
+				Alias::new("id"),
+				Alias::new("next_fire_at"),
+			])
 			.from(Alias::new("schedules"))
 			.and_where(Expr::col("halt").is_null())
 			.and_where(Expr::col("next_fire_at").lte(Expr::value(now)))
@@ -498,10 +516,11 @@ pub(crate) async fn due(
 				.not(),
 			)
 			.order_by(Alias::new("next_fire_at"), Order::Asc)
+			.order_by(Alias::new("id"), Order::Asc)
 			.limit(limit)
 			.to_string(PostgresQueryBuilder),
 	)
-	.columns(&["tenant", "id"])
+	.columns(&["tenant", "id", "next_fire_at"])
 	.fetch_all(pool.in_scope(&scope))
 	.await?;
 	Ok(rows)
