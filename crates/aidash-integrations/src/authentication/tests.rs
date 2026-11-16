@@ -187,11 +187,14 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		response.active = true;
 		response.reason.clear();
 	}
-	// Only the explicitly selected already-admitted path can reuse the old result.
-	client
-		.validate_bound_origin_within_t(&admitted)
-		.await
-		.unwrap();
+	// The online refusal ended the reuse of this origin at once (ADR 0130):
+	// the admitted path checks online again instead of passing from the cache.
+	let before = calls.lock().unwrap().len();
+	assert!(matches!(
+		client.validate_bound_origin_within_t(&admitted).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(calls.lock().unwrap().len(), before + 1);
 	// Restoring an account never refreshes an old Run's saved admission epoch.
 	assert!(matches!(
 		client.validate_bound_origin(&admitted).await,

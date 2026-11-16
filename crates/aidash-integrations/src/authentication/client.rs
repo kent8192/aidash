@@ -256,6 +256,64 @@ impl Client {
 		require_validity(identity, &response, true)?;
 		Ok(response)
 	}
+	async fn bound_origin_online(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> Result<()> {
+		let response = AuthenticationValidityClient::new(self.channel.clone())
+			.validate_origin(ValidateOriginRequest {
+				external_identity_id: origin.identity_id.to_string(),
+				expected_account_id: origin
+					.account_id
+					.map(|id| id.to_string())
+					.unwrap_or_default(),
+				expected_suspension_epoch: origin.suspension_epoch,
+				expected_source_disable_epoch: origin.source_disable_epoch,
+				bind_current: false,
+			})
+			.await
+			.map_err(rpc_error)?
+			.into_inner();
+		if !response.active
+			&& response.reason == "account_suspended"
+			&& Uuid::parse_str(&response.source_identity_id).ok() == Some(origin.identity_id)
+			&& origin
+				.account_id
+				.is_none_or(|id| response.account_id == id.to_string())
+			&& origin.source_disable_epoch.unwrap_or(0) == response.source_disable_epoch
+			&& let Some(epoch) = response.suspension_epoch
+		{
+			return Err(Error::AccountSuspended { epoch });
+		}
+		require_validity(origin.identity_id, &response, false)?;
+		if origin
+			.account_id
+			.is_some_and(|id| response.account_id != id.to_string())
+			|| origin.suspension_epoch.unwrap_or(0) != response.suspension_epoch.unwrap_or(0)
+			|| origin.source_disable_epoch.unwrap_or(0) != response.source_disable_epoch
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+}
+
+fn origin_key(origin: &aidash_domain::accounts::DurableOrigin) -> OriginKey {
+	(
+		origin.identity_id,
+		origin.account_id,
+		origin.suspension_epoch,
+		origin.source_disable_epoch,
+	)
+}
+
+/// The Authentication Server answered and refused; an unavailable answer is not
+/// a refusal and leaves reuse to run out at T (#876 decision 4).
+fn definite_refusal(error: &Error) -> bool {
+	matches!(
+		error,
+		Error::Forbidden | Error::Unauthorized | Error::AccountSuspended { .. }
+	)
 }
 
 fn require_validity(identity: Uuid, response: &ValidityResponse, interactive: bool) -> Result<()> {
@@ -347,41 +405,20 @@ impl Authority for Client {
 		&self,
 		origin: &aidash_domain::accounts::DurableOrigin,
 	) -> Result<()> {
-		let response = AuthenticationValidityClient::new(self.channel.clone())
-			.validate_origin(ValidateOriginRequest {
-				external_identity_id: origin.identity_id.to_string(),
-				expected_account_id: origin
-					.account_id
-					.map(|id| id.to_string())
-					.unwrap_or_default(),
-				expected_suspension_epoch: origin.suspension_epoch,
-				expected_source_disable_epoch: origin.source_disable_epoch,
-				bind_current: false,
-			})
-			.await
-			.map_err(rpc_error)?
-			.into_inner();
-		if !response.active
-			&& response.reason == "account_suspended"
-			&& Uuid::parse_str(&response.source_identity_id).ok() == Some(origin.identity_id)
-			&& origin
-				.account_id
-				.is_none_or(|id| response.account_id == id.to_string())
-			&& origin.source_disable_epoch.unwrap_or(0) == response.source_disable_epoch
-			&& let Some(epoch) = response.suspension_epoch
-		{
-			return Err(Error::AccountSuspended { epoch });
+		let result = self.bound_origin_online(origin).await;
+		if result.as_ref().is_err_and(definite_refusal) {
+			// A refusal seen online ends the reuse of this origin at once (ADR
+			// 0130), so other Runs bound to it stop at their next boundary.
+			let removed = self
+				.origin_cache
+				.lock()
+				.expect("validity cache")
+				.remove(&origin_key(origin));
+			if let Some(entry) = removed {
+				*entry.lock().await = None;
+			}
 		}
-		require_validity(origin.identity_id, &response, false)?;
-		if origin
-			.account_id
-			.is_some_and(|id| response.account_id != id.to_string())
-			|| origin.suspension_epoch.unwrap_or(0) != response.suspension_epoch.unwrap_or(0)
-			|| origin.source_disable_epoch.unwrap_or(0) != response.source_disable_epoch
-		{
-			return Err(Error::Forbidden);
-		}
-		Ok(())
+		result
 	}
 	async fn validate_bound_origin_within_t(
 		&self,
@@ -390,21 +427,24 @@ impl Authority for Client {
 		if self.cache_ttl.is_zero() {
 			return self.validate_bound_origin(origin).await;
 		}
-		let key = (
-			origin.identity_id,
-			origin.account_id,
-			origin.suspension_epoch,
-			origin.source_disable_epoch,
-		);
-		let entry = entry(&self.origin_cache, key, self.cache_ttl);
+		let entry = entry(&self.origin_cache, origin_key(origin), self.cache_ttl);
 		let mut last = entry.lock().await;
 		let now = Instant::now();
 		if last.is_some_and(|checked| now.duration_since(checked) < self.cache_ttl) {
 			return Ok(());
 		}
-		self.validate_bound_origin(origin).await?;
-		*last = Some(now);
-		Ok(())
+		// Holding the entry, check online without `validate_bound_origin`, which
+		// would wait on this same entry to clear it.
+		match self.bound_origin_online(origin).await {
+			Ok(()) => {
+				*last = Some(now);
+				Ok(())
+			}
+			Err(error) => {
+				*last = None;
+				Err(error)
+			}
+		}
 	}
 	async fn resume_suspended_origin(
 		&self,
