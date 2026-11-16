@@ -57,8 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "The scripted Agents carry no compaction Decider (the evaluator never approves the built-in one), so "
-    "long-context tasks pause with `context_unreducible` at the window instead of measuring pruning.",
+    "Long-context tasks can pause with `context_unreducible` at the window; "
+    "this tier does not measure recovery quality.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -74,10 +74,8 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
-    "Decider/Summary work is dispatched only when the approval accepts its declared per-call amount as a "
-    "reservation (external_compaction.cost_enforcement). The Node enforces only the call counts; a declared "
-    "reservation is not a provider cap or a reported charge, and Decision Attempt costs have no HTTP read "
-    "endpoint, so every such Run stays charged at its full auxiliary reservation.",
+    "Summary work requires an approved per-call reservation; the Node enforces call counts but the "
+    "reservation is not a provider cap or reported charge. Runs remain charged at the full reservation.",
 ]
 
 
@@ -665,8 +663,8 @@ def run_deterministic(args, binary_directory):
         error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
-    harness = {"compaction": "none: the scripted Agents remove the default compaction binding", "cache_salt": True,
-               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none",
+    harness = {"compaction": "server-configured; recovery diagnostics skipped", "cache_salt": True,
+               "provider_credential": None, "disclosure_approval": None,
                "builtin_policy": "historical-defaults/1" if corpus["version"] == "fixed-task-corpus-v1"
                                  else "minimal-task-support/1"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": max(1.0, time.monotonic() - started),
@@ -797,18 +795,13 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                                                  args.tool_endpoint)
     auxiliary = evaluation.auxiliary_allowance(approval)
     auxiliary_entries = {}
-    for kind in ("decider", "summary"):
+    for kind in ("summary",):
         allowance = auxiliary[kind]
         if allowance:
             identifier, _, version = allowance["reference"].partition("@")
             auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
     evaluation.verify_auxiliary_configs(auxiliary, auxiliary_entries, credential["provider"])
     evaluation.require_enforceable_auxiliary_bound(auxiliary)
-    missing = sorted({p["task"]["id"] for p in planned_runs if p["task"].get("requires_compaction")
-                      and (not auxiliary["decider"] or p["task"].get("requires_summary") and not auxiliary["summary"])})
-    if missing:
-        raise evaluation.GuardRefusal(f"tasks {missing} require approved bounded Decider/Summary allowances; "
-                                      "declare their exact references, configuration digests and all-call cost caps")
     evaluation.check_matched_live_models(corpus, planned_runs, mapping, models, execution_estimator=execution_estimator)
     if code_oracle:
         try:
@@ -852,7 +845,9 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                        runner.binding_guard(args.tenant, credential["provider"],
                                                             (binding["provider_credential_id"], binding["revision"]), subject),
                                        execution_seed=args.execution_seed,
-                                       auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None)
+                                       auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None,
+                                       side_effect_reader=(lambda run_id: runner.read_fixture_ledger(fixture_endpoint, run_id))
+                                       if fixture_endpoint is not None else None)
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
         error = f"interrupted by the evaluator ({type(stop).__name__})"
@@ -894,10 +889,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                    "source_provenance": "source-attestation" if source_attestation else "remote-unverified",
                    "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
-                   "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": f"bounded approved Decider ({auxiliary['cost_enforcement']})"
-                                     if auxiliary["decider"] else
-                                     "excluded: the approval attests the Tenant approves no compaction Decider"}
+                   "disclosure_approval": evaluation.canonical_sha256(approval)}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
                   "spend_ceiling_nanocredits": args.max_spend_nanocredits}

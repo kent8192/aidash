@@ -118,6 +118,14 @@ export function fixture(reference = false) {
     artifacts: [] as Artifact[],
     unconfirmed: [] as Unconfirmed[],
     installations: [],
+    next_cursors: {
+      workspaces: null,
+      tasks: null,
+      runs: null,
+      artifacts: null,
+      human_requests: null,
+      conversations: null,
+    },
     human_requests: [
       {
         id: "question-one",
@@ -617,8 +625,19 @@ export async function setup(
       return route.fulfill({
         json: {
           ...data,
+          human_requests: data.human_requests.filter(
+            (request) => request.response === null,
+          ),
           access,
           ...(options.omitUnconfirmed ? { unconfirmed: undefined } : {}),
+        },
+      });
+    if (path === "/api/human-requests" && request.method() === "GET")
+      return route.fulfill({
+        json: {
+          items: data.human_requests,
+          next_cursor: null,
+          ...(options.omitUnconfirmed ? {} : { unconfirmed: [] }),
         },
       });
     if (path === "/api/tenants/acme/nodes")
@@ -861,6 +880,18 @@ export async function setup(
         return route.fulfill({ json: data.human_requests[0] });
       }
     }
+    const runsWorkspace = path.match(/^\/api\/workspaces\/([^/]+)\/runs$/)?.[1];
+    if (runsWorkspace)
+      return route.fulfill({
+        json: {
+          items: data.runs.filter(
+            (run) =>
+              run.workspace_id === runsWorkspace &&
+              !["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase),
+          ),
+          next_cursor: null,
+        },
+      });
     const workspace = data.workspaces.find(
       (value) => path === `/api/workspaces/${value.id}`,
     );

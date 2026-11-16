@@ -1,8 +1,8 @@
 //! The impact of withdrawing one Catalog Approval, shown before the decision.
 //! Withdrawal itself is never blocked (#540): this only tells the approver
 //! which Agents can no longer start and how many Runs are still in flight.
-//! Those Runs pause at their next use of the withdrawn version (a Decider at
-//! its next compaction); they are not stopped here. A Run that only read the
+//! Those Runs pause at their next use of the withdrawn version; they are not
+//! stopped here. A Run that only read the
 //! version, for example by discovering it, is hidden and cannot be resumed
 //! until the version is approved again, so those are counted too.
 use super::approvals::dependencies;

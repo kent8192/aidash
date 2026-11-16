@@ -10,46 +10,6 @@ lines descend from a file recorded as adapted. **Content** means that the file
 was found by comparing it with the upstream source. **Copy** means that the
 file is an upstream file itself, unchanged apart from compression.
 
-## fast-jev-compaction
-
-- Source: <https://github.com/tamaratran/fast-jev-compaction>
-- Revision: `e3f262a7f4d42bd8dd32ced30d26176f7cb545b0`
-- License: MIT, in [third_party/fast-jev-compaction/LICENSE](third_party/fast-jev-compaction/LICENSE)
-
-Files that contain adapted material:
-
-- `crates/aidash-application/src/decision/state.rs`: the compaction rubric and the per-call question pair, rewritten rather than copied (content)
-
-### How the files were traced
-
-The root `LICENSE` used to name `src/context/compaction.rs` and
-`src/context/jev.rs`. The workspace split (#102, commit `095b71090`) removed
-both paths. On `develop/0.1.0` at `68c27f135`, `git blame -w -C -C -M` ran over
-every Rust file that mentions Jev, compaction or decisions. A file is listed
-when lines trace to one of the two paths and those lines are more than generic
-code. Imports, the `reqwest` client builder and single signatures count as
-generic, which excludes `crates/aidash-integrations/src/decision.rs`,
-`crates/aidash-broker/src/lib.rs`, `crates/aidash-application/src/execution.rs`
-and `server/src/apps/execution/generation/services/compaction.rs`.
-
-The content search compared upstream `src/compact.ts` and `src/state.ts` at the
-pinned revision with the tree. It searched for the upstream defaults (0.5, 6,
-25,000, 30,000 and 300), the input caps (1,000, 200 and 60), the state text and
-the question structure. It found the decision rubric in addition to the files
-above.
-
-#108 (commits `8ae3d9d81` and `7b6880532`) replaced the compactor with the
-compaction Decider. It deleted `crates/aidash-application/src/context/compaction.rs`,
-`crates/aidash-integrations/src/compaction.rs` with its tests and
-`server/src/apps/execution/services/context/jev.rs`, and removed the Jev answer
-validation from `crates/aidash-application/src/context.rs`. The same blame on
-the #108 head traces no lines to the two paths beyond generic code: the
-`reqwest` client builder in `crates/aidash-integrations/src/decision.rs` and
-imports and a route in its tests. `crates/aidash-domain/src/decision/pruning.rs`
-carries lines from the deleted `context/compaction.rs`, but they were written
-in that file after the split and do not trace to either path. The content
-search found none of the upstream defaults or input caps outside the rubric.
-
 ## Hindsight
 
 - Source: <https://github.com/vectorize-io/hindsight>

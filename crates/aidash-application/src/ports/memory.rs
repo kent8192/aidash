@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod objects;
+pub mod offloads;
 
 /// Native adapters retain this ledger outside recoverable database snapshots.
 /// Only memory paths consult its serving gate; primary execution remains usable.
@@ -162,10 +163,17 @@ pub enum ReflectStep {
 	Answer { reflection: Reflection },
 }
 
-/// Role bindings must resolve the exact Registry version. There is no implicit provider fallback.
+/// Entry roles resolve the exact Registry version; AgentModel uses the calling Run's pinned model.
 /// Before external calls, reserve the supplied bounded allowance through the origin budget ledger.
 #[async_trait]
 pub trait MemoryModels: Send + Sync {
+	/// Resolve an Agent role within the calling Run's pinned authority.
+	fn resolve_model(&self, role: &RoleModel) -> Result<EntityRef> {
+		match role {
+			RoleModel::Entry(entry) => Ok(entry.clone()),
+			RoleModel::AgentModel => Err(crate::Error::Forbidden),
+		}
+	}
 	/// Resolve the exact reranker binding before reserving a provider call.
 	/// Local rerankers receive zero allowance and must report zero usage.
 	fn reranker_uses_model(&self, model: &EntityRef) -> Result<bool>;

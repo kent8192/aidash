@@ -162,6 +162,42 @@ State mutations append durable events in the same transaction. An outbox publish
 
 The Marketplace is a tenant-scoped, versioned repository exposed by the node API. Installation validates metadata and dependencies, verifies the digest and atomically registers an immutable tenant copy, which needs its own approval before use ([Marketplace operations](operations/marketplace-authorization.md)). Payments, rankings, WASM sandboxing and automatic model routing remain outside this version. Kubernetes orchestration, automatic agent generation, complex RBAC/ABAC, distributed transactions, semantic memory/vector DB and full A2A compatibility are required for v0.1.0. Several protocol and runtime paths exist, but their integrated release acceptance is incomplete. The [generation backend](generation.md) connects revisioned policies and durable quota reservations to atomic registration, scoped worker execution and lifecycle reconciliation.
 
+### Subnode Journal ranges
+
+A Run may give a Subnode Task an inclusive range of its own Context Journal:
+
+```json
+{
+  "subnode_id": "00000000-0000-0000-0000-000000000001",
+  "title": "Inspect the earlier results",
+  "request": "Find the evidence relevant to the task.",
+  "journal_range": { "from_seq": 4, "through_seq": 9 }
+}
+```
+
+Both endpoints must exist in the creating Run's Journal, and `from_seq` must not
+exceed `through_seq`. The handover is recorded as a read by the creating Run, so
+its Read Recheck covers the handover. A Task without a range receives no Journal
+grant.
+
+The leader and members working on that Task, including its delegated work, can
+read the handed range without receiving `run.read` on the creating Run. The
+Journal tool description supplies the creating Run ID and the permitted bounds.
+Pass that ID as `run_id` and specify a range within those bounds to
+`journal_query`; without a Runner, use `journal_read` or `journal_search` with
+the same `run_id` and bounds. The grant does not allow requests outside its
+range or access to another Run. Omitting `run_id` selects the member's own
+Journal. Revoked content is replaced before export, including for members, and a changed
+withdrawal generation resets a Journal Query session.
+
+Every `subnode_message` is returned to the creating Run as a `Trust::Data`
+envelope, including messages from Tasks without a Journal range. It is not a
+person's instruction or correction. During message catch-up, result bodies are
+not folded into the human-message summary; their Workspace records remain
+available through `workspace_read`. Earlier result references are bounded in
+the request, and older messages can be found through `workspace_observe`
+pagination. See [ADR 0110](adr/0110-agents-create-subnodes-which-are-run-scoped-groups-not-nodes.md).
+
 ### Memory contracts
 
 Three contracts are separate ownership areas, each with its owning Issue. They share

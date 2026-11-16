@@ -72,9 +72,6 @@ pub async fn create(
 	}
 	let mut member_ids = BTreeSet::new();
 	for member in &input.members {
-		if member.id == run.agent_id {
-			return Err(refused(subnodes::Refusal::CreatorMember));
-		}
 		if !member_ids.insert(&member.id) {
 			return Err(refused(subnodes::Refusal::DuplicateMember(
 				member.id.clone(),
@@ -138,9 +135,6 @@ pub async fn add_member(
 ) -> Result<()> {
 	let subnode = active(scope, id).await?;
 	participant(&subnode, run)?;
-	if subnode.creator_agent.id == agent.id {
-		return Err(refused(subnodes::Refusal::CreatorMember));
-	}
 	if subnode
 		.members
 		.iter()
@@ -182,12 +176,15 @@ pub async fn task(
 	key: &str,
 	title: &str,
 	request: &str,
+	journal_range: Option<subnodes::JournalRange>,
 ) -> Result<uuid::Uuid> {
 	let subnode = active(scope, id).await?;
 	creator(&subnode, run)?;
 	aidash_domain::nonempty(title, "title")?;
 	aidash_domain::nonempty(request, "request")?;
-	scope.task(&subnode, run, key, title, request).await
+	scope
+		.task(&subnode, run, key, title, request, journal_range)
+		.await
 }
 
 pub async fn dissolve(
@@ -273,6 +270,8 @@ pub enum Command {
 		id: subnodes::SubnodeId,
 		title: String,
 		request: String,
+		#[serde(default)]
+		journal_range: Option<subnodes::JournalRange>,
 	},
 	Add {
 		id: subnodes::SubnodeId,
