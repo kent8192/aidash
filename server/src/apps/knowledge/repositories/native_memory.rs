@@ -10,6 +10,8 @@ use reinhardt::query::{
 use std::collections::{BTreeSet, VecDeque};
 
 mod dependencies;
+#[cfg(test)]
+mod tests;
 pub(crate) use dependencies::validate_impact;
 use uuid::Uuid;
 
@@ -248,7 +250,7 @@ pub(crate) async fn mutate_origin(
 			&& current.revision == *expected_revision
 			&& !current.deleted
 			&& !current.stale
-			&& canonical(content) == current.content
+			&& canonical(content, &mutation.provider) == current.content
 		{
 			// A write identical to the current revision is not a change: the
 			// revision stays, so no Run that read it stops. A stale Unit is
@@ -325,13 +327,7 @@ pub(crate) async fn mutate_origin(
 				unit
 			}
 		};
-		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
-			&& mutation.provider.version
-				== aidash_domain::registry::bindings::memory_defaults::VERSION
-			&& unit.content.verification == Verification::Unverified
-		{
-			unit.content.verification = Verification::Recorded;
-		}
+		unit.content = canonical(&unit.content, &mutation.provider);
 		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
 			&& mutation.provider.version
 				== aidash_domain::registry::bindings::memory_defaults::VERSION
@@ -346,10 +342,6 @@ pub(crate) async fn mutate_origin(
 			return Err(Error::Invalid(
 				"built-in memory facts require Journal provenance".into(),
 			));
-		}
-		if let Some(range) = unit.content.occurred.as_mut() {
-			range.start = range.start.trunc_subsecs(6);
-			range.end = range.end.trunc_subsecs(6);
 		}
 		if !unit.deleted {
 			units::unexpired(lease, &unit).await?;
@@ -555,10 +547,22 @@ pub(crate) async fn mutate_origin(
 	Ok(result)
 }
 
-/// `content` as it would be stored: PostgreSQL keeps microseconds, so an
+/// `content` as it would be stored: the built-in provider records an
+/// unverified fact as `recorded`, and PostgreSQL keeps microseconds, so an
 /// incoming time with nanoseconds equals the stored one only once truncated.
-fn canonical(content: &aidash_domain::memory::Content) -> aidash_domain::memory::Content {
+/// A changed write stores exactly this, and an identical write compares it.
+fn canonical(
+	content: &aidash_domain::memory::Content,
+	provider: &aidash_domain::registry::EntityRef,
+) -> aidash_domain::memory::Content {
+	use aidash_domain::registry::bindings::memory_defaults;
 	let mut content = content.clone();
+	if provider.id == memory_defaults::MEMORY_ID
+		&& provider.version == memory_defaults::VERSION
+		&& content.verification == Verification::Unverified
+	{
+		content.verification = Verification::Recorded;
+	}
 	if let Some(range) = content.occurred.as_mut() {
 		range.start = range.start.trunc_subsecs(6);
 		range.end = range.end.trunc_subsecs(6);
