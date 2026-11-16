@@ -1096,5 +1096,6 @@
   "unconfirmedItems": "{node} に確認できなかったため、{count} 件を表示していません。{node} が応答したら確認し直します。",
   "modelSafetyRetentionOnly": "Safety Retention の経路しかないため、Zero Data Retention では使えません",
   "modelNoZdrRoute": "ゼロデータ保持の経路がないため、このデータ保護レベルでは使えません",
-  "degradedCauseDataProtection": "埋め込みモデルがデータ保護レベルを満たせません"
+  "degradedCauseDataProtection": "埋め込みモデルがデータ保護レベルを満たせません",
+  "semanticDataProtection": "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。索引に入れるには埋め込みモデルを切り替えてください。"
 }

@@ -1096,5 +1096,6 @@
   "unconfirmedItems": "{count} items are not shown because {node} could not be reached to confirm them. They are checked again once it answers.",
   "modelSafetyRetentionOnly": "Only Safety Retention routes, so not usable at Zero Data Retention",
   "modelNoZdrRoute": "No zero data retention route, so not usable at this Data Protection Level",
-  "degradedCauseDataProtection": "The embedding model cannot meet the Data Protection Level"
+  "degradedCauseDataProtection": "The embedding model cannot meet the Data Protection Level",
+  "semanticDataProtection": "The embedding model cannot meet this Tenant's Data Protection Level. Switch the embedding model to index this item."
 }

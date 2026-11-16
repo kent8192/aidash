@@ -90,6 +90,7 @@ const semanticMessages: Record<string, string> = {
   modality: "semanticImageModality",
   too_large: "semanticImageTooLarge",
   limit: "semanticImageLimit",
+  data_protection: "semanticDataProtection",
 };
 
 export function SemanticPage({
