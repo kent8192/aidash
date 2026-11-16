@@ -23965,6 +23965,71 @@
   {
     "json": true,
     "method": "POST",
+    "name": "agent-plugin-tools",
+    "path": "/api/agent-plugins/tools",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "AttachListing": {
+            "description": "The answer of an attach-time listing. When it is `unavailable`, Read-only cannot be declared\nfor the server; `reason` is a typed cause code, never a URL or a response body.",
+            "oneOf": [
+              {
+                "properties": {
+                  "outcome": {
+                    "enum": ["listed"],
+                    "type": "string"
+                  },
+                  "tools": {
+                    "items": {
+                      "$ref": "#/components/schemas/AttachTool"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": ["outcome", "tools"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "outcome": {
+                    "enum": ["unavailable"],
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": ["outcome", "reason"],
+                "type": "object"
+              }
+            ]
+          },
+          "AttachTool": {
+            "description": "One tool an attach-time listing returned: its name and the `inputSchema` digest a Read-only\ndeclaration records, computed exactly as the Run-start pin computes it.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "schema_digest": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "schema_digest"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/AttachListing"
+        }
+      }
+    },
+    "source": "server/src/apps/registry/views/management.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
     "name": "task-delegate",
     "path": "/api/tasks/{id}/delegate",
     "query_parameters": [],
