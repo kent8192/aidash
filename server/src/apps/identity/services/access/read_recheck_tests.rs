@@ -587,29 +587,141 @@ async fn preview_stop(fixture: &Fixture, id: Uuid) -> (String, Option<String>) {
 		.unwrap()
 }
 
-async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) {
+/// The Home a Remote Grant Run came from: a Node on another Deployment.
+const HOME_DEPLOYMENT: &str = "aidash://home-fixture";
+/// The Home subject the receiver's Peer Mapping maps to the chain root.
+const SOURCE_SUBJECT: &str = "home-reader";
+
+fn home_node() -> String {
+	aidash_domain::nodes::DeploymentId::parse(HOME_DEPLOYMENT)
+		.unwrap()
+		.node(aidash_domain::nodes::NodeName::derived("home"))
+		.to_string()
+}
+
+/// A Remote Grant Run as the receiver holds it.
+struct RemoteRun {
+	/// The Home's Workspace, which has no row on the receiver (#904).
+	workspace: Uuid,
+	/// What the receiver pinned at admission.
+	description: aidash_domain::federation::execution::Description,
+}
+
+impl RemoteRun {
+	/// Rewrites the pinned Description, as if the receiver had admitted this one.
+	async fn pin(&self, fixture: &Fixture) {
+		sqlx::query("UPDATE authorization_remote_admissions SET description = $1 WHERE id = $2")
+			.bind(serde_json::to_value(&self.description).unwrap())
+			.bind(fixture.run)
+			.execute(fixture.driver())
+			.await
+			.unwrap();
+	}
+}
+
+/// The Description a receiver pins when it admits `fixture.run` from the Home.
+/// It names no dependency definitions, so the catalog checks are not exercised.
+fn admission_description(
+	fixture: &Fixture,
+	workspace: Uuid,
+) -> aidash_domain::federation::execution::Description {
+	use aidash_domain::{
+		federation::execution::{Description, Inspection},
+		registry::bindings::{BindingSnapshot, QualifiedRef},
+	};
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let now = chrono::Utc::now();
+	Description {
+		grant_id: Uuid::new_v4(),
+		source_node: home_node(),
+		target_node: format!("{DEPLOYMENT}/{node}"),
+		source_tenant: "home".into(),
+		source_subject: SOURCE_SUBJECT.into(),
+		task: aidash_domain::Task {
+			id: fixture.task,
+			workspace_id: workspace,
+			title: "Fixture".into(),
+			description: "Fixture".into(),
+			status: aidash_domain::TaskStatus::Running,
+			requirements: json!({}),
+			owner: None,
+			created_by: "reader".into(),
+			dependencies: vec![],
+			parent_id: None,
+			revision: 1,
+			created_at: now,
+		},
+		inspection: Inspection {
+			binding_snapshot: BindingSnapshot {
+				schema_version: 1,
+				agent: QualifiedRef {
+					registry_deployment: HOME_DEPLOYMENT.into(),
+					id: "fixture".into(),
+					version: "1.0.0".into(),
+				},
+				remote: true,
+				bindings: vec![],
+				definitions: vec![],
+				foreign_agents: vec![],
+				agent_plugins: vec![],
+			},
+			generation: None,
+			lineage: vec![],
+			node_id: format!("{DEPLOYMENT}/{node}"),
+			authority_digest: format!("sha256:{}", "a".repeat(64)),
+			agent: serde_json::from_value(json!({
+				"id":"fixture", "version":"1.0.0", "kind":"agent",
+				"name":{"en":"Fixture"}, "description":{"en":"Fixture"}
+			}))
+			.unwrap(),
+			definitions: vec![],
+			semantic_memory: 0,
+		},
+		expires_at: now + chrono::Duration::hours(1),
+		semantic: aidash_domain::semantic::remote::Binding::Disabled {},
+	}
+}
+
+/// Turns `fixture.run` into a Remote Grant Run as the receiver admitted it: its
+/// Home is a Node on another Deployment, its Workspace exists only there, it has
+/// an admission instead of a local grant, and the Peer Mapping its admission
+/// came through is enabled. The read journal stays local.
+async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) -> RemoteRun {
+	let driver = fixture.driver();
 	sqlx::query("DELETE FROM authorization_execution WHERE run_id = $1")
 		.bind(fixture.run)
-		.execute(fixture.driver())
+		.execute(driver)
 		.await
 		.unwrap();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
-	// Keep the read journal local while exercising the receiver admission path.
-	// The preview has no local grant, as on a Remote Grant Run.
-	sqlx::query("UPDATE runs SET home_node = $1 WHERE id = $2")
-		.bind(format!("{DEPLOYMENT}/{node}"))
+	let workspace = Uuid::new_v4();
+	sqlx::query("UPDATE runs SET home_node = $1, workspace_id = $2 WHERE id = $3")
+		.bind(home_node())
+		.bind(workspace)
 		.bind(fixture.run)
-		.execute(fixture.driver())
+		.execute(driver)
 		.await
 		.unwrap();
-	sqlx::query("INSERT INTO authorization_remote_admissions (id,node,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES ($1,$2,$3,$4,$5,'acme',$6,$7,'{}')")
-		.bind(fixture.run).bind(node).bind(DEPLOYMENT).bind(Uuid::new_v4()).bind(fixture.task)
+	sqlx::query("INSERT INTO node_registrations (tenant,node,source_node,atomic_transactions,enabled,revision,actor) VALUES ('acme',$1,$2,false,true,1,'fixture')")
+		.bind(&node).bind(home_node())
+		.execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO authorization_peer_mappings (tenant,node,source_node,source_subject,credential_id,enabled,revision,actor) VALUES ('acme',$1,$2,$3,$4,true,1,'fixture')")
+		.bind(&node).bind(home_node()).bind(SOURCE_SUBJECT).bind(fixture.identity.credential_id)
+		.execute(driver).await.unwrap();
+	let description = admission_description(fixture, workspace);
+	sqlx::query("INSERT INTO authorization_remote_admissions (id,node,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES ($1,$2,$3,$4,$5,'acme',$6,$7,$8)")
+		.bind(fixture.run).bind(&node).bind(home_node()).bind(description.grant_id).bind(fixture.task)
 		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
-		.execute(fixture.driver()).await.unwrap();
+		.bind(serde_json::to_value(&description).unwrap())
+		.execute(driver).await.unwrap();
 	if with_session {
 		sqlx::query("INSERT INTO egress_sessions (id,tenant,run_id,live_preview_id,principal,credential_id,expires_at,max_sent_bytes,max_received_bytes,max_requests) VALUES ($1,'acme',$2,$1,'reader',$3,clock_timestamp()+interval '1 hour',100,100,10)")
 			.bind(preview).bind(fixture.run).bind(fixture.identity.credential_id)
-			.execute(fixture.driver()).await.unwrap();
+			.execute(driver).await.unwrap();
+	}
+	RemoteRun {
+		workspace,
+		description,
 	}
 }
 
@@ -626,16 +738,9 @@ async fn remote_preview_recheck_without_receiver_workspace(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, with_session).await;
-	let remote_workspace = Uuid::new_v4();
-	sqlx::query("UPDATE runs SET workspace_id = $1 WHERE id = $2")
-		.bind(remote_workspace)
-		.bind(fixture.run)
-		.execute(fixture.driver())
-		.await
-		.unwrap();
+	let remote = remote_preview(&fixture, preview, with_session).await;
 	let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1)")
-		.bind(remote_workspace)
+		.bind(remote.workspace)
 		.fetch_one(fixture.driver())
 		.await
 		.unwrap();
