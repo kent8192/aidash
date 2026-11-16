@@ -803,3 +803,22 @@ async fn node_liveness_is_rechecked_after_a_savepoint_rollback(
 	tx.require_live_node("acme", node.as_str()).await.unwrap();
 	tx.take().unwrap().rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn workspace_owner_cache_respects_lock_strength_and_savepoint_rollback() {
+	let pool: Pool = sqlx::postgres::PgPoolOptions::new()
+		.connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+		.unwrap()
+		.into();
+	let probe = crate::database::native::probe::SavepointProbe::default();
+	let mut tx = AccessTransaction::new(probe.transaction(pool));
+	let locked = Uuid::new_v4();
+	let unlocked = Uuid::new_v4();
+	tx.remember_workspace_owner(locked, true, "alice");
+	tx.remember_workspace_owner(unlocked, false, "bob");
+	assert_eq!(tx.workspace_owner(locked, false).as_deref(), Some("alice"));
+	assert_eq!(tx.workspace_owner(unlocked, true), None);
+	tx.rollback_to_savepoint("owner").await.unwrap();
+	assert_eq!(tx.workspace_owner(locked, false), None);
+	assert_eq!(tx.workspace_owner(unlocked, false), None);
+}

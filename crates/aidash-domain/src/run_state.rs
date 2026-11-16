@@ -12,12 +12,14 @@ use uuid::Uuid;
 mod capability;
 mod reads;
 mod row;
+mod summary;
 #[cfg(test)]
 mod tests;
 pub use capability::{LeaseWait, PersistedCapability, StateRequirements};
 pub use reads::RunReadsBlock;
 pub use row::RawRun;
 pub use row::{RunInspection, RunMetadata};
+pub use summary::RunSummary;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

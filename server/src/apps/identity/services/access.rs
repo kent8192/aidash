@@ -184,7 +184,14 @@ impl AccessTransaction {
 
 	pub(crate) fn workspace_owner(&mut self, id: Uuid, lock: bool) -> Option<String> {
 		self.current_workspaces();
-		self.workspace_owners.get(&(id, lock)).cloned()
+		self.workspace_owners
+			.get(&(id, lock))
+			.or_else(|| {
+				(!lock)
+					.then(|| self.workspace_owners.get(&(id, true)))
+					.flatten()
+			})
+			.cloned()
 	}
 
 	pub(crate) fn remember_workspace_owner(&mut self, id: Uuid, lock: bool, owner: &str) {
