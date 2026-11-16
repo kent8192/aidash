@@ -100,6 +100,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"registry_requests" | "core_requests" => Subject("principal"),
 		"subnode_members" => Link("subnode_id", Subnode),
 		"scratch_space_settings" | "scratch_space_members" => Link("space_id", ScratchSpace),
+		"agent_plugin_data" => Link("scratch_space_id", ScratchSpace),
 		"identity_thread_approval_modes" => Link("thread_id", Thread),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
@@ -291,7 +292,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "tenant_data_protection"
 		| "agent_knowledge"
 		| "agent_plugin_copies"
-		| "agent_plugin_data"
 		| "agent_test_limits"
 		| "agent_test_profiles"
 		| "agent_test_sessions"

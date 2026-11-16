@@ -2,8 +2,9 @@
 //! own authority: its Execution Pod with the Run credential, the Tenant's approval of the
 //! built-in `mcp_stdio` group, the plugin copy's files and `${PLUGIN_DATA}`.
 //!
-//! `${PLUGIN_DATA}` is kept in `agent_plugin_data`, one current version per Tenant, Agent and
-//! plugin, read and replaced in the Run's Tenant scope.
+//! `${PLUGIN_DATA}` is kept in `agent_plugin_data`, one current version per Tenant, Scratch
+//! Space, Agent and plugin, read and replaced in the Run's Tenant scope. Everyone who may use the
+//! Scratch Space already shares its Pod, so the saved data follows the same boundary.
 use super::{Access, Guard};
 use crate::apps::execution::models::agent_plugin_data::AgentPluginData;
 use crate::{apps::registry::repositories::agent_plugins, domain::Run, store::Store};
@@ -81,6 +82,17 @@ impl StdioHost {
 			aidash_application::authorization::catalog::attributes(&entry),
 		);
 		access.require(&resource, "tool.invoke").await
+	}
+
+	/// The Run's Scratch Space, whose Pod holds the live data.
+	async fn space(&self, access: &mut Access) -> crate::Result<Uuid> {
+		crate::apps::execution::repositories::operations::pods::run_space(
+			&self.store,
+			access,
+			&self.run.metadata(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	fn tenant(&self) -> Result<String> {
@@ -166,8 +178,10 @@ impl StdioPluginHost for StdioHost {
 		let tenant = access.identity.tenant.clone();
 		let result = async {
 			self.gate(&mut access).await?;
+			let space = self.space(&mut access).await?;
 			AgentPluginData::objects()
 				.filter(AgentPluginData::field_tenant().eq(tenant))
+				.filter(AgentPluginData::field_scratch_space_id().eq(space))
 				.filter(AgentPluginData::field_agent_id().eq(self.run.agent_id.clone()))
 				.filter(AgentPluginData::field_plugin().eq(plugin.as_str().to_owned()))
 				.all_with_executor(&mut **access.tx)
@@ -201,41 +215,54 @@ impl StdioPluginHost for StdioHost {
 		let count = files.len();
 		let data = stdio_session::pack_data(&files);
 		let digest = hex(&Sha256::digest(&data));
-		let (sql, values) = Query::insert()
-			.into_table(Alias::new(AgentPluginData::table_name()))
-			.columns(
-				[
-					"id", "tenant", "agent_id", "plugin", "data", "size", "files", "sha256",
-					"saved_at",
-				]
-				.map(Alias::new),
-			)
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(Uuid::new_v4()))
-					.expr(Expr::value(self.tenant()?))
-					.expr(Expr::value(self.run.agent_id.clone()))
-					.expr(Expr::value(plugin.as_str().to_owned()))
-					.expr(Expr::value(data))
-					.expr(Expr::value(i64::try_from(size).unwrap_or(i64::MAX)))
-					.expr(Expr::value(i32::try_from(count).unwrap_or(i32::MAX)))
-					.expr(Expr::value(digest))
-					.expr(Expr::value(Utc::now()))
-					.to_owned(),
-			)
-			// One current version: a save replaces the previous one whole.
-			.on_conflict(
-				OnConflict::columns(["tenant", "agent_id", "plugin"].map(Alias::new))
-					.update_columns(["data", "size", "files", "sha256", "saved_at"].map(Alias::new))
-					.to_owned(),
-			)
-			.build(PostgresQueryBuilder);
+		let tenant = self.tenant()?;
 		// Written under the Run's lease, after the same checks as a call: a Run that lost its
 		// lease or authority keeps the previous version.
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
 			self.gate(&mut access).await?;
+			let space = self.space(&mut access).await?;
+			let (sql, values) = Query::insert()
+				.into_table(Alias::new(AgentPluginData::table_name()))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"scratch_space_id",
+						"agent_id",
+						"plugin",
+						"data",
+						"size",
+						"files",
+						"sha256",
+						"saved_at",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(Uuid::new_v4()))
+						.expr(Expr::value(tenant))
+						.expr(Expr::value(space))
+						.expr(Expr::value(self.run.agent_id.clone()))
+						.expr(Expr::value(plugin.as_str().to_owned()))
+						.expr(Expr::value(data))
+						.expr(Expr::value(i64::try_from(size).unwrap_or(i64::MAX)))
+						.expr(Expr::value(i32::try_from(count).unwrap_or(i32::MAX)))
+						.expr(Expr::value(digest))
+						.expr(Expr::value(Utc::now()))
+						.to_owned(),
+				)
+				// One current version: a save replaces the previous one whole.
+				.on_conflict(
+					OnConflict::columns(
+						["tenant", "scratch_space_id", "agent_id", "plugin"].map(Alias::new),
+					)
+					.update_columns(["data", "size", "files", "sha256", "saved_at"].map(Alias::new))
+					.to_owned(),
+				)
+				.build(PostgresQueryBuilder);
 			let tx: &mut dyn reinhardt::db::backends::TransactionExecutor = &mut **access.tx;
 			tx.execute(&sql, convert_values(values))
 				.await

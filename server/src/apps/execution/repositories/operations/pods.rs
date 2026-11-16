@@ -119,6 +119,18 @@ pub(crate) async fn tool_context(
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
+/// The Scratch Space whose Execution Pod a Run's tools use.
+pub(crate) async fn run_space(
+	store: &Store,
+	access: &mut Access,
+	run: &RunMetadata,
+) -> Result<Uuid> {
+	let policy = policy(store)?;
+	let mut services = scratch::NativeScratchServices { policy: &policy };
+	let (space_id, _) = services.run_binding_metadata(access, run).await?;
+	Ok(space_id)
+}
+
 /// Stop a Live preview, a Background process of its Run in the Execution Pod.
 /// Returns whether the Runner confirmed the stop; a failed stop request is an
 /// error so callers can tell it from an unconfirmed stop (#781).

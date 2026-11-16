@@ -13,6 +13,7 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_primary_key(true),
 				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("scratch_space_id", FieldType::Uuid).with_not_null(true),
 				ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("plugin", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("data", FieldType::Binary).with_not_null(true),
