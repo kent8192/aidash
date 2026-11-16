@@ -212,9 +212,9 @@ impl RunDetailsScope for Scope<'_> {
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 			.to_string(PostgresQueryBuilder);
 		let result: NativeResult<Vec<RawRun>> = async {
-			Ok(aidash_server::database::query_as(&query)
+			aidash_server::database::query_as(&query)
 				.fetch_all(&mut **self.access.get().tx)
-				.await?)
+				.await
 		}
 		.await;
 		result.map_err(Into::into)
