@@ -1394,6 +1394,7 @@ fn workspace_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::Worksp
 		artifacts: vec![],
 		events,
 		messages: vec![],
+		unconfirmed: vec![],
 	}
 }
 
