@@ -92,8 +92,18 @@ pub async fn local_dependency_without_memory_visible(
 		Some(task) => scope.task_visible(&task).await?,
 		None => false,
 	};
-	Ok(task_visible
-		&& scope.decide(&resource, "run.read").await?
+	if !task_visible {
+		// Same chain rule as `local_base_visible`: a source the reader is refused
+		// anyway is a refusal, not an unconfirmed row (#770).
+		let held = scope.take_row_silence();
+		if held.is_some() {
+			let rest = scope.decide(&resource, "run.read").await?
+				&& scope.human_reads(run.workspace_id, run.id).await?;
+			conclude_chain(scope, held, rest);
+		}
+		return Ok(false);
+	}
+	Ok(scope.decide(&resource, "run.read").await?
 		&& scope.human_reads(run.workspace_id, run.id).await?)
 }
 

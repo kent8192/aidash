@@ -909,3 +909,26 @@ async fn a_run_with_a_silent_task_and_refused_reads_is_not_counted(mut scope: Sc
 	assert!(!local_run_visible(&mut scope, &run()).await.unwrap());
 	assert_eq!(scope.take_row_silence(), None);
 }
+
+#[rstest]
+#[case::run_read_refused(Some("run.read"), true, false)]
+#[case::humans_refused(None, false, false)]
+#[case::nothing_else_refuses(None, true, true)]
+#[tokio::test]
+async fn a_memory_free_source_held_back_by_a_silent_task_counts_only_if_nothing_else_refuses_it(
+	mut scope: Scope,
+	#[case] denied: Option<&'static str>,
+	#[case] humans: bool,
+	#[case] counted: bool,
+) {
+	scope.silent_task = true;
+	scope.denied = denied;
+	scope.humans = humans;
+	scope.begin_row();
+	assert!(
+		!local_dependency_without_memory_visible(&mut scope, &run())
+			.await
+			.unwrap()
+	);
+	assert_eq!(scope.take_row_silence().is_some(), counted);
+}
