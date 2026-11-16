@@ -2,6 +2,7 @@ import json
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
+import pytest
 
 from execution_pod import ExecutionPodController
 
@@ -232,11 +233,51 @@ def test_file_read_http_route_returns_bounded_bytes(tmp_path):
         thread.join()
 
 
+def preview_controller(tmp_path, answers):
+    """A controller whose port probes answer `answers(host, submitted)`."""
+    from types import SimpleNamespace
+    probes = []
+    def kube(args, **kwargs):
+        assert 'port-check' in args, args
+        host = args[-1]
+        probes.append((host, controller.submit_command.called))
+        ready = answers(host, controller.submit_command.called)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'ready': ready}).encode())
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path, kube=kube), {'preview_port': 8080},
+                                        admitted=True)
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running',
+                              'podIP': '10.2.3.4'}})
+    controller.submit_command = Mock(return_value={'status': 'queued'})
+    controller.command_result = Mock(return_value={'status': 'running'})
+    controller._read_command = Mock(return_value={'pod_uid': 'uid'})
+    return controller, probes
+
+
+def test_preview_refuses_a_port_another_process_already_serves(tmp_path):
+    from execution_pod import ExecutionPodError
+    controller, _ = preview_controller(tmp_path, lambda host, submitted: host == '127.0.0.1')
+    request = {'operation_id': '00000000-0000-4000-8000-000000000001', 'scratch_space_id': 's',
+               'run_id': 'r', 'code': 'serve', 'port': 8080}
+    with pytest.raises(ExecutionPodError) as refused:
+        controller.start_preview(request)
+    assert refused.value.code == 'preview_start_failed'
+    assert 'already serving' in refused.value.message
+    controller.submit_command.assert_not_called()
+
+
+def test_preview_readiness_probes_the_pod_address_not_loopback(tmp_path):
+    controller, probes = preview_controller(tmp_path, lambda host, submitted: submitted and host == '10.2.3.4')
+    request = {'operation_id': '00000000-0000-4000-8000-000000000001', 'scratch_space_id': 's',
+               'run_id': 'r', 'code': 'serve', 'port': 8080}
+    assert controller.start_preview(request)['address'] == '10.2.3.4:8080'
+    assert [host for host, submitted in probes if submitted] == ['10.2.3.4']
+
+
 def test_preview_waits_for_port_and_returns_pod_address(tmp_path):
     from types import SimpleNamespace
     operation = '00000000-0000-4000-8000-000000000001'
-    backend = SimpleNamespace(root=tmp_path, kube=Mock(return_value=SimpleNamespace(returncode=0,
-        stdout=b'{"ready":true}')))
+    backend = SimpleNamespace(root=tmp_path, kube=Mock(side_effect=lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps({'ready': controller.submit_command.called}).encode())))
     controller = ExecutionPodController(backend, {'preview_port': 8080}, admitted=True)
     controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running',
                               'podIP': '10.2.3.4'}})
@@ -399,7 +440,10 @@ def test_preview_and_mcp_http_routes(tmp_path):
     preview = '00000000-0000-4000-8000-000000000001'
     mcp = '00000000-0000-4000-8000-000000000002'
     def kube(args, data=None, **kwargs):
-        if 'port-check' in args or 'ping' in args:
+        if 'port-check' in args:
+            ready = controller.submit_command.called
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'ready': ready}).encode())
+        if 'ping' in args:
             return SimpleNamespace(returncode=0, stdout=b'{"ready":true}')
         if 'call' in args:
             return SimpleNamespace(returncode=0, stdout=b'{"message":{"jsonrpc":"2.0","id":1,"result":"ok"}}')

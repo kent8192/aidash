@@ -820,7 +820,8 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
-    if len(sys.argv) == 4 and sys.argv[1] == 'port-check':
+    if len(sys.argv) in (4, 5) and sys.argv[1] == 'port-check':
+        import ipaddress
         import json
         import socket
         if os.environ.get('AIDASH_POD_UID') != sys.argv[2]:
@@ -828,8 +829,10 @@ if __name__ == '__main__':
         port = int(sys.argv[3])
         if not 1 <= port <= 65535:
             raise ValueError('invalid port')
+        # The Pod's own address unless a caller names one (loopback for an occupancy check).
+        host = str(ipaddress.ip_address(sys.argv[4])) if len(sys.argv) == 5 else '127.0.0.1'
         try:
-            with socket.create_connection(('127.0.0.1', port), timeout=1):
+            with socket.create_connection((host, port), timeout=1):
                 ready = True
         except OSError:
             ready = False
