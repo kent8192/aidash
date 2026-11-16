@@ -63,12 +63,8 @@ impl Record for Usage {
 			token_limit: row.try_get("token_limit")?,
 			used_tokens: row.try_get("used_tokens")?,
 			inference_attempts: row.try_get("inference_attempts")?,
-			compaction_call_limit: row.try_get("compaction_call_limit")?,
-			compaction_calls: row.try_get("compaction_calls")?,
 			embedding_calls: row.try_get("embedding_calls")?,
 			embedding_call_limit: row.try_get("embedding_call_limit")?,
-			summary_calls: row.try_get("summary_calls")?,
-			summary_call_limit: row.try_get("summary_call_limit")?,
 		})
 	}
 }

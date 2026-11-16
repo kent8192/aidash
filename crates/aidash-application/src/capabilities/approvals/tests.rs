@@ -1842,6 +1842,7 @@ fn person_input(seq: i64, sender: &str, content: &str) -> RunInput {
 		idempotency_key: format!("key-{seq}"),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	}
 }
 

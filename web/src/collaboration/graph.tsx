@@ -773,6 +773,25 @@ export function Graph({
       )}
       aria-label="Graph View"
     >
+      {data.next_cursors.conversations && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の会話があります"
+            : "Older conversations exist"}
+        </p>
+      )}
+      {data.next_cursors.runs && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP" ? "以前の実行があります" : "Older runs exist"}
+        </p>
+      )}
+      {data.next_cursors.artifacts && (
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の成果物があります"
+            : "Older artifacts exist"}
+        </p>
+      )}
       {mode === "neighborhood" ? (
         <>
           <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">

@@ -433,9 +433,6 @@ impl aidash_application::ports::decision::DecisionAuthority for FixtureAuthority
 			state_retention: Default::default(),
 		})
 	}
-	async fn read(&self, _: &Evidence, _: bool) -> aidash_application::Result<()> {
-		Err(aidash_application::Error::Forbidden)
-	}
 }
 struct FixtureProvider {
 	config: DeciderConfig,

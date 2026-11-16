@@ -70,9 +70,7 @@ async fn approved(
 	if usage.provider.node_id == node {
 		let expected = match usage.purpose {
 			Purpose::Embedding => spec.embedding.map(|value| value.provider),
-			Purpose::Compaction => spec.compaction.map(|value| value.provider),
-			Purpose::Summary => spec.summary.map(|value| value.provider),
-			Purpose::Inference => {
+			Purpose::Inference | Purpose::Summary => {
 				Some(serde_json::from_value::<AgentConfig>(spec.template.config)?.model)
 			}
 			Purpose::Memory => unreachable!("handled above"),
@@ -100,15 +98,7 @@ async fn approved(
 				.embedding
 				.as_ref()
 				.is_some_and(|value| value.provider == usage.provider),
-			Purpose::Compaction => approvals
-				.compaction
-				.as_ref()
-				.is_some_and(|value| value.provider == usage.provider),
-			Purpose::Summary => approvals
-				.summary
-				.as_ref()
-				.is_some_and(|value| value.provider == usage.provider),
-			Purpose::Inference => approvals.inference.contains(&usage.provider),
+			Purpose::Inference | Purpose::Summary => approvals.inference.contains(&usage.provider),
 			Purpose::Memory => unreachable!("handled above"),
 		};
 		if !permitted {
