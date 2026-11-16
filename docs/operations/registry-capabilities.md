@@ -463,7 +463,13 @@ framing headers. There is no separate per-server Tenant Secret binding.
 Registering or installing the Agent refuses a server secret on a Deployment
 without Tenant Secrets or toward plain HTTP other than a loopback literal, and,
 unless `owner` is `personal`, one whose shared Tenant Secret does not exist or
-does not record the server's host.
+does not record the server's host. Naming such a secret also needs `secret.use`
+on it, as for a Tool's `secret`, when the Agent is registered (including a
+personal Agent or a Workbench draft) or installed from the Marketplace; a
+personal-only server secret names only each person's own row and needs none.
+The Agent version's secret readiness lists each such server as
+`agent_plugin_server` with item `<plugin>/<server>`, so a missing or
+host-mismatched shared secret shows as a warning.
 
 The secret is resolved at each session, after the arguments are valid and
 before anything is sent, with the same checks as a Registry tool's: the row
@@ -475,18 +481,29 @@ listing at Run start leaves the server out with the cause `secret_unavailable`;
 the server never receives an unauthenticated request in its place. A Run with no
 person at the root of its chain can use only the shared secret.
 
+When a server refuses a pasted secret with `401`, or with `403` and
+`insufficient_scope`, the call fails with `secret_rejected` instead of
+`connection_required`: the operation did not execute, no connection a person
+could make would change the answer, and nothing waits. The model reads it as an
+ordinary tool result, and the listing at Run start leaves the server out with
+the cause `secret_rejected`. Registry HTTP and MCP tools that carry a pasted
+secret answer the same way.
+
 ### Declaring Read-only tools at attach time
 
 `POST /api/agent-plugins/tools` lists one remote server of the Tenant's copy of
 a plugin for the person attaching or editing it, with `digest`, `server` and
 optionally the `secret` the definition names. It needs `registry.create` on an
-Agent, as importing does. It uses that person's OAuth Connection, otherwise the
-named secret (their own first, the shared one unless `owner` is `personal`),
-through the same public-address rule and transport as a Run's sessions. The
-answer is `{"outcome": "listed", "tools": [{"name", "schema_digest"}]}`, with
-digests computed as the Run-start pin computes them, or
-`{"outcome": "unavailable", "reason": "<code>"}` such as `connection_required`
-or `secret_unavailable`. Nothing is stored. The Agent form offers the secret
+Agent, as importing does. It uses that person's OAuth Connection, otherwise
+their own personal secret of the named secret's name, through the same
+public-address rule and transport as a Run's sessions. It never uses the shared
+Tenant Secret, whatever `owner` says: a listing has no Run and no Catalog
+Approval. The answer is
+`{"outcome": "listed", "tools": [{"name", "schema_digest"}]}`, with digests
+computed as the Run-start pin computes them, or
+`{"outcome": "unavailable", "reason": "<code>"}` such as `connection_required`,
+`secret_unavailable` (no personal secret of that name) or `secret_rejected`
+(the server refused it). Nothing is stored: no row is written. The Agent form offers the secret
 choice, the listing and a Read-only checkbox per listed tool, and Read-only
 cannot be declared for a server it could not list. Run start still checks every
 declared digest against the Run's own listing.
