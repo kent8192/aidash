@@ -212,6 +212,32 @@ impl StatusRecovery for Recovery {
 		// Lock the Run and rebind its origin in the same transaction as resume.
 		{
 			use reinhardt::db::orm::Model;
+			let suspended = Run::objects()
+				.filter(Run::field_id().eq(run))
+				.filter(
+					Run::field_control()
+						.eq(crate::apps::execution::services::states::RunControl::Paused),
+				)
+				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+				.all_with_executor(access.tx.native_mut())
+				.await
+				.map_err(|error| {
+					crate::Error::from(reinhardt::core::exception::Error::from(error))
+				})?
+				.pop()
+				.is_some();
+			if suspended {
+				// The administrator's choice stands in for the owner's manual resume, so
+				// the owner's local permissions are rechecked as that resume would: a Run
+				// whose owner lost them stays paused (#876 decision 16, ADR 0132). This
+				// runs before the Run row lock, in the manual resume's lock order.
+				let (returned, allowed) =
+					super::execution::control::recheck_resume(&self.federation, access, run).await;
+				access = returned;
+				if allowed.is_err() {
+					return access.finish(Ok(false)).await.map_err(Into::into);
+				}
+			}
 			let row = Run::objects()
 				.filter(Run::field_id().eq(run))
 				.filter(

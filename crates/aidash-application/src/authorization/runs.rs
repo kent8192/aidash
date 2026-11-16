@@ -102,6 +102,16 @@ async fn use_block(
 }
 
 pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
+	authorize_resume(scope, id).await?;
+	let credential = scope.identity().credential_id;
+	scope.update_credential(id, credential).await?;
+	scope.resume_run(id).await
+}
+
+/// The local permissions a resume of `id` needs: the Workspace, `run.control`, being the
+/// subject the Run acts for, and what the Run read and uses. A manual resume and the automatic
+/// resume after a lifted suspension (#876 decision 16) both ask it.
+pub async fn authorize_resume(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
 	let run = in_workspace(scope, id).await?;
 	let block = reads_block(scope, &run).await?;
 	// Only someone who could otherwise resume the Run learns what blocks it.
@@ -113,9 +123,7 @@ pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunI
 	if let Some(block) = use_block(scope, &run).await? {
 		return Err(Error::ResumeBlocked(block));
 	}
-	let credential = scope.identity().credential_id;
-	scope.update_credential(id, credential).await?;
-	scope.resume_run(id).await
+	Ok(run)
 }
 
 /// The longest key a person can name a call by; invocation keys are far shorter.
