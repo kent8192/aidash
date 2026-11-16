@@ -43,3 +43,9 @@ Modern checkpoints preserve the original method, arguments, origin, Agent Plugin
 The Deployment sets a continuation ceiling, defaulting to 10 continuation sends per logical tool call. It includes rounds carrying only `requestState`, so zero-human-wait loops are bounded too. Exhaustion is recorded and ends the tool call with a typed error. Lease changes, batches and continuation rounds never reset the cumulative human-wait allowance or per-sampling accounting.
 
 Primary references: [version compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning), [multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr), and [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling).
+
+## Amendment (2026-11-16, #414 third grilling)
+
+stdio servers of Agent Plugins speak both the legacy era and MCP 2026-07-28, and support sampling and form elicitation exactly as remote servers do: the same Sampling approvals, Run grants and rules, cumulative waiting limits, one Inference Attempt per request and continuation ceiling.
+
+Since ADR 0073's amendment of 2026-11-14 removed the per-call freeze of writers, the modern-era wait no longer keeps the stdio server's process frozen. A modern-era human wait stops the stdio session and saves its Agent Plugin data; the answer starts the session again and sends the continuation, whose `requestState` carries the server's state. A legacy-era wait keeps the session and the worker lease, as before.
