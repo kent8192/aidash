@@ -211,16 +211,24 @@ const MANDATORY_EVIDENCE: [&str; 1] = ["run_messages"];
 const PAGE_FIELDS: [&str; 1] = ["pages"];
 
 /// The evidence items of `pinned`, in send order: every entry of a list, and
-/// every entry of each list field or each other field of an object.
+/// every entry of each list field or each other field of an object. A `null`
+/// is a hole left where a declared source or a refused item was taken out,
+/// so it is no item.
 fn evidence_items(pinned: &Value) -> Vec<EvidenceItem> {
 	let item = |key: &str, field: Option<&str>, listed: bool, content: &Value| {
 		EvidenceItem::new(key, field, listed, content.clone())
 	};
+	let present = |entry: &&Value| !entry.is_null();
 	let mut items = Vec::new();
 	for key in EVIDENCE_KEYS {
 		match pinned.get(key) {
 			Some(Value::Array(entries)) => {
-				items.extend(entries.iter().map(|entry| item(key, None, true, entry)));
+				items.extend(
+					entries
+						.iter()
+						.filter(present)
+						.map(|entry| item(key, None, true, entry)),
+				);
 			}
 			Some(Value::Object(fields)) => {
 				for (field, value) in fields {
@@ -231,8 +239,10 @@ fn evidence_items(pinned: &Value) -> Vec<EvidenceItem> {
 						Value::Array(entries) => items.extend(
 							entries
 								.iter()
+								.filter(present)
 								.map(|entry| item(key, Some(field), true, entry)),
 						),
+						Value::Null => {}
 						value => items.push(item(key, Some(field), false, value)),
 					}
 				}
@@ -272,12 +282,16 @@ fn pending_evidence(context: &Context, pinned: &Value) -> Vec<EvidenceItem> {
 /// admitted and do not count against it. Admission is final: an
 /// admitted item is never trimmed later, and a refused one is removed from
 /// `pinned`, so this request never carries it; a later step may admit it.
+/// Items an explicit `context_source` declaration places in its own envelope
+/// are not evidence: they are read from the declaration-aware projection, as
+/// [`native_context`] reads them, so history never holds a second copy.
 /// Returns how many items it refused. Only Native Runs record evidence.
 pub fn record_evidence(context: &mut Context, pinned: &mut Value, quota: usize) -> usize {
+	let projected = crate::context::source::project(context, pinned).snapshot;
 	let mut admitted = Vec::new();
 	let mut refused = BTreeSet::new();
 	let mut used = 0_usize;
-	for item in pending_evidence(context, pinned) {
+	for item in pending_evidence(context, &projected) {
 		let size = item.content.to_string().len();
 		// The Harness's quota already leaves out the Run messages.
 		if MANDATORY_EVIDENCE.contains(&item.key.as_str()) {
@@ -297,11 +311,19 @@ pub fn record_evidence(context: &mut Context, pinned: &mut Value, quota: usize) 
 			let keep = |field: Option<&str>, entry: &Value| {
 				!refused.contains(&EvidenceItem::digest(key, field, entry))
 			};
+			// A refused list entry leaves a `null` hole rather than moving
+			// later entries: source placements and delivery receipts point
+			// at list positions.
+			let refuse = |entries: &mut Vec<Value>, field: Option<&str>| {
+				for entry in entries.iter_mut().filter(|entry| !keep(field, entry)) {
+					*entry = Value::Null;
+				}
+			};
 			match value {
-				Value::Array(entries) => entries.retain(|entry| keep(None, entry)),
+				Value::Array(entries) => refuse(entries, None),
 				Value::Object(fields) => fields.retain(|field, value| match value {
 					Value::Array(entries) => {
-						entries.retain(|entry| keep(Some(field), entry));
+						refuse(entries, Some(field));
 						true
 					}
 					value => PAGE_FIELDS.contains(&field.as_str()) || keep(Some(field), value),

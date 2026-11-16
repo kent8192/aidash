@@ -279,6 +279,69 @@ fn evidence_refused_at_admission_never_reaches_history_or_the_request() {
 	assert_eq!(evidence(&run).last().unwrap(), &[json!({"title": large})]);
 }
 
+/// A workspace entry an explicit `context_source` declaration places in its
+/// own step envelope, at `pointer`.
+fn declared_workspace_entry(
+	content: Value,
+	pointer: &str,
+) -> crate::context::source::SourceContribution {
+	use crate::context::source::*;
+	let mut contribution = SourceContribution::from(SourceCandidate {
+		identity: CandidateIdentity {
+			source: crate::registry::bindings::QualifiedRef::builtin("aidash://node", "source"),
+			item: "item".into(),
+			revision: "r1".into(),
+			range: None,
+		},
+		content,
+		preview: String::new(),
+		provenance: vec![],
+		dependencies: vec![],
+		completeness: Completeness::Complete,
+		detail: None,
+		mandatory: false,
+	});
+	contribution.placement = Some(SourcePlacement {
+		slot: "workspace".into(),
+		pointer: pointer.into(),
+		volatility: Some(Volatility::Step),
+	});
+	contribution
+}
+
+/// Explicitly placed items travel only in their declared envelope: history
+/// never records them as evidence, even when an item refused before them
+/// leaves the list (#942).
+#[test]
+fn declared_sources_are_not_recorded_as_evidence() {
+	// Arrange: `large` is refused, `placed` is placed by a declaration.
+	let large = "x".repeat(400);
+	let mut run = context(vec![]);
+	run.source_contributions = vec![declared_workspace_entry(
+		json!({"title": "placed"}),
+		"/tasks/1",
+	)];
+	let mut pinned = json!({"workspace": workspace(&[&large, "placed", "kept"])});
+	let before = request_messages_unrecorded(&run, &pinned);
+	// Act
+	let refused = record_evidence(&mut run, &mut pinned, 100);
+	// Assert
+	assert_eq!(refused, 1);
+	let recorded = evidence(&run).concat();
+	assert!(recorded.contains(&json!({"title": "kept"})));
+	assert!(!recorded.contains(&json!({"title": "placed"})));
+	assert!(!recorded.contains(&Value::Null));
+	// The request sends the placed entry once, in its envelope, before and
+	// after recording.
+	for messages in [&before, &request_messages_unrecorded(&run, &pinned)] {
+		let text = serde_json::to_string(messages).unwrap();
+		assert_eq!(text.matches("placed").count(), 1, "{text}");
+		assert!(text.contains("context_sources"));
+	}
+	let after = serde_json::to_string(&request_messages_unrecorded(&run, &pinned)).unwrap();
+	assert!(!after.contains(&large));
+}
+
 #[test]
 fn pending_evidence_sends_the_bytes_it_is_recorded_with() {
 	let mut run = context(vec![assistant(1, "", &["x"]), tool("x")]);
