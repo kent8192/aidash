@@ -35,6 +35,9 @@ struct Fake {
 	created_rules: Vec<(String, ApprovalRule)>,
 	/// Everything the Run received, whoever sent it.
 	inputs: Vec<RunInput>,
+	/// The Run's Workspace is no longer live, as on a soft-deleted Node, so
+	/// its context cannot be loaded.
+	workspace_gone: bool,
 }
 
 #[async_trait]
@@ -82,6 +85,9 @@ impl ApprovalScope for Fake {
 		})
 	}
 	async fn run_context(&mut self, _: Uuid) -> Result<Run> {
+		if self.workspace_gone {
+			return Err(Error::Forbidden);
+		}
 		Ok(self.run.clone())
 	}
 	async fn interaction_run(&mut self, _: Uuid) -> Result<Run> {
@@ -201,7 +207,16 @@ impl ApprovalScope for Fake {
 	}
 }
 
-/// Alice runs research; Bob is the designated capability approver.
+/// Whether `who` may decide approval `id` now, as an Eligible approver.
+async fn decides_now(scope: &mut Fake, id: Uuid, who: &str) -> bool {
+	let previous = std::mem::replace(&mut scope.principal, who.into());
+	let record = scope.records[&id].clone();
+	let decides = reader(scope, &record).await.unwrap().approver;
+	scope.principal = previous;
+	decides
+}
+
+/// Alice runs research; Bob is a capability approver.
 fn scope(extra: Value) -> Fake {
 	let mut policies = vec![
 		json!({"id":"request","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["research"]}}),
@@ -231,6 +246,7 @@ fn scope(extra: Value) -> Fake {
 		settings: None,
 		created_rules: vec![],
 		inputs: vec![],
+		workspace_gone: false,
 		run: Run {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
@@ -308,7 +324,8 @@ async fn an_allow_once_approval_admits_exactly_one_disclosure() {
 	assert_eq!(record.kind, DISCLOSURE);
 	assert_eq!(record.data["action"], DISCLOSE);
 	assert_eq!(record.data["content"], "rust release");
-	assert_eq!(record.data["approver"], "bob");
+	// A waiting approval names nobody; who may decide it is judged when asked.
+	assert!(record.data["approver"].is_null());
 	// Repeating the call while pending waits on the same approval.
 	assert!(matches!(
 		disclose(&mut scope, &run, &request()).await.unwrap(),
@@ -860,7 +877,7 @@ async fn a_tool_call_waits_for_the_designated_approver_and_the_approval_is_consu
 	assert_eq!(record.state, "pending");
 	assert_eq!(record.data["action"], CALL_UNAPPROVED);
 	assert_eq!(record.data["targets"], json!([TOOL_TARGET]));
-	assert_eq!(record.data["approver"], "bob");
+	assert!(record.data["approver"].is_null());
 	assert_eq!(record.data["call"]["arguments"], json!({"customer":"c-1"}));
 	// Asking again while it is pending waits on the same approval.
 	assert!(matches!(
@@ -1283,7 +1300,7 @@ async fn a_plugin_tool_call_waits_for_the_designated_approver_and_names_the_tool
 	assert_eq!(record.data["plugin_tool"]["plugin"], "acme");
 	assert_eq!(record.data["plugin_tool"]["server"], "docs");
 	assert_eq!(record.data["plugin_tool"]["tool"], "search");
-	assert_eq!(record.data["approver"], "bob");
+	assert!(record.data["approver"].is_null());
 	let card = view(&mut scope, &run, &record).await.unwrap();
 	assert_eq!(card["plugin_tool"], record.data["plugin_tool"]);
 	assert_eq!(card["call"]["arguments"], json!({"q":"rust"}));
@@ -2190,7 +2207,7 @@ async fn three_blocks_in_a_row_return_the_run_to_asking_until_a_person_approves_
 
 	// Assert
 	assert!(scope.records[&approval_id].data.get("judge").is_none());
-	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
+	assert!(decides_now(&mut scope, approval_id, "alice").await);
 	decide_as(&mut scope, "alice", approval_id, ApprovalChoice::AllowOnce)
 		.await
 		.unwrap();
@@ -2433,7 +2450,9 @@ async fn decide_as(scope: &mut Fake, who: &str, id: Uuid, choice: ApprovalChoice
 async fn always_allow_by_the_chain_root_approves_once_and_creates_their_rule() {
 	let mut scope = advising(empowered(), ApprovalMode::Manual, vec![]);
 	let approval_id = pending_call(&mut scope, "run:0:0").await;
-	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
+	// The requester may approve, so they alone decide.
+	assert!(decides_now(&mut scope, approval_id, "alice").await);
+	assert!(!decides_now(&mut scope, approval_id, "bob").await);
 
 	let decided = decide_as(
 		&mut scope,
@@ -2484,7 +2503,9 @@ async fn always_allow_needs_advance_authority_not_only_the_right_to_approve_once
 	let mut scope = advising(tool_scope(Value::Null), ApprovalMode::Manual, vec![]);
 	allow_alice(&mut scope, &["capability.approve"], &["tool"]);
 	let approval_id = pending_call(&mut scope, "run:0:0").await;
-	assert_eq!(scope.records[&approval_id].data["approver"], "alice");
+	// The requester may approve, so they alone decide.
+	assert!(decides_now(&mut scope, approval_id, "alice").await);
+	assert!(!decides_now(&mut scope, approval_id, "bob").await);
 
 	let refused = decide_as(
 		&mut scope,
@@ -2541,7 +2562,8 @@ async fn always_allow_records_the_existing_rule_when_the_rule_already_exists() {
 async fn always_allow_is_offered_only_to_the_person_the_chain_starts_at() {
 	let mut scope = advising(tool_scope(Value::Null), ApprovalMode::Manual, vec![]);
 	let approval_id = pending_call(&mut scope, "run:0:0").await;
-	assert_eq!(scope.records[&approval_id].data["approver"], "bob");
+	assert!(decides_now(&mut scope, approval_id, "bob").await);
+	assert!(!decides_now(&mut scope, approval_id, "alice").await);
 
 	let refused = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::AllowAlways).await;
 
@@ -2842,4 +2864,292 @@ async fn connection_waits_use_the_policy_ceiling_of_the_persons_mode(
 		connection_mode(&mut fake, &run, &target).await.unwrap(),
 		None
 	);
+}
+
+/// Carol, like Bob, holds `capability_approver` and may approve `kinds`.
+fn add_carol(scope: &mut Fake, kinds: &[&str]) {
+	scope.bundle.subjects.insert(
+		"carol".into(),
+		serde_json::from_value(json!({"kind":"user","attributes":{"capability_approver":true}}))
+			.unwrap(),
+	);
+	scope.bundle.policies.push(
+		serde_json::from_value(json!({"id":"approve-carol","effect":"allow","subjects":{"ids":["carol"]},"actions":["capability.approve"],"resources":{"kinds":kinds}}))
+			.unwrap(),
+	);
+}
+
+#[tokio::test]
+async fn every_eligible_approver_is_offered_a_waiting_disclosure_and_the_first_decision_counts() {
+	// Arrange: Alice may not approve her own disclosure; Bob and Carol may.
+	let mut scope = scope(Value::Null);
+	add_carol(&mut scope, &["research"]);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+
+	// Act
+	let bob = decides_now(&mut scope, approval_id, "bob").await;
+	let carol = decides_now(&mut scope, approval_id, "carol").await;
+	let alice = decides_now(&mut scope, approval_id, "alice").await;
+	let carol_decides =
+		decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce).await;
+	let bob_late = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::Deny).await;
+	let alice_late = decide_as(&mut scope, "alice", approval_id, ApprovalChoice::Deny).await;
+
+	// Assert
+	assert!(bob && carol && !alice);
+	assert_eq!(carol_decides.unwrap()["state"], "approved");
+	assert!(matches!(
+		bob_late,
+		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Allowed })
+			if decided_by == "carol"
+	));
+	// The requester was never asked, so is not told who decided.
+	assert!(matches!(alice_late, Err(Error::NotFound(_))));
+	let record = &scope.records[&approval_id];
+	assert_eq!(record.data["decided_by"], "carol");
+	assert_eq!(record.data["approver"], "carol");
+}
+
+#[tokio::test]
+async fn a_requester_who_may_approve_decides_alone_and_the_approval_follows_their_eligibility() {
+	// Arrange: Alice may approve her own disclosures; Bob may too.
+	let mut scope = scope(
+		json!({"id":"alice-approves","effect":"allow","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["research"]}}),
+	);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	assert!(decides_now(&mut scope, approval_id, "alice").await);
+	assert!(!decides_now(&mut scope, approval_id, "bob").await);
+	let bob_early = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::AllowOnce).await;
+
+	// Act: Alice loses the right while it waits.
+	scope
+		.bundle
+		.policies
+		.retain(|policy| policy.id != "alice-approves");
+
+	// Assert: it is offered to every Eligible approver instead.
+	assert!(matches!(bob_early, Err(Error::NotFound(_))));
+	assert!(!decides_now(&mut scope, approval_id, "alice").await);
+	assert!(decides_now(&mut scope, approval_id, "bob").await);
+	let decided = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::AllowOnce).await;
+	assert_eq!(decided.unwrap()["state"], "approved");
+}
+
+#[tokio::test]
+async fn any_eligible_approver_may_revoke_a_run_grant_and_nobody_else() {
+	// Arrange: Carol gives a Run grant for Alice's tool calls.
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	scope.bundle.subjects.insert(
+		"dave".into(),
+		serde_json::from_value(json!({"kind":"user"})).unwrap(),
+	);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	scope.principal = "carol".into();
+	let revision = scope.records[&approval_id].revision;
+	let decided = decide(
+		&mut scope,
+		approval_id,
+		ApprovalDecision {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+			choice: ApprovalChoice::AllowRun,
+			targets: Some(vec![TOOL_TARGET.to_owned()]),
+			expires_at: Some(Utc::now() + Duration::minutes(30)),
+		},
+	)
+	.await
+	.unwrap();
+	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+	let revision = scope.records[&grant].revision;
+	let input = || Revoke {
+		idempotency_key: Uuid::new_v4(),
+		expected_revision: revision,
+	};
+
+	// Act
+	scope.principal = "dave".into();
+	let dave = revoke(&mut scope, grant, "grant", input()).await;
+	scope.principal = "bob".into();
+	let bob = revoke(&mut scope, grant, "grant", input()).await;
+
+	// Assert: Bob neither asked for it nor gave it, but may approve it now.
+	assert!(matches!(dave, Err(Error::NotFound(_))));
+	assert_eq!(bob.unwrap()["state"], "revoked");
+	assert_eq!(scope.records[&grant].state, "revoked");
+}
+
+#[tokio::test]
+async fn a_late_tool_call_decision_is_told_who_decided_and_how() {
+	// Arrange
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	assert!(decides_now(&mut scope, approval_id, "carol").await);
+
+	// Act
+	decide_as(&mut scope, "bob", approval_id, ApprovalChoice::Deny)
+		.await
+		.unwrap();
+	let late = decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce).await;
+	let stale = {
+		scope.records.get_mut(&approval_id).unwrap().state = "pending".into();
+		scope.records.get_mut(&approval_id).unwrap().data["decided_by"] = Value::Null;
+		scope.records.get_mut(&approval_id).unwrap().expires_at =
+			Some(Utc::now() - Duration::minutes(1));
+		decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce).await
+	};
+
+	// Assert: a later decision differs from an expired one.
+	assert!(matches!(
+		late,
+		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Denied })
+			if decided_by == "bob"
+	));
+	assert!(matches!(stale, Err(Error::Conflict(ref code)) if code == "APPROVAL_STALE_OR_EXPIRED"));
+}
+
+/// What happens to an allowed approval after its decision: an outbound read's
+/// worker completes it or leaves it uncertain, a call consumes it, a person
+/// revokes it, or an Evidence Revocation closes it.
+#[rstest::rstest]
+#[case::attempted("attempted")]
+#[case::completed("completed")]
+#[case::uncertain("uncertain")]
+#[case::failed("failed")]
+#[case::consumed("consumed")]
+#[case::revoked("revoked")]
+#[case::closed("closed")]
+#[tokio::test]
+async fn a_late_decision_is_told_who_decided_after_the_approval_moved_on(#[case] state: &str) {
+	// Arrange: Carol allows the call, and the record moves past `approved`.
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	scope.records.get_mut(&approval_id).unwrap().state = state.into();
+
+	// Act
+	let late = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::Deny).await;
+
+	// Assert: Bob is told Carol allowed it, not that it expired.
+	assert!(matches!(
+		late,
+		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Allowed })
+			if decided_by == "carol"
+	));
+}
+
+#[tokio::test]
+async fn a_late_decision_on_what_the_auto_decider_settled_names_the_person() {
+	// Arrange: Alice's Auto mode leaves the call to the Decider, which refuses it.
+	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
+	let run = scope.run.clone();
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	settle(
+		&mut scope,
+		&run,
+		approval_id,
+		Settlement::Blocked {
+			reason: BlockReason::DataExfiltration,
+			evidence: Uuid::from_u128(0xe2),
+		},
+	)
+	.await
+	.unwrap();
+
+	// Act
+	let late = decide_as(&mut scope, "alice", approval_id, ApprovalChoice::AllowOnce).await;
+
+	// Assert
+	assert!(matches!(
+		late,
+		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Denied })
+			if decided_by == "alice"
+	));
+}
+
+#[tokio::test]
+async fn a_record_whose_workspace_is_gone_stays_with_its_requester_and_fails_no_reader() {
+	// Arrange: Bob may decide Alice's waiting call, then her Node is deleted.
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	assert!(decides_now(&mut scope, approval_id, "bob").await);
+	scope.workspace_gone = true;
+	let record = scope.records[&approval_id].clone();
+
+	// Act
+	let alice = reader(&mut scope, &record).await;
+	scope.principal = "bob".into();
+	let bob = reader(&mut scope, &record).await;
+
+	// Assert: the requester still sees it; nobody acts on it as an approver.
+	assert_eq!(
+		alice.unwrap(),
+		Reader {
+			visible: true,
+			approver: false
+		}
+	);
+	assert_eq!(bob.unwrap(), Reader::default());
+}
+
+#[tokio::test]
+async fn a_decided_approval_leaves_the_approvers_who_did_not_decide_it() {
+	// Arrange: Bob and Carol may approve Alice's call; Carol allows it once.
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	decide_as(&mut scope, "carol", approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	let record = scope.records[&approval_id].clone();
+	let revision = record.revision;
+	let read_as = async |scope: &mut Fake, who: &str| {
+		let previous = std::mem::replace(&mut scope.principal, who.into());
+		let read = reader(scope, &record).await.unwrap();
+		scope.principal = previous;
+		read
+	};
+
+	// Act
+	let alice = read_as(&mut scope, "alice").await;
+	let carol = read_as(&mut scope, "carol").await;
+	let bob = read_as(&mut scope, "bob").await;
+	scope.principal = "bob".into();
+	let bob_revokes = revoke(
+		&mut scope,
+		approval_id,
+		TOOL_CALL,
+		Revoke {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+		},
+	)
+	.await;
+
+	// Assert: only Run grants may be revoked by any Eligible approver.
+	assert!(alice.visible);
+	assert_eq!(
+		carol,
+		Reader {
+			visible: true,
+			approver: true
+		}
+	);
+	assert_eq!(bob, Reader::default());
+	assert!(matches!(bob_revokes, Err(Error::NotFound(_))));
+	assert_eq!(scope.records[&approval_id].state, "approved");
 }

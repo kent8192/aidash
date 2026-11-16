@@ -468,7 +468,7 @@ A Deployment Administrator can pause or cancel one Run this Deployment executes,
 
 ## Approval Rules and Modes
 
-A person can decide in advance which approvals their own Runs get without waiting for a Designated approver. Their Approval Mode and Approval Rules never approve more than the Tenant's policy lets that person approve in advance. Aidash records each approval they give under their name, with the rule or mode that gave it (ADR 0076).
+A person can decide in advance which approvals their own Runs get without waiting for an Eligible approver. Their Approval Mode and Approval Rules never approve more than the Tenant's policy lets that person approve in advance. Aidash records each approval they give under their name, with the rule or mode that gave it (ADR 0076).
 
 These settings cover only Runs whose delegation chain starts at an enabled user subject of the Tenant and that execute on their home Node. They never cover a Run that arrived through Federation.
 
@@ -481,7 +481,7 @@ Aidash decides each approval when the Run needs it, in this order:
 
 | Mode      | What it does with an approval the Run would otherwise wait for                                        |
 | --------- | ----------------------------------------------------------------------------------------------------- |
-| Manual    | Asks the Designated approver.                                                                         |
+| Manual    | Asks an Eligible approver.                                                                            |
 | Auto      | Is decided by the Tenant's approval Decider, unless the Auto fallbacks below ask a person.            |
 | Don't ask | Is refused, so the Run never waits. The model's `human_request` is refused too.                       |
 | Bypass    | Is approved, within what the Tenant's policy lets the person approve. Deny and ask rules still apply. |
@@ -531,7 +531,7 @@ The routes below read and change these settings. The `mine` routes and the Threa
 
 The GET and PUT routes for `approval-preferences/mine` and `approval-decider` accept an optional `node=<Node name>` query. The Node must belong to the Tenant and the caller must hold `node.use`; omitting it selects the Tenant's default Node. Mode availability and the Decider's `approved` status use that Node's Catalog Approval. The person's preferences and the chosen Decider remain settings for the whole Tenant. Thread mode availability uses the Thread's Workspace Node, and a worker uses its Run's Node.
 
-When the Designated approver of a pending Web disclosure, outbound request or Tool call is also the person at the root of the Run's delegation chain, the Thread offers the same approval card as the approvals list. Other participants are not offered that inline card. The decision uses the same choices and record; asking the Run to act is not itself an approval. The list and decision queue continue to offer the approval.
+When a pending Web disclosure, outbound request or Tool call is decided by its requester as the person at the root of the Run's delegation chain, the Thread offers the same approval card as the approvals list. Other participants are not offered that inline card. The decision uses the same choices and record; asking the Run to act is not itself an approval. The list and decision queue continue to offer the approval.
 
 ## Scoped conversations and human interaction
 

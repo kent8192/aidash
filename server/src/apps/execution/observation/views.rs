@@ -281,11 +281,12 @@ async fn individual_read(
 					}
 				}
 				let record = found.ok_or_else(|| Error::NotFound("approval".into()))?;
-				if !crate::apps::execution::capabilities::services::approvals::visible(
+				if !crate::apps::execution::capabilities::services::approvals::reader(
 					&mut access,
 					&record,
 				)
 				.await?
+				.visible
 				{
 					return Err(Error::Forbidden);
 				}
