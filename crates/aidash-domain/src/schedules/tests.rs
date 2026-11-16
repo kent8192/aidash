@@ -134,8 +134,10 @@ fn bad_cron_expressions_are_refused(#[case] expression: &str) {
 #[case(cron("0,5 9 1 1 *", "UTC"), false)]
 #[case(cron("55 23,0 * * *", "UTC"), true)]
 #[case(cron("50,58 23 * * *", "UTC"), false)]
-// Across midnight, as if both days could match.
-#[case(cron("58,2 23,0 31 * *", "UTC"), false)]
+// Across midnight between two matching days.
+#[case(cron("58,2 23,0 * * *", "UTC"), false)]
+// The 31st never follows a 31st, so its late and early times never meet.
+#[case(cron("58,2 23,0 31 * *", "UTC"), true)]
 #[case(cron("0 9 * * *", "Europe/Berlin"), true)]
 #[case(Trigger::Interval { every_seconds: 600 }, false)]
 #[case(Trigger::Interval { every_seconds: 900 }, true)]
@@ -158,6 +160,25 @@ fn a_daylight_saving_gap_ahead_does_not_breach_the_minimum() {
 	// Assert: the scheduler skips the close tick; the Schedule stays valid.
 	assert!(registered.is_ok(), "{registered:?}");
 	assert!(at_fire_time.unwrap());
+}
+
+#[rstest]
+#[case(cron("0 9 * * 1", "UTC"), true)]
+#[case(cron("0 9 1 * *", "UTC"), true)]
+#[case(cron("0 9 * * 1,2", "UTC"), false)]
+#[case(cron("0 9 * * *", "UTC"), false)]
+// A Monday or the 1st: a Monday 31st is followed by the 1st.
+#[case(cron("0 9 1 * 1", "UTC"), false)]
+fn a_minimum_longer_than_a_day_counts_the_days_that_match(
+	#[case] trigger: Trigger,
+	#[case] accepted: bool,
+) {
+	// Arrange: a Tenant minimum of two days.
+	let minimum = 2 * 24 * 60 * 60;
+	// Act
+	let result = trigger.validate(minimum, at("2026-11-13T00:00:00Z"));
+	// Assert
+	assert_eq!(result.is_ok(), accepted, "{result:?}");
 }
 
 #[rstest]
