@@ -46,4 +46,7 @@ pub struct DashboardAdministrationHistory {
 	/// The Invitation an `invitation.*` event concerns.
 	#[field(null = true)]
 	pub invitation_id: Option<uuid::Uuid>,
+	/// Groups recorded with an Invitation approval.
+	#[field(null = true)]
+	pub groups: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 }

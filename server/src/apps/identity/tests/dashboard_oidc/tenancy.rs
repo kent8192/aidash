@@ -652,7 +652,7 @@ async fn invitations_are_single_use_tenant_addressed_and_approved(
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
 			Some(context.as_str()),
-			json!({}),
+			json!({"join_directly":false}),
 		)
 		.await;
 
@@ -866,7 +866,7 @@ impl Deployment {
 			.as_deployment_administrator(
 				"POST",
 				&format!("/api/tenants/{tenant}/invitations"),
-				json!({"groups":groups}),
+				json!({"groups":groups,"join_directly":false}),
 			)
 			.await;
 		assert_eq!(status, 201, "{invitation}");
@@ -1290,7 +1290,7 @@ async fn a_pending_invitation_request_keeps_the_display_attributes_its_administr
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
 			Some(context.as_str()),
-			json!({}),
+			json!({"join_directly":false}),
 		)
 		.await;
 	let (status, _) = d
@@ -1349,7 +1349,7 @@ async fn display_retention_follows_the_request_that_ended_last(
 			.as_deployment_administrator(
 				"POST",
 				&format!("/api/tenants/{tenant}/invitations"),
-				json!({}),
+				json!({"join_directly":false}),
 			)
 			.await;
 		assert_eq!(status, 201, "{invitation}");
@@ -1414,3 +1414,511 @@ mod nodes;
 mod registrations;
 #[path = "tenant_authority.rs"]
 mod tenant_authority;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_direct_join_records_issuer_approval(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("direct-issuer").await;
+	let bob = d.person("direct-holder").await;
+	let (_, created) = d
+		.as_person(
+			&alice,
+			"POST",
+			"/api/tenants",
+			None,
+			json!({"label":"Direct"}),
+		)
+		.await;
+	let tenant = created["name"].as_str().unwrap();
+	let context = d.context(&alice, tenant).await;
+	let (status, invitation) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			Some(&context),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	let (status, registration) = d
+		.as_person(
+			&bob,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "approved");
+	assert!(d.context_or_none(&bob, tenant).await.is_some());
+	let subject: String = sqlx::query_scalar(
+		"SELECT subject FROM dashboard_mappings WHERE tenant = $1 AND identity_id = $2 AND enabled",
+	)
+	.bind(tenant)
+	.bind(bob.identity)
+	.fetch_one(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let (status, policy) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/authorization/{tenant}"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{policy}");
+	assert_eq!(
+		policy["bundle"]["subjects"][subject.as_str()]["groups"],
+		json!(["members"])
+	);
+	let count: (i64,) = sqlx::query_as("SELECT count(*) FROM dashboard_administration_history WHERE action = 'registration.approve' AND actor_identity_id = $1 AND invitation_id = $2 AND \"groups\" = '[\"members\"]'::jsonb")
+		.bind(alice.identity)
+		.bind(Uuid::parse_str(invitation["id"].as_str().unwrap()).unwrap())
+		.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(count.0, 1);
+	let (status, overview) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("/api/tenants/{tenant}/invitation-approvals"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{overview}");
+	assert_eq!(overview.as_array().unwrap().len(), 1);
+	assert_eq!(
+		overview[0]["identity"]["verified_email"],
+		"direct-holder@example.com"
+	);
+	let (status, body) = d
+		.as_deployment_administrator(
+			"GET",
+			&format!("/api/tenants/{tenant}/invitation-approvals"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 403, "{body}");
+	let bob_context = d.context(&bob, tenant).await;
+	let (status, member_overview) = d
+		.as_person(
+			&bob,
+			"GET",
+			&format!("/api/tenants/{tenant}/invitation-approvals"),
+			Some(&bob_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 403, "{member_overview}");
+	let neighbour = d.person("neighbour-owner").await;
+	let (status, created) = d
+		.as_person(
+			&neighbour,
+			"POST",
+			"/api/tenants",
+			None,
+			json!({"label":"Other"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let other = created["name"].as_str().unwrap();
+	let other_context = d.context(&neighbour, other).await;
+	let (status, other_notices) = d
+		.as_person(
+			&neighbour,
+			"GET",
+			&format!("/api/tenants/{other}/invitation-approvals"),
+			Some(&other_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{other_notices}");
+	assert_eq!(other_notices, json!([]));
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_waits_when_issuing_deployment_administrator_loses_grant(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let issuer = d.person("former-admin").await;
+	let holder = d.person("waiting-holder").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(issuer.identity)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, created) = d
+		.as_person(
+			&issuer,
+			"POST",
+			"/api/tenants",
+			Some("deployment_administrator"),
+			json!({"label":"Team"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let tenant = created["name"].as_str().unwrap();
+	let (status, invitation) = d
+		.as_person(
+			&issuer,
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			Some("deployment_administrator"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	sqlx::query("UPDATE dashboard_deployment_administrator_grants SET enabled = false, revision = revision + 1 WHERE identity_id = $1")
+		.bind(issuer.identity).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	let (status, registration) = d
+		.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "pending");
+	assert!(d.context_or_none(&holder, tenant).await.is_none());
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_waits_when_issuing_deployment_bearer_rotates(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let holder = d.person("rotated-bearer-holder").await;
+	let first_holder = d.person("current-bearer-holder").await;
+	let (_, created) = d
+		.as_deployment_administrator("POST", "/api/tenants", json!({"label":"Team"}))
+		.await;
+	let tenant = created["name"].as_str().unwrap();
+	let (status, first) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{first}");
+	let (status, joined) = d
+		.as_person(
+			&first_holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":first["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{joined}");
+	assert_eq!(joined["status"], "approved");
+	let tag: Option<Vec<u8>> =
+		sqlx::query_scalar("SELECT issued_by_token_hash FROM tenant_invitations WHERE id = $1")
+			.bind(Uuid::parse_str(first["id"].as_str().unwrap()).unwrap())
+			.fetch_one(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(tag.is_none());
+	let (status, invitation) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	let mut changed = d.federation.clone();
+	changed.config.api_token = "rotated-deployment-administrator-fixture".into();
+	d.app.context.set_singleton(changed);
+	let (status, registration) = d
+		.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "pending");
+	assert!(d.context_or_none(&holder, tenant).await.is_none());
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_administrator_can_issue_an_immediate_administrator_invitation(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let issuer = d.person("granted-issuer").await;
+	let holder = d.person("first-administrator").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(issuer.identity)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, created) = d
+		.as_person(
+			&issuer,
+			"POST",
+			"/api/tenants",
+			Some("deployment_administrator"),
+			json!({"label":"Team"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let tenant = created["name"].as_str().unwrap();
+	let (status, invitation) = d
+		.as_person(
+			&issuer,
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			Some("deployment_administrator"),
+			json!({"groups":["administrators"]}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	let (status, registration) = d
+		.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "approved");
+	let context = d.context(&holder, tenant).await;
+	let (status, overview) = d
+		.as_person(
+			&holder,
+			"GET",
+			&format!("/api/tenants/{tenant}/administration"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{overview}");
+	let (status, notices) = d
+		.as_person(
+			&holder,
+			"GET",
+			&format!("/api/tenants/{tenant}/invitation-approvals"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{notices}");
+	assert_eq!(notices[0]["identity"]["id"], holder.identity.to_string());
+	assert!(
+		overview["actions"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("registration.approve"))
+	);
+	let count: i64 = sqlx::query_scalar("SELECT count(*) FROM dashboard_administration_history WHERE action = 'registration.approve' AND actor_identity_id = $1 AND invitation_id = $2 AND \"groups\" = '[\"administrators\"]'::jsonb")
+		.bind(issuer.identity).bind(Uuid::parse_str(invitation["id"].as_str().unwrap()).unwrap())
+		.fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(count, 1);
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn direct_invitation_gives_a_returning_member_only_its_proposed_groups(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let owner = d.person("return-owner").await;
+	let returning = d.person("return-member").await;
+	let (_, created) = d
+		.as_person(
+			&owner,
+			"POST",
+			"/api/tenants",
+			None,
+			json!({"label":"Team"}),
+		)
+		.await;
+	let tenant = created["name"].as_str().unwrap();
+	let owner_context = d.context(&owner, tenant).await;
+	let old_context = d
+		.admit(
+			tenant,
+			&returning,
+			"old-administrator",
+			json!(["administrators"]),
+		)
+		.await;
+	let (status, body) = d
+		.as_person(
+			&returning,
+			"POST",
+			&format!("/api/tenants/{tenant}/leave"),
+			Some(&old_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 204, "{body}");
+	let (status, invitation) = d
+		.as_person(
+			&owner,
+			"POST",
+			&format!("/api/tenants/{tenant}/invitations"),
+			Some(&owner_context),
+			json!({"groups":["members"]}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	let (status, registration) = d
+		.as_person(
+			&returning,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "approved");
+	let new_context = d.context(&returning, tenant).await;
+	let (status, overview) = d
+		.as_person(
+			&returning,
+			"GET",
+			&format!("/api/tenants/{tenant}/administration"),
+			Some(&new_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{overview}");
+	assert!(
+		!overview["actions"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("registration.approve"))
+	);
+	let subject: String = sqlx::query_scalar(
+		"SELECT subject FROM dashboard_mappings WHERE tenant = $1 AND identity_id = $2 AND enabled",
+	)
+	.bind(tenant)
+	.bind(returning.identity)
+	.fetch_one(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(subject, "old-administrator");
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_deployment_issuer_share_lease_and_self_approval(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let issuer = d.person("invitation-deployment-issuer").await;
+	let holder = d.person("invitation-share-holder").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(issuer.identity)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, created) = d
+		.as_person(
+			&issuer,
+			"POST",
+			"/api/tenants",
+			Some("deployment_administrator"),
+			json!({"label":"Team"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let tenant = created["name"].as_str().unwrap();
+	let path = format!("/api/tenants/{tenant}/invitations");
+	let (status, invitation) = d
+		.as_person(
+			&issuer,
+			"POST",
+			&path,
+			Some("deployment_administrator"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	// The request boundary holds this same identity lease on another connection.
+	let mut lease = d
+		.federation
+		.store
+		.pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
+	sqlx::query("SELECT id FROM dashboard_identities WHERE id = $1 FOR SHARE")
+		.bind(issuer.identity)
+		.execute(&mut *lease)
+		.await
+		.unwrap();
+	sqlx::query("SELECT identity_id FROM dashboard_deployment_administrator_grants WHERE identity_id = $1 FOR SHARE")
+		.bind(issuer.identity).execute(&mut *lease).await.unwrap();
+	let (status, registration) = tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		d.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		),
+	)
+	.await
+	.expect("redemption must coexist with the administrator boundary lease");
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "approved");
+	lease.rollback().await.unwrap();
+
+	let (status, invitation) = d
+		.as_person(
+			&issuer,
+			"POST",
+			&path,
+			Some("deployment_administrator"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	let link = json!({"tenant":tenant,"secret":invitation["secret"]});
+	let (status, registration) = d
+		.as_person(
+			&issuer,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			link.clone(),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "pending");
+	assert!(d.context_or_none(&issuer, tenant).await.is_none());
+	let (status, _) = d
+		.as_person(&issuer, "POST", "/auth/invitations/redeem", None, link)
+		.await;
+	assert_eq!(status, 404);
+	d.finish().await;
+}

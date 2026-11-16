@@ -21,6 +21,14 @@ pub(crate) struct TenantAdministration {
 	pub(crate) policy_revision: Option<i64>,
 }
 
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct InvitationApprovalNotice {
+	pub(crate) id: Uuid,
+	pub(crate) identity: TenantIdentity,
+	pub(crate) subject: String,
+	pub(crate) occurred_at: DateTime<Utc>,
+}
+
 /// Display Attributes recognize the person; they never decide authority.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct TenantIdentity {

@@ -380,6 +380,7 @@ function TenantAuthorization({
           tenant={tenant}
           assignable={assignableGroups(current.bundle)}
           canCreate={invitations}
+          canApprove
           canRead
           canRevoke
         />
