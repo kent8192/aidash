@@ -75,7 +75,7 @@ impl DurableScopes {
 			)
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
-		let _ = locked_state(&mut tx, id).await?;
+		let _ = locked_state_now(&mut tx, id).await?;
 		tx.commit().await?;
 		self.initialized.lock().unwrap().insert(id.clone());
 		Ok(())
@@ -106,12 +106,8 @@ impl DurableScopes {
 		};
 		let id = current.as_ref().map_or(&settings.id, |current| &current.id);
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
-		let mut tx = self
-			.store
-			.pool
-			.begin(&TenancyScope::tenant(&id.tenant)?)
-			.await?;
-		let _ = locked_state(&mut tx, id).await?;
+		let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
+		let _ = locked_state(&mut tx, id, "debit").await?;
 		let mut total = daily(&mut tx, id, day, "").await?;
 		let max = current
 			.as_ref()
@@ -160,12 +156,8 @@ impl DurableScopes {
 		service: Option<&str>,
 	) -> Result<()> {
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
-		let mut tx = self
-			.store
-			.pool
-			.begin(&TenancyScope::tenant(&id.tenant)?)
-			.await?;
-		let _ = locked_state(&mut tx, id).await?;
+		let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
+		let _ = locked_state(&mut tx, id, "refund").await?;
 		for name in [Some(""), service].into_iter().flatten() {
 			let mut row = daily(&mut tx, id, day, name).await?;
 			let counter = match direction {
@@ -185,7 +177,34 @@ impl DurableScopes {
 	}
 }
 
-async fn locked_state(tx: &mut Transaction, id: &ScopeId) -> Result<ScopeState> {
+/// Opens a Tenant transaction for Scratch Space egress, recording how long the
+/// pool took to hand over a connection (#909).
+pub(super) async fn begin_timed(
+	pool: &crate::database::native::Pool,
+	tenant: &str,
+) -> Result<Transaction> {
+	let scope = TenancyScope::tenant(tenant)?;
+	let started = std::time::Instant::now();
+	let tx = pool.begin(&scope).await;
+	metrics::histogram!("aidash_egress_store_begin_seconds")
+		.record(started.elapsed().as_secs_f64());
+	tx
+}
+
+/// Locks the Scratch Space's state row, which every debit and refund of that
+/// Space waits on in turn; `operation` labels how long it waited (#909).
+async fn locked_state(
+	tx: &mut Transaction,
+	id: &ScopeId,
+	operation: &'static str,
+) -> Result<ScopeState> {
+	let started = std::time::Instant::now();
+	let locked = locked_state_now(tx, id).await;
+	metrics::histogram!("aidash_egress_budget_lock_seconds", "operation" => operation)
+		.record(started.elapsed().as_secs_f64());
+	locked
+}
+async fn locked_state_now(tx: &mut Transaction, id: &ScopeId) -> Result<ScopeState> {
 	ScopeState::objects()
 		.filter(ScopeState::field_scope_id().eq(id.scratch_space))
 		.filter(ScopeState::field_tenant().eq(id.tenant.clone()))

@@ -13,6 +13,19 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const BATCH: u64 = 1024 * 1024;
+/// How long one debit may wait for the store before its Host connection ends.
+/// A slow store is not a refusal: the connection stops moving bytes and waits,
+/// and only the monitor's three failed checks decide that the store is gone
+/// (ADR 0112). This bound names a debit stuck behind the daily row's lock (#909).
+const DEBIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The first pause after a debit the store did not answer; it doubles up to
+/// [`DEBIT_RETRY_MAX`].
+const DEBIT_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+const DEBIT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest a refund may take, when a tunnel ends or a day turns.
+const REFUND_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// A debit that waited [`DEBIT_WAIT`] without an answer.
+const BUDGET_WAIT_TIMEOUT: &str = "egress_budget_wait_timeout";
 /// A Pod can repeat these failures at will, by reaching a host that always fails
 /// or by opening connections during a stall, so each kind logs at most one line
 /// per interval. The rest go to `debug`, and the counters stay exact.
@@ -581,6 +594,9 @@ struct Batch {
 	day: chrono::NaiveDate,
 	remaining: u64,
 	failure: FailureReport,
+	/// Why the store last did not answer a debit, for a connection that ends
+	/// waiting on it.
+	unanswered: Option<String>,
 }
 /// A failed debit, named so that `tunnel_ended` tells our own store from the
 /// upstream. A decision keeps the code it was made with.
@@ -591,6 +607,12 @@ fn debit_failed(error: aidash_application::Error) -> io::Error {
 		Error::Forbidden | Error::Unauthorized => io::Error::other("egress_credential_revoked"),
 		error => io::Error::other(format!("egress_authority_unavailable: {error}")),
 	}
+}
+/// Whether the store answered a debit with a decision. Anything else is a store
+/// that did not answer, and the debit is tried again (#909).
+fn debit_decided(error: &aidash_application::Error) -> bool {
+	aidash_application::egress::DebitRefusal::of(error).is_some()
+		|| matches!(error, aidash_application::Error::Refused(_))
 }
 impl Batch {
 	fn new(
@@ -606,6 +628,7 @@ impl Batch {
 			day: chrono::Utc::now().date_naive(),
 			remaining: 0,
 			failure,
+			unanswered: None,
 		}
 	}
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
@@ -613,15 +636,12 @@ impl Batch {
 		if day != self.day {
 			if self.remaining != 0 {
 				// Reported like the refund that ends a tunnel, which this one is.
-				if let Err(error) = self
-					.scopes
-					.refund(&self.settings, self.direction, self.remaining, self.day)
-					.await
-				{
-					let error = io::Error::other(format!("egress_refund_failed: {error}"));
+				// The day's unused bytes stay counted; the connection goes on.
+				let remaining = self.remaining;
+				let previous = self.day;
+				if let Err(error) = self.refund(remaining, previous).await {
 					super::settle_failure("refund", "abandoned");
 					self.failure.internal("refund", &error);
-					return Err(error);
 				}
 			}
 			self.day = day;
@@ -631,19 +651,12 @@ impl Batch {
 		if self.remaining < bytes {
 			let need = bytes - self.remaining;
 			let amount = BATCH.max(need);
-			match self
-				.scopes
-				.debit(&self.settings, self.direction, amount, day)
-				.await
-			{
+			match self.debit(amount, day).await {
 				Ok(()) => self.remaining += amount,
 				Err(aidash_application::Error::Refused(code))
 					if code == "egress_budget_exhausted" && amount != need =>
 				{
-					self.scopes
-						.debit(&self.settings, self.direction, need, day)
-						.await
-						.map_err(debit_failed)?;
+					self.debit(need, day).await.map_err(debit_failed)?;
 					self.remaining += need;
 				}
 				Err(error) => return Err(debit_failed(error)),
@@ -651,15 +664,59 @@ impl Batch {
 		}
 		Ok(())
 	}
+	/// Debits until the store decides. A store that does not answer is tried
+	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
+	async fn debit(
+		&mut self,
+		amount: u64,
+		day: chrono::NaiveDate,
+	) -> std::result::Result<(), aidash_application::Error> {
+		let started = tokio::time::Instant::now();
+		let mut pause = DEBIT_RETRY;
+		let result = loop {
+			match self
+				.scopes
+				.debit(&self.settings, self.direction, amount, day)
+				.await
+			{
+				Err(error) if !debit_decided(&error) => {
+					metrics::counter!("aidash_egress_debit_retries_total").increment(1);
+					tracing::debug!(%error, "the store did not answer a debit; trying again");
+					self.unanswered = Some(error.to_string());
+					tokio::time::sleep(pause).await;
+					pause = (pause * 2).min(DEBIT_RETRY_MAX);
+				}
+				result => break result,
+			}
+		};
+		self.unanswered = None;
+		metrics::histogram!("aidash_egress_debit_seconds").record(started.elapsed().as_secs_f64());
+		result
+	}
+	/// Returns unused bytes of `day`, waiting at most [`REFUND_WAIT`].
+	async fn refund(&self, bytes: u64, day: chrono::NaiveDate) -> io::Result<()> {
+		let started = tokio::time::Instant::now();
+		let result = tokio::time::timeout(
+			REFUND_WAIT,
+			self.scopes
+				.refund(&self.settings, self.direction, bytes, day),
+		)
+		.await;
+		metrics::histogram!("aidash_egress_refund_seconds").record(started.elapsed().as_secs_f64());
+		match result {
+			Ok(Ok(())) => Ok(()),
+			Ok(Err(error)) => Err(io::Error::other(format!("egress_refund_failed: {error}"))),
+			Err(_) => Err(io::Error::other("egress_refund_timeout")),
+		}
+	}
 }
 impl Batch {
+	/// Returns the unused reservation. A refund that fails leaves those bytes
+	/// counted for the day; it does not change how the connection ended (#909).
 	async fn settle(&mut self) -> io::Result<()> {
 		let remaining = std::mem::take(&mut self.remaining);
 		if remaining != 0 {
-			self.scopes
-				.refund(&self.settings, self.direction, remaining, self.day)
-				.await
-				.map_err(|error| io::Error::other(format!("egress_refund_failed: {error}")))?;
+			self.refund(remaining, self.day).await?;
 		}
 		Ok(())
 	}
@@ -690,7 +747,10 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 		}
 		activity.send_replace(());
 		tokio::select! {
-			result = tokio::time::timeout(std::time::Duration::from_secs(5), batch.charge(n)) => result.map_err(|_| io::Error::other("egress_authority_unavailable"))??,
+			result = tokio::time::timeout(DEBIT_WAIT, batch.charge(n)) => result.map_err(|_| match batch.unanswered.take() {
+				Some(cause) => io::Error::other(format!("{BUDGET_WAIT_TIMEOUT}: {cause}")),
+				None => io::Error::other(BUDGET_WAIT_TIMEOUT),
+			})??,
 			_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
 		}
 		let mut written = 0;
@@ -850,12 +910,15 @@ where
 			let mut failures = 0;
 			loop {
 				checks.tick().await;
-				let cause = match tokio::time::timeout(
+				let started = tokio::time::Instant::now();
+				let checked = tokio::time::timeout(
 					std::time::Duration::from_secs(5),
 					scopes.check_active(&settings, &credential),
 				)
-				.await
-				{
+				.await;
+				metrics::histogram!("aidash_egress_host_connection_check_seconds")
+					.record(started.elapsed().as_secs_f64());
+				let cause = match checked {
 					Ok(Ok(current)) => {
 						failures = 0;
 						if !current
@@ -921,23 +984,19 @@ where
 			(None, None) => unreachable!(),
 		}
 	};
-	let sent_settle = tokio::time::timeout(std::time::Duration::from_secs(5), sent_batch.settle())
-		.await
-		.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
-	let received_settle =
-		tokio::time::timeout(std::time::Duration::from_secs(5), received_batch.settle())
-			.await
-			.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
-	for settled in [&sent_settle, &received_settle] {
+	// The bytes have already moved, so a refund that fails or times out is the
+	// store's loss only: it is counted and reported, and the connection ends
+	// the way its transfer did (#909).
+	for settled in [sent_batch.settle().await, received_batch.settle().await] {
 		if let Err(error) = settled {
 			super::settle_failure("refund", "abandoned");
-			failure.internal("refund", error);
+			failure.internal("refund", &error);
 		}
 	}
 	(
 		sent.load(Ordering::Relaxed),
 		received.load(Ordering::Relaxed),
-		result.and(sent_settle).and(received_settle),
+		result,
 	)
 }
 
@@ -1420,7 +1479,9 @@ fn tunnel_ended(report: &FailureReport, result: &io::Result<()>) -> &'static str
 	if let Err(error) = result {
 		match outcome {
 			"interrupted" => report.upstream("transfer", error),
-			"egress_authority_unavailable" => report.internal("authority", error),
+			"egress_authority_unavailable" | BUDGET_WAIT_TIMEOUT => {
+				report.internal("authority", error)
+			}
 			_ => {}
 		}
 	}
@@ -1441,6 +1502,7 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 		"egress_credential_revoked",
 		"egress_host_revoked",
 		"egress_authority_unavailable",
+		BUDGET_WAIT_TIMEOUT,
 		"egress_refund_failed",
 		"egress_refund_timeout",
 		CLIENT_CLOSED,
@@ -3505,6 +3567,10 @@ mod tests {
 		memory: Arc<MemoryScopes>,
 		resolve_fails: bool,
 		debit_fails: bool,
+		/// The number of debits still to fail before the store answers again.
+		debit_failures: std::sync::atomic::AtomicU32,
+		/// How long each debit takes before it is answered.
+		debit_delay: std::time::Duration,
 		refund_fails: bool,
 		record_hangs: bool,
 		record_fails:
@@ -3516,6 +3582,8 @@ mod tests {
 				memory: Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone())),
 				resolve_fails: false,
 				debit_fails: false,
+				debit_failures: Default::default(),
+				debit_delay: std::time::Duration::ZERO,
 				refund_fails: false,
 				record_hangs: false,
 				record_fails: Box::new(|_| false),
@@ -3559,7 +3627,14 @@ mod tests {
 			n: u64,
 			day: chrono::NaiveDate,
 		) -> aidash_application::Result<()> {
-			if self.debit_fails {
+			tokio::time::sleep(self.debit_delay).await;
+			let failing = self
+				.debit_failures
+				.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+					left.checked_sub(1)
+				})
+				.is_ok();
+			if self.debit_fails || failing {
 				return Err(aidash_application::Error::External(
 					"pool timed out debiting".into(),
 				));
@@ -4110,8 +4185,10 @@ mod tests {
 		}
 	}
 
+	/// The bytes have moved by the time a refund runs, so its failure is reported
+	/// but does not change how the connection ended (#909).
 	#[tokio::test(start_paused = true)]
-	async fn a_failed_refund_leaves_its_cause_and_is_not_an_interruption() {
+	async fn a_failed_refund_leaves_its_cause_and_keeps_the_connection_s_outcome() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
 		let mut scopes = FaultyScopes::new(&settings);
@@ -4135,7 +4212,13 @@ mod tests {
 		drop(client);
 		drop(server);
 		let (_, _, result) = task.await.unwrap();
-		assert_eq!(super::tunnel_outcome(&result), "egress_refund_failed");
+		assert_ne!(super::tunnel_outcome(&result), "egress_refund_failed");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("refund")),
+			"{result:?}"
+		);
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "ERROR", "refund").len(), 1, "{logs}");
 		assert!(logs.contains("pool timed out refunding"), "{logs}");
@@ -4147,11 +4230,13 @@ mod tests {
 		);
 	}
 
-	/// A store that cannot be asked is our own failure, not the upstream's.
+	/// A store that cannot be asked is our own failure, not the upstream's. Its
+	/// debit is tried again, and the connection ends only after waiting
+	/// [`super::DEBIT_WAIT`], naming why (#909).
 	#[tokio::test(start_paused = true)]
-	async fn a_failed_debit_is_the_authority_s_failure_and_not_an_upstream_transfer() {
+	async fn a_debit_the_store_never_answers_ends_as_a_budget_wait_and_not_an_upstream_transfer() {
 		let observed = super::super::tests::Observed::start();
-		let settings = test_settings();
+		let settings = settings_allowing_any_host();
 		let mut scopes = FaultyScopes::new(&settings);
 		scopes.debit_fails = true;
 		let (mut client, gateway_client) = tokio::io::duplex(64);
@@ -4170,17 +4255,100 @@ mod tests {
 			receiver,
 		));
 		client.write_all(b"hello").await.unwrap();
+		let started = tokio::time::Instant::now();
 		let (_, _, result) = task.await.unwrap();
+		assert!(
+			started.elapsed() >= super::DEBIT_WAIT,
+			"{:?}",
+			started.elapsed()
+		);
 		assert_eq!(
 			super::tunnel_ended(&report, &result),
-			"egress_authority_unavailable",
+			super::BUDGET_WAIT_TIMEOUT,
 			"{result:?}"
 		);
+		assert!(observed.count("aidash_egress_debit_retries_total") > 1);
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
 		assert!(logs.contains("pool timed out debiting"), "{logs}");
 		assert!(lines_at(&logs, "WARN", "transfer").is_empty(), "{logs}");
+	}
+
+	/// Settings whose monitor keeps allowing [`HOST`], for a tunnel that lives
+	/// past its first five-second check.
+	fn settings_allowing_any_host() -> ScopeSettings {
+		let mut settings = test_settings();
+		settings.allowed_hosts.allow_all = true;
+		settings.operator_allows_all = true;
+		settings
+	}
+
+	/// Runs one tunnel over `scopes`, sends `hello` upstream, and returns what
+	/// the upstream read and how the tunnel ended once both sides close.
+	async fn hello_through(
+		settings: ScopeSettings,
+		scopes: FaultyScopes,
+	) -> ([u8; 5], std::io::Result<()>) {
+		let (mut client, gateway_client) = tokio::io::duplex(64);
+		let (gateway_server, mut server) = tokio::io::duplex(64);
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			Arc::new(scopes),
+			settings,
+			CREDENTIAL.into(),
+			HOST.into(),
+			super::TunnelReports::default(),
+			receiver,
+		));
+		client.write_all(b"hello").await.unwrap();
+		let mut received = [0; 5];
+		if let Err(error) = server.read_exact(&mut received).await {
+			panic!("{error}: {:?}", task.await.unwrap().2);
+		}
+		drop(client);
+		drop(server);
+		(received, task.await.unwrap().2)
+	}
+
+	/// A debit slower than the monitor's five-second check is a slow store, not
+	/// a refusal: the bytes wait for it and then move (#909).
+	#[tokio::test(start_paused = true)]
+	async fn a_slow_debit_holds_the_bytes_instead_of_closing_the_connection() {
+		let observed = super::super::tests::Observed::start();
+		let settings = settings_allowing_any_host();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.debit_delay = std::time::Duration::from_secs(12);
+		let (received, result) = hello_through(settings, scopes).await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 0);
+	}
+
+	/// A debit the store fails to answer a few times is tried again, and the
+	/// connection goes on once the store answers (#909).
+	#[tokio::test(start_paused = true)]
+	async fn a_debit_the_store_fails_for_a_while_is_tried_again() {
+		let observed = super::super::tests::Observed::start();
+		let settings = settings_allowing_any_host();
+		let scopes = FaultyScopes::new(&settings);
+		scopes.debit_failures.store(4, Ordering::SeqCst);
+		let (received, result) = hello_through(settings, scopes).await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
 	}
 
 	/// A tunnel that crosses UTC midnight refunds the day before it, and that
@@ -4201,11 +4369,9 @@ mod tests {
 		batch.day = batch.day.pred_opt().unwrap();
 		batch.remaining = 10;
 		let result = batch.charge(1).await;
-		assert_eq!(
-			super::tunnel_ended(&report, &result),
-			"egress_refund_failed",
-			"{result:?}"
-		);
+		// The day's unused bytes stay counted, and the connection goes on (#909).
+		assert!(result.is_ok(), "{result:?}");
+		assert_eq!(batch.day, chrono::Utc::now().date_naive());
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		assert_eq!(
 			observed.count(

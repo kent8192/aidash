@@ -6,7 +6,6 @@
 //! nor its Node is deleted (ADR 0060, ADR 0083); host and suspension changes
 //! reach an open connection through the gateway's periodic recheck.
 use aidash_application::egress::{Admission, ScopeAuthority, ScopeSettings};
-use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
 use aidash_domain::scratch::{HostAllowlist, ScratchState};
 use async_trait::async_trait;
@@ -104,11 +103,7 @@ impl ScratchAuthority {
 		space: Uuid,
 	) -> aidash_application::Result<Option<ScopeSettings>> {
 		let found: crate::Result<_> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(tenant)?)
-				.await?;
+			let mut tx = super::begin_timed(&self.store.pool, tenant).await?;
 			let found = scratch::read(&mut *tx, tenant, space).await?;
 			// Deleting a Tenant or a Node closes admission at once, although the
 			// Scratch Space stays Active until its data is purged.

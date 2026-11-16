@@ -342,6 +342,10 @@ impl RuntimeTasks {
 			"metrics",
 			runtime_task(crate::apps::execution::services::metrics::run(
 				coordinator.clone(),
+				vec![
+					("main", federation.store.pool.clone()),
+					("control", federation.store.control_pool.clone()),
+				],
 			)),
 		);
 		if let Some(service) = event_streams.clone() {
