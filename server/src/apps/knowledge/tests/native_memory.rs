@@ -622,7 +622,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 					memory::list(&store, &administrator(&store).await, read)
 				)
 				.await,
-				Ok(Err(aidash_server::Error::SemanticUnavailable))
+				Ok(Err(aidash_server::Error::MemoryClosed))
 			) {
 				break;
 			}
@@ -1089,7 +1089,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 	let epoch = recovery::prepare_restore(&store, directory).await.unwrap();
 	assert!(matches!(
 		memory::operate(&store, &administrator(&store).await, query()).await,
-		Err(aidash_server::Error::SemanticUnavailable)
+		Err(aidash_server::Error::MemoryClosed)
 	));
 	let mut reopened = Store::from_pool(
 		store.pool.fixture_driver().clone(),
@@ -1105,7 +1105,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 
 	assert!(matches!(
 		memory::operate(&reopened, &administrator(&reopened).await, query()).await,
-		Err(aidash_server::Error::SemanticUnavailable)
+		Err(aidash_server::Error::MemoryClosed)
 	));
 	let report = recovery::restore(&reopened, directory, &archive)
 		.await
