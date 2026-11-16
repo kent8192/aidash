@@ -1227,3 +1227,24 @@ async fn copying_saved_files_writes_them_at_their_paths() {
 	assert!(writes[0].final_chunk);
 	assert_eq!(writes[0].run_id, run.id.to_string());
 }
+
+#[test]
+fn a_working_area_read_in_the_new_schema_reaches_the_strict_legacy_shape() {
+	let file = Uuid::new_v4();
+	let read = legacy_input(
+		"file_read",
+		json!({"file_id": file, "path": null, "area_id": null}),
+	);
+	let parsed: aidash_domain::capabilities::files::FileRead =
+		serde_json::from_value(read).unwrap();
+	assert_eq!(parsed.file_id, file);
+	assert!(matches!(
+		parsed.representation,
+		aidash_domain::capabilities::files::Representation::Text
+	));
+	let search = legacy_input(
+		"file_search",
+		json!({"query": "x", "mode": "literal", "scope": "working", "glob": null}),
+	);
+	serde_json::from_value::<aidash_domain::capabilities::files::FileSearch>(search).unwrap();
+}
