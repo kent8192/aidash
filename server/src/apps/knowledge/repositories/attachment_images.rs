@@ -325,7 +325,11 @@ pub(crate) async fn enqueue(
 	}
 	let authority = lease.saved()?;
 	let mut entered = 0;
-	let posted = rows(lease, workspace, ids).await?;
+	let mut posted = rows(lease, workspace, ids).await?;
+	// Admission follows the caller's order: backfill passes the oldest message
+	// first, and a post passes its own attachment order. When fewer slots
+	// remain than images, the earlier ones take them.
+	posted.sort_by_key(|row| ids.iter().position(|id| *id == row.id));
 	for row in posted {
 		let key = attachment_image_key(row.id);
 		let source = Source::AttachmentImage {

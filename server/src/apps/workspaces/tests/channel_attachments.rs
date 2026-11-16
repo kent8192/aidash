@@ -1280,3 +1280,83 @@ async fn image_entry_keys_are_reserved_and_text_entries_hold_no_image_slot(
 		Some("PENDING")
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn backfill_admits_the_older_image_when_one_slot_remains(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: two slots, one held by an image posted while the index was
+	// enabled; then two images posted while it was disabled.
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let index_path = format!("/api/workspaces/{workspace}/semantic/index");
+	let mut spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":2});
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let held = post_image(&app, &token, &workspace, "Indexed").await;
+	spec["enabled"] = json!(false);
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	// Post the image with the larger ID first, so posting order and ID order
+	// disagree.
+	let mut ids = vec![];
+	for _ in 0..2 {
+		let (status, image) = upload_image(&app, &token, &workspace, None).await;
+		assert_eq!(status, 200, "{image}");
+		ids.push(image["id"].as_str().unwrap().to_owned());
+	}
+	ids.sort_by_key(|id| std::cmp::Reverse(id.parse::<Uuid>().unwrap()));
+	for (content, id) in ["Older", "Newer"].into_iter().zip(&ids) {
+		let (status, message) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/workspaces/{workspace}/thread-messages"),
+			json!({"content":content, "idempotency_key":Uuid::new_v4(), "attachment_ids":[id]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{message}");
+	}
+
+	// Act: enabling the index again backfills both.
+	spec["enabled"] = json!(true);
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":2,"spec":spec}),
+	)
+	.await;
+
+	// Assert: the older image takes the last slot.
+	assert_eq!(status, 200, "{index}");
+	assert_eq!(image_entry(&app, &held).await.unwrap().0, "PENDING");
+	assert_eq!(image_entry(&app, &ids[0]).await.unwrap().0, "PENDING");
+	let newer = image_entry(&app, &ids[1]).await.unwrap();
+	assert_eq!(
+		(newer.0.as_str(), newer.1.as_deref()),
+		("UNSUPPORTED", Some("limit"))
+	);
+}
