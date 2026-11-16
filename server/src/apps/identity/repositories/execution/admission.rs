@@ -44,12 +44,24 @@ impl InferenceAdmissionRepository<InferenceReservation> for Admissions<'_> {
 		attempt: Uuid,
 		digest: String,
 		units: i64,
+		summary: bool,
 	) -> Result<InferenceReservation> {
 		let federation = self.remote.ok_or(Error::Forbidden)?;
-		protocol::admit(federation, self.run, attempt, self.purpose, digest, units)
-			.await
-			.map(|reservation| InferenceReservation::Remote(Box::new(reservation)))
-			.map_err(Into::into)
+		protocol::admit(
+			federation,
+			self.run,
+			attempt,
+			if summary {
+				Purpose::Summary
+			} else {
+				self.purpose
+			},
+			digest,
+			units,
+		)
+		.await
+		.map(|reservation| InferenceReservation::Remote(Box::new(reservation)))
+		.map_err(Into::into)
 	}
 	async fn reserve_local(
 		&self,

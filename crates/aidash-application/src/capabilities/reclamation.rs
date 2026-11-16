@@ -178,6 +178,7 @@ async fn working_objects(repository: &dyn ReclamationRepository, cursor: &mut Uu
 #[derive(Default)]
 pub struct Cursor {
 	python: Uuid,
+	journal: Uuid,
 	records: Uuid,
 	working: Uuid,
 }
@@ -187,6 +188,9 @@ pub async fn sweep(repository: &dyn ReclamationRepository, cursor: &mut Cursor) 
 	}
 	if let Err(error) = repository.python(&mut cursor.python).await {
 		tracing::warn!(%error,"Python memory reclamation pending");
+	}
+	if let Err(error) = repository.journal(&mut cursor.journal).await {
+		tracing::warn!(%error, "Journal kernel reclamation pending");
 	}
 	if let Err(error) = repository.orphans().await {
 		tracing::warn!(%error,"object ownership reconciliation pending");

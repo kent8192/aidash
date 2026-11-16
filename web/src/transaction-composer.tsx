@@ -13,6 +13,7 @@ import { disambiguateLabels } from "./display-labels";
 import { parseNodeAddress, registryDeployment } from "./node-selection";
 import { Field, useI18n } from "./ui";
 import { Group, Hint } from "./components/patterns";
+import { useTaskPages } from "./task-picker-pages";
 
 function clearResource(mutation: TransactionMutation): TransactionMutation {
   switch (mutation.kind) {
@@ -42,13 +43,23 @@ export function TransactionComposer({
   const workspaces =
     data?.workspaces.filter((workspace) => workspace.node === localNode) ?? [];
   const workspaceIds = new Set(workspaces.map((workspace) => workspace.id));
-  const tasks =
-    data?.tasks.filter((task) => workspaceIds.has(task.workspace_id)) ?? [];
+  // The Task window of `/api/state` holds 50 (#664); older local Tasks are
+  // read on request. `GET /api/tasks` spans every Node, so only Tasks of the
+  // local Node's Workspaces are offered. The window wins for a Task both
+  // hold: it is re-read on every event.
+  const taskPages = useTaskPages(data, ["transaction", local]);
+  const tasks = [
+    ...new Map(
+      [...taskPages.older, ...(data?.tasks ?? [])]
+        .filter((task) => workspaceIds.has(task.workspace_id))
+        .map((task) => [task.id, task]),
+    ).values(),
+  ];
   const runs =
     data?.runs.filter(
       (run) => workspaceIds.has(run.workspace_id) && run.home_node === local,
     ) ?? [];
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const workspaceLabels = disambiguateLabels(
     workspaces,
     (workspace) => workspace.id,
@@ -308,6 +319,25 @@ export function TransactionComposer({
                         />
                       )}
                     </Field>
+                    {participant.node_id === local && taskPages.more && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={taskPages.loading}
+                        onClick={taskPages.load}
+                      >
+                        {locale === "ja-JP"
+                          ? "タスクをさらに表示"
+                          : "Show more tasks"}
+                      </Button>
+                    )}
+                    {participant.node_id === local && taskPages.error && (
+                      <p role="alert">
+                        {locale === "ja-JP"
+                          ? "タスクを読み込めませんでした。"
+                          : "Unable to load tasks."}
+                      </p>
+                    )}
                     <Field label={t("name")}>
                       <Input
                         required

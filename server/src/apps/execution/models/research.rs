@@ -30,6 +30,8 @@ use uuid::Uuid;
 
 mod journal_results;
 pub(crate) use journal_results::ResearchJournalResult;
+mod source_copies;
+pub(crate) use source_copies::{expire_copies, revoke_copies};
 
 const DISPATCHED: &str = "dispatched";
 /// Advisory lock namespace of research reservations.
@@ -1265,6 +1267,37 @@ impl ResearchAttempt {
 			return Ok(None);
 		};
 		lock(tx, &format!("research-run:{run}")).await?;
+		if matches!(
+			result["contract"].as_str(),
+			Some(
+				aidash_domain::context::research::JOURNAL_QUERY_CONTRACT
+					| aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT
+			)
+		) {
+			if ResearchRevocation::exists(tx, run).await? {
+				return Ok(Some(revoked_result(operation)));
+			}
+			let mut expired =
+				crate::apps::execution::repositories::research::account_terms::expired(tx, run)
+					.await?;
+			// A copy of another Run's Research is withdrawn with that Run.
+			let copied =
+				aidash_domain::context::research::ResearchReference::from_result(key, result);
+			if !crate::apps::execution::repositories::research::source_withdrawals(
+				tx,
+				run,
+				copied,
+				&mut expired,
+			)
+			.await?
+			.is_empty()
+			{
+				return Ok(Some(revoked_result(operation)));
+			}
+			return Ok(expired
+				.covers(result)
+				.then(|| aidash_domain::research::expiry::tombstone(operation)));
+		}
 		if let Some(tombstone) = Self::expired_tombstone(tx, run, key).await? {
 			return Ok(Some(tombstone));
 		}
@@ -1300,11 +1333,13 @@ pub(crate) async fn revoke_invocations(
 			// Exactly the domain recognizer's test: the contract marker and
 			// the operation. A pending approval or a failure has no `limits`,
 			// and its input still names what was disclosed.
-			.and_where(
-				json_text(result(), "contract")
-					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
-			)
-			.and_where(json_text(result(), "operation").eq(Expr::value(operation.as_str())))
+			.and_where({
+				let research = json_text(result(), "contract").eq(Expr::value(aidash_domain::research::RESULT_CONTRACT))
+					.and(json_text(result(), "operation").eq(Expr::value(operation.as_str())));
+				if operation == Operation::Search {
+					research.or(json_text(result(), "contract").is_in([aidash_domain::context::research::JOURNAL_QUERY_CONTRACT, aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT]).and(json_text(result(), "research_derived").eq("true")))
+				} else { research }
+			})
 			// A result settled as a tombstone after the revocation still has
 			// its input to redact.
 			.and_where(
@@ -1367,6 +1402,9 @@ pub(crate) async fn revoke_invocations(
 		.await?
 		.rows_affected;
 	revoke_tool_events(tx, run).await?;
+	// Other Runs' Journal copies of this Research go too; they are the
+	// holders' invocations, so they are not counted as this Run's.
+	revoke_copies(tx, run).await?;
 	Ok(u32::try_from(removed).unwrap_or(u32::MAX))
 }
 
@@ -1402,13 +1440,24 @@ async fn revoke_tool_events(tx: &mut dyn TransactionExecutor, run: Option<Uuid>)
 			.table(Alias::new("events"))
 			.value_expr(Alias::new("data"), with_key(data(), "result", &tombstone))
 			.and_where(Expr::col("kind").eq("tool.completed"))
-			.and_where(
-				json_text(Expr::from(result()), "contract")
-					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
-			)
-			.and_where(
-				json_text(Expr::from(result()), "operation").eq(Expr::value(operation.as_str())),
-			)
+			.and_where({
+				let research = json_text(Expr::from(result()), "contract")
+					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT))
+					.and(
+						json_text(Expr::from(result()), "operation")
+							.eq(Expr::value(operation.as_str())),
+					);
+				if operation == Operation::Search {
+					research.or(json_text(Expr::from(result()), "contract")
+						.is_in([
+							aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,
+							aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT,
+						])
+						.and(json_text(Expr::from(result()), "research_derived").eq("true")))
+				} else {
+					research
+				}
+			})
 			.and_where(result().ne(jsonb(&tombstone)))
 			.and_where(of_run())
 			.build(PostgresQueryBuilder);
@@ -1793,7 +1842,59 @@ impl ExpiringAttempts {
 			documents: documents.into_iter().collect(),
 			through: Some(at),
 		};
+		// Journal reads can reproduce any of their Research inputs. Purge the
+		// exact invocations and event copies whose dependencies expired too.
+		let (sql, values) = Query::select()
+			.columns(["idempotency_key", "result"].map(Alias::new))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+			.and_where(
+				json_text(Expr::col(Alias::new("result")), "contract").is_in([
+					aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,
+					aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT,
+				]),
+			)
+			.build(PostgresQueryBuilder);
+		let mut journal_keys = Vec::new();
+		for row in tx.fetch_all(&sql, convert_values(values)).await? {
+			let data = QueryRow::from_backend_row(row).data;
+			if expired.covers(&data["result"]) {
+				journal_keys.push(serde_json::from_value::<String>(
+					data["idempotency_key"].clone(),
+				)?);
+			}
+		}
+		if !journal_keys.is_empty() {
+			let tombstone = aidash_domain::research::expiry::tombstone(Operation::Search);
+			let (sql, values) = Query::update()
+				.table(Alias::new("invocations"))
+				.value(Alias::new("result"), tombstone.clone())
+				.and_where(Expr::col("run_id").eq(Expr::value(self.run)))
+				.and_where(
+					Expr::col("idempotency_key")
+						.is_in(journal_keys.iter().cloned().map(Expr::value)),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+			let data = || Expr::col(Alias::new("data"));
+			let (sql, values) = Query::update()
+				.table(Alias::new("events"))
+				.value_expr(
+					Alias::new("data"),
+					with_key(data(), "result", &tombstone.to_string()),
+				)
+				.and_where(Expr::col("kind").eq("tool.completed"))
+				.and_where(json_text(data(), "run_id").eq(Expr::value(self.run.to_string())))
+				.and_where(
+					json_text(data(), "idempotency_key")
+						.is_in(journal_keys.iter().cloned().map(Expr::value)),
+				)
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
 		ResearchJournalResult::expire(tx, self.run, &all, &expired).await?;
+		// Journal copies other Runs read from this Run expire with it.
+		expire_copies(tx, self.run, &expired).await?;
 		Ok(purged)
 	}
 }

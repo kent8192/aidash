@@ -45,3 +45,9 @@ Once a Subnode ends, an Agent working in its Workspace can no longer write there
 What stays open: recording how an approval was settled, a Run's final completion and the Completion Gate check, and reading Memory. Each only closes out or reads what exists, and stopping any of them could keep a Run from ending. Stopping, replacing and settling a Live preview stay open for the same reason, and so that a Pod can still be stopped. Two requests to a person also stay open, because each closes out or mirrors something that already exists: the confirmation request that closes out a tool call whose outcome is UNCERTAIN, and the copy of a request that the home Node of a remote Run already recorded.
 
 A person can still correct or delete the Memory an Agent left in the Workspace, unlike messages and files. That write does not race with the end, and a person must be able to remove what is left there.
+
+## Amendment (2026-11-10, #851, #850)
+
+A creator may name its own agent as a member. The refusal of the creator's agent had no recorded reason, and the risks it might address are covered elsewhere. A Run inside a Subnode cannot create one. A member may use only what the creating Run, the allowance and its own definition permit. Members cannot give Tasks to the creating Run. Copies of the same agent can now split a search.
+
+A Subnode Task may carry a range of the creating Run's Context Journal (ADR 0125). Handing it over counts as one of the creating Run's reads, as anything else the creator hands over does. Members read only that range, through Journal Query, and their results return to the creator as data.

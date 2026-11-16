@@ -6,6 +6,12 @@ use uuid::Uuid;
 pub trait InferenceAdmissionRepository<R: Send>: Send + Sync {
 	fn remote(&self) -> bool;
 	async fn suspend(&self) -> Result<()>;
-	async fn admit_remote(&self, attempt: Uuid, digest: String, units: i64) -> Result<R>;
+	async fn admit_remote(
+		&self,
+		attempt: Uuid,
+		digest: String,
+		units: i64,
+		summary: bool,
+	) -> Result<R>;
 	async fn reserve_local(&self, attempt: Uuid, window: usize, output: u32) -> Result<Option<R>>;
 }

@@ -118,7 +118,6 @@ class NativeMemory(RemoteMemory):
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": revision, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            self.approve_decider(node)
             # The other Node's alice acts here as a service subject. The Tenant's
             # administrator writes the Peer Mapping, through a browser Mapping (#484).
             peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)

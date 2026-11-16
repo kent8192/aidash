@@ -32,12 +32,19 @@ export type ApprovalInbox = {
  */
 export function DecisionQueue({
   decisions,
+  humanMore,
   inbox,
   open,
   onOpenChange,
   select,
 }: {
   decisions: PendingDecision[];
+  humanMore: {
+    available: boolean;
+    loading: boolean;
+    error: boolean;
+    load: () => void;
+  };
   inbox: ApprovalInbox;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -51,7 +58,7 @@ export function DecisionQueue({
   const approvals = inbox.pending ?? [];
   const grants = inbox.grants ?? [];
   const waiting = decisions.length + approvals.length;
-  if (waiting === 0 && grants.length === 0) return null;
+  if (waiting === 0 && grants.length === 0 && !humanMore.available) return null;
   return (
     <Popover
       open={open}
@@ -119,6 +126,23 @@ export function DecisionQueue({
             );
           })}
         </ul>
+        {humanMore.available && (
+          <button
+            type="button"
+            onClick={humanMore.load}
+            disabled={humanMore.loading}
+            className="px-2 py-2 text-xs"
+          >
+            {humanMore.loading ? copy.loading : copy.showMore}
+          </button>
+        )}
+        {humanMore.error && (
+          <p role="alert" className="px-2 text-xs">
+            {ja
+              ? "未回答の依頼を読み込めませんでした。"
+              : "Unable to load more requests."}
+          </p>
+        )}
         {approvals.length > 0 && (
           <section
             aria-label={ja ? "あなたの承認待ち" : "Approvals awaiting you"}

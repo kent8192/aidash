@@ -6,8 +6,7 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		id: "agent".into(),
 		version: "1.0.0".into(),
 	};
-	let mut removed = aidash_domain::registry::bindings::DEFAULT_TOOLS.to_vec();
-	removed.push(aidash_domain::registry::bindings::COMPACTION_DEFAULT);
+	let removed = aidash_domain::registry::bindings::DEFAULT_TOOLS.to_vec();
 	let entry: crate::registry::Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Fixture","schema_version":1,"bindings":[],"remove_default":removed}})).unwrap();
 	let model: crate::registry::Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"Fixture"},"config":{}})).unwrap();
 	use aidash_domain::registry::bindings::{
@@ -33,6 +32,12 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 	);
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
+	entries.extend(
+		aidash_domain::registry::bindings::memory_defaults::definitions()
+			.unwrap()
+			.into_iter()
+			.filter(|entry| entry.kind == "memory"),
+	);
 	let definitions = entries
 		.into_iter()
 		.map(|definition| {
@@ -49,14 +54,18 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		.collect::<Vec<_>>();
 	let bindings = definitions
 		.iter()
-		.filter(|d| matches!(d.definition.kind.as_str(), "tool" | "source"))
+		.filter(|d| matches!(d.definition.kind.as_str(), "tool" | "source" | "memory"))
 		.map(|d| {
-			if d.definition.kind == "source" {
+			if matches!(d.definition.kind.as_str(), "source" | "memory") {
 				return ResolvedBinding {
 					identity: d.identity.clone(),
 					definition: d.definition.clone(),
 					digest: d.digest.clone(),
-					origin: BindingOrigin::Required,
+					origin: if d.definition.kind == "memory" {
+						BindingOrigin::Default
+					} else {
+						BindingOrigin::Required
+					},
 					alias: None,
 					narrow: Default::default(),
 					installation: None,
