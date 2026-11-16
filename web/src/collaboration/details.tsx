@@ -478,7 +478,7 @@ export function OperationsDialog({
  * Steps that went without optional Workspace semantic context (ADR 0059). Only a
  * Run local to its executing node degrades, which need not be the viewer's node.
  */
-function OutageWait({ run }: { run: Run }) {
+function OutageWait({ run }: { run: Pick<Run, "state"> }) {
   const { t } = useI18n();
   const state = run.state;
   if (state?.phase !== "WAITING" || state.data.reason !== "outage") return null;
