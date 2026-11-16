@@ -729,7 +729,6 @@ fn a_workbench_test_excludes_only_the_schedule_tools() {
 		remote: false,
 		bindings: vec![bound("schedule_create"), bound("task_create")],
 		definitions: vec![],
-		foreign_agents: vec![],
 		agent_plugins: vec![],
 	};
 	// Act
