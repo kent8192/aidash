@@ -13,7 +13,21 @@ fn literal(value: &str) -> String {
 
 fn connection_url(base: &reqwest::Url, role: &str, password: &str) -> Result<String, &'static str> {
 	let mut url = base.clone();
-	url.set_query(None);
+	// Keep connection options such as `sslmode` or `sslrootcert` as written,
+	// since libpq does not read `+` as a space; only the credentials change,
+	// so the superuser's never reach the printed URLs.
+	let options = base
+		.query()
+		.unwrap_or_default()
+		.split('&')
+		.filter(|pair| {
+			let key = pair.split('=').next().unwrap_or_default();
+			let key = percent_encoding::percent_decode_str(key).decode_utf8_lossy();
+			!pair.is_empty() && !matches!(key.as_ref(), "user" | "password")
+		})
+		.collect::<Vec<_>>()
+		.join("&");
+	url.set_query((!options.is_empty()).then_some(options.as_str()));
 	url.set_fragment(None);
 	url.set_username(role).map_err(|_| "invalid database URL")?;
 	url.set_password(Some(password))
@@ -247,6 +261,18 @@ mod tests {
 		assert_eq!(
 			connection_url(&url, "aidash_server", "p@ss:/").unwrap(),
 			"postgres://aidash_server:p%40ss%3A%2F@localhost:5433/db"
+		);
+	}
+
+	#[test]
+	fn keeps_connection_options_but_not_credentials() {
+		let url = reqwest::Url::parse(
+			"postgres://admin:secret@db.internal:5432/aidash?sslmode=verify-full&sslrootcert=%2Fetc%2Fca.pem&options=-c%20search_path%3Dpublic&us%65r=admin&password=secret#x",
+		)
+		.unwrap();
+		assert_eq!(
+			connection_url(&url, "aidash_server", "pw").unwrap(),
+			"postgres://aidash_server:pw@db.internal:5432/aidash?sslmode=verify-full&sslrootcert=%2Fetc%2Fca.pem&options=-c%20search_path%3Dpublic"
 		);
 	}
 }
