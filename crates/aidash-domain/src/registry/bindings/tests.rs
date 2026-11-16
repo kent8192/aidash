@@ -742,6 +742,36 @@ fn a_workbench_test_excludes_only_the_schedule_tools() {
 }
 
 #[test]
+fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
+	// Arrange: today's defaults as stored before #557 added the four
+	// Schedule tools, and a #640-era (mode 2) normalization.
+	let node = "aidash://node-a";
+	let config = agent();
+	let schedule_tool = |binding: &NormalizedBinding| {
+		SCHEDULE_TOOLS
+			.iter()
+			.any(|tool| binding.binding.target == QualifiedRef::builtin(node, tool))
+	};
+	let mut saved = config.normalize(node).unwrap();
+	assert_eq!(saved.iter().filter(|b| schedule_tool(b)).count(), 4);
+	saved.retain(|binding| !schedule_tool(binding));
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: node.into(),
+		bindings: saved,
+	});
+
+	// Act
+	let resolved = entry.normalized_bindings(node).unwrap();
+	let historical = config.normalize_mode(node, 2).unwrap();
+
+	// Assert: what it pinned stands; no historical set has the new tools.
+	assert!(!resolved.iter().any(schedule_tool));
+	assert!(!historical.iter().any(schedule_tool));
+}
+
+#[test]
 fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 	// Arrange: a normalization saved between image retrieval (#639) and
 	// Thread Attachment image search (#622 part 2), as it was stored then.
