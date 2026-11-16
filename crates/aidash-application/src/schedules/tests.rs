@@ -238,6 +238,20 @@ async fn registering_needs_schedule_create_and_task_create_in_the_workspace() {
 
 #[rstest]
 #[tokio::test]
+async fn only_a_person_registers_a_schedule() {
+	// Arrange: a service subject holding every action in the Workspace.
+	let workspace = Uuid::new_v4();
+	let mut scope = Fake::new("nightly-service");
+	scope.workspaces.insert(workspace);
+	// Act
+	let result = register(&mut scope, workspace, definition(), Origin::Person).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+	assert!(scope.schedules.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_schedule_names_only_what_its_registrant_may_use() {
 	let workspace = Uuid::new_v4();
 	let mut unknown_agent = definition();

@@ -151,8 +151,15 @@ pub async fn register(
 	scope
 		.require_workspace(workspace, schedules::CREATE)
 		.await?;
-	check_definition(scope, workspace, &definition).await?;
 	let registrant = scope.subject().to_owned();
+	// A Schedule always acts as one person (ADR 0134): a service or Agent
+	// subject cannot be a Registrant, however it authenticated.
+	if !scope.is_person(&registrant).await? {
+		return Err(Error::Invalid(
+			"a Schedule acts as a person, and only a person of the Tenant can register one".into(),
+		));
+	}
+	check_definition(scope, workspace, &definition).await?;
 	let (total, mine) = scope.counts(&registrant).await?;
 	effective_limits(scope).await?.admit(total, mine)?;
 	let now = scope.now();
