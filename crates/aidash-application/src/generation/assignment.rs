@@ -305,13 +305,7 @@ pub async fn create_in(
 	for (reference, action) in snapshot
 		.definitions
 		.iter()
-		.filter(|d| {
-			d.identity != snapshot.agent
-				&& !aidash_domain::registry::bindings::defaults::is_implicit_compaction(
-					&snapshot,
-					&d.identity,
-				)
-		})
+		.filter(|d| d.identity != snapshot.agent)
 		.map(|d| {
 			(
 				d.identity.local(),
@@ -321,23 +315,9 @@ pub async fn create_in(
 		.chain(
 			policy
 				.spec
-				.compaction
-				.iter()
-				.map(|c| (c.provider.clone(), "decision.invoke")),
-		)
-		.chain(
-			policy
-				.spec
 				.embedding
 				.iter()
 				.map(|c| (c.provider.clone(), "embedding.invoke")),
-		)
-		.chain(
-			policy
-				.spec
-				.summary
-				.iter()
-				.map(|c| (c.provider.clone(), "model.infer")),
 		) {
 		scope.catalog_entry(&reference, "registry.read").await?;
 		scope.catalog_entry(&reference, action).await?;
@@ -355,27 +335,7 @@ pub async fn create_in(
 	if !definition.tags.iter().any(|t| t == "generated") {
 		definition.tags.push("generated".into());
 	}
-	// Generated chains use only their generation policy's exact Decider and
-	// ancestor budgets, never an ordinary Agent's implicit compaction default.
-	let mut generated: aidash_domain::registry::bindings::AgentBindings =
-		serde_json::from_value(definition.config.clone())?;
-	if !generated
-		.remove_default
-		.iter()
-		.any(|key| key == aidash_domain::registry::bindings::COMPACTION_DEFAULT)
-	{
-		generated
-			.remove_default
-			.push(aidash_domain::registry::bindings::COMPACTION_DEFAULT.into());
-	}
-	definition.config = serde_json::to_value(generated)?;
-	let replacement = snapshot
-		.definitions
-		.iter()
-		.find(|entry| entry.identity == snapshot.agent)
-		.and_then(|entry| entry.definition.binding_normalization.as_ref())
-		.and_then(|saved| saved.compaction_override.as_ref());
-	definition.normalize_agent_with_compaction(scope.node_id(), replacement)?;
+	definition.normalize_agent(scope.node_id())?;
 	validation.validate_in(&definition, true)?;
 	if !search.matches(&definition) {
 		return Err(Error::Invalid(

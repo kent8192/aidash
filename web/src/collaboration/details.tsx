@@ -1,7 +1,6 @@
 import { ProviderToolActivity } from "../provider-tools";
 import { SafetyStopPanel } from "./safety-stop";
 import { ElicitationForm, elicitationMessage } from "./elicitation";
-import { RunCompactionDetails } from "../compaction-details";
 import { RunPlanUsage } from "../model-source";
 import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -29,7 +28,9 @@ import {
   runMessage,
   channelAttachmentUpload,
   humanAnswer,
+  humanRequests,
   taskAbandon,
+  taskRuns as taskRunPage,
 } from "../generated/aidash";
 import type {
   Artifact,
@@ -62,8 +63,6 @@ import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
 import { RunSubnodes } from "./subnodes";
-import { DeciderStartRefusal } from "../catalog-approval";
-import { unapprovedCompactionDecider } from "../catalog-approval-model";
 import { ArtifactList } from "./channel";
 import {
   answeredAtDeadline,
@@ -129,9 +128,30 @@ export function OperationsDialog({
     taskSnapshot.isError || !taskSnapshot.data
       ? undefined
       : taskSnapshot.data.tasks.find((value) => value.id === d.task?.id);
-  const request = data.human_requests.find(
+  const pendingRequest = data.human_requests.find(
     (value) => value.id === d.request?.id,
   );
+  const requestDetail = useQuery({
+    queryKey: ["human-request", d.request?.run_id, d.request?.id],
+    enabled: Boolean(d.kind === "human" && d.request && !pendingRequest),
+    queryFn: async ({ signal }) => {
+      let cursor: string | null = null;
+      do {
+        const page = await humanRequests(
+          { run: d.request!.run_id, state: "all", cursor },
+          { signal },
+        );
+        const match = page.items.find((item) => item.id === d.request!.id);
+        if (match) return match;
+        cursor = page.next_cursor;
+      } while (cursor);
+      return null;
+    },
+    retry: false,
+  });
+  const request =
+    pendingRequest ??
+    (requestDetail.isError ? undefined : (requestDetail.data ?? undefined));
   const continues = request ? continuesAt(request) : null;
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
@@ -140,12 +160,25 @@ export function OperationsDialog({
   const execution = ["workspace", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
-  const refusedDecider = unapprovedCompactionDecider(error);
   const taskRuns = task
     ? data.runs.filter(
         (run) => run.task_id === task.id && isLocalRun(run, data),
       )
     : [];
+  const started = useQuery({
+    queryKey: ["task-has-runs", task?.id, task?.revision],
+    enabled: task?.status === "OPEN",
+    queryFn: async ({ signal }) => {
+      let cursor: string | null = null;
+      do {
+        const page = await taskRunPage(task!.id, { cursor }, { signal });
+        if (page.items.length) return true;
+        cursor = page.next_cursor;
+      } while (cursor);
+      return false;
+    },
+    retry: false,
+  });
   return (
     <Modal
       title={
@@ -170,16 +203,7 @@ export function OperationsDialog({
       }
       close={close}
     >
-      {error &&
-        (refusedDecider ? (
-          <DeciderStartRefusal
-            decider={refusedDecider}
-            data={data}
-            openEntry={(entity) => open({ kind: "entityDetail", entity })}
-          />
-        ) : (
-          <Alert>{error}</Alert>
-        ))}
+      {error && <Alert>{error}</Alert>}
       <fieldset disabled={busy} className="m-0 grid min-w-0 gap-4 border-0 p-0">
         {unavailable ? (
           <Hint>{copy.unavailable}</Hint>
@@ -361,7 +385,12 @@ export function OperationsDialog({
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  {abandonable(task, taskRuns) && (
+                  {abandonable(
+                    task,
+                    task.status === "OPEN" && started.data !== false
+                      ? [true]
+                      : [],
+                  ) && (
                     <form
                       className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {
@@ -387,6 +416,13 @@ export function OperationsDialog({
                         </Button>
                       </div>
                     </form>
+                  )}
+                  {data.next_cursors.runs && (
+                    <p className="text-xs text-faint">
+                      {locale === "ja-JP"
+                        ? "以前の実行があります"
+                        : "Older runs exist"}
+                    </p>
                   )}
                   {taskRuns.length > 0 && (
                     <Panel title={t("execution")}>
@@ -629,10 +665,6 @@ function RunPanel({
           {run.error}
         </p>
       )}
-      <RunCompactionDetails
-        bindings={run.context?.binding_snapshot?.bindings ?? []}
-        reason={run.recovery?.context_reason}
-      />
       <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
       {!managed && (

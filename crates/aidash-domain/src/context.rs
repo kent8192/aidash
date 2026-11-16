@@ -87,6 +87,12 @@ pub struct Context {
 	pub history: Vec<HistoryEntry>,
 	#[serde(default)]
 	pub journal: JournalCursor,
+	/// Read-back immunity and repeat counts for offloaded Journal ranges.
+	#[serde(default, skip_serializing_if = "offload::ReadGuard::is_empty")]
+	pub offload_reads: offload::ReadGuard,
+	/// Set by offloading once this Run has material outside its projection.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub offloaded: Option<journal_query::Offloaded>,
 	#[serde(default, skip_serializing_if = "recovery::RecoveryState::is_initial")]
 	pub recovery: recovery::RecoveryState,
 	/// Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one.
@@ -152,6 +158,10 @@ struct StoredContext {
 	history: Vec<StoredHistory>,
 	#[serde(default)]
 	journal: Option<JournalCursor>,
+	#[serde(default)]
+	offload_reads: offload::ReadGuard,
+	#[serde(default)]
+	offloaded: Option<journal_query::Offloaded>,
 	#[serde(default)]
 	recovery: recovery::RecoveryState,
 	#[serde(default)]
@@ -252,6 +262,8 @@ impl<'de> Deserialize<'de> for Context {
 			media_inferred_seq: stored.media_inferred_seq,
 			history,
 			journal,
+			offload_reads: stored.offload_reads,
+			offloaded: stored.offloaded,
 			recovery: stored.recovery,
 			estimate: stored.estimate,
 			usage: stored.usage,
@@ -362,8 +374,33 @@ impl Context {
 			"current": current,
 			"summary": self.summary_view(),
 			"run_message_summary": self.run_message_summary,
-			"history": self.events().collect::<Vec<_>>(),
+			"history": self.events().map(ModelEvent).collect::<Vec<_>>(),
 		})
+	}
+}
+
+/// Provider projection may include freshly authorized memory content. Durable
+/// Run and Journal serialization keeps only the evidence references.
+struct ModelEvent<'a>(&'a ContextEvent);
+impl Serialize for ModelEvent<'_> {
+	fn serialize<S: serde::Serializer>(
+		&self,
+		serializer: S,
+	) -> std::result::Result<S::Ok, S::Error> {
+		if let ContextEvent::MemoryRecall { content, .. } = self.0 {
+			#[derive(Serialize)]
+			struct Memory<'a> {
+				kind: &'static str,
+				content: &'a Option<Value>,
+			}
+			Memory {
+				kind: "memory_recall",
+				content,
+			}
+			.serialize(serializer)
+		} else {
+			self.0.serialize(serializer)
+		}
 	}
 }
 
@@ -659,7 +696,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		#[serde(skip_serializing_if = "Option::is_none")]
 		summary: Option<Value>,
 		// Last, so earlier events stay a byte prefix while the history grows.
-		history: Vec<&'a ContextEvent>,
+		history: Vec<ModelEvent<'a>>,
 	}
 	let empty = serde_json::Map::new();
 	let fields = pinned.as_object().unwrap_or(&empty);
@@ -670,7 +707,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		context_sources: projected.run,
 		run_message_summary: &context.run_message_summary,
 		summary: context.summary_projection(),
-		history: context.events().collect(),
+		history: context.events().map(ModelEvent).collect(),
 	};
 	crate::provider::OrderedContext {
 		// Serializing borrowed JSON values and derived structs cannot fail.
@@ -897,6 +934,16 @@ pub fn agent_instructions(instructions: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextEvent {
+	/// Bounded cross-Run memory recalled from the Task at Run start.
+	MemoryRecall {
+		sources: Vec<crate::memory::Evidence>,
+		#[serde(default)]
+		unavailable: bool,
+		/// Hydrated only for a provider request; never persisted in the Journal.
+		#[serde(skip)]
+		#[schemars(skip)]
+		content: Option<Value>,
+	},
 	Tool {
 		call: crate::provider::ToolCall,
 		#[serde(deserialize_with = "crate::entities::required_json")]
@@ -966,8 +1013,7 @@ pub struct ToldTask {
 }
 
 /// What an elided result tells the model in place of the content it removed.
-pub const ELIDED_NOTE: &str = "removed from the context to fit the window; call the tool again only if this \
-	result is still needed";
+pub const ELIDED_NOTE: &str = "The original result remains in the Context Journal. Use Journal Query or its range-read fallback to inspect it.";
 
 impl ContextEvent {
 	pub fn tool(call: crate::provider::ToolCall, result: Value) -> Self {
@@ -1059,9 +1105,12 @@ impl std::fmt::Display for Context {
 use serde::{Deserialize, Serialize};
 
 pub mod observation;
+pub mod offload;
 
 pub mod sources;
 
+pub mod journal_export;
+pub mod journal_query;
 pub mod policy;
 pub mod recovery;
 pub mod research;

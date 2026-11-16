@@ -138,16 +138,6 @@ async fn inspect_in(
 	} else {
 		access.bindings(&entry).await?
 	};
-	if pinned.is_none() {
-		// A new inspection starts a Run here: the executing Node requires the
-		// Agent's compaction Decider to hold its Catalog Approval (#540).
-		for binding in crate::authorization::execution::compaction::bound(&snapshot) {
-			let current = access
-				.entry(&binding.identity.local(), aidash_domain::decision::INVOKE)
-				.await;
-			crate::authorization::execution::compaction::require(binding, current)?;
-		}
-	}
 	if !snapshot.remote
 		|| snapshot.agent.registry_deployment != access.node_id()
 		|| snapshot.agent.local() != input.agent
@@ -163,23 +153,6 @@ async fn inspect_in(
 			return Err(Error::RemoteExecutionRefused(
 				aidash_domain::federation::execution::Refusal::ExecutorMismatch,
 			));
-		}
-		if aidash_domain::registry::bindings::defaults::is_compaction_decider(&pinned.definition) {
-			access
-				.require(&access.entry_resource(&pinned.definition), "registry.read")
-				.await?;
-			// Retain the exact immutable definition; compaction's own dispatch
-			// checks current Catalog Approval before sending any state.
-			definitions.insert(
-				(pinned.identity.id.clone(), pinned.identity.version.clone()),
-				Definition {
-					entry: pinned.identity.local(),
-					kind: pinned.definition.kind.clone(),
-					digest: pinned.digest.clone(),
-					metadata: pinned.definition.clone(),
-				},
-			);
-			continue;
 		}
 		let action = match pinned.definition.kind.as_str() {
 			"agent" => "agent.execute",
@@ -215,17 +188,6 @@ async fn inspect_in(
 			));
 		}
 	}
-	if let Some(decider) = &input.decider {
-		definition(
-			access,
-			decider,
-			"decider",
-			"decision.invoke",
-			&[],
-			&mut definitions,
-		)
-		.await?;
-	}
 	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
 		binding_snapshot: snapshot,
@@ -238,7 +200,6 @@ async fn inspect_in(
 		agent: entry,
 		definitions: definitions.into_values().collect(),
 		semantic_memory: aidash_domain::semantic::remote::VERSION,
-		decider: input.decider.clone(),
 	})
 }
 
