@@ -41,6 +41,17 @@ pub async fn visible_many_in(
 	scope: &mut dyn RunDetailsScope,
 	ids: &[Uuid],
 ) -> Result<HashMap<Uuid, Option<RunInspection>>> {
+	visible_many_counted_in(scope, ids)
+		.await
+		.map(|(visible, _)| visible)
+}
+/// [`visible_many_in`], and the Node each hidden Run's check gave up on
+/// because it did not answer, for a list to count (#770).
+pub async fn visible_many_counted_in(
+	scope: &mut dyn RunDetailsScope,
+	ids: &[Uuid],
+) -> Result<(HashMap<Uuid, Option<RunInspection>>, HashMap<Uuid, String>)> {
+	let mut silent = HashMap::new();
 	let mut visible: HashMap<_, _> = ids.iter().map(|id| (*id, None)).collect();
 	let mut remote = Vec::new();
 	let mut local = BTreeMap::<Uuid, Vec<RunInspection>>::new();
@@ -55,7 +66,7 @@ pub async fn visible_many_in(
 			remote.push(run);
 		}
 	}
-	decide_prepared(scope, remote, &mut visible).await?;
+	decide_prepared(scope, remote, &mut visible, &mut silent).await?;
 	for (workspace_id, runs) in local {
 		let workspace = match scope.workspace(workspace_id).await {
 			Ok(workspace) => workspace,
@@ -68,15 +79,16 @@ pub async fn visible_many_in(
 			Err(Error::Forbidden) => continue,
 			Err(error) => return Err(error),
 		}
-		decide_prepared(scope, runs, &mut visible).await?;
+		decide_prepared(scope, runs, &mut visible, &mut silent).await?;
 	}
-	Ok(visible)
+	Ok((visible, silent))
 }
 /// Prepare `runs` under the current authority and decide each one.
 async fn decide_prepared(
 	scope: &mut dyn RunDetailsScope,
 	runs: Vec<RunInspection>,
 	visible: &mut HashMap<Uuid, Option<RunInspection>>,
+	silent: &mut HashMap<Uuid, String>,
 ) -> Result<()> {
 	if runs.is_empty() {
 		return Ok(());
@@ -92,7 +104,7 @@ async fn decide_prepared(
 					Err(Error::Forbidden) => continue,
 					Err(error) => return Err(error),
 				}
-				if decide(scope, &run).await? {
+				if decide(scope, &run, silent).await? {
 					visible.insert(id, Some(run));
 				}
 			}
@@ -101,18 +113,27 @@ async fn decide_prepared(
 		Err(error) => return Err(error),
 	}
 	for run in runs {
-		if decide(scope, &run).await? {
+		if decide(scope, &run, silent).await? {
 			visible.insert(run.id, Some(run));
 		}
 	}
 	Ok(())
 }
-async fn decide(scope: &mut dyn RunDetailsScope, run: &RunInspection) -> Result<bool> {
-	match scope.run_visible(run).await {
-		Ok(visible) => Ok(visible),
-		Err(Error::Forbidden) => Ok(false),
-		Err(error) => Err(error),
+async fn decide(
+	scope: &mut dyn RunDetailsScope,
+	run: &RunInspection,
+	silent: &mut HashMap<Uuid, String>,
+) -> Result<bool> {
+	scope.begin_run_check();
+	let visible = match scope.run_visible(run).await {
+		Ok(visible) => visible,
+		Err(Error::Forbidden) => false,
+		Err(error) => return Err(error),
+	};
+	if let (false, Some(node)) = (visible, scope.take_run_silence()) {
+		silent.insert(run.id, node);
 	}
+	Ok(visible)
 }
 async fn in_workspace(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<RunInspection> {
 	let raw = scope.run(id).await?.ok_or(Error::Forbidden)?;

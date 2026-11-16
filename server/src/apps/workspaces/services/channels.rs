@@ -91,6 +91,7 @@ impl Channels {
 			"workspace.read",
 		)
 		.await?;
+		lease.access_mut().lists = true;
 		let result = history::page(&self.runtime.store, &mut lease, workspace, input).await;
 		let result = match result {
 			Ok(mut page) => {

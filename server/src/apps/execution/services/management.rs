@@ -71,6 +71,8 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		// A list: a silent Node leaves its Runs unconfirmed instead of failing it (#770).
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::workspace_runs(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
@@ -104,6 +106,7 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::runs(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
@@ -135,6 +138,7 @@ impl HarnessManagement {
 			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 		let mut access =
 			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		access.lists = true;
 		let result = aidash_application::authorization::bounded_reads::humans(
 			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
 				federation: &self.runtime,
@@ -182,6 +186,7 @@ impl HarnessManagement {
 			conversations: Vec::new(),
 			events: Vec::new(),
 			artifacts: Vec::new(),
+			unconfirmed: Vec::new(),
 			next_cursors: Default::default(),
 		};
 		Ok(Response::ok().with_json(&state)?)
@@ -580,11 +585,16 @@ impl HarnessManagement {
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
-		let (events, cursor) = scope
+		let (events, cursor, unconfirmed) = scope
 			.events_with_cursor(q.after, q.workspace_id, 500)
 			.await?;
-		let mut response =
-			crate::marketplace::events::response(&scope.store, &scope.identity, events).await?;
+		let mut response = crate::marketplace::events::response(
+			&scope.store,
+			&scope.identity,
+			events,
+			unconfirmed,
+		)
+		.await?;
 		response
 			.headers
 			.insert("x-aidash-event-cursor", cursor.into());

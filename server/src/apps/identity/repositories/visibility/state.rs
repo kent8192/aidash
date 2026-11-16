@@ -62,6 +62,20 @@ impl StateReads<'_> {
 		q
 	}
 }
+impl aidash_application::ports::authorization::visibility::RowOutcome for StateReads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
+	}
+}
 #[async_trait]
 impl WorkspaceStateScope for StateReads<'_> {
 	async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
@@ -80,7 +94,10 @@ impl WorkspaceStateScope for StateReads<'_> {
 		)
 		.await
 	}
-	async fn latest_visible_events(&mut self, node: Option<&str>) -> Result<Vec<Event>> {
+	async fn latest_visible_events(
+		&mut self,
+		node: Option<&str>,
+	) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
 		super::projection::state_events(
 			&mut Reads {
 				access: self.access,
@@ -225,7 +242,7 @@ impl WorkspaceStateScope for StateReads<'_> {
 	async fn visible_runs(
 		&mut self,
 		ids: &[Uuid],
-	) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+	) -> Result<aidash_application::ports::authorization::state::VisibleRuns> {
 		crate::apps::identity::repositories::execution::details::visible_many_within_state(
 			self.federation,
 			self.access,

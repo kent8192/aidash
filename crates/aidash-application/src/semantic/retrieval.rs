@@ -14,6 +14,7 @@ use aidash_domain::{
 		results::{Match, SearchResult},
 		retrieval::{Search, provenance},
 	},
+	unconfirmed::{Kind, Tally},
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -191,7 +192,9 @@ pub async fn prepare(
 	}
 	let mut allowed = BTreeMap::new();
 	let mut incomplete = false;
+	let mut unconfirmed = Tally::new();
 	for entry in rows {
+		scope.begin_row();
 		let source: Source = serde_json::from_value(entry.source.clone())?;
 		if source.is_image() && (entry.state != "READY" || entry.index_revision != index.revision) {
 			continue;
@@ -219,6 +222,8 @@ pub async fn prepare(
 			continue;
 		}
 		if !scope.permits(&entry, "semantic.read").await? {
+			let silence = scope.take_row_silence();
+			unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
 			continue;
 		}
 		let content = if source.is_image() {
@@ -227,11 +232,15 @@ pub async fn prepare(
 				.await?
 				.and_then(|value| image_pointer(&source, value))
 			else {
+				let silence = scope.take_row_silence();
+				unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
 				continue;
 			};
 			Candidate::Image { pointer, digest }
 		} else {
 			let Some(text) = scope.source(workspace, &source).await? else {
+				let silence = scope.take_row_silence();
+				unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
 				continue;
 			};
 			Candidate::Text(text)
@@ -269,6 +278,7 @@ pub async fn prepare(
 		matches: vec![],
 		estimated_tokens: 0,
 		truncated: false,
+		unconfirmed: unconfirmed.into_entries(),
 	};
 	result.estimated_tokens = result_tokens(&result)?;
 	if result.estimated_tokens > input.max_tokens {
@@ -347,6 +357,7 @@ pub async fn finish(
 		// Check again at delivery while the authority and source row leases are
 		// still held. Backend payload never supplies content or permission.
 		let source: Source = serde_json::from_value(entry.source.clone())?;
+		scope.begin_row();
 		let current = if scope.permits(entry, "semantic.read").await? {
 			match content {
 				Candidate::Text(text) => {
@@ -366,6 +377,14 @@ pub async fn finish(
 		if !current {
 			if strict {
 				return Err(Error::RemoteSemantic(Failure::Invalidated));
+			}
+			// A source that a Node has stopped confirming since `prepare` is left
+			// out of this answer and counted with it (#770).
+			if let Some(node) = scope.take_row_silence() {
+				let mut tally = Tally::from_entries(std::mem::take(&mut result.unconfirmed));
+				tally.record(&node, Kind::SemanticEntry, workspace);
+				result.unconfirmed = tally.into_entries();
+				refit(&mut result, max_tokens)?;
 			}
 			continue;
 		}
@@ -394,6 +413,24 @@ pub async fn finish(
 		}
 	}
 	Ok(result)
+}
+/// Keep a result within its budget after a count added at delivery grew it:
+/// the latest matches give way first, and a budget that cannot hold the
+/// counts alone fails as it would have in `prepare` (#770).
+fn refit(result: &mut SearchResult, max_tokens: usize) -> Result<()> {
+	loop {
+		let tokens = result_tokens(result)?;
+		if tokens <= max_tokens {
+			result.estimated_tokens = tokens;
+			return Ok(());
+		}
+		if result.matches.pop().is_none() {
+			return Err(Error::Invalid(
+				"semantic token budget cannot hold provenance".into(),
+			));
+		}
+		result.truncated = true;
+	}
 }
 pub async fn search(
 	scope: &mut dyn SemanticRetrievalSession,
@@ -564,6 +601,7 @@ pub async fn workspace_context(
 		matches: vec![],
 		estimated_tokens: 0,
 		truncated: false,
+		unconfirmed: vec![],
 	};
 	if budget.min(spec.max_result_tokens) < result_tokens(&minimum)? {
 		return Ok(WorkspaceContext::Retrieved(None));

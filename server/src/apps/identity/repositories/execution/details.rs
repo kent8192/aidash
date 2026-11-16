@@ -86,7 +86,7 @@ pub(crate) async fn visible_many_within_state(
 	federation: &Federation,
 	access: &mut Access,
 	runs: &[Uuid],
-) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+) -> Result<aidash_application::ports::authorization::state::VisibleRuns> {
 	let context = access.context.clone();
 	let mut scope = Scope {
 		federation,
@@ -94,7 +94,8 @@ pub(crate) async fn visible_many_within_state(
 		state_preload: true,
 	};
 	let result =
-		aidash_application::authorization::run_details::visible_many_in(&mut scope, runs).await;
+		aidash_application::authorization::run_details::visible_many_counted_in(&mut scope, runs)
+			.await;
 	scope.access.get().context = context;
 	result
 }
@@ -169,6 +170,12 @@ impl RunDetailsScope for Scope<'_> {
 	}
 	fn set_context(&mut self, context: Value) {
 		self.access.get().context = context;
+	}
+	fn begin_run_check(&mut self) {
+		self.access.get().begin_row();
+	}
+	fn take_run_silence(&mut self) -> Option<String> {
+		self.access.get().take_row_silence()
 	}
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>> {
 		let result: NativeResult<Option<RawRun>> = async {

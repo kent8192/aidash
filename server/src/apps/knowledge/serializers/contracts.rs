@@ -75,6 +75,16 @@ pub struct PutEntry {
 	pub metadata: Value,
 }
 
+/// The entries a reader may see, with the entries a Node's silence left out (#770).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "SemanticEntryList")]
+pub struct EntryList {
+	pub entries: Vec<Entry>,
+	/// Entries this read scanned and could not confirm because a Node did not
+	/// answer, for each Node. `[]` when none.
+	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticEntry")]
 pub struct Entry {

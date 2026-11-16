@@ -1,18 +1,26 @@
 //! Authorized state pages share one live policy snapshot and transaction.
+use super::visibility::RowOutcome;
 use crate::Result;
+use aidash_domain::unconfirmed::Tally;
 use aidash_domain::{
 	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Workspace,
 	policy::Resource, registry::Entry, run_state::RawRun, workspaces::TaskPage,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
+/// Visible Runs by id (`None` when hidden), and the Node each hidden Run's
+/// check gave up on because it did not answer (#770).
+pub type VisibleRuns = (
+	std::collections::HashMap<Uuid, Option<RunInspection>>,
+	std::collections::HashMap<Uuid, String>,
+);
 #[async_trait]
-pub trait WorkspaceListingScope: Send {
+pub trait WorkspaceListingScope: Send + RowOutcome {
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>>;
 	async fn task_page(&mut self, workspaces: &[Uuid], offset: u64) -> Result<TaskPage>;
 }
 #[async_trait]
-pub trait WorkspaceStateScope: Send {
+pub trait WorkspaceStateScope: Send + RowOutcome {
 	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
 	async fn prepare_workspaces(&mut self, _workspaces: &[Uuid]) -> Result<()> {
 		Ok(())
@@ -30,7 +38,9 @@ pub trait WorkspaceStateScope: Send {
 	async fn run_candidates(&mut self, node: Option<&str>) -> Result<Vec<RawRun>>;
 	async fn pending_human_candidates(&mut self, node: Option<&str>) -> Result<Vec<HumanRequest>>;
 	async fn conversation_candidates(&mut self, node: Option<&str>) -> Result<Vec<Conversation>>;
-	async fn latest_visible_events(&mut self, node: Option<&str>) -> Result<Vec<Event>>;
+	/// The latest visible events, and the events left out because a Node did
+	/// not answer (#770).
+	async fn latest_visible_events(&mut self, node: Option<&str>) -> Result<(Vec<Event>, Tally)>;
 	async fn prepare_tasks(&mut self, _tasks: &[Task]) -> Result<()> {
 		Ok(())
 	}
@@ -46,19 +56,22 @@ pub trait WorkspaceStateScope: Send {
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>>;
 	/// [`Self::visible_run`] for each of `ids`, decided together where the adapter
-	/// can, so the reads do not grow with the number of Runs.
-	async fn visible_runs(
-		&mut self,
-		ids: &[Uuid],
-	) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+	/// can, so the reads do not grow with the number of Runs. Beside them, the
+	/// Node each hidden Run's check gave up on because it did not answer (#770).
+	async fn visible_runs(&mut self, ids: &[Uuid]) -> Result<VisibleRuns> {
 		let mut runs = std::collections::HashMap::with_capacity(ids.len());
+		let mut silent = std::collections::HashMap::new();
 		for id in ids {
 			if !runs.contains_key(id) {
+				self.begin_row();
 				let run = self.visible_run(*id).await?;
+				if let (None, Some(node)) = (&run, self.take_row_silence()) {
+					silent.insert(*id, node);
+				}
 				runs.insert(*id, run);
 			}
 		}
-		Ok(runs)
+		Ok((runs, silent))
 	}
 	async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource>;
 	async fn conversation_resource(&mut self, conversation: &Conversation) -> Result<Resource>;
