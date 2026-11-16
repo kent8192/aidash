@@ -41,7 +41,14 @@ pub async fn retrieve_with_query(
 			.remote_context(task, inputs, query, budget)
 			.await?;
 		repository.refresh_remote().await?;
-		return Ok(result);
+		// The receipt keeps its field; the model sees it only when something was
+		// left out, with its note (#770).
+		return Ok(result.map(|mut receipt| {
+			if let Some(found) = receipt.get_mut("result") {
+				aidash_domain::unconfirmed::for_tool(found);
+			}
+			receipt
+		}));
 	}
 	let mut scope = repository.local_scope().await?;
 	let (result, incomplete) = match scope.retrieve(query, budget).await? {
@@ -58,7 +65,13 @@ pub async fn retrieve_with_query(
 		}
 		journal.commit().await?;
 	}
-	let value = result.map(serde_json::to_value).transpose()?;
+	let value = result
+		.map(|result| -> serde_json::Result<Value> {
+			let mut value = serde_json::to_value(result)?;
+			aidash_domain::unconfirmed::for_tool(&mut value);
+			Ok(value)
+		})
+		.transpose()?;
 	Ok(if incomplete {
 		value.map(partial)
 	} else {

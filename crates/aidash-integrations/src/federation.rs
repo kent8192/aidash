@@ -94,6 +94,11 @@ impl HttpTransport {
 				|| path.starts_with("/scoped/usage/")
 			{
 				Duration::from_secs(60)
+			} else if path == "/scoped/graph" {
+				// The peer's projection may itself wait up to 10 s on a third Node
+				// that does not answer, and its dependency walk up to 20 s. Outlast
+				// that so the page arrives with its unconfirmed count (#799).
+				Duration::from_secs(30)
 			} else {
 				Duration::from_secs(10)
 			};

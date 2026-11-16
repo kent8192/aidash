@@ -2945,8 +2945,14 @@ async fn tenant_administrators_disabling_each_other_are_serialized(
 	lock_waiters(&f, 2).await;
 	barrier.commit().await.unwrap();
 	assert_eq!(first_disables.await.unwrap().unwrap().status(), 204);
-	// The second administrator's own Mapping was disabled before it acted.
-	assert_eq!(second_disables.await.unwrap().unwrap().status(), 401);
+	// The second administrator's own Mapping was disabled before it acted, so
+	// its session answers 403 with the reason (ADR 0131, #876 decision 12).
+	let refused = second_disables.await.unwrap().unwrap();
+	assert_eq!(refused.status(), 403);
+	assert_eq!(
+		refused.json::<Value>().await.unwrap()["reason"],
+		"mapping_disabled"
+	);
 	let enabled = |mapping: &Value| {
 		format!(
 			"SELECT enabled FROM dashboard_mappings WHERE id = '{}'",
@@ -3500,7 +3506,9 @@ async fn a_bound_tenants_administrators_decide_a_shared_pool_identitys_invitatio
 	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
 	let invitation: Value = admin
 		.send(&app, reqwest::Method::POST, "/api/tenants/acme/invitations")
-		.json(&json!({}))
+		// Joining directly is the default (#897); this test covers the
+		// administrator's decision, so the request must wait for one.
+		.json(&json!({"join_directly": false}))
 		.send()
 		.await
 		.unwrap()

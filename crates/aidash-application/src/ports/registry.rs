@@ -31,14 +31,6 @@ pub trait DefinitionLookup: Send {
 	async fn require_reference_read(&mut self, _: uuid::Uuid) -> Result<()> {
 		Err(crate::Error::Forbidden)
 	}
-	/// Only an explicit Deployment Administrator adapter may import an authenticated public closure.
-	async fn foreign_agent(
-		&mut self,
-		_: &str,
-		_: &aidash_domain::registry::bindings::QualifiedRef,
-	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
-		Err(crate::Error::Forbidden)
-	}
 	/// The Tenant's stored Agent Plugin copy with this tree digest, as registration and
 	/// admission read it. A lookup that never stores plugins refuses.
 	async fn agent_plugin(

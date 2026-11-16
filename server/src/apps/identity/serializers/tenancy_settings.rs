@@ -17,6 +17,9 @@ use reinhardt::{
 /// no other Tenant's Invitation, whatever these say.
 #[settings(fragment = true, section = "tenancy", validate = false)]
 pub struct TenancySettings {
+	/// Maximum lifetime in days for Tenant-owned Subject Credentials.
+	#[setting(default = "90")]
+	pub credential_max_days: u32,
 	/// Create a Personal Tenant for each External Identity at its first sign-in.
 	#[setting(default = "None")]
 	pub personal_tenants: Option<bool>,
@@ -67,6 +70,11 @@ impl TenancySettings {
 
 impl SettingsValidation for TenancySettings {
 	fn validate(&self, _: &Profile) -> ValidationResult {
+		if !(1..=365).contains(&self.credential_max_days) {
+			return Err(ValidationError::Constraint(
+				"tenancy.credential_max_days must be between 1 and 365".into(),
+			));
+		}
 		if self.creation_per_hour.is_some_and(|limit| limit > 10_000)
 			|| self.creation_total.is_some_and(|limit| limit > 100_000)
 		{
@@ -92,9 +100,20 @@ impl SettingsValidation for TenancySettings {
 mod tests {
 	use super::TenancySettings;
 	use aidash_domain::offering::Offering;
+	use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
 
 	fn settings(value: serde_json::Value) -> TenancySettings {
 		serde_json::from_value(value).unwrap()
+	}
+
+	#[test]
+	fn credential_maximum_defaults_to_90_days_and_rejects_out_of_range_values() {
+		let default = settings(serde_json::json!({}));
+		assert_eq!(default.credential_max_days, 90);
+		for value in [0, 366] {
+			let setting = settings(serde_json::json!({"credential_max_days": value}));
+			assert!(setting.validate(&Profile::Development).is_err());
+		}
 	}
 
 	#[test]

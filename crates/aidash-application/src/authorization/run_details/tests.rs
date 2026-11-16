@@ -461,3 +461,130 @@ async fn visibility_alone_refuses_what_inspection_refuses(
 	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
 	assert!(!state.calls.contains(&"invocations".into()));
 }
+/// A scope for [`visible_many_in`]: Runs come only from the batched read.
+struct Many {
+	raws: Vec<RawRun>,
+	denied: Uuid,
+	hidden: Uuid,
+	context: Option<Value>,
+	calls: Vec<String>,
+}
+#[async_trait]
+impl RunDetailsScope for Many {
+	fn node_id(&self) -> &str {
+		"aidash://local"
+	}
+	fn set_context(&mut self, context: Value) {
+		self.context = Some(context);
+	}
+	async fn run(&mut self, _: Uuid) -> Result<Option<RawRun>> {
+		unreachable!("the Runs are read together")
+	}
+	async fn runs(&mut self, ids: &[Uuid]) -> Result<Vec<RawRun>> {
+		self.calls.push("runs".into());
+		Ok(self
+			.raws
+			.iter()
+			.filter(|raw| ids.contains(&raw.metadata.id))
+			.cloned()
+			.collect())
+	}
+	async fn workspace(&mut self, key: Uuid) -> Result<Resource> {
+		self.calls.push(format!("workspace {}", key.as_u128()));
+		Ok(Resource {
+			tenant: "tenant".into(),
+			kind: "workspace".into(),
+			id: key.to_string(),
+			attributes: json!({"workspace": key}),
+		})
+	}
+	async fn require(&mut self, resource: &Resource, _: &str) -> Result<()> {
+		assert_eq!(self.context.as_ref(), Some(&resource.attributes));
+		if resource.id == self.denied.to_string() {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+	async fn prepare_visible(&mut self, runs: &[aidash_domain::RunInspection]) -> Result<()> {
+		let ids: Vec<_> = runs.iter().map(|run| run.id.as_u128()).collect();
+		self.calls.push(format!("prepare {ids:?}"));
+		Ok(())
+	}
+	async fn run_visible(&mut self, run: &aidash_domain::RunInspection) -> Result<bool> {
+		let expected = run
+			.is_local(self.node_id())
+			.then(|| json!({"workspace": run.workspace_id}));
+		assert_eq!(self.context, expected, "Run {}", run.id);
+		Ok(run.id != self.hidden)
+	}
+	async fn run_reads_block(
+		&mut self,
+		_: &aidash_domain::RunInspection,
+	) -> Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		Ok(None)
+	}
+	async fn invocations(&mut self, _: Uuid, _: u64) -> Result<Vec<InvocationSummary>> {
+		unreachable!()
+	}
+	async fn memory(&mut self, _: &RunMetadata) -> Result<Option<aidash_domain::memory::Binding>> {
+		unreachable!()
+	}
+	async fn media_input_routes(&mut self, _: &RunMetadata) -> Result<Vec<Vec<String>>> {
+		unreachable!()
+	}
+	async fn finish(self: Box<Self>, _: Result<RunDetails>) -> Result<RunDetails> {
+		unreachable!()
+	}
+	async fn finish_visible(
+		self: Box<Self>,
+		_: Result<aidash_domain::RunInspection>,
+	) -> Result<aidash_domain::RunInspection> {
+		unreachable!()
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn many_runs_are_read_once_and_prepared_once_per_workspace(repository: Repository) {
+	let template = repository.0.lock().unwrap().raw.clone().unwrap();
+	let raw = |run: u128, workspace: u128, home: &str| {
+		let mut raw = template.clone();
+		raw.metadata.id = id(run);
+		raw.metadata.workspace_id = id(workspace);
+		raw.metadata.home_node = home.into();
+		raw
+	};
+	let local = "aidash://local/brave-otter-k3m9q2xa";
+	let mut scope = Many {
+		raws: vec![
+			raw(10, 100, local),
+			raw(11, 100, local),
+			raw(12, 101, local),
+			raw(13, 102, "aidash://home"),
+			raw(14, 100, local),
+		],
+		denied: id(101),
+		hidden: id(14),
+		context: None,
+		calls: vec![],
+	};
+	let ids = [10, 11, 12, 13, 14, 15].map(id);
+	let visible = visible_many_in(&mut scope, &ids).await.unwrap();
+	let shown: Vec<_> = ids
+		.iter()
+		.map(|key| visible[key].as_ref().map(|run| run.id))
+		.collect();
+	assert_eq!(
+		shown,
+		vec![Some(id(10)), Some(id(11)), None, Some(id(13)), None, None]
+	);
+	assert_eq!(
+		scope.calls,
+		vec![
+			"runs",
+			"prepare [13]",
+			"workspace 100",
+			"prepare [10, 11, 14]",
+			"workspace 101",
+		]
+	);
+}

@@ -77,7 +77,11 @@ pub(crate) async fn offloaded_range(
 		&mut entries,
 	)
 	.await?;
-	let values: Vec<_> = entries.into_iter().map(|entry| entry.event).collect();
+	// Memory extraction never reads recorded provider reasoning (#942).
+	let values: Vec<_> = entries
+		.into_iter()
+		.map(|entry| entry.event.without_reasoning())
+		.collect();
 	// Larger ranges are split by `offload_parts`, never refused (#852 decision 3).
 	Ok(serde_json::to_string(&values)?)
 }

@@ -15,7 +15,7 @@ use reinhardt::rest::openapi::OpenApiSchema;
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	use super::super::services::native_memory::{CreateParticipant, Participant, ReadBank};
 	use super::super::services::native_memory::{Operation, Outcome, UpgradeParticipant};
-	use aidash_domain::memory::{Mutation, Unit};
+	use aidash_domain::memory::Mutation;
 	contracts.response::<_, super::super::services::native_memory::ParticipantPage>(
 		document,
 		views::memory::participants,
@@ -55,10 +55,20 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, UpgradeParticipant>(document, views::memory::upgrade)?;
 	contracts.path(document, views::memory::upgrade, &["Uuid", "Uuid"])?;
-	contracts.response::<_, Vec<Unit>>(document, views::memory::units, 200, "application/json")?;
+	contracts.response::<_, super::super::services::native_memory::UnitList>(
+		document,
+		views::memory::units,
+		200,
+		"application/json",
+	)?;
 	contracts.request::<_, ReadBank>(document, views::memory::units)?;
 	contracts.path(document, views::memory::units, &["Uuid"])?;
-	contracts.response::<_, Vec<Unit>>(document, views::memory::mutate, 200, "application/json")?;
+	contracts.response::<_, Vec<aidash_domain::memory::Mutated>>(
+		document,
+		views::memory::mutate,
+		200,
+		"application/json",
+	)?;
 	contracts.request::<_, Mutation>(document, views::memory::mutate)?;
 	contracts.path(document, views::memory::mutate, &["Uuid"])?;
 	contracts.response::<_, aidash_domain::memory::impact::Impact>(
@@ -103,7 +113,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, SemanticPutEntry>(document, views::entries::put)?;
 	contracts.path(document, views::entries::put, &["Uuid"])?;
-	contracts.response::<_, Vec<SemanticEntry>>(
+	contracts.response::<_, crate::apps::knowledge::serializers::contracts::EntryList>(
 		document,
 		views::entries::entries,
 		200,

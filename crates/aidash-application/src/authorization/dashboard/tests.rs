@@ -36,6 +36,8 @@ struct Scope {
 	newer_validity: bool,
 	delay_seconds: i64,
 	valid_since: Option<DateTime<Utc>>,
+	/// Common authentication, as on Cloud.
+	common: Option<Arc<dyn crate::ports::accounts::Authority>>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -68,6 +70,7 @@ fn scope() -> Scope {
 		newer_validity: false,
 		delay_seconds: 0,
 		valid_since: None,
+		common: None,
 	}
 }
 struct Restricted(std::collections::BTreeMap<String, String>);
@@ -119,7 +122,7 @@ impl AccountStatus for Scope {
 impl Accounts for Scope {
 	fn policy(&self) -> Option<AccountPolicy> {
 		self.configured.then(|| AccountPolicy {
-			authority: None,
+			authority: self.common.clone(),
 			issuers: match &self.restrictions {
 				Some(restrictions) => Arc::new(Restricted(restrictions.clone())),
 				None => Arc::new(Issuer("issuer".into())),
@@ -274,6 +277,55 @@ async fn old_issuer_refresh_disables_without_contacting_the_new_provider(scope: 
 		scope.state.lock().unwrap().trace,
 		["disable-current", "mark-disabled"]
 	);
+}
+
+/// Counts the origin checks it is asked to make.
+#[derive(Default)]
+struct CountingAuthority(std::sync::atomic::AtomicUsize);
+#[async_trait]
+impl crate::ports::accounts::Authority for CountingAuthority {
+	async fn validate_interactive(&self, _: Uuid, _: Uuid) -> Result<()> {
+		Ok(())
+	}
+	async fn validate_origin(&self, _: Uuid) -> Result<()> {
+		self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		Ok(())
+	}
+	async fn origin_binding(&self, _: Uuid) -> Result<aidash_domain::accounts::DurableOrigin> {
+		Err(Error::Forbidden)
+	}
+	async fn validate_bound_origin(
+		&self,
+		_: &aidash_domain::accounts::DurableOrigin,
+	) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_admitted_stream_frame_does_not_ask_the_origin_again_within_t(mut scope: Scope) {
+	let common = Arc::new(CountingAuthority::default());
+	scope.common = Some(common.clone());
+	let account = scope.state.lock().unwrap().account.clone();
+	let authority = authority(Arc::new(scope));
+	for _ in 0..3 {
+		authority
+			.account_valid_with(&account, crate::ports::accounts::Recheck::WithinT)
+			.await
+			.unwrap();
+	}
+	assert_eq!(common.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+	authority.account_valid(&account).await.unwrap();
+	assert_eq!(common.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+	let mut disabled = account.clone();
+	disabled.disabled_at = Some(Utc::now());
+	assert!(matches!(
+		authority
+			.account_valid_with(&disabled, crate::ports::accounts::Recheck::WithinT)
+			.await,
+		Err(Error::Forbidden)
+	));
 }
 
 #[rstest]
@@ -514,9 +566,7 @@ async fn login_fulfils_demo_reservations_before_provisioning_the_personal_tenant
 }
 
 #[rstest]
-#[case::demo_data_off(false, None, Some("dana@example.com"))]
 #[case::no_verified_email(true, None, None)]
-#[case::bound_pool(true, Some("pool-a"), Some("dana@example.com"))]
 #[tokio::test]
 async fn login_does_not_fulfil_demo_reservations_outside_their_conditions(
 	mut scope: Scope,

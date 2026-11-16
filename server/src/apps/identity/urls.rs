@@ -9,6 +9,10 @@ use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(super::views::tenant_administration::credential_maximum)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::tenant_administration::set_credential_maximum)
+			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::oauth_connections::list)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::oauth_connections::disconnect)
@@ -24,6 +28,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::oauth_connections::callback)
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(super::views::provider_credentials::list)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::supply)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::provider_credentials::get_record)
 			.with_route_middleware(AccessBoundary::authenticated())
@@ -90,6 +96,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::tenant_administration::set_subnode_limits)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::tenant_administration::overview)
+			.with_route_middleware(AccessBoundary::administered())
+			.endpoint(super::views::tenant_administration::invitation_approvals)
 			.with_route_middleware(AccessBoundary::administered())
 			.endpoint(super::views::tenant_administration::registrations)
 			.with_route_middleware(AccessBoundary::administered())

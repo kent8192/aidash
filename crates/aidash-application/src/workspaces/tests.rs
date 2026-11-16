@@ -161,7 +161,6 @@ impl ConversationScope for Fixture {
 			node_id: "aidash://fixture".into(),
 			agent_id: agent.id.clone(),
 			agent_version: agent.version.clone(),
-			delivered: false,
 		})
 	}
 	async fn task(&mut self, task: Uuid) -> Result<Task> {

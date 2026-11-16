@@ -129,6 +129,9 @@ pub(crate) struct CatalogApprovals {
 #[serde(deny_unknown_fields)]
 pub(crate) struct CredentialInput {
 	pub(crate) subject: String,
+	/// Issue a child of the presented Subject Credential.
+	#[serde(default)]
+	pub(crate) child: bool,
 	#[serde(default = "credential_lifetime")]
 	pub(crate) expires_in_seconds: i64,
 }

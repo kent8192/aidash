@@ -74,6 +74,7 @@ pub async fn request(
 	let response = match method {
 		"GET" => client.get(path).await,
 		"POST" => client.post(path, &body, "json").await,
+		"PUT" => client.put(path, &body, "json").await,
 		_ => panic!("unsupported channel test method: {method}"),
 	}
 	.unwrap();

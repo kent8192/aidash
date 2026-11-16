@@ -31,6 +31,36 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.response::<_, Vec<super::tenant_administration::InvitationApprovalNotice>>(
+		document,
+		views::tenant_administration::invitation_approvals,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::invitation_approvals,
+		&["String"],
+	)?;
+	{
+		use super::tenant_administration::CredentialMaximum;
+		use views::tenant_administration::{credential_maximum, set_credential_maximum};
+		contracts.response::<_, CredentialMaximum>(
+			document,
+			credential_maximum,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, credential_maximum, &["String"])?;
+		contracts.request::<_, CredentialMaximum>(document, set_credential_maximum)?;
+		contracts.response::<_, CredentialMaximum>(
+			document,
+			set_credential_maximum,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, set_credential_maximum, &["String"])?;
+	}
 	{
 		use super::manual_keys as k;
 		use views::manual_keys as v;
@@ -439,6 +469,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, pc::Page>(document, views::provider_credentials::list)?;
 	contracts.path(document, views::provider_credentials::list, &["String"])?;
+	contracts.request::<_, pc::Supply>(document, views::provider_credentials::supply)?;
+	contracts.response::<_, pc::Supplied>(
+		document,
+		views::provider_credentials::supply,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::provider_credentials::supply, &["String"])?;
 	contracts.response::<_, Metadata>(
 		document,
 		views::provider_credentials::get_record,

@@ -52,6 +52,7 @@ fn input() -> Search {
 	Search {
 		query: "query".into(),
 		image: None,
+		attachment: None,
 		agent: None,
 		metadata: json!({}),
 		limit: 4,
@@ -100,6 +101,10 @@ struct Scope {
 	configured_exists: bool,
 	embedded: Option<(Uuid, EmbeddingConfig, String, Option<Uuid>)>,
 	embed_failure: Option<Failure>,
+	attachment_seen: bool,
+	/// The next source reads stop at a Node that did not answer (#770).
+	silent_sources: usize,
+	silence: Option<String>,
 }
 impl Scope {
 	fn new(calls: Calls) -> Self {
@@ -118,10 +123,24 @@ impl Scope {
 			configured_exists: true,
 			embedded: None,
 			embed_failure: None,
+			attachment_seen: false,
+			silent_sources: 0,
+			silence: None,
 		}
 	}
 	fn touch(&self, name: &'static str) {
 		self.calls.lock().unwrap().push(name);
+	}
+}
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
 	}
 }
 #[async_trait]
@@ -159,6 +178,11 @@ impl SemanticRetrievalSession for Scope {
 	async fn source(&mut self, workspace: Uuid, _: &Source) -> Result<Option<String>> {
 		self.touch("source");
 		assert_eq!(workspace, index().workspace_id);
+		if self.silent_sources > 0 {
+			self.silent_sources -= 1;
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(None);
+		}
 		Ok(self
 			.texts
 			.pop_front()
@@ -186,6 +210,7 @@ impl SemanticRetrievalSession for Scope {
 		Ok(crate::ports::semantic::IndexImage {
 			media_type: "image/png".into(),
 			bytes: b"\x89PNG\r\n\x1a\nquery".to_vec(),
+			description: None,
 		})
 	}
 	async fn embed_image(
@@ -198,6 +223,26 @@ impl SemanticRetrievalSession for Scope {
 		self.touch("embed_image");
 		self.image_embedded = true;
 		Ok(vec![0.25, 0.75])
+	}
+	async fn attachment_seen(
+		&mut self,
+		_: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+	) -> Result<bool> {
+		self.touch("attachment_seen");
+		Ok(self.attachment_seen)
+	}
+	async fn query_attachment(
+		&mut self,
+		_: Uuid,
+		_: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+		_: usize,
+	) -> Result<crate::ports::semantic::IndexImage> {
+		self.touch("query_attachment");
+		Ok(crate::ports::semantic::IndexImage {
+			media_type: "image/png".into(),
+			bytes: b"\x89PNG\r\n\x1a\nattachment".to_vec(),
+			description: None,
+		})
 	}
 	async fn digest(&mut self, point: Uuid) -> Result<String> {
 		self.touch("digest");
@@ -1269,4 +1314,280 @@ async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
 		(Err(Error::RemoteSemantic(_)), None) => {}
 		(other, _) => panic!("unexpected {other:?}"),
 	}
+}
+
+fn attachment_source() -> Value {
+	json!({"kind":"attachment_image","message_id":Uuid::from_u128(20),"attachment_id":Uuid::from_u128(21)})
+}
+fn attachment_pointer(description: Option<&str>) -> Value {
+	let mut pointer = json!({"message_id":Uuid::from_u128(20),"attachment_id":Uuid::from_u128(21),
+		"name":"photo.png","media_type":"image/png","size":12,"digest":"bytes-digest",
+		"message_text":"Here is the shop front","bytes":"must-not-leak"});
+	if let Some(text) = description {
+		pointer["description"] = json!(text);
+	}
+	pointer
+}
+
+#[tokio::test]
+async fn an_attachment_match_points_at_its_message_with_text_and_description() {
+	// Arrange
+	let (_, mut scope, vector) = fixture();
+	scope.rows[0].source = attachment_source();
+	let pointer = attachment_pointer(Some("A red shop front"));
+	scope.images = VecDeque::from([Some(pointer.clone()), Some(pointer)]);
+	scope.digest =
+		aidash_domain::semantic::indexing::image_digest("bytes-digest", Some("A red shop front"));
+
+	// Act
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert_eq!(result.matches.len(), 1);
+	let matched = serde_json::to_value(&result.matches[0]).unwrap();
+	assert_eq!(
+		matched["metadata"]["attachment_id"],
+		Uuid::from_u128(21).to_string()
+	);
+	assert_eq!(
+		matched["metadata"]["message_id"],
+		Uuid::from_u128(20).to_string()
+	);
+	assert_eq!(
+		matched["metadata"]["message_text"],
+		"Here is the shop front"
+	);
+	assert_eq!(matched["metadata"]["description"], "A red shop front");
+	assert!(matched.get("text").is_none());
+	assert!(!matched.to_string().contains("must-not-leak"));
+}
+
+#[tokio::test]
+async fn an_attachment_point_from_before_a_description_edit_is_not_delivered() {
+	// Arrange
+	let (_, mut scope, vector) = fixture();
+	scope.rows[0].source = attachment_source();
+	let pointer = attachment_pointer(Some("A blue shop front"));
+	scope.images = VecDeque::from([Some(pointer.clone()), Some(pointer)]);
+	scope.digest =
+		aidash_domain::semantic::indexing::image_digest("bytes-digest", Some("A red shop front"));
+
+	// Act
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	assert!(result.matches.is_empty());
+}
+
+#[tokio::test]
+async fn a_pending_attachment_image_does_not_fail_text_search() {
+	// Arrange
+	let (_, mut scope, vector) = fixture();
+	let mut pending = entry();
+	pending.id = Uuid::from_u128(30);
+	pending.point_id = Uuid::from_u128(31);
+	pending.source = attachment_source();
+	pending.state = "PENDING".into();
+	scope.rows.push(pending);
+
+	// Act
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		None,
+	)
+	.await;
+
+	// Assert
+	assert_eq!(result.unwrap().matches.len(), 1);
+}
+
+fn attachment_query(run_id: Uuid) -> Search {
+	let mut request = input();
+	request.query.clear();
+	request.attachment = Some(aidash_domain::semantic::retrieval::AttachmentImageQuery {
+		run_id,
+		message_id: Uuid::from_u128(20),
+		attachment_id: Uuid::from_u128(21),
+		expected_digest: "bytes-digest".into(),
+	});
+	request
+}
+
+#[tokio::test]
+async fn an_attachment_the_run_never_selected_is_refused_as_a_query() {
+	// Arrange
+	let (calls, mut scope, vector) = fixture();
+	let run_id = Uuid::from_u128(12);
+	scope.index.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	scope.attachment_seen = false;
+
+	// Act
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&attachment_query(run_id),
+		Some(run_id),
+		None,
+	)
+	.await;
+
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message == ATTACHMENT_NOT_SEEN),
+		"{result:?}"
+	);
+	let calls = calls.lock().unwrap();
+	assert!(!calls.contains(&"query_attachment"));
+	assert!(!calls.contains(&"candidates"));
+	assert!(!scope.image_embedded);
+}
+
+#[rstest]
+#[case::other_run(Some(Uuid::from_u128(13)))]
+#[case::no_run(None)]
+#[tokio::test]
+async fn a_run_cannot_query_with_another_runs_selection(#[case] invoking_run: Option<Uuid>) {
+	// Arrange
+	let (calls, mut scope, vector) = fixture();
+	scope.index.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	scope.attachment_seen = true;
+
+	// Act
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&attachment_query(Uuid::from_u128(12)),
+		invoking_run,
+		None,
+	)
+	.await;
+
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(!calls.lock().unwrap().contains(&"attachment_seen"));
+	assert!(!scope.image_embedded);
+}
+
+#[tokio::test]
+async fn a_selected_attachment_is_embedded_as_the_query() {
+	// Arrange
+	let (calls, mut scope, vector) = fixture();
+	let run_id = Uuid::from_u128(12);
+	scope.index.spec["embedding"]["inputs"] = json!(["text", "image"]);
+	scope.attachment_seen = true;
+
+	// Act
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&attachment_query(run_id),
+		Some(run_id),
+		None,
+	)
+	.await;
+
+	// Assert
+	assert!(result.is_ok(), "{result:?}");
+	assert!(scope.image_embedded);
+	let calls = calls.lock().unwrap();
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "query_attachment")
+			.count(),
+		2,
+		"the attachment is read again after the vector search"
+	);
+}
+
+fn silent_entry() -> aidash_domain::unconfirmed::Unconfirmed {
+	aidash_domain::unconfirmed::Unconfirmed {
+		node: "aidash://other/silent".into(),
+		kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
+		workspace_id: index().workspace_id,
+		count: 2,
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn candidates_whose_source_stops_at_a_silent_node_are_counted_and_refusals_are_not() {
+	// Arrange: five entries, two stop at a silent Node, one is refused, two read.
+	let (_, mut scope, _) = fixture();
+	scope.rows = (0..5)
+		.map(|n| Entry {
+			id: Uuid::from_u128(20 + n),
+			..entry()
+		})
+		.collect();
+	scope.silent_sources = 2;
+	scope.permitted = VecDeque::from([true, true, false]);
+	// Act
+	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(prepared.result.unconfirmed, vec![silent_entry()]);
+	// The two that read share the fixture's point, so they are one candidate.
+	assert_eq!(prepared.allowed.len(), 1);
+}
+#[rstest]
+#[tokio::test]
+async fn a_source_that_a_node_stops_confirming_before_delivery_is_counted() {
+	let (_, mut scope, vector) = fixture();
+	let prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+		.await
+		.unwrap();
+	assert!(prepared.result.unconfirmed.is_empty());
+	scope.silent_sources = 1;
+	let result = finish(&vector, &mut scope, prepared, &[0.25, 0.75], false)
+		.await
+		.unwrap();
+	assert!(result.matches.is_empty());
+	assert_eq!(
+		result.unconfirmed,
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			count: 1,
+			..silent_entry()
+		}]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_count_added_at_delivery_keeps_the_result_within_its_budget() {
+	// Arrange: the budget holds the empty result exactly.
+	let (_, mut scope, vector) = fixture();
+	let mut prepared = prepare(&mut scope, index().workspace_id, &input(), None)
+		.await
+		.unwrap();
+	prepared.max_tokens = prepared.result.estimated_tokens;
+	// Act: the only candidate's source stops answering before delivery.
+	scope.silent_sources = 1;
+	let result = finish(&vector, &mut scope, prepared, &[0.25, 0.75], false).await;
+	// Assert: the count no longer fits, which fails as it would in `prepare`.
+	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
 }

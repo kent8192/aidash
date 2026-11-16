@@ -130,6 +130,7 @@ fn repository() -> Repository {
 			matches,
 			estimated_tokens: 19,
 			truncated: false,
+			unconfirmed: vec![],
 		}),
 		remote_result: Some(json!({"home":"context"})),
 		calls: vec![],
@@ -229,8 +230,10 @@ async fn local_context_commits_every_dependency_before_releasing_source_authorit
 	task: Task,
 	inputs: Vec<(InputRead, String)>,
 ) {
-	let expected =
+	let mut expected =
 		serde_json::to_value(repository.0.lock().unwrap().local.as_ref().unwrap()).unwrap();
+	// Ordinary model input carries no `unconfirmed` (#770).
+	expected.as_object_mut().unwrap().remove("unconfirmed");
 	let value = retrieve(&repository, &task, &inputs, 123, false)
 		.await
 		.unwrap()
@@ -256,6 +259,33 @@ async fn local_context_commits_every_dependency_before_releasing_source_authorit
 			"source_release"
 		]
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn context_that_left_items_out_for_a_silent_node_says_so_to_the_model(
+	repository: Repository,
+	task: Task,
+	inputs: Vec<(InputRead, String)>,
+) {
+	repository
+		.0
+		.lock()
+		.unwrap()
+		.local
+		.as_mut()
+		.unwrap()
+		.unconfirmed = vec![aidash_domain::unconfirmed::Unconfirmed {
+		node: "aidash://other/silent".into(),
+		kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
+		workspace_id: id(2),
+		count: 2,
+	}];
+	let value = retrieve(&repository, &task, &inputs, 123, false)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(value["unconfirmed"][0]["count"], 2);
+	assert_eq!(value["unconfirmed_note"], aidash_domain::unconfirmed::NOTE);
 }
 #[rstest]
 #[case::absent(true)]

@@ -605,7 +605,10 @@ export function Configuration({
               </Notice>
             ))}
           {section === "providerCredentials" && (
-            <ProviderCredentialsPage access={data.access} />
+            <ProviderCredentialsPage
+              access={data.access}
+              offering={data.offering}
+            />
           )}
           {(section === "agents" ||
             section === "registry" ||

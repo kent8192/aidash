@@ -258,6 +258,11 @@ async fn a_summary_that_absorbed_an_expired_result_is_restored_with_the_placehol
 		&context.history[0].event,
 		ContextEvent::Tool { result, .. } if *result == ContextEvent::expired_result("searched")
 	));
+	// Reasoning from the expired result on is no longer resent (#942).
+	assert_eq!(
+		context.reasoning_withheld_from_seq,
+		Some(context.history[0].seq)
+	);
 	// The same purges again change nothing.
 	assert!(
 		!expire_projection(&mut context, &expired(day(1)), &journal)

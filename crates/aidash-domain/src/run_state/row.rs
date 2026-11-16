@@ -251,6 +251,7 @@ impl RawRun {
 		// until the worker has answered them.
 		let had_call = recovery.paused_call.take().is_some();
 		let had_outage = recovery.outage.take().is_some();
+		let had_suspension = recovery.account_suspension_epoch.take().is_some();
 		if recovery.semantic_reason.is_some() || recovery.context_reason.is_some() {
 			recovery.retry = None;
 			recovery.semantic_reason = None;
@@ -266,7 +267,7 @@ impl RawRun {
 			recovery.retry = None;
 			recovery.node_retry = 0;
 			Ok(Some(encode(&state, &recovery)?))
-		} else if had_call || had_outage {
+		} else if had_call || had_outage || had_suspension {
 			Ok(Some(encode(&state, &recovery)?))
 		} else {
 			Ok(None)
