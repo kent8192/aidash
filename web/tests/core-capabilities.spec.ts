@@ -584,7 +584,7 @@ test("retained-work Files link keeps the originating request instead of the firs
     fetch("/api/state").then((response) => response.json()),
   );
   data.workspaces.reverse();
-  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
   await page.route("**/api/working-areas/*/session", (route) =>
     route.fulfill({
       json: {
