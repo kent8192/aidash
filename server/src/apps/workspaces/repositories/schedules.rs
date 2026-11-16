@@ -206,7 +206,9 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 /// Which Schedules a list reads.
 pub(crate) enum Filter<'a> {
 	Workspace(Uuid),
-	Registrant(&'a str),
+	/// The person's own Schedules, and those waiting for them to take over
+	/// as the named successor.
+	Mine(&'a str),
 	Tenant,
 }
 
@@ -221,9 +223,11 @@ pub(crate) async fn list(
 		Filter::Workspace(workspace) => {
 			query.filter(ScheduleRecord::field_workspace_id().eq(workspace))
 		}
-		Filter::Registrant(subject) => {
-			query.filter(ScheduleRecord::field_registrant().eq(subject.to_owned()))
-		}
+		Filter::Mine(subject) => query.filter(
+			ScheduleRecord::field_registrant()
+				.eq(subject.to_owned())
+				.or(ScheduleRecord::field_successor().eq(Some(subject.to_owned()))),
+		),
 		Filter::Tenant => query,
 	};
 	query

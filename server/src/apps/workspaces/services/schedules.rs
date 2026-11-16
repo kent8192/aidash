@@ -209,7 +209,7 @@ impl ScheduleScope for Adapter<'_> {
 		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
 		let filter = match listing {
 			Listing::Workspace(workspace) => Filter::Workspace(workspace),
-			Listing::Mine => Filter::Registrant(&subject),
+			Listing::Mine => Filter::Mine(&subject),
 			Listing::Tenant => Filter::Tenant,
 		};
 		Ok(repository::list(&mut *self.access.tx, &tenant, filter).await?)
@@ -320,15 +320,7 @@ async fn notices(scope: &mut Adapter<'_>) -> Result<NoticesView> {
 	let all = if administers {
 		repository::list(&mut *scope.access.tx, &tenant, Filter::Tenant).await?
 	} else {
-		let mut mine =
-			repository::list(&mut *scope.access.tx, &tenant, Filter::Registrant(&subject)).await?;
-		mine.extend(
-			repository::list(&mut *scope.access.tx, &tenant, Filter::Tenant)
-				.await?
-				.into_iter()
-				.filter(|schedule| schedule.successor.as_deref() == Some(subject.as_str())),
-		);
-		mine
+		repository::list(&mut *scope.access.tx, &tenant, Filter::Mine(&subject)).await?
 	};
 	let stopped = all
 		.iter()

@@ -470,6 +470,29 @@ async fn a_successor_resumes_a_departed_registrants_schedule_as_their_own() {
 
 #[rstest]
 #[tokio::test]
+async fn the_named_successor_sees_the_schedule_without_its_workspace() {
+	// Arrange: Alice left, and Carol, who cannot see the Workspace, is named.
+	let workspace = Uuid::new_v4();
+	let mut alice = alice_in(workspace);
+	let mut schedule = register(&mut alice, workspace, definition(), Origin::Person)
+		.await
+		.unwrap();
+	schedule.stop(Halt::RegistrantLeft, alice.now);
+	schedule.successor = Some("carol".into());
+	let mut carol = Fake::new("carol");
+	carol.schedules.insert(schedule.id, schedule.clone());
+	let mut bob = Fake::new("bob");
+	bob.schedules = carol.schedules.clone();
+	// Act
+	let shown = detail(&mut carol, schedule.id).await.unwrap();
+	let hidden = detail(&mut bob, schedule.id).await;
+	// Assert: she may take it over; nobody else outside the Workspace sees it.
+	assert!(!shown.may_edit);
+	assert!(matches!(hidden, Err(Error::NotFound(_))));
+}
+
+#[rstest]
+#[tokio::test]
 async fn others_see_a_schedule_only_through_its_workspace() {
 	// Arrange
 	let workspace = Uuid::new_v4();

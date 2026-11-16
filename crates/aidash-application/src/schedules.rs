@@ -20,7 +20,8 @@ use uuid::Uuid;
 pub enum Listing {
 	/// Every Schedule of one Workspace the person can see.
 	Workspace(Uuid),
-	/// The person's own Schedules, in every Workspace.
+	/// The person's own Schedules, in every Workspace, and those waiting for
+	/// them to take over as the named successor.
 	Mine,
 	/// Every Schedule of the Tenant, for holders of `schedule.administer`.
 	Tenant,
@@ -205,7 +206,10 @@ async fn visible(scope: &mut dyn ScheduleScope, id: Uuid, lock: bool) -> Result<
 	} else {
 		scope.load(id).await?
 	};
+	// The named successor sees the Schedule they are asked to take over,
+	// even without the Workspace, so they can review and resume it.
 	if schedule.registrant == scope.subject()
+		|| schedule.successor.as_deref() == Some(scope.subject())
 		|| scope.sees_workspace(schedule.workspace_id).await?
 		|| scope.administers().await?
 	{
