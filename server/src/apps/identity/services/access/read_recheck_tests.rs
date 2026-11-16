@@ -1061,6 +1061,55 @@ async fn the_loop_stops_what_is_running_when_a_read_is_revoked(
 
 #[rstest]
 #[tokio::test]
+async fn a_run_whose_command_left_background_processes_is_still_rechecked(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	// Arrange: the command ended and left a Background process running in the Pod.
+	let fixture = fixture(database.await, 3).await;
+	let (operation, _) = running_targets(&fixture).await;
+	sqlx::query("UPDATE core_operations SET state='completed', input='{\"runtime\":\"pod\"}', result='{\"left_running\":\"x.left\"}' WHERE id=$1")
+		.bind(operation)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		targets.contains(&Target::Operation(operation)),
+		"{targets:?}"
+	);
+
+	// Act
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	let checked = repository
+		.check(Target::Operation(operation))
+		.await
+		.unwrap();
+	let stopped = repository.stop_refused(Target::Operation(operation)).await;
+
+	// Assert: the refusal marks the Run, which ends the target.
+	assert_eq!(checked, Outcome::Refused);
+	assert!(stopped.is_err(), "no Runner is configured");
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		!targets.contains(&Target::Operation(operation)),
+		"{targets:?}"
+	);
+	assert!(
+		targets.contains(&Target::RevokedRun(fixture.run)),
+		"{targets:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_live_preview_that_cannot_be_confirmed_stops_without_blaming_authority(
 	#[future] database: DatabaseFixture,
 ) {
