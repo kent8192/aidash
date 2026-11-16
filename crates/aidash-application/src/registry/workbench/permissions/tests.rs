@@ -126,6 +126,12 @@ impl PermissionScope for Scope<'_> {
 			.push(format!("effective:{}", entry.id));
 		let kind = if entry.id == "agent" {
 			self.0.agent_kind
+		} else if entry.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID {
+			"memory"
+		} else if entry.id == aidash_domain::registry::bindings::memory_defaults::RERANKER_ID {
+			"reranker"
+		} else if entry.id == aidash_domain::registry::bindings::memory_defaults::TOKENIZER_ID {
+			"tokenizer"
 		} else {
 			if entry.id
 				== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
@@ -373,7 +379,7 @@ async fn catalog_action_and_required_registry_read_each_gate_effective_permissio
 		catalog == Some(true) && action
 	);
 	for row in &result.rows[1..] {
-		if row.kind == "source" {
+		if row.action == "registry.read" {
 			assert_eq!(row.action, "registry.read");
 			assert_eq!(row.policy_allowed, registry);
 			assert_eq!(row.registry_read_allowed, Some(registry));

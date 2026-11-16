@@ -40,6 +40,8 @@ pub enum Continuation {
 pub enum ResultFitting {
 	WorkspaceRecord,
 	SkillText,
+	JournalText,
+	JournalSearch,
 	/// A `skill_asset_read` text page: `content` from `offset` to `next_offset`.
 	SkillAsset,
 	/// A `capability_describe` result, useful only complete: recorded whole
@@ -476,6 +478,15 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		target,
 	};
 	match name {
+		"journal_read" | "journal_search" | "journal_query" => {
+			behavior.effect = ToolEffect::ReadOnly;
+			behavior.fitting = match name {
+				"journal_read" => Some(ResultFitting::JournalText),
+				"journal_search" => Some(ResultFitting::JournalSearch),
+				_ => None,
+			};
+			contract.disclosure = DisclosureBoundary::Local;
+		}
 		// A Remote-Grant-started creator needs to manage its receiving-Node
 		// Subnode; each effect rechecks its creator or member identity.
 		"subnode_create"

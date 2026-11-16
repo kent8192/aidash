@@ -2,6 +2,64 @@ use super::*;
 use crate::memory::recall::{Rankings, fuse, graph, temporal};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn tenant_memory_scope_widens_only_for_the_same_agent_and_tenant() {
+	assert!(SharingScope::Workspace.permits(true, true, false));
+	assert!(!SharingScope::Workspace.permits(true, false, true));
+	assert!(SharingScope::TenantAgent.permits(true, false, true));
+	assert!(!SharingScope::TenantAgent.permits(true, false, false));
+	assert!(!SharingScope::TenantAgent.permits(false, true, true));
+}
+
+#[test]
+fn policy_accepts_agent_roles_without_embedding() {
+	let mut value: serde_json::Value = serde_json::from_str(include_str!(
+		"../../../../tests/fixtures/native_memory_policy_baseline.json"
+	))
+	.unwrap();
+	for role in ["extraction", "derivation", "reflection"] {
+		value[role] = serde_json::json!("agent_model");
+	}
+	value["embedding"] = serde_json::Value::Null;
+	let policy: Policy = serde_json::from_value(value).unwrap();
+	assert!(policy.validate().is_ok());
+}
+
+#[test]
+fn role_model_accepts_agent_model_or_a_pinned_entry() {
+	let own: RoleModel = serde_json::from_str("\"agent_model\"").unwrap();
+	assert!(own.validate().is_ok());
+	assert_eq!(
+		serde_json::to_value(&own).unwrap(),
+		serde_json::json!("agent_model")
+	);
+	let entry: RoleModel =
+		serde_json::from_value(serde_json::json!({"id":"model","version":"1.0.0"})).unwrap();
+	assert!(entry.validate().is_ok());
+	assert_eq!(
+		serde_json::to_value(&entry).unwrap(),
+		serde_json::json!({"id":"model","version":"1.0.0"})
+	);
+	let invalid: RoleModel =
+		serde_json::from_value(serde_json::json!({"id":"model","version":""})).unwrap();
+	assert!(invalid.validate().is_err());
+	assert!(serde_json::from_str::<RoleModel>("\"other\"").is_err());
+}
+
+#[test]
+fn journal_evidence_accepts_only_a_nonempty_ordered_range() {
+	let run = Uuid::from_u128(42);
+	let mut fact = unit(1).content;
+	for (from, through, valid) in [(1, 1, true), (1, 5, true), (0, 1, false), (5, 4, false)] {
+		let source: Evidence = serde_json::from_value(serde_json::json!({
+			"kind": "journal_range", "run_id": run, "from_seq": from, "through_seq": through
+		}))
+		.unwrap();
+		fact.evidence = vec![source];
+		assert_eq!(fact.validate(&bounds()).is_ok(), valid);
+	}
+}
+
 fn bounds() -> Bounds {
 	Bounds {
 		max_unit_bytes: 1024,

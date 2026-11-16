@@ -31,7 +31,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 		job: &Request,
 	) -> aidash_application::Result<(i64, aidash_domain::generation::policy::Allowances)> {
 		let tx = &mut *self.transaction;
-		let (tokens, compaction_calls, embedding_calls, summary_calls): (i64, i64, i64, i64) = {
+		let (tokens, embedding_calls): (i64, i64) = {
 			let query_bind_1 = job.id;
 			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
@@ -40,16 +40,8 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 						reinhardt::query::Alias::new("remaining_tokens"),
 					)
 					.expr_as(
-						reinhardt::query::Expr::cust("compaction_call_limit - compaction_calls"),
-						reinhardt::query::Alias::new("remaining_compaction_calls"),
-					)
-					.expr_as(
 						reinhardt::query::Expr::cust("embedding_call_limit - embedding_calls"),
 						reinhardt::query::Alias::new("remaining_embedding_calls"),
-					)
-					.expr_as(
-						reinhardt::query::Expr::cust("summary_call_limit - summary_calls"),
-						reinhardt::query::Alias::new("remaining_summary_calls"),
 					)
 					.from(reinhardt::query::Alias::new("generation_budgets"))
 					.and_where(SimpleExpr::CustomWithExpr(
@@ -59,22 +51,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 					.lock(reinhardt::query::LockType::Update)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.columns(&[
-				"remaining_tokens",
-				"remaining_compaction_calls",
-				"remaining_embedding_calls",
-				"remaining_summary_calls",
-			])
+			.columns(&["remaining_tokens", "remaining_embedding_calls"])
 			.fetch_one(&mut **tx)
 			.await?
 		};
 		Ok((
 			tokens,
-			aidash_domain::generation::policy::Allowances {
-				compaction_calls,
-				embedding_calls,
-				summary_calls,
-			},
+			aidash_domain::generation::policy::Allowances { embedding_calls },
 		))
 	}
 
@@ -89,9 +72,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = &job.policy_id;
 		let query_bind_3 = unused;
-		let query_bind_4 = unused_calls.compaction_calls;
 		let query_bind_5 = unused_calls.embedding_calls;
-		let query_bind_6 = unused_calls.summary_calls;
 		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("generation_policies"))
@@ -103,24 +84,10 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 					),
 				)
 				.value_expr(
-					reinhardt::query::Alias::new("allocated_compaction_calls"),
-					SimpleExpr::CustomWithExpr(
-						"(allocated_compaction_calls - ?)".to_owned(),
-						vec![Expr::value(query_bind_4.to_owned()).into()],
-					),
-				)
-				.value_expr(
 					reinhardt::query::Alias::new("allocated_embedding_calls"),
 					SimpleExpr::CustomWithExpr(
 						"(allocated_embedding_calls - ?)".to_owned(),
 						vec![Expr::value(query_bind_5.to_owned()).into()],
-					),
-				)
-				.value_expr(
-					reinhardt::query::Alias::new("allocated_summary_calls"),
-					SimpleExpr::CustomWithExpr(
-						"(allocated_summary_calls - ?)".to_owned(),
-						vec![Expr::value(query_bind_6.to_owned()).into()],
 					),
 				)
 				.and_where(SimpleExpr::CustomWithExpr(

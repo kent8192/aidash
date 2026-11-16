@@ -57,6 +57,58 @@ pub fn approver_eligible(bundle: &PolicyBundle, evaluation: &Evaluation, request
 					|| subject.attributes["capability_approver"] == true)
 		}) && bundle.evaluate(evaluation).allowed
 }
+
+/// Judge the starter of a Workbench test without a Run or workspace context.
+pub fn workbench_approver_eligible(
+	bundle: &PolicyBundle,
+	starter: &str,
+	target: &crate::policy::Resource,
+) -> bool {
+	let evaluation = Evaluation {
+		subject: starter.into(),
+		action: "capability.approve".into(),
+		resource: target.clone(),
+		environment: json!({}),
+	};
+	let bundle = workbench_policy(bundle);
+	approver_eligible(&bundle, &evaluation, starter)
+}
+
+/// A Workbench test has no Run or workspace. An allow that depends on either
+/// cannot grant access; denies still evaluate their other applicable branches.
+pub fn workbench_policy(bundle: &PolicyBundle) -> PolicyBundle {
+	use crate::policy::{Condition, Effect, Operand};
+	// Do not make an invalid bundle valid by filtering a malformed statement.
+	if bundle.validate().is_err() {
+		return bundle.clone();
+	}
+	fn run_operand(operand: &Operand) -> bool {
+		match operand {
+			Operand::Resource { path } | Operand::Environment { path } => {
+				["/run_id", "/workspace_id", "/workspace", "/owner"]
+					.iter()
+					.any(|prefix| path == prefix || path.starts_with(&format!("{prefix}/")))
+			}
+			_ => false,
+		}
+	}
+	fn run_condition(condition: &Condition) -> bool {
+		match condition {
+			Condition::All { conditions } | Condition::Any { conditions } => {
+				conditions.iter().any(run_condition)
+			}
+			Condition::Eq { left, right }
+			| Condition::NotEq { left, right }
+			| Condition::Contains { left, right } => run_operand(left) || run_operand(right),
+			Condition::Exists { value } => run_operand(value),
+		}
+	}
+	let mut scoped = bundle.clone();
+	scoped.policies.retain(|policy| {
+		policy.effect != Effect::Allow || !policy.condition.as_ref().is_some_and(run_condition)
+	});
+	scoped
+}
 pub fn requested_state(direct: bool, grant: bool, designated: bool) -> &'static str {
 	if direct || grant {
 		"approved"
