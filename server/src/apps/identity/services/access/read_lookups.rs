@@ -1234,18 +1234,8 @@ impl Access {
 		semantic.sort_by_key(|row| (row.entry_id, row.revision));
 		let area_ids: Vec<_> = core_runs.iter().map(|row| row.area_id).collect();
 		let mut areas = BTreeMap::new();
-		if !area_ids.is_empty() {
-			let query = crate::apps::execution::repositories::sessions::select("core_areas")
-				.and_where(Expr::col("id").is_in(area_ids.into_iter().map(Expr::value)))
-				.and_where(Expr::col("tenant").eq(Expr::value(&self.identity.tenant)))
-				.to_string(PostgresQueryBuilder);
-			let rows: Vec<crate::apps::execution::capabilities::serializers::contracts::Area> =
-				crate::database::native::query_as(&query)
-					.fetch_all(&mut **self.tx)
-					.await?;
-			for area in rows {
-				areas.insert(area.id, area);
-			}
+		for area in crate::apps::execution::repositories::sessions::areas(self, &area_ids).await? {
+			areas.insert(area.id, area);
 		}
 		let mut wanted = early_definitions.clone();
 		wanted.extend(

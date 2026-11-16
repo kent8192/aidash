@@ -105,6 +105,21 @@ pub(crate) async fn run_area(
 	.await?;
 	Ok(Some(area))
 }
+/// The Working Areas among `ids` in the caller's tenant, read together, each as
+/// [`run_area`] reads one. The dashboard state preload reads its window's areas here.
+pub(crate) async fn areas(access: &mut Access, ids: &[Uuid]) -> NativeResult<Vec<NativeArea>> {
+	if ids.is_empty() {
+		return Ok(Vec::new());
+	}
+	Ok(crate::database::native::query_as(
+		&select("core_areas")
+			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **access.tx)
+	.await?)
+}
 #[async_trait]
 impl SessionScope for Scope<'_> {
 	fn tenant(&self) -> &str {
