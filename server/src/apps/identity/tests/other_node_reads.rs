@@ -1086,6 +1086,11 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	// Assert: the Tasks that need the Node are left out and counted under it,
 	// the rest stay, and every missing row is counted.
 	assert_eq!(status, 200, "{tasks}");
+	// The first list waits for the silent Node, which the second must not.
+	assert!(
+		first >= Duration::from_millis(900),
+		"the first list asks the silent Node: {first:?}"
+	);
 	let hidden: Vec<_> = children
 		.iter()
 		.filter(|child| !listed(&tasks, child.id))
@@ -1148,14 +1153,15 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	assert_eq!(tasks_bob["unconfirmed"], json!([]), "{tasks_bob}");
 	assert!(hidden.iter().all(|child| !listed(&tasks_bob, child.id)));
 	// A second list within the memory does not wait on the Node again, and a
-	// single read still asks it.
+	// single read still asks it. Without the memory every list read waits the
+	// pool's full second for the silent Node, so this bound fails (#770, Q16).
 	let second = std::time::Instant::now();
 	let (status, tasks) = world.get("/api/tasks").await;
 	let second = second.elapsed();
 	assert_eq!(status, 200, "{tasks}");
 	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
 	assert!(
-		second < first || second < Duration::from_millis(500),
+		second < Duration::from_millis(500),
 		"the second list waited {second:?} after {first:?}"
 	);
 	let asking = std::time::Instant::now();
