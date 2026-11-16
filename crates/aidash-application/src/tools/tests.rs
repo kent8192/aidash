@@ -134,7 +134,7 @@ impl ToolOperations for Operations {
 			.lock()
 			.unwrap()
 			.push((key.to_owned(), json!({"node":node,"agent":agent})));
-		Ok(json!({"delivered":true}))
+		Ok(json!({"node_id":node}))
 	}
 	async fn artifact(&self, _key: &str, _input: &ArtifactInput) -> Result<Artifact> {
 		panic!("unexpected tool effect: artifact")
@@ -828,7 +828,7 @@ async fn agent_delegation_retains_parent_and_durable_operation_keys(fixture: Fix
 	);
 	assert_eq!(
 		output,
-		json!({"task":fixture.operations.task,"delegation":{"delivered":true}})
+		json!({"task":fixture.operations.task,"delegation":{"node_id":"aidash://remote"}})
 	);
 }
 #[rstest]
