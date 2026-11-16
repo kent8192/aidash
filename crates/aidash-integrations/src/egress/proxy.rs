@@ -26,6 +26,16 @@ const DEBIT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
 const REFUND_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A debit that waited [`DEBIT_WAIT`] without an answer.
 const BUDGET_WAIT_TIMEOUT: &str = "egress_budget_wait_timeout";
+
+/// Records the time since it was made when it is dropped, so that a debit cut
+/// short by [`DEBIT_WAIT`] or a closing tunnel is still measured. Those are the
+/// slow waits that the measurement is for (#909).
+struct Elapsed(metrics::Histogram, tokio::time::Instant);
+impl Drop for Elapsed {
+	fn drop(&mut self) {
+		self.0.record(self.1.elapsed().as_secs_f64());
+	}
+}
 /// A Pod can repeat these failures at will, by reaching a host that always fails
 /// or by opening connections during a stall, so each kind logs at most one line
 /// per interval. The rest go to `debug`, and the counters stay exact.
@@ -826,7 +836,10 @@ impl Batch {
 		amount: u64,
 		day: chrono::NaiveDate,
 	) -> std::result::Result<(), aidash_application::Error> {
-		let started = tokio::time::Instant::now();
+		let _elapsed = Elapsed(
+			metrics::histogram!("aidash_egress_debit_seconds"),
+			tokio::time::Instant::now(),
+		);
 		let mut pause = DEBIT_RETRY;
 		let result = loop {
 			match self
@@ -845,7 +858,6 @@ impl Batch {
 			}
 		};
 		self.unanswered = None;
-		metrics::histogram!("aidash_egress_debit_seconds").record(started.elapsed().as_secs_f64());
 		result
 	}
 	/// Returns unused bytes of `day`, waiting at most [`REFUND_WAIT`].
@@ -4652,6 +4664,8 @@ mod tests {
 			"{result:?}"
 		);
 		assert!(observed.count("aidash_egress_debit_retries_total") > 1);
+		// The debit cut short by the wait is still measured.
+		assert_eq!(observed.count("aidash_egress_debit_seconds_count"), 1);
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");

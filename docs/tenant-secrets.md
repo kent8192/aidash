@@ -434,11 +434,13 @@ these checks, debits and refunds are in
 `aidash_egress_host_connection_check_seconds`, `aidash_egress_debit_seconds`
 and `aidash_egress_refund_seconds`; debits the store did not answer are counted
 in `aidash_egress_debit_retries_total`. Where the store's time goes is in
-`aidash_egress_store_begin_seconds` (waiting for a pooled connection),
+`aidash_egress_store_begin_seconds` (waiting for a pooled connection and
+opening the transaction; read it with the pool gauges below),
 `aidash_egress_budget_lock_seconds{operation}` (waiting on the Scratch Space's
 state lock, which its debits and refunds take in turn) and
 `aidash_db_pool_connections{pool,state}` with `aidash_db_pool_max_connections`,
-sampled every five seconds. A scope credential is a MAC over the Tenant and
+sampled every five seconds. A wait the gateway gives up on is recorded at the
+time it gave up. A scope credential is a MAC over the Tenant and
 Scratch Space under the server's key, verified in constant time, and is excluded
 from records and logs. It has one value per Scratch Space and stays valid until
 the space is deleted; deleting its Tenant or its Node closes it at once, before

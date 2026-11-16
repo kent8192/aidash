@@ -177,18 +177,28 @@ impl DurableScopes {
 	}
 }
 
-/// Opens a Tenant transaction for Scratch Space egress, recording how long the
-/// pool took to hand over a connection (#909).
+/// Opens a Tenant transaction for Scratch Space egress, recording how long that
+/// took: the wait for a pooled connection, `BEGIN` and the scope statement
+/// (#909).
 pub(super) async fn begin_timed(
 	pool: &crate::database::native::Pool,
 	tenant: &str,
 ) -> Result<Transaction> {
 	let scope = TenancyScope::tenant(tenant)?;
-	let started = std::time::Instant::now();
-	let tx = pool.begin(&scope).await;
-	metrics::histogram!("aidash_egress_store_begin_seconds")
-		.record(started.elapsed().as_secs_f64());
-	tx
+	let _elapsed = Elapsed(
+		metrics::histogram!("aidash_egress_store_begin_seconds"),
+		std::time::Instant::now(),
+	);
+	pool.begin(&scope).await
+}
+
+/// Records the time since it was made when it is dropped, so that a wait the
+/// gateway gives up on is measured too: those are the slow ones (#909).
+struct Elapsed(metrics::Histogram, std::time::Instant);
+impl Drop for Elapsed {
+	fn drop(&mut self) {
+		self.0.record(self.1.elapsed().as_secs_f64());
+	}
 }
 
 /// Locks the Scratch Space's state row, which every debit and refund of that
@@ -198,11 +208,11 @@ async fn locked_state(
 	id: &ScopeId,
 	operation: &'static str,
 ) -> Result<ScopeState> {
-	let started = std::time::Instant::now();
-	let locked = locked_state_now(tx, id).await;
-	metrics::histogram!("aidash_egress_budget_lock_seconds", "operation" => operation)
-		.record(started.elapsed().as_secs_f64());
-	locked
+	let _elapsed = Elapsed(
+		metrics::histogram!("aidash_egress_budget_lock_seconds", "operation" => operation),
+		std::time::Instant::now(),
+	);
+	locked_state_now(tx, id).await
 }
 async fn locked_state_now(tx: &mut Transaction, id: &ScopeId) -> Result<ScopeState> {
 	ScopeState::objects()
