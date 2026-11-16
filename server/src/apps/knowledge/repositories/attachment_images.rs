@@ -268,6 +268,17 @@ pub(crate) async fn counted(tx: &mut native::Transaction, workspace: Uuid) -> Re
 	Ok(usize::try_from(count).unwrap_or(usize::MAX))
 }
 
+/// The authority an entry was admitted and is indexed under.
+async fn saved_authority(tx: &mut native::Transaction, workspace: Uuid, id: Uuid) -> Result<Value> {
+	let query = Query::select()
+		.column("authority")
+		.from(Alias::new("semantic_entries"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("id").eq(Expr::value(id)))
+		.to_string(PostgresQueryBuilder);
+	native::query_scalar(&query).scalar_one(&mut **tx).await
+}
+
 /// Working Area images that hold an index slot in the File publication ledger.
 async fn working(tx: &mut native::Transaction, workspace: Uuid) -> Result<usize> {
 	let query = Query::select()
@@ -290,8 +301,9 @@ async fn working(tx: &mut native::Transaction, workspace: Uuid) -> Result<usize>
 const ADMISSION_LOCK: i64 = 71003250;
 
 /// Enter posted images into the Workspace index. With `refresh`, also queue an
-/// image already there again, because its Image Description changed; without
-/// it a replayed post leaves existing entries alone. The caller's transaction
+/// image already there again, under the authority that admitted it, because
+/// its Image Description changed; without it a replayed post leaves existing
+/// entries alone. The caller's transaction
 /// holds the attachments; this adds the entries under the same authority. A
 /// Workspace without an enabled index, or an author who may not write to it,
 /// leaves them out. Returns how many images it entered or queued again.
@@ -338,11 +350,46 @@ pub(crate) async fn enqueue(
 		};
 		let mut entries = Entries { lease: &mut *lease };
 		let existing = entries.by_key(workspace, &key).await?;
-		if existing.as_ref().is_some_and(|old| old.deleted || !refresh) {
+		if let Some(old) = existing {
+			if old.deleted || !refresh {
+				continue;
+			}
+			// A changed Image Description needs a new point; the old one is
+			// retired with the revision. The entry keeps the authority that
+			// admitted it, as any reindexing would: the description's writer
+			// may edit it without being able to write to the index, and the
+			// entry must not stay Indexed with a point for the old words.
+			let saved = saved_authority(entries.lease.tx(), workspace, old.id).await?;
+			let limited = old.state == "UNSUPPORTED" && old.last_error.as_deref() == Some("limit");
+			let pending = entries
+				.change(
+					workspace,
+					old.id,
+					Uuid::new_v4(),
+					index.revision,
+					false,
+					saved,
+				)
+				.await?;
+			entries.schedule(&pending, &index.collection).await?;
+			if limited {
+				super::image_publications::mark_limit(&mut entries, workspace, &pending).await?;
+			} else {
+				entries
+					.history(
+						workspace,
+						pending.id,
+						pending.revision,
+						"PENDING",
+						"Image Description changed",
+					)
+					.await?;
+			}
+			entered += 1;
 			continue;
 		}
 		let entry = Entry {
-			id: existing.as_ref().map_or_else(Uuid::new_v4, |old| old.id),
+			id: Uuid::new_v4(),
 			workspace_id: workspace,
 			key: key.clone(),
 			source: serde_json::to_value(&source)?,
@@ -361,37 +408,6 @@ pub(crate) async fn enqueue(
 		if !entries.permits(&entry, "semantic.write").await?
 			|| !entries.permits(&entry, "semantic.read").await?
 		{
-			continue;
-		}
-		if let Some(old) = existing {
-			// A changed Image Description needs a new point; the old one is
-			// retired with the revision.
-			let limited = old.state == "UNSUPPORTED" && old.last_error.as_deref() == Some("limit");
-			let pending = entries
-				.change(
-					workspace,
-					old.id,
-					Uuid::new_v4(),
-					index.revision,
-					false,
-					authority.clone(),
-				)
-				.await?;
-			entries.schedule(&pending, &index.collection).await?;
-			if limited {
-				super::image_publications::mark_limit(&mut entries, workspace, &pending).await?;
-			} else {
-				entries
-					.history(
-						workspace,
-						pending.id,
-						pending.revision,
-						"PENDING",
-						"Image Description changed",
-					)
-					.await?;
-			}
-			entered += 1;
 			continue;
 		}
 		let held = counted(lease.tx(), workspace).await? + working(lease.tx(), workspace).await?;

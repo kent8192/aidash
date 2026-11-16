@@ -1360,3 +1360,68 @@ async fn backfill_admits_the_older_image_when_one_slot_remains(
 		("UNSUPPORTED", Some("limit"))
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_description_edit_requeues_an_image_its_writer_could_not_index(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: Bob may post but not write to the index; his image enters it
+	// under Alice's authority when she configures the index.
+	let ScopedChannel {
+		app,
+		mut policy,
+		token: alice,
+		workspace,
+	} = Box::pin(scoped_channel).await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"bob-cannot-index","effect":"deny","subjects":{"ids":["bob"]},"actions":["semantic.write"],"resources":{"kinds":["*"]}}));
+	let (status, changed) = request(
+		&app,
+		&app.runtime.config.api_token.clone(),
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	let bob = crate::endpoint::subject_credential(&app.runtime.store, "acme", "bob").await;
+	let image = post_image(&app, &bob, &workspace, "Bob's photo").await;
+	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256});
+	let (status, index) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let before = image_entry(&app, &image).await.unwrap();
+
+	// Act
+	let (status, described) = request(
+		&app,
+		&bob,
+		"PUT",
+		&format!("/api/workspaces/{workspace}/attachments/{image}/description"),
+		json!({"description":"A lighthouse"}),
+	)
+	.await;
+
+	// Assert: the entry is queued again for the new words, still under the
+	// authority that admitted it.
+	assert_eq!(status, 200, "{described}");
+	let after = image_entry(&app, &image).await.unwrap();
+	assert_eq!(after.0, "PENDING");
+	assert_eq!(after.2, before.2 + 1, "the edit retires the old point");
+	let authority: Value =
+		sqlx::query_scalar("SELECT authority FROM semantic_entries WHERE key = $1")
+			.bind(format!("attachment-image:{image}"))
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_ne!(authority["subject"], "bob", "{authority}");
+}
