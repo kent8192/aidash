@@ -29,12 +29,24 @@ async fn every_policy_migration_runs_the_rendered_template() {
 	assert!(policies > 0);
 }
 
-/// Tables the compaction rebuild (#850) dropped after their policy migration ran.
+/// Tables dropped after their policy migration ran: by the compaction rebuild
+/// (#850) and with the Research category (#987).
 const RETIRED: &[&str] = &[
 	"decision_states",
 	"decision_outcomes",
 	"generation_compaction_usage",
 	"generation_summary_usage",
+	// The Research category (#987, ADR 0138).
+	"research_attempts",
+	"research_fragments",
+	"research_journal_results",
+	"research_originals",
+	"research_page_images",
+	"research_revocations",
+	"research_snapshots",
+	"research_sources",
+	"tenant_retention_rule_history",
+	"tenant_retention_rules",
 ];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
@@ -51,12 +63,15 @@ const BEFORE_POLICIES: &[&str] = &[
 const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0089_remove_agent_cluster forward",
 	"execution.0090_run_created_at forward",
+	"execution.0132_remove_research forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
 	"identity.0067_scratch_member_policy forward",
 	"identity.0080_data_protection_switches backward",
 	"identity.0080_data_protection_switches forward",
+	"identity.0082_remove_research_approvals forward",
 	"registry.0054_remove_agent_cluster forward",
+	"registry.0069_remove_research_providers forward",
 	"workspaces.0021_conversation_scratch_space forward",
 	"workspaces.0024_workspace_scratch_space forward",
 ];

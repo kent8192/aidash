@@ -1129,8 +1129,8 @@ async fn recorded_tool_call(
 	record.data["consumed_at"] = json!(Utc::now());
 	match scope.update(&mut record).await {
 		Ok(()) => Ok(settled_tool_call(&record)),
-		// The approval changed since it was loaded: an Evidence Revocation closed
-		// it or the approver revoked it. That wins the race.
+		// The approval changed since it was loaded: it was closed meanwhile
+		// or the approver revoked it. That wins the race.
 		Err(Error::Conflict(_)) => {
 			let current = scope.load(record.id, &record.kind).await?;
 			Ok(settled_tool_call(&current))

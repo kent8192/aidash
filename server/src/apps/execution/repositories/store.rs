@@ -3025,8 +3025,8 @@ impl Store {
 		tx.commit().await?;
 		Ok(true)
 	}
-	/// A channel message a local Run publishes, attributed to that Run so its
-	/// Source citations resolve. Only scoped authority tracks it as Run output.
+	/// A channel message a local Run publishes, attributed to that Run. Only
+	/// scoped authority tracks it as Run output.
 	pub(crate) async fn message_from_run(
 		&self,
 		scope: &TenancyScope,

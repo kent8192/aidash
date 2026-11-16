@@ -26,8 +26,8 @@ const TEXT_BUDGET: usize = MAX_PROGRESS_ITEM_BYTES - 2 * STORAGE_SLACK;
 /// Coalesces offered progress until the flusher stores it.
 pub(super) struct ProgressBuffer {
 	started: Instant,
-	/// Answer text is not displayed before its Source citations are checked;
-	/// tool-call assembly progress still is.
+	/// Text that is not the Run's answer, such as an MCP sampling reply, is
+	/// not displayed; tool-call assembly progress still is.
 	withhold_text: bool,
 	pending: Mutex<Pending>,
 	wake: Notify,
@@ -49,8 +49,8 @@ impl ProgressBuffer {
 		Self::withholding_text(started, false)
 	}
 
-	/// A Run that binds an operation yielding citable evidence verifies its
-	/// answer before publishing it, so tentative answer text is not streamed.
+	/// Text a call produces for someone other than the Run's reader, such as
+	/// an MCP sampling reply, is not streamed.
 	pub(super) fn withholding_text(started: Instant, withhold_text: bool) -> Self {
 		Self {
 			started,

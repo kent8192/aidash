@@ -21,7 +21,7 @@ struct Fake {
 	cache: BTreeMap<Uuid, (String, Value)>,
 	run: Run,
 	/// Close the record the next update writes just before it does, as an
-	/// Evidence Revocation committing meanwhile would.
+	/// area cleanup committing meanwhile would.
 	close_before_update: bool,
 	/// Outbound reads are admitted, to `https://example.com`.
 	admission: bool,
@@ -2447,7 +2447,7 @@ async fn a_late_tool_call_decision_is_told_who_decided_and_how() {
 
 /// What happens to an allowed approval after its decision: an outbound read's
 /// worker completes it or leaves it uncertain, a call consumes it, a person
-/// revokes it, or an Evidence Revocation closes it.
+/// revokes it, or its area's cleanup closes it.
 #[rstest::rstest]
 #[case::attempted("attempted")]
 #[case::completed("completed")]

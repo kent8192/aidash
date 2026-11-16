@@ -1,7 +1,7 @@
 //! URL intents: a person's request, made with their input, that the Run read
 //! particular pages. The host records the pages beside the person's text and
-//! never in it (ADR 0052); a URL intent never approves the Web disclosure the
-//! Page reading leads to.
+//! never in it (ADR 0052); a URL intent never approves the page read it leads
+//! to.
 use super::{Operation, address::candidate_host};
 use crate::{
 	registry::bindings::BindingSnapshot,
@@ -61,7 +61,7 @@ pub fn requested_pages(
 
 /// What a request's step state tells the model about recorded URL intents.
 /// It is rendered into every step that carries one and is never stored.
-pub const URL_INTENT_INSTRUCTION: &str = "The person asked you to read these pages with the page reading tool before you answer. Each page still needs its own Web disclosure approval.";
+pub const URL_INTENT_INSTRUCTION: &str = "The person asked you to read these pages with the page reading tool before you answer. Reading a page may still need approval.";
 
 /// The pages one input asked the Run to read: the Run's Task when
 /// `input_key` is `None`, otherwise the run input with that idempotency key.

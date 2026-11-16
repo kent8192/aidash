@@ -81,6 +81,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0066_native_context_recovery"),
 	("registry", "0067_optional_memory_roles"),
 	("registry", "0068_reject_new_compaction_deciders"),
+	("registry", "0069_remove_research_providers"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -133,6 +134,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0129_host_connection_limits"),
 	("execution", "0130_scope_refusals"),
 	("execution", "0131_scope_refusals_state"),
+	("execution", "0132_remove_research"),
+	("execution", "0133_remove_research_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -160,6 +163,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0129_host_connection_limits"),
 	("execution", "0130_scope_refusals"),
 	("execution", "0131_scope_refusals_state"),
+	("execution", "0132_remove_research"),
+	("execution", "0133_remove_research_state"),
 ];
 
 async fn history_size() -> usize {
@@ -202,13 +207,16 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0068_reject_new_compaction_deciders");
+	assert_eq!(registry[0].name, "0069_remove_research_providers");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0131_scope_refusals_state");
+	assert_eq!(execution[0].name, "0133_remove_research_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0055_attachment_images");
+	assert_eq!(
+		knowledge[0].name,
+		"0057_journal_proofs_without_research_state"
+	);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -220,7 +228,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		115
+		118
 	);
 	let tables = migrations
 		.iter()
@@ -486,14 +494,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0132_policy_probe")
+		.get_migration("execution", "0134_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0131_scope_refusals_state".to_owned()
+			"0133_remove_research_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -554,6 +562,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0129_host_connection_limits"),
 			("execution", "0130_scope_refusals"),
 			("execution", "0131_scope_refusals_state"),
+			("execution", "0132_remove_research"),
+			("execution", "0133_remove_research_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -1022,7 +1032,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		115
+		118
 	);
 }
 
@@ -1281,6 +1291,13 @@ async fn image_policy_migrations_reverse_safely(#[future] fresh_database: Migrat
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	for name in [
+		"0057_journal_proofs_without_research_state",
+		"0056_journal_proofs_without_research",
+	] {
+		let migration = source.get_migration("knowledge", name).await.unwrap();
+		executor.rollback_migrations(&[migration]).await.unwrap();
+	}
 	let attachment_images = source
 		.get_migration("knowledge", "0055_attachment_images")
 		.await
