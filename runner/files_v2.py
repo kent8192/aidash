@@ -43,15 +43,20 @@ def open_dir(root, components):
 
 
 def open_file(fd, name, flags=os.O_RDONLY, mode=0o600):
+    import fcntl
+    # Non-blocking, so a FIFO is refused at once instead of waiting for a writer.
     try:
-        result = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=fd)
+        result = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=fd)
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise InvalidPath('symlinks are not allowed') from None
+        if error.errno == errno.ENXIO:
+            raise InvalidPath('path is not a regular file') from None
         raise
     if not stat.S_ISREG(os.fstat(result).st_mode):
         os.close(result)
         raise InvalidPath('path is not a regular file')
+    fcntl.fcntl(result, fcntl.F_SETFL, fcntl.fcntl(result, fcntl.F_GETFL) & ~os.O_NONBLOCK)
     return result
 
 
@@ -172,7 +177,14 @@ class FileService:
                     if not stat.S_ISREG(existing.st_mode):
                         raise InvalidPath('target is not a regular file')
                 except FileNotFoundError:
-                    pass
+                    existing = None
+                if mode is None:
+                    # Without a mode, keep the target's or give a new file the usual 0644.
+                    staged = open_file(state, key + '.tmp')
+                    try:
+                        os.fchmod(staged, stat.S_IMODE(existing.st_mode) if existing else 0o644)
+                    finally:
+                        os.close(staged)
                 os.replace(key + '.tmp', path[-1], src_dir_fd=state, dst_dir_fd=parent)
                 os.fsync(parent)
             return {'size': size}
@@ -511,3 +523,26 @@ class FileService:
             for parent in opened:
                 os.close(parent)
             os.close(lock)
+
+
+# Read-only operations end well before the Runner's 45 s transport limit, which
+# holds the Scratch Space's lock while it waits.
+FILE_OPERATION_SECONDS = 30
+
+
+def run_bounded(service, operation, request, seconds=FILE_OPERATION_SECONDS):
+    """Run one file operation; a read-only walk or pathological pattern stops at the budget."""
+    if operation not in ('read', 'search', 'manifest'):
+        return getattr(service, operation)(request)
+    import signal
+
+    def over_budget(*_):
+        raise ValueError(f'file operation exceeded its {seconds} s time budget')
+
+    previous = signal.signal(signal.SIGALRM, over_budget)
+    signal.alarm(seconds)
+    try:
+        return getattr(service, operation)(request)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)

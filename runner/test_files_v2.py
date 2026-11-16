@@ -137,3 +137,34 @@ def test_patch_changes_only_the_lines_it_names(tmp_path):
     service.patch({'run_id': 'r', 'patch': patch})
     assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal\nappended'
 
+
+def test_a_fifo_is_refused_at_once_and_writes_keep_a_readable_mode(tmp_path):
+    import os
+    import stat
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    os.mkfifo(scratch / 'pipe')
+    (scratch / 'kept').write_bytes(b'old')
+    os.chmod(scratch / 'kept', 0o755)
+    service = FileService(scratch, tmp_path / 'state')
+    with pytest.raises(InvalidPath):
+        service.read({'path': 'pipe', 'limit': 10})
+    assert service.search({'pattern': 'x', 'regex': False, 'max_results': 10})['matches'] == []
+    chunk = {'run_id': 'r', 'data': base64.b64encode(b'new').decode(), 'offset': 0, 'final': True}
+    service.write(dict(chunk, path='fresh'))
+    service.write(dict(chunk, path='kept'))
+    assert stat.S_IMODE(os.stat(scratch / 'fresh').st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(scratch / 'kept').st_mode) == 0o755
+
+
+def test_a_pathological_search_pattern_stops_at_the_time_budget(tmp_path):
+    import time
+    from files_v2 import run_bounded
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / 'a').write_text('a' * 64 + 'b\n')
+    service = FileService(scratch, tmp_path / 'state')
+    started = time.monotonic()
+    with pytest.raises(ValueError, match='time budget'):
+        run_bounded(service, 'search', {'pattern': '(a+)+$', 'regex': True, 'max_results': 1}, seconds=1)
+    assert time.monotonic() - started < 5
