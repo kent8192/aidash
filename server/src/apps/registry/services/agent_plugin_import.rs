@@ -191,9 +191,10 @@ async fn require_library(runtime: &Federation, access: &mut Access, source: &str
 }
 
 /// Lists one remote server of the Tenant's copy of an Agent Plugin for the person attaching or
-/// editing it, with that person's OAuth Connection or, when the server offers none, the pasted
-/// secret the request names: the person's own first, the shared one unless the definition
-/// requires a personal one (ADR 0100, ADR 0073 amended 2026-11-16). The listing goes through the
+/// editing it, with that person's OAuth Connection or, when the server offers none, their own
+/// personal secret of the name the request gives (ADR 0100, ADR 0073 amended 2026-11-16). A shared
+/// Tenant Secret is never used here, whatever the request's `owner` says: a listing has no Run and
+/// no Catalog Approval, so it must not reveal what a shared secret reaches. The listing goes through the
 /// same public-address rule and transport as a Run's sessions. Nothing is stored: a Run checks
 /// every declared digest against its own listing at Run start.
 ///
@@ -291,7 +292,8 @@ pub async fn list_tools(
 					&identity.tenant,
 					Some(identity.subject.as_str()),
 					&secret.name,
-					secret.owner,
+					// Only the person's own secret, never the shared one.
+					aidash_domain::tool::SecretOwner::Personal,
 					config.url.as_str(),
 					call(attach)?,
 				)

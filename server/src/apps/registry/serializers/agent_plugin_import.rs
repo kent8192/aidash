@@ -32,7 +32,8 @@ pub struct PluginToolsRequest {
 	/// A remote server of that copy.
 	pub server: aidash_domain::agent_plugin::ServerName,
 	/// The pasted secret the Agent definition names for the server, used when the person has no
-	/// OAuth Connection to it. The person's own secret of that name wins over the shared one.
+	/// OAuth Connection to it. Only the person's own secret of that name is used; a shared Tenant
+	/// Secret never is, whatever `owner` says.
 	#[serde(default)]
 	pub secret: Option<aidash_domain::agent_plugin::ServerSecret>,
 }
