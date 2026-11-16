@@ -1796,9 +1796,15 @@ impl<'a> Executor<'a> {
 					instructions.push('\n');
 					instructions.push_str(&line);
 				}
-				if let Some(section) =
-					external_services_section(&self.environment.external_services(run).await?)
-				{
+				// The list only informs; failing to read it never fails the Run.
+				let services = match self.environment.external_services(run).await {
+					Ok(services) => services,
+					Err(error) => {
+						tracing::warn!(run = %run.id, %error, "External services could not be listed");
+						Vec::new()
+					}
+				};
+				if let Some(section) = external_services_section(&services) {
 					instructions.push('\n');
 					instructions.push_str(&section);
 				}

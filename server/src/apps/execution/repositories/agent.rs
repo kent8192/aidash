@@ -1215,18 +1215,23 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
-	async fn external_services(&self, run: &Run) -> Result<Vec<ExternalServiceLine>> {
+	async fn external_services(&self, _run: &Run) -> Result<Vec<ExternalServiceLine>> {
+		// The Scratch Space the worker resolved for this Run, the one whose
+		// Execution Pod its tools reach; a Remote Grant's Run has a derived
+		// one. Without local authority there is nothing to list.
+		let Some(authority) = &self.authority else {
+			return Ok(Vec::new());
+		};
 		let store = &self.federation.store;
 		let scope = &self.run_store.scope;
 		let Some(tenant) = scope.tenant_name().map(|name| name.as_str().to_owned()) else {
 			return Ok(Vec::new());
 		};
-		let workspace = store.workspace(scope, run.workspace_id).await?;
 		let mut tx = store.pool.begin(scope).await?;
 		let lines = crate::apps::workspaces::repositories::scratch::usable_lines(
 			&mut tx,
 			&tenant,
-			workspace.scratch_space_id,
+			authority.guard.scratch_space_id,
 		)
 		.await;
 		// Only reads happened; the transaction ends without keeping anything.

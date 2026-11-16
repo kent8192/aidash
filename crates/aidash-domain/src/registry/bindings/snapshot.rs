@@ -117,6 +117,11 @@ impl BindingSnapshot {
 			let binding = &mut normalized.binding;
 			// Exposure selects request visibility only; it never changes the closure.
 			binding.exposure = None;
+			// An Agent no longer binds an External service (#738); resolution
+			// leaves such a Binding of an older version out of the closure.
+			if binding.kind == BindingKind::ExternalService {
+				continue;
+			}
 			let entry = &definitions
 				.get(&binding.target)
 				.ok_or_else(|| Error::Invalid("snapshot lacks a bound definition".into()))?
@@ -318,12 +323,18 @@ impl BindingSnapshot {
 			super::memory_provider(&binding.definition.kind, &binding.definition.config)
 		});
 		let mut seen = BTreeSet::new();
-		if self.bindings.len() != expected.len() {
+		// A Run admitted before #738 may still hold one; it grants nothing now.
+		let saved_bindings = self
+			.bindings
+			.iter()
+			.filter(|binding| binding.definition.kind != "external_service")
+			.collect::<Vec<_>>();
+		if saved_bindings.len() != expected.len() {
 			return Err(Error::Invalid(
 				"Run Bindings differ from the normalized Agent closure".into(),
 			));
 		}
-		for saved in &self.bindings {
+		for saved in saved_bindings {
 			let expected = expected.get(&saved.identity).ok_or_else(|| {
 				Error::Invalid("Run Binding is absent from the normalized Agent closure".into())
 			})?;

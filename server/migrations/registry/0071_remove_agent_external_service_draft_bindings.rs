@@ -3,7 +3,7 @@
 // made available to a Scratch Space only. Drafts keep no such Binding.
 // Reinhardt has no data operation for rewriting a JSON array inside a column,
 // so this one-time data change is SQL. Registered Agent versions are immutable
-// and digest-pinned: they keep theirs and resolve it as excluded.
+// and digest-pinned: they keep theirs, and Run start leaves it out.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new(

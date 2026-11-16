@@ -19,6 +19,11 @@ pub(super) fn migration() -> Migration {
 			old_definition: Some(ColumnDefinition::new("session_id", FieldType::Uuid)),
 		})
 		.add_operation(Operation::DropColumn {
+			table: "egress_requests".into(),
+			column: "operation_id".into(),
+			old_definition: Some(ColumnDefinition::new("operation_id", FieldType::Uuid)),
+		})
+		.add_operation(Operation::DropColumn {
 			table: "core_live_previews".into(),
 			column: "egress_expires_at".into(),
 			old_definition: Some(ColumnDefinition::new(

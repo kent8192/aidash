@@ -16,7 +16,7 @@ The gateway's periodic check of an open request rechecks the same conditions for
 
 The Credential Broker sees the Scratch Space as the user of the Tenant Secret (`SecretSubject::ScratchSpace`). The Egress request record names the Run the credential claims. Limits are the Scratch Space egress allowance plus the service's own daily share, with no request count (ADR 0054). Admission reads no Run row and writes no Authorization Decision: the decisions behind it are the Catalog Approval and the Scratch Space settings, and both are recorded where they are made.
 
-Agent definitions no longer bind External services. New registrations with such a binding are refused, and drafts lose theirs. Registered versions keep theirs, because their digests are pinned; resolution excludes those bindings, so they grant nothing. Runner operations outside an Execution Pod (Reference extraction, verification), preparation commands without a Run, and Live preview pages in a viewer's browser reach no External service.
+Agent definitions no longer bind External services. New registrations with such a binding are refused, and drafts lose theirs. Registered versions keep theirs, because their digests are pinned, but nothing follows them: Run start leaves them out of the Binding snapshot without loading their definitions, and neither Approval Review nor Marketplace publication counts them as dependencies. Runner operations outside an Execution Pod (Reference extraction, verification), preparation commands without a Run, and Live preview pages in a viewer's browser reach no External service.
 
 ## Considered Options
 

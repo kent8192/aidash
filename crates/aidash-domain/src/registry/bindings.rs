@@ -98,7 +98,9 @@ pub fn definition_references(
 					BindingKind::Memory => "memory",
 					BindingKind::Source => "source",
 					BindingKind::Decider => "decider",
-					BindingKind::ExternalService => "external_service",
+					// An Agent no longer binds an External service (#738): an
+					// older version's Binding is no edge of its closure.
+					BindingKind::ExternalService => continue,
 				};
 				result.push((normalized.binding.target, kind.into()));
 			}

@@ -30,8 +30,10 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 					aidash_domain::registry::bindings::BindingKind::Memory => "memory",
 					aidash_domain::registry::bindings::BindingKind::Source => "source",
 					aidash_domain::registry::bindings::BindingKind::Decider => "decider",
+					// An Agent no longer binds an External service (#738):
+					// it is neither approved nor published with the Agent.
 					aidash_domain::registry::bindings::BindingKind::ExternalService => {
-						"external_service"
+						continue;
 					}
 				};
 				refs.push((binding.target.local(), kind.into()));

@@ -352,7 +352,6 @@ impl ServiceSecrets {
 			.id(id)
 			.tenant(scope.id.tenant.clone())
 			.run_id(run)
-			.operation_id(None)
 			.via("pod".to_owned())
 			.service(service.to_owned())
 			.method(method.to_owned())
@@ -455,7 +454,10 @@ impl ServiceMeter {
 		Ok(())
 	}
 
-	async fn add_to_record(&self, direction: Direction, bytes: i64) -> Result<()> {
+	/// Adds forwarded bytes to the request record, then rechecks, in one
+	/// transaction, so that a store failure leaves nothing half committed for
+	/// the gateway's retry to count twice.
+	async fn record_and_recheck(&self, direction: Direction, bytes: i64) -> Result<Result<()>> {
 		let mut tx = self
 			.store
 			.pool
@@ -479,7 +481,14 @@ impl ServiceMeter {
 			.save_with_executor(&mut *tx, &record)
 			.await
 			.map_err(reinhardt::core::exception::Error::from)?;
-		tx.commit().await
+		// A refusal is a decision about bytes already forwarded: they stay.
+		let decision = match self.still_usable(&mut tx).await {
+			Ok(()) => Ok(()),
+			Err(Error::Forbidden) => Err(Error::Forbidden),
+			Err(error) => return Err(error),
+		};
+		tx.commit().await?;
+		Ok(decision)
 	}
 }
 
@@ -507,12 +516,12 @@ impl Meter for ServiceMeter {
 	}
 	async fn charge(&self, direction: Direction, bytes: usize) -> aidash_application::Result<()> {
 		let bytes = i64::try_from(bytes).map_err(|_| aidash_application::Error::Forbidden)?;
-		// The bytes already crossed the gateway, so they are recorded first,
-		// whatever the recheck then decides.
-		self.add_to_record(direction, bytes)
+		// The bytes already crossed the gateway, so they are recorded whatever
+		// the recheck decides.
+		self.record_and_recheck(direction, bytes)
 			.await
-			.map_err(aidash_application::Error::from)?;
-		self.check_active().await
+			.map_err(aidash_application::Error::from)?
+			.map_err(aidash_application::Error::from)
 	}
 	async fn finish(
 		&self,

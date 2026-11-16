@@ -299,7 +299,6 @@ async fn a_scratch_space_uses_the_newest_version_approved_for_everyone_on_its_no
 		.unwrap();
 	assert_eq!(record.run_id, run);
 	assert_eq!(record.via, "pod");
-	assert_eq!(record.operation_id, None);
 	assert!(record.secret_id.is_some());
 	assert_eq!(record.secret_host.as_deref(), Some("secure.example.test"));
 
@@ -352,6 +351,33 @@ async fn a_scratch_space_uses_the_newest_version_approved_for_everyone_on_its_no
 			available: Vec::new(),
 		}
 	);
+	// A Run's starting instructions list the usable services only, with the
+	// address its code calls (#738).
+	let mut tx = f
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
+	let lines =
+		crate::apps::workspaces::repositories::scratch::usable_lines(&mut tx, "acme", space)
+			.await
+			.unwrap();
+	tx.rollback().await.unwrap();
+	assert_eq!(
+		lines
+			.iter()
+			.map(|line| (line.id.as_str(), line.url.as_str()))
+			.collect::<Vec<_>>(),
+		vec![
+			("images", "http://services.aidash.internal/images/"),
+			(
+				"secured-images",
+				"http://services.aidash.internal/secured-images/"
+			),
+		]
+	);
+	assert_eq!(lines[0].methods, vec!["GET".to_owned()]);
 	// Preparation has no Run and gets no External service.
 	assert!(matches!(
 		services

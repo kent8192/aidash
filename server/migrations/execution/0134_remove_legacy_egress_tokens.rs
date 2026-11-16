@@ -33,6 +33,25 @@ pub(super) fn migration() -> Migration {
 			column: "session_id".into(),
 			old_definition: Some(ColumnDefinition::new("session_id", FieldType::Uuid)),
 		})
+		// Only the removed operation route wrote an operation; a Scratch Space
+		// request names its Run alone, so Node purge follows the Run.
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "egress_requests".into(),
+			constraint: Constraint::ForeignKey {
+				name: "egress_requests_operation_fkey".into(),
+				columns: vec!["tenant".into(), "operation_id".into()],
+				referenced_table: "core_operations".into(),
+				referenced_columns: vec!["tenant".into(), "id".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::DropColumn {
+			table: "egress_requests".into(),
+			column: "operation_id".into(),
+			old_definition: Some(ColumnDefinition::new("operation_id", FieldType::Uuid)),
+		})
 		.add_operation(Operation::DropColumn {
 			table: "core_live_previews".into(),
 			column: "egress_expires_at".into(),

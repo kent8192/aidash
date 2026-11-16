@@ -696,13 +696,21 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.await,
 		0
 	);
-	assert_eq!(d.count(&format!("SELECT count(*) FROM egress_requests WHERE operation_id='{sibling_operation}' AND run_id='{target_run}'")).await,1);
+	// An Egress request record follows the Run that made it (#738), whichever
+	// Node's Workspace that Run worked in.
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM egress_requests WHERE operation_id='{target_operation}'"
+			"SELECT count(*) FROM egress_requests WHERE run_id='{target_run}'"
 		))
 		.await,
 		0
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM egress_requests WHERE run_id='{sibling_run}'"
+		))
+		.await,
+		1
 	);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM authorization_execution e JOIN authorization_run_reads r USING(run_id) WHERE e.run_id='{sibling_run}' AND e.tenant='{tenant}'")).await,1);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM authorization_task_origins WHERE task_id='{descendant}' AND source_run_id='{sibling_run}'")).await,1);
@@ -1711,7 +1719,7 @@ async fn cross_node_execution_evidence(
 		sqlx::query("INSERT INTO authorization_run_reads(run_id,tenant,workspace_id,resource_kind,resource_id) VALUES ($1,$2,$3,'task',$4)").bind(run).bind(tenant).bind(workspace).bind(task).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,$2,id,1,true,generation FROM core_areas WHERE tenant=$2 AND workspace_id=$3").bind(run).bind(tenant).bind(workspace).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO core_operations (id,tenant,area_id,run_id,credential_id,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,$2,id,$3,$4,$5,$1::text,'fixture','shell','uncertain',epoch,generation,1,1,'[]','{}','{\"termination_confirmed\":true,\"runner_acknowledged\":true}','fixture-runner' FROM core_areas WHERE tenant=$2 AND workspace_id=$6").bind(operation).bind(tenant).bind(run).bind(credential).bind(subject).bind(workspace).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO egress_requests (id,tenant,run_id,operation_id,via,service,method,path,query_digest,status,sent_bytes,received_bytes,duration_ms,created_at) VALUES ($1,$2,$3,$4,'operation','fixture','GET','/','digest',200,1,1,1,clock_timestamp())").bind(Uuid::new_v4()).bind(tenant).bind(run).bind(operation).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO egress_requests (id,tenant,run_id,via,service,method,path,query_digest,status,sent_bytes,received_bytes,duration_ms,created_at) VALUES ($1,$2,$3,'pod','fixture','GET','/','digest',200,1,1,1,clock_timestamp())").bind(Uuid::new_v4()).bind(tenant).bind(run).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		result.push((task, run, operation));
 	}
 	let descendant = Uuid::new_v4();

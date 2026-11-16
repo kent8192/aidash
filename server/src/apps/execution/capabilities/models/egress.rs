@@ -14,9 +14,6 @@ pub struct RequestRecord {
 	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
-	/// Only a record of the removed operation route has one (#738).
-	#[field(null = true)]
-	pub operation_id: Option<Uuid>,
 	#[field(field_type = "text")]
 	pub service: String,
 	#[field(field_type = "text")]

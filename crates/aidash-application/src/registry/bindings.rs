@@ -223,6 +223,13 @@ pub async fn resolve(
 			exposure: _,
 		} = normalized.binding;
 		let origin = normalized.origin;
+		// External services are made available to a Scratch Space, not bound
+		// by an Agent (#738). A registered version that still carries such a
+		// Binding resolves without it: its definition is not loaded, approved
+		// or pinned, and the Run gains nothing from it.
+		if kind == BindingKind::ExternalService {
+			continue;
+		}
 		target.validate()?;
 		let entry = if let Some(entry) = definitions.get(&target) {
 			entry.clone()
@@ -417,7 +424,6 @@ pub async fn resolve(
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
 				BindingKind::Decider => "decider",
-				BindingKind::ExternalService => "external_service",
 				_ => unreachable!(),
 			};
 			if entry.kind != expected {
@@ -446,11 +452,7 @@ pub async fn resolve(
 				}
 				source_skill_support |= descriptor.requires_skill_support();
 			}
-			if kind == BindingKind::ExternalService {
-				aidash_domain::egress::definition(&entry)?;
-			} else {
-				catalog.source(&entry).await?;
-			}
+			catalog.source(&entry).await?;
 		}
 		let binding = ResolvedBinding {
 			identity: target.clone(),

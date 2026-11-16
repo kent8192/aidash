@@ -723,13 +723,17 @@ impl ScratchServices for NativeScratchServices<'_> {
 		for (id, result) in usable {
 			match result {
 				Ok(entry) => {
-					// Whoever adds it must still be able to read the definition.
-					let reference = aidash_domain::registry::EntityRef {
-						id: entry.id.clone(),
-						version: entry.version.clone(),
-					};
-					crate::authorization::catalog::entry(access, &reference, "registry.read")
-						.await?;
+					// Whoever adds it must still be able to read the definition. The
+					// approval was checked on the Space's Node above, so this asks
+					// policy alone rather than the caller's own Node.
+					let resource = crate::authorization::catalog::resource(access, &entry);
+					if !access
+						.decide(&resource, "registry.read")
+						.await
+						.map_err(aidash_application::Error::from)?
+					{
+						return Err(aidash_application::Error::Forbidden);
+					}
 					aidash_domain::egress::definition(&entry)?;
 				}
 				Err(reason) => return Err(refusal(&id, reason)),
