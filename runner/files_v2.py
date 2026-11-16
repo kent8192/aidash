@@ -24,10 +24,16 @@ def parts(path, allow_root=False):
     return components
 
 
-def open_dir(root, components):
+def open_dir(root, components, create=False):
+    """Open a directory below root without following links; `create` makes missing ones (0755)."""
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for component in components:
+            if create:
+                try:
+                    os.mkdir(component, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
             try:
                 child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except OSError as error:
@@ -148,7 +154,7 @@ class FileService:
         self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
         state = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            parent = open_dir(self.root, path[:-1])
+            parent = open_dir(self.root, path[:-1], create=True)
         except BaseException:
             os.close(state)
             raise
@@ -429,7 +435,7 @@ class FileService:
             fcntl.flock(lock, fcntl.LOCK_EX)
             for path, mode, change in edits:
                 components = parts(path)
-                parent = open_dir(self.root, components[:-1])
+                parent = open_dir(self.root, components[:-1], create=mode == 0)
                 opened.append(parent)
                 name = components[-1]
                 try:

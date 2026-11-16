@@ -168,3 +168,20 @@ def test_a_pathological_search_pattern_stops_at_the_time_budget(tmp_path):
     with pytest.raises(ValueError, match='time budget'):
         run_bounded(service, 'search', {'pattern': '(a+)+$', 'regex': True, 'max_results': 1}, seconds=1)
     assert time.monotonic() - started < 5
+
+
+def test_new_files_get_their_missing_parent_directories(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (tmp_path / 'outside').mkdir()
+    (scratch / 'link').symlink_to(tmp_path / 'outside', target_is_directory=True)
+    service = FileService(scratch, tmp_path / 'state')
+    patch = '*** Begin Patch\n*** Add File: src/pkg/main.py\n+print(1)\n*** End Patch\n'
+    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['src/pkg/main.py']}
+    assert (scratch / 'src' / 'pkg' / 'main.py').read_text() == 'print(1)\n'
+    chunk = {'run_id': 'r', 'data': base64.b64encode(b'x').decode(), 'offset': 0, 'final': True}
+    service.write(dict(chunk, path='copies/deep/x'))
+    assert (scratch / 'copies' / 'deep' / 'x').read_bytes() == b'x'
+    with pytest.raises(InvalidPath):
+        service.write(dict(chunk, path='link/new/x'))
+    assert list((tmp_path / 'outside').iterdir()) == []
