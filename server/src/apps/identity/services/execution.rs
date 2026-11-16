@@ -430,6 +430,20 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
+		let mut access = self.access.write().await;
+		// A search leaves a Node that did not answer alone for a while, like the
+		// lists a person reads; the Run's other reads still ask it (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = Self::workspace_search_in(&mut access, store, run, input).await;
+		access.lists = lists;
+		result
+	}
+	async fn workspace_search_in(
+		access: &mut Access,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
 		let image = if input.get("image").is_some_and(|value| !value.is_null()) {
 			let selected: aidash_domain::media::WorkingImageSelection =
 				serde_json::from_value(input["image"].clone())?;
@@ -444,8 +458,7 @@ impl WorkerAuthority {
 		} else {
 			None
 		};
-		let mut access = self.access.write().await;
-		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
+		let mut lease = crate::semantic::service::Lease::Inherited(access);
 		lease.durable();
 		lease.workspace(run.workspace_id, "semantic.search").await?;
 		let reference = run
@@ -1935,11 +1948,13 @@ impl WorkerAuthority {
 		offset: usize,
 		limit: usize,
 	) -> Result<Value> {
-		self.access
-			.write()
-			.await
-			.workspace_observation(workspace, offset, limit)
-			.await
+		let mut access = self.access.write().await;
+		// An observation lists the Workspace, so it leaves a Node that did not
+		// answer alone for a while (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = access.workspace_observation(workspace, offset, limit).await;
+		access.lists = lists;
+		result
 	}
 
 	pub async fn workspace_observation_fitted<F>(
@@ -1952,11 +1967,14 @@ impl WorkerAuthority {
 	where
 		F: FnMut(usize, &Value) -> Result<bool>,
 	{
-		self.access
-			.write()
-			.await
+		let mut access = self.access.write().await;
+		// See `workspace_observation` (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = access
 			.workspace_observation_fitted(workspace, offset, limit, fits)
-			.await
+			.await;
+		access.lists = lists;
+		result
 	}
 
 	pub async fn skill_context(&self, store: &Store, run: &Run) -> Result<String> {
