@@ -801,7 +801,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				Err(error) => Err(error),
 			},
 			Ok(None) => Err(NativeError::Forbidden),
-			Err(error) => Err(error.into()),
+			Err(error) => Err(error),
 		}
 	} else {
 		access.recheck_run_reads(preview.run_id).await.map(|_| ())
