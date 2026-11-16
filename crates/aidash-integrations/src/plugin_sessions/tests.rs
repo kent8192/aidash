@@ -40,6 +40,11 @@ enum Mode {
 	OversizedFinalEvent,
 	TruncatedFinalEvent,
 	RejectCall,
+	/// Every request is refused at the authorization layer: `401`, or a `403` with
+	/// `insufficient_scope` when `scope` is set.
+	RejectCredential {
+		scope: bool,
+	},
 }
 
 struct Seen {
@@ -194,6 +199,24 @@ async fn rpc(
 		params: body["params"].clone(),
 	});
 	let id = body.get("id").cloned();
+	if let Mode::RejectCredential { scope } = *fake.mode.lock().unwrap() {
+		return if scope {
+			(
+				StatusCode::FORBIDDEN,
+				[(
+					"www-authenticate",
+					r#"Bearer error="insufficient_scope", scope="files.write""#,
+				)],
+			)
+				.into_response()
+		} else {
+			(
+				StatusCode::UNAUTHORIZED,
+				[("www-authenticate", r#"Bearer realm="fake""#)],
+			)
+				.into_response()
+		};
+	}
 	let modern = matches!(
 		*fake.mode.lock().unwrap(),
 		Mode::Modern | Mode::UnsupportedRevision
@@ -923,6 +946,60 @@ async fn a_brokered_secret_sends_every_request_to_the_broker_with_its_token_and_
 			seen.method
 		);
 	}
+}
+
+#[rstest::rstest]
+#[case::unauthorized(false)]
+#[case::insufficient_scope(true)]
+#[tokio::test]
+async fn a_server_that_refuses_a_pasted_secret_answers_secret_rejected_not_a_connection(
+	#[case] scope: bool,
+) {
+	let fixture = Fixture::start().await;
+	fixture.fake.set_mode(Mode::RejectCredential { scope });
+	let secret = pasted("wrong", aidash_capability::tenant_secret::Attach::Bearer);
+
+	let listed = fixture
+		.sessions
+		.list(fixture.run, &server("demo"), &fixture.config, Some(&secret))
+		.await;
+	let called = fixture
+		.sessions
+		.call(
+			Uuid::new_v4(),
+			&server("demo"),
+			&fixture.config,
+			"alpha",
+			&digest(&alpha()),
+			false,
+			json!({}),
+			"key-1",
+			Some(&secret),
+		)
+		.await;
+
+	// Listing: a typed failure the Run-start pin reports as `secret_rejected`, not a connection.
+	let error = listed.unwrap_err();
+	assert!(!matches!(error, Error::Connection(_)), "{error:?}");
+	assert!(error.to_string().contains("secret_rejected"), "{error}");
+	// Calling: an ordinary tool failure the model reads; nothing was executed.
+	assert_eq!(called.unwrap()["error"], "secret_rejected");
+	assert_eq!(fixture.fake.count("tools/call"), 0);
+}
+
+#[tokio::test]
+async fn a_refused_oauth_connection_still_reads_as_connection_required() {
+	let fixture = Fixture::start().await;
+	fixture
+		.fake
+		.set_mode(Mode::RejectCredential { scope: false });
+
+	let listed = fixture
+		.sessions
+		.list(fixture.run, &server("demo"), &fixture.config, None)
+		.await;
+
+	assert!(matches!(listed, Err(Error::Connection(_))), "{listed:?}");
 }
 
 #[tokio::test]

@@ -288,7 +288,11 @@ impl ToolTransport for HttpTools {
 					return Err(failure.into_error());
 				}
 				if let Some(error) = auth::challenge(&response, endpoint) {
-					return Err(auth::finish(error));
+					let error = auth::finish(error, secret);
+					return match auth::error_value(&error) {
+						Some(value) => Ok(value),
+						None => Err(error),
+					};
 				}
 				let status = response.status();
 				let unsafe_failure = status.is_server_error()
@@ -383,7 +387,7 @@ impl ToolTransport for HttpTools {
 				}
 				match result {
 					Err(error) => {
-						let error = auth::finish(error);
+						let error = auth::finish(error, secret);
 						match auth::error_value(&error) {
 							Some(value) => Ok(value),
 							None => tool_service_failure(

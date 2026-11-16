@@ -136,6 +136,7 @@ async fn a_server_the_plugin_serves_over_stdio_is_not_listed() {
 	Listed::SecretUnavailable(Some("docs-token")),
 	"secret_unavailable"
 )]
+#[case::secret_rejected(Listed::SecretRejected, "secret_rejected")]
 #[case::leaky(
 	Listed::Leaky("GET https://docs.example.com/mcp?token=hunter2 returned 500: <html>".into()),
 	"unreachable"
@@ -449,6 +450,7 @@ async fn an_attach_time_listing_returns_names_and_the_digests_the_run_start_pin_
 #[case::refused(Listed::Forbidden, "forbidden")]
 #[case::failed(Listed::Failed(ListFailure::Unreachable), "unreachable")]
 #[case::secret(Listed::SecretUnavailable(Some("docs-token")), "secret_unavailable")]
+#[case::rejected(Listed::SecretRejected, "secret_rejected")]
 #[tokio::test]
 async fn an_attach_time_listing_that_fails_says_why_and_lists_nothing(
 	#[case] listed: Listed,

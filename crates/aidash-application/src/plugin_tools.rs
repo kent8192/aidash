@@ -122,7 +122,7 @@ async fn list_one(
 
 /// What one remote server lists for the person attaching or editing its Agent Plugin, so they can
 /// declare Read-only tools (ADR 0073, amended 2026-11-16). `auth` is that person's OAuth
-/// Connection or pasted secret; the caller resolves it. The listing uses its own session key and
+/// Connection or personal secret; the caller resolves it and never passes a shared one. The listing uses its own session key and
 /// ends it before returning, so it never becomes a Run's session.
 pub async fn list_for_attach(
 	sessions: &dyn PluginSessions,
@@ -145,7 +145,12 @@ pub struct AttachTool {
 }
 
 /// The answer of an attach-time listing. When it is `unavailable`, Read-only cannot be declared
-/// for the server; `reason` is a typed cause code, never a URL or a response body.
+/// for the server; `reason` is a typed cause code, never a URL or a response body:
+/// `connection_required` or `connection_scope_insufficient` (no usable OAuth Connection),
+/// `secret_unavailable` (the person has no personal secret of the named secret's name; the
+/// shared Tenant Secret is never used here), `secret_rejected` (the server refused the person's
+/// secret), or a transport cause such as `unreachable`, `initialize_failed`, `invalid_response`,
+/// `forbidden` or `timeout`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum AttachListing {
@@ -303,6 +308,13 @@ fn cause(error: &Error) -> String {
 				|| crate::tenant_secrets::personal_error_value(error).is_some() =>
 		{
 			aidash_domain::tenant_secrets::UNAVAILABLE.into()
+		}
+		// The server refused the pasted secret: no connection would change that.
+		Error::Invalid(message)
+			if serde_json::from_str::<serde_json::Value>(message)
+				.is_ok_and(|value| value["error"] == aidash_domain::tenant_secrets::REJECTED) =>
+		{
+			aidash_domain::tenant_secrets::REJECTED.into()
 		}
 		Error::Invalid(_) => "invalid_response".into(),
 		Error::Port(source) => source

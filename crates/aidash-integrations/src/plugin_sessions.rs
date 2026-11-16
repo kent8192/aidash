@@ -739,9 +739,9 @@ impl PluginSessions for McpPluginSessions {
 			return self
 				.list_once(run, server, config, auth)
 				.await
-				.map_err(crate::tools::auth::finish);
+				.map_err(|error| crate::tools::auth::finish(error, auth));
 		}
-		result.map_err(crate::tools::auth::finish)
+		result.map_err(|error| crate::tools::auth::finish(error, auth))
 	}
 	async fn call(
 		&self,
@@ -831,7 +831,7 @@ impl PluginSessions for McpPluginSessions {
 		}
 		match result {
 			Err(error) => {
-				let error = crate::tools::auth::finish(error);
+				let error = crate::tools::auth::finish(error, auth);
 				crate::tools::auth::error_value(&error)
 					.map(ToolRound::Complete)
 					.ok_or(error)

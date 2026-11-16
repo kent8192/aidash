@@ -381,6 +381,8 @@ pub(crate) enum Listed {
 	/// The server's named secret could not be resolved; with `Some(name)` the definition
 	/// required the person's own secret of that name.
 	SecretUnavailable(Option<&'static str>),
+	/// The server refused the pasted secret the listing carried.
+	SecretRejected,
 	Hang,
 }
 
@@ -476,6 +478,10 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 					Listed::Leaky(text) => Err(Error::External(text.clone())),
 					Listed::SecretUnavailable(None) => Err(Error::Invalid(
 						aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+					)),
+					Listed::SecretRejected => Err(Error::Invalid(
+						serde_json::json!({"error": aidash_domain::tenant_secrets::REJECTED})
+							.to_string(),
 					)),
 					Listed::SecretUnavailable(Some(name)) => {
 						Err(crate::tenant_secrets::personal_required(name))

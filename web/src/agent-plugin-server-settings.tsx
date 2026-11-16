@@ -22,6 +22,7 @@ const reasonLabels: Record<string, string> = {
   connection_required: "agentPluginListConnect",
   connection_scope_insufficient: "agentPluginListConnect",
   secret_unavailable: "agentPluginListSecret",
+  secret_rejected: "agentPluginListRejected",
 };
 
 /**
