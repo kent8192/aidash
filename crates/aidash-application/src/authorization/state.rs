@@ -112,7 +112,6 @@ pub async fn state(
 		}
 	}
 	let mut human_requests = Vec::new();
-	let mut visible_runs = HashMap::new();
 	let candidates = scope.pending_human_candidates(node).await?;
 	cursors.human_requests = cursor(&candidates, |row| row.id);
 	scope
@@ -124,13 +123,23 @@ pub async fn state(
 		)
 		.await?;
 	let had_humans = !candidates.is_empty();
-	for mut row in candidates {
-		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
-			continue;
+	let mut waiting = Vec::new();
+	for row in candidates {
+		if workspace_ok(scope, &mut cache, row.workspace_id).await? {
+			waiting.push(row);
 		}
-		if let std::collections::hash_map::Entry::Vacant(entry) = visible_runs.entry(row.run_id) {
-			entry.insert(scope.visible_run(row.run_id).await?);
-		}
+	}
+	// The waiting Runs are decided together, so the reads stay fixed however
+	// many Runs wait on a person (#849 decision 3).
+	let mut run_ids: Vec<_> = waiting.iter().map(|row| row.run_id).collect();
+	run_ids.sort_unstable();
+	run_ids.dedup();
+	let visible_runs = if run_ids.is_empty() {
+		HashMap::new()
+	} else {
+		scope.visible_runs(&run_ids).await?
+	};
+	for mut row in waiting {
 		let Some(run) = visible_runs.get(&row.run_id).and_then(Option::as_ref) else {
 			continue;
 		};

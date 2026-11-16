@@ -959,27 +959,32 @@ impl Access {
 
 	/// State is the only caller; policies are evaluated by the usual readers.
 	pub(crate) async fn prepare_state_runs(&mut self, runs: &[domain::RunMetadata]) -> Result<()> {
-		self.prepare_state_runs_inner(runs, None).await
+		self.prepare_state_runs_inner(runs, &[]).await
 	}
 
-	pub(crate) async fn prepare_state_inspection(
+	/// Preload Runs checked together under one authority, such as the Runs of a
+	/// Workspace's pending Human Requests: one preload for all of them, not one each.
+	pub(crate) async fn prepare_state_inspections(
 		&mut self,
-		run: &domain::RunInspection,
+		runs: &[domain::RunInspection],
 	) -> Result<()> {
-		let snapshot = run
-			.context
-			.as_ref()
-			.and_then(|context| context.binding_snapshot.as_deref())
+		let snapshots = runs
+			.iter()
+			.filter_map(|run| {
+				run.context
+					.as_ref()
+					.and_then(|context| context.binding_snapshot.as_deref())
+			})
 			.map(serde_json::to_value)
-			.transpose()?;
-		self.prepare_state_runs_inner(std::slice::from_ref(&run.metadata), snapshot.as_ref())
-			.await
+			.collect::<std::result::Result<Vec<_>, _>>()?;
+		let metadata: Vec<_> = runs.iter().map(|run| run.metadata.clone()).collect();
+		self.prepare_state_runs_inner(&metadata, &snapshots).await
 	}
 
 	async fn prepare_state_runs_inner(
 		&mut self,
 		runs: &[domain::RunMetadata],
-		known_snapshot: Option<&Value>,
+		known_snapshots: &[Value],
 	) -> Result<()> {
 		if runs.is_empty() {
 			self.begin_state_registry_preload();
@@ -995,7 +1000,7 @@ impl Access {
 		)? {
 			early_definitions.insert((entry.id, entry.version));
 		}
-		if let Some(snapshot) = known_snapshot {
+		for snapshot in known_snapshots {
 			snapshot_definitions(snapshot, &self.node_id, &mut early_definitions);
 		}
 		// These are independent row reads under one authority. UNION ALL keeps the

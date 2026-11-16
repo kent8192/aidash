@@ -239,3 +239,108 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 	}
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn state_statement_count_does_not_grow_with_runs_waiting_on_a_person(
+	#[future(awt)]
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings { actor_burst: 100_000, ..Default::default() })]
+	fixture: common::ApplicationFixture,
+) {
+	use uuid::Uuid;
+
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, first_task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let db = f.store.pool.fixture_driver();
+	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+		.bind(first_task)
+		.fetch_one(db)
+		.await
+		.unwrap();
+	let mut few = 0;
+	for index in 0..30 {
+		let task = if index == 0 {
+			first_task
+		} else {
+			let (status, task) = common::request(
+				&app,
+				&token,
+				"POST",
+				&format!("/api/workspaces/{workspace}/tasks"),
+				json!({"title":"Measured task", "description":"Create a run"}),
+			)
+			.await;
+			assert_eq!(status, 200, "{task}");
+			task["id"].as_str().unwrap().parse().unwrap()
+		};
+		let (status, body) = common::request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		let run: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+			.bind(task)
+			.fetch_one(db)
+			.await
+			.unwrap();
+		// Every Run waits on its own pending Human Request.
+		let request = Uuid::new_v4();
+		sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', $1::text, now())")
+			.bind(request).bind(workspace).bind(run).execute(db).await.unwrap();
+		let state =
+			aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
+				request_id: request,
+				answer_by: None,
+				resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
+			}));
+		let pending = aidash_domain::run_state::encode(&state, &Default::default()).unwrap();
+		sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1 WHERE id = $2")
+			.bind(pending)
+			.bind(run)
+			.execute(db)
+			.await
+			.unwrap();
+		if index == 2 || index == 29 {
+			let (status, body) =
+				common::request(&app, &token, "GET", "/api/state", Value::Null).await;
+			assert_eq!(status, 200, "{body}");
+			let ((status, body), statements) = statements::recorded(common::request(
+				&app,
+				&token,
+				"GET",
+				"/api/state",
+				Value::Null,
+			))
+			.await;
+			assert_eq!(status, 200, "{body}");
+			assert_eq!(
+				body["human_requests"].as_array().unwrap().len(),
+				index + 1,
+				"{body}"
+			);
+			assert!(statements.len() <= 100, "{} statements", statements.len());
+			println!(
+				"WAITING_STATE_STATEMENTS requests={} count={}",
+				index + 1,
+				statements.len()
+			);
+			if index == 2 {
+				few = statements.len();
+			} else {
+				assert_eq!(
+					few,
+					statements.len(),
+					"few={few}, many={}",
+					statements.len()
+				);
+			}
+		}
+	}
+	common::cleanup(f, &url, &schema).await;
+}

@@ -45,6 +45,21 @@ pub trait WorkspaceStateScope: Send {
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>>;
+	/// [`Self::visible_run`] for each of `ids`, decided together where the adapter
+	/// can, so the reads do not grow with the number of Runs.
+	async fn visible_runs(
+		&mut self,
+		ids: &[Uuid],
+	) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+		let mut runs = std::collections::HashMap::with_capacity(ids.len());
+		for id in ids {
+			if !runs.contains_key(id) {
+				let run = self.visible_run(*id).await?;
+				runs.insert(*id, run);
+			}
+		}
+		Ok(runs)
+	}
 	async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource>;
 	async fn conversation_resource(&mut self, conversation: &Conversation) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;

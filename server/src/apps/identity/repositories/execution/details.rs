@@ -80,6 +80,25 @@ pub(crate) async fn visible_within_state(
 	visible_within_mode(federation, access, run, true).await
 }
 
+/// [`visible_within_state`] for many Runs at once, each `None` where it is
+/// `Forbidden`. Each Workspace's Runs are read and prepared together.
+pub(crate) async fn visible_many_within_state(
+	federation: &Federation,
+	access: &mut Access,
+	runs: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+	let context = access.context.clone();
+	let mut scope = Scope {
+		federation,
+		access: Held::Borrowed(&mut *access),
+		state_preload: true,
+	};
+	let result =
+		aidash_application::authorization::run_details::visible_many_in(&mut scope, runs).await;
+	scope.access.get().context = context;
+	result
+}
+
 async fn visible_within_mode(
 	federation: &Federation,
 	access: &mut Access,
@@ -176,6 +195,23 @@ impl RunDetailsScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn runs(&mut self, ids: &[Uuid]) -> Result<Vec<RawRun>> {
+		if ids.is_empty() {
+			return Ok(Vec::new());
+		}
+		let query = Query::select()
+			.column(Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
+			.to_string(PostgresQueryBuilder);
+		let result: NativeResult<Vec<RawRun>> = async {
+			Ok(aidash_server::database::query_as(&query)
+				.fetch_all(&mut **self.access.get().tx)
+				.await?)
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.get().workspace(id).await.map_err(Into::into)
 	}
@@ -186,9 +222,9 @@ impl RunDetailsScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn prepare_visible(&mut self, run: &RunInspection) -> Result<()> {
+	async fn prepare_visible(&mut self, runs: &[RunInspection]) -> Result<()> {
 		if self.state_preload {
-			self.access.get().prepare_state_inspection(run).await?;
+			self.access.get().prepare_state_inspections(runs).await?;
 		}
 		Ok(())
 	}

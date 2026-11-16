@@ -23,10 +23,22 @@ pub trait RunDetailsScope: Send {
 	fn node_id(&self) -> &str;
 	fn set_context(&mut self, context: Value);
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>>;
+	/// The existing Runs among `ids`, in no particular order. One read where the
+	/// adapter can batch it.
+	async fn runs(&mut self, ids: &[Uuid]) -> Result<Vec<RawRun>> {
+		let mut runs = Vec::with_capacity(ids.len());
+		for id in ids {
+			if let Some(run) = self.run(*id).await? {
+				runs.push(run);
+			}
+		}
+		Ok(runs)
+	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	/// State can preload under the exact authority used by this visibility check.
-	async fn prepare_visible(&mut self, _run: &RunInspection) -> Result<()> {
+	/// State can preload under the exact authority used by these visibility checks.
+	/// Every Run given here is checked under that same authority.
+	async fn prepare_visible(&mut self, _runs: &[RunInspection]) -> Result<()> {
 		Ok(())
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool>;

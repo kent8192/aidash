@@ -222,6 +222,17 @@ impl WorkspaceStateScope for StateReads<'_> {
 			Err(error) => Err(error),
 		}
 	}
+	async fn visible_runs(
+		&mut self,
+		ids: &[Uuid],
+	) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+		crate::apps::identity::repositories::execution::details::visible_many_within_state(
+			self.federation,
+			self.access,
+			ids,
+		)
+		.await
+	}
 	async fn human_resource(&mut self, row: &HumanRequest) -> Result<Resource> {
 		self.access.human_resource(row).await.map_err(Into::into)
 	}
