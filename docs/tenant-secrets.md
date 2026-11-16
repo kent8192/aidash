@@ -331,7 +331,10 @@ There are no built-in package index External services and no index rewriting
 
 The server connects the scope-authenticated forward proxy to Scratch Space
 credentials and durable scope policy. The operation-token gateway described
-above also remains available. The Pod needs
+above also remains available, but no Execution Pod process is issued an
+operation token, and the scoped route below refuses Run credentials, so until
+#738 lands processes in the Execution Pod cannot reach External services (#952
+waits on #738). The Pod needs
 `HTTPS_PROXY` and `HTTP_PROXY` set to the internal Egress gateway. The gateway
 accepts HTTP Basic proxy authentication with the scope credential as the password
 (for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;

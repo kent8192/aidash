@@ -19,4 +19,5 @@ Code in the Pod runs as root and can read another process's environment, so it c
 - A preparation Pod that resolves a stdio MCP server's packages (ADR 0073) carries a credential for its preparation operation instead of a Run.
 - A Run delegated to another Node runs in that Node's Scratch Space under a Run of that Node, so its credential and mark are local there. A Live preview whose Run has no local grant keeps the rule of ADR 0116: unconfirmed checks stop it after the limit.
 - Usage stays charged per Scratch Space (ADR 0111); the Run on a record is not a billing split.
+- Until #738 lands, processes in the Execution Pod cannot reach External services: no `/v1` operation token is issued to them, and the scoped `/v2/services/...` route refuses their Run credential. They reach only the Scratch Space's allowed hosts, and #952 waits on #738.
 - Amends ADR 0111 and ADR 0070.
