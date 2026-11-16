@@ -141,6 +141,7 @@ pub(crate) fn request_body(
 		)));
 	}
 	let mut body = input::encoded_input_body(request)?;
+	drop_unreplayable_reasoning(&mut body);
 	body["model"] = json!(config.model_id);
 	body["instructions"] = json!(format!(
 		"{}{}",
@@ -150,10 +151,32 @@ pub(crate) fn request_body(
 	// Plan usage requires both; neither is configurable (ADR 0007).
 	body["store"] = json!(false);
 	body["stream"] = json!(true);
+	// With `store: false` the provider keeps no reasoning item, so a replayed
+	// item is usable only with its encrypted content, which the provider
+	// returns only when asked (#942). A route with passback off replays none.
+	if config.reasoning_passback() {
+		body["include"] = json!(["reasoning.encrypted_content"]);
+	}
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
 	Ok(body)
+}
+
+/// Remove replayed `reasoning` items that carry no encrypted content. Under
+/// `store: false` such an item only names an ID the provider never stored, so
+/// resending it would be rejected; it is left out of every request alike, so
+/// the cached prefix stays stable. Other Responses routes resend items as
+/// received (#942).
+fn drop_unreplayable_reasoning(body: &mut Value) {
+	if let Some(items) = body["input"].as_array_mut() {
+		items.retain(|item| {
+			item["type"] != "reasoning"
+				|| item["encrypted_content"]
+					.as_str()
+					.is_some_and(|content| !content.is_empty())
+		});
+	}
 }
 
 /// OpenRouter's Responses body. It uses flat function tools and no namespace
