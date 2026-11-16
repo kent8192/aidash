@@ -767,19 +767,19 @@ operations (#752). A record holds them once its outcome settles, so a record tha
 never settled and a record older than this migration leave them null. The typed
 operations update the ORM snapshot, so no state-only checkpoint is needed.
 
-`execution/0123_host_connection_limits` (after
-`execution/0122_invocation_refused_state`) adds the nullable `error` and
+`execution/0129_host_connection_limits` (after
+`execution/0128_remove_generated_summary_state`) adds the nullable `error` and
 `wait_ms` of `egress_scope_connections` and drops `suspended`,
 `window_started_at` and `connections_in_window` from `egress_scope_state`, with
 typed operations (#845). Nothing suspends a scope any more, so a suspended scope
 opens again. A Host connection that held its limits records the code its client
 received and its wait. Rows older than the migration leave the new columns
 null. The reverse restores the state columns with their defaults, so every scope
-comes back unsuspended. `execution/0124_scope_refusals` is database-only and
+comes back unsuspended. `execution/0130_scope_refusals` is database-only and
 creates `egress_scope_refusals`, the per-minute counts of connections that ended
 before they held a limit, with its index and the Tenant isolation policy that
 `0110` gives the other scope tables; Reinhardt migrations cannot express row
-policies. `execution/0125_scope_refusals_state` is its state-only checkpoint, as
+policies. `execution/0131_scope_refusals_state` is its state-only checkpoint, as
 `0111` is for `0109`.
 
 ## Home ledger recovery eligibility (#434)
@@ -805,6 +805,9 @@ the single Knowledge head, and no schema or model state is overwritten.
 `registry/0062_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0098_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
 
 `registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
+
+`registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
+`registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
@@ -907,6 +910,13 @@ Each is an empty state-only migration that joins its listed histories. The
 renumbered Node chains also follow the provider and semantic image histories,
 leaving one leaf each for Identity, Execution and Knowledge.
 
+`knowledge/0051_recorded_memory` permits automatically recorded facts and
+observations without marking them as awaiting human verification.
+`knowledge/0052_memory_sharing_scope` stores the Tenant Administrator's
+revisioned Workspace or Tenant-Agent choice and enforces Tenant row isolation.
+`knowledge/0053_memory_journal_proofs` retains Research identities from
+admitted Journal ranges independently of their content, with Tenant isolation.
+
 `execution/0108_node_preview_merge` joins `execution/0107_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
 ending in `execution/0083_harness_contract_state`.
@@ -932,3 +942,17 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`registry/0065_agent_default_removals` admits `connection_request` as a removable default and rejects the removed `compaction` default. Its SQL replaces a PostgreSQL validation function that Reinhardt cannot express; reversal refuses definitions or Runs that rely on the new removal.
+
+`execution/0123_remove_compaction_decision_storage` removes the compaction-only decision state and outcome tables; `0124_remove_compaction_decision_storage_state` updates the model state. Decision Attempts and approval Evidence remain.
+
+`execution/0125_remove_generated_compaction` removes generated-chain Decider usage and its obsolete counters; `0126_remove_generated_compaction_state` updates the model state. Its SQL drops the usage table's statement trigger and row policy, which Reinhardt migrations cannot express, and drops the table itself because a typed `DropTable` would reverse the historical composite primary key as two separate keys; the reverse SQL recreates the original key.
+
+`execution/0127_remove_generated_summary` removes the generated Summary Stage allowance, its counters and the `generation_summary_usage` journal; `0128_remove_generated_summary_state` updates the model state. Its raw SQL has the same two reasons as 0125: the statement trigger and row policy have no typed operation, and the table drop must reverse to the original composite primary key. The Embedding allowance remains.
+
+`knowledge/0054_memory_constraint_state` keeps database-only memory checks and Tenant foreign keys out of model migration state while retaining the constraints in PostgreSQL.
+
+`registry/0066_native_context_recovery` replaces the Agent bindings validation function so a `context_policy` may carry the native recovery fields and a `summary` object that names no model of its own (it is validated with the Agent's model). Its SQL keeps the previous function body and delegates to it; PostgreSQL function bodies are DDL that Reinhardt migrations cannot express. Reversal refuses while definitions use the new policy fields.
+
+`registry/0068_reject_new_compaction_deciders` adds a `NOT VALID` check that preserves existing compaction Decider rows while rejecting new or updated ones. PostgreSQL `NOT VALID` constraint DDL is expressed as raw SQL because Reinhardt does not provide it.

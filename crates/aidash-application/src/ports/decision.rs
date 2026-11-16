@@ -1,6 +1,6 @@
 //! Fail-closed boundaries for decision authority, physical requests and durable evidence.
 use crate::Result;
-use aidash_domain::{context::Context, decision::*};
+use aidash_domain::decision::*;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -35,9 +35,6 @@ pub trait DecisionAuthority: Send + Sync {
 		decider: &DeciderPin,
 		sources: &[SourcePin],
 	) -> Result<Approval>;
-	/// Requires Run access, decision.evidence.read and current authority for every source.
-	/// Full state additionally requires decision.state.read. No execution is authorized.
-	async fn read(&self, evidence: &Evidence, full_state: bool) -> Result<()>;
 }
 
 /// The transport must send precisely these bytes, with no automatic retry/redirect.
@@ -156,14 +153,6 @@ pub enum Reservation {
 	Recovered(RecoveredAttempt),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RetainedState {
-	pub id: Uuid,
-	pub digest: String,
-	pub expires_at: DateTime<Utc>,
-	pub state: Value,
-}
-
 #[async_trait]
 pub trait DecisionJournal: Send + Sync {
 	/// The persistence clock, also used to discard state that expired during dispatch.
@@ -218,26 +207,6 @@ pub trait DecisionJournal: Send + Sync {
 		}
 		self.finish_attempt(permit, answers, status).await
 	}
-	/// Rechecks lease, input/run revisions and exact pins (including the Node Provider
-	/// implementation) inside the commit boundary.
-	/// Applying context or retaining state also requires current source/invocation
-	/// authority. Revocation or invalid approval must still permit a fenced rejection
-	/// without context or full state, preserving dispatched attempts for recovery.
-	/// Applied context, evidence and optional state commit atomically; errors must
-	/// leave the authoritative Run unchanged.
-	/// Shadow/rejected records use None and must never replace execution context.
-	/// At the atomic write, compare state.expires_at with the persistence clock. If
-	/// elapsed, omit the state bytes and persist an Expired reference in the evidence.
-	/// Preserve the immutable state_retention witness through commit/cleanup; never
-	/// replace an Applied/Shadow decision with a new outcome or retention witness.
-	/// Retrying a rejected decision appends a snapshot, preserving earlier evidence
-	/// and all existing charged attempts; a rejection never resets owner allowances.
-	async fn commit(
-		&self,
-		evidence: &Evidence,
-		context: Option<&Context>,
-		state: Option<&RetainedState>,
-	) -> Result<()>;
 	/// Records one approval decision (ADR 0077) after it replays: the evidence is
 	/// valid, its Boundary names the current lease and the verdict follows from
 	/// its answers. An approval decision changes no context and retains no state.
@@ -248,9 +217,6 @@ pub trait DecisionJournal: Send + Sync {
 	/// without a verdict. Recovery of a committed approval decision must keep
 	/// returning its charged attempts, so judging again reuses their answers.
 	async fn commit_approval(&self, evidence: &ApprovalEvidence) -> Result<()>;
-	/// Retention cleanup deletes state bytes and atomically leaves an expired marker.
-	async fn expire_states(&self, now: DateTime<Utc>) -> Result<usize>;
-	async fn append_outcome(&self, outcome: &OutcomeLink) -> Result<()>;
 }
 
 /// The Decider of one hook bound to one Run and the Node adapters that serve its

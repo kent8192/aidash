@@ -36,6 +36,11 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 		.post("/api/registry", &invalid, "json")
 		.await
 		.unwrap();
+	let removed_hook = json!({"id":"old-compaction","version":"1.0.0","kind":"decider","name":{"en":"Old compaction"},"description":{"en":"Removed hook"},"schema":{},"config":{"hook":"compaction","answer_type":"noul","description":"old","provider_credential":"openrouter","routes":[],"builder":"aidash.compaction/3","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
+	let removed_hook_response = registrar
+		.post("/api/registry", &removed_hook, "json")
+		.await
+		.unwrap();
 	let created = registrar
 		.post("/api/registry", &skill, "json")
 		.await
@@ -48,6 +53,7 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 	let excluded = registrar.get("/api/registry?kind=agent").await.unwrap();
 	// Assert
 	assert_json(rejected, 400);
+	assert_json(removed_hook_response, 400);
 	assert_eq!(assert_json(created, 200)["id"], skill["id"]);
 	assert_eq!(assert_json(found, 200)["config"], skill["config"]);
 	assert_eq!(assert_json(excluded, 200), json!([]));

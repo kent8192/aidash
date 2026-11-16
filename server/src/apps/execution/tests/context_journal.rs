@@ -4,6 +4,7 @@
 mod common;
 
 use aidash_application::ports::execution::ExecutionStore;
+use aidash_application::ports::journal_export::JournalSource;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::context::{
 	ContextEvent, HistoryEntry, JournalCursor,
@@ -215,6 +216,18 @@ async fn saves_journal_original_events_with_their_origin(
 			},
 		]
 	);
+	let exported = f
+		.store
+		.export(&TEST_FIXTURE, run.id, run.id, Some((2, 3)))
+		.await
+		.unwrap();
+	assert_eq!(
+		exported
+			.iter()
+			.map(|entry| (entry.seq, entry.text.as_deref()))
+			.collect::<Vec<_>>(),
+		vec![(2, Some("observation 2")), (3, Some("observation 3"))]
+	);
 	assert!(
 		ExecutionStore::context_journal(&f.store.for_run(TEST_FIXTURE), run.id, 5, 9)
 			.await
@@ -223,6 +236,87 @@ async fn saves_journal_original_events_with_their_origin(
 	);
 	f.store
 		.release_lease(&TEST_FIXTURE, run.id, worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn export_tracks_cross_run_reads_and_refuses_them_without_run_read(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (reader, reader_worker) = leased(&f, &app, &token).await;
+	let (target, target_worker) = leased(&f, &app, &token).await;
+	let (other, other_worker) = leased(&f, &app, &token).await;
+	let (denied_reader, denied_worker) = leased(&f, &app, &token).await;
+	// A model may send its Task ID as the optional Journal Run ID. The
+	// reader exists, but the named target does not; this is a correctable
+	// input error, not a missing reader or a lost execution lease.
+	let tenant = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let missing_target = f
+		.store
+		.export(&tenant, reader.id, reader.task_id, None)
+		.await;
+	assert!(
+		matches!(missing_target, Err(aidash_application::Error::Invalid(_))),
+		"{missing_target:?}"
+	);
+	let missing_reader = f
+		.store
+		.export(&tenant, Uuid::new_v4(), target.id, None)
+		.await;
+	assert!(
+		matches!(missing_reader, Err(aidash_application::Error::NotFound(_))),
+		"{missing_reader:?}"
+	);
+	f.store
+		.export(&TEST_FIXTURE, reader.id, target.id, None)
+		.await
+		.unwrap();
+	let tracked: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_run_reads WHERE run_id=$1 AND resource_kind='run' AND resource_id=$2")
+		.bind(reader.id).bind(target.id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(tracked, 1);
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-journal-run-read","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"]}}));
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let result = f
+		.store
+		.export(&TEST_FIXTURE, denied_reader.id, other.id, None)
+		.await;
+	assert!(
+		matches!(result, Err(aidash_application::Error::Forbidden)),
+		"{result:?}"
+	);
+	let count: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_run_reads WHERE run_id=$1 AND resource_kind='run' AND resource_id=$2")
+		.bind(denied_reader.id).bind(other.id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(count, 0);
+	f.store
+		.release_lease(&TEST_FIXTURE, reader.id, reader_worker)
+		.await
+		.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, target.id, target_worker)
+		.await
+		.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, other.id, other_worker)
+		.await
+		.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, denied_reader.id, denied_worker)
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;
@@ -325,7 +419,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			Uuid::new_v4(),
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))
@@ -342,7 +435,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			beyond.id,
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))
@@ -393,7 +485,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			insufficient.id,
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))
@@ -409,7 +500,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 		worker,
 		accepted.id,
 		&adopted(),
-		None,
 	)
 	.await
 	.unwrap();
@@ -449,7 +539,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			accepted.id,
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))

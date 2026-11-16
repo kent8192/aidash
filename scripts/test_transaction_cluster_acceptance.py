@@ -15,7 +15,6 @@ from urllib.parse import urlsplit
 
 from native_memory_cluster_acceptance import NativeMemory
 from remote_memory_cluster_acceptance import RemoteMemory
-from golden_path import COMPACTION_DECIDER
 from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, MEMBER, PEER_SUBJECT, Cluster, main, transaction_cases
 
 
@@ -156,12 +155,10 @@ class MemoryNodeContractTests(unittest.TestCase):
                     call(0, "home-tenant", "alice"), call(0, "home-tenant", PEER_SUBJECT),
                     call(1, "worker-tenant", "alice"), call(1, "worker-tenant", PEER_SUBJECT)])
                 self.assertEqual(fixture.tokens, ["alice-token", "alice-token"])
-                # Every Agent depends on the compaction Decider, which alice approves (#832).
+                # Compaction Deciders were removed (#850), so no Agent waits on a Decider approval.
                 for node in range(2):
-                    self.assertIn(call(node, f"/api/authorization/{fixture.tenants[node]}/catalog/approvals", {
-                        "node": fixture.nodes[node]["node"],
-                        "approvals": [{"entry": COMPACTION_DECIDER, "enabled": True, "expected_revision": 0}]}),
-                        fixture.user.call_args_list)
+                    self.assertFalse(any(c.args[1] == f"/api/authorization/{fixture.tenants[node]}/catalog/approvals"
+                                         for c in fixture.user.call_args_list if c.args[0] == node))
                 for node in range(2):
                     policy = next(call for call in fixture.api.call_args_list
                                   if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}") and len(call.args) == 3)

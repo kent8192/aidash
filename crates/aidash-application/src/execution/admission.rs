@@ -16,6 +16,8 @@ pub async fn reserve<R: Send>(
 				attempt,
 				request.inference_digest(),
 				(window + output as usize) as i64,
+				request.response_format.as_ref()
+					== Some(&aidash_domain::context::summary::SummaryContent::response_format()),
 			)
 			.await?;
 		return Ok(Some(reservation));

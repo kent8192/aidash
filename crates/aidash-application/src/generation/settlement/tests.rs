@@ -296,7 +296,6 @@ async fn bounded_accounting_is_atomic_for_active_and_released_quota(
 
 #[rstest]
 #[case(Purpose::Embedding)]
-#[case(Purpose::Compaction)]
 #[case(Purpose::Inference)]
 #[tokio::test]
 async fn abort_preserves_purpose_for_each_atomic_call_refund(

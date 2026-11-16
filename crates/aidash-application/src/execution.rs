@@ -35,6 +35,20 @@ pub struct RunMessagePage {
 	pub has_more: bool,
 }
 
+/// Keep a Subnode member's message explicitly below instruction authority.
+pub fn run_message_value(input: &aidash_domain::run_input::RunInput, value: Value) -> Value {
+	if input.is_data {
+		serde_json::to_value(aidash_domain::projection::native::Envelope::subnode_result(
+			&input.sender,
+			input.seq,
+			value,
+		))
+		.expect("serializable message envelope")
+	} else {
+		value
+	}
+}
+
 pub fn run_message_page(
 	inputs: &[aidash_domain::run_input::RunInput],
 	after_seq: i64,
@@ -53,9 +67,15 @@ pub fn run_message_page(
 		let id = input
 			.message_id
 			.ok_or_else(|| Error::External("run message home delivery is pending".into()))?;
-		let full = json!({"seq":input.seq,"sender":input.sender,"content":input.content});
+		let full = run_message_value(
+			input,
+			json!({"seq":input.seq,"sender":input.sender,"content":input.content}),
+		);
 		let full_size = full.to_string().len();
-		let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
+		let reference = run_message_value(
+			input,
+			json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true}),
+		);
 		let mut reference_only = references_only || input.reference_only;
 		let mut entry = if reference_only {
 			reference.clone()
@@ -513,6 +533,17 @@ pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<Work
 	Ok(WorkspaceReadRange { offset, requested })
 }
 
+pub fn journal_read_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
+	let offset = read_argument(call, "Journal read", "offset")?.unwrap_or(0);
+	let requested = read_argument(call, "Journal read", "max_chars")?.unwrap_or(4000);
+	if requested > 4000 {
+		return Err(Error::Invalid(
+			"Journal read max_chars must not exceed 4000".into(),
+		));
+	}
+	Ok(WorkspaceReadRange { offset, requested })
+}
+
 /// Without `max_chars` the configured read limit bounds the page, so the fitted
 /// size is clamped to the returned content instead.
 pub fn skill_asset_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
@@ -642,13 +673,14 @@ pub fn tool_result_plan(
 	let range = match fitting {
 		ResultFitting::WorkspaceRecord => workspace_read_range(call)?,
 		ResultFitting::SkillText => skill_read_range(call)?,
+		ResultFitting::JournalText => journal_read_range(call)?,
 		ResultFitting::SkillAsset => skill_asset_range(call)?,
 		// A description is recorded whole, so it has no range to narrow.
 		ResultFitting::CapabilityDescription => WorkspaceReadRange {
 			offset: 0,
 			requested: 0,
 		},
-		ResultFitting::CapabilitySearch => WorkspaceReadRange {
+		ResultFitting::CapabilitySearch | ResultFitting::JournalSearch => WorkspaceReadRange {
 			offset: capability_search_offset(call),
 			requested: aidash_domain::exposure::SEARCH_PAGE_SIZE,
 		},
@@ -671,6 +703,8 @@ pub fn result_plan(pending: &ToolCallState, fitting: ResultFitting) -> &Option<R
 		ResultFitting::WorkspaceRecord => &pending.workspace_read_plan,
 		// Skill and capability reads share one prepared slot; a plan matches only its call.
 		ResultFitting::SkillText
+		| ResultFitting::JournalText
+		| ResultFitting::JournalSearch
 		| ResultFitting::SkillAsset
 		| ResultFitting::CapabilityDescription
 		| ResultFitting::CapabilitySearch => &pending.skill_read_plan,
@@ -684,6 +718,8 @@ pub fn result_plan_mut(
 	match fitting {
 		ResultFitting::WorkspaceRecord => &mut pending.workspace_read_plan,
 		ResultFitting::SkillText
+		| ResultFitting::JournalText
+		| ResultFitting::JournalSearch
 		| ResultFitting::SkillAsset
 		| ResultFitting::CapabilityDescription
 		| ResultFitting::CapabilitySearch => &mut pending.skill_read_plan,
@@ -708,6 +744,13 @@ pub fn defer_result(
 		ResultFitting::SkillText => {
 			state.deferred_skill_read = Some(deferred_skill_read(call));
 			"run.skill_read_deferred"
+		}
+		ResultFitting::JournalText | ResultFitting::JournalSearch => {
+			state.deferred_skill_read = Some(Box::new(DeferredRead {
+				message: "Retry this Journal read after reducing the retained context; its result envelope did not fit.".into(),
+				call: call.clone(),
+			}));
+			"run.journal_read_deferred"
 		}
 		ResultFitting::SkillAsset => {
 			state.deferred_skill_read = Some(deferred_skill_asset_read(call));
@@ -1007,8 +1050,6 @@ pub mod semantic_context;
 pub mod cancellation;
 
 pub mod admission;
-
-pub mod summary;
 
 pub mod headroom;
 

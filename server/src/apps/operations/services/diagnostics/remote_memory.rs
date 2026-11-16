@@ -37,7 +37,7 @@ pub(super) fn document() -> serde_json::Value {
 		"usage": rows("generation_remote_usage", &["request_id", "attempt_id", "operation_id", "purpose", "state", "reserved_tokens", "reported_tokens"], "admission_id=:'run'::uuid"),
 		"dispatches": rows("generation_remote_dispatches", &["attempt_id", "usage", "state", "peer_finalized"], "usage->>'admission_id'=:'run'"),
 		"requests": rows("generation_requests", &["id", "home_node", "task_id", "agent_id", "agent_version", "status", "admission_id"], "task_id=:'task'::uuid"),
-		"budgets": rows("generation_budgets", &["request_id", "used_tokens", "embedding_calls", "compaction_calls"], "TRUE")
+		"budgets": rows("generation_budgets", &["request_id", "used_tokens", "embedding_calls"], "TRUE")
 	})
 }
 

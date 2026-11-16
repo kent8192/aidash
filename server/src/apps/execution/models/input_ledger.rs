@@ -32,13 +32,19 @@ impl RunInput {
 			.await
 			.map_err(FrameworkError::from)?
 			.into_iter()
-			.map(|record| InputContract {
-				seq: record.seq,
-				sender: record.sender,
-				content: record.content,
-				idempotency_key: record.idempotency_key,
-				message_id: record.message_id,
-				reference_only: record.reference_only,
+			.map(|record| {
+				let is_data = record
+					.idempotency_key
+					.starts_with(aidash_domain::run_input::SUBNODE_RESULT_PREFIX);
+				InputContract {
+					seq: record.seq,
+					sender: record.sender,
+					content: record.content,
+					idempotency_key: record.idempotency_key,
+					message_id: record.message_id,
+					reference_only: record.reference_only,
+					is_data,
+				}
 			})
 			.collect())
 	}
