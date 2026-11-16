@@ -118,6 +118,23 @@ impl reinhardt::commands::CapabilityCommand for Command {
 				.await
 				.map_err(|_| fail("could not inspect database roles"))?
 				.is_some();
+			if exists {
+				// Startup refuses a login with these attributes and names this
+				// command, so an existing role loses them here; the new role
+				// below never has them. PostgreSQL role DDL is not supported
+				// by Reinhardt's schema builder.
+				transaction
+					.execute(
+						&format!(
+							"ALTER ROLE {role} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION"
+						),
+						vec![],
+					)
+					.await
+					.map_err(|_| {
+						fail("could not remove privileged attributes from a database role")
+					})?;
+			}
 			let supplied = args.get_one::<String>(option);
 			let password = supplied.cloned().or_else(|| {
 				(!exists).then(|| {
