@@ -58,7 +58,12 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.response::<_, Vec<Unit>>(document, views::memory::units, 200, "application/json")?;
 	contracts.request::<_, ReadBank>(document, views::memory::units)?;
 	contracts.path(document, views::memory::units, &["Uuid"])?;
-	contracts.response::<_, Vec<Unit>>(document, views::memory::mutate, 200, "application/json")?;
+	contracts.response::<_, Vec<aidash_domain::memory::Mutated>>(
+		document,
+		views::memory::mutate,
+		200,
+		"application/json",
+	)?;
 	contracts.request::<_, Mutation>(document, views::memory::mutate)?;
 	contracts.path(document, views::memory::mutate, &["Uuid"])?;
 	contracts.response::<_, aidash_domain::memory::impact::Impact>(

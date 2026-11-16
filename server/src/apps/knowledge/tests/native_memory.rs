@@ -2236,6 +2236,7 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 #[case(false, false, "shared_read_revoked")]
 #[case::extra_on_demand(false, false, "extra_on_demand")]
 #[case::primary_on_demand(false, false, "primary_on_demand")]
+#[case::outside_correction(false, false, "outside_correction")]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
@@ -2256,6 +2257,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let reflect = fixture.state.reflect;
 	let captured = fixture.state.captured;
 	let invalidate = fixture.state.invalidate;
+	let correct = fixture.state.correct;
 	let provider = fixture.server;
 
 	if journal_bound {
@@ -2773,6 +2775,20 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	if delivery == "accepted_lease_lost" {
 		*invalidate.lock().unwrap() = Some((f.store.clone(), run.id, None));
 	}
+	if delivery == "outside_correction" {
+		// #127: another writer corrects the Unit while the provider holds a
+		// request built from its first revision.
+		let mut correction = mutation(
+			&participant.bank,
+			Change::Correct {
+				id,
+				expected_revision: 1,
+				content: content("バスを利用する。 Take the bus instead."),
+			},
+		);
+		correction.provider = primary.clone();
+		*correct.lock().unwrap() = Some((f.store.clone(), actor.clone(), correction));
+	}
 	if delivery == "shared_read_revoked" {
 		let mut revoked = policy;
 		revoked["policies"].as_array_mut().unwrap().push(json!({"id":"shared-only-revocation","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["memory"]},"condition":{"op":"eq","left":{"source":"resource","path":"/shared"},"right":{"source":"literal","value":true}}}));
@@ -2783,7 +2799,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	};
 	let accepted_save_rejected = matches!(
 		delivery,
-		"accepted_save_failure" | "accepted_lease_lost" | "shared_read_revoked"
+		"accepted_save_failure"
+			| "accepted_lease_lost"
+			| "shared_read_revoked"
+			| "outside_correction"
 	);
 	for _ in 0..4 {
 		let attempt =
@@ -2878,6 +2897,13 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			usize::from(accepted_save_rejected),
 			"only accepted-save failure reaches the provider; pre-read failure never does"
 		);
+		if delivery == "outside_correction" {
+			let actual = captured.lock().unwrap()[0].to_string();
+			assert!(
+				actual.contains("Use the subway in Tokyo."),
+				"the first revision must actually reach the provider before it is corrected: {actual}"
+			);
+		}
 		if delivery == "shared_read_revoked" {
 			let actual = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
 			assert_eq!(
@@ -2910,6 +2936,36 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			stored.context.source_deliveries.is_empty(),
 			"rejected save cannot adopt delivery evidence"
 		);
+		if delivery == "outside_correction" {
+			assert_eq!(
+				stored.control,
+				aidash_domain::RunControl::Paused,
+				"{:?}",
+				stored.error
+			);
+			assert_eq!(
+				stored.recovery.semantic_reason,
+				Some(aidash_domain::semantic::Failure::Invalidated),
+				"a correction racing inference is a source change: {:?}",
+				stored.error
+			);
+			let tools: i64 = aidash_server::database::native::query_scalar(
+				&Query::select()
+					.expr(reinhardt::query::Func::count(
+						Expr::col(reinhardt::query::ColumnRef::Asterisk).into(),
+					))
+					.from(Alias::new("invocations"))
+					.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(f.store.pool.in_scope(&TEST_FIXTURE))
+			.await
+			.unwrap();
+			assert_eq!(
+				tools, 0,
+				"the response built on the old revision is not adopted"
+			);
+		}
 		if delivery == "shared_read_revoked" {
 			assert_eq!(stored.control, aidash_domain::RunControl::Paused);
 			assert_eq!(
@@ -3210,10 +3266,24 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		after_restart.revision, stopped.revision,
 		"no restart loop rewrites the paused Run"
 	);
-	// A manual resume is not an exemption: the worker's entry check withholds
-	// the Run's own disclosure and pauses it again without another inference.
-	// That entry check reports the generic authority pause, not `invalidated`;
-	// rejecting such a resume outright is a decision requested in Issue #127.
+	// The Run's person asking to resume it is refused with the cause, and the
+	// Run is left as it was (#127 decision 6).
+	let refused = aidash_server::authorization::execution::resume(&f, identity, run.id).await;
+	assert!(
+		matches!(
+			refused,
+			Err(aidash_server::Error::ResumeBlocked(
+				aidash_domain::run_state::RunReadsBlock::SourceChanged
+			))
+		),
+		"{refused:?}"
+	);
+	let untouched = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(untouched.control.as_str(), "PAUSED");
+	assert_eq!(untouched.revision, stopped.revision);
+	// A resume that skips that check is still no exemption: the worker's entry
+	// check withholds the Run's own disclosure and pauses it again without
+	// another inference, with the generic authority pause.
 	f.store
 		.control(
 			&TEST_FIXTURE,
@@ -4773,11 +4843,14 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider
 }
 
 type InferenceInvalidation = (Store, Uuid, Option<serde_json::Value>);
+/// A correction another writer commits while the Run's first inference is in flight.
+type InferenceCorrection = (Store, Actor, Mutation);
 
 #[derive(Clone)]
 struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 	id: Uuid,
 	invalidate: Arc<Mutex<Option<InferenceInvalidation>>>,
+	correct: Arc<Mutex<Option<InferenceCorrection>>>,
 	reflect: bool,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
@@ -4788,6 +4861,7 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 	HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
 		id: Uuid::now_v7(),
 		invalidate: Arc::new(Mutex::new(None)),
+		correct: Arc::new(Mutex::new(None)),
 		reflect,
 		captured: Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new())),
 	}
@@ -4804,12 +4878,17 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 	let captured = state.captured.clone();
 	let received = captured.clone();
 	let invalidate = state.invalidate.clone();
+	let correct = state.correct.clone();
 	std::sync::Arc::new({
 		let model = reply(move |request: reinhardt::Request| {
 			let input = request.json::<serde_json::Value>().unwrap();
 			let received = received.clone();
 			let invalidation = invalidate.lock().unwrap().take();
+			let correction = correct.lock().unwrap().take();
 			async move {
+				if let Some((store, actor, mutation)) = correction {
+					memory::mutate(&store, &actor, mutation).await.unwrap();
+				}
 				if let Some((store, run, policy)) = invalidation {
 					if let Some(policy) = policy {
 						aidash_server::authorization::Authorization {

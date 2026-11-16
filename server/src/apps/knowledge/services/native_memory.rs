@@ -1397,11 +1397,13 @@ impl NativeMemory {
 		actor: Actor,
 		workspace: Uuid,
 		input: Mutation,
-	) -> Result<Vec<Unit>> {
+	) -> Result<Vec<aidash_domain::memory::Mutated>> {
 		if input.bank.workspace != workspace {
 			return Err(Error::Forbidden);
 		}
-		mutate(&self.runtime.store, &actor, input).await
+		let changes = input.changes.clone();
+		let units = mutate(&self.runtime.store, &actor, input).await?;
+		Ok(aidash_domain::memory::Mutated::of(&changes, units))
 	}
 	pub async fn impact(
 		&self,

@@ -441,14 +441,15 @@ A person pauses, resumes or cancels a Run with `POST /api/runs/{id}/control`, an
 
 `run_reads.kind` is the first cause found, since the check stops there. A read refusal covers the Run and the Runs its Task and reads came from, so a definition it names may have been read by one of those; a resume refusal for `definition_not_approved` or `definition_not_usable` is about the Run's own Binding:
 
-| Kind                      | Meaning                                                                                                                                 |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `definition_not_approved` | A definition the Run uses has no approval on this Node (resume only). `definition` names it only for a holder of `registry.read` on it. |
-| `definition_not_usable`   | A definition the Run uses is approved, but the caller's policy or the approval's restriction does not let the Run use it (resume only). |
-| `definition_not_readable` | A definition the Run read is not readable by this person: `registry.read` is denied.                                                    |
-| `remote_read`             | Something the Run read from another Node could not be confirmed.                                                                        |
-| `semantic_read`           | A semantic index the Run read is no longer available to this person.                                                                    |
-| `source`                  | A record the Run read is no longer visible to this person. `source` gives its kind.                                                     |
+| Kind                      | Meaning                                                                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `definition_not_approved` | A definition the Run uses has no approval on this Node (resume only). `definition` names it only for a holder of `registry.read` on it.  |
+| `definition_not_usable`   | A definition the Run uses is approved, but the caller's policy or the approval's restriction does not let the Run use it (resume only).  |
+| `definition_not_readable` | A definition the Run read is not readable by this person: `registry.read` is denied.                                                     |
+| `remote_read`             | Something the Run read from another Node could not be confirmed.                                                                         |
+| `semantic_read`           | A semantic index the Run read is no longer available to this person.                                                                     |
+| `source`                  | A record the Run read is no longer visible to this person. `source` gives its kind.                                                      |
+| `source_changed`          | Something the Run read changed after it read it, so it paused with `invalidated` (resume only). Only a Follow-up Task goes on from here. |
 
 A Run stopped because a definition it uses was withdrawn cannot be resumed until the definition is approved again; its results stay readable. `GET /api/authorization/{tenant}/catalog/impact` reports, before a withdrawal, the Agents that depend on the version (`agents`) and their in-flight Runs (`running_runs`). Runs that only read the version go on, so they are not counted.
 

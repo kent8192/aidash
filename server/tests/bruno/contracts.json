@@ -10417,6 +10417,7 @@
       "200": {
         "definitions": {
           "ReferenceRevocation": {
+            "description": "What a subject holding `reference.delete` needs to revoke a Reference: the\nrevision to send back and its state. It carries no content or name (#826).",
             "properties": {
               "reference_id": {
                 "format": "uuid",
@@ -32010,14 +32011,13 @@
             "additionalProperties": false
           },
           "PausedCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "The call an Authority Pause stopped, recorded only when it certainly did not run.",
-            "required": ["key", "index", "replay_safe", "tool", "kind"],
             "properties": {
               "index": {
-                "type": "integer",
                 "format": "uint",
-                "minimum": 0
+                "minimum": 0,
+                "type": "integer"
               },
               "key": {
                 "type": "string"
@@ -32030,9 +32030,21 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
-            "additionalProperties": false
+            "required": ["key", "index", "replay_safe", "tool", "kind"],
+            "type": "object"
           },
           "PendingCheck": {
             "type": "object",
@@ -32411,6 +32423,13 @@
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
+              },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
                 },
                 "type": "array"
               }
@@ -34262,6 +34281,17 @@
               }
             },
             "required": ["key", "digest", "content"],
+            "type": "object"
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
             "type": "object"
           }
         },
@@ -36506,14 +36536,13 @@
             "additionalProperties": false
           },
           "PausedCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "The call an Authority Pause stopped, recorded only when it certainly did not run.",
-            "required": ["key", "index", "replay_safe", "tool", "kind"],
             "properties": {
               "index": {
-                "type": "integer",
                 "format": "uint",
-                "minimum": 0
+                "minimum": 0,
+                "type": "integer"
               },
               "key": {
                 "type": "string"
@@ -36526,9 +36555,21 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
-            "additionalProperties": false
+            "required": ["key", "index", "replay_safe", "tool", "kind"],
+            "type": "object"
           },
           "PendingCheck": {
             "type": "object",
@@ -36931,6 +36972,13 @@
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
+              },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
                 },
                 "type": "array"
               }
@@ -38696,6 +38744,17 @@
               }
             },
             "required": ["key", "digest", "content"],
+            "type": "object"
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
             "type": "object"
           }
         },
@@ -41397,23 +41456,8 @@
             "required": ["question", "automatic_refresh"],
             "type": "object"
           },
-          "TimeRange": {
-            "additionalProperties": false,
-            "properties": {
-              "end": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "start": {
-                "format": "date-time",
-                "type": "string"
-              }
-            },
-            "required": ["start", "end"],
-            "type": "object"
-          },
-          "Unit": {
-            "additionalProperties": false,
+          "Mutated": {
+            "description": "One Unit as a mutation returned it, with every field of [`Unit`].\n`unchanged` marks a correction identical to the current revision (#127\ndecision 2): the revision stayed, no history was recorded and no Run that\nread the Unit stopped.",
             "properties": {
               "bank": {
                 "$ref": "#/components/schemas/Bank"
@@ -41439,6 +41483,9 @@
               "stale": {
                 "type": "boolean"
               },
+              "unchanged": {
+                "type": "boolean"
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -41452,8 +41499,24 @@
               "learned_at",
               "updated_at",
               "deleted",
-              "stale"
+              "stale",
+              "unchanged"
             ],
+            "type": "object"
+          },
+          "TimeRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "start": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["start", "end"],
             "type": "object"
           },
           "Verification": {
@@ -41473,7 +41536,7 @@
         },
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/Unit"
+            "$ref": "#/components/schemas/Mutated"
           },
           "type": "array"
         }
@@ -52980,14 +53043,13 @@
             "additionalProperties": false
           },
           "PausedCall": {
-            "type": "object",
+            "additionalProperties": false,
             "description": "The call an Authority Pause stopped, recorded only when it certainly did not run.",
-            "required": ["key", "index", "replay_safe", "tool", "kind"],
             "properties": {
               "index": {
-                "type": "integer",
                 "format": "uint",
-                "minimum": 0
+                "minimum": 0,
+                "type": "integer"
               },
               "key": {
                 "type": "string"
@@ -53000,9 +53062,21 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
-            "additionalProperties": false
+            "required": ["key", "index", "replay_safe", "tool", "kind"],
+            "type": "object"
           },
           "PendingCheck": {
             "type": "object",
@@ -53381,6 +53455,13 @@
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
+              },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
                 },
                 "type": "array"
               }
@@ -55019,6 +55100,17 @@
               }
             },
             "required": ["key", "digest", "content"],
+            "type": "object"
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
             "type": "object"
           }
         },
@@ -57315,17 +57407,6 @@
                 },
                 "type": "array"
               },
-              "compaction_override": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/QualifiedRef"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Exact explicit compaction replacement, resolved by trusted registration."
-              },
               "registry_deployment": {
                 "type": "string"
               },
@@ -57336,12 +57417,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "schema_version",
-              "registry_deployment",
-              "compaction_override",
-              "bindings"
-            ],
+            "required": ["schema_version", "registry_deployment", "bindings"],
             "type": "object"
           },
           "ApprovalRef": {
@@ -57410,6 +57486,29 @@
               }
             },
             "required": ["reference", "revision"],
+            "type": "object"
+          },
+          "Bank": {
+            "additionalProperties": false,
+            "description": "Issued by the Home authority for a participant, independently of a definition version.",
+            "properties": {
+              "home": {
+                "type": "string"
+              },
+              "participant": {
+                "description": "`None` is the explicitly published Workspace bank.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "tenant": {
+                "type": "string"
+              },
+              "workspace": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["home", "tenant", "workspace", "participant"],
             "type": "object"
           },
           "Binding3": {
@@ -57984,6 +58083,28 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Bounded cross-Run memory recalled from the Task at Run start.",
+                "properties": {
+                  "kind": {
+                    "enum": ["memory_recall"],
+                    "type": "string"
+                  },
+                  "sources": {
+                    "items": {
+                      "$ref": "#/components/schemas/Evidence"
+                    },
+                    "type": "array"
+                  },
+                  "unavailable": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": ["kind", "sources", "unavailable"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "call": {
                     "$ref": "#/components/schemas/ToolCall"
@@ -58477,6 +58598,144 @@
             },
             "required": ["step", "estimator", "version"],
             "type": "object"
+          },
+          "Evidence": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Exact selected disclosure grant; source lineage is resolved at the Home.",
+                "properties": {
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["publication"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bank": {
+                    "$ref": "#/components/schemas/Bank"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["unit"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "bank", "id", "revision"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["message"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision", "digest"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["artifact"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision", "digest"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["run"],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "id", "revision", "digest"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Inclusive positions in the originating Run's Context Journal.",
+                "properties": {
+                  "from_seq": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": ["journal_range"],
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "through_seq": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["kind", "run_id", "from_seq", "through_seq"],
+                "type": "object"
+              }
+            ]
           },
           "ExecutionSummary": {
             "additionalProperties": false,
@@ -59178,6 +59437,17 @@
               },
               "tool": {
                 "type": "string"
+              },
+              "tool_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefusedToolCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Exact input at the authority check; absent on pauses saved by older workers."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -59481,13 +59751,13 @@
                 "description": "Typed context-recovery reason for a paused Run; cleared on resume."
               },
               "decider_retry": {
-                "description": "Outage retries of the current step's compaction decision after every\nDecider Route failed. A decision commits to it, so each retry asks the\nRoutes again; it is reset once the step saves anything else (ADR 0066).",
+                "description": "Outage retries of the current step's decision after every\nDecider Route failed. A decision commits to it, so each retry asks the\nRoutes again; it is reset once the step saves anything else (ADR 0066).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
               },
               "decision_cycle": {
-                "description": "How many times a person resumed this Run from a pause. A compaction\ndecision commits to it, so a resume starts a new decision while a\nrecovered lease continues the same one (#108).",
+                "description": "How many times a person resumed this Run from a pause. A decision\ncommits to it, so a resume starts a new decision while a\nrecovered lease continues the same one (#108).",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -59502,6 +59772,13 @@
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
+              },
+              "early_abandoned_tasks": {
+                "description": "Unassigned Tasks this Run abandoned before it could finish.",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
               },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
@@ -59583,6 +59860,17 @@
                 "type": "string"
               }
             ]
+          },
+          "RefusedToolCall": {
+            "description": "The tool and input of a stopped call, retained privately for the invocation journal.",
+            "properties": {
+              "arguments": {},
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "arguments"],
+            "type": "object"
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -59734,7 +60022,7 @@
           },
           "Restrictions": {
             "additionalProperties": false,
-            "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability: it keeps more content for compaction and blocks more\ncalls for approval. `preserve_recent` and `forbid_apply` apply to compaction\nonly; an approval Decider reads `threshold` and `max_calls_per_run`.",
+            "description": "What a Binding may tighten. A lower threshold takes the conservative action\nat a lower probability. Approval reads `threshold` and `max_calls_per_run`;\nsource selection also uses `forbid_apply`.",
             "properties": {
               "forbid_apply": {
                 "default": false,
