@@ -403,3 +403,53 @@ async fn every_eligible_approver_sees_a_waiting_approval_and_a_late_one_is_told_
 	);
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_approval_on_a_deleted_node_fails_no_approvals_list(
+	#[future] approver_fixture: (CoreFixture, aidash_server::domain::Run, String),
+) {
+	// Arrange: Alice's outbound read waits for Bob, then its Node is deleted.
+	let (c, run, bob) = Box::pin(approver_fixture).await;
+	let (status, pending) = common::post(
+		&c.app,
+		&c.token,
+		&format!("/api/runs/{}/outbound", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	let id = pending["approval_id"].clone();
+	sqlx::query(
+		"INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) \
+		 SELECT $1,tenant,node,CURRENT_TIMESTAMP,'deployment_administrator',CURRENT_TIMESTAMP + INTERVAL '1 day',0 \
+		 FROM workspaces WHERE id = $2",
+	)
+	.bind(Uuid::new_v4())
+	.bind(run.workspace_id)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let listed = |page: &serde_json::Value| {
+		page["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|card| card["id"] == id)
+			.cloned()
+	};
+
+	// Act
+	let (bob_status, bob_cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
+	let (alice_status, alice_cards) =
+		common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
+
+	// Assert: the approver skips it; its requester still sees it, undecidable.
+	assert_eq!(bob_status, 200, "{bob_cards}");
+	assert!(listed(&bob_cards).is_none(), "{bob_cards}");
+	assert_eq!(alice_status, 200, "{alice_cards}");
+	let card = listed(&alice_cards).expect("the requester keeps the card");
+	assert_eq!(card["viewer_is_approver"], false, "{card}");
+	assert_eq!(card["allow_always"], false, "{card}");
+	c.close().await;
+}

@@ -464,7 +464,14 @@ pub struct Reader {
 pub async fn reader(scope: &mut dyn ApprovalScope, record: &Record) -> Result<Reader> {
 	let principal = scope.principal().to_owned();
 	let owner = record.owner == principal;
-	let Some(targets) = targets_of(scope, record).await? else {
+	// A record outlives a Workspace that is no longer live, as on a
+	// soft-deleted Node. Nobody can act on it as an approver then, but its
+	// requester still sees it, and one such record must not fail a whole list.
+	let targets = match targets_of(scope, record).await {
+		Err(Error::NotFound(_) | Error::Forbidden) => None,
+		other => other?,
+	};
+	let Some(targets) = targets else {
 		return Ok(Reader {
 			visible: owner,
 			approver: false,

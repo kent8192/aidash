@@ -958,8 +958,11 @@ async fn approval_card(
 		&row.state
 	};
 	// A rule can name an outbound read, a Web disclosure or a tool call, and
-	// only the person the Run's delegation chain starts at may make one.
+	// only the person the Run's delegation chain starts at may make one. Only
+	// someone who may decide it can, which also skips a record whose Workspace
+	// is no longer live, as its Run's context no longer loads.
 	let allow_always = state == "pending"
+		&& reader.approver
 		&& matches!(
 			row.kind.as_str(),
 			"outbound" | "disclosure" | "tool_call" | "sampling"

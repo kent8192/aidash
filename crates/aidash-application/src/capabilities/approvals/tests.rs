@@ -35,6 +35,9 @@ struct Fake {
 	created_rules: Vec<(String, ApprovalRule)>,
 	/// Everything the Run received, whoever sent it.
 	inputs: Vec<RunInput>,
+	/// The Run's Workspace is no longer live, as on a soft-deleted Node, so
+	/// its context cannot be loaded.
+	workspace_gone: bool,
 }
 
 #[async_trait]
@@ -82,6 +85,9 @@ impl ApprovalScope for Fake {
 		})
 	}
 	async fn run_context(&mut self, _: Uuid) -> Result<Run> {
+		if self.workspace_gone {
+			return Err(Error::Forbidden);
+		}
 		Ok(self.run.clone())
 	}
 	async fn interaction_run(&mut self, _: Uuid) -> Result<Run> {
@@ -240,6 +246,7 @@ fn scope(extra: Value) -> Fake {
 		settings: None,
 		created_rules: vec![],
 		inputs: vec![],
+		workspace_gone: false,
 		run: Run {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
@@ -3072,4 +3079,29 @@ async fn a_late_decision_on_what_the_auto_decider_settled_names_the_person() {
 		Err(Error::ApprovalDecided { ref decided_by, outcome: approvals::DecidedOutcome::Denied })
 			if decided_by == "alice"
 	));
+}
+
+#[tokio::test]
+async fn a_record_whose_workspace_is_gone_stays_with_its_requester_and_fails_no_reader() {
+	// Arrange: Bob may decide Alice's waiting call, then her Node is deleted.
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
+	assert!(decides_now(&mut scope, approval_id, "bob").await);
+	scope.workspace_gone = true;
+	let record = scope.records[&approval_id].clone();
+
+	// Act
+	let alice = reader(&mut scope, &record).await;
+	scope.principal = "bob".into();
+	let bob = reader(&mut scope, &record).await;
+
+	// Assert: the requester still sees it; nobody acts on it as an approver.
+	assert_eq!(
+		alice.unwrap(),
+		Reader {
+			visible: true,
+			approver: false
+		}
+	);
+	assert_eq!(bob.unwrap(), Reader::default());
 }
