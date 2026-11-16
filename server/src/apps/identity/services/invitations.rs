@@ -569,101 +569,120 @@ impl Invitations {
 					.first()
 					.map(|m| m.subject.clone())
 					.unwrap_or_else(|| format!("user-{registration_id}"));
-				let decision = JoinDecision {
-					registration: registration_id,
-					identity,
-					subject: &subject,
-					groups: &groups,
-				};
-				let approver = if preview.join_directly && previous.len() <= 1 && admission_allowed
-				{
-					// A changed policy or lost authority refuses only the optional
-					// approval. Roll back its locks and audit before opening the request.
-					match tx
+				if preview.join_directly && previous.len() <= 1 && admission_allowed {
+					// The issuer's check, its audit, the spent link, the request and
+					// the approval share one savepoint: a refusal anywhere in it rolls
+					// all of them back, so no allowed decision outlives an approval
+					// that did not happen. The request is then opened pending below.
+					let direct = tx
 						.atomic(async |tx| {
-							self.invitation_approver(
+							self.join_directly(
 								tx,
+								&input,
+								&holder,
 								&preview,
-								&input.secret,
+								&previous,
 								exclusive,
-								&decision,
-							)
-							.await
-						})
-						.await
-					{
-						Ok(approver) => approver,
-						Err(error) if approval_refusal(&error) => None,
-						Err(error) => return Err(error),
-					}
-				} else {
-					None
-				};
-				let invitation = invitations::usable(tx, &input.tenant, &input.secret, true)
-					.await?
-					.ok_or_else(invalid_link)?;
-				let mut registration =
-					invitations::redeem(tx, invitation, &holder.session, registration_id).await?;
-				if let Some((actor, snapshot)) = approver {
-					// A direct join is bound by the current Assignable Groups for
-					// every issuer, including Deployment Administrators.
-					let assignable =
-						aidash_domain::identity::tenant_administration::assignable_groups(
-							&snapshot.bundle,
-						);
-					let current_previous = DashboardMapping::objects()
-						.filter(DashboardMapping::field_identity_id().eq(identity))
-						.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
-						.filter(DashboardMapping::field_enabled().eq(false))
-						.order_by(&["id"])
-						.all_with_db(tx)
-						.await?;
-					if !groups.is_subset(&assignable)
-						|| current_previous.len() != previous.len()
-						|| current_previous.first().map(|m| m.subject.as_str())
-							!= previous.first().map(|m| m.subject.as_str())
-					{
-						return Ok(registration);
-					}
-					// The request and spent link live outside this savepoint. Any
-					// approval refusal rolls back its partial effects and leaves the
-					// request pending; storage failures still abort the transaction.
-					let approved: Result<_> = tx
-						.atomic(async |tx| {
-							DashboardRegistrationRequest::approve_in(
-								tx,
-								registration.id,
-								Approval {
-									tenant: input.tenant.clone(),
-									subject,
-									groups: Some(groups.clone()),
-								},
-								groups,
-								&actor,
-								digest(&random_secret()),
-								self.runtime.config.dashboard_policy(),
-								true,
-								Some(snapshot),
+								registration_id,
+								subject.clone(),
+								groups.clone(),
 							)
 							.await
 						})
 						.await;
-					match approved {
-						Ok(_) => {}
-						Err(error) if approval_refusal(&error) => return Ok(registration),
+					match direct {
+						Ok(Some(registration)) => return Ok(registration),
+						Ok(None) => {}
+						Err(error) if approval_refusal(&error) => {}
 						Err(error) => return Err(error),
 					}
-					registration = DashboardRegistrationRequest::objects()
-						.filter(DashboardRegistrationRequest::field_id().eq(registration.id))
-						.all_with_db(tx)
-						.await?
-						.pop()
-						.ok_or_else(invalid_link)?;
 				}
-				Ok(registration)
+				let invitation = invitations::usable(tx, &input.tenant, &input.secret, true)
+					.await?
+					.ok_or_else(invalid_link)?;
+				invitations::redeem(tx, invitation, &holder.session, registration_id).await
 			})
 			.await?;
 		Ok(registration.contract())
+	}
+
+	/// Spends the link on an approved request when its issuer still may approve
+	/// it. `None` leaves the link unspent for the pending path; refusals are
+	/// errors so the caller's savepoint rolls back every effect.
+	#[allow(clippy::too_many_arguments)]
+	async fn join_directly(
+		&self,
+		tx: &mut AtomicTransaction,
+		input: &InvitationLink,
+		holder: &BrowserOrigin,
+		preview: &TenantInvitation,
+		previous: &[DashboardMapping],
+		exclusive: bool,
+		registration_id: Uuid,
+		subject: String,
+		groups: BTreeSet<String>,
+	) -> Result<Option<DashboardRegistrationRequest>> {
+		let identity = holder.session.identity_id;
+		let decision = JoinDecision {
+			registration: registration_id,
+			identity,
+			subject: &subject,
+			groups: &groups,
+		};
+		let Some((actor, snapshot)) = self
+			.invitation_approver(tx, preview, &input.secret, exclusive, &decision)
+			.await?
+		else {
+			return Ok(None);
+		};
+		let invitation = invitations::usable(tx, &input.tenant, &input.secret, true)
+			.await?
+			.ok_or_else(invalid_link)?;
+		let registration =
+			invitations::redeem(tx, invitation, &holder.session, registration_id).await?;
+		// A direct join is bound by the current Assignable Groups for every
+		// issuer, including Deployment Administrators.
+		let assignable =
+			aidash_domain::identity::tenant_administration::assignable_groups(&snapshot.bundle);
+		let current_previous = DashboardMapping::objects()
+			.filter(DashboardMapping::field_identity_id().eq(identity))
+			.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+			.filter(DashboardMapping::field_enabled().eq(false))
+			.order_by(&["id"])
+			.all_with_db(tx)
+			.await?;
+		if !groups.is_subset(&assignable)
+			|| current_previous.len() != previous.len()
+			|| current_previous.first().map(|m| m.subject.as_str())
+				!= previous.first().map(|m| m.subject.as_str())
+		{
+			return Err(Error::Conflict(
+				"the Invitation can no longer join directly".into(),
+			));
+		}
+		DashboardRegistrationRequest::approve_in(
+			tx,
+			registration.id,
+			Approval {
+				tenant: input.tenant.clone(),
+				subject,
+				groups: Some(groups.clone()),
+			},
+			groups,
+			&actor,
+			digest(&random_secret()),
+			self.runtime.config.dashboard_policy(),
+			true,
+			Some(snapshot),
+		)
+		.await?;
+		DashboardRegistrationRequest::objects()
+			.filter(DashboardRegistrationRequest::field_id().eq(registration.id))
+			.all_with_db(tx)
+			.await?
+			.pop()
+			.ok_or_else(invalid_link)
+			.map(Some)
 	}
 }
 

@@ -1338,6 +1338,17 @@ async fn invitation_uses_another_current_mapping_of_its_issuer(
 	let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM dashboard_administration_history WHERE action = 'registration.approve' AND registration_id = $1 AND actor_identity_id = $2 AND actor_mapping_id = $3")
 		.bind(Uuid::parse_str(registration["id"].as_str().unwrap()).unwrap()).bind(t.alice.identity).bind(mapping).fetch_one(pool).await.unwrap();
 	assert_eq!(recorded, 1);
+	// The allowed check of a direct join is kept with its approval.
+	let allowed =
+		t.d.count(&format!(
+			"SELECT count(*) FROM authorization_decisions WHERE tenant = '{}' \
+			 AND action = 'registration.approve' AND resource_id = '{}' \
+			 AND (decision->>'allowed')::boolean",
+			t.tenant,
+			registration["id"].as_str().unwrap()
+		))
+		.await;
+	assert_eq!(allowed, 1);
 	t.finish().await;
 }
 
@@ -1382,6 +1393,17 @@ async fn invitation_waits_when_proposed_group_is_no_longer_assignable(
 		assert_eq!(status, 200, "{request}");
 		assert_eq!(request["status"], "pending");
 		assert!(t.d.context_or_none(holder, &t.tenant).await.is_none());
+		// The issuer's allowed check rolls back with the approval it was for.
+		let allowed =
+			t.d.count(&format!(
+				"SELECT count(*) FROM authorization_decisions WHERE tenant = '{}' \
+				 AND action = 'registration.approve' AND resource_id = '{}' \
+				 AND (decision->>'allowed')::boolean",
+				t.tenant,
+				request["id"].as_str().unwrap()
+			))
+			.await;
+		assert_eq!(allowed, 0);
 		let (status, _) =
 			t.d.as_person(holder, "POST", "/auth/invitations/redeem", None, link)
 				.await;
