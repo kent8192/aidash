@@ -1083,6 +1083,9 @@ def render():
             body = (
                 json.dumps({"expected_revision": 0, "provider_credential_id": None})
                 if method == "PUT"
+                # Pasted Key Material (#892) names the provider and the key.
+                else json.dumps({"provider": "openrouter", "key": "sk-or-contract"})
+                if method == "POST" and path.endswith("/provider-credentials")
                 else json.dumps({"expected_revision": 0})
                 if route["json"]
                 else None
@@ -1346,6 +1349,8 @@ def render():
                     headers=SUBJECT, body=limits, immutable=True)
             continue
         if route["source"] == "server/src/apps/execution/capabilities/views/previews.rs":
+            # A loopback origin defaults to `*.localhost` only with a
+            # `public_port` (#894); the contract server sets none.
             flag = 'expect(res.getBody()).to.have.all.keys("available","preview_domain");expect(res.getBody().available).to.equal(false);expect(res.getBody().preview_domain).to.equal(null);'
             if path.endswith("/availability"):
                 add(endpoint, "Anonymous request is rejected", 401)

@@ -42158,39 +42158,78 @@
     "responses": {
       "200": {
         "definitions": {
-          "Provider": {
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
+          "KeyOrigin": {
             "oneOf": [
               {
-                "enum": ["openrouter"],
-                "type": "string"
+                "type": "string",
+                "description": "Issued by the provider's own consent flow.",
+                "enum": ["authorization"]
               },
               {
-                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"],
-                "type": "string"
+                "type": "string",
+                "description": "Typed or pasted by a person in the dashboard.",
+                "enum": ["pasted"]
+              },
+              {
+                "type": "string",
+                "description": "Stored through Host Access with the host-side command.",
+                "enum": ["host_access"]
               }
-            ]
+            ],
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+          },
+          "Provider": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["openrouter"]
+              },
+              {
+                "type": "string",
+                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+                "enum": ["chatgpt"]
+              }
+            ],
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
           },
           "ProviderCredentialMetadata": {
+            "type": "object",
+            "required": [
+              "id",
+              "tenant",
+              "provider",
+              "base_url",
+              "fingerprint",
+              "last4",
+              "key_origin",
+              "key_settings_url",
+              "state",
+              "created_at",
+              "rotated_at",
+              "revoked_at",
+              "revision"
+            ],
             "properties": {
               "base_url": {
                 "type": "string"
               },
               "created_at": {
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               "fingerprint": {
                 "type": "string"
               },
               "id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
               },
               "key_settings_url": {
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
               },
               "last4": {
                 "type": "string"
@@ -42199,16 +42238,16 @@
                 "$ref": "#/components/schemas/Provider"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "revoked_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "rotated_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "state": {
                 "$ref": "#/components/schemas/State"
@@ -42216,7 +42255,69 @@
               "tenant": {
                 "type": "string"
               }
-            },
+            }
+          },
+          "State": {
+            "type": "string",
+            "enum": ["pending", "active", "revoked", "deleted"]
+          }
+        },
+        "schema": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ProviderCredentialMetadata"
+          }
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "provider-credential-supply",
+    "path": "/api/tenants/{tenant}/provider-credentials",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "KeyOrigin": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Issued by the provider's own consent flow.",
+                "enum": ["authorization"]
+              },
+              {
+                "type": "string",
+                "description": "Typed or pasted by a person in the dashboard.",
+                "enum": ["pasted"]
+              },
+              {
+                "type": "string",
+                "description": "Stored through Host Access with the host-side command.",
+                "enum": ["host_access"]
+              }
+            ],
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+          },
+          "Provider": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["openrouter"]
+              },
+              {
+                "type": "string",
+                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+                "enum": ["chatgpt"]
+              }
+            ],
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+          },
+          "ProviderCredentialMetadata": {
+            "type": "object",
             "required": [
               "id",
               "tenant",
@@ -42224,6 +42325,7 @@
               "base_url",
               "fingerprint",
               "last4",
+              "key_origin",
               "key_settings_url",
               "state",
               "created_at",
@@ -42231,18 +42333,90 @@
               "revoked_at",
               "revision"
             ],
-            "type": "object"
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
+              },
+              "key_settings_url": {
+                "type": ["string", "null"],
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
+              },
+              "last4": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/components/schemas/Provider"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "revoked_at": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "rotated_at": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "state": {
+                "$ref": "#/components/schemas/State"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            }
           },
           "State": {
-            "enum": ["pending", "active", "revoked", "deleted"],
-            "type": "string"
+            "type": "string",
+            "enum": ["pending", "active", "revoked", "deleted"]
+          },
+          "SuppliedProviderCredential": {
+            "type": "object",
+            "description": "The stored Provider Credential and whether its provider's binding now names it.",
+            "required": [
+              "provider_credential",
+              "warnings",
+              "previous_key_settings_url",
+              "bound"
+            ],
+            "properties": {
+              "bound": {
+                "type": "boolean",
+                "description": "False when another active Provider Credential stays bound, or the\nbinding could not be updated, so Runs do not use the new key yet."
+              },
+              "previous_key_settings_url": {
+                "type": ["string", "null"],
+                "description": "After a rotation, the owner-only settings page of the key it replaced.\nRotation disables only Aidash's copy; a provider-issued key stays live\nuntil the user deletes it there, and this is the last place its link\nappears once the new digest is recorded."
+              },
+              "provider_credential": {
+                "$ref": "#/components/schemas/ProviderCredentialMetadata"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "schema": {
-          "items": {
-            "$ref": "#/components/schemas/ProviderCredentialMetadata"
-          },
-          "type": "array"
+          "$ref": "#/components/schemas/SuppliedProviderCredential"
         }
       }
     },
@@ -42258,39 +42432,78 @@
     "responses": {
       "200": {
         "definitions": {
-          "Provider": {
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
+          "KeyOrigin": {
             "oneOf": [
               {
-                "enum": ["openrouter"],
-                "type": "string"
+                "type": "string",
+                "description": "Issued by the provider's own consent flow.",
+                "enum": ["authorization"]
               },
               {
-                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"],
-                "type": "string"
+                "type": "string",
+                "description": "Typed or pasted by a person in the dashboard.",
+                "enum": ["pasted"]
+              },
+              {
+                "type": "string",
+                "description": "Stored through Host Access with the host-side command.",
+                "enum": ["host_access"]
               }
-            ]
+            ],
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+          },
+          "Provider": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["openrouter"]
+              },
+              {
+                "type": "string",
+                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+                "enum": ["chatgpt"]
+              }
+            ],
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
           },
           "ProviderCredentialMetadata": {
+            "type": "object",
+            "required": [
+              "id",
+              "tenant",
+              "provider",
+              "base_url",
+              "fingerprint",
+              "last4",
+              "key_origin",
+              "key_settings_url",
+              "state",
+              "created_at",
+              "rotated_at",
+              "revoked_at",
+              "revision"
+            ],
             "properties": {
               "base_url": {
                 "type": "string"
               },
               "created_at": {
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               "fingerprint": {
                 "type": "string"
               },
               "id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
               },
               "key_settings_url": {
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
               },
               "last4": {
                 "type": "string"
@@ -42299,16 +42512,16 @@
                 "$ref": "#/components/schemas/Provider"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "revoked_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "rotated_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "state": {
                 "$ref": "#/components/schemas/State"
@@ -42316,26 +42529,11 @@
               "tenant": {
                 "type": "string"
               }
-            },
-            "required": [
-              "id",
-              "tenant",
-              "provider",
-              "base_url",
-              "fingerprint",
-              "last4",
-              "key_settings_url",
-              "state",
-              "created_at",
-              "rotated_at",
-              "revoked_at",
-              "revision"
-            ],
-            "type": "object"
+            }
           },
           "State": {
-            "enum": ["pending", "active", "revoked", "deleted"],
-            "type": "string"
+            "type": "string",
+            "enum": ["pending", "active", "revoked", "deleted"]
           }
         },
         "schema": {
@@ -42355,39 +42553,78 @@
     "responses": {
       "200": {
         "definitions": {
-          "Provider": {
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
+          "KeyOrigin": {
             "oneOf": [
               {
-                "enum": ["openrouter"],
-                "type": "string"
+                "type": "string",
+                "description": "Issued by the provider's own consent flow.",
+                "enum": ["authorization"]
               },
               {
-                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"],
-                "type": "string"
+                "type": "string",
+                "description": "Typed or pasted by a person in the dashboard.",
+                "enum": ["pasted"]
+              },
+              {
+                "type": "string",
+                "description": "Stored through Host Access with the host-side command.",
+                "enum": ["host_access"]
               }
-            ]
+            ],
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+          },
+          "Provider": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["openrouter"]
+              },
+              {
+                "type": "string",
+                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+                "enum": ["chatgpt"]
+              }
+            ],
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
           },
           "ProviderCredentialMetadata": {
+            "type": "object",
+            "required": [
+              "id",
+              "tenant",
+              "provider",
+              "base_url",
+              "fingerprint",
+              "last4",
+              "key_origin",
+              "key_settings_url",
+              "state",
+              "created_at",
+              "rotated_at",
+              "revoked_at",
+              "revision"
+            ],
             "properties": {
               "base_url": {
                 "type": "string"
               },
               "created_at": {
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               "fingerprint": {
                 "type": "string"
               },
               "id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
               },
               "key_settings_url": {
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
               },
               "last4": {
                 "type": "string"
@@ -42396,16 +42633,16 @@
                 "$ref": "#/components/schemas/Provider"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "revoked_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "rotated_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "state": {
                 "$ref": "#/components/schemas/State"
@@ -42413,26 +42650,11 @@
               "tenant": {
                 "type": "string"
               }
-            },
-            "required": [
-              "id",
-              "tenant",
-              "provider",
-              "base_url",
-              "fingerprint",
-              "last4",
-              "key_settings_url",
-              "state",
-              "created_at",
-              "rotated_at",
-              "revoked_at",
-              "revision"
-            ],
-            "type": "object"
+            }
           },
           "State": {
-            "enum": ["pending", "active", "revoked", "deleted"],
-            "type": "string"
+            "type": "string",
+            "enum": ["pending", "active", "revoked", "deleted"]
           }
         },
         "schema": {
@@ -42452,39 +42674,78 @@
     "responses": {
       "200": {
         "definitions": {
-          "Provider": {
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
+          "KeyOrigin": {
             "oneOf": [
               {
-                "enum": ["openrouter"],
-                "type": "string"
+                "type": "string",
+                "description": "Issued by the provider's own consent flow.",
+                "enum": ["authorization"]
               },
               {
-                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"],
-                "type": "string"
+                "type": "string",
+                "description": "Typed or pasted by a person in the dashboard.",
+                "enum": ["pasted"]
+              },
+              {
+                "type": "string",
+                "description": "Stored through Host Access with the host-side command.",
+                "enum": ["host_access"]
               }
-            ]
+            ],
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+          },
+          "Provider": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["openrouter"]
+              },
+              {
+                "type": "string",
+                "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
+                "enum": ["chatgpt"]
+              }
+            ],
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
           },
           "ProviderCredentialMetadata": {
+            "type": "object",
+            "required": [
+              "id",
+              "tenant",
+              "provider",
+              "base_url",
+              "fingerprint",
+              "last4",
+              "key_origin",
+              "key_settings_url",
+              "state",
+              "created_at",
+              "rotated_at",
+              "revoked_at",
+              "revision"
+            ],
             "properties": {
               "base_url": {
                 "type": "string"
               },
               "created_at": {
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               "fingerprint": {
                 "type": "string"
               },
               "id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
               },
               "key_settings_url": {
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
               },
               "last4": {
                 "type": "string"
@@ -42493,16 +42754,16 @@
                 "$ref": "#/components/schemas/Provider"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "revoked_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "rotated_at": {
-                "format": "date-time",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "date-time"
               },
               "state": {
                 "$ref": "#/components/schemas/State"
@@ -42510,26 +42771,11 @@
               "tenant": {
                 "type": "string"
               }
-            },
-            "required": [
-              "id",
-              "tenant",
-              "provider",
-              "base_url",
-              "fingerprint",
-              "last4",
-              "key_settings_url",
-              "state",
-              "created_at",
-              "rotated_at",
-              "revoked_at",
-              "revision"
-            ],
-            "type": "object"
+            }
           },
           "State": {
-            "enum": ["pending", "active", "revoked", "deleted"],
-            "type": "string"
+            "type": "string",
+            "enum": ["pending", "active", "revoked", "deleted"]
           }
         },
         "schema": {

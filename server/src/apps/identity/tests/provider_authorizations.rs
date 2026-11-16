@@ -259,6 +259,7 @@ fn authorization_runtime(
 			exchange: Arc::new(parts.provider.clone()),
 			fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 			max_per_tenant: 5,
+			supplied_keys: false,
 		}));
 		owner
 	}

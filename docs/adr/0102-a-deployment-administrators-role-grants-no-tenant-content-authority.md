@@ -22,3 +22,8 @@ A refused administrator request returns 403 with no Tenant content; routes that 
 - Routes deny a Deployment Administrator by default; only routes that serve a retained authority admit one. A new route is Tenant-only unless it is deliberately marked otherwise.
 - Headless setups issue a Tenant's first Subject Credential with a host-side `manage` command. Host access already reaches the database, so this opens no new route; over HTTP, issuance still needs Tenant authority (ADR 0063).
 - Workbench adoption, which let an administrator place a registered agent into a Tenant's Creator, is removed rather than moved: it was an administrator-only Tenant mutation.
+
+## Amendment (2026-11-11, #877)
+
+- A fresh Self-hosted Deployment gets its first Tenant and administrators through Host Access, with the host-side `manage bootstrap --email <address> [--tenant <label>]` command. It creates the Tenant or finds it by name or label, reserves the address as that Tenant's Tenant Administrator, and grants the address Deployment Administrator. If the address has already signed in, both take effect at once; otherwise at its first sign-in. Reruns never create a second Tenant, so the command also recovers a Tenant that has lost every Tenant Administrator.
+- The command opens no HTTP route and changes nothing above: the person holds two separate authorities, and as a Deployment Administrator still reaches the Tenant's content only through the Mapping the reservation makes.

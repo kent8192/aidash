@@ -25,6 +25,8 @@ pub(crate) enum Creator {
 	/// A Deployment Administrator, through the bearer token (no identity) or a
 	/// browser session. Nobody is mapped into the new Tenant.
 	DeploymentAdministrator(Option<Uuid>),
+	/// Host Access bootstraps administration.
+	HostAccess,
 }
 
 impl Creator {
@@ -32,6 +34,7 @@ impl Creator {
 		match self {
 			Self::Identity(_) => "identity",
 			Self::DeploymentAdministrator(_) => "deployment_administrator",
+			Self::HostAccess => "host_access",
 		}
 	}
 	pub(crate) fn identity(self) -> Option<Uuid> {
@@ -39,7 +42,7 @@ impl Creator {
 			Self::Identity(identity) | Self::DeploymentAdministrator(Some(identity)) => {
 				Some(identity)
 			}
-			Self::DeploymentAdministrator(None) => None,
+			Self::DeploymentAdministrator(None) | Self::HostAccess => None,
 		}
 	}
 	/// The first policy revision's actor.
@@ -47,6 +50,7 @@ impl Creator {
 		match self {
 			Self::Identity(identity) => format!("oidc:{identity}"),
 			Self::DeploymentAdministrator(_) => "deployment_administrator".into(),
+			Self::HostAccess => "host_access".into(),
 		}
 	}
 }
@@ -198,7 +202,10 @@ pub(crate) async fn create(
 	let bundle = if personal {
 		tenancy::personal_initial_policy(&name)?
 	} else {
-		tenancy::initial_policy(&name, matches!(creator, Creator::Identity(_)))?
+		tenancy::initial_policy(
+			&name,
+			matches!(creator, Creator::Identity(_) | Creator::HostAccess),
+		)?
 	};
 	AuthorizationBundle::replace(
 		tx,
@@ -217,9 +224,10 @@ pub(crate) async fn create(
 	.await?;
 	let mapping = match creator {
 		Creator::Identity(identity) => Some(map_owner(tx, &name, identity).await?),
-		Creator::DeploymentAdministrator(_) => None,
+		Creator::DeploymentAdministrator(_) | Creator::HostAccess => None,
 	};
 	let actor = match creator {
+		Creator::HostAccess => AdministrationActor::HostAccess,
 		Creator::Identity(identity) => AdministrationActor::Identity {
 			identity,
 			mapping: None,
@@ -240,7 +248,7 @@ pub(crate) async fn create(
 				// a Deployment Administrator's identity is the actor alone.
 				identity: match creator {
 					Creator::Identity(identity) => Some(identity),
-					Creator::DeploymentAdministrator(_) => None,
+					Creator::DeploymentAdministrator(_) | Creator::HostAccess => None,
 				},
 				registration: None,
 				mapping,
