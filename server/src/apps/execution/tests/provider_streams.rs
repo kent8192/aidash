@@ -270,7 +270,8 @@ fn progress_script(#[default(false)] with_tools: bool, release: Arc<Notify>) -> 
 				usage(),
 				done(),
 			],
-			json!({"choices":[{"finish_reason":"stop","message":{"content":"Completed"}}],
+			json!({"choices":[{"finish_reason":"stop","message":{"content":"Completed",
+				"reasoning":"private reasoning"}}],
 				"usage":{"prompt_tokens":12,"completion_tokens":7,"cost":0.01}}),
 		)
 	}

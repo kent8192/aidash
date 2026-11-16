@@ -207,6 +207,11 @@ completion ceiling. Summary output uses its own policy and one eighth of the
 window, capped by that ceiling when present; it does not inherit the ordinary
 step budget.
 
+A model definition may set `reasoning_passback: false` to stop a route from
+recording and resending the provider's reasoning (#942). Omitting it means
+`true`. A Run's model version is immutable, so the choice holds for the whole
+Run; only Native Runs record reasoning.
+
 A model definition that sets `request_estimator: calibrated` scales only the
 byte basis. The ratio is the nearest-rank 99th percentile of reported
 `prompt_tokens` per byte of basis over the newest 200 samples of the same

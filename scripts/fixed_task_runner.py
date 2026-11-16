@@ -556,8 +556,6 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                 observation["fixture_record_pages"] = ledger
             except (OSError, ValueError, TypeError):
                 observation["fixture_record_pages"] = None
-        if usage_reader is not None:
-            observation["usage_records"] = usage_reader(observation["run_id"])
     except Exception as error:  # Counted as an infrastructure failure, never dropped.
         observation["infrastructure_error"] = f"{type(error).__name__}: {error}"
         # A failed request says nothing about the Run: it may still be active, so stop it
@@ -584,6 +582,18 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                                                   f"{error}"
         observation["wall_ms"] = round((clock() - started) * 1000, 3)
         raise
+    finally:
+        if usage_reader is not None and observation.get("run_id"):
+            try:
+                observation["usage_records"] = usage_reader(observation["run_id"])
+                try:
+                    events = compaction_events(api, token, observation["workspace"], observation["run_id"])
+                except Exception:
+                    events = []
+                mark_compaction(observation["usage_records"], events)
+            except Exception as error:
+                detail = f"usage read failed: {type(error).__name__}: {error}"
+                observation["infrastructure_error"] = "; ".join(filter(None, (observation.get("infrastructure_error"), detail)))
     observation["wall_ms"] = round((clock() - started) * 1000, 3)
     return observation
 
@@ -796,8 +806,50 @@ def observed_provider_work(api, token, workspace, run_id):
             continue
         usage = data.get("context_usage") or {}
         attempts.append({"step": data.get("step"), "input_tokens": usage.get("input_tokens"),
-                         "output_tokens": usage.get("output_tokens")})
+                         "output_tokens": usage.get("output_tokens"), "context_usage": usage})
     return attempts
+
+
+def compaction_events(api, token, workspace, run_id):
+    """Read chronological events past the snapshot's 100-event limit."""
+    cursor = 0
+    completed = []
+    while True:
+        events = api.get(f"/api/events?workspace_id={quote(str(workspace), safe='')}&after={cursor}", token)
+        if not isinstance(events, list):
+            raise ValueError("invalid workspace event page")
+        if not events:
+            return completed
+        for event in events:
+            sequence = event.get("sequence")
+            if type(sequence) is not int or sequence <= cursor:
+                raise ValueError("workspace events are not ordered")
+            cursor = sequence
+            data = event.get("data") or {}
+            if event.get("kind") == "model.completed" and data.get("run_id") == run_id:
+                completed.append({"context_usage": data.get("context_usage")})
+
+
+def mark_compaction(records, events):
+    """Match accepted attempts to workspace events; leave uncertain matches unknown."""
+    main = [r for r in records if r.get("purpose") == "main"]
+    for record in main:
+        record["after_compaction"] = None
+    accepted = [r for r in main if r.get("outcome") == "completed"]
+    counts = [(event.get("context_usage") or {}).get("compactions") for event in events]
+    if len(accepted) != len(counts) or any(type(n) is not int for n in counts):
+        return
+    previous = 0
+    uncertain = False
+    completed = iter(counts)
+    for record in main:
+        if record.get("outcome") != "completed":
+            uncertain = True
+            continue
+        count = next(completed)
+        record["after_compaction"] = count > previous if not uncertain and count >= previous else None
+        previous = count
+        uncertain = False
 
 
 def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout, observations,
@@ -867,9 +919,10 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                              "or the Deployment Administrator token")
             if observation["run_id"] and observation.get("workspace"):
                 try:
-                    attempt["provider_work"] = observed_provider_work(api, experiment.token,
-                                                                      observation["workspace"],
-                                                                      observation["run_id"])
+                    attempt["provider_work"] = [{k: v for k, v in item.items() if k != "context_usage"}
+                                                for item in observed_provider_work(api, experiment.token,
+                                                                                   observation["workspace"],
+                                                                                   observation["run_id"])]
                 except Exception as error:  # Informational only; the reservation stays charged.
                     attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
         except BaseException:  # Ctrl-C, SIGTERM and the like: the in-flight Run is counted, never dropped.

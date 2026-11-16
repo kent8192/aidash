@@ -608,3 +608,43 @@ async fn observation_discloses_only_visible_attachment_metadata_within_the_fit(m
 	assert!(!output.to_string().contains("2.png"));
 	assert!(!output.to_string().contains("content_bytes"));
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_step_observation_leaves_out_and_does_not_track_the_runs_own_events(mut scope: Scope) {
+	// Arrange: events 2 and 4 are the observing Run's own telemetry.
+	let own = Uuid::from_u128(77);
+	scope.events = (1..=5).rev().map(|seq| event(seq, true)).collect();
+	for row in &mut scope.events {
+		if row.sequence % 2 == 0 {
+			row.data["run_id"] = json!(own);
+		}
+	}
+
+	// Act
+	let output = observation(&mut scope, Uuid::from_u128(1), 0, 20, Some(own))
+		.await
+		.unwrap();
+
+	// Assert: rendered, counted and tracked events are the same three.
+	let rendered = output["events"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|row| row["sequence"].as_i64().unwrap())
+		.collect::<Vec<_>>();
+	assert_eq!(rendered, vec![5, 3, 1]);
+	assert_eq!(output["pages"]["events"]["total"], 3);
+	let tracked = scope.tracked[0]
+		.events
+		.iter()
+		.map(|row| row.sequence)
+		.collect::<Vec<_>>();
+	assert_eq!(tracked, rendered);
+
+	// The observe tool's view still lists every event.
+	let all = observation(&mut scope, Uuid::from_u128(1), 0, 20, None)
+		.await
+		.unwrap();
+	assert_eq!(all["pages"]["events"]["total"], 5);
+}
