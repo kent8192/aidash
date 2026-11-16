@@ -14,6 +14,9 @@ pub trait WorkspaceListingScope: Send {
 #[async_trait]
 pub trait WorkspaceStateScope: Send {
 	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
+	async fn prepare_workspaces(&mut self, _workspaces: &[Uuid]) -> Result<()> {
+		Ok(())
+	}
 	async fn registry(&mut self) -> Result<Vec<Entry>>;
 	async fn workspace_rows(&mut self, workspaces: &[Uuid]) -> Result<Vec<Workspace>>;
 	/// Candidate pages contain at most PAGE_SIZE rows, ordered newest first.
@@ -28,10 +31,35 @@ pub trait WorkspaceStateScope: Send {
 	async fn pending_human_candidates(&mut self, node: Option<&str>) -> Result<Vec<HumanRequest>>;
 	async fn conversation_candidates(&mut self, node: Option<&str>) -> Result<Vec<Conversation>>;
 	async fn latest_visible_events(&mut self, node: Option<&str>) -> Result<Vec<Event>>;
+	async fn prepare_tasks(&mut self, _tasks: &[Task]) -> Result<()> {
+		Ok(())
+	}
+	async fn prepare_artifacts(&mut self, _artifacts: &[Artifact]) -> Result<()> {
+		Ok(())
+	}
 	async fn task_visible(&mut self, task: &Task) -> Result<bool>;
 	async fn artifact_visible(&mut self, artifact: &Artifact) -> Result<bool>;
+	/// Prepare candidate rows for the state window without changing visibility rules.
+	async fn prepare_runs(&mut self, _runs: &[RunMetadata]) -> Result<()> {
+		Ok(())
+	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>>;
+	/// [`Self::visible_run`] for each of `ids`, decided together where the adapter
+	/// can, so the reads do not grow with the number of Runs.
+	async fn visible_runs(
+		&mut self,
+		ids: &[Uuid],
+	) -> Result<std::collections::HashMap<Uuid, Option<RunInspection>>> {
+		let mut runs = std::collections::HashMap::with_capacity(ids.len());
+		for id in ids {
+			if !runs.contains_key(id) {
+				let run = self.visible_run(*id).await?;
+				runs.insert(*id, run);
+			}
+		}
+		Ok(runs)
+	}
 	async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource>;
 	async fn conversation_resource(&mut self, conversation: &Conversation) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
