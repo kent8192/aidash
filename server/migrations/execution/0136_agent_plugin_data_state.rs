@@ -1,9 +1,9 @@
 // reinhardt-migration-source: 1
-// Model state for saved Agent Plugin data; 0131 owns the table, its keys and checks.
+// Model state for saved Agent Plugin data; 0134 owns the table, its keys and checks.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0133_agent_plugin_data_state", "execution")
-		.add_dependency("execution", "0132_agent_plugin_data_rls")
+	Migration::new("0136_agent_plugin_data_state", "execution")
+		.add_dependency("execution", "0135_agent_plugin_data_rls")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-#[derive(Deserialize, JsonSchema, Validate, Default)]
+#[derive(Deserialize, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct InvitationRequest {
 	/// The Assignable Groups to propose; `members` when omitted.
@@ -15,6 +15,9 @@ pub(crate) struct InvitationRequest {
 	/// How long the link lasts, at most 7 days (the default).
 	#[serde(default)]
 	pub(crate) expires_in_seconds: Option<i64>,
+	/// Join immediately if the issuer still has approval authority.
+	#[serde(default)]
+	pub(crate) join_directly: Option<bool>,
 }
 
 /// An issued Invitation. `link` and `secret` are shown only in this response.

@@ -287,8 +287,14 @@ impl WorkspaceProjection for Reads<'_> {
 	}
 }
 
-/// Scan state events without first listing every authorized Workspace.
-pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> Result<Vec<Event>> {
+/// Scan state events without first listing every authorized Workspace, and
+/// count the events left out because a Node did not answer (#770).
+pub(crate) async fn state_events(
+	reads: &mut Reads<'_>,
+	node: Option<&str>,
+) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
+	use aidash_application::ports::authorization::visibility::RowOutcome as _;
+	use aidash_domain::unconfirmed::{Kind, Tally};
 	use std::collections::HashMap;
 	let tenant = reads.access.identity.tenant.clone();
 	let mut workspace_query = Query::select();
@@ -302,6 +308,7 @@ pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> R
 	let tenant_workspaces =
 		Expr::col(Alias::new("workspace_id")).in_subquery(workspace_query.to_owned());
 	let mut result = Vec::new();
+	let mut unconfirmed = Tally::new();
 	let mut checked = HashMap::new();
 	let mut runs = RunVerdicts::default();
 	let mut cursor = i64::MAX;
@@ -334,6 +341,71 @@ pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> R
 				.map_err(aidash_application::Error::from)?;
 		let exhausted = rows.len() < size;
 		scanned += rows.len();
+		reads
+			.access
+			.prepare_state_workspaces(
+				&rows
+					.iter()
+					.filter_map(|row| row.workspace_id)
+					.collect::<Vec<_>>(),
+			)
+			.await
+			.map_err(aidash_application::Error::from)?;
+		let ids: Vec<Uuid> = rows
+			.iter()
+			.filter_map(|event| {
+				event
+					.data
+					.get("run_id")
+					.or_else(|| {
+						(event.kind == "run.created")
+							.then(|| event.data.get("id"))
+							.flatten()
+					})
+					.and_then(serde_json::Value::as_str)
+					.and_then(|id| Uuid::parse_str(id).ok())
+			})
+			.collect();
+		if !ids.is_empty() {
+			let query = Query::select()
+				.column(ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").is_in(ids.into_iter().map(Expr::value)))
+				.to_string(PostgresQueryBuilder);
+			let candidates: Vec<aidash_domain::RunMetadata> =
+				aidash_server::database::query_as(&query)
+					.fetch_all(&mut **reads.access.tx)
+					.await
+					.map_err(aidash_application::Error::from)?;
+			reads
+				.access
+				.prepare_state_runs(&candidates)
+				.await
+				.map_err(aidash_application::Error::from)?;
+		}
+		let task_ids: Vec<Uuid> = rows
+			.iter()
+			.filter(|event| event.kind.starts_with("task."))
+			.filter_map(|event| {
+				let id = |value: &serde_json::Value| value.as_str().and_then(|id| id.parse().ok());
+				id(&event.data["task"]["id"])
+					.or_else(|| id(&event.data["task_id"]))
+					.or_else(|| id(&event.data["id"]))
+			})
+			.collect();
+		if !task_ids.is_empty() {
+			let tasks = crate::apps::workspaces::models::Task::read_many_in(
+				&mut **reads.access.tx,
+				&task_ids,
+			)
+			.await
+			.map_err(aidash_application::Error::from)?;
+			reads
+				.access
+				.prepare_state_tasks(&tasks)
+				.await
+				.map_err(aidash_application::Error::from)?;
+		}
 		for row in rows {
 			cursor = row.sequence;
 			if let Some(id) = row.workspace_id {
@@ -357,7 +429,12 @@ pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> R
 					continue;
 				}
 			}
-			if WorkspaceProjection::event_visible(reads, &row, &mut runs).await? {
+			// Counted only after the reader's own `workspace.read` and
+			// `workspace.events` passed above.
+			reads.begin_row();
+			let visible = WorkspaceProjection::event_visible(reads, &row, &mut runs).await?;
+			let silence = reads.take_row_silence();
+			if unconfirmed.settle_in(silence, Kind::Event, row.workspace_id, visible) {
 				result.push(row);
 			}
 			if result.len() == 100 {
@@ -369,5 +446,5 @@ pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> R
 		}
 	}
 	result.reverse();
-	Ok(result)
+	Ok((result, unconfirmed))
 }

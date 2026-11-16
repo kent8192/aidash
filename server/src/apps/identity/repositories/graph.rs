@@ -14,6 +14,14 @@ pub(crate) struct Projection<'a, 'scope> {
 	pub node: &'a str,
 	pub revision: &'a str,
 }
+impl aidash_application::ports::authorization::visibility::RowOutcome for Projection<'_, '_> {
+	fn begin_row(&mut self) {
+		self.authority.0.begin_row();
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.authority.0.take_row_silence()
+	}
+}
 #[async_trait]
 impl GraphProjectionScope for Projection<'_, '_> {
 	fn node_id(&self) -> &str {

@@ -27,6 +27,7 @@ pub(crate) struct Details<'a> {
 struct Scope<'a> {
 	federation: &'a Federation,
 	access: Held<'a>,
+	state_preload: bool,
 }
 /// The authorization transaction a scope reads through: its own, which it
 /// finishes, or a caller's, which the caller goes on using and finishes.
@@ -55,6 +56,7 @@ impl RunDetailsRepository for Details<'_> {
 		Ok(Box::new(Scope {
 			federation: self.federation,
 			access: Held::Own(Box::new(access)),
+			state_preload: false,
 		}))
 	}
 }
@@ -67,10 +69,48 @@ pub(crate) async fn visible_within(
 	access: &mut Access,
 	run: Uuid,
 ) -> Result<RunInspection> {
+	visible_within_mode(federation, access, run, false).await
+}
+
+pub(crate) async fn visible_within_state(
+	federation: &Federation,
+	access: &mut Access,
+	run: Uuid,
+) -> Result<RunInspection> {
+	visible_within_mode(federation, access, run, true).await
+}
+
+/// [`visible_within_state`] for many Runs at once, each `None` where it is
+/// `Forbidden`. Each Workspace's Runs are read and prepared together.
+pub(crate) async fn visible_many_within_state(
+	federation: &Federation,
+	access: &mut Access,
+	runs: &[Uuid],
+) -> Result<aidash_application::ports::authorization::state::VisibleRuns> {
 	let context = access.context.clone();
 	let mut scope = Scope {
 		federation,
 		access: Held::Borrowed(&mut *access),
+		state_preload: true,
+	};
+	let result =
+		aidash_application::authorization::run_details::visible_many_counted_in(&mut scope, runs)
+			.await;
+	scope.access.get().context = context;
+	result
+}
+
+async fn visible_within_mode(
+	federation: &Federation,
+	access: &mut Access,
+	run: Uuid,
+	state_preload: bool,
+) -> Result<RunInspection> {
+	let context = access.context.clone();
+	let mut scope = Scope {
+		federation,
+		access: Held::Borrowed(&mut *access),
+		state_preload,
 	};
 	let result = aidash_application::authorization::run_details::visible_in(&mut scope, run).await;
 	scope.access.get().context = context;
@@ -131,6 +171,12 @@ impl RunDetailsScope for Scope<'_> {
 	fn set_context(&mut self, context: Value) {
 		self.access.get().context = context;
 	}
+	fn begin_run_check(&mut self) {
+		self.access.get().begin_row();
+	}
+	fn take_run_silence(&mut self) -> Option<String> {
+		self.access.get().take_row_silence()
+	}
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>> {
 		let result: NativeResult<Option<RawRun>> = async {
 			Ok({
@@ -156,6 +202,23 @@ impl RunDetailsScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn runs(&mut self, ids: &[Uuid]) -> Result<Vec<RawRun>> {
+		if ids.is_empty() {
+			return Ok(Vec::new());
+		}
+		let query = Query::select()
+			.column(Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
+			.to_string(PostgresQueryBuilder);
+		let result: NativeResult<Vec<RawRun>> = async {
+			Ok(aidash_server::database::query_as(&query)
+				.fetch_all(&mut **self.access.get().tx)
+				.await?)
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.get().workspace(id).await.map_err(Into::into)
 	}
@@ -165,6 +228,12 @@ impl RunDetailsScope for Scope<'_> {
 			.require(resource, action)
 			.await
 			.map_err(Into::into)
+	}
+	async fn prepare_visible(&mut self, runs: &[RunInspection]) -> Result<()> {
+		if self.state_preload {
+			self.access.get().prepare_state_inspections(runs).await?;
+		}
+		Ok(())
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.get().run_visible(run).await.map_err(Into::into)

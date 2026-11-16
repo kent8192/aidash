@@ -66,8 +66,6 @@ pub enum DeploymentScopeReason {
 	ApprovalObservation,
 	/// Claiming and publishing the event outbox.
 	OutboxDispatch,
-	/// Claiming and delivering delegations that are due for a retry.
-	DelegationRetry,
 	/// Listing and reconciling generation requests and foreign generation
 	/// intents.
 	GenerationReconcile,
@@ -114,6 +112,8 @@ pub enum DeploymentScopeReason {
 	/// Mapping. The Tenant's name is drawn inside the transaction (ADR 0050),
 	/// so no Tenant Scope can name it when the transaction begins.
 	TenantCreation,
+	/// Host Access first-run and administrator recovery.
+	Bootstrap,
 	/// Revalidating External Identities that have work in any Tenant, and
 	/// stopping a disabled identity's Runs in every Tenant.
 	IdentityStatus,
@@ -164,7 +164,6 @@ impl DeploymentScopeReason {
 			Self::ActivationClaim => "activation-claim",
 			Self::ApprovalObservation => "approval-observation",
 			Self::OutboxDispatch => "outbox-dispatch",
-			Self::DelegationRetry => "delegation-retry",
 			Self::GenerationReconcile => "generation-reconcile",
 			Self::SemanticIndexing => "semantic-indexing",
 			Self::SemanticMaintenance => "semantic-maintenance",
@@ -181,6 +180,7 @@ impl DeploymentScopeReason {
 			Self::DeploymentAdministration => "deployment-administration",
 			Self::IdentityTenants => "identity-tenants",
 			Self::TenantCreation => "tenant-creation",
+			Self::Bootstrap => "bootstrap",
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
@@ -207,7 +207,6 @@ impl DeploymentScopeReason {
 			Self::ActivationClaim
 			| Self::ApprovalObservation
 			| Self::OutboxDispatch
-			| Self::DelegationRetry
 			| Self::SemanticMaintenance
 			| Self::GenerationReconcile
 			| Self::Retention
@@ -219,6 +218,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministration
 			| Self::IdentityTenants
 			| Self::TenantCreation
+			| Self::Bootstrap
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
 			| Self::TenantPurge
@@ -265,7 +265,6 @@ mod tests {
 		let reasons = [
 			DeploymentScopeReason::ActivationClaim,
 			DeploymentScopeReason::OutboxDispatch,
-			DeploymentScopeReason::DelegationRetry,
 			DeploymentScopeReason::GenerationReconcile,
 			DeploymentScopeReason::SemanticIndexing,
 			DeploymentScopeReason::SemanticMaintenance,
@@ -282,6 +281,7 @@ mod tests {
 			DeploymentScopeReason::DeploymentAdministration,
 			DeploymentScopeReason::IdentityTenants,
 			DeploymentScopeReason::TenantCreation,
+			DeploymentScopeReason::Bootstrap,
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,

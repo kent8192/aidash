@@ -59,10 +59,16 @@ fn egress_profiles_require_an_internal_ip_runner_and_positive_cumulative_limits(
 	}
 	let mut configured = value.clone();
 	configured["egress"]["proxy_global_tunnels"] = json!(200);
-	configured["egress"]["proxy_tenant_tunnels"] = json!(20);
+	configured["egress"]["proxy_tenant_tunnels"] = json!(40);
 	assert!(
 		crate::capabilities::Runtime::new(serde_json::from_value(configured.clone()).unwrap())
 			.is_ok()
+	);
+	// Below one Scratch Space's own limit of 32.
+	configured["egress"]["proxy_tenant_tunnels"] = json!(20);
+	assert!(
+		crate::capabilities::Runtime::new(serde_json::from_value(configured.clone()).unwrap())
+			.is_err()
 	);
 	configured["egress"]["proxy_tenant_tunnels"] = json!(200);
 	assert!(

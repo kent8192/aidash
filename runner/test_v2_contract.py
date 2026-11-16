@@ -15,6 +15,21 @@ def test_image_proxy_is_not_inherited_without_process_credential(tmp_path, monke
     assert 'HTTPS_PROXY' not in image_environment(str(root))
 
 
+def test_process_proxy_also_reaches_node_fetch(tmp_path, monkeypatch):
+    # Node's built-in fetch, which corepack uses, ignores the proxy variables
+    # unless asked to read them (#845).
+    from sandbox_v2 import image_environment, save_image_environment
+    root = tmp_path / 'rootfs'
+    root.mkdir()
+    save_image_environment(tmp_path, {'PATH': '/bin', 'NODE_USE_ENV_PROXY': '0'})
+    monkeypatch.setenv('HTTPS_PROXY', 'http://aidash:run@proxy:8888')
+    environment = image_environment(str(root))
+    assert environment['HTTPS_PROXY'] == 'http://aidash:run@proxy:8888'
+    assert environment['NODE_USE_ENV_PROXY'] == '1'
+    monkeypatch.delenv('HTTPS_PROXY')
+    assert 'NODE_USE_ENV_PROXY' not in image_environment(str(root))
+
+
 def test_credential_is_sent_on_stdin_not_command_arguments_or_journal(tmp_path):
     from types import SimpleNamespace
     operation = '00000000-0000-4000-8000-000000000001'

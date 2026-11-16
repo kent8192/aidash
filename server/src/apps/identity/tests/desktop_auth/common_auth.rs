@@ -38,6 +38,8 @@ impl AuthenticationPeer {
 			source_subject: "desktop-fixture".into(),
 			suspension_epoch: Some(0),
 			source_disable_epoch: 0,
+			resumable_suspension_epochs: Vec::new(),
+			usable_sign_in_method_count: None,
 		}
 	}
 }
@@ -185,6 +187,7 @@ async fn common_auth_desktop_keeps_its_own_session_after_browser_logout_and_expi
 			ca_certificate_file: "fixture-ca".into(),
 			client_certificate_file: "fixture-client".into(),
 			client_private_key_file: "fixture-key".into(),
+			validity_cache_seconds: 30,
 			source_issuers: [("https://accounts.google.com".into(), String::new())].into(),
 		},
 	);

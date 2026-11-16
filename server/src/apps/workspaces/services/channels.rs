@@ -91,6 +91,7 @@ impl Channels {
 			"workspace.read",
 		)
 		.await?;
+		lease.access_mut().lists = true;
 		let result = history::page(&self.runtime.store, &mut lease, workspace, input).await;
 		let result = match result {
 			Ok(mut page) => {
@@ -139,6 +140,30 @@ impl Channels {
 			.map(|()| attachment),
 			Err(error) => Err(error),
 		};
+		lease.finish(result).await
+	}
+	pub async fn describe(
+		&self,
+		workspace: Uuid,
+		attachment: Uuid,
+		input: ChannelAttachmentDescription,
+	) -> Result<ChannelAttachment> {
+		crate::http::validate(&input)?;
+		let mut lease = Lease::begin(
+			&self.runtime.store,
+			self.actor.clone(),
+			workspace,
+			"message.create",
+		)
+		.await?;
+		let result = attachments::describe(
+			&self.runtime.store,
+			&mut lease,
+			workspace,
+			attachment,
+			&input.description,
+		)
+		.await;
 		lease.finish(result).await
 	}
 	pub async fn download(

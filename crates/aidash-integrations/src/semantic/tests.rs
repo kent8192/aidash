@@ -303,3 +303,56 @@ async fn image_embedding_sends_validated_image_as_openrouter_content() {
 		.is_err()
 	);
 }
+
+#[tokio::test]
+async fn described_image_sends_its_description_and_image_as_one_content() {
+	// Arrange
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
+	let app = Router::new().route("/api/v1/embeddings", post(|Json(body): Json<Value>| async move {
+        assert_eq!(body["input"], json!([{"content":[{"type":"text","text":"A bar chart of sales"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]));
+        Json(json!({"model":"google/gemini-embedding-2","data":[{"index":0,"embedding":[1.0]}]}))
+    }));
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let mut config = configuration(endpoint);
+	config.dimensions = 1;
+	config
+		.inputs
+		.insert(aidash_domain::semantic::EmbeddingInputKind::Image);
+	let input = aidash_domain::semantic::EmbeddingInput::DescribedImage {
+		text: "A bar chart of sales",
+		media_type: "image/png",
+		bytes: b"\x89PNG\r\n\x1a\n",
+	};
+
+	// Act
+	let result = embed_input(
+		&FixtureAccess,
+		&Context::default(),
+		&clients().unwrap(),
+		&config,
+		input,
+	)
+	.await;
+
+	// Assert
+	assert_eq!(result.unwrap().vector, vec![1.0]);
+	let blank = aidash_domain::semantic::EmbeddingInput::DescribedImage {
+		text: " ",
+		media_type: "image/png",
+		bytes: b"\x89PNG\r\n\x1a\n",
+	};
+	assert!(
+		embed_input(
+			&FixtureAccess,
+			&Context::default(),
+			&clients().unwrap(),
+			&config,
+			blank
+		)
+		.await
+		.is_err()
+	);
+}

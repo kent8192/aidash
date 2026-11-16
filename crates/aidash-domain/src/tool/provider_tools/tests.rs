@@ -52,6 +52,7 @@ fn provider_activity_growth_covers_every_replay(#[case] activity: Value) {
 		text: "Reported".into(),
 		calls: vec![],
 		provider_activity: vec![activity],
+		reasoning: None,
 	};
 	let mut after = before.clone();
 	after.push(event.clone());
@@ -95,6 +96,7 @@ fn responses_estimates_count_the_openrouter_activity_replay() {
 		provider_activity: vec![
 			json!({"type":"shell_call_output","call_id":"call_1","output":"x".repeat(20_000)}),
 		],
+		reasoning: None,
 	});
 	let request = ModelRequest {
 		context: ModelContext::Native(crate::projection::native::native_context(

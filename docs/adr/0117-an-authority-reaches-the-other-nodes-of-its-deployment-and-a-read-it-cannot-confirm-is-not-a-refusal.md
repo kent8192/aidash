@@ -42,6 +42,6 @@ A third stop is left as it is. A Run admitted by a Remote Grant is judged at the
 
 ## Consequences
 
-- A list can be shorter than it should be with no sign of it until #770.
+- A list can be shorter than it should be with no sign of it until #770. ADR 0133 makes a list, search and Agent tool result count such items for each Node; the event stream stays silent.
 - Until #758 lands, a read whose local and peer checks together pass 30 seconds answers `504`.
 - A Run that discovered an Agent on a Node later deleted stays hidden, because there is no route to that Node. Whether a listing counts as a read at all is #769.

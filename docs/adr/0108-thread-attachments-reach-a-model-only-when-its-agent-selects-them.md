@@ -12,3 +12,4 @@ A federated Run follows the same rule from the other side: its own Node first co
 
 - `POST /api/runs/{id}/message` with media stays as the one explicit push, for a person handing media to one Run.
 - Revoking a delegation, disabling a Peer Mapping or deleting the message takes effect on the next selection or fetch; a Run that already selected deleted media is told it is unavailable.
+- Amended by #622 part 2 (see the image retrieval ADR's amendment): an image opened by a model whose modalities do not include images is no longer a tool error. The model receives the image's Image Description, file name and message text instead, and nothing is selected. Other unreadable formats keep the explicit error.

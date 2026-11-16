@@ -101,21 +101,47 @@ async fn use_block(
 	scope.use_block(run).await
 }
 
+/// A paused Run that stopped because something it read changed (`invalidated`). Its context
+/// already holds the obsolete text, so no resume can let it go on: only a Follow-up Task can
+/// (#127). Its disclosure is withheld for the same reason, so this is asked before the read walk.
+fn invalidated(run: &RunInspection) -> bool {
+	run.control == aidash_domain::RunControl::Paused
+		&& !run.phase.is_terminal()
+		&& run.recovery.as_ref().and_then(|r| r.semantic_reason)
+			== Some(aidash_domain::semantic::Failure::Invalidated)
+}
+
 pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
+	authorize_resume(scope, id).await?;
+	let credential = scope.identity().credential_id;
+	scope.update_credential(id, credential).await?;
+	scope.resume_run(id).await
+}
+
+/// The local permissions a resume of `id` needs: the Workspace, `run.control`, being the
+/// subject the Run acts for, and what the Run read and uses. A manual resume and the automatic
+/// resume after a lifted suspension (#876 decision 16) both ask it.
+pub async fn authorize_resume(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
 	let run = in_workspace(scope, id).await?;
-	let block = reads_block(scope, &run).await?;
+	let invalidated = invalidated(&run);
+	let block = if invalidated {
+		None
+	} else {
+		reads_block(scope, &run).await?
+	};
 	// Only someone who could otherwise resume the Run learns what blocks it.
 	require_control(scope, id).await?;
 	require_own_grant(scope, id).await?;
+	if invalidated {
+		return Err(Error::ResumeBlocked(RunReadsBlock::SourceChanged));
+	}
 	if let Some(block) = block {
 		return Err(Error::ResumeBlocked(block));
 	}
 	if let Some(block) = use_block(scope, &run).await? {
 		return Err(Error::ResumeBlocked(block));
 	}
-	let credential = scope.identity().credential_id;
-	scope.update_credential(id, credential).await?;
-	scope.resume_run(id).await
+	Ok(run)
 }
 
 /// The longest key a person can name a call by; invocation keys are far shorter.
@@ -126,9 +152,10 @@ pub async fn decline_call(
 	repository: &dyn RunControlRepository,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<RunInspection> {
 	let mut scope = repository.begin().await?;
-	let result = decline_call_in(scope.as_mut(), id, call).await;
+	let result = decline_call_in(scope.as_mut(), id, call, rest_of_run).await;
 	let run = scope.finish(result).await?;
 	repository.notify();
 	Ok(run)
@@ -141,6 +168,7 @@ pub async fn decline_call_in(
 	scope: &mut dyn RunControlScope,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<RunInspection> {
 	if call.is_empty() || call.len() > CALL_KEY_LIMIT {
 		return Err(Error::Invalid("call key is empty or too long".into()));
@@ -173,7 +201,7 @@ pub async fn decline_call_in(
 		let credential = scope.identity().credential_id;
 		scope.update_credential(id, credential).await?;
 	}
-	scope.decline_call(id, call).await
+	scope.decline_call(id, call, rest_of_run).await
 }
 #[cfg(test)]
 mod tests;

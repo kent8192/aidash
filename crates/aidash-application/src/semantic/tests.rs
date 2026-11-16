@@ -37,6 +37,8 @@ struct State {
 	collections: Vec<String>,
 	cleanup_locked: bool,
 	cleanup_failure: Vec<Option<String>>,
+	description: Option<String>,
+	embedded_text: Option<String>,
 }
 fn vector_config() -> VectorConfig {
 	VectorConfig {
@@ -85,6 +87,8 @@ impl Default for Fixture {
 			collections: vec![],
 			cleanup_locked: true,
 			cleanup_failure: vec![],
+			description: None,
+			embedded_text: None,
 		})))
 	}
 }
@@ -254,6 +258,7 @@ impl SemanticIndexingSession for Session {
 			IndexImageRead::Image(IndexImage {
 				media_type: "image/png".into(),
 				bytes,
+				description: self.fixture.0.lock().unwrap().description.clone(),
 			})
 		}))
 	}
@@ -269,10 +274,14 @@ impl SemanticIndexingSession for Session {
 		&mut self,
 		_: Uuid,
 		_: &EmbeddingConfig,
-		_: &IndexImage,
+		image: &IndexImage,
 		_: Uuid,
 	) -> Result<Vec<f32>> {
 		self.fixture.record("embed_image")?;
+		if let aidash_domain::semantic::EmbeddingInput::DescribedImage { text, .. } = image.input()
+		{
+			self.fixture.0.lock().unwrap().embedded_text = Some(text.to_owned());
+		}
 		Ok(vec![0.1, 0.2, 0.3])
 	}
 	async fn set_revoked(&mut self, _: Uuid, reason: &str) -> Result<()> {
@@ -319,9 +328,16 @@ impl SemanticIndexingSession for Session {
 		Ok(vec![0.1, 0.2, 0.3])
 	}
 	async fn record_digest(&mut self, _: Uuid, digest: &str) -> Result<()> {
-		let source = self.fixture.0.lock().unwrap().entry.source.clone();
-		let expected = if source["kind"] == "working_image" {
-			indexing::content_digest_bytes(b"\x89PNG\r\n\x1a\n")
+		let (source, description) = {
+			let state = self.fixture.0.lock().unwrap();
+			(state.entry.source.clone(), state.description.clone())
+		};
+		let expected = if source["kind"] == "working_image" || source["kind"] == "attachment_image"
+		{
+			indexing::image_digest(
+				&indexing::content_digest_bytes(b"\x89PNG\r\n\x1a\n"),
+				description.as_deref(),
+			)
 		} else {
 			indexing::content_digest("source text")
 		};
@@ -905,4 +921,46 @@ async fn image_read_failure_is_recorded_and_does_not_abort_the_index_sweep() {
 	assert!(process(&fixture, &fixture, fixture.id()).await.unwrap());
 	assert!(fixture.has("failed"));
 	assert!(!fixture.has("embed_image"));
+}
+
+#[tokio::test]
+async fn an_attachment_image_is_embedded_with_its_description() {
+	// Arrange
+	let fixture = Fixture::default();
+	{
+		let mut state = fixture.0.lock().unwrap();
+		state.entry.source = json!({"kind":"attachment_image", "message_id": Uuid::from_u128(8), "attachment_id": Uuid::from_u128(9)});
+		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
+		state.description = Some("A red bicycle".into());
+	}
+
+	// Act
+	process(&fixture, &fixture, fixture.id()).await.unwrap();
+
+	// Assert
+	assert!(fixture.has("embed_image"));
+	assert!(fixture.has("ready"));
+	assert_eq!(
+		fixture.0.lock().unwrap().embedded_text.as_deref(),
+		Some("A red bicycle")
+	);
+}
+
+#[tokio::test]
+async fn an_attachment_image_on_a_text_only_index_is_unsupported() {
+	// Arrange
+	let fixture = Fixture::default();
+	{
+		let mut state = fixture.0.lock().unwrap();
+		state.entry.source = json!({"kind":"attachment_image", "message_id": Uuid::from_u128(8), "attachment_id": Uuid::from_u128(9)});
+		state.description = Some("A red bicycle".into());
+	}
+
+	// Act
+	process(&fixture, &fixture, fixture.id()).await.unwrap();
+
+	// Assert
+	assert!(fixture.has("unsupported:modality"));
+	assert!(!fixture.has("embed_image"));
+	assert!(!fixture.has("embed"));
 }

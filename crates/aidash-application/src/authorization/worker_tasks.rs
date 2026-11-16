@@ -138,7 +138,6 @@ pub async fn delegate(
 			node_id: node.into(),
 			agent_id: agent.id.clone(),
 			agent_version: agent.version.clone(),
-			delivered: true,
 		});
 	}
 	let delegation = scope.delegate(task, agent).await?;

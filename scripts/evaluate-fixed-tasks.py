@@ -9,6 +9,10 @@ Subcommands:
   live           Opt-in measurement against a Node and model the evaluator chooses.
                  Refuses to start without an explicitly connected Tenant Provider
                  Credential, a disclosure approval and hard spend/time limits.
+                 --usage-database-url reads usage with psql from local bench
+                 PostgreSQL only; never use a production database. Optionally use
+                 --usage-psql-container to run psql in that local container and
+                 --usage-database-url-env to keep credentials out of arguments.
   validate       Validate an existing result manifest.
 
 Results are measurements. They approve no accuracy, cost or rollout claim, and
@@ -35,6 +39,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fixed_task_evaluation as evaluation  # noqa: E402
@@ -247,6 +252,68 @@ def settings_directory(private, cache_salt):
     (settings / "base.toml").chmod(0o600)
     (settings / "local.toml").write_text("")
     return settings
+
+
+def fixture_ledger_endpoint(fixture_endpoint, override):
+    """Where the evaluator reads the approved fixture's per-Run ledger.
+
+    The backend reaches the fixture through the approved tool endpoint, which may be a name only
+    containers resolve (host.docker.internal). The evaluator can read the same service on loopback
+    instead. Without an approved fixture there is no ledger to read.
+    """
+    if fixture_endpoint is None:
+        return None
+    if override is None:
+        return fixture_endpoint
+    parsed = urllib.parse.urlsplit(override)
+    if parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1", "::1") \
+            or parsed.query or parsed.fragment:
+        raise ValueError("the fixture ledger endpoint must be a loopback http URL without query parameters")
+    return override
+
+
+def local_usage_reader_for(database_url, container=None):
+    """Read only the specified Run from a loopback PostgreSQL bench using psql."""
+    parsed = urllib.parse.urlsplit(database_url)
+    if parsed.scheme not in ("postgres", "postgresql") or parsed.hostname not in ("localhost", "127.0.0.1", "::1") or parsed.query or parsed.fragment:
+        raise ValueError("usage database must be a loopback PostgreSQL URL without query parameters")
+    command = ["psql", "--no-psqlrc", "--tuples-only", "--no-align", "--set", "ON_ERROR_STOP=1"]
+    # psql reads PGDATABASE as a bare database name and does not expand a URL there, so pass each part separately.
+    # Credentials stay in the environment and never appear in an argument list.
+    connection = {"PGHOST": parsed.hostname, "PGPORT": str(parsed.port or 5432),
+                  "PGUSER": urllib.parse.unquote(parsed.username or ""),
+                  "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
+                  "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/"))}
+    if container:
+        try:
+            port = subprocess.run(["docker", "port", container, "5432/tcp"], text=True, capture_output=True,
+                                  timeout=USAGE_READ_TIMEOUT, check=True).stdout
+        except (OSError, subprocess.SubprocessError):
+            raise ValueError("cannot inspect bench PostgreSQL container port") from None
+        if not any(line.rsplit(":", 1)[-1] == str(parsed.port or 5432) for line in port.splitlines()):
+            raise ValueError("bench container port does not match the database URL")
+        # Inside the container the server listens on its own loopback port.
+        connection.update(PGHOST="127.0.0.1", PGPORT="5432")
+        names = [*connection, "PGOPTIONS"]
+        command = ["docker", "exec", "-i", *[part for name in names for part in ("-e", name)], container, *command]
+
+    def read(run_id):
+        run_id = str(uuid.UUID(run_id))
+        query = ("SELECT row_to_json(u) FROM (SELECT attempt_id, run_id, created_at, purpose, outcome, "
+                 "input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, "
+                 "estimated_tokens, cost_nanocredits FROM inference_usage "
+                 f"WHERE run_id = '{run_id}'::uuid ORDER BY created_at, attempt_id) u;\n")
+        env = {"PATH": os.environ.get("PATH", ""), **connection,
+               "PGOPTIONS": "-c default_transaction_read_only=on -c statement_timeout=30000"}
+        try:
+            result = subprocess.run(command,
+                                    input=query, text=True, capture_output=True, timeout=USAGE_READ_TIMEOUT, env=env)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"local usage read failed: {type(error).__name__}") from None
+        if result.returncode:
+            raise RuntimeError(f"local usage read failed: psql exit {result.returncode}")
+        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    return read
 
 
 def usage_reader_for(postgres, database, password, query):
@@ -793,6 +860,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                       "--model mapping; map them or drop the selectors")
     fixture_endpoint, code_oracle = evaluation.live_task_support(approval, corpus, planned_runs,
                                                                  args.tool_endpoint)
+    ledger_endpoint = fixture_ledger_endpoint(fixture_endpoint, getattr(args, "fixture_ledger_endpoint", None))
     auxiliary = evaluation.auxiliary_allowance(approval)
     auxiliary_entries = {}
     for kind in ("summary",):
@@ -845,9 +913,10 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                        runner.binding_guard(args.tenant, credential["provider"],
                                                             (binding["provider_credential_id"], binding["revision"]), subject),
                                        execution_seed=args.execution_seed,
+                                       usage_reader=local_usage_reader_for(args.usage_database_url, getattr(args, "usage_psql_container", None)) if getattr(args, "usage_database_url", None) else None,
                                        auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None,
-                                       side_effect_reader=(lambda run_id: runner.read_fixture_ledger(fixture_endpoint, run_id))
-                                       if fixture_endpoint is not None else None)
+                                       side_effect_reader=(lambda run_id: runner.read_fixture_ledger(ledger_endpoint, run_id))
+                                       if ledger_endpoint is not None else None)
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
         error = f"interrupted by the evaluator ({type(stop).__name__})"
@@ -969,6 +1038,10 @@ def main(argv=None):
                                             "(default 1800); a timed-out command is recorded as an error")
     live_command = commands.choices["live"]
     live_command.add_argument("--base-url", required=True)
+    usage_url = live_command.add_mutually_exclusive_group()
+    usage_url.add_argument("--usage-database-url", help="local bench PostgreSQL URL for read-only Run usage (requires psql); do not use production")
+    usage_url.add_argument("--usage-database-url-env", help="environment variable holding the local bench URL (keeps credentials out of command arguments)")
+    live_command.add_argument("--usage-psql-container", help="use psql in this local PostgreSQL container; its published port must match the URL")
     live_command.add_argument("--tenant", required=True)
     live_command.add_argument("--token-env", default="AIDASH_EVALUATION_TOKEN", help="Deployment Administrator bearer token variable")
     live_command.add_argument("--subject-token-env", default="AIDASH_EVALUATION_SUBJECT_TOKEN",
@@ -978,6 +1051,9 @@ def main(argv=None):
                                    "hexadecimal characters (a git commit or SHA-256)")
     live_command.add_argument("--tool-endpoint", default="https://tools.invalid/aidash-fixed-task-evaluation",
                               help="endpoint declared by fixture tools; approvals for them are denied")
+    live_command.add_argument("--fixture-ledger-endpoint",
+                              help="loopback URL where this evaluator reads the approved fixture's per-Run ledger "
+                                   "when the tool endpoint is a container-only name (default: the tool endpoint)")
     live_command.add_argument("--provider-credential", help="connected Tenant Provider Credential ID")
     live_command.add_argument("--execution-estimator", choices=("bytes", "calibrated"), default="bytes",
                               help="Bytes primary comparison; calibrated requires an explicit matching disclosure approval")
@@ -995,6 +1071,12 @@ def main(argv=None):
     validate_parser.add_argument("--memory-corpus", type=Path, default=evaluation.EVALUATION / "memory.toml",
                                  help="the memory corpus the experiment used")
     args = parser.parse_args(argv)
+    if args.command == "live" and args.usage_database_url_env:
+        args.usage_database_url = os.environ.get(args.usage_database_url_env)
+        if not args.usage_database_url:
+            parser.error("usage database URL environment variable is missing or empty")
+    if args.command == "live" and args.usage_psql_container and not args.usage_database_url:
+        parser.error("--usage-psql-container requires --usage-database-url")
     if args.command == "validate":
         return validate_command(args)
     if not 1 <= args.repeats <= 250:

@@ -4,8 +4,8 @@
 // their combined bytes, capped at 64 MiB, and `sha256` is the digest of `data`.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0131_agent_plugin_data", "execution")
-		.add_dependency("execution", "0130_egress_run_revocations_rls")
+	Migration::new("0134_agent_plugin_data", "execution")
+		.add_dependency("execution", "0133_egress_run_revocations_rls")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

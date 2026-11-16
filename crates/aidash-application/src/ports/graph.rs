@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 #[async_trait]
-pub trait GraphProjectionScope: Send {
+pub trait GraphProjectionScope: Send + super::authorization::visibility::RowOutcome {
 	fn node_id(&self) -> &str;
 	fn now(&self) -> DateTime<Utc>;
 	fn encode_cursor(&self, cursor: &GraphCursor) -> Result<String>;

@@ -3,6 +3,48 @@ use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
 use rstest::{fixture, rstest};
 use serde_json::Value;
 
+#[test]
+fn credential_refusals_keep_status_and_report_the_reason() {
+	use crate::error::CredentialReason;
+	for (error, status, reason) in [
+		(
+			Error::CredentialUnauthorized(CredentialReason::Expired),
+			401,
+			"expired",
+		),
+		(
+			Error::CredentialUnauthorized(CredentialReason::Revoked),
+			401,
+			"revoked",
+		),
+		(
+			Error::CredentialUnauthorized(CredentialReason::ParentEnded),
+			401,
+			"parent_ended",
+		),
+		(
+			Error::CredentialForbidden(CredentialReason::MappingDisabled),
+			403,
+			"mapping_disabled",
+		),
+		(
+			Error::CredentialForbidden(CredentialReason::IdentityDisabled),
+			403,
+			"identity_disabled",
+		),
+		(
+			Error::AccountSuspended { epoch: 1 },
+			403,
+			"account_suspended",
+		),
+	] {
+		let response = error.http_response();
+		assert_eq!(response.status.as_u16(), status);
+		let body: Value = serde_json::from_slice(&response.body).unwrap();
+		assert_eq!(body["reason"], reason);
+	}
+}
+
 #[fixture]
 fn database_error() -> DatabaseError {
 	DatabaseError::new(DatabaseErrorKind::Query, "private database diagnostic")

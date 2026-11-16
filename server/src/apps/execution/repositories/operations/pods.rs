@@ -120,14 +120,14 @@ pub(crate) async fn tool_context(
 }
 
 /// Stop a Live preview, a Background process of its Run in the Execution Pod.
-/// Returns whether the Runner confirmed the stop.
+/// Returns whether the Runner confirmed the stop; a failed stop request is an
+/// error so callers can tell it from an unconfirmed stop (#781).
 pub(crate) async fn stop_preview(store: &Store, preview: Uuid) -> NativeResult<bool> {
 	let runner = crate::bootstrap::operation_runner(store)?;
-	Ok(
-		aidash_application::capabilities::pod::previews::stop(&runner, preview)
-			.await
-			.is_ok(),
-	)
+	aidash_application::capabilities::pod::previews::stop(&runner, preview)
+		.await
+		.map_err(|error| NativeError::External(error.to_string()))?;
+	Ok(true)
 }
 
 #[async_trait]

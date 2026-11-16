@@ -43,7 +43,8 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 			.await
 			.unwrap(),
 		200,
-	);
+	)["events"]
+		.clone();
 	let cursor = first[0]["sequence"].as_i64().unwrap();
 	let next = member
 		.get(&format!("/api/events?workspace_id={id}&after={cursor}"))
@@ -58,7 +59,7 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 			.iter()
 			.all(|event| event["workspace_id"] == id)
 	);
-	let next = assert_json(next, 200);
+	let next = assert_json(next, 200)["events"].clone();
 	assert_eq!(next.as_array().unwrap().len(), 1);
 	assert_eq!(next[0]["kind"], "workspace.updated");
 	assert!(next[0]["sequence"].as_i64().unwrap() > cursor);
@@ -190,7 +191,10 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 		.unwrap();
 	let status = response.status();
 	let body = response.text().await.unwrap();
-	assert!(!status.is_success() || body == "[]", "{status}: {body}");
+	assert!(
+		!status.is_success() || body == r#"{"events":[],"unconfirmed":[]}"#,
+		"{status}: {body}"
+	);
 	assert!(!body.contains(id), "{body}");
 	// The authorized Tenant Subject still reads them.
 	let events = assert_json(
@@ -200,7 +204,7 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 			.unwrap(),
 		200,
 	);
-	assert_eq!(events.as_array().unwrap().len(), 1);
+	assert_eq!(events["events"].as_array().unwrap().len(), 1);
 }
 
 async fn next_frame(response: &mut reqwest::Response) -> String {

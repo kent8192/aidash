@@ -78,7 +78,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "egress_scope_state"
 		| "egress_scope_daily"
 		| "egress_scope_connections"
-		| "egress_scope_events" => Node("node"),
+		| "egress_scope_events"
+		| "egress_scope_refusals" => Node("node"),
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
@@ -241,6 +242,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "dashboard_login_transactions"
 		| "dashboard_logout_tokens"
 		| "dashboard_mappings"
+		| "bootstrap_deployment_administrator_reservations"
 		| "dashboard_deployment_administrator_grants"
 		| "dashboard_registration_requests"
 		| "dashboard_sessions"

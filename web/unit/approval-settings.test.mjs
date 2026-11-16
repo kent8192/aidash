@@ -487,3 +487,17 @@ test("both locales explain the Answer Deadline and its limits", () => {
   );
   assert.deepEqual(Object.keys(english.units), ["minutes", "hours", "days"]);
 });
+
+test("a question closed when its Run ends is shown as closed", async () => {
+  const { closedWhenRunEnded } = await import(
+    "../src/approval-settings-model.ts"
+  );
+  assert.equal(typeof closedWhenRunEnded, "function");
+  const response = { answered: false, reason: "run_ended" };
+  assert.equal(closedWhenRunEnded({ answered_by: "system", response }), true);
+  assert.equal(closedWhenRunEnded({ answered_by: "person", response }), false);
+  assert.equal(
+    closedWhenRunEnded({ answered_by: "system", response: null }),
+    false,
+  );
+});

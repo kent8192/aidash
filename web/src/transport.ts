@@ -66,18 +66,22 @@ export class ApiError extends Error {
   readonly runReads: boolean;
   /** Seconds until a refused Authority Change can be sent again. */
   readonly retryAfter?: number;
+  /** The error envelope's other fields, such as a machine-readable `code`. */
+  readonly detail?: Record<string, unknown>;
   constructor(
     message: string,
     status: number,
     responseReceived = false,
     runReads = false,
     retryAfter?: number,
+    detail?: Record<string, unknown>,
   ) {
     super(message);
     this.status = status;
     this.responseReceived = responseReceived;
     this.runReads = runReads;
     this.retryAfter = retryAfter;
+    this.detail = detail;
   }
 }
 /** What a refused read or resume of a Run says: what it read, or what it uses. */
@@ -90,7 +94,8 @@ type RunReadsBlock =
   | { kind: "definition_not_usable" }
   | { kind: "remote_read" }
   | { kind: "semantic_read" }
-  | { kind: "source"; source: string };
+  | { kind: "source"; source: string }
+  | { kind: "source_changed" };
 function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
   switch (block.kind) {
     case "definition_not_approved":
@@ -110,6 +115,8 @@ function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
       return messages.runReadsSemantic;
     case "source":
       return messages.runReadsSource.replace("{source}", block.source);
+    case "source_changed":
+      return messages.runReadsSourceChanged;
   }
 }
 /** The wait a Policy Busy refusal asks for, or `undefined` for any other response. */
@@ -310,6 +317,9 @@ export async function authenticatedFetch(
         : (data.error?.message ?? response.statusText),
       response.status,
       true,
+      false,
+      undefined,
+      data && typeof data === "object" ? data : undefined,
     );
   }
   return response;

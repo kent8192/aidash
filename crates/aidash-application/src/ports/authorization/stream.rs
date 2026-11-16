@@ -29,7 +29,7 @@ pub trait StreamAuthorityStore: Send + Sync {
 	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>>;
 }
 #[async_trait]
-pub trait StreamSession: Send {
+pub trait StreamSession: Send + super::visibility::RowOutcome {
 	async fn event_workspaces(&mut self, workspace: Option<Uuid>) -> Result<Vec<Uuid>>;
 	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>>;
