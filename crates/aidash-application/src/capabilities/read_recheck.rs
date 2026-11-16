@@ -9,7 +9,6 @@ use std::{
 	collections::{BTreeMap, BTreeSet},
 	time::{Duration, Instant},
 };
-use uuid::Uuid;
 
 /// How often each target is checked. The first check after a target appears, or
 /// after a restart, runs at once.

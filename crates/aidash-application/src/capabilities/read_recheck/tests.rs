@@ -4,6 +4,7 @@ use crate::Error;
 use async_trait::async_trait;
 use rstest::rstest;
 use std::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Default)]
 struct Repository {
