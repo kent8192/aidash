@@ -177,15 +177,6 @@ const RETURN_BASE: &str = "https://aidash.invalid/";
 #[path = "../tests/oidc_return_path.rs"]
 mod return_path_tests;
 
-async fn account_valid(f: &Federation, row: DashboardIdentity) -> Result<()> {
-	crate::bootstrap::dashboard_authority(f)
-		.account_valid(&crate::apps::identity::repositories::dashboard::account(
-			row,
-		))
-		.await
-		.map_err(Into::into)
-}
-
 /// Browser sessions and ongoing runs use the same application account authority.
 pub async fn refresh_active(
 	f: Federation,
@@ -306,6 +297,9 @@ async fn validate_session_identity_with_recheck(
 			DashboardIdentity::find(tx, session.identity_id()).await
 		})
 		.await?;
+	// Without common authentication no interactive check was made to stand in
+	// for the origin's, so the account is checked online as before.
+	let mut account_recheck = aidash_application::ports::accounts::Recheck::Online;
 	if let Some(authority) = &f.config.common_auth {
 		use aidash_application::ports::accounts::Authority as _;
 		let remote_session = session
@@ -316,8 +310,14 @@ async fn validate_session_identity_with_recheck(
 		authority
 			.check_interactive(session.identity_id(), remote_session, recheck)
 			.await?;
+		account_recheck = recheck;
 	}
-	account_valid(f, identity).await?;
+	crate::bootstrap::dashboard_authority(f)
+		.account_valid_with(
+			&crate::apps::identity::repositories::dashboard::account(identity),
+			account_recheck,
+		)
+		.await?;
 	// Revalidation may revoke the session. Reread it by id: a concurrent desktop
 	// refresh rotates its access-token hash, which is not a revocation.
 	let current = pool
