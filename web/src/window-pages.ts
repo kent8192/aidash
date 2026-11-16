@@ -68,3 +68,56 @@ export function olderRows<T>(
 ): T[] | null {
   return windowCursor === null ? null : pages.items;
 }
+
+/** One page of a "show more" list endpoint. */
+export type Page<T> = { items: T[]; next_cursor: string | null };
+
+/**
+ * Lands a "show more" page read from `cursor` after `read` pages. The page is
+ * dropped (only `loading` clears) when the pages moved on while it was in
+ * flight: a re-read of the loaded range already replaced them, and that
+ * re-read counted this page.
+ */
+export function landPage<T extends { id: string }>(
+  old: WindowPages<T>,
+  key: string,
+  read: number,
+  cursor: string | null,
+  page: Page<T>,
+): WindowPages<T> {
+  if (old.key !== key) return old;
+  if (old.read !== read || old.cursor !== cursor)
+    return { ...old, loading: false };
+  return {
+    ...old,
+    items: uniqueById([...old.items, ...page.items]),
+    read: read + 1,
+    cursor: page.next_cursor,
+    loading: false,
+  };
+}
+
+/**
+ * Re-reads the loaded range behind a fresh window, starting at the window's
+ * own cursor, so rows that slid out of the window are not skipped and rows
+ * that left the list drop out. `depth` is read before every page rather than
+ * once: a "show more" asked for while the re-read runs raises it, and the
+ * re-read then covers that page on the fresh chain (the late "show more"
+ * result is dropped by `landPage`, since `read` moved on).
+ */
+export async function rereadPages<T>(
+  readPage: (cursor: string) => Promise<Page<T>>,
+  windowCursor: string | null,
+  depth: () => number,
+): Promise<{ items: T[]; read: number; cursor: string | null }> {
+  const items: T[] = [];
+  let cursor = windowCursor;
+  let read = 0;
+  while (cursor && read < depth()) {
+    const page = await readPage(cursor);
+    items.push(...page.items);
+    cursor = page.next_cursor;
+    read += 1;
+  }
+  return { items, read, cursor };
+}

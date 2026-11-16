@@ -133,6 +133,4 @@ mod tests;
 
 pub mod admission;
 
-pub mod compaction;
-
 pub mod guard;

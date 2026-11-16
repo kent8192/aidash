@@ -186,10 +186,7 @@ A coordinator's final response remains gated while a child is unresolved. A Tena
 
 ### Context compaction
 
-The [decision gate](decision-gate.md) defines explicit Decider pins and historical
-replay contracts for native compaction. Its pruning stage uses the exact
-compaction Decider in the Run's Binding snapshot and the Node's current
-authority, provider and durable decision-journal adapters.
+Context recovery works on the model-visible Context Projection and keeps the original events in the Context Journal. It does not invoke a compaction Decider (ADR 0125).
 
 The compaction trigger, post-compaction fit check and final preflight use the
 same complete-request estimate, the Request Estimate (ADR 0017). Its upper
@@ -199,11 +196,16 @@ context inside message text and the cache-salt reserve), plus the media
 allowance, `max_output_tokens` and 1,024 framing tokens. It is not the
 provider's actual token count.
 Output fits inside the registered context window; it is not extra input space.
-Failure to fit leaves saved context unchanged, prevents inference I/O and pauses
-the Run with the typed reason `context_unreducible`.
+Recovery saves offloaded or summarized projections as it progresses. When no
+eligible reduction can fit, it prevents inference I/O and pauses the Run with
+the typed reason `context_unreducible`.
 New model registrations capture OpenRouter's advertised maximum completion
-tokens as `max_output_tokens`; model versions created before this field existed
-retain their previous output allowance until re-registered.
+tokens as `max_output_tokens` for ordinary steps; model versions created before
+this field existed retain their previous output allowance until re-registered.
+An optional `provider_max_output_tokens` declares the provider's independent
+completion ceiling. Summary output uses its own policy and one eighth of the
+window, capped by that ceiling when present; it does not inherit the ordinary
+step budget.
 
 A model definition that sets `request_estimator: calibrated` scales only the
 byte basis. The ratio is the nearest-rank 99th percentile of reported
@@ -211,8 +213,7 @@ byte basis. The ratio is the nearest-rank 99th percentile of reported
 upstream model slug and Projection Version, plus a 10% margin. The media
 allowance, output reservation and framing are added unscaled, and the result
 never exceeds the byte estimate. With fewer than 20 samples the estimate stays
-the byte estimate. Omitting the field means `bytes`; new registrations write
-`calibrated`. Samples come only from complete, media-free Inference Attempts
+the byte estimate. Omitting the field uses `calibrated`. Samples come only from complete, media-free Inference Attempts
 of Run steps. They are kept Deployment-wide in `estimate_calibration_samples`,
 which holds no Run, Tenant or attempt identifier, and are written in the same
 transaction that completes the Usage Record. Deployment Administrators read per-key aggregates
@@ -283,25 +284,16 @@ the working context. This changes only observation representation; human
 records, other tool results and the underlying audit journal are preserved.
 The conversion commits only when the complete request fits.
 
-Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events and runs through the [decision gate](decision-gate.md) at the compaction boundary (#108). A Run prunes only through the compaction Decider its Agent's Binding names: a `decider` Registry definition whose exact version has a Catalog Approval on the Node. Jev receives a classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events (on `native`, Model Turns), non-tool text, instructions, current task/workspace, memory, and any Execution Summary remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while the original events remain in the Context Journal and complete invocation results remain in PostgreSQL. Every batch of questions sees the same state. Token estimates are conservative and are not provider tokenization.
-
-Each Decider Route fixes its keep threshold, 0.5 for Jev: keep the complete pair when the result probability reaches the threshold; otherwise retain the call with the first 300 result characters and a notice when the call probability reaches it; otherwise drop the pair. Results up to 420 characters are unchanged. The first and latest `preserve_recent` (at least six) events, or Model Turns on `native`, are never classified. On `native` a dropped result is elided under its call, and a Model Turn is removed only as a whole, when every call it ran is dropped and its response has no text.
-
-Jev sees the task's goal, the text of every non-tool event, each tool call's input, and each result only by status and size. The Decider version fixes a state budget in bytes (ADR 0042). Tool inputs are abridged in stages (complete, 200 and 60 characters) until the state fits Jev's default mode: about 32,000 bytes per request, with 24,000 for the state. Only a state that still does not fit after the last stage is sent in OpenRouter's long-context mode, up to 262,144 tokens, which TypeSafe describes as slower and less accurate. A larger state pauses the Run with `decider_unavailable`. Questions are split into requests that each fit the mode their state travels in.
-
-A Decider version lists its Routes in order (ADR 0066). A System One Route's requests go to OpenRouter's System One API, `POST {base}/systemone` under the Provider Catalog base URL (or the Credential Broker's on Cloud), and send `{model,state,questions,provider:{zdr:true}}` with the exact pinned model, such as `typesafe/jev-1.14`; aliases are refused. A Decisions Route's requests go to OpenRouter's Decisions API, `POST {root}/alpha/decisions` beside that base, with the same body and `provider:{zdr:true,only:[hosts],allow_fallbacks:true}`, so OpenRouter routes only among the hosts the Route names, such as `cloudflare/clef` on Cloudflare, DeepInfra and PrimeIntellect. On Cloud the attempt's Capability Token signs those hosts, and the broker refuses a body that names any others. A Decisions response must name one of those hosts. Each request is a Decision Attempt with its own identifier, charged against the Decider version's per-Run call limit (which a Binding can only lower) and, in a generated chain, against every ancestor's call budget: on Cloud its Capability Token names the Run as subject and carries the `decision` operation, and the broker admits only that body shape. A response must name the pinned release or a dated snapshot of it (`typesafe/jev-1.14-20261001`). The reported `usage.cost` is kept with the Decision Attempt and is not a Usage Record. The upstream license notice is listed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
-
-A later Route is asked only when the earlier one was unavailable: a connection failure, a timeout, HTTP 404, 429 or 5xx, an invalid answer, or a state or plan it does not accept. A refusal (HTTP 400, 401, 402, 403 or 413) is the same on every Route, so it stops the decision. When every Route was unavailable for a provider reason, the step is retried after 2, 4, 8, 16 and 32 seconds, each time as a new decision, and then pauses. A bound Decider that cannot run pauses the Run with a typed reason and never falls back to the Summary Stage: `decider_unapproved` when its exact version has no Catalog Approval on the Node, `decider_calls_exhausted` when a call limit is spent, and `decider_unavailable` when the Tenant has no OpenRouter connection, every Route failed through the bounded retry, a Route refused the request, or the state is too large for every Route. A paused Run continues through the ordinary resume control. An Agent without a compaction Decider, or with one in Shadow mode, is not pruned: its Summary Stage may reduce the context on its own, and without one the Run pauses with `context_unreducible`.
-
 ### Context recovery
 
 Every history event a Run records receives a sequence number and is appended to
-the `run_context_events` Context Journal in the same transaction that saves the
-Run. The history sent to the model is a lossy Context Projection of that
-journal: pruning and summaries change the projection, never the journal. Runs
+the `run_context_events` Context Journal no later than the transaction that saves
+the Run. Results selected for offloading are journaled before their marker is
+saved. The history sent to the model is a Context Projection of that journal:
+offloading and summaries change the projection, never the journal. Runs
 saved before the journal existed import their current projection, marked
-`imported`, on their next save or, at the latest, before their first pruning or
-summary, because earlier pruning may already have removed
+`imported`, on their next save or, at the latest, before their first offload or
+summary, because earlier projection changes may already have removed
 events. Message-read and inference coverage, semantic and authorization read
 journals, and pending execution state are kept outside the projection, so
 compaction cannot make an unread source look read or forget a revoked
@@ -309,106 +301,42 @@ dependency. The journal is internal; it is deleted with its Run and is not
 exposed through the public API. The inspection API returns each history event
 with its `seq`, the `journal` cursor and any `execution_summary`.
 
-An Agent version selects its recovery behavior with an immutable
-`context_policy`. Without one, the Run keeps the prune-only behavior above,
-`prune-only/1`, and its provider requests are byte-identical to earlier
-versions; such a Run has no Summary Stage, so it pauses with
-`context_unreducible` when pruning cannot fit its request. The opt-in `context-recovery/1` policy accepts:
+Every Agent uses Context Recovery. An immutable `context_policy` can override
+its defaults; omitted or null settings use the same pipeline on Native, Ordered
+and Legacy projections.
 
-| Field                 | Default | Bounds                | Meaning                                                                                           |
-| --------------------- | ------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `preserve_recent`     | 6       | 6–1000                | Latest events (Model Turns on `native`) that are never pruned or summarized                       |
-| `overflow_retries`    | 2       | 0–4                   | Compact-and-retry attempts after a provider Context Overflow                                      |
-| `overflow_shrink`     | 0.75    | 0.5–0.9               | Factor applied to the effective window on each overflow retry                                     |
-| `summary.model`       | none    | exact model reference | Separately approved summarizer; enables the Summary Stage                                         |
-| `summary.max_tokens`  | 4,096   | 256–4,096             | Summary output bound, further capped at an eighth of the window and the summarizer's output limit |
-| `summary.call_budget` | 8       | 1–64                  | Summary requests per Run, including failed attempts                                               |
+| Field                      | Default | Bounds    | Meaning                                                          |
+| -------------------------- | ------- | --------- | ---------------------------------------------------------------- |
+| `preserve_recent`          | 6       | 6–1000    | Recent events or Model Turns protected when their size permits   |
+| `offload_target`           | 0.7     | 0.5–0.9   | Target fraction of the window for a batch of Offloaded Results   |
+| `protected_tail_fraction`  | 0.25    | 0.05–0.5  | Maximum window share of the protected recent tail                |
+| `reread_immunity_steps`    | 3       | 1–100     | Steps during which a read-back result is protected               |
+| `reread_summary_threshold` | 3       | 2–100     | Repeated reads that request a Summary Stage and notify the Agent |
+| `overflow_retries`         | 2       | 0–4       | Retries after a proven provider Context Overflow                 |
+| `overflow_shrink`          | 0.75    | 0.5–0.9   | Factor applied to the effective window per retry                 |
+| `summary.max_tokens`       | 4,096   | 256–4,096 | Summary output limit, capped by the window and provider ceiling  |
+| `summary.call_budget`      | 8       | 1–64      | Summary calls per Run, including failed attempts                 |
 
-The pipeline is fixed: fit check, pruning through the compaction Decider, the
-optional Summary Stage, then complete-request validation. A bound Decider that
-cannot run pauses the Run with its typed reason; the Summary Stage never stands
-in for it. An applied pruning saves the pruned context, which ends the step.
-When pruning cannot fit the request, the Summary Stage continues from the pruned
-projection and merges eligible older events into the structured Execution
-Summary; the Decider's decision is then recorded as `staged` in the same
-transaction that adopts the summary, or as rejected when no summary is adopted
-(ADR 0056). It absorbs only `tool` events
-that are older than the protected tail and were already part of an accepted
-inference request. Human answers, corrections, continuation markers and
-`model_media_observation` events, whose source messages a summary could not
-recheck, always stay verbatim. So do `workspace_observe` pages and workspace
-record reads other than message reads, whose records are visible one by one
-while a summary rechecks only message sources. On the `native` Projection
-Version the unit is a Model Turn: an `assistant` event and the `tool` events of
-its calls are absorbed together or not at all, and Jev elides a dropped result
-under its call instead of removing the call. The summarizer receives only the
-task, the previous summary and the absorbed events, with no tools and a JSON
-schema response format. Each merge
-copies the previous goal verbatim and
-keeps the previous summary's constraints and unresolved items under their IDs,
-in the same list and with unchanged text, unless it lists them as resolved;
-a changed or moved item is rejected, and a resolved ID must leave both active
-lists. A resolution's `resolved_by` and every new
-`verification` reference must be the exact ID of a tool call the merge absorbs,
-and a new verification's outcome must equal a complete value of that call's
-result, so a claim the result does not state is rejected;
-previous decisions, resolved and verification entries must be carried
-unchanged, so a retired ID never returns. A new artifact's reference, and its
-revision when one is given, must each equal a complete argument or result value
-of one absorbed event, so `src/parser.rs.bak` never proves `src/parser.rs`; a
-previous artifact is carried unchanged unless the merge's history states a
-newer, non-empty revision of the same reference. It records the
-exact journal range, the absorbed sequence ranges (entries pruned between them
-were never absorbed), and the absorbed entries' digest, and carries the sources
-it depends on. A summary is adopted only if it validates, strictly shrinks the
-complete request and makes it fit. A `summary` text stored before the journal
-existed stays model-visible verbatim.
+Large tool results are journaled before their projection becomes a short
+Offloaded Result marker. The marker retains the first 300 characters of the
+result as data, identifies its Journal sequence, and points to Journal Query
+or its fallback; the original call remains paired with it.
+If the request still does not fit, older results are offloaded in a batch. The
+latest Native Model Turn stays intact, and the protected tail is bounded by
+size as well as count. The Context Journal remains the source of the original.
 
-Every summary request is recorded in `context_compaction_attempts` before any
-provider I/O. The summarizer must be the exact model pinned in the Run's Binding
-snapshot. Local Runs need its catalog approval. Generated chains need every
-ancestor to approve it and are charged per ancestor before I/O. Remote
-Runs need a summarizer pin and a summary allowance: the semantic
-request's optional `summarizer` must name the Agent's pinned `summary.model`, the
-Home discloses it as the binding's `summarizer` provider, and each request is
-admitted with usage purpose `summary` against every owner's `summary` (or
-`remote.summary`) allowance. The Home accepts the request only when the
-executor's own inspected Agent pins that `summary.model`; an executor whose
-Agent schema predates `context_policy` cannot resolve such an Agent, so Nodes
-without the field never receive it. An Agent without Home semantic retrieval
-sends the pin in a `disabled` semantic request; the Home then authorizes the
-remote execution and `semantic.disclose` for the summarizer, never `semantic.search`
-or its index and embedding provider, and binds `disabled` with only that pin. The
-Home accepts only the approved maximum charge: the pinned summarizer's context
-window plus `summary.max_tokens` capped at its output limit.
-Disclosure is checked before every request. A missing approval makes the stage unavailable,
-with no fallback. Every source the candidate depends on is rechecked before
-its reservation, so an already revoked source charges nothing, and again once
-the reservation holds and before the request leaves the Node; a revoked source
-settles the attempt as unauthorized without calling the summarizer, and a held
-reservation is released: a local charge is refunded whole, and a dispatch the
-Home already admitted settles with unknown usage. Adoption
-saves the Run and marks the attempt adopted in one
-lease-fenced transaction, after the Run's inference authority, every
-summarizer approval above and every source the candidate depends on
-(including those carried from the previous summary) are rechecked without
-charging another call; a summarizer or source revoked during its call is
-never adopted. A Run without an authority guard still rechecks every source
-after the call. Malformed, empty,
-non-reducing, unauthorized or interrupted summaries leave the saved context
-unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
-by lease recovery. If a source the summary depends on is no longer readable, the
-summary is discarded and the original journal events it absorbed return to the
-saved projection, and the step pauses for authority before Jev or the model
-receives them. The context keeps the discarded summary's dependencies, so
-every later step pauses the same way until each source is readable again.
-Message sources are the targets of absorbed message reads.
-A local Run rechecks message dependencies under its current authority without
-recording a read; a remote Run rechecks them through the Home's filtered record
-reads. An authority-bearing Run rechecks them again after pruning, whose Jev
-I/O releases its authority, before the summarizer or the model is called, and
-after the model call, which releases it as well, before its response is
-accepted; a source revoked during that call discards the response.
+If offloading is insufficient, the Summary Stage uses the Agent's own pinned
+model and ordinary inference authority and allowance. Code copies the goal from
+the Run's pinned Task and people's words and observed outcomes from the Journal;
+the model supplies only
+per-call labels and prose. Unsupported labels are dropped, while omitting an
+item of a previous summary rejects the merge. Each adopted merge records its
+source ranges and dependencies and normally must reduce the projection; several
+merges can progressively fit a request. A repeated-read summary may grow a
+request that still fits. Summary requests are recorded before provider
+I/O. Source authority is checked before dispatch and again before adoption; a
+revoked summary is discarded and its Journal originals restored. A request
+pauses with `context_unreducible` only when no eligible reduction can fit it.
 
 Provider failures are classified before recovery. An OpenRouter `400` or `413`
 whose message reports the maximum context length is a Context Overflow; a `413`
@@ -428,12 +356,10 @@ the call's token reservation. A paused Run's typed reason is reported as
 `context_reason` by run management and by remote execution status and control.
 Other `4xx` responses keep their
 existing handling, and transport errors keep their bounded retry. OpenRouter
-requests from an Agent with a Context Policy, including its Summary Stage
-requests, set `transforms: []`, so the provider never compresses them on its
-own. Prune-only Agents keep their unchanged request body and OpenRouter's
-default transforms.
+requests from every Agent, including its Summary Stage requests, set
+`transforms: []`, so the provider never compresses them on its own.
 
-Metrics: `aidash_context_compaction_total{stage,outcome}` counts prune and
+Metrics: `aidash_context_compaction_total{stage,outcome}` counts offload and
 summary outcomes (`applied`, `insufficient`, `unavailable`, `invalid`,
 `unauthorized`, `revoked`), `aidash_context_compaction_tokens{stage,phase}`
 records estimated sizes before and after, and

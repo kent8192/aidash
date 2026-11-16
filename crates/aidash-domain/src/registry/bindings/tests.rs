@@ -29,6 +29,97 @@ mod agent_plugins;
 fn agent() -> AgentBindings {
 	serde_json::from_value(json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."})).unwrap()
 }
+
+#[test]
+fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
+	let node = "aidash://node-a";
+	let mut config = agent();
+	let defaults = config.normalize(node).unwrap();
+	let memories: Vec<_> = defaults
+		.iter()
+		.filter(|binding| binding.binding.kind == BindingKind::Memory)
+		.collect();
+	assert_eq!(memories.len(), 1);
+	assert_eq!(memories[0].binding.target.id, "aidash.memory");
+	assert_eq!(memories[0].binding.target.version, "1.0.0");
+	assert_eq!(memories[0].origin, BindingOrigin::Default);
+	config.bindings.push(Binding {
+		kind: BindingKind::Memory,
+		target: QualifiedRef {
+			registry_deployment: node.into(),
+			id: "custom-memory".into(),
+			version: "1.0.0".into(),
+		},
+		alias: None,
+		narrow: Narrowing::default(),
+		members: vec![],
+		exposure: None,
+	});
+	let bound = config.normalize(node).unwrap();
+	let memories: Vec<_> = bound
+		.iter()
+		.filter(|binding| binding.binding.kind == BindingKind::Memory)
+		.collect();
+	assert_eq!(memories.len(), 1);
+	assert_eq!(memories[0].binding.target.id, "custom-memory");
+	assert_eq!(memories[0].origin, BindingOrigin::Explicit);
+}
+
+#[test]
+fn builtin_memory_algorithms_are_internal_but_custom_provider_roles_are_dependencies() {
+	let entry = memory_defaults::definitions()
+		.unwrap()
+		.into_iter()
+		.find(|entry| entry.kind == "memory")
+		.unwrap();
+	let identity = QualifiedRef::builtin("aidash://node-a", "memory");
+	let references = definition_references(&identity, &entry).unwrap();
+	assert!(
+		!references
+			.iter()
+			.any(|(_, kind)| kind == "reranker" || kind == "tokenizer")
+	);
+	let mut custom = entry.clone();
+	custom.id = "tenant.memory".into();
+	let references = definition_references(&identity, &custom).unwrap();
+	assert!(
+		references
+			.iter()
+			.any(|(target, kind)| target.id == memory_defaults::RERANKER_ID && kind == "reranker")
+	);
+	assert!(
+		references
+			.iter()
+			.any(|(target, kind)| target.id == memory_defaults::TOKENIZER_ID && kind == "tokenizer")
+	);
+}
+
+#[test]
+fn agent_model_roles_do_not_add_registry_dependencies() {
+	let mut policy: Value = serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/native_memory_policy_baseline.json"
+	))
+	.unwrap();
+	for role in ["extraction", "derivation", "reflection"] {
+		policy[role] = json!("agent_model");
+	}
+	policy["embedding"] = Value::Null;
+	policy["reranker"] = json!({"id":"rrf","version":"1.0.0"});
+	policy["tokenizer"] = json!({"id":"utf8","version":"1.0.0"});
+	let entry: Entry = serde_json::from_value(json!({"id":"memory","version":"1.0.0","kind":"memory","name":{"en":"Memory"},"description":{"en":"Memory"},"config":{"engine":"hindsight_rust","policy":policy}})).unwrap();
+	let identity = QualifiedRef {
+		registry_deployment: "aidash://node-a".into(),
+		id: "memory".into(),
+		version: "1.0.0".into(),
+	};
+	let refs = definition_references(&identity, &entry).unwrap();
+	assert_eq!(
+		refs.iter()
+			.map(|(reference, kind)| (reference.id.as_str(), kind.as_str()))
+			.collect::<Vec<_>>(),
+		vec![("rrf", "reranker"), ("utf8", "tokenizer")]
+	);
+}
 #[rstest::rstest]
 fn agent_config_rejects_removed_cluster_field() {
 	let input = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","cluster":null});
@@ -60,6 +151,13 @@ fn legacy_and_mixed_schemas_are_rejected() {
 		.is_err()
 	);
 }
+#[test]
+fn obsolete_compaction_default_is_rejected() {
+	let mut definition = agent();
+	definition.remove_default.push("compaction".into());
+	assert!(definition.validate().is_err());
+}
+
 #[test]
 fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	let mut agent = agent();
@@ -96,14 +194,11 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
-	let old = config
-		.normalize_version("aidash://node-a", None, true)
-		.unwrap();
+	let old = config.normalize_version("aidash://node-a", true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
 		registry_deployment: "aidash://node-a".into(),
-		compaction_override: None,
 		bindings: old.clone(),
 	});
 	assert_eq!(entry.normalized_bindings("aidash://node-a").unwrap(), old);
@@ -127,12 +222,11 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	let node = "aidash://node-a";
 	let config = agent();
-	let old = config.normalize_version(node, None, true).unwrap();
+	let old = config.normalize_version(node, true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"schema":{},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
 		registry_deployment: node.into(),
-		compaction_override: None,
 		bindings: old.clone(),
 	});
 	assert!(!entry.supports_thread_attachment_selection(node).unwrap());
@@ -206,7 +300,7 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 	);
 }
 #[test]
-fn memory_builtins_stay_default_bindings_and_explicit_ones_need_a_memory() {
+fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let memory_tools = |agent: &AgentBindings| -> Vec<BindingOrigin> {
 		agent
 			.normalize("aidash://node-a")
@@ -220,12 +314,12 @@ fn memory_builtins_stay_default_bindings_and_explicit_ones_need_a_memory() {
 			.map(|b| b.origin)
 			.collect()
 	};
-	// The snapshot records them so it can say why they are excluded.
+	// They are offered with the built-in provider by default.
 	let mut agent = agent();
 	assert_eq!(memory_tools(&agent), vec![BindingOrigin::Default; 3]);
 	let explicit = Binding::tool(QualifiedRef::builtin("aidash://node-a", "memory_recall"));
 	agent.bindings.push(explicit.clone());
-	assert!(agent.validate().is_err());
+	agent.validate().unwrap();
 	agent.bindings.push(Binding {
 		kind: BindingKind::Memory,
 		target: QualifiedRef {

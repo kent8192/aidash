@@ -209,6 +209,15 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	let (_, cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
 	assert_eq!(cards["items"][0]["requester"], "alice");
 	assert_eq!(cards["items"][0]["approver"], "bob");
+	assert_eq!(cards["items"][0]["viewer_can_decide_inline"], false);
+	let (_, requester_cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
+	let requester_card = requester_cards["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|card| card["id"] == pending["approval_id"])
+		.unwrap();
+	assert_eq!(requester_card["viewer_can_decide_inline"], false);
 	let revoke = withdrawal != "none";
 	if revoke {
 		if withdrawal == "attribute" {

@@ -15,17 +15,9 @@ pub struct GenerationBudget {
 	#[field(default = 0)]
 	pub used_tokens: i64,
 	#[field(default = 0)]
-	pub compaction_call_limit: i64,
-	#[field(default = 0)]
-	pub compaction_calls: i64,
-	#[field(default = 0)]
 	pub embedding_call_limit: i64,
 	#[field(default = 0)]
 	pub embedding_calls: i64,
-	#[field(default = 0)]
-	pub summary_call_limit: i64,
-	#[field(default = 0)]
-	pub summary_calls: i64,
 }
 
 impl GenerationBudget {}

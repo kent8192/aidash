@@ -65,7 +65,8 @@ pub async fn sessions(repository: &dyn SandboxRepository, id: Uuid) -> Result<Ve
 	scope
 		.authorize_draft(&draft, "agent_draft.read", true)
 		.await?;
-	let rows = scope.sessions(id).await?;
+	let mut rows = scope.sessions(id).await?;
+	approval::reveal(scope.as_mut(), &draft, &mut rows).await?;
 	scope.commit().await?;
 	Ok(rows)
 }
@@ -76,12 +77,15 @@ pub async fn stop(repository: &dyn SandboxRepository, id: Uuid) -> Result<TestSe
 	scope
 		.authorize_draft(&draft, "agent_draft.test", true)
 		.await?;
-	let result = scope.stop(id).await?;
+	let mut result = scope.stop(id).await?;
 	scope.commit().await?;
+	approval::conceal(&mut result);
 	Ok(result)
 }
 #[cfg(test)]
 mod tests;
+
+pub mod approval;
 
 pub mod dispatch;
 

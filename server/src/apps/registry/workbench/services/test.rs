@@ -26,6 +26,26 @@ pub async fn provide_test(#[inject] runtime: Federation) -> BehavioralTests {
 }
 
 impl BehavioralTests {
+	pub(crate) async fn answer_approval(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		input: crate::apps::registry::workbench::serializers::test::TestApprovalAnswer,
+	) -> Result<TestSession> {
+		use crate::apps::registry::workbench::serializers::test::TestApprovalChoice;
+		use aidash_application::registry::workbench::sandbox::approval;
+		approval::answer(
+			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+			id,
+			input.approval_id,
+			match input.choice {
+				TestApprovalChoice::AllowOnce => approval::Choice::AllowOnce,
+				TestApprovalChoice::Deny => approval::Choice::Deny,
+			},
+		)
+		.await
+		.map_err(Into::into)
+	}
 	pub(crate) async fn get_limits(&self, actor: Actor, id: Uuid) -> Result<TestLimits> {
 		Ok(
 			aidash_application::registry::workbench::sandbox::get_limits(
@@ -130,6 +150,8 @@ impl BehavioralTests {
 			.await?;
 			return Err(error.into());
 		}
-		Ok(admitted.session)
+		let mut session = admitted.session;
+		aidash_application::registry::workbench::sandbox::approval::conceal(&mut session);
+		Ok(session)
 	}
 }
