@@ -37,7 +37,7 @@ test("subject transaction controls survive a barrier and discard revoked detail"
       ? route.fulfill({ status: 403, json: { error: "permission revoked" } })
       : route.fulfill({ json: { transaction, participants: [], history: [] } });
   });
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     barrier
       ? route.fulfill({
           status: 503,
@@ -95,7 +95,7 @@ test("authority controls distinguish pending revocation while ordinary data is u
 }) => {
   await setup(page, { administrator: true });
   let pending = true;
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     route.fulfill({
       status: 503,
       json: { error: "atomic transaction visibility pending" },
@@ -242,7 +242,7 @@ test("subjects compose transactions in their selected local Node", async ({
     error: null,
     updated_at: workspaces[index].created_at,
   }));
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     route.fulfill({
       json: {
         access: { kind: "subject", tenant: "acme", subject: "alice" },
@@ -260,6 +260,14 @@ test("subjects compose transactions in their selected local Node", async ({
         ],
         registry: [],
         conversations: [],
+        next_cursors: {
+          workspaces: null,
+          tasks: null,
+          runs: null,
+          artifacts: null,
+          human_requests: null,
+          conversations: null,
+        },
         human_requests: [],
         events: [],
         artifacts: [],

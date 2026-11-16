@@ -351,6 +351,7 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	assert_eq!(card["kind"], "disclosure");
 	assert_eq!(card["action"], "research.disclose");
 	assert_eq!(card["state"], "pending");
+	assert_eq!(card["viewer_can_decide_inline"], true);
 	assert_eq!(
 		card["disclosure"], QUERY,
 		"the approver sees the exact query"
@@ -414,6 +415,18 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 		.collect::<std::collections::BTreeMap<_, _>>();
 	assert_eq!(states[&first.to_string()], "consumed");
 	assert_eq!(states[&second.to_string()], "pending");
+	// A decided card is no longer offered inline; the new pending one is.
+	let inline = |id: Uuid| {
+		approvals["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["id"] == json!(id))
+			.unwrap()["viewer_can_decide_inline"]
+			.clone()
+	};
+	assert_eq!(inline(first), false);
+	assert_eq!(inline(second), true);
 	assert_eq!(
 		r.requests.load(Ordering::SeqCst),
 		2,
@@ -680,6 +693,7 @@ async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_a
 	assert_eq!(card["targets"], json!(["example.com"]));
 	assert_eq!(card["area_id"], area["id"]);
 	assert_eq!(card["viewer_is_approver"], true);
+	assert_eq!(card["viewer_can_decide_inline"], true);
 	assert!(card.get("account_id").is_none(), "{card}");
 	r.close().await;
 }

@@ -470,12 +470,12 @@ pub struct RecoveryState {
 	/// Consecutive Lease Recoveries of the current step.
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub lease_recoveries: u32,
-	/// How many times a person resumed this Run from a pause. A compaction
-	/// decision commits to it, so a resume starts a new decision while a
+	/// How many times a person resumed this Run from a pause. A decision
+	/// commits to it, so a resume starts a new decision while a
 	/// recovered lease continues the same one (#108).
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub decision_cycle: u32,
-	/// Outage retries of the current step's compaction decision after every
+	/// Outage retries of the current step's decision after every
 	/// Decider Route failed. A decision commits to it, so each retry asks the
 	/// Routes again; it is reset once the step saves anything else (ADR 0066).
 	#[serde(default, skip_serializing_if = "is_zero")]

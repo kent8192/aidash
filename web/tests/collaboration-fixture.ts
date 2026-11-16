@@ -116,6 +116,14 @@ export function fixture(reference = false) {
     events: [],
     artifacts: [] as Artifact[],
     installations: [],
+    next_cursors: {
+      workspaces: null,
+      tasks: null,
+      runs: null,
+      artifacts: null,
+      human_requests: null,
+      conversations: null,
+    },
     human_requests: [
       {
         id: "question-one",
@@ -600,7 +608,19 @@ export async function setup(
     if (path === "/api/session")
       return route.fulfill({ json: { access, node_id: data.deployment.id } });
     if (path === "/api/state")
-      return route.fulfill({ json: { ...data, access } });
+      return route.fulfill({
+        json: {
+          ...data,
+          human_requests: data.human_requests.filter(
+            (request) => request.response === null,
+          ),
+          access,
+        },
+      });
+    if (path === "/api/human-requests" && request.method() === "GET")
+      return route.fulfill({
+        json: { items: data.human_requests, next_cursor: null },
+      });
     if (path === "/api/tenants/acme/nodes")
       return route.fulfill({
         json: [
@@ -840,6 +860,18 @@ export async function setup(
         return route.fulfill({ json: data.human_requests[0] });
       }
     }
+    const runsWorkspace = path.match(/^\/api\/workspaces\/([^/]+)\/runs$/)?.[1];
+    if (runsWorkspace)
+      return route.fulfill({
+        json: {
+          items: data.runs.filter(
+            (run) =>
+              run.workspace_id === runsWorkspace &&
+              !["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase),
+          ),
+          next_cursor: null,
+        },
+      });
     const workspace = data.workspaces.find(
       (value) => path === `/api/workspaces/${value.id}`,
     );

@@ -57,7 +57,7 @@ pub(crate) async fn record_revision(
 	area: &Area,
 	manifest: &Value,
 ) -> NativeResult<()> {
-	crate::database::native::query(
+	let inserted = crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("core_manifest_revisions"))
 			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
@@ -76,7 +76,8 @@ pub(crate) async fn record_revision(
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(&mut **tx)
-	.await?;
+	.await?
+	.rows_affected();
 	let stored: Value = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("manifest"))
@@ -91,48 +92,55 @@ pub(crate) async fn record_revision(
 	if stored != *manifest {
 		return Err(NativeError::Conflict("AREA_REVISION_CHANGED".into()));
 	}
+	// Revision and references are inserted in the same transaction. An existing
+	// revision therefore already owns its references, including an empty one.
+	if inserted == 0 {
+		return Ok(());
+	}
 	let mut entries: Vec<FileEntry> = serde_json::from_value(manifest.clone())?;
 	entries.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
-	for file in entries {
-		let holder = format!("{}:{}:{}", area.id, area.revision, file.file_id);
-		crate::database::native::query(
-			&Query::insert()
-				.into_table(Alias::new("core_blob_references"))
-				.columns(
-					[
-						"id",
-						"tenant",
-						"digest",
-						"holder_kind",
-						"holder_id",
-						"object_id",
-						"area_id",
-						"revision",
-					]
-					.map(Alias::new),
-				)
+	// Bound statement size independently of the maximum Working Area size.
+	const REFERENCE_BATCH_SIZE: usize = 256;
+	for batch in entries.chunks(REFERENCE_BATCH_SIZE) {
+		let mut insert = Query::insert();
+		insert
+			.into_table(Alias::new("core_blob_references"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"digest",
+					"holder_kind",
+					"holder_id",
+					"object_id",
+					"area_id",
+					"revision",
+				]
+				.map(Alias::new),
+			);
+		for file in batch {
+			let holder = format!("{}:{}:{}", area.id, area.revision, file.file_id);
+			insert
 				.values(vec![
 					Uuid::new_v4().into(),
 					tenant.to_owned().into(),
-					file.digest.into(),
+					file.digest.clone().into(),
 					"revision".into(),
 					holder.into(),
 					file.file_id.into(),
 					area.id.into(),
 					area.revision.into(),
 				])
-				.map_err(NativeError::Invalid)?
-				.on_conflict(
-					OnConflict::columns(
-						["tenant", "digest", "holder_kind", "holder_id"].map(Alias::new),
-					)
-					.do_nothing()
-					.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
+				.map_err(NativeError::Invalid)?;
+		}
+		insert.on_conflict(
+			OnConflict::columns(["tenant", "digest", "holder_kind", "holder_id"].map(Alias::new))
+				.do_nothing()
+				.to_owned(),
+		);
+		crate::database::native::query(&insert.to_string(PostgresQueryBuilder))
+			.execute(&mut **tx)
+			.await?;
 	}
 	Ok(())
 }

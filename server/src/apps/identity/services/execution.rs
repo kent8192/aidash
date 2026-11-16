@@ -1481,6 +1481,55 @@ impl WorkerAuthority {
 		restore_outer(&mut outer, store, run, result).await
 	}
 
+	pub async fn memory_hydrate(
+		&self,
+		store: &Store,
+		run: &Run,
+		sources: &[aidash_domain::memory::Evidence],
+	) -> Result<serde_json::Value> {
+		let mut outer = self.access.write().await;
+		if outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result =
+				crate::semantic::native_memory::run_hydrate(store, &mut lease, run, sources).await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
+	}
+
+	pub async fn memory_start_recall(
+		&self,
+		store: &Store,
+		run: &Run,
+		query: aidash_domain::memory::RecallQuery,
+	) -> Result<crate::semantic::native_memory::Outcome> {
+		let mut outer = self.access.write().await;
+		if outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result =
+				crate::semantic::native_memory::run_start_recall(store, &mut lease, run, query)
+					.await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
+	}
+
 	pub async fn assign(
 		&self,
 		f: &Federation,
@@ -1781,12 +1830,23 @@ impl WorkerAuthority {
 			return access.finish(Ok(previous)).await;
 		}
 		let result: Result<Value> = match command {
-			Command::Task { id, title, request } => {
-				subnodes::task(&mut scope, &run.metadata(), *id, key, title, request)
-					.await
-					.map(|task| json!({"task_id":task}))
-					.map_err(Into::into)
-			}
+			Command::Task {
+				id,
+				title,
+				request,
+				journal_range,
+			} => subnodes::task(
+				&mut scope,
+				&run.metadata(),
+				*id,
+				key,
+				title,
+				request,
+				*journal_range,
+			)
+			.await
+			.map(|task| json!({"task_id":task}))
+			.map_err(Into::into),
 			Command::Add { id, agent } => {
 				subnodes::add_member(&mut scope, &run.metadata(), *id, agent)
 					.await
@@ -2538,109 +2598,6 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
-	/// The compaction Decider a remote or generated Run must use instead of its
-	/// Agent's Binding: the Decider pinned for this executing Node, or the one
-	/// every generated ancestor's policy names (ADR 0042).
-	pub(crate) async fn chain_decider(
-		&self,
-		f: &Federation,
-	) -> aidash_application::Result<aidash_application::generation::compaction::Chain> {
-		use aidash_application::generation::compaction::{self, Chain, remote};
-		let mut access = self.access.write().await;
-		if let Some(federation) = &self.remote {
-			let mut scope =
-				crate::bootstrap::generation_remote_compaction_scope(&mut access, federation);
-			return Ok(Chain::Generated(
-				remote::decider(&mut scope, &self.run).await?.map(Box::new),
-			));
-		}
-		compaction::decider(
-			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			f.store.deployment.as_str(),
-			&self.generation_context(),
-		)
-		.await
-	}
-
-	/// Charge the owners beside the Run itself for one Decision Attempt: the
-	/// Home of a remote Run, or every generated ancestor. Returns their receipts
-	/// and, for a remote Run, the Home's open reservation to settle once the
-	/// attempt's result is kept.
-	pub(crate) async fn charge_decision(
-		&self,
-		f: &Federation,
-		decider: &EntityRef,
-		config: &aidash_domain::decision::DeciderConfig,
-		attempt: Uuid,
-		request_digest: &str,
-		questions: usize,
-	) -> aidash_application::Result<(
-		std::collections::BTreeMap<String, Uuid>,
-		Option<aidash_domain::generation::dispatch::Input>,
-	)> {
-		use aidash_application::generation::compaction::{self, remote};
-		let mut access = self.access.write().await;
-		if let Some(federation) = &self.remote {
-			let mut scope =
-				crate::bootstrap::generation_remote_compaction_scope(&mut access, federation);
-			let reservation = remote::admit(
-				&mut scope,
-				&self.run,
-				attempt,
-				request_digest.to_owned(),
-				config,
-			)
-			.await?;
-			// The Home correlates its reservation by the Decision Attempt, so
-			// that, not the shared remote Run, is the receipt.
-			return Ok((
-				std::collections::BTreeMap::from([(
-					format!("home/runs/{}", self.run.id),
-					reservation.usage.attempt_id,
-				)]),
-				Some(reservation),
-			));
-		}
-		let tenancy = access.tenancy()?;
-		let bytes = i64::try_from(config.max_request_bytes()).map_err(|_| {
-			aidash_application::Error::Invalid("decision request bound overflow".into())
-		})?;
-		let questions = i32::try_from(questions).map_err(|_| {
-			aidash_application::Error::Invalid("too many decision questions".into())
-		})?;
-		let receipts = compaction::charge(
-			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&crate::bootstrap::generation_compaction_repository(&f.store, tenancy),
-			&self.generation_context(),
-			decider,
-			attempt,
-			bytes,
-			questions,
-		)
-		.await?;
-		Ok((receipts, None))
-	}
-
-	/// Settle the Home's reservation of a remote Decision Attempt.
-	pub(crate) async fn settle_decision(
-		&self,
-		reservation: &aidash_domain::generation::dispatch::Input,
-	) -> aidash_application::Result<()> {
-		let federation = self
-			.remote
-			.as_ref()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		let mut access = self.access.write().await;
-		let mut scope =
-			crate::bootstrap::generation_remote_compaction_scope(&mut access, federation);
-		aidash_application::generation::compaction::remote::settle(
-			&mut scope,
-			&self.run,
-			reservation,
-		)
-		.await
-	}
-
 	pub async fn reserve_inference(
 		&self,
 		store: &Store,
@@ -2660,56 +2617,6 @@ impl Guard {
 			window,
 			output,
 			request,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
-	/// Authorize the exact pinned summarizer and charge every allowance
-	/// before the Summary Stage request leaves this node.
-	pub async fn reserve_summary(
-		&self,
-		f: &Federation,
-		attempt: Uuid,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		window: usize,
-		output: u32,
-		request: &crate::provider::ModelRequest,
-	) -> Result<Option<crate::generation::budget::InferenceReservation>> {
-		let request_bytes = serde_json::to_vec(request)?.len().max(1) as i64;
-		aidash_application::execution::summary::authorize(
-			&SummaryApproval { guard: self, f },
-			summarizer,
-			request_bytes,
-		)
-		.await?;
-		aidash_application::execution::admission::reserve(
-			&crate::bootstrap::summary_admission_repository(
-				&f.store,
-				self.remote.as_ref(),
-				&self.access,
-				&self.run,
-			),
-			attempt,
-			window,
-			output,
-			request,
-		)
-		.await
-		.map_err(aidash_application::execution::summary::classify)
-		.map_err(Into::into)
-	}
-
-	/// Repeat every `reserve_summary` approval for the exact summarizer without
-	/// charging another call; a revoked summarizer's output is never adopted.
-	pub async fn recheck_summary(
-		&self,
-		f: &Federation,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		aidash_application::execution::summary::recheck(
-			&SummaryApproval { guard: self, f },
-			summarizer,
 		)
 		.await
 		.map_err(Into::into)
@@ -2831,106 +2738,6 @@ impl Guard {
 			.map_err(|_| Error::Conflict("execution boundary still in use".into()))?
 			.into_inner();
 		access.finish(result).await
-	}
-}
-
-/// Summary Stage approvals under the Guard's retained worker authority.
-struct SummaryApproval<'a> {
-	guard: &'a Guard,
-	f: &'a Federation,
-}
-#[async_trait::async_trait]
-impl aidash_application::ports::execution::summary::SummaryAuthorization for SummaryApproval<'_> {
-	fn remote(&self) -> bool {
-		self.guard.remote.is_some()
-	}
-	fn node_id(&self) -> &str {
-		self.f.config.deployment.as_str()
-	}
-	async fn refresh(&self) -> aidash_application::Result<()> {
-		self.guard.refresh_remote().await.map_err(Into::into)
-	}
-	async fn remote_binding(
-		&self,
-	) -> aidash_application::Result<aidash_domain::semantic::remote::Binding> {
-		use aidash_application::ports::generation::compaction::remote::RemoteCompactionAuthority as _;
-		let remote = self.guard.remote.as_ref().ok_or(Error::Forbidden)?;
-		let mut access = self.guard.access.write().await;
-		let mut scope = crate::bootstrap::generation_remote_compaction_scope(&mut access, remote);
-		// Reacquire the Home's current lease before reading its disclosed pins.
-		scope.suspend().await?;
-		if !scope.refresh(&self.guard.run).await? {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		let description: aidash_domain::federation::execution::Description =
-			serde_json::from_value(scope.description(self.guard.run.id).await?)?;
-		Ok(description.semantic)
-	}
-	async fn catalog_entry(
-		&self,
-		model: &EntityRef,
-		action: &str,
-	) -> aidash_application::Result<crate::registry::Entry> {
-		let mut access = self.guard.access.write().await;
-		catalog::entry(&mut access, model, action)
-			.await
-			.map_err(Into::into)
-	}
-	async fn charge_generated(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		request_bytes: i64,
-	) -> aidash_application::Result<()> {
-		let mut access = self.guard.access.write().await;
-		let tenancy = access.tenancy()?;
-		aidash_application::generation::summary::reserve(
-			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			&crate::bootstrap::generation_summary_repository(&self.f.store, tenancy),
-			&self.generation_context(),
-			summarizer,
-			request_bytes,
-		)
-		.await
-		.map(|_| ())
-	}
-	async fn recheck_generated(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> aidash_application::Result<()> {
-		let mut access = self.guard.access.write().await;
-		aidash_application::generation::summary::recheck(
-			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
-			self.f.store.deployment.as_str(),
-			&self.generation_context(),
-			summarizer,
-		)
-		.await
-	}
-}
-impl Guard {
-	fn generation_context(&self) -> aidash_domain::generation::compaction::Context {
-		let run = &self.run;
-		aidash_domain::generation::compaction::Context {
-			run: run.id,
-			task: run.task_id,
-			agent: EntityRef {
-				id: run.agent_id.clone(),
-				version: run.agent_version.clone(),
-			},
-		}
-	}
-}
-impl SummaryApproval<'_> {
-	fn generation_context(&self) -> aidash_domain::generation::compaction::Context {
-		let run = &self.guard.run;
-		aidash_domain::generation::compaction::Context {
-			run: run.id,
-			task: run.task_id,
-			agent: EntityRef {
-				id: run.agent_id.clone(),
-				version: run.agent_version.clone(),
-			},
-		}
 	}
 }
 

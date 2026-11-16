@@ -752,6 +752,8 @@ fn prepared_result_views_share_fences_and_deferral() {
 	for fitting in [
 		ResultFitting::WorkspaceRecord,
 		ResultFitting::SkillText,
+		ResultFitting::JournalText,
+		ResultFitting::JournalSearch,
 		ResultFitting::SkillAsset,
 		ResultFitting::CapabilityDescription,
 		ResultFitting::CapabilitySearch,
@@ -797,6 +799,9 @@ fn prepared_result_views_share_fences_and_deferral() {
 			ResultFitting::SkillText | ResultFitting::SkillAsset => {
 				(next.deferred_skill_read, "run.skill_read_deferred")
 			}
+			ResultFitting::JournalText | ResultFitting::JournalSearch => {
+				(next.deferred_skill_read, "run.journal_read_deferred")
+			}
 			ResultFitting::CapabilityDescription => {
 				(next.deferred_skill_read, "run.description_deferred")
 			}
@@ -809,6 +814,18 @@ fn prepared_result_views_share_fences_and_deferral() {
 		assert_eq!(event, expected_event);
 		assert_eq!(deferred.unwrap().call, call);
 	}
+}
+
+#[test]
+fn journal_read_fitting_uses_the_same_limit_as_the_tool() {
+	let mut call = aidash_domain::provider::ToolCall {
+		id: "read".into(),
+		name: "journal_read".into(),
+		arguments: json!({"from_seq":1,"through_seq":4}),
+	};
+	assert_eq!(super::journal_read_range(&call).unwrap().requested, 4000);
+	call.arguments["max_chars"] = json!(4001);
+	assert!(super::journal_read_range(&call).is_err());
 }
 
 #[rstest::rstest]

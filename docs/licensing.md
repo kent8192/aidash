@@ -51,10 +51,9 @@ that an earlier revision granted.
 
 - Before the interim notice, the root `LICENSE` held the MIT notice of
   `tamaratran/fast-jev-compaction`. That notice covered only the Jev-derived
-  portions, not the rest of the repository. It is kept verbatim in
-  [third_party/fast-jev-compaction/LICENSE](../third_party/fast-jev-compaction/LICENSE),
-  and the covered files are listed in
-  [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+  portions, not the rest of the repository. The notice and its former file
+  mapping remain in earlier Git revisions; the adapted material has since
+  been removed.
 - `aidash-broker` and `aidash-capability` declared Apache-2.0 from 2026-10-09.
   `aidash-capability` stays Apache-2.0. Revisions of `aidash-broker` published
   before the cutover keep Apache-2.0; from 0.1.0 it is part of the Licensed

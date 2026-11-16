@@ -80,8 +80,7 @@ pub struct DecisionAttempt {
 	pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// One immutable Decision Evidence snapshot. A decision has at most one applied,
-/// staged or shadow snapshot; each retry of a rejected decision appends another.
+/// One immutable Decision Evidence snapshot.
 #[model(app_label = "execution", table_name = "decision_evidence")]
 #[derive(Serialize, Deserialize)]
 pub struct DecisionEvidence {
@@ -106,56 +105,6 @@ pub struct DecisionEvidence {
 	pub reason: String,
 	#[field]
 	pub evidence: Json<Value>,
-	#[field(auto_now_add = true)]
-	pub created_at: DateTime<Utc>,
-}
-
-/// The classification state a Decider version asked to keep. Retention cleanup
-/// deletes the row and leaves an expired marker in its evidence.
-#[model(app_label = "execution", table_name = "decision_states")]
-#[derive(Serialize, Deserialize)]
-pub struct DecisionState {
-	#[field(primary_key = true, field_type = "uuid")]
-	pub id: Uuid,
-	#[field(field_type = "text")]
-	pub tenant: String,
-	#[field]
-	pub evidence_id: Uuid,
-	#[field]
-	pub run_id: Uuid,
-	#[field(field_type = "text")]
-	pub digest: String,
-	#[field]
-	pub expires_at: DateTime<Utc>,
-	#[field]
-	pub state: Json<Value>,
-	#[field(auto_now_add = true)]
-	pub created_at: DateTime<Utc>,
-}
-
-/// An appended observation after a decision, never a causal claim about it.
-#[model(app_label = "execution", table_name = "decision_outcomes")]
-#[derive(Serialize, Deserialize)]
-pub struct DecisionOutcome {
-	#[field(primary_key = true, field_type = "uuid")]
-	pub id: Uuid,
-	#[field(field_type = "text")]
-	pub tenant: String,
-	#[field]
-	pub decision_id: Uuid,
-	#[rel(
-		foreign_key,
-		shared_fields = ["tenant"],
-		db_constraint = "decision_outcome_run",
-		db_index = false,
-		on_delete = Cascade,
-		on_update = Restrict
-	)]
-	pub run: ForeignKeyField<crate::apps::execution::models::Run>,
-	#[field(field_type = "text", null = true)]
-	pub next_inference: Option<String>,
-	#[field(field_type = "text")]
-	pub observed_status: String,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

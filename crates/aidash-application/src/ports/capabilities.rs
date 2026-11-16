@@ -79,6 +79,7 @@ pub mod sessions;
 
 pub mod cleanup;
 
+pub mod journal_query;
 pub mod packages;
 pub mod python;
 
