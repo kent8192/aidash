@@ -677,7 +677,13 @@ async fn fire(
 	let access = match Access::begin(&f.store, &identity).await {
 		Ok(access) => access,
 		// The Registrant left the Tenant or lost the credential it acts with.
-		Err(Error::Unauthorized | Error::Forbidden) => {
+		// A refused credential says why since #876; any reason stops it.
+		Err(
+			Error::Unauthorized
+			| Error::CredentialUnauthorized(_)
+			| Error::Forbidden
+			| Error::CredentialForbidden(_),
+		) => {
 			return record_miss(
 				f,
 				tenant,
