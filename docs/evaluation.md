@@ -55,7 +55,7 @@ Cargo fetching crates for the first build. It
    Cache Salt Key, so Ordered Runs are possible;
 4. serves the scripted provider (`scripts/fixed_task_fixture.py`): the model at
    `/v1/chat/completions` and the fixture tools at `/tools/{task}/{alias}`
-   (there is no Jev classifier: the fixture Agents bind no compaction Decider);
+   (the fixture provider is local and scripted);
 5. creates a Tenant, a subject token and one Agent definition per task arm,
    runs every task arm `--repeats` times (default 1) as Tenant-scoped Runs,
    up to `--parallel` (default 4) at a time, reads each Run's Usage Records from
@@ -121,9 +121,8 @@ request shape and Usage Records, not provider prices. Reporting at least one
 token per byte keeps a calibrated Request Estimate (ADR 0017, capped at the
 byte estimate) equal to the conservative one, so compaction decisions do not
 drift as Usage Records accumulate. Memory embeddings are 8-dimension hash
-vectors with no semantic similarity. The fixture Agents bind no compaction
-Decider and have no Summary Stage, so a long-context task stops with
-`context_unreducible` when it outgrows its window. The provider rejects
+vectors with no semantic similarity. The deterministic tier skips the dedicated
+recovery diagnostics; it does not establish live recovery quality. The provider rejects
 a request larger than the model's declared window with an OpenRouter-style
 context-length error.
 
@@ -232,33 +231,12 @@ shorten it. The refusal is recorded in
 dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
-`external_compaction: "disabled"` attests that the evaluated Tenant approves
-no compaction Decider. A Run whose context records an applied compaction then
-violates the declared experiment: the manifest records the error and no further
-Run is dispatched. A bounded auxiliary-work declaration pins exact Decider and
-Summary configurations, call limits and per-call price bounds separately from
-main inference. A declaration alone cannot enforce a provider's monetary cost:
-the Node enforces only the call counts (`max_calls_per_run`, the Context
-Policy's `call_budget`). Live Decider and Summary execution is therefore refused
-unless the approval also sets `"cost_enforcement": "declared-reservation-accepted"`
-inside `external_compaction`. The approver then accepts the declared
-`max_nanocredits_per_call` as a reservation: each Run reserves every permitted
-auxiliary call at that amount against the hard ceiling, and the manifest's
-`harness.jev_classifier` records the acceptance. Pin the Decider to one Route;
-a Decider version with fallback Routes is refused. See the
-[comparison admission requirements](projection-comparison.md#live-admission-and-shared-limits).
-Never replace unknown Decider cost with zero or a reservation amount.
-
-```json
-"external_compaction": {
-  "mode": "bounded",
-  "cost_enforcement": "declared-reservation-accepted",
-  "decider": {"reference": "DECIDER_ID@VERSION", "config_sha256": "<sha256>",
-              "max_calls_per_run": 20, "max_nanocredits_per_call": 5000000},
-  "summary": {"reference": "MODEL_ID@VERSION", "config_sha256": "<sha256>",
-              "max_calls_per_run": 8, "max_nanocredits_per_call": 19814400}
-}
-```
+`external_compaction: "disabled"` selects evaluation without an external
+compaction Decider. Context recovery can still modify the projection and its
+compaction count is recorded without stopping the campaign. Bounded historical
+contracts that name a compaction Decider cannot be used with ADR 0125.
+Summary requests remain subject to the evaluator's declared reservation and
+call limits.
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
 takes no expected credential. The evaluator therefore reads the binding just
@@ -407,15 +385,72 @@ which the ledger reserves or the evaluator cancels.
 are reported as `feature-not-available`. `context-recovery` (#113),
 `parallel-read-tools` (#119) and `streaming` (#120) remain `not-measured` as
 standalone comparisons. The v2 projection comparisons include frozen pruning
-and Summary diagnostics, but the Python deterministic tier has no approved
-fixture Decider route and reports those diagnostic Runs as skipped rather than
-claiming recovery evidence. Actual Rust recovery tests are separate evidence.
-The live tier runs those diagnostics only under an approved bounded
+and Summary diagnostics; the Python deterministic tier reports those diagnostic
+Runs as skipped rather than claiming recovery evidence. Actual Rust recovery
+tests are separate evidence. Live Summary diagnostics require a bounded
 `external_compaction` contract (above). The scripted
 provider does not stream. A comparison whose Agent
 definition the Node rejects at registration is an error and fails the command;
 only with `--allow-unavailable-arms` is it reported as `feature-not-available`
 with the rejection as its `detail`.
+
+### Context recovery corpus and offline prompt optimization
+
+`corpus-context-recovery.toml` includes three pressure tasks. `correction-mid-page`
+places a correction halfway through a fixed-length tool result;
+`relevance-visible-in-input` identifies the relevant document in its tool input;
+`side-effect-ledger` records each page once and the oracle fails on missing,
+failed, out-of-order or repeated ledger calls. The scripted fixture follows the
+same call order and preserves the byte length of the page when splicing in a
+correction. Live runs and task completion must still be measured independently.
+
+Generate probes from a JSON array of Context Journal `{seq, event}` records, or
+flat fixture events. The generator reads explicit `KEY=value` constraints from
+human responses and tool results, keeps the latest scalar value, accumulates
+`EXCLUDE-` values, and extracts explicit identifiers, including tool inputs, and person response text.
+Only tools named with `--side-effect-tool` produce outcome probes. Each probe
+contains a journal sequence, type, question and exact string answer. This is a
+conservative syntax-based extractor, not a semantic parser: inspect its probes
+and supply representative transcripts before drawing conclusions.
+
+```sh
+python3 scripts/context_recovery_probes.py private/journal.json \
+  --side-effect-tool record_note --output private/probes.json
+```
+
+The optimizer uses DSPy model clients and GEPA with two shared candidate strings:
+one Summary prompt and one marker. Each panel model summarizes the same journal
+and answers the generated probes from that summary and marker. Answers are
+matched exactly; the score for each Run is the lowest panel score. GEPA receives
+feedback naming missed probes. The marker must retain `{from_seq}` and
+`{through_seq}`. Results and feedback may contain the source text: keep them in
+`private/` and use synthetic data or Aidash evaluation Runs only.
+
+Examples are a JSON array with unique `id`, `source` (`synthetic` or
+`aidash-evaluation`), `split` (`train`, `validation`, or `test`), `journal`,
+and optional `side_effect_tools`. Test examples also need a boolean
+`task_completed` from an independent task oracle. GEPA sees only train and
+validation; the output groups held-out probe scores by task completion so the
+relationship can be checked before using the score as a proxy. Empty groups and
+small samples do not establish correlation. The optimizer does not run Aidash or
+verify the supplied completion labels. `--max-metric-calls` bounds GEPA metric
+calls, not provider calls or spending: each episode calls every panel model
+for a summary and answers, and reflection plus final validation and held-out
+scoring add calls.
+
+```sh
+# Offline smoke test: fake models and no paid calls.
+uv run --with 'dspy>=3.4,<4' --with 'gepa>=0.0.21' \
+  python scripts/optimize_context_recovery.py --dry-run \
+  --output private/context-recovery-dry-run.json
+
+# An explicit optimization uses the configured provider credentials and may cost money.
+uv run --with 'dspy>=3.4,<4' --with 'gepa>=0.0.21' \
+  python scripts/optimize_context_recovery.py --examples private/recovery-examples.json \
+  --model openrouter/example/family-one --model openrouter/example/family-two \
+  --reflection-model openrouter/example/reflection --max-metric-calls 20 \
+  --output private/context-recovery-result.json
+```
 
 ### Adding a task
 
@@ -477,7 +512,7 @@ The experiment records the Aidash commit, dirty state and diff digest, the
 binary SHA-256, the corpus and memory corpus snapshots, the evaluator identity,
 the model registrations (config digests) and route, every arm's exact Agent,
 model and tool registrations with the Agent fields that differ, the compaction
-and Jev classifier modes, the Provider Credential and disclosure approval digest
+mode, the Provider Credential and disclosure approval digest
 (live), the repeat count, the time, token and spend limits, and the
 reproducibility limitations. The live tier defaults to three repeats. A live experiment always sets
 `model.mutable_alias: true`: an upstream alias can change without notice, and
@@ -563,10 +598,6 @@ utility; this branch measures only the first deterministically.
   exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
-- The live tier reserves Jev compaction and Summary calls only at their declared
-  per-call amounts, which no provider enforces, and only when the approval
-  accepts that. Without a bounded contract it relies on the evaluator's
-  attestation that the evaluated Tenant approves no compaction Decider and stops
-  dispatching when a Run shows an applied compaction.
-- The deterministic tier does not measure pruning: its Agents bind no
-  compaction Decider.
+- The live tier refuses legacy compaction Decider approvals. Its auxiliary
+  reservations are declared amounts, not provider-enforced monetary caps.
+- The deterministic tier does not measure context recovery quality.

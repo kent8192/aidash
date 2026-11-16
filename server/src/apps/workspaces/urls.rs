@@ -26,6 +26,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::workspace_list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::workspace_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::workspace_get)

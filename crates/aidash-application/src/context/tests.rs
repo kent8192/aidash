@@ -205,8 +205,7 @@ fn compaction_snapshot_redacts_private_documents_without_mutating_inference_cont
 	);
 }
 
-/// An Agent version without a Context Policy and without a compaction
-/// Decider: its context either fits or is unreducible.
+/// Check fitting with the default recovery policy.
 async fn prune_only(
 	context: &mut Context,
 	budget: &RequestBudget<'_>,
@@ -218,10 +217,16 @@ async fn prune_only(
 		pinned,
 		policy: &policy,
 	};
-	match super::compact_decided(context, None, &fitting).await? {
+	match super::compact(context, &fitting, 0)? {
 		Compaction::Fits => Ok(()),
-		Compaction::NeedsSummary(_) | Compaction::Saved => {
-			panic!("a prune-only policy without a Decider never summarizes or saves")
+		Compaction::Offloaded {
+			context: candidate, ..
+		} => {
+			*context = *candidate;
+			Ok(())
+		}
+		Compaction::NeedsSummary(_, _) => {
+			Err(Error::Context(recovery::Failure::ContextUnreducible))
 		}
 	}
 }
@@ -243,7 +248,7 @@ fn check_request(window: usize, request: &provider::ModelRequest) -> aidash_doma
 fn recovery_policy(summary: bool) -> policy::Effective {
 	let mut value = json!({"version":"context-recovery/1"});
 	if summary {
-		value["summary"] = json!({"model":{"id":"summarizer","version":"1.0.0"},"max_tokens":1024});
+		value["summary"] = json!({"max_tokens":1024});
 	}
 	let policy: policy::ContextPolicy = serde_json::from_value(value).unwrap();
 	policy.validate().unwrap();
@@ -273,17 +278,8 @@ fn summarizer() -> summary::SummaryProvider {
 	}
 }
 
-fn summary_text(constraints: &[&str], unresolved: &[&str], resolved: &[&str]) -> String {
-	json!({
-		"goal":"Ship the release",
-		"constraints":constraints.iter().map(|id| json!({"id":id,"text":"Never deploy on Fridays"})).collect::<Vec<_>>(),
-		"decisions":["read every old file"],
-		"unresolved":unresolved.iter().map(|id| json!({"id":id,"text":"fix the flaky test"})).collect::<Vec<_>>(),
-		"resolved":resolved.iter().map(|id| json!({"id":id,"resolved_by":"old-b0"})).collect::<Vec<_>>(),
-		"artifacts":[],
-		"verification":[]
-	})
-	.to_string()
+fn summary_text(_constraints: &[&str], _unresolved: &[&str], _resolved: &[&str]) -> String {
+	json!({"retained":[], "labels":[], "prose":"read every old file"}).to_string()
 }
 
 struct Scenario {
@@ -323,7 +319,11 @@ impl Scenario {
 			pinned: &self.pinned,
 			policy,
 		};
-		super::compact_decided(context, None, &fitting).await
+		if fitting.fits(context) {
+			return Ok(Compaction::Fits);
+		}
+		super::summary_plan(context.clone(), &fitting)
+			.map(|plan| Compaction::NeedsSummary(plan, Default::default()))
 	}
 	fn adopt(
 		&self,
@@ -343,61 +343,76 @@ impl Scenario {
 
 fn needs_summary(compaction: Compaction) -> SummaryPlan {
 	match compaction {
-		Compaction::NeedsSummary(plan) => *plan,
-		Compaction::Fits | Compaction::Saved => panic!("expected the Summary Stage"),
+		Compaction::NeedsSummary(plan, _) => *plan,
+		Compaction::Fits | Compaction::Offloaded { .. } => panic!("expected the Summary Stage"),
 	}
+}
+
+#[test]
+fn repeated_journal_reads_request_a_summary_even_when_request_fits() {
+	let mut context = journaled(vec![
+		tool("original", "saved evidence"),
+		tool("later", "later"),
+	]);
+	context.journal.inferred_through = context.journal.head;
+	let policy = policy::Effective::of(None);
+	let range = super::offload::JournalRange {
+		from_seq: 1,
+		through_seq: 1,
+	};
+	for result in 3..=5 {
+		super::offload::note_journal_read(&mut context, range, result, 10, &policy);
+	}
+	let budget = Scenario::budget(100_000);
+	let pinned = json!({"task":{"description":"Work"}});
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let Compaction::NeedsSummary(plan, _) = super::compact(&context, &fitting, 10).unwrap() else {
+		panic!("repeated read should request the Summary Stage");
+	};
+	assert!(plan.absorbed.iter().any(|entry| entry.seq == 1));
+	let draft =
+		json!({"retained":[],"labels":[],"prose":"The original was read repeatedly."}).to_string();
+	let (adopted, _) = summary_candidate(
+		&plan,
+		&draft,
+		Default::default(),
+		summarizer(),
+		1024,
+		&fitting,
+	)
+	.unwrap();
+	assert!(!adopted.offload_reads.summary_pending);
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn summary_recovers_history_that_pruning_alone_cannot_fit_across_compactions() {
+async fn summary_merges_old_history_and_refuses_a_dropped_previous_item() {
 	let scenario = Scenario::new();
 	let policy = recovery_policy(true);
 	let mut context = long_history();
 	let saved = json!(context);
 	let plan = needs_summary(scenario.plan(&mut context, &policy).await.unwrap());
-	// Planning never changes the saved projection.
 	assert_eq!(json!(context), saved);
-	assert_eq!(plan.absorbed.len(), 30);
-	assert!(
-		plan.absorbed
-			.iter()
-			.all(|entry| json!(entry.event).to_string().contains("old-"))
-	);
-
 	let request = summary_request(&plan, &scenario.pinned, 1024);
 	assert!(request.tools.is_empty());
-	assert!(request.response_format.is_some());
-	let provider::ModelContext::Legacy(context) = &request.context else {
-		panic!("the summary request is a single JSON message");
-	};
-	assert!(!context.to_string().contains("PRIVATE-REFERENCE-123"));
-	assert_eq!(context["previous_summary"], Value::Null);
-
-	let (first, _) = scenario
-		.adopt(&plan, &summary_text(&["c1"], &["u1"], &[]), &policy)
-		.unwrap();
-	let summary = first.execution_summary.as_ref().unwrap();
-	assert_eq!(
-		(summary.source.from_seq, summary.source.through_seq),
-		(2, 31)
-	);
-	assert_eq!(summary.policy_version, "context-recovery/1");
-	// The human correction and the recent tail stay verbatim.
-	assert_eq!(first.history.len(), 7);
-	assert!(matches!(first.history[0].event, ContextEvent::Human { .. }));
-	assert_eq!(
-		first.history[1..].iter().map(|e| e.seq).collect::<Vec<_>>(),
-		(32..=37).collect::<Vec<_>>()
-	);
 	assert!(
-		scenario
-			.plan(&mut first.clone(), &policy)
-			.await
-			.is_ok_and(|c| matches!(c, Compaction::Fits))
+		!json!(request.context)
+			.to_string()
+			.contains("PRIVATE-REFERENCE-123")
 	);
-
-	// A second compaction merges into the first summary instead of restarting.
+	let (first, _) = scenario
+		.adopt(&plan, &summary_text(&[], &[], &[]), &policy)
+		.unwrap();
+	// Nothing was offloaded on its own, yet the summary sends the agent to
+	// the Context Journal for what it absorbed, so retrieval is exposed.
+	assert!(plan.pruned.offloaded.is_none());
+	assert!(first.offloaded.is_some());
+	let previous = first.execution_summary.as_ref().unwrap();
+	assert_eq!(previous.content.goal, "Ship the release");
 	let mut second = first.clone();
 	for i in 0..30 {
 		second.push(tool(&format!("old-b{i}"), &"y".repeat(400)));
@@ -407,34 +422,19 @@ async fn summary_recovers_history_that_pruning_alone_cannot_fit_across_compactio
 	}
 	second.journal.inferred_through = second.journal.head;
 	let plan = needs_summary(scenario.plan(&mut second, &policy).await.unwrap());
-	assert!(plan.absorbed.iter().all(|entry| entry.seq > 31));
-	let request = summary_request(&plan, &scenario.pinned, 1024);
-	let provider::ModelContext::Legacy(context) = &request.context else {
-		panic!("the summary request is a single JSON message");
-	};
-	assert_eq!(context["previous_summary"]["constraints"][0]["id"], "c1");
-	let dropped = scenario
-		.adopt(&plan, &summary_text(&[], &["u1"], &[]), &policy)
+	let error = scenario
+		.adopt(&plan, &summary_text(&[], &[], &[]), &policy)
 		.unwrap_err();
-	assert_eq!(dropped.outcome, recovery::Outcome::Invalid);
+	assert!(matches!(
+		error.rejection,
+		Some(summary::Rejection::DroppedItem(_))
+	));
+	let draft = json!({"retained":SummaryContent::retained_ids(Some(previous)),"labels":[],"prose":"continued"}).to_string();
+	let (merged, _) = scenario.adopt(&plan, &draft, &policy).unwrap();
 	assert_eq!(
-		dropped.rejection,
-		Some(summary::Rejection::DroppedItem("c1".into()))
+		merged.execution_summary.unwrap().previous.unwrap().digest,
+		previous.digest
 	);
-	let (merged, _) = scenario
-		.adopt(&plan, &summary_text(&["c1"], &[], &["u1"]), &policy)
-		.unwrap();
-	let merged_summary = merged.execution_summary.as_ref().unwrap();
-	assert_eq!(merged_summary.source.from_seq, 2);
-	assert_eq!(
-		merged_summary.previous.as_ref().unwrap().digest,
-		summary.digest
-	);
-	assert_eq!(
-		merged_summary.content.constraints[0].text,
-		"Never deploy on Fridays"
-	);
-	assert!(merged_summary.content.unresolved.is_empty());
 }
 
 #[rstest::rstest]
@@ -466,11 +466,11 @@ async fn recent_tail_and_uninferred_events_are_never_absorbed() {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn invalid_or_insufficient_summaries_are_not_adopted() {
+async fn invalid_summaries_are_rejected_and_reductions_can_continue() {
 	let scenario = Scenario::new();
 	let policy = recovery_policy(true);
 	let plan = needs_summary(scenario.plan(&mut long_history(), &policy).await.unwrap());
-	for text in ["", "not json", &summary_text(&["c1", "c1"], &[], &[])] {
+	for text in ["", "not json", "{\"retained\":[]}"] {
 		let unadopted = scenario.adopt(&plan, text, &policy).unwrap_err();
 		assert_eq!(unadopted.outcome, recovery::Outcome::Invalid);
 	}
@@ -479,25 +479,30 @@ async fn invalid_or_insufficient_summaries_are_not_adopted() {
 		window: scenario.window - 3_000,
 		..Scenario::new()
 	};
-	let unadopted = tight
+	let (partial, after) = tight
 		.adopt(&plan, &summary_text(&["c1"], &[], &[]), &policy)
-		.unwrap_err();
-	assert_eq!(unadopted.outcome, recovery::Outcome::Insufficient);
+		.unwrap();
+	assert!(after > tight.window);
+	assert!(after < plan.before_tokens);
+	assert!(partial.execution_summary.is_some());
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn unreducible_context_pauses_with_typed_reasons() {
-	let scenario = Scenario::new();
-	for policy in [policy::Effective::of(None), recovery_policy(false)] {
-		let mut context = long_history();
-		let saved = json!(context);
-		assert!(matches!(
-			scenario.plan(&mut context, &policy).await,
-			Err(Error::Context(recovery::Failure::ContextUnreducible))
-		));
-		assert_eq!(json!(context), saved);
-	}
+async fn unreducible_context_pauses_when_no_events_can_be_summarized() {
+	let policy = policy::Effective::of(None);
+	let context = Context::default();
+	let budget = Scenario::budget(256);
+	let pinned = json!({"task":"x".repeat(10_000)});
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	assert!(matches!(
+		super::compact(&context, &fitting, 0),
+		Err(Error::Context(recovery::Failure::ContextUnreducible))
+	));
 }
 
 #[rstest::rstest]
@@ -530,14 +535,14 @@ async fn revoked_summary_restores_only_the_entries_it_absorbed() {
 	let policy = recovery_policy(true);
 	let original = long_history();
 	let mut plan = needs_summary(scenario.plan(&mut original.clone(), &policy).await.unwrap());
-	// Jev pruned seq 10 before the merge, so the summary never absorbed it.
+	// Sequence 10 was omitted before the merge and must not be restored.
 	plan.absorbed.retain(|entry| entry.seq != 10);
 	plan.pruned.history.retain(|entry| entry.seq != 10);
 	let (mut adopted, _) = scenario
 		.adopt(&plan, &summary_text(&["c1"], &[], &[]), &policy)
 		.unwrap();
 	let summary = adopted.execution_summary.as_ref().unwrap();
-	assert_eq!(summary.source.absorbed, vec![[2, 9], [11, 31]]);
+	assert_eq!(summary.source.absorbed, vec![[1, 9], [11, 31]]);
 	restore_summarized(&mut adopted, original.history.clone()).unwrap();
 	let expected = original
 		.history
@@ -548,29 +553,112 @@ async fn revoked_summary_restores_only_the_entries_it_absorbed() {
 	assert_eq!(adopted.history, expected);
 }
 
-#[rstest::rstest]
 #[tokio::test]
-async fn a_resolution_without_absorbed_evidence_keeps_the_item() {
-	let scenario = Scenario::new();
+async fn repeated_summary_adoption_bounds_older_prose_in_context_bytes() {
+	let mut scenario = Scenario::new();
+	scenario.pinned["task"]["description"] = json!("g".repeat(433));
 	let policy = recovery_policy(true);
-	let plan = needs_summary(scenario.plan(&mut long_history(), &policy).await.unwrap());
-	let (first, _) = scenario
-		.adopt(&plan, &summary_text(&["c1"], &["u1"], &[]), &policy)
-		.unwrap();
-	let mut second = first;
-	for i in 0..30 {
-		second.push(tool(&format!("old-b{i}"), &"y".repeat(400)));
+	let mut context = long_history();
+	for round in 0..4 {
+		let plan = needs_summary(scenario.plan(&mut context, &policy).await.unwrap());
+		let previous = plan.pruned.execution_summary.as_deref();
+		let draft = json!({"retained":SummaryContent::retained_ids(previous),"labels":[],"prose":format!("round {round}: {}", "x".repeat(700))}).to_string();
+		let (adopted, _) = scenario.adopt(&plan, &draft, &policy).unwrap();
+		let content = &adopted.execution_summary.as_ref().unwrap().content;
+		assert!(serde_json::to_string(content).unwrap().len() <= scenario.window / 8);
+		assert_eq!(content.goal, "g".repeat(433));
+		assert!(content.decisions.iter().any(|item| {
+			item.starts_with("Full tool results remain in Context Journal sequences ")
+		}));
+		assert!(
+			content
+				.decisions
+				.iter()
+				.any(|item| item.starts_with(&format!("round {round}:")))
+		);
+		context = adopted;
+		for i in 0..30 {
+			context.push(tool(&format!("old-{round}-{i}"), &"z".repeat(400)));
+		}
+		for i in 0..6 {
+			context.push(tool(&format!("recent-{round}-{i}"), "recent"));
+		}
+		context.journal.inferred_through = context.journal.head;
 	}
-	for i in 0..6 {
-		second.push(tool(&format!("recent-b{i}"), "recent"));
-	}
-	second.journal.inferred_through = second.journal.head;
-	let plan = needs_summary(scenario.plan(&mut second, &policy).await.unwrap());
-	// The recent tail is never absorbed, so it cannot prove a resolution.
-	let unproven = summary_text(&["c1"], &[], &["u1"]).replace("old-b0", "recent-b5");
-	let unadopted = scenario.adopt(&plan, &unproven, &policy).unwrap_err();
-	assert_eq!(
-		unadopted.rejection,
-		Some(summary::Rejection::UnprovenResolution("u1".into()))
+	let content = &context.execution_summary.as_ref().unwrap().content;
+	assert!(
+		!content
+			.decisions
+			.iter()
+			.any(|item| item.starts_with("round 0:"))
+	);
+}
+
+#[rstest::rstest]
+fn an_oversized_rehydrated_original_goes_back_to_its_marker_so_the_summary_fits() {
+	// Arrange: the oldest absorbed result is larger than the summary window.
+	let mut context = journaled(vec![
+		tool("huge", &"x".repeat(40_000)),
+		tool("small", "ok"),
+		tool("recent", "recent"),
+	]);
+	context.journal.inferred_through = context.journal.head;
+	let mut plan = SummaryPlan {
+		pruned: context.clone(),
+		absorbed: context.history[..2].to_vec(),
+		people: vec![],
+		before_tokens: usize::MAX,
+	};
+	let pinned = json!({"task":{"description":"Work"}});
+	let window = 8_000;
+	assert!(
+		summary_request(&plan, &pinned, 512)
+			.ensure_fits(window)
+			.is_err()
+	);
+
+	// Act
+	assert!(offload_largest_absorbed(&mut plan.absorbed, 0));
+
+	// Assert: only the large result became its marker; the request fits and
+	// the adopted summary points to the original in the Journal.
+	assert!(matches!(
+		&plan.absorbed[0].event,
+		ContextEvent::Tool { result, .. } if super::offload::is_marker(result) && result["journal"]["from_seq"] == 1
+	));
+	assert!(matches!(
+		&plan.absorbed[1].event,
+		ContextEvent::Tool { result, .. } if result == "ok"
+	));
+	assert!(
+		summary_request(&plan, &pinned, 512)
+			.ensure_fits(window)
+			.is_ok()
+	);
+	assert!(!offload_largest_absorbed(&mut plan.absorbed[1..], 0));
+	let policy = recovery_policy(true);
+	let budget = Scenario::budget(window);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let draft = json!({"retained":[],"labels":[],"prose":"read the huge file"}).to_string();
+	let (adopted, _) = summary_candidate(
+		&plan,
+		&draft,
+		Default::default(),
+		summarizer(),
+		512,
+		&fitting,
+	)
+	.unwrap();
+	let summary = adopted.execution_summary.unwrap();
+	assert!(
+		summary
+			.content
+			.decisions
+			.iter()
+			.any(|decision| decision.contains("sequences 1 through 1"))
 	);
 }

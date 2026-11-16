@@ -11,12 +11,14 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
-pub mod defaults;
-pub use defaults::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION, COMPACTION_DEFAULT};
+pub mod memory_defaults;
 mod snapshot;
 pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
+/// Default Tool sets an Agent version may have been normalized with: today's
+/// (0) and four historical ones (see `AgentBindings::normalize_mode`).
+const HISTORICAL_DEFAULT_SETS: u8 = 5;
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
 pub const MAX_TOOL_PARALLELISM: u8 = 16;
 fn sequential_tools() -> u8 {
@@ -48,7 +50,8 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 ];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
-/// offering them (#600, #617).
+/// offering them (#600, #617). Binding resolution gives an Agent that binds
+/// no provider Built-in Memory (#852).
 pub const MEMORY_TOOLS: &[&str] = &["memory_mutate", "memory_recall", "memory_reflect"];
 /// Whether a resolved definition is a memory provider. A native conversation
 /// or semantic memory source (a definition with `schema_version`) is a
@@ -89,9 +92,6 @@ pub fn definition_references(
 			result.push((local(&config.model), "model".into()));
 			if let Some(embedding) = &config.reference_embedding {
 				result.push((local(embedding), "embedding".into()));
-			}
-			if let Some(summary) = config.context_summary() {
-				result.push((local(&summary.model), "model".into()));
 			}
 			for normalized in entry.normalized_bindings(&identity.registry_deployment)? {
 				let kind = match normalized.binding.kind {
@@ -160,18 +160,24 @@ pub fn definition_references(
 				declaration.validate()?;
 				result.extend(declaration.references());
 			}
-			result.extend(
-				[
-					(provider.policy.extraction, "model"),
-					(provider.policy.derivation, "model"),
-					(provider.policy.reflection, "model"),
-					(provider.policy.embedding, "embedding"),
-					(provider.policy.reranker, "reranker"),
-					(provider.policy.tokenizer, "tokenizer"),
-				]
-				.into_iter()
-				.map(|(r, k)| (local(&r), k.into())),
-			);
+			for role in [
+				provider.policy.extraction,
+				provider.policy.derivation,
+				provider.policy.reflection,
+			] {
+				if let crate::memory::RoleModel::Entry(reference) = role {
+					result.push((local(&reference), "model".into()));
+				}
+			}
+			if let Some(reference) = provider.policy.embedding {
+				result.push((local(&reference), "embedding".into()));
+			}
+			// The built-in provider's fixed local algorithms are implementation
+			// details, rather than independent user-selected Registry dependencies.
+			if !memory_defaults::is_builtin_memory(entry) {
+				result.push((local(&provider.policy.reranker), "reranker".into()));
+				result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
+			}
 		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
@@ -282,7 +288,7 @@ impl AgentBindings {
 			|| self
 				.remove_default
 				.iter()
-				.any(|name| name != COMPACTION_DEFAULT && !defaults.contains(&name.as_str()))
+				.any(|name| !defaults.contains(&name.as_str()))
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
@@ -327,18 +333,6 @@ impl AgentBindings {
 			if !targets.insert(&binding.target) {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
-		}
-		if !self.has_memory_binding()
-			&& self.bindings.iter().any(|b| {
-				b.kind == BindingKind::Tool
-					&& b.target
-						.id
-						.strip_prefix("aidash.")
-						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
-			}) {
-			return Err(Error::Invalid(
-				"memory tools require a memory provider".into(),
-			));
 		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self
@@ -396,28 +390,17 @@ impl AgentBindings {
 	fn has_memory_binding(&self) -> bool {
 		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
 	}
-	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
-		match self.context_policy.as_ref()? {
-			crate::context::policy::ContextPolicy::RecoveryV1 { summary, .. } => summary.as_ref(),
-		}
-	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_with_compaction(node, None)
+		self.normalize_mode(node, 0)
 	}
-	pub fn normalize_with_compaction(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-	) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, compaction_override, 0)
-	}
-	fn normalize_mode(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-		mode: u8,
-	) -> Result<Vec<NormalizedBinding>> {
+	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
+	/// version was normalized with (0 today, 1–4 historical); `mode >=
+	/// HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and `subnode_task`
+	/// at the 1.0.0 they had before they moved to 1.1.0.
+	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
+		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
+		let mode = mode % HISTORICAL_DEFAULT_SETS;
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
@@ -466,6 +449,9 @@ impl AgentBindings {
 			}) {
 				target = binding.target.clone();
 			}
+			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
+				target.version = "1.0.0".into();
+			}
 			let explicit = self
 				.bindings
 				.iter()
@@ -500,7 +486,9 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
-		defaults::add_compaction(self, node, compaction_override, &mut result)?;
+		if !self.has_memory_binding() {
+			result.push(memory_defaults::binding(node));
+		}
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),
@@ -516,23 +504,10 @@ impl AgentBindings {
 pub struct AgentNormalization {
 	pub schema_version: u8,
 	pub registry_deployment: String,
-	/// Exact explicit compaction replacement, resolved by trusted registration.
-	pub compaction_override: Option<QualifiedRef>,
 	pub bindings: Vec<NormalizedBinding>,
 }
 impl Entry {
 	pub fn normalize_agent(&mut self, node: &str) -> Result<()> {
-		let replacement = self
-			.binding_normalization
-			.as_ref()
-			.and_then(|saved| saved.compaction_override.clone());
-		self.normalize_agent_with_compaction(node, replacement.as_ref())
-	}
-	pub fn normalize_agent_with_compaction(
-		&mut self,
-		node: &str,
-		replacement: Option<&QualifiedRef>,
-	) -> Result<()> {
 		if self.kind != "agent" {
 			if self.binding_normalization.is_some() {
 				return Err(Error::Invalid(
@@ -545,17 +520,12 @@ impl Entry {
 		self.binding_normalization = Some(AgentNormalization {
 			schema_version: BINDING_SCHEMA,
 			registry_deployment: node.into(),
-			compaction_override: replacement.cloned(),
-			bindings: config.normalize_with_compaction(node, replacement)?,
+			bindings: config.normalize(node)?,
 		});
 		Ok(())
 	}
 	pub fn normalized_bindings(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
-		let replacement = self
-			.binding_normalization
-			.as_ref()
-			.and_then(|saved| saved.compaction_override.as_ref());
 		if let Some(saved) = &self.binding_normalization {
 			if saved.schema_version != BINDING_SCHEMA || saved.registry_deployment != node {
 				return Err(Error::Invalid(
@@ -567,17 +537,17 @@ impl Entry {
 			let saved_bindings = upgraded(node, saved.bindings.clone());
 			let matches = |mode: u8| {
 				config
-					.normalize_mode(node, replacement, mode)
+					.normalize_mode(node, mode)
 					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
 			};
-			if !(0..=4).any(matches) {
+			if !(0..2 * HISTORICAL_DEFAULT_SETS).any(matches) {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
 			return Ok(saved_bindings);
 		}
-		config.normalize_with_compaction(node, replacement)
+		config.normalize(node)
 	}
 
 	/// Whether this Agent version pins the builtin Tool that can select Thread Attachments.
@@ -670,7 +640,11 @@ impl QualifiedRef {
 			id: format!("aidash.{operation}"),
 			version: if matches!(
 				operation,
-				"workspace_read" | "workspace_search" | "workspace_message"
+				"workspace_read"
+					| "workspace_search"
+					| "workspace_message"
+					| "memory_mutate"
+					| "subnode_task"
 			) {
 				"1.1.0"
 			} else if operation == "workspace_observe" {
@@ -1104,14 +1078,18 @@ impl ForeignAgentSnapshot {
 		Ok(result)
 	}
 	pub fn validate(&self) -> Result<()> {
+		let builtins = memory_defaults::definitions()?;
 		if self.definitions.iter().any(|definition| {
 			definition.identity.registry_deployment != self.agent.registry_deployment
 				|| definition.definition.installation.is_some()
 				|| matches!(
 					definition.definition.kind.as_str(),
 					"memory" | "source" | "skill"
-				) && !source_defaults::workspace_observation()
-					.is_ok_and(|source| source == definition.definition)
+				) && !builtins
+					.iter()
+					.any(|builtin| builtin == &definition.definition)
+					&& !source_defaults::workspace_observation()
+						.is_ok_and(|source| source == definition.definition)
 				|| definition.definition.kind == "agent"
 					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
 						.is_ok_and(|agent| !agent.agent_plugins.is_empty())

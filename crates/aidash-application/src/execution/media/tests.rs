@@ -54,6 +54,7 @@ fn model() -> ModelConfig {
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(8192),
+		provider_max_output_tokens: None,
 		modalities: vec!["text".into(), "image".into(), "audio".into()],
 		media_routes: vec![routes(vec!["image/png".into(), "mp3".into()])],
 		provider_route: None,

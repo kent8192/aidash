@@ -75,6 +75,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"file_search" | "file_read" | "apply_patch" | "attachment_copy" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
+		"journal_search" | "journal_read" | "journal_query" => "core.journal@1",
 		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_poll"
 		| "python_cancel" => "core.sandbox@1",
 		"outbound_get" => "core.egress@1",
