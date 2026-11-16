@@ -403,7 +403,12 @@ async fn start(
 	// "Run now" is an ordinary Run of the person who clicked it, in their own
 	// mode; only a scheduled tick carries the Schedule's.
 	let scheduled = key.1.is_empty();
-	if let Some(mode) = definition.approval_mode.filter(|_| scheduled) {
+	// A new Thread starts without a mode of its own, so only a chosen mode is
+	// written there. A fixed Thread keeps the mode an earlier tick wrote, so a
+	// Schedule set back to the default clears it (#557 decision 4).
+	let fixed = matches!(definition.thread, ThreadMode::Fixed { .. });
+	if scheduled && (definition.approval_mode.is_some() || fixed) {
+		let mode = definition.approval_mode;
 		// The Schedule's Approval Mode is its Thread's mode for the person
 		// its Runs act as (#557 decision 4).
 		let access = lease.access_mut();
@@ -419,7 +424,7 @@ async fn start(
 			&tenant,
 			&subject,
 			thread,
-			Some(mode),
+			mode,
 		)
 		.await?;
 	}

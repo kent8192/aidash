@@ -264,6 +264,72 @@ async fn deleting_a_schedules_fixed_thread_stops_it(#[future] capability_fixture
 	c.close().await;
 }
 
+/// The mode a fixed Thread holds for the fixture's person, if any.
+async fn thread_mode(c: &CoreFixture, thread: &Value) -> Option<String> {
+	sqlx::query_scalar("SELECT mode FROM identity_thread_approval_modes WHERE thread_id = $1")
+		.bind(Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap())
+		.fetch_optional(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_fixed_thread_schedule_set_back_to_the_default_mode_clears_its_mode(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: a fixed-Thread Schedule whose first tick ran in its own mode.
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let root = source(&c, workspace, "Standup notes").await;
+	let (status, thread) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id": root}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let mut body = definition("Standup notes", 86_400);
+	body["thread"] = json!({"kind": "fixed", "thread_id": thread["id"]});
+	body["approval_mode"] = json!("dont_ask");
+	let schedule = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	make_due(&c, id).await;
+	let first = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(first.started.len(), 1, "{first:?}");
+	assert_eq!(thread_mode(&c, &thread).await.as_deref(), Some("dont_ask"));
+	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+		.bind(first.started[0])
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query(
+		"UPDATE schedule_ticks SET scheduled_at = scheduled_at - interval '3 days' WHERE schedule_id = $1",
+	)
+	.bind(id)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// Act: the Registrant returns it to their own default mode.
+	let (status, changed) = request(
+		&c.app,
+		&c.token,
+		"PATCH",
+		&format!("/api/schedules/{id}"),
+		json!({"approval_mode": "default"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	make_due(&c, id).await;
+	let second = pass(&c.f, Utc::now()).await.unwrap();
+	// Assert: the next tick runs in the person's default, not the old mode.
+	assert_eq!(second.started.len(), 1, "{second:?}");
+	assert_eq!(thread_mode(&c, &thread).await, None);
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn an_agent_registers_for_its_person_and_a_scheduled_run_cannot(
