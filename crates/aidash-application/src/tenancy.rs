@@ -66,8 +66,6 @@ pub enum DeploymentScopeReason {
 	ApprovalObservation,
 	/// Claiming and publishing the event outbox.
 	OutboxDispatch,
-	/// Claiming and delivering delegations that are due for a retry.
-	DelegationRetry,
 	/// Listing and reconciling generation requests and foreign generation
 	/// intents.
 	GenerationReconcile,
@@ -164,7 +162,6 @@ impl DeploymentScopeReason {
 			Self::ActivationClaim => "activation-claim",
 			Self::ApprovalObservation => "approval-observation",
 			Self::OutboxDispatch => "outbox-dispatch",
-			Self::DelegationRetry => "delegation-retry",
 			Self::GenerationReconcile => "generation-reconcile",
 			Self::SemanticIndexing => "semantic-indexing",
 			Self::SemanticMaintenance => "semantic-maintenance",
@@ -207,7 +204,6 @@ impl DeploymentScopeReason {
 			Self::ActivationClaim
 			| Self::ApprovalObservation
 			| Self::OutboxDispatch
-			| Self::DelegationRetry
 			| Self::SemanticMaintenance
 			| Self::GenerationReconcile
 			| Self::Retention
@@ -265,7 +261,6 @@ mod tests {
 		let reasons = [
 			DeploymentScopeReason::ActivationClaim,
 			DeploymentScopeReason::OutboxDispatch,
-			DeploymentScopeReason::DelegationRetry,
 			DeploymentScopeReason::GenerationReconcile,
 			DeploymentScopeReason::SemanticIndexing,
 			DeploymentScopeReason::SemanticMaintenance,

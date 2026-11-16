@@ -1272,7 +1272,7 @@ impl Injectable for Federation {
 }
 
 pub use crate::apps::federation::remote::serializers::runtime::{
-	Delegation, DiscoveredAgent, Discovery, Offer,
+	Delegation, DiscoveredAgent, Discovery,
 };
 
 impl Federation {
