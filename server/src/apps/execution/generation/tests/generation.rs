@@ -1011,7 +1011,9 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
-	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+	// A deadlock never ends, so the limit only needs to outlast slow runners:
+	// the six steps took 6 s on a local machine with the Schedule tools (#557).
+	tokio::time::timeout(std::time::Duration::from_secs(30), async {
 		for _ in 0..6 {
 			worker.worker_once().await.unwrap();
 		}

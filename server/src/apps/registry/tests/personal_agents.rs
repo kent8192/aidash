@@ -189,10 +189,8 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	if large_documents {
 		let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
 		model.id = "small-model".into();
-		// Room for every builtin tool with documents still filling most of the
-		// window; the tool specifications grow as tools learn new inputs.
-		const WINDOW: usize = 49152;
-		model.config["context_window"] = json!(WINDOW);
+		// The default tools include the Schedule tools (#557), which outgrow 32,768.
+		model.config["context_window"] = json!(65536);
 		f.registry.register(&tenant, model).await.unwrap();
 		input["entry"]["config"]["model"]["id"] = json!("small-model");
 		let tools = tool::builtins()
@@ -201,7 +199,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			.collect::<Vec<_>>();
 		let budget = context::RequestBudget {
 			input_format: Default::default(),
-			window: WINDOW,
+			window: 65536,
 			instructions: "",
 			tools: &tools,
 			max_output_tokens: 4096,

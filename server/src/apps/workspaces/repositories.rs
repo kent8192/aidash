@@ -9,4 +9,5 @@ pub mod mutations;
 
 pub(crate) mod media;
 
+pub(crate) mod schedules;
 pub(crate) mod scratch;

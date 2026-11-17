@@ -89,6 +89,7 @@ pub async fn delete(
 	scope
 		.delete_attachments(workspace, thread, channel.root_message_id)
 		.await?;
+	scope.stop_schedules(thread).await?;
 	scope.create(Creation {id:thread,area:None,kind:"thread_tombstone",state:"deleted",data:json!({"workspace_id":workspace,"root_message_id":channel.root_message_id,"file_choices":results}),expires:None}).await?;
 	let result = json!({"thread_id":thread,"state":"deleted","file_operations":results});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
