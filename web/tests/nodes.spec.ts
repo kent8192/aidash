@@ -57,6 +57,10 @@ const registration = (
   actor: "oidc:identity",
   created_at: created,
   updated_at: created,
+  // The Federation tool lists every registration record carries (ADR 0139).
+  tool_request: { tools: ["task_create"], hosts: [] },
+  tool_allowance: ["task_create"],
+  tool_block: [],
   ...overrides,
 });
 

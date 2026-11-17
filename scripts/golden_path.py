@@ -142,6 +142,29 @@ def register_node(base, tenant, source_address, endpoint, administrator, reachab
                                     "atomic_transactions": True, "enabled": True, "expected_revision": existing[0]["revision"] if existing else 0})
 
 
+DEFAULT_FEDERATION_TOOLS = ["task_create", "artifact_publish", "workspace_message", "workspace_read", "workspace_observe",
+                            "memory_recall", "memory_reflect", "memory_mutate", "human_request", "skill_read", "skill_asset_read"]
+
+
+def list_federation_tools(base, tenant, source_address, administrator, tools, hosts=()):
+    """Add `tools` (names or patterns) to both Federation tool lists of the default Node's registration of
+    `source_address` (ADR 0139): the Request this Node sends it and the Allowance it grants it. A scenario
+    calls this on both Nodes, since a remote Run uses only what both lists name. Returns the record."""
+    node = next(node for node in administrator.api(f"/api/tenants/{tenant}/nodes") if node["default"])["name"]
+    path = f"/api/tenants/{tenant}/nodes/{node}/registrations"
+    record = next(row for row in administrator.api(path) if row["source_node"] == source_address)
+    request = record["tool_request"]
+    lists = {"revision": record["revision"],
+             "request": {"tools": sorted(set(request["tools"]) | set(tools)), "hosts": sorted(set(request["hosts"]) | set(hosts))},
+             "allowance": sorted(set(record["tool_allowance"]) | set(tools)),
+             "block": record["tool_block"]}
+    encoded = urllib.parse.quote(source_address, safe="")
+    status, parsed = administrator.call("PUT", f"{path}/{encoded}/tool-lists", lists)
+    if status >= 400:
+        raise RuntimeError(f"{path}/{encoded}/tool-lists answered {status}: {parsed}")
+    return parsed
+
+
 def generate_deployment_key(binary, directory, env, hosted_model_origins=()):
     """Create a Deployment Key in `directory` and return the settings directory that names it.
 
