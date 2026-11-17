@@ -3518,9 +3518,10 @@ async fn remote_grant_run_reports_its_one_hop_limit_for_discovery_and_delegation
 			.iter()
 			.find(|binding| binding.definition.config["operation"] == operation)
 			.unwrap();
+		// Reach never: a remote Binding excludes them (ADR 0139); the Home still refuses the hop.
 		assert!(
-			binding.excluded_reason.is_none(),
-			"{operation} must be available to return a one-hop rejection"
+			binding.excluded_reason.is_some(),
+			"{operation} is never offered to a remote Run"
 		);
 	}
 	let home = Home::new(p.b.clone(), run);
@@ -3593,7 +3594,8 @@ async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_
 		.iter()
 		.find(|binding| binding.definition.config["operation"] == "task_delegate")
 		.unwrap();
-	assert!(excluded.excluded_reason.is_none());
+	// task_delegate has Reach never, so a remote Binding excludes it (ADR 0139).
+	assert!(excluded.excluded_reason.is_some());
 	let home = Home::new(p.b.clone(), run);
 	let child = home
 		.create_task(
@@ -7233,7 +7235,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_substitute(
+async fn remote_memory_mutate_cannot_write_a_receiver_substitute(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -7245,9 +7247,12 @@ async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_subs
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1);
 	let run = p.run().await;
-	assert_eq!(
-		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"],
-		"unavailable tool memory_mutate",
+	// memory_mutate is now a candidate a remote Run is offered (ADR 0139); a write it cannot
+	// make still answers an explicit tool error and leaves no Unit on either Node.
+	assert!(
+		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"]
+			.as_str()
+			.is_some_and(|error| !error.is_empty()),
 		"unsupported remote writes must return an explicit tool error"
 	);
 	for node in [&p.a, &p.b] {
