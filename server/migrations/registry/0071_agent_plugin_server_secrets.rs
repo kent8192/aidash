@@ -7,13 +7,13 @@
 // assets. Like 0061 and 0065 it validates and strips the new key in a wrapper,
 // then delegates to the existing body.
 //
-// Numbered 0071 after develop's leaf 0068: open PR #952 already takes registry
-// 0069 and 0070. Whichever of the two lands second renumbers or adds a merge
-// migration.
+// Follows develop's leaf 0069_schedule_tools (#937), which wraps the same
+// function first. Open PR #952 takes registry 0070 and 0071, so whichever of
+// the two lands second renumbers.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0071_agent_plugin_server_secrets", "registry")
-		.add_dependency("registry", "0068_reject_new_compaction_deciders")
+		.add_dependency("registry", "0069_schedule_tools")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {

@@ -125,6 +125,10 @@ pub enum DeploymentScopeReason {
 	RunTenant,
 	/// Resolve the Tenant of a Scratch Space named by an operator.
 	ScratchSpaceTenant,
+	/// Finding due Schedules and the started ticks whose Runs ended, across
+	/// Tenants (#557). Each one is then handled in its Tenant's scope, as its
+	/// Registrant.
+	ScheduleTicks,
 	/// Reading current Data Protection policies along a Run's delegation ancestry.
 	DataProtectionEvaluation,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
@@ -185,6 +189,7 @@ impl DeploymentScopeReason {
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
 			Self::ScratchSpaceTenant => "scratch-space-tenant",
+			Self::ScheduleTicks => "schedule-ticks",
 			Self::DataProtectionEvaluation => "data-protection-evaluation",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::OAuthAuthorization => "oauth-authorization",
@@ -232,6 +237,7 @@ impl DeploymentScopeReason {
 			| Self::FederationInbound
 			| Self::RunTenant
 			| Self::ScratchSpaceTenant
+			| Self::ScheduleTicks
 			| Self::DataProtectionEvaluation
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
@@ -286,6 +292,7 @@ mod tests {
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::ScratchSpaceTenant,
+			DeploymentScopeReason::ScheduleTicks,
 			DeploymentScopeReason::DataProtectionEvaluation,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::OAuthAuthorization,

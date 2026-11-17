@@ -340,7 +340,7 @@ impl BindingSnapshot {
 				let descriptor: ToolDescriptor =
 					serde_json::from_value(definitions[&saved.identity].definition.config.clone())?;
 				let contract = descriptor.declared_contract(saved.identity.clone())?;
-				let excluded_reason = match memory_exclusion(
+				let mut excluded_reason = match memory_exclusion(
 					expected.origin,
 					&descriptor.operation,
 					memory_provider,
@@ -349,6 +349,14 @@ impl BindingSnapshot {
 					None if self.remote => remote_exclusion(expected.origin, &contract)?,
 					None => None,
 				};
+				// A Workbench test may also exclude a Schedule tool
+				// (`for_workbench_test`); excluding only takes a tool away.
+				if excluded_reason.is_none()
+					&& descriptor.provider == "core.schedules@1"
+					&& saved.excluded_reason.as_deref() == Some(super::WORKBENCH_SCHEDULE_EXCLUSION)
+				{
+					excluded_reason = saved.excluded_reason.clone();
+				}
 				let pinned = match saved.provider_contract_digest.as_deref() {
 					Some(digest) => contract.pinned(digest)?.is_some(),
 					None => false,

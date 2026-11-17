@@ -206,7 +206,18 @@ impl ExecutionAdmissionSession for Admission<'_> {
 	async fn persist_grant(&mut self, grant: &ExecutionGrant) -> Result<()> {
 		persist_grant_in(&mut *self.access.tx, grant)
 			.await
-			.map_err(Into::into)
+			.map_err(aidash_application::Error::from)?;
+		// A Run delegated by a Run a Schedule started is scheduled too,
+		// whichever Task it was given (#557 decision 7).
+		if let Some(source) = self.access.read_run {
+			crate::apps::workspaces::repositories::schedules::inherit_scheduled(
+				&mut *self.access.tx,
+				source,
+				grant.run_id,
+			)
+			.await?;
+		}
+		Ok(())
 	}
 	async fn admit_plan_connections(
 		&mut self,
