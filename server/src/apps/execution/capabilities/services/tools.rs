@@ -45,6 +45,24 @@ impl Tool for CoreTool {
 		let Some(authority) = ctx.home.tool_authority() else {
 			return Err(Error::Forbidden);
 		};
+		// A Run executing here for another Home reaches the Home's person and the Home's Run
+		// through the Home, not through this Node's own people and Areas (ADR 0139). Neither
+		// call holds a transaction across its Federation requests.
+		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
+			match self.name {
+				"file_share" => {
+					return authority
+						.share_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
+						.await;
+				}
+				"outbound_get" => {
+					return authority
+						.outbound_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
+						.await;
+				}
+				_ => {}
+			}
+		}
 		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)
 			&& aidash_domain::tool::concurrency::shares_every_resource(self.name, &input);
 		authority

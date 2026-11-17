@@ -277,13 +277,25 @@ impl ToolOperations for Operations {
 			return self.message(key, content).await;
 		}
 		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
-			// The Home would have to take the bytes as Thread Attachments, and the Federation
-			// transport has no admission-bound way to deliver them yet (ADR 0139, decision 20).
-			return Err(aidash_application::Error::Conflict(
-				"REMOTE_FILES_UNAVAILABLE: a Run executing for another Home cannot yet send files \
-				 with a message; send the message without files"
-					.into(),
-			));
+			// The Home takes the bytes as Thread Attachments of the message it posts for the
+			// Agent (ADR 0139, decision 20).
+			let authority = self
+				.0
+				.home
+				.tool_authority()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			return authority
+				.message_files_to_home(
+					&self.0.store,
+					&self.0.run,
+					&self.0.home,
+					key,
+					content,
+					files,
+					descriptions,
+				)
+				.await
+				.map_err(operation_error);
 		}
 		let authority = self
 			.0

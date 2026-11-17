@@ -867,6 +867,39 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(document, views::policies::credentials, &["String"])?;
 	contracts
 		.query::<_, super::policies::CredentialPage>(document, views::policies::credentials)?;
+	contracts.response::<_, serde_json::Value>(
+		document,
+		views::remote_commands::delivery_prepare,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::DeliveryOpen>(
+			document,
+			views::remote_commands::delivery_prepare,
+		)?;
+	contracts.response::<_, serde_json::Value>(
+		document,
+		views::remote_commands::delivery_commit,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::DeliveryOpen>(
+			document,
+			views::remote_commands::delivery_commit,
+		)?;
+	contracts.response::<_, serde_json::Value>(
+		document,
+		views::remote_commands::delivery_chunk,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::DeliveryChunk>(
+			document,
+			views::remote_commands::delivery_chunk,
+		)?;
 	contracts.response::<_, super::policies::CredentialRevocation>(
 		document,
 		views::policies::revoke_credential,

@@ -3153,3 +3153,305 @@ async fn a_decided_approval_leaves_the_approvers_who_did_not_decide_it() {
 	assert!(matches!(bob_revokes, Err(Error::NotFound(_))));
 	assert_eq!(scope.records[&approval_id].state, "approved");
 }
+
+// An outbound read of a Run executing for another Home waits for the Home's person (ADR 0139).
+mod home {
+	use super::*;
+	use aidash_domain::capabilities::approvals::HomeVerdict;
+
+	fn outbound_scope() -> Fake {
+		let mut scope = scope(
+			json!({"id":"request-outbound","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["outbound"]}}),
+		);
+		scope.admission = true;
+		scope
+	}
+	fn read(key: Uuid) -> Outbound {
+		Outbound {
+			idempotency_key: key,
+			url: "https://example.com/data.txt".into(),
+		}
+	}
+	async fn begin(scope: &mut Fake, key: Uuid) -> HomeOutbound {
+		let run = scope.run.clone();
+		home_begin(scope, &run, Uuid::from_u128(9), read(key))
+			.await
+			.unwrap()
+	}
+	fn ask(outbound: HomeOutbound) -> HomeAsk {
+		match outbound {
+			HomeOutbound::Ask(ask) => ask,
+			HomeOutbound::Settled(view) => panic!("expected to ask the Home, got {view}"),
+		}
+	}
+	async fn settle(scope: &mut Fake, record: Uuid, answer: HomeAnswer) -> Result<Value> {
+		let run = scope.run.clone();
+		home_settle(scope, &run, record, answer).await
+	}
+
+	#[tokio::test]
+	async fn the_first_call_records_a_read_that_only_the_home_can_approve() {
+		let mut scope = outbound_scope();
+		let key = Uuid::new_v4();
+		let asked = ask(begin(&mut scope, key).await);
+		assert!(asked.home_request.is_none());
+		let record = &scope.records[&asked.record];
+		assert_eq!(record.kind, OUTBOUND);
+		assert_eq!(record.state, AWAITING_HOME);
+		assert_eq!(record.data["targets"], json!(["https://example.com"]));
+		assert_eq!(record.data["approver"], Value::Null);
+		assert!(asked.prompt.contains("https://example.com/data.txt"));
+	}
+	#[tokio::test]
+	async fn the_receivers_own_origins_and_policy_still_apply_before_the_home_is_asked() {
+		let mut scope = outbound_scope();
+		let run = scope.run.clone();
+		let other = Outbound {
+			idempotency_key: Uuid::new_v4(),
+			url: "https://elsewhere.example/x".into(),
+		};
+		assert!(matches!(
+			home_begin(&mut scope, &run, Uuid::nil(), other).await,
+			Err(Error::Domain(aidash_domain::Error::Conflict(code))) if code == "OUTBOUND_ORIGIN_DENIED"
+		));
+		assert!(scope.records.is_empty());
+		// No policy of this Node lets the Run request it.
+		let mut denied = super::scope(Value::Null);
+		denied.admission = true;
+		let run = denied.run.clone();
+		assert!(matches!(
+			home_begin(&mut denied, &run, Uuid::nil(), read(Uuid::new_v4())).await,
+			Err(Error::Forbidden)
+		));
+		assert!(denied.records.is_empty());
+		scope.admission = false;
+		assert!(matches!(
+			home_begin(&mut scope, &run, Uuid::nil(), read(Uuid::new_v4())).await,
+			Err(Error::Conflict(code)) if code == "CAPABILITIES_DISABLED"
+		));
+	}
+	#[tokio::test]
+	async fn a_repeat_of_the_call_finds_the_same_record_and_asks_once() {
+		let mut scope = outbound_scope();
+		let key = Uuid::new_v4();
+		let first = ask(begin(&mut scope, key).await);
+		settle(
+			&mut scope,
+			first.record,
+			HomeAnswer::Asked(Uuid::from_u128(77)),
+		)
+		.await
+		.unwrap();
+		let again = ask(begin(&mut scope, key).await);
+		assert_eq!(again.record, first.record);
+		assert_eq!(again.home_request, Some(Uuid::from_u128(77)));
+		assert_eq!(scope.records.len(), 1);
+		assert_eq!(again.key, first.key, "the Home deduplicates on one key");
+	}
+	#[tokio::test]
+	async fn an_approval_from_the_home_makes_the_record_approved_for_the_worker() {
+		let mut scope = outbound_scope();
+		let asked = ask(begin(&mut scope, Uuid::new_v4()).await);
+		let request = Uuid::from_u128(77);
+		settle(&mut scope, asked.record, HomeAnswer::Asked(request))
+			.await
+			.unwrap();
+		let waiting = settle(
+			&mut scope,
+			asked.record,
+			HomeAnswer::Read {
+				request,
+				verdict: HomeVerdict::Pending,
+			},
+		)
+		.await
+		.unwrap();
+		assert_eq!(waiting["status"], "approval_required");
+		assert_eq!(scope.records[&asked.record].state, AWAITING_HOME);
+		let done = settle(
+			&mut scope,
+			asked.record,
+			HomeAnswer::Read {
+				request,
+				verdict: HomeVerdict::Approved {
+					by: Some("alice".into()),
+				},
+			},
+		)
+		.await
+		.unwrap();
+		assert_eq!(done["status"], "running");
+		let record = &scope.records[&asked.record];
+		assert_eq!(record.state, "approved");
+		assert_eq!(record.data["decided_by"], "alice");
+		// The worker's own re-check of this Node's authority and origins is untouched: the
+		// record names the same URL and target the receiver's limits judged.
+		assert_eq!(record.data["url"], "https://example.com/data.txt");
+	}
+	#[tokio::test]
+	async fn a_decline_an_expiry_or_a_misread_answer_refuses_the_call() {
+		for (verdict, code) in [
+			(HomeVerdict::Declined, "OUTBOUND_HOME_DECLINED"),
+			(HomeVerdict::Expired, "OUTBOUND_HOME_EXPIRED"),
+		] {
+			let mut scope = outbound_scope();
+			let asked = ask(begin(&mut scope, Uuid::new_v4()).await);
+			let request = Uuid::from_u128(77);
+			settle(&mut scope, asked.record, HomeAnswer::Asked(request))
+				.await
+				.unwrap();
+			let refused = settle(
+				&mut scope,
+				asked.record,
+				HomeAnswer::Read { request, verdict },
+			)
+			.await
+			.unwrap();
+			assert_eq!(refused["status"], "blocked");
+			assert_eq!(refused["error"], code);
+			assert_eq!(scope.records[&asked.record].state, "denied");
+		}
+	}
+	#[tokio::test]
+	async fn the_worker_fetches_a_home_approved_read_under_this_nodes_own_checks() {
+		let mut scope = outbound_scope();
+		let asked = ask(begin(&mut scope, Uuid::new_v4()).await);
+		let request = Uuid::from_u128(77);
+		settle(&mut scope, asked.record, HomeAnswer::Asked(request))
+			.await
+			.unwrap();
+		settle(
+			&mut scope,
+			asked.record,
+			HomeAnswer::Read {
+				request,
+				verdict: HomeVerdict::Approved {
+					by: Some("home-person".into()),
+				},
+			},
+		)
+		.await
+		.unwrap();
+		// The worker marks the record attempted, then judges it as `authorize` does.
+		let mut attempted = scope.records[&asked.record].clone();
+		attempted.state = "attempted".into();
+		let run = authorize(&mut scope, &attempted).await.unwrap();
+		assert_eq!(run.id, scope.run.id);
+		// A read nobody approved on this Node's own authority is still refused: the Home's
+		// mode is what lets this one through.
+		attempted.data["approval_mode"] = json!("allow_once");
+		attempted.data["approver"] = json!("home-person");
+		assert!(matches!(
+			authorize(&mut scope, &attempted).await,
+			Err(Error::Forbidden)
+		));
+		// And this Node's own checks still bind a Home-approved read: its origins.
+		let mut elsewhere = scope.records[&asked.record].clone();
+		elsewhere.state = "attempted".into();
+		elsewhere.data["url"] = json!("https://elsewhere.example/x");
+		assert!(authorize(&mut scope, &elsewhere).await.is_err());
+		// ... and its policy on the request.
+		scope.bundle = super::scope(Value::Null).bundle;
+		let mut again = scope.records[&asked.record].clone();
+		again.state = "attempted".into();
+		assert!(matches!(
+			authorize(&mut scope, &again).await,
+			Err(Error::Forbidden)
+		));
+	}
+	#[tokio::test]
+	async fn an_unanswered_request_past_its_deadline_expires_with_the_record() {
+		let mut scope = outbound_scope();
+		let asked = ask(begin(&mut scope, Uuid::new_v4()).await);
+		let request = Uuid::from_u128(77);
+		settle(&mut scope, asked.record, HomeAnswer::Asked(request))
+			.await
+			.unwrap();
+		scope.records.get_mut(&asked.record).unwrap().expires_at =
+			Some(Utc::now() - Duration::seconds(1));
+		let refused = settle(
+			&mut scope,
+			asked.record,
+			HomeAnswer::Read {
+				request,
+				verdict: HomeVerdict::Pending,
+			},
+		)
+		.await
+		.unwrap();
+		assert_eq!(refused["error"], "OUTBOUND_HOME_EXPIRED");
+	}
+	#[tokio::test]
+	async fn only_the_request_this_record_asked_can_settle_it() {
+		let mut scope = outbound_scope();
+		let asked = ask(begin(&mut scope, Uuid::new_v4()).await);
+		settle(
+			&mut scope,
+			asked.record,
+			HomeAnswer::Asked(Uuid::from_u128(77)),
+		)
+		.await
+		.unwrap();
+		assert!(matches!(
+			settle(
+				&mut scope,
+				asked.record,
+				HomeAnswer::Read {
+					request: Uuid::from_u128(78),
+					verdict: HomeVerdict::Approved { by: None },
+				},
+			)
+			.await,
+			Err(Error::Forbidden)
+		));
+		assert_eq!(scope.records[&asked.record].state, AWAITING_HOME);
+	}
+	#[tokio::test]
+	async fn an_approval_for_an_origin_the_receiver_no_longer_allows_does_not_open_the_network() {
+		let mut scope = outbound_scope();
+		let asked = ask(begin(&mut scope, Uuid::new_v4()).await);
+		let request = Uuid::from_u128(77);
+		settle(&mut scope, asked.record, HomeAnswer::Asked(request))
+			.await
+			.unwrap();
+		scope.records.get_mut(&asked.record).unwrap().data["url"] =
+			json!("https://elsewhere.example/x");
+		assert!(
+			settle(
+				&mut scope,
+				asked.record,
+				HomeAnswer::Read {
+					request,
+					verdict: HomeVerdict::Approved { by: None },
+				},
+			)
+			.await
+			.is_err()
+		);
+		assert_eq!(scope.records[&asked.record].state, AWAITING_HOME);
+	}
+	#[tokio::test]
+	async fn a_settled_read_answers_a_repeated_call_from_its_record() {
+		let mut scope = outbound_scope();
+		let key = Uuid::new_v4();
+		let asked = ask(begin(&mut scope, key).await);
+		let request = Uuid::from_u128(77);
+		settle(&mut scope, asked.record, HomeAnswer::Asked(request))
+			.await
+			.unwrap();
+		settle(
+			&mut scope,
+			asked.record,
+			HomeAnswer::Read {
+				request,
+				verdict: HomeVerdict::Declined,
+			},
+		)
+		.await
+		.unwrap();
+		let HomeOutbound::Settled(view) = begin(&mut scope, key).await else {
+			panic!("a settled read is not asked again")
+		};
+		assert_eq!(view["status"], "blocked");
+	}
+}

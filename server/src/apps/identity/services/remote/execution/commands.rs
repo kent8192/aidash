@@ -131,6 +131,12 @@ pub struct RemoteCommands {
 pub async fn provide(#[inject] runtime: Federation) -> RemoteCommands {
 	RemoteCommands { runtime }
 }
+pub(crate) use super::deliveries::{
+	chunk as delivery_chunk, commit as delivery_commit, prepare as delivery_prepare,
+};
 pub(crate) use crate::apps::identity::serializers::remote_execution_commands::AttachmentInput;
 pub(crate) use crate::apps::identity::serializers::remote_execution_commands::AttachmentResponse;
 pub(crate) use crate::apps::identity::serializers::remote_execution_commands::Input;
+pub(crate) use crate::apps::identity::serializers::remote_execution_commands::{
+	DeliveryChunk, DeliveryOpen,
+};

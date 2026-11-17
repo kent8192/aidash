@@ -362,16 +362,11 @@ impl FileScopePort for Scope<'_> {
 		let result: NativeResult<Value> = async {
 			Ok(match action {
 				Action::Outbound => {
-					// Approvals of a Run executing for another Home belong to that Home's root
-					// person (ADR 0139, decision 22), and `approvals::prepare` judges approvers
-					// by this Node's policy alone. Until the approval is routed to the Home,
-					// the call is refused by name rather than put to this Node's people.
+					// A Run executing for another Home asks its Home's person through
+					// `outbound_to_home`, before any record is made here (ADR 0139, decision 22).
+					// This scope never approves for them, so a call that reached it is refused.
 					if !run.is_local(store.deployment.as_str()) {
-						return Err(NativeError::Conflict(
-							"OUTBOUND_UNAVAILABLE: a Run executing for another Home cannot yet ask \
-							 its Home for an outbound GET approval"
-								.into(),
-						));
+						return Err(NativeError::Forbidden);
 					}
 					approvals::prepare(
 						store,

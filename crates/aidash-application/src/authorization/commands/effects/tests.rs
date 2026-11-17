@@ -21,6 +21,7 @@ struct Scope {
 	output: Option<Uuid>,
 	record: Value,
 	excluded_run: Option<Uuid>,
+	human: Option<aidash_domain::HumanRequest>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -54,6 +55,7 @@ fn scope() -> Scope {
 		output: Some(Uuid::from_u128(9)),
 		record: json!({"visible":true}),
 		excluded_run: None,
+		human: None,
 	}
 }
 impl Scope {
@@ -145,7 +147,7 @@ impl RemoteCommandEffects for Scope {
 		_: Uuid,
 		_: Uuid,
 	) -> Result<aidash_domain::HumanRequest> {
-		Err(Error::Forbidden)
+		self.human.clone().ok_or(Error::Forbidden)
 	}
 	fn local_node(&self) -> &str {
 		"aidash://home"
@@ -1077,5 +1079,95 @@ async fn forwarded_memory_writes_are_replay_journaled_and_cannot_name_a_bank(mut
 		)
 		.await,
 		Err(Error::Conflict(_))
+	));
+}
+
+fn outbound_prompt() -> String {
+	aidash_domain::capabilities::approvals::outbound_prompt(
+		"https://docs.example.com/a.txt",
+		"https://docs.example.com",
+	)
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_outbound_request_asks_the_home_person_under_human_request_authority(
+	mut scope: Scope,
+) {
+	let data = json!({"run_id":Uuid::from_u128(1),"key":"ask","prompt":outbound_prompt()});
+	run(&mut scope, "outbound_request", &data).await.unwrap();
+	assert!(scope.calls.contains(&"builtin:outbound_get".to_string()));
+	assert!(scope.calls.contains(&"require:human.request".to_string()));
+	assert_eq!(
+		scope.applied[0]["effect"]["request_kind"],
+		aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND
+	);
+	assert_eq!(
+		scope.journal.len(),
+		1,
+		"a retried ask finds the same request"
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_outbound_request_needs_a_person_at_the_root(mut scope: Scope) {
+	scope.person = false;
+	let data = json!({"key":"ask","prompt":outbound_prompt()});
+	assert!(matches!(
+		run(&mut scope, "outbound_request", &data).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[case::not_json("not json")]
+#[case::other_tool(
+	r#"{"tool":"connection_request","url":"https://a.example/x","origin":"https://a.example"}"#
+)]
+#[case::plain_http(
+	r#"{"tool":"outbound_get","url":"http://a.example/x","origin":"http://a.example"}"#
+)]
+#[tokio::test]
+async fn forwarded_outbound_request_rechecks_the_prompt_the_tool_composed(
+	mut scope: Scope,
+	#[case] prompt: &str,
+) {
+	let data = json!({"key":"ask","prompt":prompt});
+	assert!(run(&mut scope, "outbound_request", &data).await.is_err());
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn an_outbound_read_returns_only_the_question_this_tool_asked(mut scope: Scope) {
+	let request = |kind: &str| aidash_domain::HumanRequest {
+		answered_by: None,
+		id: Uuid::from_u128(77),
+		workspace_id: Uuid::from_u128(3),
+		run_id: Uuid::from_u128(1),
+		kind: kind.into(),
+		prompt: outbound_prompt(),
+		response: None,
+		created_at: chrono::Utc::now(),
+		answer_by: None,
+	};
+	let data = json!({"run_id":Uuid::from_u128(1),"id":Uuid::from_u128(77)});
+	scope.human = Some(request(
+		aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND,
+	));
+	let read = run(&mut scope, "outbound_read", &data).await.unwrap();
+	assert_eq!(read["id"], json!(Uuid::from_u128(77)));
+	assert!(scope.calls.contains(&"builtin:outbound_get".to_string()));
+	assert!(scope.journal.is_empty(), "a read is not a mutation");
+	scope.human = Some(request("MCP_CONNECTION"));
+	assert!(matches!(
+		run(&mut scope, "outbound_read", &data).await,
+		Err(Error::Forbidden)
+	));
+	// Another tool's approval request is an approval request too, but not this tool's.
+	let mut other = request(aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND);
+	other.prompt = "Approve this exact external tool action once? Tool: x".into();
+	scope.human = Some(other);
+	assert!(matches!(
+		run(&mut scope, "outbound_read", &data).await,
+		Err(Error::Forbidden)
 	));
 }

@@ -513,7 +513,7 @@ impl Home {
 	}
 	/// The Node at which this remote Run executes, as the Home's callbacks are
 	/// sent from it. A callback acts as the Node and names no subject.
-	async fn admitted_sender(&self, operation: &str, data: &Value) -> Result<Sender> {
+	pub(crate) async fn admitted_sender(&self, operation: &str, data: &Value) -> Result<Sender> {
 		let scope = self.tenancy().await?;
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.clone();
 		let node: String = self

@@ -25,4 +25,4 @@ Registering a Source and having it approved is the moment a person makes its fil
 
 ## Amendment (2026-11-17)
 
-A Run that a Remote Grant started keeps its Agent version's Reference set in its Working Area on the receiving Node and reads it as a local Run does (ADR 0139). Such an Area may send files to that Run's Home through `file_share` or a message, because the receiving Tenant consented by listing those tools in its Federation Tool Allowance; it still sends files to no other Node.
+A Run that a Remote Grant started keeps its Agent version's Reference set in its Working Area on the receiving Node and reads it as a local Run does (ADR 0139). Such an Area may send files to that Run's Home through `file_share` or a message, because the receiving Tenant consented by listing those tools in its Federation Tool Allowance; it still sends files to no other Node. Reference files, and copies of them as made, still never leave: the amendment lifts the Area's refusal, not the file rule.

@@ -6,6 +6,8 @@ pub mod management;
 
 pub mod runtime;
 
+pub(crate) mod home_files;
+
 pub(crate) mod home_tools;
 
 pub(crate) mod input_fences;

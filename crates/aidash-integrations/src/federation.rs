@@ -89,6 +89,7 @@ impl HttpTransport {
 			let timeout = if path == "/scoped/semantic/query" {
 				Duration::from_secs(120)
 			} else if path == "/scoped/execution/commands"
+				|| path.starts_with("/scoped/execution/deliveries/")
 				|| path.starts_with("/scoped/execution/grants/")
 				|| path.starts_with("/scoped/execution/admissions")
 				|| path.starts_with("/scoped/usage/")

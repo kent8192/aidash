@@ -4,6 +4,7 @@ use crate::Result;
 use aidash_domain::{
 	RunMetadata,
 	capabilities::{
+		operations::MountedFile,
 		sessions::Area,
 		sharing::{Recipient, Share},
 	},
@@ -39,4 +40,35 @@ pub trait SharingScope: FileScopePort {
 		input: Share,
 		digest: &str,
 	) -> Result<Value>;
+}
+
+/// What a Run executing for another Home needs of its receiving Node to send files back to that
+/// Home (ADR 0139, decision 20): the Area it reads, nothing of a recipient. Any `SharingScope`
+/// provides it, so the Node's own scope serves both and a test needs only these methods.
+#[async_trait]
+pub trait HomeShareScope: Send {
+	fn share_limits(&self) -> Result<Limits>;
+	/// The result of the call with this key, when the same input already ran.
+	async fn replay(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
+	async fn active_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
+	async fn permit(&mut self, area: &Area, action: &str) -> Result<()>;
+	async fn read_range(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>>;
+}
+#[async_trait]
+impl<T: SharingScope + ?Sized> HomeShareScope for T {
+	fn share_limits(&self) -> Result<Limits> {
+		SharingScope::sharing_limits(self)
+	}
+	async fn replay(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
+		FileScopePort::cached(self, key, digest).await
+	}
+	async fn active_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
+		FileScopePort::current_run(self, area).await
+	}
+	async fn permit(&mut self, area: &Area, action: &str) -> Result<()> {
+		FileScopePort::authorize(self, area, action).await
+	}
+	async fn read_range(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>> {
+		FileScopePort::read_chunk(self, file, offset).await
+	}
 }

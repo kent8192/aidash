@@ -50,8 +50,16 @@ async fn mapped<'a>(
 		{
 			return Err(Error::Forbidden);
 		}
-		let node = scope.node_resource().await?;
-		scope.require(&node, "file.transfer").await?;
+		let delivery = repository.delivery();
+		// A Home taking a delivery has already admitted it through the grant, so it neither
+		// resolves nor asks for the Node-level `file.transfer` a Peer Mapping must hold.
+		let node = match delivery {
+			None => Some(scope.node_resource().await?),
+			Some(_) => None,
+		};
+		if let Some(node) = &node {
+			scope.require(node, "file.transfer").await?;
+		}
 		let mut subjects = scope.subjects().to_vec();
 		subjects.push(aidash_domain::agent_subject(
 			&description.target.node_id,
@@ -64,7 +72,9 @@ async fn mapped<'a>(
 			.await?
 			.ok_or_else(|| Error::NotFound("recipient unavailable".into()))?;
 		scope.authorize(&area, "file.receive").await?;
-		scope.require(&node, "file.transfer").await?;
+		if let Some(node) = &node {
+			scope.require(node, "file.transfer").await?;
+		}
 		let entry = scope
 			.entry(
 				&EntityRef {
@@ -81,9 +91,11 @@ async fn mapped<'a>(
 		if admitted.is_none() {
 			return Err(Error::NotFound("recipient version unavailable".into()));
 		}
-		scope
-			.require_bound_operation(admitted.expect("checked admitted recipient"), "file_share")
-			.await?;
+		if let Some(operation) = delivery.map_or(Some("file_share"), |mode| mode.bound_operation) {
+			scope
+				.require_bound_operation(admitted.expect("checked admitted recipient"), operation)
+				.await?;
+		}
 		Ok(area)
 	}
 	.await;
@@ -294,6 +306,100 @@ pub async fn commit(
         scope.event(area.workspace_id,"capability.files_received",json!({"transfer_id":record.id,"area_id":area.id,"source_node":source})).await?;
         Ok(view(&record))
     }.await;
+	finish(scope, result).await
+}
+/// The files of a staged delivery that is not a share into an Area, read back whole.
+pub enum Staged {
+	/// The delivery already committed: its stored view.
+	Committed(Value),
+	Ready {
+		description: Box<Description>,
+		files: Vec<(FileEntry, Vec<u8>)>,
+	},
+}
+/// First half of committing a delivery whose files become something other than Area files (a
+/// message's Thread Attachments, ADR 0139): check the staged delivery exactly as `commit` does
+/// and hand back every file's bytes, verified against the manifest. The caller stores them under
+/// its own idempotency keys, then calls `settle`. Nothing is published here.
+pub async fn staged_files(
+	repository: &dyn ReceiverRepository,
+	source: &str,
+	input: Identity,
+) -> Result<Staged> {
+	if !repository.limits().admission {
+		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
+	}
+	let fresh: Description = serde_json::from_value(
+		repository
+			.callback(source, "/scoped/files/describe", &json!(input))
+			.await?,
+	)?;
+	let (mut scope, area, record, description) = current(repository, source, &input).await?;
+	if json!(fresh) != json!(description) {
+		return finish(scope, Err(Error::Forbidden)).await;
+	}
+	let result = async {
+		if record.state == "committed" {
+			return Ok(Staged::Committed(view(&record)));
+		}
+		if record.state != "staging"
+			|| description.expires_at <= Utc::now()
+			|| record.data["generation"] != area.generation
+		{
+			return Err(Error::Conflict("TRANSFER_UNAVAILABLE".into()));
+		}
+		let mut files = Vec::with_capacity(description.files.len());
+		for (index, file) in description.files.iter().enumerate() {
+			let mut bytes = Vec::with_capacity(usize::try_from(file.size).unwrap_or(0));
+			let mut offset = 0;
+			while offset < file.size {
+				let chunk: FileEntry = serde_json::from_value(
+					record.data["chunks"][format!("{index}:{offset}")].clone(),
+				)
+				.map_err(|_| Error::Conflict("TRANSFER_INCOMPLETE".into()))?;
+				bytes.extend_from_slice(&scope.read_file(&chunk).await?);
+				offset += chunk.size;
+			}
+			if bytes.len() as u64 != file.size || chunk_digest(&bytes) != file.digest {
+				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+			}
+			files.push((file.clone(), bytes));
+		}
+		Ok(Staged::Ready {
+			description: Box::new(description),
+			files,
+		})
+	}
+	.await;
+	finish(scope, result).await
+}
+/// Second half: record the delivery as committed under `receipt` and release what it reserved.
+/// A repeat finds it committed and returns the stored view, never a second receipt.
+pub async fn settle(
+	repository: &dyn ReceiverRepository,
+	source: &str,
+	input: Identity,
+	receipt: Value,
+) -> Result<Value> {
+	let (mut scope, area, mut record, description) = current(repository, source, &input).await?;
+	let result = async {
+		if record.state == "committed" {
+			return Ok(view(&record));
+		}
+		if record.state != "staging" || record.data["generation"] != area.generation {
+			return Err(Error::Conflict("TRANSFER_UNAVAILABLE".into()));
+		}
+		let total = description.files.iter().map(|f| f.size).sum::<u64>();
+		scope.lock_conversion().await?;
+		record.state = "committed".into();
+		record.expires_at = None;
+		record.data["receipt"] = receipt;
+		scope.update(&mut record).await?;
+		// The chunks drew half of what `prepare` reserved; the rest is released with them.
+		scope.reserve(-(total as i64)).await?;
+		Ok(view(&record))
+	}
+	.await;
 	finish(scope, result).await
 }
 pub async fn status(

@@ -2,7 +2,7 @@
 use crate::{
 	Error, Result,
 	capabilities::files,
-	ports::capabilities::sharing::{Limits, SharingScope},
+	ports::capabilities::sharing::{HomeShareScope, Limits, SharingScope},
 };
 use aidash_domain::{
 	RunMetadata,
@@ -14,6 +14,7 @@ use aidash_domain::{
 	registry::EntityRef,
 };
 use serde_json::{Value, json};
+use sha2::Digest as _;
 use uuid::Uuid;
 /// Snapshot selection is immutable; no allocation occurs before all budgets pass.
 pub fn select_files(
@@ -55,6 +56,107 @@ pub fn select_files(
 	Ok((chosen, size))
 }
 
+/// What a Run executing for another Home sends back: its snapshot, read whole, and the input
+/// digest the call is journaled under.
+pub struct HomeDelivery {
+	pub digest: String,
+	pub files: Vec<(FileEntry, Vec<u8>)>,
+	pub total: u64,
+}
+pub enum HomeShare {
+	/// The same call already ran: its stored result.
+	Replay(Value),
+	Deliver(Box<HomeDelivery>),
+}
+/// Constraints of a Working Area that bar it from sending files out (private originals and text,
+/// and files received from other Agents). A Reference set is not one of them for the Home, which
+/// the receiving Tenant consented to by listing the tool; the Reference files themselves never
+/// leave, as `select_files` keeps them out.
+const BARRING: [&str; 3] = ["reference", "reference_text", "received_scope"];
+/// `file_share` of a Run executing for another Home, to that Home (ADR 0139, decision 20). Runs
+/// in the Run's own transaction and reads every selected file; sending them to the Home is the
+/// caller's, outside the transaction, and then recording the result under the call's key.
+pub async fn home_prepare(
+	scope: &mut dyn HomeShareScope,
+	run: &RunMetadata,
+	area: &Area,
+	input: &Share,
+) -> Result<HomeShare> {
+	let limits = scope.share_limits()?;
+	if input.files.is_empty() || input.files.len() > limits.files {
+		return Err(Error::Invalid("SHARE_FILE_LIMIT".into()));
+	}
+	let digest = aidash_domain::registry::rules::digest(&json!(["file_share", run.id, input]));
+	if let Some(previous) = scope.replay(input.idempotency_key, &digest).await? {
+		return Ok(HomeShare::Replay(previous));
+	}
+	if !limits.admission {
+		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
+	}
+	if scope.active_run(area).await? != Some(run.id) {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
+	// A Home's Runs send to that Home only: the Area's own `remote_home` and the Run's say so.
+	if !area.is_remote_home()
+		|| !area.may_send_to(&input.recipient.node_id)
+		|| run.home_node != input.recipient.node_id
+	{
+		return Err(Error::Forbidden);
+	}
+	if input.expected_revision != area.revision {
+		return Err(Error::Conflict(
+			aidash_domain::capabilities::errors::area_revision_changed(area.revision),
+		));
+	}
+	scope.permit(area, "file.share").await?;
+	if area
+		.constraints
+		.as_array()
+		.ok_or(Error::Forbidden)?
+		.iter()
+		.any(|c| c["kind"].as_str().is_some_and(|k| BARRING.contains(&k)))
+	{
+		return Err(Error::Forbidden);
+	}
+	let mounted: Vec<FileEntry> = serde_json::from_value(area.manifest.clone())?;
+	let (chosen, total) = select_files(&mounted, &input.files, &limits)?;
+	let mut files = Vec::with_capacity(chosen.len());
+	for file in chosen {
+		let mut bytes = Vec::with_capacity(usize::try_from(file.size).unwrap_or(0));
+		while (bytes.len() as u64) < file.size {
+			let chunk = scope.read_range(&file, bytes.len() as u64).await?;
+			if chunk.is_empty() {
+				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+			}
+			bytes.extend_from_slice(&chunk);
+		}
+		// The object store verified the bytes on read; the digest is checked again because the
+		// Home stores nothing that does not match the manifest it was sent.
+		if bytes.len() as u64 != file.size
+			|| format!("{:x}", sha2::Sha256::digest(&bytes)) != file.digest
+		{
+			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+		}
+		files.push((file, bytes));
+	}
+	Ok(HomeShare::Deliver(Box::new(HomeDelivery {
+		digest,
+		files,
+		total,
+	})))
+}
+/// The result a `file_share` to the Home reports, in the shape of a local share's: the Home's
+/// receipt names the delivered files and the Area they landed in.
+pub fn home_result(
+	id: Uuid,
+	area: &Area,
+	input: &Share,
+	manifest_digest: &str,
+	receipt: Value,
+) -> Value {
+	json!({"operation_id":id,"snapshot_id":id,"transfer_id":id,"status":"completed","manifest_digest":manifest_digest,"recipient":input.recipient,"receipt":receipt,"revision":area.revision,"generation":area.generation})
+}
+
 pub async fn share(
 	scope: &mut dyn SharingScope,
 	run: &RunMetadata,
@@ -80,19 +182,11 @@ pub async fn share(
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	// An Area that belongs to a Home's Runs sends files to that Home only, whether or not it
-	// holds a Reference set (ADR 0114 amendment, ADR 0139). The Federation transport has no
-	// delivery into the Home's delegating Run yet (`file-transfer/1` knows only a sender that
-	// holds the Workspace), so even the Home is refused, by name, and never falls through to the
-	// receiver's own Areas or to another Node.
+	// holds a Reference set (ADR 0114 amendment, ADR 0139), and only through `home_prepare`:
+	// the Home is served by an admission-bound delivery, never by this scope, and no other Node
+	// is ever a target.
 	if area.is_remote_home() {
-		if !area.may_send_to(&input.recipient.node_id) {
-			return Err(Error::Forbidden);
-		}
-		return Err(Error::Conflict(
-			"FILE_SHARE_TO_HOME_UNAVAILABLE: a Run executing for another Home cannot yet send files back; \
-			 name the result in the final answer or publish an Artifact through the Home"
-				.into(),
-		));
+		return Err(Error::Forbidden);
 	}
 	let own = aidash_domain::nodes::DeploymentId::parse(scope.node_id())?
 		.node(run.node.clone())

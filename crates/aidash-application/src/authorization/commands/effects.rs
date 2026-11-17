@@ -32,7 +32,11 @@ pub async fn execute(
 	};
 	if matches!(
 		input.operation,
-		"human_request" | "connection_request" | "mcp.connection_call" | "mcp.connection_list"
+		"human_request"
+			| "connection_request"
+			| "outbound_request"
+			| "mcp.connection_call"
+			| "mcp.connection_list"
 	) {
 		let bound = scope
 			.binding(input.grant_id)
@@ -51,7 +55,10 @@ pub async fn execute(
 		scope
 			.require(
 				&resource,
-				if matches!(input.operation, "human_request" | "connection_request") {
+				if matches!(
+					input.operation,
+					"human_request" | "connection_request" | "outbound_request"
+				) {
 					"human.request"
 				} else {
 					"tool.invoke"
@@ -176,6 +183,52 @@ pub async fn execute(
 				)
 				.await?
 				.value
+		}
+		"outbound_request" => {
+			only_fields(data, &["run_id", "key", "prompt"])?;
+			// The Home's person at the root of the chain is the one who may allow the fetch.
+			if scope.connection_owner().is_none() {
+				return Err(Error::Invalid(
+					"outbound_get requires a person at the Run's chain root".into(),
+				));
+			}
+			let run = scope.resource(
+				"run",
+				&format!("{}/runs/{}", scope.local_node(), input.admission_id),
+				task_resource.attributes.clone(),
+			);
+			scope.require(&run, "human.request").await?;
+			let prompt = field(data, "prompt")?;
+			aidash_domain::capabilities::approvals::check_outbound_prompt(prompt)?;
+			scope
+				.apply(
+					context(),
+					Effect::HumanRequest {
+						kind: aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND,
+						prompt,
+					},
+				)
+				.await?
+				.value
+		}
+		"outbound_read" => {
+			only_fields(data, &["run_id", "id"])?;
+			let request = scope
+				.human_read(
+					input.grant_id,
+					input.admission_id,
+					serde_json::from_value(data["id"].clone())?,
+				)
+				.await?;
+			// Only the question this tool put to the person can be read through it: an
+			// approval request whose prompt names an outbound GET, never another tool's.
+			if request.kind != aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND
+				|| aidash_domain::capabilities::approvals::check_outbound_prompt(&request.prompt)
+					.is_err()
+			{
+				return Err(Error::Forbidden);
+			}
+			json!(request)
 		}
 		"workspace_search" => {
 			only_fields(data, &["run_id", "input"])?;

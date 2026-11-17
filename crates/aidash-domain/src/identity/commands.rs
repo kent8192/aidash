@@ -14,7 +14,7 @@ pub struct Metadata {
 pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 	if matches!(
 		operation,
-		"delegate" | "task_assign" | "connection_request" | "memory_mutate"
+		"delegate" | "task_assign" | "connection_request" | "outbound_request" | "memory_mutate"
 	) && data["key"].as_str().is_none()
 	{
 		return Err(Error::Invalid("missing command key".into()));
@@ -34,6 +34,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 				| "mcp.connection_call"
 				| "task_assign"
 				| "connection_request"
+				| "outbound_request"
 				| "memory_mutate"
 		);
 	let digest = registry::rules::digest(&json!({"operation":operation,"data":data}));
@@ -75,6 +76,9 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"task_assign" => Some("task_assign"),
 		"workspace_search" => Some("workspace_search"),
 		"connection_request" => Some("connection_request"),
+		// A remote Run's outbound GET is approved by the Home's root person first (ADR 0139,
+		// decision 22): the Home asks and answers under the tool the Run called.
+		"outbound_request" | "outbound_read" => Some("outbound_get"),
 		"memory_recall" => Some("memory_recall"),
 		"memory_reflect" => Some("memory_reflect"),
 		"memory_mutate" => Some("memory_mutate"),

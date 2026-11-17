@@ -296,6 +296,26 @@ async fn dispatch(
 			let input = checked!(body, remote_execution::commands::Input);
 			respond(boxed(|| remote_execution::commands::handle(f, admitted, input)).await)
 		}
+		("POST", ["scoped", "execution", "deliveries", "prepare"]) => {
+			let input = checked!(body, remote_execution::commands::DeliveryOpen);
+			respond(
+				boxed(|| remote_execution::commands::delivery_prepare(f, admitted, input)).await,
+			)
+		}
+		("POST", ["scoped", "execution", "deliveries", "chunks"]) => {
+			let input = checked!(body, remote_execution::commands::DeliveryChunk);
+			respond(boxed(|| remote_execution::commands::delivery_chunk(f, admitted, input)).await)
+		}
+		("POST", ["scoped", "execution", "deliveries", "commit"]) => {
+			let input = checked!(body, remote_execution::commands::DeliveryOpen);
+			respond(boxed(|| remote_execution::commands::delivery_commit(f, admitted, input)).await)
+		}
+		("POST", ["thread-attachment", "1", "fetch"]) => {
+			let input = checked!(body, remote_execution::commands::AttachmentInput);
+			respond(
+				boxed(|| remote_execution::commands::thread_attachment(f, admitted, input)).await,
+			)
+		}
 		("POST", ["scoped", "execution", "grants", "activation"]) => {
 			let input = input!(body, VerifyInput);
 			respond(boxed(|| remote_execution::activation_binding(f, admitted, input)).await)

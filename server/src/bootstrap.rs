@@ -2208,6 +2208,7 @@ pub(crate) fn transfer_repository(
 	crate::apps::execution::repositories::transfer::Repository {
 		federation,
 		receiver: None,
+		delivery: None,
 	}
 }
 /// A transfer arriving at the Node `receiver`.
@@ -2225,7 +2226,18 @@ pub(crate) fn transfer_receiver_repository(
 				.to_string(),
 			node: receiver,
 		}),
+		delivery: None,
 	}
+}
+/// A delivery from a Run executing for another Home, arriving at the Home Node `receiver`.
+pub(crate) fn home_delivery_repository(
+	federation: &crate::federation::Federation,
+	receiver: aidash_domain::nodes::NodeName,
+	delivery: crate::apps::execution::repositories::transfer::HomeDelivery,
+) -> crate::apps::execution::repositories::transfer::Repository<'_> {
+	let mut repository = transfer_receiver_repository(federation, receiver);
+	repository.delivery = Some(delivery);
+	repository
 }
 pub(crate) fn transfer_scope<'a>(
 	store: Option<&'a Store>,

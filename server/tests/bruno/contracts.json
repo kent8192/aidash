@@ -1485,6 +1485,51 @@
   {
     "json": true,
     "method": "POST",
+    "name": "remotecommands-delivery-prepare",
+    "path": "/federation/v0.1/scoped/execution/deliveries/prepare",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "remotecommands-delivery-chunk",
+    "path": "/federation/v0.1/scoped/execution/deliveries/chunks",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "remotecommands-delivery-commit",
+    "path": "/federation/v0.1/scoped/execution/deliveries/commit",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
     "name": "peerexecutionmanagement-activate",
     "path": "/federation/v0.1/scoped/execution/admissions/{id}/activate",
     "query_parameters": [],

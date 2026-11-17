@@ -137,3 +137,23 @@ fn home_forwarded_writes_require_an_explicit_string_key(#[case] operation: &str)
 		matches!(prepare(operation,&json!({})),Err(Error::Invalid(message)) if message=="missing command key")
 	);
 }
+
+#[rstest]
+fn an_outbound_request_is_a_keyed_mutation_checked_as_the_tool_the_run_called() {
+	assert!(
+		prepare("outbound_request", &json!({"key":"id"}))
+			.unwrap()
+			.mutation
+	);
+	assert!(matches!(
+		prepare("outbound_request", &json!({})),
+		Err(Error::Invalid(message)) if message == "missing command key"
+	));
+	assert!(
+		!prepare("outbound_read", &json!({"id":"x"}))
+			.unwrap()
+			.mutation
+	);
+	assert_eq!(builtin("outbound_request"), Some("outbound_get"));
+	assert_eq!(builtin("outbound_read"), Some("outbound_get"));
+}

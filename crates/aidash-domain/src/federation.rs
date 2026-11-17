@@ -100,6 +100,8 @@ pub struct PeerError {
 	pub error: String,
 }
 
+pub mod delivery;
+
 pub mod dependencies;
 
 pub mod execution;

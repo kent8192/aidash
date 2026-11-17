@@ -42,6 +42,21 @@ pub(crate) async fn description_lease(
 	.map(|(scope, description)| (scope.into_access(), description))
 	.map_err(Into::into)
 }
+/// The Home's lease for one request of a delivery from a Run executing for another Home (ADR
+/// 0139): the live grant's own authority, rechecked exactly as a Home command rechecks it, with
+/// the command lock so deliveries and commands of one grant do not interleave.
+pub(crate) async fn delivery_lease(
+	f: &Federation,
+	node: &str,
+	id: Uuid,
+) -> Result<(Access, Description)> {
+	let mut revision_race = false;
+	let (mut access, description) =
+		description_lease_mode(f, node, id, true, &mut revision_race).await?;
+	access.worker();
+	access.read_grant = Some(id);
+	Ok((access, description))
+}
 async fn description_lease_mode(
 	f: &Federation,
 	node: &str,

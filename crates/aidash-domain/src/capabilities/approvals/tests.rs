@@ -205,3 +205,62 @@ fn the_decision_choices_use_their_wire_names(
 	let choice: ApprovalChoice = serde_json::from_value(json!(name)).unwrap();
 	assert!(is(&choice), "{name}");
 }
+
+#[rstest]
+fn the_homes_person_approves_only_explicitly() {
+	let who = Some("alice");
+	assert_eq!(home_verdict(None, who), HomeVerdict::Pending);
+	for approved in [
+		json!({"approved":true}),
+		json!({"choice":"allow_once"}),
+		json!({"choice":"allow_run"}),
+		json!({"choice":"allow_always"}),
+	] {
+		assert_eq!(
+			home_verdict(Some(&approved), who),
+			HomeVerdict::Approved {
+				by: Some("alice".into())
+			}
+		);
+	}
+	for declined in [
+		json!({"approved":false}),
+		json!({"choice":"deny"}),
+		json!({"approved":true,"choice":"deny"}),
+		json!({"answer":"yes please"}),
+		json!("approved"),
+		json!({}),
+	] {
+		assert_eq!(home_verdict(Some(&declined), who), HomeVerdict::Declined);
+	}
+}
+#[rstest]
+fn an_unanswered_deadline_is_an_expiry_and_not_a_decline() {
+	assert_eq!(
+		home_verdict(Some(&answer_deadline()), None),
+		HomeVerdict::Expired
+	);
+	// What the Home answers for a request nobody answered within 15 minutes.
+	assert_eq!(
+		home_verdict(Some(&json!({"approved":false,"expired":true})), None),
+		HomeVerdict::Expired
+	);
+}
+fn answer_deadline() -> Value {
+	json!({"answered": false, "reason": "answer_deadline"})
+}
+#[rstest]
+fn the_homes_prompt_names_one_https_url_and_its_own_origin() {
+	let prompt = outbound_prompt("https://example.com/a?b=1", "https://example.com");
+	assert!(check_outbound_prompt(&prompt).is_ok());
+	for bad in [
+		outbound_prompt("http://example.com/a", "http://example.com"),
+		outbound_prompt("https://example.com/a", "https://other.example"),
+		outbound_prompt("https://user:pw@example.com/a", "https://example.com"),
+		outbound_prompt("https://example.com:8443/a", "https://example.com:8443"),
+		json!({"tool":"connection_request","url":"https://example.com/a","origin":"https://example.com"}).to_string(),
+		"not json".to_owned(),
+	] {
+		assert!(check_outbound_prompt(&bad).is_err(), "{bad}");
+	}
+}

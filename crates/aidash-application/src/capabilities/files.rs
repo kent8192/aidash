@@ -457,7 +457,7 @@ async fn legacy(
 	})
 }
 /// Shape a tool result as the Envelope Agents read.
-fn envelope(
+pub fn envelope(
 	scope: &mut dyn FileScopePort,
 	area: &Area,
 	key: &str,
