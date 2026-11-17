@@ -227,8 +227,9 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		let unit: aidash_domain::memory::Unit = serde_json::from_value(body[0].clone()).unwrap();
-		evidence.push(unit.evidence());
+		let saved: aidash_domain::memory::Mutated =
+			serde_json::from_value(body[0].clone()).unwrap();
+		evidence.push(saved.unit.evidence());
 	}
 	let (status, body) = request(&p.aa, &p.token, "POST", &route, json!({
 		"operation_id":Uuid::now_v7(),"provider":fixture["provider"],"bank":fixture["bank"],
