@@ -51,6 +51,26 @@ impl AgentToolRepository for AgentTools<'_> {
 	}
 }
 impl Scope<'_> {
+	/// What this Node's people allowed this Run to use for this Run only (ADR 0139), kept on
+	/// its admission. A Run without an admission, or one never answered, has none.
+	async fn run_allowance(&mut self) -> NativeResult<ToolList> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		let stored: Option<Value> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COALESCE(run_tool_allowance, '[]'::jsonb)"))
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(self.run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		Ok(match stored {
+			Some(value) => serde_json::from_value(value)?,
+			None => ToolList::default(),
+		})
+	}
 	/// This Node's own Node Registration of the Run's Home Node, if it has one.
 	async fn home_registration(&mut self) -> Result<Option<NodeRegistration>> {
 		let run = self.run.metadata();
@@ -135,9 +155,10 @@ impl AgentToolScope for Scope<'_> {
 			request: request.map(|request| request.tools).unwrap_or_default(),
 			allowance: registration.tool_allowance,
 			block: registration.tool_block,
-			// The Runs' own allowances come with the pause answers (P6).
+			// The Home's Run-only answers already travel inside its Request; only the
+			// receiving Node's own are read here.
 			run_request: ToolList::default(),
-			run_allowance: ToolList::default(),
+			run_allowance: self.run_allowance().await?,
 		}))
 	}
 	async fn remote_tool_block(&mut self) -> Result<Option<ToolList>> {

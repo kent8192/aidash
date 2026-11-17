@@ -32,6 +32,14 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 		&mut self,
 		receiver: &str,
 	) -> Result<Option<FederationToolRequest>>;
+	/// The tools the Home's people allowed this grant's Run for that Run only (ADR 0139),
+	/// merged into the Request its Description carries. None unless an ask was answered.
+	async fn run_only_tool_request(
+		&mut self,
+		_grant: Uuid,
+	) -> Result<aidash_domain::federation::tool_lists::ToolList> {
+		Ok(Default::default())
+	}
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn append_subject(&mut self, subject: String);
 	/// Record a refusal after policy evaluation but before peer admission.

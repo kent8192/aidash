@@ -204,6 +204,127 @@ pub async fn decline_call<R: HomeRepository>(
 	finish(scope, result).await?;
 	Ok(activation)
 }
+/// The grant and its remote Run for an answer to a Federation tool ask. The caller has already
+/// decided that the person holds the Home's list permission for this registration, which is what
+/// lets someone who may not control the Run answer it (ADR 0118, amended).
+async fn answered_grant<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+) -> Result<(Grant, Uuid)> {
+	subject(repository)?;
+	let mut scope = repository.begin().await?;
+	let result = async {
+		let grant = scope.task_grant(task, id).await?.ok_or(Error::Forbidden)?;
+		let binding = scope.binding(id).await?.ok_or(Error::Forbidden)?;
+		Ok((grant, binding.admission_id))
+	}
+	.await;
+	finish(scope, result).await
+}
+/// Resume the remote Run of `grant` the way a person's resume does, after the Home's lists changed.
+async fn resume_grant<R: HomeRepository>(
+	repository: &R,
+	grant: &Grant,
+	admission: Uuid,
+	by: &str,
+) -> Result<Activation> {
+	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
+		let (mut authority, description) = repository.description(&grant.node_id, grant.id).await?;
+		let result = authority
+			.resume_semantic(grant.id, admission, description.task.workspace_id, by)
+			.await;
+		finish(authority, result).await?;
+	}
+	let activation: Activation = repository
+		.request(
+			grant.workspace_id,
+			&grant.node_id,
+			&format!("/scoped/execution/admissions/{admission}/control"),
+			&json!({"grant_id":grant.id,"action":RemoteExecutionControl::Resume}),
+		)
+		.await?;
+	if activation.grant_id != grant.id
+		|| activation.admission_id != admission
+		|| activation.run_id != admission
+	{
+		return Err(Error::Forbidden);
+	}
+	Ok(activation)
+}
+/// The Home's people allowed the paused tool, so the remote Run of `id` goes on. Resuming before
+/// the receiving Node answers its own ask pauses the Run again, which is not a loop: each pause
+/// waits for the people who lack the tool.
+pub async fn resume_after_tool_answer<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+) -> Result<Activation> {
+	let identity = subject(repository)?;
+	let (grant, admission) = answered_grant(repository, task, id).await?;
+	resume_grant(repository, &grant, admission, &identity.subject).await
+}
+/// The Home's people decline the call a remote Run is paused on because the Home's Request lacks
+/// its tool (ADR 0139). Like [`decline_call`] but decided by the Home's list permission rather than
+/// by the Run's.
+pub async fn decline_tool_ask<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+	call: &str,
+) -> Result<Activation> {
+	if call.is_empty() || call.len() > 256 {
+		return Err(Error::Invalid("call key is empty or too long".into()));
+	}
+	let identity = subject(repository)?;
+	let (grant, admission) = answered_grant(repository, task, id).await?;
+	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
+		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
+		let result = authority
+			.resume_semantic(
+				id,
+				admission,
+				description.task.workspace_id,
+				&identity.subject,
+			)
+			.await;
+		finish(authority, result).await?;
+	}
+	let declined: Declined = repository
+		.request(
+			grant.workspace_id,
+			&grant.node_id,
+			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
+			&json!({"grant_id":id,"call":call}),
+		)
+		.await?;
+	let activation = declined.activation;
+	if activation.grant_id != id
+		|| activation.admission_id != admission
+		|| activation.run_id != admission
+	{
+		return Err(Error::Forbidden);
+	}
+	let mut scope = repository.begin().await?;
+	let result = scope
+		.call_declined(
+			grant.workspace_id,
+			json!({
+				"task_id": task,
+				"grant_id": id,
+				"run_id": admission,
+				"call": call,
+				"tool": declined.tool,
+				"kind": declined.kind,
+				"by": identity.subject,
+				"rest_of_run": false,
+				"tool_ask": true,
+			}),
+		)
+		.await;
+	finish(scope, result).await?;
+	Ok(activation)
+}
 pub async fn control<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,

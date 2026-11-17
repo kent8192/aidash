@@ -50,6 +50,7 @@ pub mod tenancy_settings;
 pub mod demo_data_settings;
 pub mod node_registrations;
 pub mod nodes;
+pub mod tool_asks;
 
 pub mod tenants;
 

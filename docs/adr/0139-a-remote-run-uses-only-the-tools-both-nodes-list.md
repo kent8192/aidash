@@ -36,3 +36,4 @@ The receiving Node gives a remote Run an authority of its own, the Peer Mapping'
 - ADR 0064 and `docs/protocol.md`: the receiver keeps a `jti` record for Federation tokens.
 - ADR 0100: Registry tools are listed like any other external service and leave the defaults.
 - ADR 0111 and ADR 0136: a remote Run's commands run in its Delegated Run Scratch Space under the receiver's authority.
+- Answers to an ask: "this Run only" is kept per admission on the receiving Node and per Remote Grant on the Home, where it joins the Request each Description carries; "add" and "block" are ordinary list changes with a history row; a decline of the receiving Node's own ask is a Declined Call whose sentence names no Node. `GET` and `POST .../registrations/{source_node}/tool-asks` list and answer them for holders of `node.federation_tools.manage`; the Home learns a pause only from the receiving Node's status, which names the Home's missing key and nothing about the receiver's lists.

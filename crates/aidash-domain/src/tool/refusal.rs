@@ -67,7 +67,8 @@ impl RefusalKind {
 			Self::Policy => "this Node's policy refused",
 			Self::CatalogApproval => "this Node's Catalog Approval refused",
 			Self::AgentConfiguration => "this Agent's configuration does not permit",
-			Self::OtherNode => "another Node's authority refused",
+			// Another Node's authority, or a Federation tool list that either Node keeps.
+			Self::OtherNode => "a Node's authority or tool list refused",
 		};
 		format!("A person declined this call, which {refused}. Find another way. {DO_NOT_REPEAT}")
 	}
@@ -351,7 +352,7 @@ mod tests {
 	)]
 	#[case(
 		RefusalKind::OtherNode,
-		"A person declined this call, which another Node's authority refused. Find another way. Do not repeat this call."
+		"A person declined this call, which a Node's authority or tool list refused. Find another way. Do not repeat this call."
 	)]
 	fn each_kind_has_one_fixed_sentence(#[case] kind: RefusalKind, #[case] expected: &str) {
 		assert_eq!(kind.declined_sentence(), expected);

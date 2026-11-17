@@ -2,6 +2,7 @@
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::serializers::node_registrations::{RegistrationInput, ToolListsInput};
 use crate::apps::identity::serializers::peer::{HistoryPage, MappingPage};
+use crate::apps::identity::serializers::tool_asks::ToolAskAnswerInput;
 use crate::apps::identity::services::node_registrations::NodeRegistrations;
 use crate::authorization::identity::Actor;
 use crate::http::json::Json;
@@ -103,6 +104,63 @@ pub async fn remote_tools(
 	crate::http::json(
 		service
 			.remote_tools(actor, origin, tenant, node, source_node)
+			.await,
+	)
+}
+
+/// The calls of remote Runs that wait for this registration's list holders (ADR 0139).
+#[get(
+	"/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks",
+	name = "tenant-node-registration-tool-asks",
+	auth = "protected"
+)]
+pub async fn tool_asks(
+	#[inject] service: Depends<NodeRegistrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	PathStruct(RegistrationPath {
+		tenant,
+		node,
+		source_node,
+	}): PathStruct<RegistrationPath>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.tool_asks(actor, origin, tenant, node, source_node)
+			.await,
+	)
+}
+
+/// The path of one answer: a registration and the waiting call's admission or grant.
+#[derive(serde::Deserialize)]
+pub struct ToolAskPath {
+	pub tenant: String,
+	pub node: String,
+	pub source_node: String,
+	pub id: uuid::Uuid,
+}
+
+/// Answer one waiting call: this Run only, add to the list, decline, or block.
+#[post(
+	"/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks/{id}/answer",
+	name = "tenant-node-registration-tool-ask-answer",
+	auth = "protected"
+)]
+pub async fn answer_tool_ask(
+	#[inject] service: Depends<NodeRegistrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	PathStruct(ToolAskPath {
+		tenant,
+		node,
+		source_node,
+		id,
+	}): PathStruct<ToolAskPath>,
+	Json(input): Json<ToolAskAnswerInput>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.answer_tool_ask(actor, origin, tenant, node, source_node, id, input)
 			.await,
 	)
 }

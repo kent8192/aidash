@@ -22,6 +22,8 @@ use aidash_domain::nodes::{
 use aidash_integrations::federation::directory::HttpDirectory;
 use serde_json::json;
 
+mod tool_asks;
+
 pub struct NodeRegistrations {
 	runtime: Federation,
 }

@@ -20,7 +20,7 @@ use aidash_domain::{
 	Task,
 	federation::{
 		execution::{Inspection, PrepareInput, home::Grant},
-		tool_lists::FederationToolRequest,
+		tool_lists::{FederationToolRequest, ToolList},
 	},
 	identity::execution::ExecutionPrincipal,
 	nodes::NodeAddress,
@@ -113,6 +113,22 @@ impl GrantScope for Scope {
 		.await
 		.map(|registration| registration.map(|registration| registration.tool_request))
 		.map_err(Into::into)
+	}
+	async fn run_only_tool_request(&mut self, grant: Uuid) -> Result<ToolList> {
+		let stored: Option<Value> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COALESCE(tool_request_additions, '[]'::jsonb)"))
+				.from(Alias::new("authorization_remote_grants"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(grant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await
+		.map_err(crate::Error::from)?;
+		Ok(match stored {
+			Some(value) => serde_json::from_value(value)?,
+			None => ToolList::default(),
+		})
 	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) {
 		self.access.subjects = subjects;

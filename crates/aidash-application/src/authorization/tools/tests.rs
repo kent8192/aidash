@@ -2369,6 +2369,35 @@ async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
 		refusal.check,
 		RefusalCheck::FederationTools { home, receiver }
 	);
+	// The pause is answered by the key the lists matched.
+	assert_eq!(refusal.action.as_deref(), Some("workspace_read"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_only_answer_of_each_side_lets_the_call_through(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let only = ToolList::new([ToolPattern::new("workspace_read").unwrap()]).unwrap();
+	repository.remote = true;
+	repository.lists = Some(
+		aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
+			run_request: only.clone(),
+			run_allowance: only,
+			..Default::default()
+		},
+	);
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
 }
 
 #[rstest]

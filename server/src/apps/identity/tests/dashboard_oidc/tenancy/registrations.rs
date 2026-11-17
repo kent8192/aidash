@@ -599,6 +599,81 @@ async fn federation_tool_lists_default_then_round_trip_with_revision_and_permiss
 
 #[rstest::rstest]
 #[tokio::test]
+async fn waiting_tool_asks_are_listed_and_answered_only_by_list_holders(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let carol = d.person("carol").await;
+	let (tenant, context) = d.node_tenant(&alice, "Team").await;
+	let (other_tenant, other_context) = d.node_tenant(&carol, "Carol").await;
+	let member = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
+	let node = d.default_node(&alice, &context, &tenant).await;
+	let source = d.address_of(&carol, &other_context, &other_tenant).await;
+	let (status, created) = d
+		.register(
+			&alice,
+			&context,
+			&tenant,
+			&node,
+			json!({"source_node":source,"atomic_transactions":false,"enabled":true,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 200, "{created}");
+	let encoded = source.replace(':', "%3A").replace('/', "%2F");
+	let asks = format!("/api/tenants/{tenant}/nodes/{node}/registrations/{encoded}/tool-asks");
+
+	// Nothing waits, so both sides list nothing.
+	let (status, listed) = d
+		.as_person(&alice, "GET", &asks, Some(&context), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed, json!({"asks": []}));
+
+	// A call that is not waiting cannot be answered, whichever side it names.
+	let answer = format!("{asks}/{}/answer", uuid::Uuid::new_v4());
+	let (status, refused) = d
+		.as_person(
+			&alice,
+			"POST",
+			&answer,
+			Some(&context),
+			json!({"choice": "run_only"}),
+		)
+		.await;
+	assert_eq!(status, 404, "{refused}");
+	let (status, refused) = d
+		.as_person(
+			&alice,
+			"POST",
+			&answer,
+			Some(&context),
+			json!({"choice": "always"}),
+		)
+		.await;
+	assert_eq!(status, 422, "an unknown choice is unprocessable: {refused}");
+
+	// A member lacks `node.federation_tools.manage`, for the list and for an answer.
+	let (status, refused) = d
+		.as_person(&bob, "GET", &asks, Some(&member), Value::Null)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	let (status, refused) = d
+		.as_person(
+			&bob,
+			"POST",
+			&answer,
+			Some(&member),
+			json!({"choice": "decline"}),
+		)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {

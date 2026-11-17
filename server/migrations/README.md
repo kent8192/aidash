@@ -1,5 +1,12 @@
 # Aidash native migration history
 
+`federation/0028_run_only_tool_answers` (after `federation/0027_federation_tool_lists_state`)
+adds the nullable `jsonb` column `run_tool_allowance` to `authorization_remote_admissions` (the
+tools the receiving Node's people allowed for one Run only) and `tool_request_additions` to
+`authorization_remote_grants` (the tools the Home's people allowed for one Run only), each a
+Federation tool list of ADR 0139 (#989); NULL means none. It uses only Reinhardt operations.
+`0029_run_only_tool_answers_state` records the model state.
+
 `federation/0026_federation_tool_lists` (after `federation/0025_federation_token_ids_state`)
 adds `tool_request` and `tool_allowance` (nullable `jsonb`; NULL means the default list) and
 `tool_block` (`jsonb NOT NULL DEFAULT '[]'`) to `node_registrations` and

@@ -187,3 +187,108 @@ fn list_key_names_builtins_plainly_and_registry_tools_by_definition_and_operatio
 	assert_eq!(list_key(&core, "shell"), "shell");
 	assert_eq!(list_key(&core, "lookup"), "registry:aidash.shell/lookup");
 }
+
+#[test]
+fn a_run_only_answer_lets_the_call_through_without_changing_the_registered_lists() {
+	let allowance = list(&["workspace_read"]);
+	let run_only = list(&["registry:github/create_issue"]);
+	let lists = RemoteToolLists {
+		request: &list(&["workspace_read", "registry:github/*"]),
+		allowance: &allowance,
+		block: &ToolList::default(),
+		run_request: &ToolList::default(),
+		run_allowance: &run_only,
+	};
+	assert_eq!(
+		lists.decide(ToolReach::ExternalServices, "registry:github/create_issue"),
+		ToolVerdict::Usable
+	);
+	// Another tool of the same definition is still asked about: the answer named one tool.
+	assert_eq!(
+		lists.decide(ToolReach::ExternalServices, "registry:github/delete_repo"),
+		ToolVerdict::Ask(Lacking {
+			home: false,
+			receiver: true
+		})
+	);
+	assert_eq!(allowance, list(&["workspace_read"]));
+}
+
+#[test]
+fn a_blocked_tool_is_not_let_through_by_a_run_only_answer() {
+	let run_only = list(&["shell"]);
+	let lists = RemoteToolLists {
+		request: &run_only,
+		allowance: &ToolList::default(),
+		block: &list(&["shell"]),
+		run_request: &run_only,
+		run_allowance: &run_only,
+	};
+	assert_eq!(
+		lists.decide(ToolReach::Execution, "shell"),
+		ToolVerdict::Unavailable
+	);
+}
+
+#[test]
+fn the_homes_run_only_tools_travel_inside_the_request() {
+	let request = FederationToolRequest {
+		tools: list(&["workspace_read"]),
+		hosts: vec![HostPattern::new("example.com").unwrap()],
+	};
+	let merged = request
+		.with_run_tools(&list(&["shell", "workspace_read"]))
+		.unwrap();
+	assert_eq!(merged.tools, list(&["shell", "workspace_read"]));
+	assert_eq!(merged.hosts, request.hosts);
+	assert_eq!(request.tools, list(&["workspace_read"]));
+	assert_eq!(
+		request.with_run_tools(&ToolList::default()).unwrap(),
+		request
+	);
+}
+
+#[test]
+fn an_answer_lists_the_exact_key_or_a_pattern_that_matches_it() {
+	let key = "registry:github/create_issue";
+	assert_eq!(answered_pattern(key, None).unwrap().as_str(), key);
+	assert_eq!(answered_pattern(key, Some("  ")).unwrap().as_str(), key);
+	assert_eq!(
+		answered_pattern(key, Some("registry:github/*"))
+			.unwrap()
+			.as_str(),
+		"registry:github/*"
+	);
+	// A pattern that misses the key would leave the Run paused on the same call.
+	assert!(answered_pattern(key, Some("registry:gitlab/*")).is_err());
+	assert!(answered_pattern(key, Some("Bad Pattern")).is_err());
+}
+
+#[test]
+fn only_the_receiver_may_block() {
+	assert!(AskChoice::Block.allowed_on(AskSide::Receiver));
+	assert!(!AskChoice::Block.allowed_on(AskSide::Home));
+	for choice in [AskChoice::RunOnly, AskChoice::Add, AskChoice::Decline] {
+		assert!(choice.allowed_on(AskSide::Home));
+		assert!(choice.allowed_on(AskSide::Receiver));
+	}
+	assert!(AskChoice::RunOnly.resumes_the_run());
+	assert!(AskChoice::Add.resumes_the_run());
+	assert!(AskChoice::Block.resumes_the_run());
+	assert!(!AskChoice::Decline.resumes_the_run());
+}
+
+#[test]
+fn an_answer_is_read_from_its_snake_case_name() {
+	let choice: AskChoice = serde_json::from_str("\"run_only\"").unwrap();
+	assert_eq!(choice, AskChoice::RunOnly);
+	assert!(serde_json::from_str::<AskChoice>("\"always\"").is_err());
+}
+
+#[test]
+fn a_list_drops_an_exact_entry_and_unions_with_another() {
+	let a = list(&["a", "b"]);
+	assert_eq!(a.without(&ToolPattern::new("a").unwrap()), list(&["b"]));
+	assert_eq!(a.union(&list(&["b", "c"])).unwrap(), list(&["a", "b", "c"]));
+	assert!(ToolList::default().is_empty());
+}

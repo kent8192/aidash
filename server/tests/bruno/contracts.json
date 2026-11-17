@@ -93,6 +93,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -435,6 +439,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -1577,6 +1585,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -1766,6 +1778,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -1992,6 +2008,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -2155,6 +2175,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -2388,6 +2412,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -3121,6 +3149,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -34257,6 +34289,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -37496,6 +37532,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -42924,6 +42964,24 @@
     "query_parameters": [],
     "source": "server/src/apps/identity/views/node_registrations.rs",
     "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-node-registration-tool-asks",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "tenant-node-registration-tool-ask-answer",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks/{id}/answer",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": ["id"]
   },
   {
     "json": true,
@@ -56596,6 +56654,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -56837,6 +56899,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -57095,6 +57161,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"

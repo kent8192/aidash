@@ -207,6 +207,27 @@ impl ToolList {
 	pub fn with(&self, pattern: ToolPattern) -> Result<Self> {
 		Self::new(self.0.iter().cloned().chain([pattern]))
 	}
+
+	/// The patterns of both lists, as the Request a Home sends once its people allowed more
+	/// tools for one Run only.
+	pub fn union(&self, other: &Self) -> Result<Self> {
+		Self::new(self.0.iter().chain(&other.0).cloned())
+	}
+
+	/// The list without `pattern`, an exact entry; a list that lacks it is unchanged.
+	pub fn without(&self, pattern: &ToolPattern) -> Self {
+		Self(
+			self.0
+				.iter()
+				.filter(|item| *item != pattern)
+				.cloned()
+				.collect(),
+		)
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
 }
 
 impl TryFrom<Vec<ToolPattern>> for ToolList {
@@ -309,6 +330,15 @@ pub struct FederationToolRequest {
 }
 
 impl FederationToolRequest {
+	/// The Request with the tools the Home's people allowed for one Run only (ADR 0139): the
+	/// receiver reads one Request, so a Run-only answer travels inside it.
+	pub fn with_run_tools(&self, run_only: &ToolList) -> Result<Self> {
+		Ok(Self {
+			tools: self.tools.union(run_only)?,
+			hosts: self.hosts.clone(),
+		})
+	}
+
 	pub fn defaults() -> Self {
 		Self {
 			tools: ToolList::defaults(),
@@ -328,6 +358,68 @@ impl FederationToolRequest {
 pub struct Lacking {
 	pub home: bool,
 	pub receiver: bool,
+}
+
+/// The tool a remote Run's paused call needs and which sides lack it, recorded on the pause so
+/// the people who hold the lists can be asked and can answer (ADR 0139).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAsk {
+	/// The key the lists match, [`list_key`] of the called tool.
+	pub key: String,
+	pub lacking: Lacking,
+}
+
+/// Which side's people answer an ask: the Home's, who edit the Request, or the receiving
+/// Node's, who edit the Allowance and the Block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AskSide {
+	Home,
+	Receiver,
+}
+
+/// How the people of one side answer an ask (decision 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AskChoice {
+	/// Allow the tool for this Run only.
+	RunOnly,
+	/// Add the tool, or a pattern naming it, to the side's list.
+	Add,
+	/// Decline the call; the Run goes on without it.
+	Decline,
+	/// Never offer the tool to this peer; the receiving side only.
+	Block,
+}
+
+impl AskChoice {
+	/// Whether `side` may answer this way: only the receiver keeps a Block.
+	pub fn allowed_on(self, side: AskSide) -> bool {
+		!matches!((self, side), (Self::Block, AskSide::Home))
+	}
+
+	/// Whether the answer resumes the paused Run so that its next attempt meets the new lists:
+	/// allowed, the call runs; blocked, it answers the words of an unknown tool. A decline
+	/// resumes the Run through the Declined Call itself.
+	pub fn resumes_the_run(self) -> bool {
+		!matches!(self, Self::Decline)
+	}
+}
+
+/// What an answer adds to a list: `pattern`, which has to match the asked `key` or the
+/// answer would leave the Run paused on the same call, or the exact key.
+pub fn answered_pattern(key: &str, pattern: Option<&str>) -> Result<ToolPattern> {
+	let Some(pattern) = pattern.map(str::trim).filter(|pattern| !pattern.is_empty()) else {
+		return ToolPattern::new(key);
+	};
+	let pattern = ToolPattern::new(pattern)?;
+	if !pattern.matches(key) {
+		return Err(Error::Invalid(
+			"the pattern has to match the tool that is asked about".into(),
+		));
+	}
+	Ok(pattern)
 }
 
 /// What a remote Run's call to one tool may do now.

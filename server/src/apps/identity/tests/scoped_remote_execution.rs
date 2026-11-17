@@ -3915,6 +3915,7 @@ impl Pair {
 				tool: "task_delegate".into(),
 				tool_call: None,
 				kind: aidash_domain::tool::RefusalKind::OtherNode,
+				ask: None,
 			}),
 			..Default::default()
 		};

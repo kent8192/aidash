@@ -1683,6 +1683,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			.subject_chain(vec!["alice".to_owned()])
 			.description(Json(json!({})))
 			.created_at(chrono::Utc::now())
+			.run_tool_allowance(None)
 			.finish();
 		f.store
 			.pool

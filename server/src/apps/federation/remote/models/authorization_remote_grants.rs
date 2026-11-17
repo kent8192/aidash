@@ -46,6 +46,10 @@ pub struct AuthorizationRemoteGrant {
 
 	#[field]
 	pub semantic: Json<Value>,
+	/// The Federation tool list the Home's people allowed for this Run only (ADR 0139),
+	/// merged into the Request each Description carries; absent means none.
+	#[field]
+	pub tool_request_additions: Option<Json<Value>>,
 }
 
 impl AuthorizationRemoteGrant {}

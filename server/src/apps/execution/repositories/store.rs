@@ -5717,6 +5717,21 @@ impl Store {
 						.map_or_else(|| refusal.tool.clone(), |stopped| stopped.name.clone()),
 					kind,
 					tool_call: call.tool_call.clone(),
+					// A Federation tool list stopped the call: record who has to be asked, by
+					// the key the lists matched (carried as the refusal's action).
+					ask: match (refusal.check, &refusal.action) {
+						(
+							aidash_domain::tool::RefusalCheck::FederationTools { home, receiver },
+							Some(key),
+						) => Some(aidash_domain::federation::tool_lists::ToolAsk {
+							key: key.clone(),
+							lacking: aidash_domain::federation::tool_lists::Lacking {
+								home,
+								receiver,
+							},
+						}),
+						_ => None,
+					},
 				}
 			}),
 		)

@@ -45,7 +45,10 @@ fn optional_text(row: &Row, column: &str) -> Result<Option<String>> {
 }
 
 /// A nullable `jsonb` column read as `T`; SQL NULL is `None`.
-fn optional_json<T: serde::de::DeserializeOwned>(row: &Row, column: &str) -> Result<Option<T>> {
+pub(crate) fn optional_json<T: serde::de::DeserializeOwned>(
+	row: &Row,
+	column: &str,
+) -> Result<Option<T>> {
 	match row.data.get(column) {
 		None | Some(QueryValue::Null) | Some(QueryValue::Json(None)) => Ok(None),
 		Some(QueryValue::Json(Some(value))) => Ok(Some(serde_json::from_value((**value).clone())?)),

@@ -104,19 +104,19 @@ fn federation_gate(
 	let Some(lists) = lists else {
 		return Ok(());
 	};
-	match lists
-		.lists()
-		.decide(contract.reach, &list_key(contract, operation))
-	{
+	let key = list_key(contract, operation);
+	match lists.lists().decide(contract.reach, &key) {
 		ToolVerdict::Usable => Ok(()),
 		ToolVerdict::Unavailable => Err(Error::Invalid(UNAVAILABLE_TOOL.into())),
+		// The key the lists matched travels as the refusal's action, so the pause can say which
+		// pattern its answer adds without resolving the tool again.
 		ToolVerdict::Ask(lacking) => Err(refused(
 			call,
 			RefusalCheck::FederationTools {
 				home: lacking.home,
 				receiver: lacking.receiver,
 			},
-			None,
+			Some(&key),
 		)),
 	}
 }
