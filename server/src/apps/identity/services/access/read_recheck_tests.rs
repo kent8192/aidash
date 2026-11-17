@@ -702,13 +702,26 @@ async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) ->
 		.execute(driver)
 		.await
 		.unwrap();
-	sqlx::query("INSERT INTO node_registrations (tenant,node,source_node,atomic_transactions,enabled,revision,actor) VALUES ('acme',$1,$2,false,true,1,'fixture')")
+	// Both Federation tool lists name the Live preview tools, so only reads decide here (ADR 0139).
+	sqlx::query("INSERT INTO node_registrations (tenant,node,source_node,atomic_transactions,enabled,revision,actor,tool_allowance) VALUES ('acme',$1,$2,false,true,1,'fixture','[\"live_preview_*\"]'::jsonb)")
 		.bind(&node).bind(home_node())
 		.execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_peer_mappings (tenant,node,source_node,source_subject,credential_id,enabled,revision,actor) VALUES ('acme',$1,$2,$3,$4,true,1,'fixture')")
 		.bind(&node).bind(home_node()).bind(SOURCE_SUBJECT).bind(fixture.identity.credential_id)
 		.execute(driver).await.unwrap();
-	let description = admission_description(fixture, workspace);
+	let mut description = admission_description(fixture, workspace);
+	description.authorization_details = vec![
+		aidash_domain::federation::tool_lists::ToolAuthorizationDetail::new(
+			&aidash_domain::federation::tool_lists::FederationToolRequest {
+				tools: aidash_domain::federation::tool_lists::ToolList::new([
+					aidash_domain::federation::tool_lists::ToolPattern::new("live_preview_*")
+						.unwrap(),
+				])
+				.unwrap(),
+				hosts: Vec::new(),
+			},
+		),
+	];
 	sqlx::query("INSERT INTO authorization_remote_admissions (id,node,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES ($1,$2,$3,$4,$5,'acme',$6,$7,$8)")
 		.bind(fixture.run).bind(&node).bind(home_node()).bind(description.grant_id).bind(fixture.task)
 		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
