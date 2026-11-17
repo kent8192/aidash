@@ -48,6 +48,9 @@ pub const NODE_REGISTRATION_READ: &str = "node_registration.read";
 /// Registering a Node of another Tenant at one of the Tenant's Nodes, or
 /// changing that registration.
 pub const NODE_REGISTRATION_UPDATE: &str = "node_registration.update";
+/// Setting the Federation Tool Request, Allowance and Block of a Node
+/// Registration (ADR 0139). Members never hold it.
+pub const NODE_FEDERATION_TOOLS_MANAGE: &str = "node.federation_tools.manage";
 /// Creating a Run-scoped Subnode; an agent must be explicitly granted this.
 pub const SUBNODE_CREATE: &str = "subnode.create";
 /// Changing the Tenant's Subnode limits.
@@ -77,7 +80,7 @@ pub const CONNECTION_ADMINISTER: &str = "connection.administer";
 pub const SCHEDULE_ADMINISTER: &str = crate::schedules::ADMINISTER;
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 30] = [
+pub const ACTIONS: [&str; 31] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -100,6 +103,7 @@ pub const ACTIONS: [&str; 30] = [
 	NODE_DELETE,
 	NODE_REGISTRATION_READ,
 	NODE_REGISTRATION_UPDATE,
+	NODE_FEDERATION_TOOLS_MANAGE,
 	TEST_LIMITS_UPDATE,
 	SUBNODE_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
@@ -160,7 +164,9 @@ pub fn resource_kind(action: &str) -> &'static str {
 		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE | SCRATCH_CREATE | SUBNODE_CREATE => {
 			"node"
 		}
-		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
+		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE | NODE_FEDERATION_TOOLS_MANAGE => {
+			"node_registration"
+		}
 		TEST_LIMITS_UPDATE => "test_limits",
 		SUBNODE_LIMITS_UPDATE | SCHEDULE_ADMINISTER => "tenant",
 		TEST_PROFILE_UPDATE => "test_profile",

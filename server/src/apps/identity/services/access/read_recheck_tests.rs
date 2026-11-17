@@ -632,6 +632,7 @@ fn admission_description(
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let now = chrono::Utc::now();
 	Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::new_v4(),
 		source_node: home_node(),
 		target_node: format!("{DEPLOYMENT}/{node}"),

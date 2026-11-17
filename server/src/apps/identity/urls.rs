@@ -161,6 +161,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::node_registrations::set)
 			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::node_registrations::set_tool_lists)
+			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::tenant_administration::leave)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::invitations::issue)

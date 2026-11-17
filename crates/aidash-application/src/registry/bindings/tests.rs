@@ -607,7 +607,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let saved = resolve(
 		&mut catalog,
 		&Providers {
-			unavailable: Some("file_search".into()),
+			unavailable: Some("agent_discover".into()),
 		},
 		reference("agent"),
 		&agent_entry(&config),
@@ -618,7 +618,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let files = saved
 		.bindings
 		.iter()
-		.find(|binding| binding.identity.id == "aidash.file_search")
+		.find(|binding| binding.identity.id == "aidash.agent_discover")
 		.unwrap();
 	assert!(files.excluded_reason.is_some());
 	assert!(files.provider_implementation.is_none());
@@ -631,7 +631,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	);
 	config
 		.bindings
-		.push(Binding::tool(QualifiedRef::builtin(NODE, "file_search")));
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "agent_discover")));
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 }
 
@@ -659,7 +659,9 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 		sessions: None,
 	};
 	let tools = resolver.tools(&run).await.unwrap();
-	assert!(!tools.contains_key("memory_mutate"));
+	// A Never tool stays out; a listable one stays a candidate (ADR 0139).
+	assert!(!tools.contains_key("agent_discover"));
+	assert!(tools.contains_key("memory_mutate"));
 	assert!(tools.contains_key("workspace_read"));
 	assert!(tools.contains_key("human_request"));
 
@@ -668,7 +670,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 		let memory = altered
 			.bindings
 			.iter_mut()
-			.find(|binding| binding.alias.as_deref() == Some("memory_mutate"))
+			.find(|binding| binding.alias.as_deref() == Some("agent_discover"))
 			.unwrap();
 		match mutation {
 			0 => {
@@ -706,7 +708,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	let memory = local
 		.bindings
 		.iter_mut()
-		.find(|binding| binding.alias.as_deref() == Some("memory_mutate"))
+		.find(|binding| binding.alias.as_deref() == Some("agent_discover"))
 		.unwrap();
 	memory.excluded_reason = Some("provider contract is ineligible for remote execution".into());
 	memory.provider_implementation = None;
@@ -1756,8 +1758,10 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 	assert!(admitted.operation("skill_read").is_ok());
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
 	assert!(settings.semantic_memory);
-	assert!(!settings.needs_context_authority());
-	assert!(!settings.core_capabilities.files);
+	// File tools are candidates for a remote Run now; the receiver gives it a
+	// Working Area of its own (ADR 0139), so they need area authority there.
+	assert!(settings.needs_context_authority());
+	assert!(settings.core_capabilities.files);
 	assert!(!settings.core_capabilities.skills);
 }
 

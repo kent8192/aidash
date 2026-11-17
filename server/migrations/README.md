@@ -1,5 +1,18 @@
 # Aidash native migration history
 
+`federation/0026_federation_tool_lists` (after `federation/0025_federation_token_ids_state`)
+adds `tool_request` and `tool_allowance` (nullable `jsonb`; NULL means the default list) and
+`tool_block` (`jsonb NOT NULL DEFAULT '[]'`) to `node_registrations` and
+`node_registration_history`, the Federation Tool Request, Allowance and Block of ADR 0139 (#989).
+It uses only Reinhardt operations. `0027_federation_tool_lists_state` records the model state.
+
+`federation/0024_federation_token_ids` (after
+`federation/0023_delegation_unused_columns_state`) creates the Tenant-owned
+`federation_token_ids` table, which records the `jti` of every Federation token a
+receiving Node in another Tenant verified until `exp` plus 30 seconds (ADR 0064,
+#989). Its row-level policy is a SQL asset because Reinhardt migrations cannot
+express policies. `0025_federation_token_ids_state` records the model state.
+
 `federation/0022_delegation_unused_columns` (after
 `federation/0021_node_preview_origin_merge`) drops the `delegations_retry` index
 and the `binding_snapshot`, `human_requests`, `next_attempt_at` and `delivered`

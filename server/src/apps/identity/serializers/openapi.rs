@@ -258,6 +258,21 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 					views::node_registrations::set,
 					&["String", "String"],
 				)?;
+				contracts.request::<_, r::ToolListsInput>(
+					document,
+					views::node_registrations::set_tool_lists,
+				)?;
+				contracts.response::<_, r::RegistrationRecord>(
+					document,
+					views::node_registrations::set_tool_lists,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::set_tool_lists,
+					&["String", "String", "String"],
+				)?;
 			}
 		}
 		contracts.response::<_, t::CreatedTenant>(

@@ -20,6 +20,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 	};
 	let inspection = super::super::tests::inspection();
 	let description = Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::from_u128(3),
 		source_node: "aidash://home".into(),
 		target_node: "aidash://receiver".into(),
@@ -48,6 +49,33 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 		description: serde_json::to_value(&description).unwrap(),
 	};
 	(record, identity, description)
+}
+
+#[rstest]
+fn the_request_rides_the_description_only_when_there_is_one(
+	binding: (Record, ExecutionPrincipal, Description),
+) {
+	use crate::federation::tool_lists::{FederationToolRequest, ToolAuthorizationDetail};
+	let (_, _, mut description) = binding;
+	assert!(
+		serde_json::to_value(&description)
+			.unwrap()
+			.get("authorization_details")
+			.is_none()
+	);
+	description.authorization_details = vec![ToolAuthorizationDetail::new(
+		&FederationToolRequest::defaults(),
+	)];
+	let wire = serde_json::to_value(&description).unwrap();
+	assert_eq!(
+		wire["authorization_details"][0]["type"],
+		"aidash.federation.tools"
+	);
+	let back: Description = serde_json::from_value(wire).unwrap();
+	assert_eq!(
+		back.authorization_details,
+		description.authorization_details
+	);
 }
 
 #[rstest]

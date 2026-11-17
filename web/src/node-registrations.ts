@@ -1,4 +1,8 @@
-import type { RegistrationInput, RegistrationRecord } from "./generated/models";
+import type {
+  RegistrationInput,
+  RegistrationRecord,
+  ToolListsInput,
+} from "./generated/models";
 import { deploymentId, parseNodeAddress } from "./node-selection.ts";
 
 /** What a Tenant Administrator types to register a Node. */
@@ -65,5 +69,51 @@ export function changedRegistration(
           key_id: record.key_id,
         }
       : {}),
+  };
+}
+
+/** The four Federation tool lists of a registration, one pattern per line. */
+export type ToolListsDraft = {
+  request_tools: string;
+  request_hosts: string;
+  allowance: string;
+  block: string;
+};
+
+/** The patterns of one list, one per line. */
+export function patternLines(patterns: readonly string[]): string {
+  return patterns.join("\n");
+}
+
+/** The patterns typed one per line; blank lines and spaces around a pattern are dropped. */
+export function patternsOf(lines: string): string[] {
+  return lines
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+export function toolListsDraft(record: RegistrationRecord): ToolListsDraft {
+  return {
+    request_tools: patternLines(record.tool_request.tools),
+    request_hosts: patternLines(record.tool_request.hosts),
+    allowance: patternLines(record.tool_allowance),
+    block: patternLines(record.tool_block),
+  };
+}
+
+/** Replaces all three lists of `record` at the revision the person loaded. */
+export function changedToolLists(
+  record: RegistrationRecord,
+  draft: ToolListsDraft,
+): ToolListsInput {
+  return {
+    revision: record.revision,
+    request: {
+      tools: patternsOf(draft.request_tools),
+      hosts: patternsOf(draft.request_hosts),
+    },
+    allowance: patternsOf(draft.allowance),
+    block: patternsOf(draft.block),
   };
 }

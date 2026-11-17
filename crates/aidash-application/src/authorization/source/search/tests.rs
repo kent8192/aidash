@@ -212,6 +212,7 @@ fn description() -> Description {
 		semantic_memory: 0,
 	};
 	Description {
+		authorization_details: Vec::new(),
 		grant_id: operation().grant_id,
 		source_node: "aidash://home".into(),
 		target_node: "aidash://receiver".into(),

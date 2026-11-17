@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check as Tick } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
 import {
   Alert,
   Check,
@@ -20,6 +21,7 @@ import {
 import {
   tenantNodeRegistrationHistory,
   tenantNodeRegistrationSet,
+  tenantNodeRegistrationToolLists,
   tenantNodeRegistrations,
   tenantNodeUpdate,
   tenantNodesCreate,
@@ -28,9 +30,12 @@ import { useNodes } from "./nodes";
 import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 import {
   changedRegistration,
+  changedToolLists,
   inOtherDeployment,
   newRegistration,
   type RegistrationDraft,
+  toolListsDraft,
+  type ToolListsDraft,
 } from "./node-registrations";
 import { registryDeployment } from "./node-selection";
 import { RecordView } from "./record-view";
@@ -174,6 +179,7 @@ export function NodesPage({ data }: { data: State }) {
           label={selected.label}
           own={registryDeployment(data)}
           editable={can("node_registration.update")}
+          toolsEditable={can("node.federation_tools.manage")}
         />
       )}
       {can("node_registration.read") && can("node_registration.update") && (
@@ -218,12 +224,64 @@ export function NodesPage({ data }: { data: State }) {
   );
 }
 
+/** The Federation tool lists of one registration (ADR 0139): what this Node asks
+ *  the registered Node for, and what it allows and blocks for that Node. */
+function FederationTools({
+  row,
+  editable,
+  busy,
+  save,
+}: {
+  row: Parameters<typeof toolListsDraft>[0];
+  editable: boolean;
+  busy: boolean;
+  save: (lists: ToolListsDraft) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  // Keyed by revision by the caller, so a refetch of the same revision keeps
+  // what is being typed and a new revision starts from the stored lists.
+  const [lists, setLists] = useState<ToolListsDraft>(() => toolListsDraft(row));
+  const field = (key: keyof ToolListsDraft, label: string) => (
+    <Field label={label}>
+      <Textarea
+        className="font-mono text-xs"
+        rows={4}
+        value={lists[key]}
+        disabled={!editable || busy}
+        onChange={(event) => setLists({ ...lists, [key]: event.target.value })}
+      />
+    </Field>
+  );
+  return (
+    <details className="col-span-full" data-federation-tools={row.source_node}>
+      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+        {t("federationTools")}
+      </summary>
+      <div className="mt-2 grid gap-2 md:grid-cols-2">
+        <Hint>{t("federationToolsHelp")}</Hint>
+        {field("request_tools", t("federationToolsRequest"))}
+        {field("request_hosts", t("federationToolsRequestHosts"))}
+        {field("allowance", t("federationToolsAllowance"))}
+        {field("block", t("federationToolsBlock"))}
+        {editable && (
+          <div>
+            <Button size="sm" disabled={busy} onClick={() => void save(lists)}>
+              {t("federationToolsSave")}
+            </Button>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function Registrations({
   tenant,
   node,
   label,
   own,
   editable,
+  toolsEditable,
 }: {
   tenant: string;
   node: string;
@@ -231,6 +289,8 @@ function Registrations({
   /** `aidash://<name>` of this Deployment. */
   own: string;
   editable: boolean;
+  /** Whether the person holds `node.federation_tools.manage`. */
+  toolsEditable: boolean;
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
@@ -274,6 +334,31 @@ function Registrations({
         input,
       );
       setAdding(false);
+      await client.invalidateQueries({ queryKey: ["node-registrations"] });
+      await client.invalidateQueries({
+        queryKey: ["node-registration-history"],
+      });
+    } catch (reason) {
+      setError(failure(reason));
+      await client.invalidateQueries({ queryKey: ["node-registrations"] });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveToolLists = async (
+    row: Parameters<typeof toolListsDraft>[0],
+    lists: ToolListsDraft,
+  ) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await tenantNodeRegistrationToolLists(
+        encodeURIComponent(tenant),
+        encodeURIComponent(node),
+        encodeURIComponent(row.source_node),
+        changedToolLists(row, lists),
+      );
       await client.invalidateQueries({ queryKey: ["node-registrations"] });
       await client.invalidateQueries({
         queryKey: ["node-registration-history"],
@@ -414,6 +499,13 @@ function Registrations({
                     </Button>
                   </div>
                 )}
+                <FederationTools
+                  key={`${row.source_node}:${row.revision}`}
+                  row={row}
+                  editable={toolsEditable}
+                  busy={busy}
+                  save={(lists) => saveToolLists(row, lists)}
+                />
               </div>
             ))}
           </RowList>

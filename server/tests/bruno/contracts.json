@@ -42433,6 +42433,23 @@
     "responses": {
       "200": {
         "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools"],
+            "type": "object"
+          },
           "RegistrationRecord": {
             "description": "A Node Registration as its Tenant sees it.",
             "properties": {
@@ -42474,6 +42491,18 @@
                 "description": "The registered Node's address.",
                 "type": "string"
               },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -42487,12 +42516,22 @@
               "key_id",
               "atomic_transactions",
               "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
               "revision",
               "actor",
               "created_at",
               "updated_at"
             ],
             "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "schema": {
@@ -42515,6 +42554,23 @@
     "responses": {
       "200": {
         "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools"],
+            "type": "object"
+          },
           "NodeRegistrationRevision": {
             "description": "A Node Registration as its Tenant sees it.",
             "properties": {
@@ -42560,6 +42616,18 @@
                 "description": "The registered Node's address.",
                 "type": "string"
               },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -42574,12 +42642,22 @@
               "key_id",
               "atomic_transactions",
               "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
               "revision",
               "actor",
               "created_at",
               "updated_at"
             ],
             "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "schema": {
@@ -42602,6 +42680,23 @@
     "responses": {
       "200": {
         "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools"],
+            "type": "object"
+          },
           "RegistrationRecord": {
             "description": "A Node Registration as its Tenant sees it.",
             "properties": {
@@ -42643,6 +42738,18 @@
                 "description": "The registered Node's address.",
                 "type": "string"
               },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -42656,12 +42763,140 @@
               "key_id",
               "atomic_transactions",
               "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
               "revision",
               "actor",
               "created_at",
               "updated_at"
             ],
             "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/RegistrationRecord"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "tenant-node-registration-tool-lists",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-lists",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools"],
+            "type": "object"
+          },
+          "RegistrationRecord": {
+            "description": "A Node Registration as its Tenant sees it.",
+            "properties": {
+              "actor": {
+                "description": "`oidc:<identity>` or `deployment_administrator`.",
+                "type": "string"
+              },
+              "atomic_transactions": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "dashboard_origin": {
+                "description": "Pinned dashboard origin used to validate remote Preview frame ancestors.",
+                "type": ["string", "null"]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "endpoint": {
+                "description": "Where the other Deployment answers; absent for a Node of this one.",
+                "type": ["string", "null"]
+              },
+              "key_id": {
+                "description": "The pinned Deployment Key's key ID; absent for a Node of this Deployment.",
+                "type": ["string", "null"]
+              },
+              "node": {
+                "description": "The owning Node's name.",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "source_node": {
+                "description": "The registered Node's address.",
+                "type": "string"
+              },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "node",
+              "source_node",
+              "endpoint",
+              "dashboard_origin",
+              "key_id",
+              "atomic_transactions",
+              "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
+              "revision",
+              "actor",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "schema": {

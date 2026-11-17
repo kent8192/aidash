@@ -158,7 +158,7 @@ async fn descriptor_authorization_accepts_only_lowered_concurrency(
 
 #[rstest]
 #[tokio::test]
-async fn remote_visibility_uses_contracts_after_aliases_change(
+async fn filter_leaves_remote_tools_to_the_federation_tool_lists(
 	mut repository: Repository,
 	agent: AgentConfig,
 ) {
@@ -186,9 +186,10 @@ async fn remote_visibility_uses_contracts_after_aliases_change(
 	super::filter(&repository, &agent, &mut tools, Clone::clone)
 		.await
 		.unwrap();
+	// Remote use is decided per call from Tool Reach and the lists (ADR 0139).
 	assert_eq!(
 		tools.keys().map(String::as_str).collect::<Vec<_>>(),
-		["create_alias", "registered_alias"]
+		["create_alias", "external_alias", "registered_alias"]
 	);
 }
 
@@ -1596,7 +1597,7 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 }
 #[rstest]
 #[tokio::test]
-async fn remote_filtering_happens_before_lease_failure_and_does_not_refresh(
+async fn filter_keeps_remote_candidates_before_lease_failure_and_does_not_refresh(
 	mut repository: Repository,
 	agent: AgentConfig,
 ) {
@@ -1617,10 +1618,12 @@ async fn remote_filtering_happens_before_lease_failure_and_does_not_refresh(
 	assert_eq!(
 		tools,
 		BTreeMap::from([
+			("memory_mutate".into(), 1),
 			("task_create".into(), 2),
 			("task_delegate".into(), 3),
 			("plugin_bad".into(), 4),
-			("skill_read".into(), 5)
+			("skill_read".into(), 5),
+			("human_request".into(), 6),
 		])
 	);
 	assert_eq!(repository.calls(), vec!["lease"]);

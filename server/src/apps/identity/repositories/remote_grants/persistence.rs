@@ -18,8 +18,12 @@ use aidash_application::{
 };
 use aidash_domain::{
 	Task,
-	federation::execution::{Inspection, PrepareInput, home::Grant},
+	federation::{
+		execution::{Inspection, PrepareInput, home::Grant},
+		tool_lists::FederationToolRequest,
+	},
 	identity::execution::ExecutionPrincipal,
+	nodes::NodeAddress,
 	policy::{PolicyBundle, Resource},
 	semantic::remote::{Binding, Request},
 };
@@ -89,6 +93,26 @@ impl SourceAuthorityScope for Scope {
 impl GrantScope for Scope {
 	fn home_address(&self) -> String {
 		self.access.node_reference().to_owned()
+	}
+	async fn registered_tool_request(
+		&mut self,
+		receiver: &str,
+	) -> Result<Option<FederationToolRequest>> {
+		let (Ok(receiver), Ok(home)) = (
+			NodeAddress::parse(receiver),
+			NodeAddress::parse(self.access.node_reference()),
+		) else {
+			return Ok(None);
+		};
+		crate::apps::identity::repositories::node_registrations::get(
+			self.access.tx.as_mut(),
+			&self.access.identity.tenant,
+			home.node.as_str(),
+			&receiver,
+		)
+		.await
+		.map(|registration| registration.map(|registration| registration.tool_request))
+		.map_err(Into::into)
 	}
 	fn replace_subjects(&mut self, subjects: Vec<String>) {
 		self.access.subjects = subjects;

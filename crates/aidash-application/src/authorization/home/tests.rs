@@ -116,6 +116,7 @@ fn grant(required: bool) -> Grant {
 }
 fn description() -> Description {
 	Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::from_u128(4),
 		source_node: "aidash://home/airy-hawk-2lu4as22".into(),
 		target_node: "aidash://receiver".into(),
