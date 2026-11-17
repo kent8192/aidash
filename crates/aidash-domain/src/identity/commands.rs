@@ -12,7 +12,11 @@ pub struct Metadata {
 	pub request_key: String,
 }
 pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
-	if operation == "delegate" && data["key"].as_str().is_none() {
+	if matches!(
+		operation,
+		"delegate" | "task_assign" | "connection_request" | "memory_mutate"
+	) && data["key"].as_str().is_none()
+	{
 		return Err(Error::Invalid("missing command key".into()));
 	}
 	let mutation =
@@ -28,6 +32,9 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 				| "run_message_output"
 				| "event" | "human_request"
 				| "mcp.connection_call"
+				| "task_assign"
+				| "connection_request"
+				| "memory_mutate"
 		);
 	let digest = registry::rules::digest(&json!({"operation":operation,"data":data}));
 	// Personal calls use their logical invocation key. `not_personal` is an internal
@@ -63,6 +70,14 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"message" => Some("workspace_message"),
 		"create_task" => Some("task_create"),
 		"delegate" => Some("task_delegate"),
+		// Home-forwarded tools (ADR 0139): each op is named as its tool so the
+		// tool lists and the Binding are checked for the tool the Run called.
+		"task_assign" => Some("task_assign"),
+		"workspace_search" => Some("workspace_search"),
+		"connection_request" => Some("connection_request"),
+		"memory_recall" => Some("memory_recall"),
+		"memory_reflect" => Some("memory_reflect"),
+		"memory_mutate" => Some("memory_mutate"),
 		_ => None,
 	}
 }

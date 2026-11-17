@@ -321,6 +321,23 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					),
 					None,
 				),
+				Effect::Assign {
+					child,
+					policy,
+					reason,
+				} => (
+					json!(
+						crate::generation::assign_in_home(
+							self.runtime,
+							self.access,
+							child,
+							policy,
+							reason
+						)
+						.await?
+					),
+					None,
+				),
 				Effect::Message { content, through } => {
 					let value = if let Some(seq) = through {
 						store
@@ -616,5 +633,59 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		crate::authorization::remote::live(self.access, grant)
 			.await
 			.map_err(Into::into)
+	}
+	async fn workspace_search(&mut self, workspace: Uuid, input: &Value) -> Result<Value> {
+		super::search::workspace_search(self.access, &self.runtime.store, workspace, input)
+			.await
+			.map_err(Into::into)
+	}
+	async fn memory_recall(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+		key: &str,
+		query: &aidash_domain::memory::RecallQuery,
+		reflect: bool,
+	) -> Result<Value> {
+		let result: NativeResult<Value> = async {
+			let mut lease = crate::semantic::service::Lease::Inherited(self.access);
+			lease.lists();
+			let outcome = crate::apps::knowledge::services::remote_memory::tools::recall(
+				&self.runtime.store,
+				&mut lease,
+				grant,
+				admission,
+				key,
+				query.clone(),
+				reflect,
+			)
+			.await?;
+			Ok(serde_json::to_value(outcome)?)
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	async fn memory_mutate(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
+	) -> Result<Value> {
+		let result: NativeResult<Value> = async {
+			let mut lease = crate::semantic::service::Lease::Inherited(self.access);
+			let units = crate::apps::knowledge::services::remote_memory::tools::mutate(
+				&self.runtime.store,
+				&mut lease,
+				grant,
+				admission,
+				key,
+				changes,
+			)
+			.await?;
+			Ok(serde_json::to_value(units)?)
+		}
+		.await;
+		result.map_err(Into::into)
 	}
 }

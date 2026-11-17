@@ -68,6 +68,8 @@ struct Scope {
 	settings: Option<Settings>,
 	/// What the Tenant's policy lets that person do alone, as `kind:action`.
 	root_policy: BTreeSet<String>,
+	/// The Node a delegation names; the Workspace's own Node when unset.
+	delegate_node: Option<String>,
 }
 impl Scope {
 	fn new() -> Self {
@@ -115,6 +117,7 @@ impl Scope {
 			foreign_clock: now,
 			settings: None,
 			root_policy: BTreeSet::new(),
+			delegate_node: None,
 		}
 	}
 	async fn point(&self, name: impl Into<String>) -> Result<()> {
@@ -434,7 +437,10 @@ impl GenerationAssignmentScope for Scope {
 		self.effects.push("delegate".into());
 		Ok(Delegation {
 			task_id,
-			node_id: self.node_id().into(),
+			node_id: self
+				.delegate_node
+				.clone()
+				.unwrap_or_else(|| self.node_id().into()),
 			agent_id: agent.id.clone(),
 			agent_version: agent.version.clone(),
 		})
@@ -1251,4 +1257,71 @@ async fn subnode_assignment_reuses_only_members_and_never_generates(
 		Err(Error::Refused(_))
 	));
 	assert!(no_match.effects.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_remote_runs_assignment_names_only_an_agent_of_the_home_node(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	scope.ordinary("ordinary", true, SubjectKind::Agent);
+	let Assignment::Existing { delegation } = assign_in_home(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await
+	.unwrap() else {
+		panic!("existing")
+	};
+	assert_eq!(delegation.agent_id, "ordinary");
+	assert!(aidash_domain::nodes::names_home(
+		&delegation.node_id,
+		&node().to_string()
+	));
+}
+
+#[rstest]
+#[case::another_deployment("aidash://elsewhere")]
+#[case::another_node_of_the_deployment("aidash://local/other-node-abcdefgh")]
+#[tokio::test]
+async fn a_remote_runs_assignment_never_selects_another_node(
+	validation: DefinitionValidation,
+	#[case] other: &str,
+) {
+	let mut scope = Scope::new();
+	scope.ordinary("ordinary", true, SubjectKind::Agent);
+	scope.delegate_node = Some(other.into());
+	let result = assign_in_home(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await;
+	// `names_home` also accepts the bare Deployment of the Workspace's Node, which is
+	// still the Home's own Deployment.
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_remote_runs_assignment_may_generate_an_agent_there(validation: DefinitionValidation) {
+	let mut scope = Scope::new();
+	let job = generated(
+		assign_in_home(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+		)
+		.await
+		.unwrap(),
+	);
+	assert_eq!(job.agent_id, "generated-00000000000000000000000000000001");
 }

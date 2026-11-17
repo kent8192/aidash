@@ -322,6 +322,58 @@ async fn export_tracks_cross_run_reads_and_refuses_them_without_run_read(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A Run executing for another Home reads its own Journal with the `journal_*` tools and no
+/// other Run's (ADR 0139, decision 25). Its worker holds no execution grant here, so the read
+/// is not tracked as a cross-Run read either.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_remote_run_reads_only_its_own_journal(
+	#[future(awt)]
+	#[from(native_application)]
+	fixture: ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let (_policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (remote, remote_worker) = leased(&f, &app, &token).await;
+	let (other, other_worker) = leased(&f, &app, &token).await;
+	sqlx::query("UPDATE runs SET home_node=$1 WHERE id=$2")
+		.bind("aidash://elsewhere")
+		.bind(remote.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	f.store
+		.export(&TEST_FIXTURE, remote.id, remote.id, None)
+		.await
+		.unwrap();
+	let cross = f
+		.store
+		.export(&TEST_FIXTURE, remote.id, other.id, None)
+		.await;
+	assert!(
+		matches!(cross, Err(aidash_application::Error::Forbidden)),
+		"{cross:?}"
+	);
+	let tracked: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM authorization_run_reads WHERE run_id=$1 AND resource_kind='run'",
+	)
+	.bind(remote.id)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(tracked, 0);
+	f.store
+		.release_lease(&TEST_FIXTURE, remote.id, remote_worker)
+		.await
+		.unwrap();
+	f.store
+		.release_lease(&TEST_FIXTURE, other.id, other_worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn begin_compaction_abandons_open_attempts_and_enforces_the_call_budget(

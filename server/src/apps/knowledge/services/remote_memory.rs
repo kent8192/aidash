@@ -18,6 +18,8 @@ use reinhardt::query::{
 use serde_json::json;
 use uuid::Uuid;
 
+pub(crate) mod tools;
+
 pub(crate) fn descriptor(home: &str, entry: &Entry) -> Result<Provider> {
 	Ok(Provider {
 		node_id: home.into(),
