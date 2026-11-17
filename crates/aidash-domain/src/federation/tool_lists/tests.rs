@@ -150,3 +150,40 @@ fn the_request_round_trips_as_an_authorization_detail() {
 	};
 	assert!(other.request().is_err());
 }
+
+#[test]
+fn list_key_names_builtins_plainly_and_registry_tools_by_definition_and_operation() {
+	use crate::registry::{EntityRef, bindings::QualifiedRef};
+	use crate::tool::builtin_contract;
+	let shell = builtin_contract("shell").unwrap();
+	assert_eq!(list_key(&shell, "ignored"), "shell");
+	let reference = EntityRef {
+		id: "github".into(),
+		version: "1.0.0".into(),
+	};
+	let config = ToolConfig::Mcp {
+		endpoint: "https://example.test/mcp".into(),
+		tool_name: "create_issue".into(),
+		replay: "idempotent".into(),
+		idempotency_argument: None,
+		secret: None,
+		scopes: None,
+		secret_owner: Default::default(),
+	};
+	let registry = ToolContract::registry(reference, &config);
+	let operation = registry_operation(&config);
+	assert_eq!(
+		list_key(&registry, operation),
+		"registry:github/create_issue"
+	);
+	// A descriptor of a core provider is its builtin; any other is a Registry key.
+	let qualified = QualifiedRef {
+		registry_deployment: "deployment".into(),
+		id: "aidash.shell".into(),
+		version: "1.0.0".into(),
+	};
+	let mut core = shell.clone();
+	core.identity = ToolIdentity::Descriptor(qualified.clone());
+	assert_eq!(list_key(&core, "shell"), "shell");
+	assert_eq!(list_key(&core, "lookup"), "registry:aidash.shell/lookup");
+}

@@ -2880,6 +2880,20 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
+	/// Drop the tools a remote Run may never see (ADR 0139); a Run of this Tenant keeps its tools.
+	pub(crate) async fn remote_tool_filter(
+		&self,
+		tools: &mut aidash_application::ports::execution::Tools,
+	) -> Result<()> {
+		aidash_application::authorization::tools::filter_remote(
+			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
+			tools,
+			|tool| tool.contract(),
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	pub async fn tool_contract(
 		&self,
 		call: &ToolCall,

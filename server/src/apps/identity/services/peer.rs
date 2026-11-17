@@ -14,7 +14,11 @@ pub(crate) mod graph;
 pub(crate) mod reads;
 
 use super::{access::Access, catalog, policy::identifier};
-use crate::{Result, federation::Federation, registry::Entry};
+use crate::{
+	Result,
+	federation::Federation,
+	registry::{Entry, Search},
+};
 
 use serde_json::json;
 
@@ -275,6 +279,12 @@ impl PeerMappings {
 	) -> Result<Vec<Entry>> {
 		discover_for(self.runtime.clone(), admitted, input).await
 	}
+	pub(crate) async fn discover_tools(
+		&self,
+		admitted: Admitted,
+	) -> Result<aidash_domain::federation::tool_lists::ToolDiscovery> {
+		tools_discover_for(self.runtime.clone(), admitted).await
+	}
 }
 
 pub(crate) async fn access_mode(
@@ -322,18 +332,156 @@ pub(crate) async fn discover_for(
 			json!({"label":node.label,"default":node.default}),
 		);
 		access.require(&resource, "federation.discover").await?;
+		let block = sender_block(&mut access, &admitted).await?;
 		let mut search = input.search;
 		search.kind = Some("agent".into());
 		let mut visible = vec![];
-		for entry in catalog::list_in(&mut access, &search).await? {
+		for mut entry in catalog::list_in(&mut access, &search).await? {
 			if access
 				.decide(&catalog::resource(&access, &entry), "agent.execute")
 				.await?
 			{
+				if let Some(block) = &block {
+					hide_blocked_tools(&mut access, &mut entry, block).await;
+				}
 				visible.push(entry);
 			}
 		}
 		Ok(visible)
+	}
+	.await;
+	access.finish(result).await
+}
+
+/// The Federation Tool Block this Node keeps for the sender, or `None` for a sender of this
+/// Tenant, which registers no Node here and for which the lists do not apply.
+async fn sender_block(
+	access: &mut Access,
+	admitted: &Admitted,
+) -> Result<Option<aidash_domain::federation::tool_lists::ToolList>> {
+	Ok(
+		crate::apps::identity::repositories::node_registrations::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			admitted.receiver.node.as_str(),
+			&admitted.sender,
+		)
+		.await?
+		.map(|registration| registration.tool_block),
+	)
+}
+
+/// Take from an Agent card the tools the receiver blocks for the sender. The card names an
+/// Agent's tools in `config.bindings`, each a binding of kind `tool` that targets a definition;
+/// the definition's key is what the Block matches. A definition that cannot be read or keyed
+/// stays: it is only a description, and a call to it is decided again when it is made.
+async fn hide_blocked_tools(
+	access: &mut Access,
+	entry: &mut Entry,
+	block: &aidash_domain::federation::tool_lists::ToolList,
+) {
+	use aidash_domain::federation::tool_lists::definition_key;
+	let Some(bindings) = entry
+		.config
+		.get("bindings")
+		.and_then(serde_json::Value::as_array)
+		.cloned()
+	else {
+		return;
+	};
+	let mut kept = Vec::with_capacity(bindings.len());
+	for binding in bindings {
+		if binding["kind"] == "tool"
+			&& let (Some(id), Some(version)) = (
+				binding["target"]["id"].as_str(),
+				binding["target"]["version"].as_str(),
+			) && let Ok(definition) =
+			crate::apps::registry::models::Definition::read_in(&mut **access.tx, id, version).await
+			&& definition_key(id, &definition.config).is_some_and(|key| block.matches(&key))
+		{
+			continue;
+		}
+		kept.push(binding);
+	}
+	entry.config["bindings"] = serde_json::Value::Array(kept);
+}
+
+/// The tools this Node offers `admitted.sender` to request (ADR 0139): every tool whose Reach
+/// is listable, that the receiver's Allowance names and its Block does not. Between Nodes of
+/// one Tenant no list applies, so every listable tool is offered. Refuses exactly as
+/// [`discover_for`] does: the verified token, a mapping to a subject, and the local policy's
+/// `federation.discover` decide.
+pub(crate) async fn tools_discover_for(
+	f: Federation,
+	admitted: Admitted,
+) -> Result<aidash_domain::federation::tool_lists::ToolDiscovery> {
+	use aidash_domain::federation::tool_lists::{
+		DiscoveredTool, RemoteToolLists, ToolDiscovery, definition_key,
+	};
+	use aidash_domain::tool::{ALL_BUILTINS, builtin_reach};
+	let mut access = access(&f, &admitted).await?;
+	let result = async {
+		let node = crate::apps::identity::repositories::nodes::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			admitted.receiver.node.as_str(),
+		)
+		.await?;
+		let resource = access.resource(
+			"node",
+			node.name.as_str(),
+			json!({"label":node.label,"default":node.default}),
+		);
+		access.require(&resource, "federation.discover").await?;
+		let lists = crate::apps::identity::repositories::node_registrations::get(
+			&mut *access.tx,
+			admitted.tenant.as_str(),
+			admitted.receiver.node.as_str(),
+			&admitted.sender,
+		)
+		.await?
+		.map(|registration| (registration.tool_allowance, registration.tool_block));
+		let offered = |key: &str| {
+			lists.as_ref().is_none_or(|(allowance, block)| {
+				RemoteToolLists::discoverable(allowance, block, key)
+			})
+		};
+		let mut tools = vec![];
+		for name in ALL_BUILTINS {
+			let reach = builtin_reach(name).expect("every builtin has a Reach");
+			if reach.listable() && offered(name) {
+				tools.push(DiscoveredTool {
+					key: (*name).to_owned(),
+					reach,
+				});
+			}
+		}
+		// Registry tools the sender's authority may invoke here; a core descriptor is the
+		// builtin already listed.
+		let search = Search {
+			kind: Some("tool".into()),
+			..Search::default()
+		};
+		for entry in catalog::list_in(&mut access, &search).await? {
+			if !access
+				.decide(&catalog::resource(&access, &entry), "tool.invoke")
+				.await?
+			{
+				continue;
+			}
+			let Some(key) = definition_key(&entry.id, &entry.config) else {
+				continue;
+			};
+			if key.starts_with("registry:") && offered(&key) {
+				tools.push(DiscoveredTool {
+					key,
+					reach: aidash_domain::tool::ToolReach::ExternalServices,
+				});
+			}
+		}
+		tools.sort_by(|left, right| left.key.cmp(&right.key));
+		tools.dedup_by(|left, right| left.key == right.key);
+		Ok(ToolDiscovery { tools })
 	}
 	.await;
 	access.finish(result).await

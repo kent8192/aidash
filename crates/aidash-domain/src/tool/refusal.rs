@@ -33,6 +33,10 @@ pub enum RefusalCheck {
 	TenantDeletion,
 	/// The Run's own authority was gone when the effect had already happened.
 	RunAuthority,
+	/// A remote Run called a tool that the Home's Federation Tool Request or the receiving
+	/// Node's Federation Tool Allowance does not list (ADR 0139). Each flag says which side
+	/// lacks it, so the pause asks that side's people.
+	FederationTools { home: bool, receiver: bool },
 	/// An authority check refused a step and left no note saying which one.
 	Unnamed,
 }
@@ -82,6 +86,8 @@ impl RefusalCheck {
 			| Self::PluginTool
 			| Self::AgentExecution => Some(RefusalKind::AgentConfiguration),
 			Self::RemoteAuthority => Some(RefusalKind::OtherNode),
+			// Declining a call nothing yet permitted is the people's answer to the ask (decision 10).
+			Self::FederationTools { .. } => Some(RefusalKind::OtherNode),
 			Self::RemoteAsk | Self::TenantDeletion | Self::RunAuthority | Self::Unnamed => None,
 		}
 	}
@@ -189,6 +195,14 @@ impl fmt::Display for AuthorityRefusal {
 			(RefusalCheck::RemoteAsk, None) => {
 				write!(f, "{tool}: the other Node asks for approval")
 			}
+			(RefusalCheck::FederationTools { home, receiver }, _) => {
+				let side = match (home, receiver) {
+					(true, true) => "the Home and this Node do",
+					(true, false) => "the Home does",
+					_ => "this Node does",
+				};
+				write!(f, "{tool}: {side} not list this tool for remote Runs")
+			}
 			(RefusalCheck::TenantDeletion, _) => {
 				write!(f, "{tool}: the Tenant is being deleted")
 			}
@@ -281,6 +295,24 @@ mod tests {
 			serde_json::to_value(RefusalCheck::CallUnapprovedDeny).unwrap(),
 			serde_json::json!("call_unapproved_deny")
 		);
+	}
+
+	#[rstest]
+	fn federation_tools_check_round_trips_with_its_sides() {
+		let check = RefusalCheck::FederationTools {
+			home: true,
+			receiver: false,
+		};
+		let value = serde_json::to_value(check).unwrap();
+		assert_eq!(
+			value,
+			serde_json::json!({"federation_tools": {"home": true, "receiver": false}})
+		);
+		assert_eq!(
+			serde_json::from_value::<RefusalCheck>(value).unwrap(),
+			check
+		);
+		assert_eq!(check.declinable_kind(), Some(RefusalKind::OtherNode));
 	}
 
 	#[rstest]

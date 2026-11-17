@@ -613,6 +613,12 @@ impl PeerAdmissionScope for Owned {
 	fn corpus_digest(&mut self, digest: Option<String>) {
 		self.access.home_corpus_digest = digest
 	}
+	fn tool_request(
+		&mut self,
+		request: Option<aidash_domain::federation::tool_lists::FederationToolRequest>,
+	) {
+		self.access.home_tool_request = request
+	}
 	async fn activation_record(&mut self, id: Uuid) -> Result<Option<State>> {
 		crate::apps::execution::repositories::node_cancellations::require_admission_open(
 			&mut **self.access.tx,

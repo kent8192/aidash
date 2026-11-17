@@ -282,6 +282,64 @@ impl NodeRegistrations {
 		Ok(stored.into())
 	}
 
+	/// The tools the registered Node `source_node` offers `node` to request (ADR 0139), asked
+	/// of its `scoped/tools/discover` as the requesting person. Only a holder of
+	/// `node.federation_tools.manage` sees the answer, since it is what a Request is chosen from.
+	pub(crate) async fn remote_tools(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		node: String,
+		source_node: String,
+	) -> Result<aidash_domain::federation::tool_lists::ToolDiscovery> {
+		let node = NodeName::parse(&node)?;
+		let source_node = percent_encoding::percent_decode_str(&source_node)
+			.decode_utf8()
+			.map_err(|_| {
+				Error::Invalid("a Node address is aidash://<deployment>/<node name>".into())
+			})?;
+		let source_node = NodeAddress::parse(&source_node)?;
+		let f = self.runtime.clone();
+		let subject = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				f.store
+					.pool
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						administrator
+							.require(
+								tx,
+								&snapshot,
+								rules::NODE_FEDERATION_TOOLS_MANAGE,
+								&source_node.to_string(),
+								attributes(node.as_str(), &source_node),
+							)
+							.await?;
+						require_node(tx, &tenant, &node).await?;
+						Ok(())
+					})
+					.await?;
+				Ok(administrator.identity.subject.clone())
+			})
+			.await?;
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
+			node: Some(node),
+			subject: Some(subject),
+		};
+		self.runtime
+			.request(
+				&sender,
+				&source_node.to_string(),
+				reqwest::Method::POST,
+				"/scoped/tools/discover",
+				Some(&json!({})),
+			)
+			.await
+	}
+
 	/// What the registration pins: nothing for a Node of this Deployment, the
 	/// key the other Deployment publishes otherwise, or what the registration
 	/// already pins when the request only disables it.

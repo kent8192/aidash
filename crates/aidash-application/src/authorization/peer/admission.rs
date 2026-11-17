@@ -290,6 +290,7 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		scope.worker(true);
 		scope.corpus_digest(corpus_digest);
+		scope.tool_request(super::tool_request::requested_tools(&description)?);
 		Ok(agent)
 	}
 	.await;

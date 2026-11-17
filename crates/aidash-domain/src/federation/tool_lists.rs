@@ -3,7 +3,8 @@
 //! A Run that a Remote Grant started may use a listable tool only when both the Home's
 //! Request and the receiving Node's Allowance name it, and the receiver's Block does not.
 //! A tool that either side lacks is not refused outright: the Run stops and asks that side.
-use crate::tool::contract::ToolReach;
+use crate::tool::ToolConfig;
+use crate::tool::contract::{ToolContract, ToolIdentity, ToolReach, builtin_reach};
 use crate::{Error, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -31,9 +32,71 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"skill_asset_read",
 ];
 
+/// What a call to a tool that is blocked, Reach never, or unknown to this Node answers a remote
+/// Run, the same words for all three so the answer reveals nothing about which it was.
+pub const UNAVAILABLE_TOOL: &str = "this tool is not available on this Node";
+
 /// The key a list matches for a Registry tool.
 pub fn registry_key(definition: &str, tool: &str) -> String {
 	format!("registry:{definition}/{tool}")
+}
+
+/// The operation a Registry tool definition is listed under: the MCP server's own tool name, the
+/// native operation, or `invoke` for the one operation of an HTTP or Agent tool.
+pub fn registry_operation(config: &ToolConfig) -> &str {
+	match config {
+		ToolConfig::Mcp { tool_name, .. } => tool_name,
+		ToolConfig::Native { operation, .. } => operation,
+		ToolConfig::Http { .. } | ToolConfig::Agent { .. } => "invoke",
+	}
+}
+
+/// The key the Federation tool lists match for `contract`. A builtin, and a core provider's
+/// descriptor, is its builtin name; a Registry tool or a descriptor of another provider is
+/// `registry:<definition id>/<operation>`, which names the definition and operation but not
+/// the version, so a list outlives a new version. `operation` is the descriptor's operation or
+/// [`registry_operation`]; it is ignored for a builtin.
+pub fn list_key(contract: &ToolContract, operation: &str) -> String {
+	match &contract.identity {
+		ToolIdentity::Builtin(name) => name.strip_prefix("builtin:").unwrap_or(name).to_owned(),
+		ToolIdentity::Registry(reference) => registry_key(&reference.id, operation),
+		ToolIdentity::Descriptor(_) if builtin_reach(operation).is_some() => operation.to_owned(),
+		ToolIdentity::Descriptor(reference) => registry_key(&reference.id, operation),
+		// Never reaches a remote Run, so no list names it.
+		ToolIdentity::AgentPlugin(tool) => {
+			format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool)
+		}
+	}
+}
+
+/// The key a Registry definition `id` is listed under, read from its `config` the way [`list_key`]
+/// reads a contract: a core provider's descriptor is its builtin name, any other descriptor or
+/// a tool transport `registry:<id>/<operation>`. `None` when `config` is neither.
+pub fn definition_key(id: &str, config: &serde_json::Value) -> Option<String> {
+	if config.get("provider").is_some() {
+		let descriptor: crate::tool::providers::ToolDescriptor =
+			serde_json::from_value(config.clone()).ok()?;
+		return Some(if builtin_reach(&descriptor.operation).is_some() {
+			descriptor.operation
+		} else {
+			registry_key(id, &descriptor.operation)
+		});
+	}
+	let config: ToolConfig = serde_json::from_value(config.clone()).ok()?;
+	Some(registry_key(id, registry_operation(&config)))
+}
+
+/// One tool a receiving Node offers a peer for its Request, as `scoped/tools/discover` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoveredTool {
+	pub key: String,
+	pub reach: ToolReach,
+}
+
+/// The answer of `scoped/tools/discover`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolDiscovery {
+	pub tools: Vec<DiscoveredTool>,
 }
 
 /// One tool name or `*` pattern, such as `file_*` or `registry:github/*`.
@@ -287,6 +350,28 @@ pub struct RemoteToolLists<'a> {
 	pub run_request: &'a ToolList,
 	/// Tools the receiver's people allowed for this Run only.
 	pub run_allowance: &'a ToolList,
+}
+
+/// [`RemoteToolLists`] that owns its lists, as a port hands them over.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OwnedRemoteToolLists {
+	pub request: ToolList,
+	pub allowance: ToolList,
+	pub block: ToolList,
+	pub run_request: ToolList,
+	pub run_allowance: ToolList,
+}
+
+impl OwnedRemoteToolLists {
+	pub fn lists(&self) -> RemoteToolLists<'_> {
+		RemoteToolLists {
+			request: &self.request,
+			allowance: &self.allowance,
+			block: &self.block,
+			run_request: &self.run_request,
+			run_allowance: &self.run_allowance,
+		}
+	}
 }
 
 impl RemoteToolLists<'_> {

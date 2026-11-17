@@ -6059,6 +6059,15 @@
   {
     "json": true,
     "method": "POST",
+    "name": "peer-mappings-discover-tools",
+    "path": "/federation/v0.1/scoped/tools/discover",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/peer_mappings.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
     "name": "remote-grant-prepare",
     "path": "/api/tasks/{id}/remote-grants",
     "query_parameters": [],
@@ -42904,6 +42913,15 @@
         }
       }
     },
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-node-registration-tools",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tools",
+    "query_parameters": [],
     "source": "server/src/apps/identity/views/node_registrations.rs",
     "uuid_parameters": []
   },

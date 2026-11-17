@@ -83,3 +83,26 @@ pub async fn set_tool_lists(
 			.await,
 	)
 }
+
+/// The tools the registered Node offers to be requested (ADR 0139).
+#[get(
+	"/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tools",
+	name = "tenant-node-registration-tools",
+	auth = "protected"
+)]
+pub async fn remote_tools(
+	#[inject] service: Depends<NodeRegistrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	PathStruct(RegistrationPath {
+		tenant,
+		node,
+		source_node,
+	}): PathStruct<RegistrationPath>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.remote_tools(actor, origin, tenant, node, source_node)
+			.await,
+	)
+}
