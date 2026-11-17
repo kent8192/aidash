@@ -58,6 +58,17 @@ pub(crate) async fn bounding_run(
 	Ok(current)
 }
 
+/// Whether `run` is a Subnode member working for a Run that executes for another Home. Its
+/// requests to a person cannot reach that Home, which knows only the creating Run, so they are
+/// refused instead of going to a person of this Tenant (ADR 0110, ADR 0139).
+pub(crate) async fn is_remote_member(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+) -> NativeResult<bool> {
+	let bound = bounding_run(&mut *tx, run).await?;
+	Ok(bound != run && is_admitted(tx, bound).await?)
+}
+
 /// Whether this Node executes `run` for another Home, that is, holds an admission for it.
 pub(crate) async fn is_admitted(tx: &mut dyn TransactionExecutor, run: Uuid) -> NativeResult<bool> {
 	Ok(
@@ -125,4 +136,43 @@ pub(crate) async fn withdrawn(
 		lists.as_ref(),
 		tool,
 	))
+}
+
+/// The egress hosts the Home of the Run executing here lets its commands reach (ADR 0139,
+/// decision 21), to be met besides the Scratch Space's own list.
+///
+/// This is the Home's Request as the admission last saw it: the egress proxy has no Federation
+/// and holds no Home connection, so a Request the Home narrows reaches a running command only
+/// once the Run's next worker boundary has refreshed the admission. The 30 second Read Recheck
+/// stops a command whose tool a list withdrew, but not one that merely narrows the hosts.
+///
+/// `Ok(None)` puts no further limit: a Run no other Home started, or one whose Home shares this
+/// Tenant (its Description carries no tool authorization detail). A Run another Home started
+/// whose admission cannot be read (its Run row exists here) is refused, never left on the Space's hosts alone. A Subnode
+/// member's Run is bounded by the hosts of the Run that created its Subnode.
+pub(crate) async fn home_hosts(
+	tx: &mut dyn TransactionExecutor,
+	deployment: &str,
+	run: Uuid,
+) -> NativeResult<Option<Vec<aidash_domain::federation::tool_lists::HostPattern>>> {
+	let bound = bounding_run(&mut *tx, run).await?;
+	let Some(admission) =
+		crate::apps::federation::peer::repositories::admissions::for_run(&mut *tx, bound).await?
+	else {
+		// A Run with no row is no Run another Home started, since such a Run always has one.
+		let remote = crate::apps::execution::models::Run::read_in(&mut *tx, bound, None)
+			.await?
+			.is_some_and(|row| !row.is_local(deployment));
+		return if remote {
+			Err(Error::Forbidden)
+		} else {
+			Ok(None)
+		};
+	};
+	let description: Description = serde_json::from_value(admission.description.0.clone())?;
+	Ok(
+		aidash_application::authorization::peer::tool_request::requested_tools(&description)
+			.map_err(Error::from)?
+			.map(|request| request.hosts),
+	)
 }

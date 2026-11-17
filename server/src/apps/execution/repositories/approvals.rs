@@ -300,9 +300,14 @@ impl ApprovalScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
-		self.store
-			.ok_or_else(missing)?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+		let store = self.store.ok_or_else(missing)?;
+		store
+			.event(
+				&mut self.access.tx,
+				store.event_workspace(self.run.as_deref(), workspace),
+				kind,
+				data,
+			)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

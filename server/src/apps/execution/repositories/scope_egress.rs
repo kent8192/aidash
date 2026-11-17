@@ -329,6 +329,8 @@ impl EgressScopes for DurableScopes {
 			.map_err(application_error)?;
 		let mut current = self.live(&scope.id).await?;
 		current.run_id = scope.run_id;
+		// The Space's own settings carry no Run; the Home's hosts come from the credential.
+		current.allowed_hosts.home_ceiling = scope.allowed_hosts.home_ceiling;
 		Ok(current)
 	}
 	async fn admit_external(
@@ -409,6 +411,9 @@ impl EgressScopes for DurableScopes {
 		}
 		let mut current = self.live(&settings.id).await?;
 		current.run_id = authenticated.run_id;
+		// Re-read on every check, so the 5 s tunnel monitor also ends a connection the Home's
+		// hosts no longer name, as far as the admission has seen the change.
+		current.allowed_hosts.home_ceiling = authenticated.allowed_hosts.home_ceiling;
 		Ok(current)
 	}
 	async fn debit(

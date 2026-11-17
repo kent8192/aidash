@@ -372,7 +372,8 @@ impl OperationReconciliationScope for Scope<'_> {
 		self.store
 			.event(
 				&mut self.access.tx,
-				Some(self.area.as_ref().unwrap().workspace_id),
+				self.store
+					.event_workspace(self.run.as_ref(), self.area.as_ref().unwrap().workspace_id),
 				"capability.operation_changed",
 				data,
 			)

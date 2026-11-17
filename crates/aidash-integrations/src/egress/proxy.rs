@@ -3045,6 +3045,7 @@ mod tests {
 			allowed_hosts: AllowedHosts {
 				hosts: vec!["127.0.0.1".into()],
 				allow_all: false,
+				home_ceiling: None,
 			},
 			budget: DailyBudget::default(),
 			anomaly: AnomalyRule::default(),

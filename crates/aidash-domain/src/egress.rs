@@ -86,6 +86,11 @@ pub const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
 pub struct AllowedHosts {
 	pub hosts: Vec<String>,
 	pub allow_all: bool,
+	/// The hosts the Home of a remote Run lets its commands reach (ADR 0139, decision 21). A
+	/// host must pass the Space's own list and one of these patterns. `None` puts no further
+	/// limit, for every Run that no other Home started; an empty list reaches nothing.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub home_ceiling: Option<Vec<crate::federation::tool_lists::HostPattern>>,
 }
 impl Default for AllowedHosts {
 	fn default() -> Self {
@@ -95,12 +100,20 @@ impl Default for AllowedHosts {
 				.map(|host| (*host).to_owned())
 				.collect(),
 			allow_all: false,
+			home_ceiling: None,
 		}
 	}
 }
 impl AllowedHosts {
+	/// Whether `host` may be reached: the Space's list admits it and, for a remote Run, so
+	/// does the Home's Request.
 	pub fn permits(&self, host: &str, operator_allows_all: bool) -> bool {
 		if host.is_empty() || !host.is_ascii() {
+			return false;
+		}
+		if let Some(ceiling) = &self.home_ceiling
+			&& !ceiling.iter().any(|pattern| pattern.matches(host))
+		{
 			return false;
 		}
 		if self.allow_all && operator_allows_all {

@@ -798,6 +798,14 @@ impl Store {
 		self.event_in_executor(&mut **tx, workspace, kind, data)
 			.await
 	}
+	/// The Workspace an event of `run` belongs to: none for a Run executing here for another
+	/// Home, whose Workspace this Node does not hold and no event row can name (ADR 0139).
+	pub(crate) fn event_workspace(&self, run: Option<&Run>, workspace: Uuid) -> Option<Uuid> {
+		match run {
+			Some(run) if !run.is_local(self.deployment.as_str()) => None,
+			_ => Some(workspace),
+		}
+	}
 	pub(crate) async fn event_in_executor(
 		&self,
 		tx: &mut dyn TransactionExecutor,

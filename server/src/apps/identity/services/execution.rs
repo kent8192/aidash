@@ -900,6 +900,57 @@ impl WorkerAuthority {
 		.await;
 		lease.finish(result).await
 	}
+	/// `attachment_copy` for a Run executing here for another Home (ADR 0139, decision 20): the
+	/// receiver pulled the Home's attachment, so there is no Workspace record to read here. The
+	/// copy lands where `copy_thread_attachment` puts it for any Run, in the Scratch Space its
+	/// commands read, or in its receiving Working Area when the Node runs no Pods.
+	pub(crate) async fn copy_pulled_thread_attachment(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+		message_id: Uuid,
+		media_type: String,
+		content: &[u8],
+	) -> Result<Value> {
+		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
+			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
+		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
+			.map_err(|_| Error::Invalid("invalid idempotency key".into()))?;
+		let revision = input["expected_revision"]
+			.as_i64()
+			.ok_or_else(|| Error::Invalid("missing expected_revision".into()))?;
+		let path = input["path"]
+			.as_str()
+			.ok_or_else(|| Error::Invalid("missing path".into()))?
+			.to_owned();
+		let digest = crate::apps::execution::repositories::capability_objects::digest(content);
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result: Result<Value> = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
+			aidash_application::capabilities::files::copy_thread_attachment(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				key,
+				revision,
+				path,
+				message_id,
+				attachment_id,
+				media_type,
+				digest,
+				content,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		access.finish(result).await
+	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.
 	pub(crate) async fn model_media(
@@ -1315,6 +1366,18 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			if crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+				access.tx.as_mut(),
+				run.id,
+			)
+			.await?
+			{
+				// The Home's person answers only the creating Run's own requests (ADR 0110).
+				return Err(Error::Refused(
+					"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+						.into(),
+				));
+			}
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
 				run.workspace_id,
@@ -1352,6 +1415,18 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			if crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+				access.tx.as_mut(),
+				run.id,
+			)
+			.await?
+			{
+				// The Home's person answers only the creating Run's own requests (ADR 0110).
+				return Err(Error::Refused(
+					"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+						.into(),
+				));
+			}
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
 				run.workspace_id,
@@ -1694,12 +1769,9 @@ impl WorkerAuthority {
 		input: &aidash_application::subnodes::Create,
 	) -> Result<aidash_domain::subnodes::Subnode> {
 		use crate::apps::identity::repositories::subnodes::{
-			Creation, binding_authority, check_member_bindings, creator_can_use_binding,
+			Creation, binding_authority, check_member_bindings, check_member_lists,
+			creator_can_use_binding,
 		};
-		let remote =
-			crate::apps::identity::services::peer::admission::run_grant(&f.store, &run.metadata())
-				.await?
-				.is_some();
 		let mut lease = self.access.write().await;
 		let node_address = format!("{}/{}", lease.node_id, run.node);
 		let creator =
@@ -1798,6 +1870,8 @@ impl WorkerAuthority {
 			}
 			let config = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
 			check_member_bindings(&usable, &snapshot, &config)?;
+			// A creator that a Remote Grant started passes on only what both Nodes' lists give it.
+			check_member_lists(&mut lease, run.id, &snapshot, &config).await?;
 			members.insert(
 				format!("{}@{}", agent.id, agent.version),
 				binding_authority(&snapshot, &config)?,
@@ -1809,7 +1883,6 @@ impl WorkerAuthority {
 				access: &mut access,
 				federation: f,
 				node_address,
-				remote,
 				creator_authority,
 				members,
 			},
@@ -1831,7 +1904,8 @@ impl WorkerAuthority {
 	) -> Result<Value> {
 		use crate::apps::execution::models::subnodes::{SubnodeOperationReceipt, SubnodeRecord};
 		use crate::apps::identity::repositories::subnodes::{
-			Management, binding_authority, check_member_bindings, creator_binding_authority,
+			Management, binding_authority, check_member_bindings, check_member_lists,
+			creator_binding_authority,
 		};
 		use aidash_application::ports::subnodes::ManageScope as _;
 		use aidash_application::subnodes::{self, Command};
@@ -1919,6 +1993,9 @@ impl WorkerAuthority {
 				&snapshot,
 				&config,
 			)?;
+			// The creating Run's lists bound a member added or tasked later too, as they may
+			// have narrowed since the Subnode was created.
+			check_member_lists(&mut lease, creator.id, &snapshot, &config).await?;
 			let required = binding_authority(&snapshot, &config)?;
 			aidash_domain::subnodes::member_fits(&required, &subnode.allowance)
 				.map_err(|error| Error::Refused(error.to_string()))?;

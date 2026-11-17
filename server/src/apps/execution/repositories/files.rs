@@ -362,6 +362,17 @@ impl FileScopePort for Scope<'_> {
 		let result: NativeResult<Value> = async {
 			Ok(match action {
 				Action::Outbound => {
+					// Approvals of a Run executing for another Home belong to that Home's root
+					// person (ADR 0139, decision 22), and `approvals::prepare` judges approvers
+					// by this Node's policy alone. Until the approval is routed to the Home,
+					// the call is refused by name rather than put to this Node's people.
+					if !run.is_local(store.deployment.as_str()) {
+						return Err(NativeError::Conflict(
+							"OUTBOUND_UNAVAILABLE: a Run executing for another Home cannot yet ask \
+							 its Home for an outbound GET approval"
+								.into(),
+						));
+					}
 					approvals::prepare(
 						store,
 						self.access,
@@ -691,9 +702,14 @@ impl FileScopePort for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
-		self.store
-			.ok_or_else(missing)?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+		let store = self.store.ok_or_else(missing)?;
+		store
+			.event(
+				&mut self.access.tx,
+				store.event_workspace(self.run, workspace),
+				kind,
+				data,
+			)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

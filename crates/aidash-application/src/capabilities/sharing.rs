@@ -79,6 +79,21 @@ pub async fn share(
 	if scope.current_run(area).await? != Some(run.id) {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
+	// An Area that belongs to a Home's Runs sends files to that Home only, whether or not it
+	// holds a Reference set (ADR 0114 amendment, ADR 0139). The Federation transport has no
+	// delivery into the Home's delegating Run yet (`file-transfer/1` knows only a sender that
+	// holds the Workspace), so even the Home is refused, by name, and never falls through to the
+	// receiver's own Areas or to another Node.
+	if area.is_remote_home() {
+		if !area.may_send_to(&input.recipient.node_id) {
+			return Err(Error::Forbidden);
+		}
+		return Err(Error::Conflict(
+			"FILE_SHARE_TO_HOME_UNAVAILABLE: a Run executing for another Home cannot yet send files back; \
+			 name the result in the final answer or publish an Artifact through the Home"
+				.into(),
+		));
+	}
 	let own = aidash_domain::nodes::DeploymentId::parse(scope.node_id())?
 		.node(run.node.clone())
 		.to_string();

@@ -48,6 +48,14 @@ impl Area {
 			.as_array()
 			.is_some_and(|sources| sources.iter().any(|source| source["kind"] == REMOTE_HOME))
 	}
+	/// Whether this Area's files may leave for `recipient_node`, a Node address. An Area that
+	/// belongs to Runs executing here for another Home, with or without a Reference set, sends
+	/// files to that Home only (ADR 0114 amendment, ADR 0139): the receiving Tenant consented to
+	/// that by listing the tool, and to no other destination. Any other Area is not decided
+	/// here; the caller's own checks apply, which refuse a Reference set.
+	pub fn may_send_to(&self, recipient_node: &str) -> bool {
+		!self.is_remote_home() || recipient_node == self.home_node
+	}
 }
 pub fn received_scope_matches(subjects: &[String], owner: &str, agent: &str) -> bool {
 	subjects.first().map(String::as_str) == Some(owner)
