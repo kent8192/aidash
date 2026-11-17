@@ -59,10 +59,10 @@ pub async fn create(
 	if let Some(existing) = scope.replay(run, key, input).await? {
 		return Ok(existing);
 	}
+	// A Run a Remote Grant started needs no setting of its own: `subnode_*` in both Federation
+	// tool lists is what lets it reach this point (ADR 0139), and the receiving Tenant's limits
+	// below apply to it as to any Run.
 	let limits = scope.limits().await?;
-	limits
-		.check_remote(scope.remote_grant_started_run(run.id).await?)
-		.map_err(refused)?;
 	limits
 		.check_create(scope.active_count(run.id).await?)
 		.map_err(refused)?;
@@ -85,6 +85,35 @@ pub async fn create(
 		subnodes::member_fits(&required, &input.allowance).map_err(refused)?;
 	}
 	scope.insert(run, key, input).await
+}
+
+/// Refuse a member that needs a tool the creating Run may not use. A Run a Remote Grant started
+/// uses a tool only when both Nodes' Federation lists allow it (ADR 0139), so its Subnode members,
+/// who use at most what it may use (ADR 0110), need every tool they bind to pass the same
+/// decision. `keys` are the list keys of the member's tool Bindings. The coordination tools act
+/// only inside the Subnode and are not listed. A tool a side merely lacks refuses the member as
+/// well: nobody is asked on a member's behalf, the creating Run has to call the tool first.
+pub fn within_federation_lists(
+	lists: &aidash_domain::federation::tool_lists::OwnedRemoteToolLists,
+	keys: &BTreeSet<String>,
+) -> Result<()> {
+	use aidash_domain::{
+		federation::tool_lists::ToolVerdict,
+		tool::{ToolReach, builtin_reach},
+	};
+	for key in keys {
+		if subnodes::COORDINATION_TOOLS.contains(&key.as_str()) {
+			continue;
+		}
+		// Only a Registry tool, or a descriptor of another provider, has no builtin name.
+		let reach = builtin_reach(key).unwrap_or(ToolReach::ExternalServices);
+		if !matches!(lists.lists().decide(reach, key), ToolVerdict::Usable) {
+			return Err(Error::Refused(format!(
+				"member needs a tool the creating Run may not use under the Federation tool lists: {key}"
+			)));
+		}
+	}
+	Ok(())
 }
 
 #[cfg(test)]

@@ -96,19 +96,30 @@ fn refused(call: &ToolCall, check: RefusalCheck, action: Option<&str>) -> Error 
 /// (the Home shares the receiver's Tenant) only Reach never refuses, which `authorize` did
 /// already. A tool that is blocked or Reach never answers the same words as a tool that does
 /// not exist; one that a side merely lacks stops the Run so that side's people can answer.
+///
+/// `member` is a Subnode member of a Run that a Remote Grant started: it answers to the lists of
+/// that creating Run (ADR 0110), except for the coordination tools, which act only inside the
+/// Subnode. Nobody can be asked on a member's behalf, so a tool a side merely lacks is refused.
 fn federation_gate(
 	call: &ToolCall,
 	lists: Option<&OwnedRemoteToolLists>,
 	contract: &ToolContract,
 	operation: &str,
+	member: bool,
 ) -> Result<()> {
 	let Some(lists) = lists else {
 		return Ok(());
 	};
 	let key = list_key(contract, operation);
+	if member && aidash_domain::subnodes::COORDINATION_TOOLS.contains(&key.as_str()) {
+		return Ok(());
+	}
 	match lists.lists().decide(contract.reach, &key) {
 		ToolVerdict::Usable => Ok(()),
 		ToolVerdict::Unavailable => Err(Error::Invalid(UNAVAILABLE_TOOL.into())),
+		ToolVerdict::Ask(_) if member => Err(Error::Refused(
+			"this tool is not available to Subnode members of this Run".into(),
+		)),
 		// The key the lists matched travels as the refusal's action, so the pause can say which
 		// pattern its answer adds without resolving the tool again.
 		ToolVerdict::Ask(lacking) => Err(refused(
@@ -248,13 +259,17 @@ pub async fn authorize(
 	}
 	// Taking the lease only waits for the Access guard; it refuses nothing.
 	let mut scope = repository.lease().await?;
-	if let Some(allowance) = scope.subnode_allowance().await?
-		&& !allowed_in_subnode(repository, contract, &allowance)?
+	let allowance = scope.subnode_allowance().await?;
+	if let Some(allowance) = &allowance
+		&& !allowed_in_subnode(repository, contract, allowance)?
 	{
 		return Err(refused(call, RefusalCheck::Policy, None));
 	}
 	// The refresh above read the Home's current Request; the receiver's lists are its own rows.
-	let lists = if repository.is_remote() {
+	// A Subnode member is local, but answers to the lists of the Run that created its Subnode,
+	// which the repository finds; it has none when that Run is not a remote one.
+	let member = !repository.is_remote() && allowance.is_some();
+	let lists = if repository.is_remote() || member {
 		scope.remote_tool_lists().await?
 	} else {
 		None
@@ -293,7 +308,13 @@ pub async fn authorize(
 					"a Run started by a Remote Grant is limited to one hop and cannot discover agents or delegate tasks".into(),
 				));
 			}
-			federation_gate(call, lists.as_ref(), contract, &descriptor.operation)?;
+			federation_gate(
+				call,
+				lists.as_ref(),
+				contract,
+				&descriptor.operation,
+				member,
+			)?;
 			operation = Some(descriptor.operation);
 			&current.authorization
 		}
@@ -311,12 +332,18 @@ pub async fn authorize(
 				Some("tool.invoke"),
 			)?;
 			let config: ToolConfig = serde_json::from_value(entry.config)?;
-			federation_gate(call, lists.as_ref(), contract, registry_operation(&config))?;
+			federation_gate(
+				call,
+				lists.as_ref(),
+				contract,
+				registry_operation(&config),
+				member,
+			)?;
 			current = ToolContract::registry(reference.clone(), &config);
 			&current.authorization
 		}
 		ToolIdentity::Builtin(grant) => {
-			federation_gate(call, lists.as_ref(), contract, "")?;
+			federation_gate(call, lists.as_ref(), contract, "", member)?;
 			let resource = scope.resource("tool", grant, json!({}));
 			named(
 				scope.require(&resource, "tool.invoke").await,

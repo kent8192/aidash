@@ -139,6 +139,13 @@ impl AgentToolScope for Scope<'_> {
 		Ok(true)
 	}
 	async fn remote_tool_lists(&mut self) -> Result<Option<OwnedRemoteToolLists>> {
+		if self.remote.is_none() {
+			// A Subnode member runs here as a Run of its own, but answers to the lists of the Run
+			// that created its Subnode (ADR 0110), whose admission and Node Registration hold them.
+			use crate::apps::execution::repositories::operations::remote_tools;
+			let bound = remote_tools::bounding_run(self.access.tx.as_mut(), self.run.id).await?;
+			return Ok(remote_tools::lists(self.access.tx.as_mut(), bound).await?);
+		}
 		// Whether the Home is another Tenant's Node is this Node's own knowledge: only then
 		// does it hold a Node Registration of it. A description without a Request never
 		// turns another Tenant's Home into a same-Tenant one; it asks for nothing instead.

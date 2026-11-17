@@ -107,6 +107,45 @@ pub(crate) fn check_member_bindings(
 	Ok(())
 }
 
+/// Refuse a candidate member whose tool Bindings exceed what the creating Run may use under the
+/// Federation tool lists (ADR 0110, ADR 0139). A creating Run that executes for another Home
+/// is bounded by both Nodes' lists; a Run of this Tenant has none and every member passes.
+/// `creator` is the Run that created, or will create, the Subnode.
+pub(crate) async fn check_member_lists(
+	access: &mut Access,
+	creator: Uuid,
+	snapshot: &BindingSnapshot,
+	config: &aidash_domain::registry::AgentConfig,
+) -> crate::Result<()> {
+	use crate::apps::execution::repositories::operations::remote_tools;
+	let bound = remote_tools::bounding_run(access.tx.as_mut(), creator).await?;
+	let Some(lists) = remote_tools::lists(access.tx.as_mut(), bound).await? else {
+		return Ok(());
+	};
+	let mut keys = std::collections::BTreeSet::new();
+	for binding in &snapshot.bindings {
+		if binding.excluded_reason.is_some()
+			|| binding.definition.kind != "tool"
+			|| !creator_can_use_binding(config, binding)?
+		{
+			continue;
+		}
+		// A definition the lists cannot name is refused rather than let through.
+		let key = aidash_domain::federation::tool_lists::definition_key(
+			&binding.identity.local().id,
+			&binding.definition.config,
+		)
+		.ok_or_else(|| {
+			crate::Error::Refused(format!(
+				"member Binding {} cannot be checked against the Federation tool lists",
+				binding.identity.resource_id()
+			))
+		})?;
+		keys.insert(key);
+	}
+	aidash_application::subnodes::within_federation_lists(&lists, &keys).map_err(Into::into)
+}
+
 /// A pinned Binding is not usable when the creator lacks its Agent or core
 /// capability prerequisite, even if current policy allows tool.invoke.
 pub(crate) fn creator_can_use_binding(
@@ -143,7 +182,6 @@ pub(crate) struct Creation<'a> {
 	pub access: &'a mut Access,
 	pub federation: &'a Federation,
 	pub node_address: String,
-	pub remote: bool,
 	pub creator_authority: Allowance,
 	pub members: BTreeMap<String, Allowance>,
 }
@@ -183,9 +221,6 @@ impl CreateScope for Creation<'_> {
 			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(crate::Error::from)?
 			.is_empty())
-	}
-	async fn remote_grant_started_run(&mut self, _: Uuid) -> Result<bool> {
-		Ok(self.remote)
 	}
 	async fn replay(
 		&mut self,

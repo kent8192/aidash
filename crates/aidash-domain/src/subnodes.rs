@@ -167,8 +167,6 @@ pub enum Refusal {
 	NotMember,
 	#[error("a Subnode member cannot create another Subnode")]
 	NestedSubnode,
-	#[error("remote Runs are not permitted to create Subnodes")]
-	RemoteCreationDisabled,
 	#[error("invalid Subnode limits")]
 	InvalidLimits,
 }
@@ -214,6 +212,8 @@ pub struct SubnodeLimits {
 	pub members_per_subnode: u32,
 	#[schemars(range(min = 1, max = 10))]
 	pub subnodes_per_run: u32,
+	// No longer read: the receiving Node's Federation Tool Allowance replaced this setting
+	// (ADR 0110, ADR 0139). It stays in the stored and API shape until a migration drops it.
 	pub remote_runs_may_create: bool,
 }
 
@@ -233,14 +233,6 @@ impl SubnodeLimits {
 			|| !(1..=10).contains(&self.subnodes_per_run)
 		{
 			return Err(Refusal::InvalidLimits);
-		}
-		Ok(())
-	}
-
-	pub fn check_remote(self, remote: bool) -> Result<(), Refusal> {
-		self.validate()?;
-		if remote && !self.remote_runs_may_create {
-			return Err(Refusal::RemoteCreationDisabled);
 		}
 		Ok(())
 	}
@@ -304,19 +296,6 @@ mod tests {
 	#[test]
 	fn limits_apply_to_resulting_members_and_existing_subnodes() {
 		let limits = SubnodeLimits::default();
-		assert_eq!(limits.check_remote(false), Ok(()));
-		assert_eq!(
-			limits.check_remote(true),
-			Err(Refusal::RemoteCreationDisabled)
-		);
-		assert_eq!(
-			SubnodeLimits {
-				remote_runs_may_create: true,
-				..limits
-			}
-			.check_remote(true),
-			Ok(())
-		);
 		assert_eq!(limits.check_members(5), Ok(()));
 		assert_eq!(limits.check_members(6), Err(Refusal::MemberLimit));
 		assert_eq!(limits.check_create(2), Ok(()));

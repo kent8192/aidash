@@ -2353,6 +2353,55 @@ async fn a_listed_tool_runs_in_a_remote_run(
 }
 
 #[rstest]
+#[tokio::test]
+async fn a_subnode_member_answers_to_the_lists_of_its_remote_creating_run(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// The member is a local Run, so the repository finds the creating Run's lists for it.
+	repository.subnode_allowance = Some(aidash_domain::subnodes::Allowance {
+		tools: ["workspace_read".to_owned(), "workspace_search".to_owned()].into(),
+		secrets: Default::default(),
+	});
+	repository.lists = Some(lists(
+		&["workspace_read", "workspace_search"],
+		&["workspace_read"],
+		&[],
+	));
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+	// The allowance names the tool but the receiver's list does not: refused, never a pause
+	// nobody could answer for the member.
+	assert!(matches!(
+		authorize(
+			&repository,
+			&run,
+			&agent,
+			&call("workspace_search", json!({})),
+		)
+		.await,
+		Err(Error::Refused(_))
+	));
+	// A Subnode member of a Run of the receiver's own Tenant has no lists.
+	repository.lists = None;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+}
+
+#[rstest]
 #[case::blocked("workspace_read", lists(&["workspace_read"], &["workspace_read"], &["workspace_*"]))]
 #[case::never_reach("schedule_list", lists(&["*"], &["*"], &[]))]
 #[tokio::test]

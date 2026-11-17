@@ -18,7 +18,6 @@ pub trait CreateScope: AuthorizationLease {
 	fn execution_node(&self) -> &str;
 	async fn node_resource(&mut self, run: &RunMetadata) -> Result<Resource>;
 	async fn workspace_is_subnode(&mut self, workspace: Uuid) -> Result<bool>;
-	async fn remote_grant_started_run(&mut self, run: Uuid) -> Result<bool>;
 	/// Return an earlier receipt, or conflict if the key names different input.
 	async fn replay(
 		&mut self,
