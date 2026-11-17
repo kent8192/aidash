@@ -1,11 +1,11 @@
 // reinhardt-migration-source: 1
-// ORM state for the approval carry-over columns in 0073.
+// Existing approvals remain Node-scoped and do not carry (ADR 0128).
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0081_approval_carry_over_state", "identity")
-		.add_dependency("identity", "0080_approval_carry_over")
-		.state_only(true)
+	Migration::new("0082_approval_carry_over", "identity")
+		.add_dependency("identity", "0081_scheduled_executions")
+		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "authorization_catalog".into(),
@@ -16,7 +16,9 @@ pub(super) fn migration() -> Migration {
 		})
 		.add_operation(Operation::AddColumn {
 			table: "authorization_catalog".into(),
-			column: ColumnDefinition::new("scope", FieldType::Text).with_not_null(true),
+			column: ColumnDefinition::new("scope", FieldType::Text)
+				.with_not_null(true)
+				.with_default(Some("'node'".into())),
 			mysql_options: None,
 		})
 		.add_operation(Operation::AddColumn {
@@ -40,7 +42,9 @@ pub(super) fn migration() -> Migration {
 		})
 		.add_operation(Operation::AddColumn {
 			table: "authorization_catalog_history".into(),
-			column: ColumnDefinition::new("scope", FieldType::Text).with_not_null(true),
+			column: ColumnDefinition::new("scope", FieldType::Text)
+				.with_not_null(true)
+				.with_default(Some("'node'".into())),
 			mysql_options: None,
 		})
 		.add_operation(Operation::AddColumn {
@@ -54,5 +58,19 @@ pub(super) fn migration() -> Migration {
 			column: ColumnDefinition::new("carried_from_approver", FieldType::Text)
 				.with_not_null(false),
 			mysql_options: None,
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_catalog".into(),
+			constraint: Constraint::Check {
+				name: "authorization_catalog_scope_valid".into(),
+				expression: "scope IN ('node','deployment')".into(),
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_catalog_history".into(),
+			constraint: Constraint::Check {
+				name: "authorization_catalog_history_scope_valid".into(),
+				expression: "scope IN ('node','deployment')".into(),
+			},
 		})
 }

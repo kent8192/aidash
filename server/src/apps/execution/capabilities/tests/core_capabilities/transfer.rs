@@ -1283,6 +1283,28 @@ async fn reserved_transfer_capacity_survives_unrelated_uploads_and_its_own_conve
 	let (status, prepared) = peer_request(&c.b, &c.a, "prepare", identity.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
 	let (upload_status, upload) = common::post(&c.b.app, &c.b.token, &path_for_patch(c.receiver.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"other.txt":null},"patch":"*** Begin Patch\n*** Add File: other.txt\n+x\n*** End Patch"})).await;
+	assert_eq!(
+		upload_status, 409,
+		"unrelated upload consumed reserved capacity: {upload}"
+	);
+	assert_eq!(upload["error"]["code"], "STORAGE_QUOTA");
+	// Rejected uploads release their temporary reservations asynchronously.
+	// Wait for that cleanup before exercising the independently reserved chunk.
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let pending: i64 =
+				sqlx::query_scalar("SELECT COUNT(*) FROM core_blob_uploads WHERE tenant='acme'")
+					.fetch_one(c.b.f.store.pool.fixture_driver())
+					.await
+					.unwrap();
+			if pending == 0 {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the rejected upload's reservation was released");
 	let mut chunk = identity.clone();
 	chunk["file"] = json!(0);
 	chunk["offset"] = json!(0);
@@ -1290,11 +1312,6 @@ async fn reserved_transfer_capacity_survives_unrelated_uploads_and_its_own_conve
 	let (chunk_status, chunk_result) = peer_request(&c.b, &c.a, "chunk", chunk).await;
 	let (commit_status, committed) = peer_request(&c.b, &c.a, "commit", identity).await;
 	c.close().await;
-	assert_eq!(
-		upload_status, 409,
-		"unrelated upload consumed reserved capacity: {upload}"
-	);
-	assert_eq!(upload["error"]["code"], "STORAGE_QUOTA");
 	assert_eq!(
 		chunk_status, 200,
 		"reserved chunk must be admitted: {chunk_result}"

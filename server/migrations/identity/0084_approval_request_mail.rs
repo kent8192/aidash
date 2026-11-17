@@ -2,8 +2,8 @@
 // Mail for Catalog Approval Requests is on for existing people (ADR 0128).
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_approval_request_mail", "identity")
-		.add_dependency("identity", "0081_approval_carry_over_state")
+	Migration::new("0084_approval_request_mail", "identity")
+		.add_dependency("identity", "0083_approval_carry_over_state")
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_identities".into(),
