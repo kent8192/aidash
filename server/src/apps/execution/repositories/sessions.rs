@@ -111,14 +111,14 @@ pub(crate) async fn areas(access: &mut Access, ids: &[Uuid]) -> NativeResult<Vec
 	if ids.is_empty() {
 		return Ok(Vec::new());
 	}
-	Ok(crate::database::native::query_as(
+	crate::database::native::query_as(
 		&select("core_areas")
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_all(&mut **access.tx)
-	.await?)
+	.await
 }
 #[async_trait]
 impl SessionScope for Scope<'_> {
