@@ -82,6 +82,11 @@ pub struct GenerationRequest {
 
 	#[field]
 	pub local_workspace_id: Option<uuid::Uuid>,
+
+	/// A Run a Schedule started made this request (#557): the Run its
+	/// generated Agent is delegated never registers or changes Schedules.
+	#[field(default = false)]
+	pub scheduled: bool,
 }
 
 impl GenerationRequest {

@@ -19,4 +19,6 @@ pub mod tasks;
 
 pub(crate) mod openapi;
 
+pub mod schedule_settings;
+pub(crate) mod schedules;
 pub(crate) mod scratch;

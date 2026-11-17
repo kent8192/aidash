@@ -143,7 +143,8 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 
 #[fixture]
 fn model() -> Value {
-	json!({"id":"personal-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"No provider request is made"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})
+	// The default tools, including the Schedule tools (#557), outgrow 32,768.
+	json!({"id":"personal-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"No provider request is made"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost","context_window":65536,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})
 }
 
 #[rstest]

@@ -187,6 +187,7 @@ fn the_creator_administers_and_members_use() {
 	for action in [
 		"workspace.create",
 		"scratch.create",
+		"schedule.create",
 		"run.read",
 		"registry.create",
 		"marketplace.install",

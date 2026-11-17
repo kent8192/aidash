@@ -4,9 +4,10 @@ export type NoticeKind =
   | "input"
   | "completed"
   | "failed"
-  | "joined";
+  | "joined"
+  | "schedule_stopped";
 export type NoticeTarget = {
-  kind: "human" | "task" | "approval" | "administration";
+  kind: "human" | "task" | "approval" | "administration" | "schedule";
   node: string;
   id: string;
   workspace: string;
@@ -24,6 +25,9 @@ export type NoticeEntry = {
   target: NoticeTarget;
   /** When an administration event happened, as an RFC 3339 time. */
   occurredAt?: string;
+  /** Shown in the bell without a toast, as a scheduled Run's completion is
+   *  (#557 decision 26). */
+  quiet?: boolean;
 };
 export type Notice = NoticeEntry & { kind: NoticeKind; id: string };
 export type NoticeFrame = {
@@ -146,7 +150,11 @@ export class NoticeStore {
       if (!item) continue;
       current.set(item.id, item);
       const before = this.previous.get(entry.key);
-      const input = item.kind === "approval" || item.kind === "input";
+      // A stopped Schedule waits on a person as an approval does (#557).
+      const input =
+        item.kind === "approval" ||
+        item.kind === "input" ||
+        item.kind === "schedule_stopped";
       const newInput = input && !this.announcedInputs.has(entry.key);
       const taskStatusRevision = JSON.stringify([item.id, entry.signature]);
       // First snapshots, newly granted workspaces and new remote nodes are quiet.
@@ -216,7 +224,7 @@ export class NoticeStore {
       .slice(0, NOTICE_HISTORY_LIMIT)
       .map((item) => current.get(item.id)!);
     for (const item of fresh) {
-      this.pendingToast.set(item.id, item);
+      if (!item.quiet) this.pendingToast.set(item.id, item);
       this.unread.add(item.id);
     }
     this.pendingToast = new Map(
@@ -227,7 +235,9 @@ export class NoticeStore {
     this.publish(
       [...current.values()].filter(
         (item) =>
-          item.target.kind === "human" || item.target.kind === "approval",
+          item.target.kind === "human" ||
+          item.target.kind === "approval" ||
+          item.target.kind === "schedule",
       ),
       this.recent,
     );

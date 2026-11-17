@@ -17,12 +17,14 @@ use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
 
+/// The default tools, including the Schedule tools (#557), outgrow a 32,768
+/// window for an Agent registered on this model.
 #[fixture]
 fn timeout_model() -> Value {
 	json!({"id":"timeout-model","version":"1.0.0","kind":"model",
         "name":{"en":"Timeout fixture"},"description":{"en":"Persistence test"},
         "config":{"provider":"openrouter","model_id":"vendor/model",
-            "endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+            "endpoint":"http://127.0.0.1:1/v1","context_window":65536,"max_output_tokens":4096,
             "modalities":["text"],"cost":{}}})
 }
 
