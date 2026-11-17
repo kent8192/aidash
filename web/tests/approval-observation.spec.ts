@@ -409,7 +409,7 @@ test("observer settings and report labels remain accessible in Japanese", async 
   const report = panel(page, "Tenant の Shadow 承認レポート");
   await expect(report.getByLabel("開始日（UTC・含む）")).toBeVisible();
   await expect(
-    report.locator("summary").filter({ hasText: "ページ読み取り" }),
+    report.locator("summary").filter({ hasText: "ツール呼び出し" }),
   ).toHaveCount(1);
   await expect(report.getByRole("table").first()).toContainText("人が拒否");
 });

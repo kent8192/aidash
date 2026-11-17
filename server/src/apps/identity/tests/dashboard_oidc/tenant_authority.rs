@@ -1188,14 +1188,15 @@ async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_nex
 			.to_string()
 			.contains("forbids Keyless endpoints")
 	);
-	// The former model-call switch is gone; an unknown field is refused.
+	// The former model-call switch is gone; an unknown field is refused like any
+	// unknown JSON field.
 	let (status, _) = send(
 		"PUT",
 		&path,
 		json!({"level":"zero_data_retention","model_call_zdr":false}),
 	)
 	.await;
-	assert_eq!(status, 400);
+	assert_eq!(status, 422);
 	let (status, _) = send("PUT", &path, defaults["policy"].clone()).await;
 	assert_eq!(status, 200);
 	access

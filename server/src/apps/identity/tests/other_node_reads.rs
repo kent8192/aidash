@@ -535,17 +535,17 @@ fn carol_reads_nothing() -> Value {
 
 /// The receiver's Run is admitted and starts on the second Node, then stops
 /// for a reason the system states. A Run admitted by a Remote Grant is judged
-/// at the strictest Data Protection Level, because the receipt does not publish
-/// the source Tenant's current policy, and the fixture's Keyless model endpoint
-/// cannot meet that level. The refusal is legitimate; delegation itself worked
-/// (#751, item 17).
+/// by the strictest Data Protection policy, because the receipt does not
+/// publish the source Tenant's current policy. That policy forbids Keyless
+/// endpoints (#961), so the fixture's Keyless model endpoint is refused. The
+/// refusal is legitimate; delegation itself worked (#751, item 17).
 fn stops_at_data_protection(receiver: &Run) {
 	assert_eq!(receiver.phase().as_str(), "FAILED", "{:?}", receiver.error);
 	assert!(
 		receiver
 			.error
 			.as_deref()
-			.is_some_and(|error| error.contains("Data Protection Level ZeroDataRetention")),
+			.is_some_and(|error| error.contains("forbids Keyless endpoints")),
 		"{:?}",
 		receiver.error
 	);

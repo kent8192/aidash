@@ -59,6 +59,20 @@ test.beforeEach(async ({ page }) => {
           ],
         },
       });
+    } else if (path === "/api/tenants/acme/data-protection") {
+      // The model picker reads the level to mark models it refuses (#963).
+      const policy = {
+        level: "no_training",
+        forbid_plan_connections: false,
+        forbid_keyless_endpoints: false,
+      };
+      await route.fulfill({
+        json: {
+          policy,
+          effective: policy,
+          deployment_floor: "no_restriction",
+        },
+      });
     } else if (path === "/api/tenants/acme/plan-connections/chatgpt") {
       await route.fulfill({
         json: {
