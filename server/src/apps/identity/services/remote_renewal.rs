@@ -9,8 +9,8 @@
 //! calls is renewed too. Serving a description or verification of such a grant
 //! renews it as well. Both extend the expiry only from the value they read, so
 //! replicas and the two paths together renew a grant once per window.
+use crate::Result;
 use crate::federation::Federation;
-use crate::{Error, Result};
 use aidash_application::authorization::source::renewal::{
 	GrantLife, RENEW_WITHIN, RENEWAL_BATCH, Renewal, RenewalRepository, renew, renew_after_use,
 };
@@ -172,7 +172,7 @@ impl RenewalRepository for Grants {
 			.await
 		{
 			Ok((access, _)) => {
-				access.finish(Ok(())).await.map_err(Error::from)?;
+				access.finish(Ok(())).await?;
 				Ok(true)
 			}
 			Err(error) => {

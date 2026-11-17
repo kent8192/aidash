@@ -51,6 +51,9 @@ fn key_id(signer: &InMemorySigner) -> DeploymentKeyId {
 	DeploymentKeyId::of_public_key(&signer.public_key().to_bytes())
 }
 
+/// `(tenant, receiver, sending deployment, jti, expires_at)` of a recorded token.
+type RecordedToken = (TenantName, NodeName, DeploymentId, Uuid, u64);
+
 struct World {
 	own: DeploymentId,
 	nodes: Vec<(NodeName, TenantName)>,
@@ -63,8 +66,8 @@ struct World {
 	trust: Mutex<Vec<(ReceivingKeyOwner, ReceivingKeys)>>,
 	cas_conflict: bool,
 	asked: Mutex<Vec<&'static str>>,
-	/// `(tenant, receiver, sending deployment, jti, expires_at)` of each token seen.
-	recorded: Mutex<Vec<(TenantName, NodeName, DeploymentId, Uuid, u64)>>,
+	/// Each token seen.
+	recorded: Mutex<Vec<RecordedToken>>,
 	record_fails: bool,
 }
 

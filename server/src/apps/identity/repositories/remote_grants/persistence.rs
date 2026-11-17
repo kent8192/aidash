@@ -123,8 +123,7 @@ impl GrantScope for Scope {
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **self.access.tx)
-		.await
-		.map_err(crate::Error::from)?;
+		.await?;
 		Ok(match stored {
 			Some(value) => serde_json::from_value(value)?,
 			None => ToolList::default(),

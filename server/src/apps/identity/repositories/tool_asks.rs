@@ -131,13 +131,8 @@ pub(crate) async fn receiver_asks(
 pub(crate) struct HomeGrant {
 	pub id: Uuid,
 	pub task_id: Uuid,
-	pub workspace_id: Uuid,
 }
-crate::native_record!(HomeGrant {
-	id,
-	task_id,
-	workspace_id
-});
+crate::native_record!(HomeGrant { id, task_id });
 
 /// The live Remote Grants `node` issued to `receiver`, whose Runs may wait for the Home's people.
 /// `only` narrows the answer to one grant.
@@ -152,7 +147,6 @@ pub(crate) async fn home_grants(
 	query
 		.column(Alias::new("id"))
 		.column(Alias::new("task_id"))
-		.column(Alias::new("workspace_id"))
 		.from(Alias::new("authorization_remote_grants"))
 		.and_where(SimpleExpr::CustomWithExpr(
 			"(tenant = ? AND node = ? AND node_id = ? AND NOT revoked AND expires_at > CLOCK_TIMESTAMP())"
