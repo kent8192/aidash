@@ -594,9 +594,6 @@ pub async fn filter<T: Send>(
 	tools: &mut BTreeMap<String, T>,
 	contract: impl Fn(&T) -> ToolContract,
 ) -> Result<()> {
-	if repository.is_remote() {
-		tools.retain(|_, tool| contract(tool).remote_exposure);
-	}
 	let mut scope = repository.lease().await?;
 	if let Some(allowance) = scope.subnode_allowance().await? {
 		for name in tools.keys().cloned().collect::<Vec<_>>() {

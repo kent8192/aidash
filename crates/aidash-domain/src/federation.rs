@@ -114,5 +114,7 @@ pub mod registry_reads;
 
 pub mod route;
 
+pub mod tool_lists;
+
 #[cfg(test)]
 mod tests;

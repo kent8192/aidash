@@ -104,9 +104,9 @@ fn descriptors_can_lower_but_never_raise_provider_concurrency() {
 }
 #[test]
 fn only_implicit_defaults_can_be_excluded_remotely() {
-	let descriptor = core_descriptor("aidash://node-a", "memory_mutate").unwrap();
+	let descriptor = core_descriptor("aidash://node-a", "agent_discover").unwrap();
 	let contract = descriptor
-		.declared_contract(QualifiedRef::builtin("aidash://node-a", "memory_mutate"))
+		.declared_contract(QualifiedRef::builtin("aidash://node-a", "agent_discover"))
 		.unwrap();
 	assert!(
 		remote_exclusion(BindingOrigin::Default, &contract)
@@ -180,7 +180,7 @@ fn exposure_and_skill_asset_operations_are_builtin_core_operations() {
 		let contract = descriptor
 			.declared_contract(QualifiedRef::builtin("aidash://node-a", operation))
 			.unwrap();
-		assert!(contract.remote_exposure);
+		assert_ne!(contract.reach, ToolReach::Never);
 		assert!(
 			remote_exclusion(BindingOrigin::Required, &contract)
 				.unwrap()

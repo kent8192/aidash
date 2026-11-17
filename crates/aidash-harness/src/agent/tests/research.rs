@@ -227,11 +227,9 @@ fn research_contracts_declare_yields_and_disclosure_per_operation() {
 	assert!(search.behavior.disclosure_approval && fetch.behavior.disclosure_approval);
 	assert!(!find.behavior.disclosure_approval);
 	assert_eq!(find.disclosure, DisclosureBoundary::Local);
-	assert!(
-		[search, fetch, find]
-			.iter()
-			.all(|contract| contract.replay_safe() && !contract.remote_exposure)
-	);
+	assert!([search, fetch, find].iter().all(|contract| {
+		contract.replay_safe() && contract.reach == aidash_domain::tool::ToolReach::Never
+	}));
 }
 
 #[rstest]

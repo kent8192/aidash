@@ -294,6 +294,27 @@ impl ToolBehavior {
 			.flatten()
 	}
 }
+/// What a tool touches; decides whether a Run started by a Remote Grant could use it (ADR 0139).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolReach {
+	/// The Run itself: always usable by a remote Run, never listed.
+	Run,
+	HomeWorkspace,
+	ReceiverMaterial,
+	ReceiverAgents,
+	People,
+	ExternalServices,
+	Execution,
+	/// Never offered to a remote Run.
+	Never,
+}
+impl ToolReach {
+	/// Whether a Federation Tool Request / Allowance may list a tool of this Reach.
+	pub fn listable(self) -> bool {
+		!matches!(self, Self::Run | Self::Never)
+	}
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolContract {
 	/// The model provider executes this capability inside inference. It yields
@@ -304,7 +325,8 @@ pub struct ToolContract {
 	pub authorization: ToolAuthorization,
 	pub behavior: ToolBehavior,
 	pub disclosure: DisclosureBoundary,
-	pub remote_exposure: bool,
+	/// What the tool touches; a remote Run may use only what its Reach allows (ADR 0139).
+	pub reach: ToolReach,
 }
 impl ToolContract {
 	/// Provider-reported sources never authorize Aidash Source citations.
@@ -367,7 +389,7 @@ impl ToolContract {
 				..external_behavior(ToolEffect::Unsafe, !read_only)
 			},
 			disclosure: DisclosureBoundary::External,
-			remote_exposure: false,
+			reach: ToolReach::Never,
 		}
 	}
 	/// A tool of an Agent Plugin's stdio server. It runs in the Run's Execution Pod, bounded by
@@ -382,7 +404,7 @@ impl ToolContract {
 			authorization: ToolAuthorization::none(),
 			behavior: external_behavior(ToolEffect::Unsafe, false),
 			disclosure: DisclosureBoundary::Local,
-			remote_exposure: false,
+			reach: ToolReach::Never,
 		}
 	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
@@ -431,7 +453,7 @@ impl ToolContract {
 				..external_behavior(effect, approval)
 			},
 			disclosure,
-			remote_exposure: true,
+			reach: ToolReach::ExternalServices,
 		}
 	}
 }
@@ -455,10 +477,51 @@ fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavi
 	}
 }
 
+/// The Reach of every builtin, listed by name with no default so a new tool must be classified.
+pub fn builtin_reach(name: &str) -> Option<ToolReach> {
+	Some(match name {
+		"journal_read"
+		| "journal_search"
+		| "journal_query"
+		| "capability_search"
+		| "capability_describe"
+		| "capability_load"
+		| "capability_unload"
+		| "workspace_wait" => ToolReach::Run,
+		"task_create" | "task_assign" | "artifact_publish" | "workspace_message"
+		| "workspace_read" | "workspace_observe" | "workspace_search" | "memory_recall"
+		| "memory_reflect" | "memory_mutate" | "file_share" | "attachment_copy" => {
+			ToolReach::HomeWorkspace
+		}
+		"skill_read" | "skill_asset_read" | "file_read" | "file_search" => {
+			ToolReach::ReceiverMaterial
+		}
+		"subnode_create"
+		| "subnode_task"
+		| "subnode_add_member"
+		| "subnode_remove_member"
+		| "subnode_dissolve"
+		| "subnode_message" => ToolReach::ReceiverAgents,
+		"human_request" | "connection_request" => ToolReach::People,
+		"outbound_get" => ToolReach::ExternalServices,
+		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_poll"
+		| "python_cancel" | "apply_patch" | "file_save" | "file_remove" | "file_copy"
+		| "process_list" | "process_log" | "process_stop" | "live_preview_start"
+		| "live_preview_stop" => ToolReach::Execution,
+		"agent_discover" | "task_delegate" | "skill_list" | "skill_load" => ToolReach::Never,
+		// An Agent Plugin's stdio MCP server is never remote (ADR 0100), and a Schedule acts
+		// as one person of its own Tenant (ADR 0134), which a remote Run cannot be.
+		"mcp_stdio" | "schedule_create" | "schedule_update" | "schedule_delete"
+		| "schedule_list" => ToolReach::Never,
+		_ => return None,
+	})
+}
+
 /// The sole builtin assignment table. Grant identity is independent of model alias.
 pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 	use AuthorizationRequirement::*;
 	use ResourceTarget::*;
+	let reach = builtin_reach(name)?;
 	let mut contract = ToolContract {
 		provider_owned: false,
 		identity: ToolIdentity::Builtin(format!("builtin:{name}")),
@@ -483,7 +546,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			disclosure_approval: false,
 		},
 		disclosure: DisclosureBoundary::Home,
-		remote_exposure: false,
+		reach,
 	};
 	let auth = &mut contract.authorization;
 	let behavior = &mut contract.behavior;
@@ -502,21 +565,17 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			};
 			contract.disclosure = DisclosureBoundary::Local;
 		}
-		// A Remote-Grant-started creator needs to manage its receiving-Node
-		// Subnode; each effect rechecks its creator or member identity.
+		// Reach: ReceiverAgents; each effect rechecks its creator or member identity.
 		"subnode_create"
 		| "subnode_task"
 		| "subnode_add_member"
 		| "subnode_remove_member"
-		| "subnode_dissolve" => {
-			contract.remote_exposure = true;
-		}
+		| "subnode_dissolve" => {}
 		"subnode_message" => {}
 		"task_create" => {
 			auth.flag = Some(AgentFlag::TaskCreation);
 			auth.requirements
 				.push(resource("task.create", "workspace", Workspace));
-			contract.remote_exposure = true;
 		}
 		"task_assign" => {
 			auth.flag = Some(AgentFlag::Delegation);
@@ -527,7 +586,6 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			));
 		}
 		"task_delegate" => {
-			contract.remote_exposure = true;
 			auth.flag = Some(AgentFlag::Delegation);
 			auth.requirements = vec![
 				LocalDelegation,
@@ -537,12 +595,10 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"artifact_publish" => {
 			auth.requirements
 				.push(resource("artifact.create", "artifact", Task));
-			contract.remote_exposure = true;
 		}
 		"workspace_message" => {
 			auth.requirements
 				.push(resource("message.create", "workspace", Workspace));
-			contract.remote_exposure = true;
 		}
 		"attachment_copy" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
@@ -574,12 +630,10 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.connection_request = name == "connection_request";
 		}
 		"agent_discover" => {
-			contract.remote_exposure = true;
 			behavior.effect = ToolEffect::ReadOnly;
 		}
 		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_search" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
-			contract.remote_exposure = name != "workspace_search";
 			behavior.effect = ToolEffect::ReadOnly;
 			match name {
 				"workspace_read" => {
@@ -602,7 +656,6 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			behavior.fitting = Some(ResultFitting::SkillText);
 			behavior.media_pending = true;
-			contract.remote_exposure = true;
 		}
 		"skill_asset_read" => {
 			auth.core = Some(CorePermission::Skills);
@@ -611,7 +664,6 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.fitting = Some(ResultFitting::SkillAsset);
 			behavior.media_pending = true;
 			contract.disclosure = DisclosureBoundary::Local;
-			contract.remote_exposure = true;
 		}
 		"capability_search" | "capability_describe" => {
 			behavior.effect = ToolEffect::ReadOnly;
@@ -622,12 +674,10 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			} else {
 				ResultFitting::CapabilitySearch
 			});
-			contract.remote_exposure = true;
 		}
 		"capability_load" | "capability_unload" => {
 			behavior.exposure_update = true;
 			contract.disclosure = DisclosureBoundary::Local;
-			contract.remote_exposure = true;
 		}
 		"skill_list" | "skill_load" => {
 			auth.core = Some(CorePermission::Skills);
@@ -715,6 +765,66 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 
 #[cfg(test)]
 mod tests {
+	/// Every builtin `builtin_contract` knows; `builtin_reach` has no default.
+	const ALL_BUILTINS: &[&str] = &[
+		"journal_read",
+		"journal_search",
+		"journal_query",
+		"capability_search",
+		"capability_describe",
+		"capability_load",
+		"capability_unload",
+		"workspace_wait",
+		"task_create",
+		"task_assign",
+		"artifact_publish",
+		"workspace_message",
+		"workspace_read",
+		"workspace_observe",
+		"workspace_search",
+		"memory_recall",
+		"memory_reflect",
+		"memory_mutate",
+		"file_share",
+		"attachment_copy",
+		"skill_read",
+		"skill_asset_read",
+		"file_read",
+		"file_search",
+		"subnode_create",
+		"subnode_task",
+		"subnode_add_member",
+		"subnode_remove_member",
+		"subnode_dissolve",
+		"subnode_message",
+		"human_request",
+		"connection_request",
+		"outbound_get",
+		"shell",
+		"shell_poll",
+		"shell_cancel",
+		"code_interpreter",
+		"python_poll",
+		"python_cancel",
+		"apply_patch",
+		"file_save",
+		"file_remove",
+		"file_copy",
+		"process_list",
+		"process_log",
+		"process_stop",
+		"live_preview_start",
+		"live_preview_stop",
+		"agent_discover",
+		"task_delegate",
+		"skill_list",
+		"skill_load",
+		"mcp_stdio",
+		"schedule_create",
+		"schedule_update",
+		"schedule_delete",
+		"schedule_list",
+	];
 	#[test]
 	fn command_calls_declare_an_operation_continuation() {
 		for name in ["shell", "shell_poll", "code_interpreter", "python_poll"] {
@@ -751,7 +861,7 @@ mod tests {
 		] {
 			let contract = builtin_contract(name).unwrap();
 			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
-			assert!(!contract.remote_exposure);
+			assert_eq!(contract.reach, ToolReach::HomeWorkspace);
 			assert!(contract.replay_safe());
 			assert_eq!(contract.behavior.effect, effect);
 			assert_eq!(
@@ -777,7 +887,7 @@ mod tests {
 			assert_eq!(contract.behavior.tool_call_approval, approval, "{name}");
 			assert_eq!(contract.behavior.effect, effect, "{name}");
 			assert!(!contract.behavior.read_only_operation, "{name}");
-			assert!(!contract.remote_exposure, "{name}");
+			assert_eq!(contract.reach, ToolReach::Never, "{name}");
 			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
 			assert_eq!(
 				crate::tool::providers::core_provider(name),
@@ -786,7 +896,120 @@ mod tests {
 		}
 	}
 	#[test]
-	fn modes_and_remote_exposure_are_explicit_sets() {
+	fn every_builtin_has_an_explicit_reach() {
+		let by_reach = |reach: ToolReach| {
+			let mut names = ALL_BUILTINS
+				.iter()
+				.copied()
+				.filter(|name| builtin_contract(name).unwrap().reach == reach)
+				.collect::<Vec<_>>();
+			names.sort_unstable();
+			names
+		};
+		let sorted = |mut names: Vec<&'static str>| {
+			names.sort_unstable();
+			names
+		};
+		assert_eq!(
+			by_reach(ToolReach::Run),
+			sorted(vec![
+				"journal_read",
+				"journal_search",
+				"journal_query",
+				"capability_search",
+				"capability_describe",
+				"capability_load",
+				"capability_unload",
+				"workspace_wait"
+			])
+		);
+		assert_eq!(
+			by_reach(ToolReach::HomeWorkspace),
+			sorted(vec![
+				"task_create",
+				"task_assign",
+				"artifact_publish",
+				"workspace_message",
+				"workspace_read",
+				"workspace_observe",
+				"workspace_search",
+				"memory_recall",
+				"memory_reflect",
+				"memory_mutate",
+				"file_share",
+				"attachment_copy"
+			])
+		);
+		assert_eq!(
+			by_reach(ToolReach::ReceiverMaterial),
+			sorted(vec![
+				"skill_read",
+				"skill_asset_read",
+				"file_read",
+				"file_search"
+			])
+		);
+		assert_eq!(
+			by_reach(ToolReach::ReceiverAgents),
+			sorted(vec![
+				"subnode_create",
+				"subnode_task",
+				"subnode_add_member",
+				"subnode_remove_member",
+				"subnode_dissolve",
+				"subnode_message"
+			])
+		);
+		assert_eq!(
+			by_reach(ToolReach::People),
+			sorted(vec!["human_request", "connection_request"])
+		);
+		assert_eq!(
+			by_reach(ToolReach::ExternalServices),
+			sorted(vec!["outbound_get"])
+		);
+		assert_eq!(
+			by_reach(ToolReach::Execution),
+			sorted(vec![
+				"shell",
+				"shell_poll",
+				"shell_cancel",
+				"code_interpreter",
+				"python_poll",
+				"python_cancel",
+				"apply_patch",
+				"file_save",
+				"file_remove",
+				"file_copy",
+				"process_list",
+				"process_log",
+				"process_stop",
+				"live_preview_start",
+				"live_preview_stop"
+			])
+		);
+		assert_eq!(
+			by_reach(ToolReach::Never),
+			sorted(vec![
+				"agent_discover",
+				"task_delegate",
+				"skill_list",
+				"skill_load",
+				// UNCLASSIFIED (lead decides): held back until classified.
+				"mcp_stdio",
+				"schedule_create",
+				"schedule_update",
+				"schedule_delete",
+				"schedule_list"
+			])
+		);
+		// A name outside the table has neither a Reach nor a contract.
+		assert_eq!(builtin_reach("memory_write"), None);
+		assert!(ToolReach::Execution.listable());
+		assert!(!ToolReach::Run.listable() && !ToolReach::Never.listable());
+	}
+	#[test]
+	fn modes_are_explicit_sets() {
 		let names = [
 			"task_create",
 			"task_assign",
@@ -828,25 +1051,6 @@ mod tests {
 				.filter(|name| predicate(&builtin_contract(name).unwrap()))
 				.collect::<Vec<_>>()
 		};
-		assert_eq!(
-			selected(|c| c.remote_exposure),
-			[
-				"task_create",
-				"task_delegate",
-				"artifact_publish",
-				"workspace_message",
-				"agent_discover",
-				"workspace_read",
-				"workspace_observe",
-				"workspace_wait",
-				"skill_read",
-				"capability_search",
-				"capability_describe",
-				"capability_load",
-				"capability_unload",
-				"skill_asset_read"
-			]
-		);
 		assert_eq!(
 			selected(|c| c.behavior.permits(ToolUseMode::MessageCatchUp)),
 			["workspace_read"]
@@ -1119,7 +1323,7 @@ mod tests {
 			assert!(contract.behavior.tenant_tool_call());
 			assert!(contract.behavior.concurrency.is_sequential());
 			assert_eq!(contract.disclosure, DisclosureBoundary::External);
-			assert!(!contract.remote_exposure);
+			assert_eq!(contract.reach, ToolReach::Never);
 			assert_eq!(contract.authorization, ToolAuthorization::none());
 		}
 	}
@@ -1165,7 +1369,8 @@ mod tests {
 		assert_eq!(plugin.behavior, registry.behavior);
 		assert_eq!(plugin.authorization, registry.authorization);
 		assert_eq!(plugin.disclosure, registry.disclosure);
-		assert!(registry.remote_exposure);
+		assert_eq!(registry.reach, ToolReach::ExternalServices);
+		assert_eq!(plugin.reach, ToolReach::Never);
 	}
 	#[test]
 	fn only_a_tenants_http_or_mcp_tool_passes_the_tool_call_gate() {
@@ -1194,7 +1399,7 @@ mod tests {
 		);
 	}
 	const PINNED_WORKSPACE_READ_DIGEST: &str =
-		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
+		"sha256:5ba171e3a421d6ff3f7d254e152b1efbc019e936f77d65e7fc140197b5f66465";
 	#[test]
 	fn admitted_read_only_definitions_keep_their_approval_gated_contract() {
 		// Persisted contract shape before Read-only declarations changed approval
@@ -1207,7 +1412,7 @@ mod tests {
 				"catch_up": false, "media_pending": false, "yields_model_media": false,
 				"tool_call_approval": true
 			},
-			"disclosure": "External", "remote_exposure": true
+			"disclosure": "External", "reach": "external_services"
 		});
 		let digest = crate::registry::rules::digest(&legacy);
 		for config in [
@@ -1292,7 +1497,7 @@ mod tests {
 				assert!(contract.behavior.tenant_tool_call(), "{replay:?}");
 				assert_eq!(contract.replay_safe(), safe, "{replay:?}");
 				assert_eq!(contract.disclosure, DisclosureBoundary::External);
-				assert!(contract.remote_exposure);
+				assert_eq!(contract.reach, ToolReach::ExternalServices);
 				// A Read-only operation implies no Concurrency safety.
 				assert!(contract.behavior.concurrency.is_sequential(), "{replay:?}");
 				assert!(
