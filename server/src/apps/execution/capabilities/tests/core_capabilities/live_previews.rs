@@ -341,7 +341,8 @@ async fn a_newer_revision_marks_a_running_preview_stale(#[future] capability_fix
 }
 
 /// A Live preview start waits for the Runner while its Run is cancelled.
-/// The stub reports starting until released, then reports the Pod running.
+/// The stub holds the Execution Pod's preview start until released, then
+/// answers with the address the preview serves on (#745).
 #[rstest::rstest]
 #[case::stop_confirmed(false)]
 #[case::stop_retry_after_earlier_proof(true)]
@@ -365,37 +366,27 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 	let router = {
 		let (released, dispatched, cancels) =
 			(released.clone(), dispatched.clone(), cancels.clone());
-		let cancelled = Arc::new(AtomicBool::new(false));
-		let seen = cancelled.clone();
 		reinhardt::test::stub::StubRouter::new()
-			.post("/v1/operations", move |_request| {
-				let dispatched = dispatched.clone();
+			.post("/v2/pods/ensure", |_request| async {
+				Ok(reinhardt::Response::ok()
+					.with_json(&json!({"protocol":"aidash-runner/2","pod":"pod","claim":"claim"}))
+					.unwrap())
+			})
+			.post("/v2/previews/start", move |_request| {
+				let (released, dispatched) = (released.clone(), dispatched.clone());
 				async move {
 					dispatched.fetch_add(1, Ordering::SeqCst);
+					// The Runner answers once the port accepts connections.
+					while !released.load(Ordering::SeqCst) {
+						tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+					}
 					Ok(reinhardt::Response::ok()
-						.with_json(&json!({"status":"accepted"}))
+						.with_json(&json!({"operation_id":"preview","address":"10.0.0.9:3000"}))
 						.unwrap())
 				}
 			})
-			.get("/v1/operations/{id}", move |_request| {
-				let (released, cancelled) = (released.clone(), seen.clone());
-				async move {
-					let gone = cancelled.load(Ordering::SeqCst);
-					let serve = if gone {
-						json!({"status":"stopped","reason":"cancelled"})
-					} else if released.load(Ordering::SeqCst) {
-						json!({"status":"running","pod_host":"10.0.0.9","startup_log":"serving"})
-					} else {
-						json!({"status":"starting","startup_log":""})
-					};
-					Ok(reinhardt::Response::ok()
-						.with_json(&json!({"status": if gone {"cancelled"} else {"running"},
-							"serve": serve, "termination_confirmed": gone}))
-						.unwrap())
-				}
-			})
-			.post("/v1/operations/{id}/cancel", move |_request| {
-				let (cancels, cancelled) = (cancels.clone(), cancelled.clone());
+			.post("/v2/previews/stop", move |_request| {
+				let cancels = cancels.clone();
 				async move {
 					cancels.fetch_add(1, Ordering::SeqCst);
 					if fail_cancel {
@@ -403,9 +394,8 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 							http::StatusCode::INTERNAL_SERVER_ERROR,
 						));
 					}
-					cancelled.store(true, Ordering::SeqCst);
 					Ok(reinhardt::Response::ok()
-						.with_json(&json!({"status":"cancelled"}))
+						.with_json(&json!({"operation_id":"preview","status":"stopped"}))
 						.unwrap())
 				}
 			})
