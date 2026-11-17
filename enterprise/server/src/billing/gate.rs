@@ -29,12 +29,13 @@ pub struct Gate {
 	pub offering: Offering,
 }
 
-#[async_trait]
-impl aidash_application::ports::nodes::TierLimits for Gate {
-	async fn nodes(
+impl Gate {
+	/// The Tier that covers `tenant` now, on Cloud. Other Offerings set no
+	/// Tier limit.
+	async fn tier(
 		&self,
 		tenant: &aidash_domain::tenancy::TenantName,
-	) -> aidash_application::Result<Option<u32>> {
+	) -> aidash_application::Result<Option<super::settings::Tier>> {
 		if self.offering != Offering::Cloud {
 			return Ok(None);
 		}
@@ -58,8 +59,27 @@ impl aidash_application::ports::nodes::TierLimits for Gate {
 		)
 		.map_err(|denied| aidash_application::Error::Conflict(denied.code().into()))?;
 		Ok(Some(match cover {
-			Cover::Free(tier) | Cover::Paid(tier) => tier.nodes,
+			Cover::Free(tier) | Cover::Paid(tier) => tier.clone(),
 		}))
+	}
+}
+
+#[async_trait]
+impl aidash_application::ports::nodes::TierLimits for Gate {
+	async fn nodes(
+		&self,
+		tenant: &aidash_domain::tenancy::TenantName,
+	) -> aidash_application::Result<Option<u32>> {
+		Ok(self.tier(tenant).await?.map(|tier| tier.nodes))
+	}
+
+	/// The covering Tier's Schedule cap lowers the Tenant's own limit (#557
+	/// decision 16).
+	async fn schedules(
+		&self,
+		tenant: &aidash_domain::tenancy::TenantName,
+	) -> aidash_application::Result<Option<u32>> {
+		Ok(self.tier(tenant).await?.and_then(|tier| tier.schedules))
 	}
 }
 

@@ -662,6 +662,16 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			contract.disclosure = DisclosureBoundary::External;
 		}
+		// Schedules act as the person at the root of the Run's chain (ADR 0134).
+		// A change passes that person's Approval Mode and Approval Rules as a
+		// Tool call approval; the use case checks `schedule.create` as them.
+		"schedule_create" | "schedule_update" | "schedule_delete" => {
+			behavior.effect = ToolEffect::Unsafe;
+			behavior.tool_call_approval = true;
+		}
+		"schedule_list" => {
+			behavior.effect = ToolEffect::ReadOnly;
+		}
 		_ => return None,
 	}
 	Some(contract)
@@ -718,6 +728,26 @@ mod tests {
 			);
 		}
 		assert!(builtin_contract("memory_write").is_none());
+	}
+	#[test]
+	fn schedule_changes_need_a_tool_call_approval_and_stay_at_home() {
+		for (name, approval, effect) in [
+			("schedule_create", true, ToolEffect::Unsafe),
+			("schedule_update", true, ToolEffect::Unsafe),
+			("schedule_delete", true, ToolEffect::Unsafe),
+			("schedule_list", false, ToolEffect::ReadOnly),
+		] {
+			let contract = builtin_contract(name).unwrap();
+			assert_eq!(contract.behavior.tool_call_approval, approval, "{name}");
+			assert_eq!(contract.behavior.effect, effect, "{name}");
+			assert!(!contract.behavior.read_only_operation, "{name}");
+			assert!(!contract.remote_exposure, "{name}");
+			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
+			assert_eq!(
+				crate::tool::providers::core_provider(name),
+				Some("core.schedules@1")
+			);
+		}
 	}
 	#[test]
 	fn modes_and_remote_exposure_are_explicit_sets() {
