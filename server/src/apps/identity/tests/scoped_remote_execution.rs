@@ -2968,13 +2968,16 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 /// `unavailable` semantic failure. The step retries with a persisted delay and
 /// never reaches inference. `semantic_retry_exhaustion_pauses_and_manual_resume_
 /// keeps_attempt_history` shows the same classification for HTTP 503 through
-/// exhaustion, `retries_exhausted` and manual resume.
+/// exhaustion, `retries_exhausted` and manual resume. Missing vector points are
+/// retried the same way but typed `index_repair`, since only an outage waits
+/// (ADR 0059, ADR 0129).
 #[rstest::rstest]
-#[case::provider_transport(true)]
-#[case::vector_backend(false)]
+#[case::provider_transport(true, "unavailable")]
+#[case::missing_points(false, "index_repair")]
 #[tokio::test]
 async fn required_home_semantic_outage_is_a_typed_transient_failure_for_every_cause(
 	#[case] provider_gone: bool,
+	#[case] expected_reason: &str,
 	#[with(true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -3011,7 +3014,7 @@ async fn required_home_semantic_outage_is_a_typed_transient_failure_for_every_ca
 	assert!(run.recovery.retry.as_ref().unwrap().at > chrono::Utc::now());
 	assert_eq!(
 		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
-		"unavailable",
+		expected_reason,
 		"{run:?}"
 	);
 	assert!(p.requests.lock().await.is_empty(), "no inference happened");

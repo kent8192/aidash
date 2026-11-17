@@ -249,10 +249,11 @@ impl Scope<'_, '_> {
 			.present(&spec.vector, &index.collection, &index.tenant, &points)
 			.await?
 		{
-			// Indexed points are missing from the vector backend: an outage of
-			// that backend, retried by a Run like a semantic search (#233).
+			// Indexed points are missing from the vector backend: the index needs
+			// repair. A Run retries it like a semantic search (#233), then pauses
+			// instead of waiting (ADR 0059).
 			return Err(Error::RemoteSemantic(
-				crate::semantic::remote::Failure::Unavailable,
+				crate::semantic::remote::Failure::IndexRepair,
 			));
 		}
 		let embedded = self.models.embed(model, text, allowance).await?;

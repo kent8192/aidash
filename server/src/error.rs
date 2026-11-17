@@ -374,9 +374,18 @@ impl Error {
 		{
 			if reason.compatible() != reason {
 				response.headers.insert("x-aidash-semantic-cause", value);
+				// Established peers read the compatible reason. An index that needs
+				// repair keeps the outage's `unavailable`; every older cause keeps
+				// the `context_budget` it has always been sent as.
 				response.headers.insert(
 					"x-aidash-semantic-reason",
-					HeaderValue::from_static("context_budget"),
+					HeaderValue::from_static(
+						if reason == crate::semantic::remote::Failure::IndexRepair {
+							"unavailable"
+						} else {
+							"context_budget"
+						},
+					),
 				);
 			} else {
 				response.headers.insert("x-aidash-semantic-reason", value);

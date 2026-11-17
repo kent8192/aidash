@@ -119,8 +119,9 @@ impl PreparedSearch {
 	pub async fn check_points(&self, vector: &dyn VectorIndex) -> Result<()> {
 		if !self.points_present(vector).await? {
 			// Indexed points the entries still require are missing from the
-			// vector backend: an outage of that backend, retried by a Run.
-			return Err(Error::RemoteSemantic(Failure::Unavailable));
+			// vector backend: the index needs repair, which waiting will not
+			// bring (ADR 0059). A backend that does not answer is `Unavailable`.
+			return Err(Error::RemoteSemantic(Failure::IndexRepair));
 		}
 		Ok(())
 	}
@@ -473,8 +474,8 @@ enum Retrieval {
 }
 
 /// Search, returning an outage that waiting can fix as its cause instead of an
-/// error (ADR 0059). Missing vector points stay an `Unavailable` error: the
-/// index needs repair, so they never degrade.
+/// error (ADR 0059). Missing vector points are an `IndexRepair` error: the
+/// index needs repair, so they never degrade and never wait.
 async fn search_or_outage(
 	scope: &mut dyn SemanticRetrievalSession,
 	vector: &dyn VectorIndex,
@@ -531,7 +532,7 @@ async fn search_or_outage(
 	}
 	match prepared.points_present(vector).await {
 		Ok(true) => {}
-		Ok(false) => return Err(Error::RemoteSemantic(Failure::Unavailable)),
+		Ok(false) => return Err(Error::RemoteSemantic(Failure::IndexRepair)),
 		Err(error) if outage(&error) => return Ok(Retrieval::Outage(OutageCause::VectorBackend)),
 		Err(error) => return Err(error),
 	}

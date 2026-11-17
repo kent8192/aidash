@@ -482,16 +482,26 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 	let retry = run.recovery.retry.as_ref().expect("a scheduled retry");
 	assert_eq!(retry.count, 1, "{unavailable:?}");
 	assert!(retry.at > chrono::Utc::now(), "{unavailable:?}");
+	// Missing vector points are retried the same way but typed apart: the
+	// index needs repair, so they pause after the retries instead of waiting
+	// (ADR 0059, ADR 0129).
+	let (reason, message) = if matches!(unavailable, Unavailable::VectorBackend) {
+		(
+			"index_repair",
+			"The semantic index is missing vector points and needs repair",
+		)
+	} else {
+		(
+			"unavailable",
+			"The semantic backend is temporarily unavailable",
+		)
+	};
 	assert_eq!(
 		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
-		"unavailable",
+		reason,
 		"{unavailable:?}"
 	);
-	assert_eq!(
-		run.error.as_deref(),
-		Some("The semantic backend is temporarily unavailable"),
-		"{unavailable:?}"
-	);
+	assert_eq!(run.error.as_deref(), Some(message), "{unavailable:?}");
 	assert!(
 		!matches!(
 			&run.state,

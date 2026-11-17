@@ -153,6 +153,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -496,6 +497,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -1643,6 +1645,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -1833,6 +1836,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -2058,6 +2062,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -2290,6 +2295,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -2912,6 +2918,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -3256,6 +3263,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -31760,6 +31768,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -35795,6 +35804,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -37744,6 +37754,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -51214,6 +51225,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -53878,6 +53890,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -54205,6 +54218,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -54411,6 +54425,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ]
@@ -55459,6 +55474,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],

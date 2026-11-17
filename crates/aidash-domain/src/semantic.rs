@@ -38,6 +38,12 @@ pub enum Failure {
 	Allowance,
 	#[error("The semantic backend is temporarily unavailable")]
 	Unavailable,
+	// The vector backend answered but lacks points the index's READY entries
+	// need. Waiting will not repair the index, so a Run retries it like an
+	// outage and then pauses instead of entering an Outage Wait (ADR 0059).
+	// Established peers read it as `Unavailable`.
+	#[error("The semantic index is missing vector points and needs repair")]
+	IndexRepair,
 	#[error("Semantic retries are exhausted; an authorized manual retry is required")]
 	RetriesExhausted,
 	#[error("The semantic operation is already in progress")]
@@ -63,12 +69,15 @@ impl Failure {
 		match self {
 			Self::DurableMemoryBudget => Self::ContextBudget,
 			Self::EmbeddingModelNotFound => Self::ProviderContract,
+			Self::IndexRepair => Self::Unavailable,
 			other => other,
 		}
 	}
 
+	/// Retried with the outage backoff. Only `Unavailable` then waits in an
+	/// Outage Wait; `IndexRepair` pauses (ADR 0059, ADR 0129).
 	pub fn transient(self) -> bool {
-		matches!(self, Self::Unavailable)
+		matches!(self, Self::Unavailable | Self::IndexRepair)
 	}
 }
 

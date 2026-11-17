@@ -27,6 +27,8 @@ These enter an Outage Wait:
 - An exhausted plan allowance (ADR 0007). The Run is no longer failed. It waits and retries once an hour, because OpenAI gives no reset time.
 - Native memory of a Home that is closed because a write outcome is unknown (ADR 0083). The Home stays closed for reads too, to keep the never-rewind guarantee. Only the way the Run stops changes.
 
+Missing vector points do not enter an Outage Wait. The vector backend answered, and the index needs repair, which waiting will not bring (ADR 0059). They are retried on the same 2–32 s schedule and then pause the Run as before. They are typed `index_repair`, a new semantic failure, so the Run can tell them from an outage, which stays `unavailable`. Peers built before this change read `index_repair` as `unavailable`: a remote execution status carries it as `semantic_cause` beside `semantic_reason: unavailable`, and an HTTP response sends `x-aidash-semantic-cause: index_repair` with `x-aidash-semantic-reason: unavailable`, still with status 503.
+
 The database wait (ADR 0113, ADR 0124) is the same kind of wait. It keeps its own 1-second cadence and has no bound, because nothing can be recorded about the Run while the database is away.
 
 **Degraded context by default.** `on_unavailable` on a Workspace source now defaults to `degrade`. An Agent may still set `pause`, which now means an Outage Wait. Optional Workspace context whose index is incomplete returns its READY part as Degraded context with the existing typed marker, which is shown in the dashboard and stated in the model's context. Inference, authority decisions, write targets, required-Home context and native memory are never advisory and never degrade.
