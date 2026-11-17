@@ -131,6 +131,8 @@ impl crate::tenant_secret::SecretCallSink for CloudLogging {
 		tracing::info!(tenant = %a.tenant, secret = %a.secret, version = %a.version, host = %a.host, path_sha256 = %a.path_sha256, method = %a.method, status = a.status, bytes_in = a.bytes_in, bytes_out = a.bytes_out, jti = %a.jti, subject = %a.subject, duration_ms = a.duration_ms as u64, "secret_call");
 	}
 }
+/// OpenRouter's ZDR catalog per (API root, Tenant), with when it was read.
+type ZdrCatalogs = HashMap<(String, String), (Instant, Arc<Vec<Value>>)>;
 pub struct Broker {
 	config: Config,
 	keys: PublicKeys,
@@ -141,7 +143,7 @@ pub struct Broker {
 	buckets: Mutex<HashMap<uuid::Uuid, Bucket>>,
 	catalog: HashMap<String, String>,
 	/// OpenRouter's ZDR catalog per (API root, Tenant), read at most every 30 s.
-	zdr_catalogs: Mutex<HashMap<(String, String), (Instant, Arc<Vec<Value>>)>>,
+	zdr_catalogs: Mutex<ZdrCatalogs>,
 }
 impl Broker {
 	pub fn new(
