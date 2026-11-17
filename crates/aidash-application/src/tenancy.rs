@@ -151,6 +151,9 @@ pub enum DeploymentScopeReason {
 	/// Purging a deleted Tenant's data after its grace period, and deleting the
 	/// audit history that outlived a purge (ADR 0061).
 	TenantPurge,
+	/// Read-only discovery of Remote Grants near expiry whose Run still lives;
+	/// each renewal is then evaluated and written in the grant's own Tenant.
+	RemoteGrantRenewal,
 	/// Read-only discovery of Node purges; erasure uses the owning Tenant.
 	NodePurge,
 	/// The `demo-data` command and the sign-in step that fulfils Demo
@@ -198,6 +201,7 @@ impl DeploymentScopeReason {
 			Self::MarketplaceDistribution => "marketplace-distribution",
 			Self::UsageSampling => "usage-sampling",
 			Self::TenantPurge => "tenant-purge",
+			Self::RemoteGrantRenewal => "remote-grant-renewal",
 			Self::NodePurge => "node-purge",
 			Self::DemoData => "demo-data",
 			#[cfg(feature = "test-support")]
@@ -243,6 +247,7 @@ impl DeploymentScopeReason {
 			| Self::ActivityObserver
 			| Self::PreviewGateway
 			| Self::UsageSampling
+			| Self::RemoteGrantRenewal
 			| Self::NodePurge => false,
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => true,
@@ -300,6 +305,7 @@ mod tests {
 			DeploymentScopeReason::MarketplaceDistribution,
 			DeploymentScopeReason::UsageSampling,
 			DeploymentScopeReason::TenantPurge,
+			DeploymentScopeReason::RemoteGrantRenewal,
 			DeploymentScopeReason::NodePurge,
 			DeploymentScopeReason::DemoData,
 		];

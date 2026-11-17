@@ -92,3 +92,5 @@ pub mod provenance;
 pub mod search;
 
 pub mod snapshot;
+
+pub mod renewal;

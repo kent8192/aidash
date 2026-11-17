@@ -16,6 +16,8 @@ use serde_json::json;
 
 use uuid::Uuid;
 
+use crate::apps::identity::services::remote_renewal as renewal;
+
 // A receiver may describe only the requested Agent's exact direct dependencies.
 // Never use peer-provided node IDs or arbitrary resource lists as authority.
 
@@ -152,6 +154,15 @@ impl RemoteGrants {
 		let (access, description) =
 			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
 		let description = access.finish(Ok(description)).await?;
+		// The chain was just re-evaluated, so a grant near its hour is renewed
+		// while its Run lives (ADR 0109); never fails the description.
+		renewal::after_use(
+			&f,
+			&description.source_tenant,
+			&admitted.sender.to_string(),
+			description.grant_id,
+		)
+		.await;
 		let corpus_digest = corpus_digest(&f.store, &description).await?;
 		Ok(Described {
 			description,
@@ -160,9 +171,11 @@ impl RemoteGrants {
 	}
 	pub(crate) async fn verify(&self, admitted: Admitted, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();
-		let (access, _) =
-			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
-		access.finish(Ok(true)).await
+		let node = admitted.sender.to_string();
+		let (access, description) = description_lease(&f, &node, input.grant_id).await?;
+		let verified = access.finish(Ok(true)).await?;
+		renewal::after_use(&f, &description.source_tenant, &node, description.grant_id).await;
+		Ok(verified)
 	}
 	pub(crate) async fn snapshot(
 		&self,
