@@ -245,6 +245,8 @@ pub const TABLES: &[Table] = &[
 	),
 	table("federation", "authorization_remote_grants", TenantOwned),
 	table("federation", "delegations", TenantOwned),
+	// Token identifiers a receiving Node has seen; replay refusal state (#989).
+	table("federation", "federation_token_ids", TenantOwned),
 	// Node Registrations and their revisions: the receiving Node's Tenant
 	// decides whom its Node accepts (#241). Receiver-local keysets share that
 	// same Tenant RLS boundary; key learning creates no Deployment-wide trust.

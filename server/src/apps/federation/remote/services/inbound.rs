@@ -2,6 +2,7 @@
 //! whether that Tenant is deleted, and what its Node Registrations, Peer
 //! Mappings and policy say.
 
+use crate::apps::federation::remote::models::FederationTokenId;
 use crate::apps::identity::repositories::{
 	node_registrations as registrations, nodes, tenant_deletions,
 };
@@ -130,6 +131,35 @@ impl InboundRepository for Federation {
 
 	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
 		Ok(receiving_keys::get(&self.store.pool, owner).await?)
+	}
+
+	async fn record_token(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeName,
+		sender: &DeploymentId,
+		jti: uuid::Uuid,
+		expires_at: u64,
+	) -> Result<bool> {
+		let expires_at = i64::try_from(expires_at)
+			.ok()
+			.and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+			.ok_or(aidash_application::Error::Unauthorized)?;
+		Ok(self
+			.store
+			.pool
+			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+				FederationTokenId::record(
+					tx,
+					tenant.as_str(),
+					receiver.as_str(),
+					sender.as_str(),
+					jti,
+					expires_at,
+				)
+				.await
+			})
+			.await?)
 	}
 
 	async fn advance_keys(

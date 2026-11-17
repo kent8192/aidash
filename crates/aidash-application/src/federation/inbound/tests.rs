@@ -63,6 +63,9 @@ struct World {
 	trust: Mutex<Vec<(ReceivingKeyOwner, ReceivingKeys)>>,
 	cas_conflict: bool,
 	asked: Mutex<Vec<&'static str>>,
+	/// `(tenant, receiver, sending deployment, jti, expires_at)` of each token seen.
+	recorded: Mutex<Vec<(TenantName, NodeName, DeploymentId, Uuid, u64)>>,
+	record_fails: bool,
 }
 
 impl World {
@@ -83,6 +86,8 @@ impl World {
 			trust: Mutex::new(vec![]),
 			cas_conflict: false,
 			asked: Mutex::new(vec![]),
+			recorded: Mutex::new(vec![]),
+			record_fails: false,
 		}
 	}
 
@@ -112,6 +117,9 @@ impl World {
 			actor: "test".into(),
 			created_at: Utc::now(),
 			updated_at: Utc::now(),
+			tool_request: Default::default(),
+			tool_allowance: Default::default(),
+			tool_block: Default::default(),
 		});
 	}
 
@@ -212,6 +220,33 @@ impl InboundRepository for World {
 			.iter()
 			.find(|(held, _)| held == owner)
 			.map(|(_, keys)| keys.clone()))
+	}
+	async fn record_token(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeName,
+		sender: &DeploymentId,
+		jti: Uuid,
+		expires_at: u64,
+	) -> Result<bool> {
+		if self.record_fails {
+			return Err(Error::External("the jti store is down".into()));
+		}
+		let mut recorded = self.recorded.lock().unwrap();
+		if recorded
+			.iter()
+			.any(|(t, n, d, j, _)| t == tenant && n == receiver && d == sender && *j == jti)
+		{
+			return Ok(false);
+		}
+		recorded.push((
+			tenant.clone(),
+			receiver.clone(),
+			sender.clone(),
+			jti,
+			expires_at,
+		));
+		Ok(true)
 	}
 	async fn advance_recovery_keys(
 		&self,
@@ -741,4 +776,104 @@ async fn rejected_successor_requests_never_replace_receiving_trust() {
 		}
 		assert_eq!(world.trust.lock().unwrap()[0].1, before, "{refusal}");
 	}
+}
+
+#[tokio::test]
+async fn a_token_is_recorded_until_thirty_seconds_after_it_expires() {
+	let mut world = World::new();
+	let signer = signer(1);
+	let sender = remote(&mut world, &signer);
+	world.map(sender.clone(), "alice", true);
+	let inbound = token(&signer, &sender, "alice", |claims| {
+		claims.jti = Uuid::from_u128(42);
+	})
+	.await;
+	accept(inbound, &digest(), &world).await.unwrap();
+	assert_eq!(
+		*world.recorded.lock().unwrap(),
+		vec![(
+			tenant(TENANT),
+			node(RECEIVING),
+			DeploymentId::parse(OTHER).unwrap(),
+			Uuid::from_u128(42),
+			NOW + 60 + TOKEN_RECORD_GRACE_SECS,
+		)]
+	);
+}
+
+#[tokio::test]
+async fn a_token_seen_before_is_refused_with_the_uniform_unauthorized() {
+	let mut world = World::new();
+	let signer = signer(1);
+	let sender = remote(&mut world, &signer);
+	world.map(sender.clone(), "alice", true);
+	let inbound = token(&signer, &sender, "alice", |_| {}).await;
+	accept(inbound.clone(), &digest(), &world).await.unwrap();
+	let replay = accept(inbound, &digest(), &world).await;
+	assert!(matches!(replay, Err(Error::Unauthorized)), "{replay:?}");
+	// A new token for the same request carries a new `jti`.
+	accept(
+		token(&signer, &sender, "alice", |_| {}).await,
+		&digest(),
+		&world,
+	)
+	.await
+	.unwrap();
+	assert_eq!(world.recorded.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_token_whose_jti_cannot_be_recorded_is_refused() {
+	let mut world = World::new();
+	let signer = signer(1);
+	let sender = remote(&mut world, &signer);
+	world.map(sender.clone(), "alice", true);
+	world.record_fails = true;
+	let result = accept(
+		token(&signer, &sender, "alice", |_| {}).await,
+		&digest(),
+		&world,
+	)
+	.await;
+	assert!(matches!(result, Err(Error::External(_))), "{result:?}");
+	assert!(world.recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_request_refused_for_another_reason_records_no_jti() {
+	let mut world = World::new();
+	let signer = signer(1);
+	let sender = remote(&mut world, &signer);
+	// No Peer Mapping: the signature verifies, then the mapping check refuses.
+	let unmapped = accept(
+		token(&signer, &sender, "alice", |_| {}).await,
+		&digest(),
+		&world,
+	)
+	.await;
+	assert!(matches!(unmapped, Err(Error::Forbidden)), "{unmapped:?}");
+	// A token for another audience fails its claims binding before any record.
+	let wrong_audience = accept(
+		token(&signer, &sender, "alice", |claims| {
+			claims.aud = address(OWN, SIBLING).to_string();
+		})
+		.await,
+		&digest(),
+		&world,
+	)
+	.await;
+	assert!(matches!(wrong_audience, Err(Error::Unauthorized)));
+	assert!(world.recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_process_inside_the_deployment_records_no_jti() {
+	let mut world = World::new();
+	let sender = address(OWN, NEIGHBOUR);
+	world.register(sender.clone(), Counterpart::SameDeployment, true);
+	world.map(sender.clone(), "alice", true);
+	accept(local(sender, "alice"), &digest(), &world)
+		.await
+		.unwrap();
+	assert!(world.recorded.lock().unwrap().is_empty());
 }
