@@ -51,3 +51,7 @@ A person can still correct or delete the Memory an Agent left in the Workspace, 
 A creator may name its own agent as a member. The refusal of the creator's agent had no recorded reason, and the risks it might address are covered elsewhere. A Run inside a Subnode cannot create one. A member may use only what the creating Run, the allowance and its own definition permit. Members cannot give Tasks to the creating Run. Copies of the same agent can now split a search.
 
 A Subnode Task may carry a range of the creating Run's Context Journal (ADR 0125). Handing it over counts as one of the creating Run's reads, as anything else the creator hands over does. Members read only that range, through Journal Query, and their results return to the creator as data.
+
+## Amendment (2026-11-17)
+
+The separate receiving-Tenant setting is the receiving Node's Federation Tool Allowance: a Run that a Remote Grant started may create a Subnode only when both that Allowance and the Home's Federation Tool Request list the `subnode_*` tools (ADR 0139). The remote Run acts on the receiving Node under the Peer Mapping's mapped subject within the grant, its members use at most what it may use, approvals go to the person at the root of the chain on the Home, and the Subnode's Workspace stays read-only on the receiving Node after it ends.

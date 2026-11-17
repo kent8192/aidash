@@ -21,3 +21,7 @@ Code in the Pod runs as root and can read another process's environment, so it c
 - Usage stays charged per Scratch Space (ADR 0111); the Run on a record is not a billing split.
 - Until #738 lands, processes in the Execution Pod cannot reach External services: no `/v1` operation token is issued to them, and the scoped `/v2/services/...` route refuses their Run credential. They reach only the Scratch Space's allowed hosts, and #952 waits on #738.
 - Amends ADR 0111 and ADR 0070.
+
+## Amendment (2026-11-17)
+
+A Run that a Remote Grant started runs its commands in the receiving Node's Delegated Run Scratch Space under the receiving Node's authority for that Run, and its credential names that Run as for a local one (ADR 0139). Removing a tool from either Federation tool list stops its commands as a withdrawal does.

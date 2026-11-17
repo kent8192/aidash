@@ -36,3 +36,7 @@ Anomalous traffic no longer stops a Scratch Space's outbound traffic. Under a ho
 ## Amendment (2026-11-14, #745)
 
 ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.
+
+## Amendment (2026-11-17)
+
+A Run that a Remote Grant started works in the receiving Node's Delegated Run Scratch Space and keeps files in a Working Area of its own on that Node, one per Home person, Agent and Home Workspace thread, kept while the Node Registration with that Home lasts (ADR 0139). Its commands reach only the hosts that both the Space's settings and the Home's Federation Tool Request allow, and the Space has no External services.

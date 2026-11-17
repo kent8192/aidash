@@ -31,3 +31,7 @@ registration: the Tenant's policy decides over the sender's own subject.
   sending Tenant's name leaves the protocol and the Peer Mapping key.
 
 Amended 2026-10-27 (#486): this ADR once also let a Peer Graph Grant pin the other Deployment's key, so a named Deployment Administrator of another Deployment could read one Tenant's graph. #301 removed Peer Graph Grants and #486 deleted the token variant, the grant table and the grant routes. Every inbound caller is now a Node with a Node Registration, and protocol `0.5` refuses `0.4`.
+
+## Amendment (2026-11-17)
+
+Federation tokens could be replayed within their 60-second lifetime, and handlers were relied on to be idempotent. The receiving Node now records the sending Deployment and the `jti` of every Federation token that passes signature verification until the token expires plus 30 seconds. A token whose `jti` it has already seen gets the same `401` as any other refusal, and a request whose `jti` it cannot record is refused. Senders already mint a new token for every request, so a legitimate retry is unaffected. Credential Broker tokens are #1001.

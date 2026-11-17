@@ -22,3 +22,7 @@ Registering a Source and having it approved is the moment a person makes its fil
 - An Area given a Reference set cannot export files to another Node. Revoking a file never locks that Area, because it holds nothing of the file until it copies it. While a copy is there, revoking the file makes the Area unusable, and only the uploader can download the copy as made. A copy as made cannot be shared, nor can a file with the same content as one of the Area's Reference files, so copying it again does not get around this. Editing a copy makes it that person's own file, and this boundary does not follow it: someone who may read a file can already retype it.
 - A Run that created a Subnode reads its members' Areas but not their Reference sets, which stay inside the Runs whose Agent versions bind them. A copy a member made is readable.
 - Who may upload is not changed by this decision.
+
+## Amendment (2026-11-17)
+
+A Run that a Remote Grant started keeps its Agent version's Reference set in its Working Area on the receiving Node and reads it as a local Run does (ADR 0139). Such an Area may send files to that Run's Home through `file_share` or a message, because the receiving Tenant consented by listing those tools in its Federation Tool Allowance; it still sends files to no other Node.

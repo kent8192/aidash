@@ -24,3 +24,7 @@ Each fact names its Run and Context Journal range. A later Run reads details bac
 - A Built-in Memory failure is a tool error returned to the model. ADR 0059's pause remains for memory a Tenant binds explicitly.
 - Built-in Memory must work without a Workspace semantic index and without a recovery ledger, or #852's PR names where it does not. Automatic admission needs a default cap and eviction, because recall loads the whole bank.
 - After a Run's Context Journal expires, only its extracted facts remain.
+
+## Amendment (2026-11-17)
+
+A Run that a Remote Grant started recalls and writes memory through its Home (ADR 0139). Recall reads the Home Workspace's published bank and the Agent's participant bank there, as the Run's starting context already did, and writes go only to the participant bank, so nothing the Run learns stays on the receiving Node and it never writes the Home's shared memory directly.
