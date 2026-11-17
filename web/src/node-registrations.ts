@@ -117,3 +117,53 @@ export function changedToolLists(
     block: patternsOf(draft.block),
   };
 }
+
+/** Whose people answer a waiting call: the Home's, or the receiving Node's. */
+export type ToolAskSide = "home" | "receiver";
+
+/** How a side answers: allow for this Run only, add to its list, decline, or (receiver) block. */
+export type ToolAskChoice = "run_only" | "add" | "decline" | "block";
+
+/** One call of a remote Run that waits for an answer about a Federation tool list. */
+export type ToolAsk = {
+  side: ToolAskSide;
+  /** The path id of the answer: the admission or, on the Home, the grant. */
+  id: string;
+  run_id: string;
+  grant_id: string;
+  task_id: string;
+  task_title: string | null;
+  tool: string;
+  /** The key the lists match; an answer adds it exactly unless a pattern is typed. */
+  key: string;
+  paused_since: string | null;
+};
+
+export type ToolAsks = { asks: ToolAsk[] };
+
+/** The answers a side may give; only the receiving Node keeps a Block. */
+export function toolAskChoices(side: ToolAskSide): ToolAskChoice[] {
+  return side === "receiver"
+    ? ["run_only", "add", "decline", "block"]
+    : ["run_only", "add", "decline"];
+}
+
+/** Where the waiting calls of one registration are listed, and answered under. */
+export function toolAsksPath(
+  tenant: string,
+  node: string,
+  sourceNode: string,
+): string {
+  return `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registrations/${encodeURIComponent(sourceNode)}/tool-asks`;
+}
+
+/** The request body of an answer. The pattern only goes with the choices that list something. */
+export function toolAskAnswer(
+  choice: ToolAskChoice,
+  pattern: string,
+): { choice: ToolAskChoice; pattern?: string } {
+  const typed = pattern.trim();
+  return choice !== "decline" && typed !== ""
+    ? { choice, pattern: typed }
+    : { choice };
+}
