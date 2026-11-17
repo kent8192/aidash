@@ -77,7 +77,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			.await
 			.unwrap();
 	}
-	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
+	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update","workbench.test_limits.update"],"resources":{"kinds":["*"]}},{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
 	common::tenant_root(&f, "acme").await;
 	assert_eq!(
 		common::post(
@@ -96,6 +96,19 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let (status, draft) =
 		common::post(&app, token, "/api/workbench/drafts", json!({"entry":entry})).await;
 	assert_eq!(status, 200, "draft: {draft}");
+	// The default tools alone take most of the default 16,384-token total limit, so a two-step
+	// session (the call, then the answer) needs a Tenant limit the default tools fit twice.
+	let (status, saved) = request(
+		&app,
+		token,
+		"PUT",
+		"/api/workbench/test-limits/acme",
+		json!({"tenant":"acme","max_input_bytes":20000,"max_output_tokens":2048,"max_total_tokens":65536,
+			"max_steps":12,"max_duration_secs":60,"max_concurrent":2,"payload_days":30,
+			"incident_evidence_days":90,"revision":0}),
+	)
+	.await;
+	assert_eq!(status, 200, "test limits: {saved}");
 	let path = format!(
 		"/api/workbench/drafts/{}/tests",
 		draft["id"].as_str().unwrap()

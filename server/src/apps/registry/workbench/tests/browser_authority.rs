@@ -137,6 +137,12 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 			.with_middleware(super::CapturedActor(other_actor.clone()))
 	})
 	.await;
+	// The default tools alone take most of the default 16,384-token total limit, so a two-step
+	// session (the call, then the answer) needs a Tenant limit the default tools fit twice.
+	let limits_path = "/api/workbench/test-limits/acme";
+	let mut limits = wb.call("GET", limits_path, Value::Null).await["limits"].clone();
+	limits["max_total_tokens"] = json!(65536);
+	wb.call("PUT", limits_path, limits).await;
 	let path = format!("{}/tests", wb.path());
 	let (status, started) = request(
 		&app,
