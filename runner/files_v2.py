@@ -67,7 +67,7 @@ def open_file(fd, name, flags=os.O_RDONLY, mode=0o600):
 
 
 def split_lines(text):
-    """Split on '\n' only, keeping each line's ending: '\r\n', '\n' or '' for a last line without one."""
+    r"""Split on '\n' only, keeping each line's ending: '\r\n', '\n' or '' for a last line without one."""
     pieces = text.split('\n')
     lines = [(piece[:-1], '\r\n') if piece.endswith('\r') else (piece, '\n') for piece in pieces[:-1]]
     if pieces[-1]:

@@ -2343,7 +2343,6 @@ print(json.dumps(r))'''
     def start_preview(self, request):
         import base64
         import ipaddress
-        import json
         import time
         from control import scratch_resource_name
         operation, scratch, port = request['operation_id'], request['scratch_space_id'], request['port']
