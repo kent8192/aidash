@@ -92,6 +92,25 @@ fn identical_admission_retains_the_original_binding(
 	assert_eq!(record.view(&description).expires_at, description.expires_at);
 }
 
+/// The Home renews the grant and its tool Request changes between describes; neither
+/// ends the admission (ADR 0139).
+#[rstest]
+fn a_renewed_grant_or_a_changed_tool_request_keeps_the_admission(
+	binding: (Record, ExecutionPrincipal, Description),
+) {
+	let (record, identity, mut description) = binding;
+	description.expires_at += chrono::Duration::hours(1);
+	description.authorization_details =
+		vec![crate::federation::tool_lists::ToolAuthorizationDetail::new(
+			&crate::federation::tool_lists::FederationToolRequest::defaults(),
+		)];
+	assert!(
+		record
+			.matches(&identity, &["mapped".into(), "agent".into()], &description)
+			.unwrap()
+	);
+}
+
 #[rstest]
 #[case(0)]
 #[case(1)]

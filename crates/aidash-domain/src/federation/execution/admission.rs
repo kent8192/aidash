@@ -107,7 +107,7 @@ impl Record {
 			&& self.tenant == identity.tenant
 			&& self.credential_id == identity.credential_id
 			&& self.subject_chain == subjects
-			&& self.description == serde_json::to_value(description)?)
+			&& pinned(self.description.clone()) == pinned(serde_json::to_value(description)?))
 	}
 	pub fn matches_run(&self, run: &RunMetadata, description: &Description) -> bool {
 		self.source_node == run.home_node
@@ -125,6 +125,16 @@ impl Record {
 			expires_at: description.expires_at,
 		}
 	}
+}
+/// The part of a description an admission pins. The Home's Federation Tool Request is
+/// read fresh on every describe and the Home renews the grant's expiry while the Run
+/// lives (ADR 0139), so neither may end an admission by changing.
+fn pinned(mut description: serde_json::Value) -> serde_json::Value {
+	if let Some(fields) = description.as_object_mut() {
+		fields.remove("authorization_details");
+		fields.remove("expires_at");
+	}
+	description
 }
 #[derive(Serialize, Deserialize)]
 pub struct Admission {
