@@ -712,6 +712,23 @@ async fn publication_tombstones_only_removed_working_objects() {
 }
 
 #[tokio::test]
+async fn a_receiving_area_publishes_without_a_workspace_index_or_event() {
+	let (mut scope, mut area, mut image) = fixture(b"bytes");
+	image.path = "image.png".into();
+	image.media_type = "image/png".into();
+	scope.previous = json!([]);
+	area.manifest = json!([image]);
+	area.constraints = json!([
+		aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node")
+	]);
+	publish(&mut scope, &mut area).await.unwrap();
+	// The revision is still saved, so the Area's readers see the Reference set.
+	assert_eq!(scope.persisted.as_ref().unwrap().revision, area.revision);
+	assert!(scope.image_publications.is_empty());
+	assert!(scope.events.is_empty());
+}
+
+#[tokio::test]
 async fn publication_records_image_versions_in_publication_order() {
 	use aidash_domain::semantic::indexing::ImageChange;
 	let (mut scope, mut area, mut old) = fixture(b"bytes");

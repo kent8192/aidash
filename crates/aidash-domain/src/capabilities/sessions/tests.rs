@@ -32,3 +32,33 @@ fn disclosure_requires_both_delegation_endpoints(
 		expected
 	);
 }
+
+// Receiving Areas (ADR 0139).
+use serde_json::json;
+
+fn area(constraints: Value) -> Area {
+	Area {
+		id: Uuid::nil(),
+		tenant: "tenant".into(),
+		home_node: "aidash://home/node".into(),
+		workspace_id: Uuid::nil(),
+		thread_id: Uuid::nil(),
+		agent_id: "agent".into(),
+		owner: "alice".into(),
+		generation: 0,
+		revision: 0,
+		epoch: 0,
+		state: "active".into(),
+		manifest: json!([]),
+		constraints,
+		next_sequence: 1,
+	}
+}
+
+#[test]
+fn only_a_receiving_area_names_its_home() {
+	assert!(!area(json!([])).is_remote_home());
+	assert!(!area(json!([{"kind":"reference_bound","id":Uuid::nil()}])).is_remote_home());
+	assert!(area(json!([remote_home_constraint("aidash://home/node")])).is_remote_home());
+	assert!(!area(json!("malformed")).is_remote_home());
+}

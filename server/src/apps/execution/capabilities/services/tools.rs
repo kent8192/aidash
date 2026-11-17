@@ -42,7 +42,7 @@ impl Tool for CoreTool {
 					.into(),
 			));
 		}
-		let Some(authority) = &ctx.home.authority else {
+		let Some(authority) = ctx.home.tool_authority() else {
 			return Err(Error::Forbidden);
 		};
 		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)

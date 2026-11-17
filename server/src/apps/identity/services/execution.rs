@@ -2292,7 +2292,9 @@ impl Step {
 
 	/// The Run's Home carrying the step's authority, as the worker's tools see it.
 	pub fn home(&self, f: Federation) -> crate::federation::Home {
-		crate::federation::Home::new(f, self.0.run.clone()).with_authority(self.0.local_authority())
+		crate::federation::Home::new(f, self.0.run.clone())
+			.with_authority(self.0.local_authority())
+			.with_receiver_authority(self.0.receiver_authority())
 	}
 
 	/// Commits what the step wrote, as the worker does when it waits.
@@ -2435,6 +2437,13 @@ impl Guard {
 
 	pub fn local_authority(&self) -> Option<WorkerAuthority> {
 		self.remote.is_none().then(|| self.authority())
+	}
+	/// The authority of a Run executing for another Home, on this Node: the Peer Mapping's
+	/// mapped subject within the Remote Grant (ADR 0139). `None` for a local Run, whose authority
+	/// [`Self::local_authority`] already gives. Only core tools and Subnode operations take it;
+	/// whatever acts on the Home's own Workspace stays a Home command.
+	pub fn receiver_authority(&self) -> Option<WorkerAuthority> {
+		self.remote.is_some().then(|| self.authority())
 	}
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()

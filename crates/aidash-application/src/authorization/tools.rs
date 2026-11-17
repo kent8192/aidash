@@ -48,7 +48,8 @@ fn task_not_found(id: &str) -> Error {
 
 /// Foreign execution can address only its admitted Task and Workspace.
 pub fn remote_identifier(run: &RunMetadata, kind: &str, id: &str) -> Result<String> {
-	if matches!(kind, "memory" | "generation_policy") || kind == "run" && id != run.id.to_string() {
+	// `memory` is no longer refused: a remote Run's memory tools are served by its Home (ADR 0126).
+	if kind == "run" && id != run.id.to_string() {
 		return Err(Error::Forbidden);
 	}
 	if (kind == "task" && id != run.task_id.to_string())
@@ -119,6 +120,23 @@ fn federation_gate(
 			Some(&key),
 		)),
 	}
+}
+
+/// Whether work a remote Run started with the builtin tool `tool`, a running command, a Live
+/// preview or a Subnode member's call, must now stop: the tool is no longer usable under both
+/// Nodes' lists (ADR 0139, decision 12). A Block added, an Allowance or a Request that no
+/// longer names it, or a Reach that never answers all withdraw it, as a list change acts like a
+/// withdrawal of authority. Without lists (the Home shares the receiver's Tenant) the Tenant's
+/// policy decides and nothing is withdrawn here. A tool the table does not know withdraws too,
+/// so a new tool must be classified before work depends on it.
+pub fn tool_withdrawn(lists: Option<&OwnedRemoteToolLists>, tool: &str) -> bool {
+	let Some(lists) = lists else {
+		return false;
+	};
+	let Some(reach) = aidash_domain::tool::builtin_reach(tool) else {
+		return true;
+	};
+	!matches!(lists.lists().decide(reach, tool), ToolVerdict::Usable)
 }
 
 /// Name the check behind a plain refusal (`Forbidden` or `Unauthorized`); every other outcome,

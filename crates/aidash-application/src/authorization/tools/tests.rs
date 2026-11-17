@@ -1289,7 +1289,8 @@ async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
 #[case::memory("memory_mutate")]
 #[case::generation("task_assign")]
 #[tokio::test]
-async fn remote_execution_rejects_local_only_resources_after_invoke(
+/// Memory and Generation name Home resources a remote Run's tools are forwarded to (ADR 0139).
+async fn remote_execution_names_home_resources_for_forwarded_tools(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1304,9 +1305,8 @@ async fn remote_execution_rejects_local_only_resources_after_invoke(
 			&call(name, json!({"policy_id":"saved"}))
 		)
 		.await,
-		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::RemoteAuthority
+		Ok(())
 	));
-	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
 #[tokio::test]
@@ -1664,10 +1664,10 @@ async fn cancellation_releases_the_lease_held_during_tool_authorization(
 #[case::foreign_task("task", 9, false)]
 #[case::matching_workspace("workspace", 3, true)]
 #[case::foreign_workspace("workspace", 9, false)]
-#[case::memory("memory", 1, false)]
+#[case::memory("memory", 1, true)]
 #[case::run("run", 1, true)]
 #[case::foreign_run("run", 9, false)]
-#[case::generation("generation_policy", 1, false)]
+#[case::generation("generation_policy", 1, true)]
 fn remote_identifiers_enforce_the_admitted_scope(
 	run: RunMetadata,
 	#[case] kind: &str,
@@ -1752,9 +1752,7 @@ async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
 #[rstest]
 #[case::workspace("workspace")]
 #[case::task("task")]
-#[case::memory("memory")]
 #[case::run("run")]
-#[case::generation("generation_policy")]
 #[tokio::test]
 async fn explicit_remote_actions_cannot_escape_the_admitted_resource(
 	mut repository: Repository,
@@ -2298,6 +2296,41 @@ fn lists(
 		block: list(block),
 		..Default::default()
 	}
+}
+
+#[rstest]
+#[case::both_list_it(lists(&["shell"], &["shell"], &[]), "shell", false)]
+#[case::block_added(lists(&["shell"], &["shell"], &["shell"]), "shell", true)]
+#[case::allowance_removed(lists(&["shell"], &[], &[]), "shell", true)]
+#[case::request_no_longer_names_it(lists(&[], &["shell"], &[]), "shell", true)]
+#[case::pattern_still_covers(lists(&["*"], &["shell*"], &[]), "shell_poll", false)]
+#[case::block_pattern_wins(lists(&["*"], &["*"], &["live_*"]), "live_preview_start", true)]
+#[case::run_reach_needs_no_list(lists(&[], &[], &[]), "journal_read", false)]
+#[case::never_reach(lists(&["*"], &["*"], &[]), "schedule_list", true)]
+#[case::unknown_tool_fails_closed(lists(&["*"], &["*"], &[]), "no_such_tool", true)]
+fn a_list_change_withdraws_the_work_that_depends_on_the_tool(
+	#[case] lists: aidash_domain::federation::tool_lists::OwnedRemoteToolLists,
+	#[case] tool: &str,
+	#[case] withdrawn: bool,
+) {
+	assert_eq!(tool_withdrawn(Some(&lists), tool), withdrawn);
+}
+
+#[test]
+fn a_run_without_lists_is_never_withdrawn_by_them() {
+	assert!(!tool_withdrawn(None, "shell"));
+}
+
+#[test]
+fn a_run_only_answer_keeps_the_work_until_it_is_gone() {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let only = |name: &str| ToolList::new([ToolPattern::new(name).unwrap()]).unwrap();
+	let mut owned = lists(&[], &[], &[]);
+	owned.run_request = only("shell");
+	owned.run_allowance = only("shell");
+	assert!(!tool_withdrawn(Some(&owned), "shell"));
+	owned.run_allowance = ToolList::default();
+	assert!(tool_withdrawn(Some(&owned), "shell"));
 }
 
 #[rstest]

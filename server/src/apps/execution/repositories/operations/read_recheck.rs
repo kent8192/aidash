@@ -2,7 +2,10 @@
 use super::reconciliation::Repository;
 use crate::{
 	Error, Result as NativeResult,
-	apps::execution::repositories::live_previews,
+	apps::{
+		execution::repositories::live_previews,
+		workspaces::repositories::scratch::remote_space_key as remote_space_id,
+	},
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
@@ -36,6 +39,16 @@ async fn check_operation(repository: &Repository<'_>, id: Uuid) -> NativeResult<
 	let result = async {
 		let mut check = access.rechecking(snapshot.run_id);
 		let run = check.recheck_run_reads(snapshot.run_id).await?;
+		// A list change acts like a withdrawal (ADR 0139): a command whose tool the Run's
+		// lists no longer let it use stops at this recheck, as a revoked read does.
+		let tool = aidash_domain::capabilities::operations::capability_of(&snapshot.kind);
+		if super::remote_tools::withdrawn(check.tx.as_mut(), run.id, tool).await? {
+			return Err(Error::Forbidden);
+		}
+		// The Home's own Task is not on this Node for a Run executing here for another Home.
+		if super::remote_tools::is_admitted(check.tx.as_mut(), run.id).await? {
+			return Ok(());
+		}
 		check.task_read(run.task_id).await.map(|_| ())
 	}
 	.await;
@@ -199,25 +212,6 @@ pub(crate) async fn stop_pending_run_with_runner(
 		.map_err(Error::from)?;
 	tx.commit().await?;
 	Ok(())
-}
-
-// Same deterministic identity as remote Space allocation. It must be resolvable
-// after authorization has been revoked, without performing a new admission.
-fn remote_space_id(tenant: &str, node: &str, home: &str, workspace: Uuid, person: &str) -> Uuid {
-	use sha2::{Digest, Sha256};
-	let mut hash = Sha256::new();
-	hash.update(b"aidash:remote-scratch-space:v1");
-	for value in [tenant, node, home, person] {
-		hash.update((value.len() as u64).to_be_bytes());
-		hash.update(value.as_bytes());
-	}
-	hash.update(workspace.as_bytes());
-	let digest = hash.finalize();
-	let mut bytes = [0_u8; 16];
-	bytes.copy_from_slice(&digest[..16]);
-	bytes[6] = (bytes[6] & 0x0f) | 0x80;
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
-	Uuid::from_bytes(bytes)
 }
 
 #[async_trait]

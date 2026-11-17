@@ -1166,6 +1166,11 @@ pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<(
 	} else {
 		aidash_domain::semantic::indexing::image_changes(&previous, &current)
 	};
+	// A receiving Area belongs to a Home whose Workspace this Node does not hold: no Workspace
+	// image index or event stream here can take what it changes (ADR 0139).
+	if area.is_remote_home() {
+		return Ok(());
+	}
 	if !changes.is_empty() {
 		scope.image_publication(area, &changes).await?;
 	}

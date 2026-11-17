@@ -120,6 +120,103 @@ pub(crate) async fn areas(access: &mut Access, ids: &[Uuid]) -> NativeResult<Vec
 	.fetch_all(&mut **access.tx)
 	.await
 }
+/// The row of the Area keyed by `(tenant, home, workspace, thread, agent, owner)`, created empty
+/// with `constraints` when it does not exist and left as it is otherwise.
+async fn ensure_area_row(
+	access: &mut Access,
+	home: &str,
+	workspace: Uuid,
+	thread: Uuid,
+	agent_id: &str,
+	owner: &str,
+	constraints: Value,
+) -> NativeResult<NativeArea> {
+	let new_area_id = Uuid::new_v4();
+	crate::database::native::query(
+		&Query::insert()
+			.into_table(Alias::new("core_areas"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"home_node",
+					"workspace_id",
+					"thread_id",
+					"agent_id",
+					"owner",
+					"constraints",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(((1..=8).map(|i| Expr::cust(format!("${i}")))).fold(
+				reinhardt::query::Query::select(),
+				|mut select, expr| {
+					select.expr(expr);
+					select
+				},
+			))
+			.on_conflict(
+				OnConflict::columns(
+					[
+						"tenant",
+						"home_node",
+						"workspace_id",
+						"thread_id",
+						"agent_id",
+						"owner",
+					]
+					.map(Alias::new),
+				)
+				.do_nothing()
+				.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(new_area_id)
+	.bind(&access.identity.tenant)
+	.bind(home)
+	.bind(workspace)
+	.bind(thread)
+	.bind(agent_id)
+	.bind(owner)
+	.bind(&constraints)
+	.execute(&mut **access.tx)
+	.await?;
+	// Only the newly inserted Area has this fresh id. A conflicting
+	// existing Area already owns its current revision.
+	crate::database::native::query(
+		&Query::insert()
+			.into_table(Alias::new("core_manifest_revisions"))
+			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.columns(["tenant", "id", "revision"].map(Alias::new))
+					.expr(Expr::value(serde_json::json!([])))
+					.from(Alias::new("core_areas"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(new_area_id)))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **access.tx)
+	.await?;
+	locked_area(
+		&mut **access.tx,
+		&select("core_areas")
+			.and_where(
+				Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.clone())),
+			)
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
+			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::value(agent_id.to_owned())))
+			.and_where(Expr::col(Alias::new("home_node")).eq(Expr::value(home.to_owned())))
+			.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(owner.to_owned())))
+			.to_owned(),
+		LockType::Update,
+	)
+	.await?
+	.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))
+}
 #[async_trait]
 impl SessionScope for Scope<'_> {
 	fn tenant(&self) -> &str {
@@ -527,137 +624,38 @@ impl SessionScope for Scope<'_> {
 				.deployment
 				.node(access.workspace_node(task.workspace_id).await?)
 				.to_string();
-			let new_area_id = Uuid::new_v4();
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("core_areas"))
-					.columns(
-						[
-							"id",
-							"tenant",
-							"home_node",
-							"workspace_id",
-							"thread_id",
-							"agent_id",
-							"owner",
-						]
-						.map(Alias::new),
-					)
-					.from_subquery(((1..=7).map(|i| Expr::cust(format!("${i}")))).fold(
-						reinhardt::query::Query::select(),
-						|mut select, expr| {
-							select.expr(expr);
-							select
-						},
-					))
-					.on_conflict(
-						OnConflict::columns(
-							[
-								"tenant",
-								"home_node",
-								"workspace_id",
-								"thread_id",
-								"agent_id",
-								"owner",
-							]
-							.map(Alias::new),
-						)
-						.do_nothing()
-						.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
+			let owner = access.identity.subject.clone();
+			ensure_area_row(
+				access,
+				&home,
+				task.workspace_id,
+				thread,
+				agent_id,
+				&owner,
+				serde_json::json!([]),
 			)
-			.bind(new_area_id)
-			.bind(&access.identity.tenant)
-			.bind(&home)
-			.bind(task.workspace_id)
-			.bind(thread)
-			.bind(agent_id)
-			.bind(&access.identity.subject)
-			.execute(&mut **access.tx)
-			.await?;
-			// Only the newly inserted Area has this fresh id. A conflicting
-			// existing Area already owns its current revision.
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("core_manifest_revisions"))
-					.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-					.from_subquery(
-						Query::select()
-							.columns(["tenant", "id", "revision"].map(Alias::new))
-							.expr(Expr::value(serde_json::json!([])))
-							.from(Alias::new("core_areas"))
-							.and_where(Expr::col(Alias::new("id")).eq(Expr::value(new_area_id)))
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **access.tx)
-			.await?;
-			let area: NativeArea = {
-				let query_bind_1 = &access.identity.tenant;
-				let query_bind_2 = task.workspace_id;
-				let query_bind_3 = thread;
-				let query_bind_4 = agent_id;
-				let query_bind_5 = home.as_str();
-				let query_bind_6 = &access.identity.subject;
-				locked_area(
-					&mut **access.tx,
-					&select("core_areas")
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								)),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("agent_id")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								)),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("home_node")))
-								.eq(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_5.to_owned()).into()],
-								)),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("owner"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_6.to_owned()).into()],
-								),
-							),
-						)
-						.to_owned(),
-					LockType::Update,
-				)
-				.await?
-				.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))?
-			};
-			Ok(area)
+			.await
 		}
+		.await;
+		result.map(Into::into).map_err(Into::into)
+	}
+	async fn ensure_remote_area(
+		&mut self,
+		run: &aidash_domain::RunMetadata,
+		thread: Uuid,
+		owner: &str,
+	) -> Result<Area> {
+		let result: NativeResult<_> = ensure_area_row(
+			self.access,
+			&run.home_node,
+			run.workspace_id,
+			thread,
+			&run.agent_id,
+			owner,
+			serde_json::json!([
+				aidash_domain::capabilities::sessions::remote_home_constraint(&run.home_node)
+			]),
+		)
 		.await;
 		result.map(Into::into).map_err(Into::into)
 	}

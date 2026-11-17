@@ -3260,6 +3260,61 @@ async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
 	p.close().await;
 }
 
+/// A Run executing here for another Home has no Workspace on this Node, so work done on its
+/// behalf is checked through its admission instead (#989): a healthy foreign Run may act, and a
+/// withdrawal on the executing Node stops it, as it did before the Workspace was left out.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_foreign_run_acts_through_its_admission_and_a_withdrawal_stops_it(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let may_act = async || {
+		let aidash_server::authorization::identity::Actor::Subject(identity) =
+			authorization.authenticate(&p.receiver_token).await.unwrap()
+		else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		let run = p.run().await;
+		let chain: Vec<String> = sqlx::query_scalar(
+			"SELECT subject_chain FROM authorization_remote_admissions WHERE task_id = $1",
+		)
+		.bind(run.task_id)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::authorization::services::execution::operation_may_act(
+			&p.b.store, &identity, chain, run.id,
+		)
+		.await
+	};
+	may_act()
+		.await
+		.expect("a healthy foreign Run acts through its admission");
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&EntityRef {
+				id: "research".into(),
+				version: "1.0.0".into(),
+			},
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	assert!(
+		matches!(may_act().await, Err(aidash_server::Error::Forbidden)),
+		"a withdrawal on the executing Node stops a foreign Run's actions"
+	);
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review_receiver_only_executor_activates_required_home(

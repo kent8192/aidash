@@ -1210,11 +1210,17 @@ impl<'a> Environment<'a> {
 		)
 	}
 	fn native_home(&self) -> Home {
-		Home::new(self.federation.clone(), self.step_run.clone()).with_authority(
-			self.authority
-				.as_ref()
-				.and_then(|authority| authority.guard.local_authority()),
-		)
+		Home::new(self.federation.clone(), self.step_run.clone())
+			.with_authority(
+				self.authority
+					.as_ref()
+					.and_then(|authority| authority.guard.local_authority()),
+			)
+			.with_receiver_authority(
+				self.authority
+					.as_ref()
+					.and_then(|authority| authority.guard.receiver_authority()),
+			)
 	}
 }
 
