@@ -60,7 +60,7 @@ fn scope_settings() -> ScopeSettings {
 			received_bytes: 1,
 		},
 		anomaly: AnomalyRule {
-			connections_per_minute: 1,
+			distinct_hosts_per_minute: 1,
 		},
 		operator_allows_all: false,
 		tunnel_limits: Default::default(),

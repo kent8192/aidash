@@ -138,6 +138,7 @@ impl DashboardRegistrationRequest {
 		identity: Uuid,
 		tenant: &str,
 		invitation: Option<Uuid>,
+		registration_id: Uuid,
 	) -> Result<Self> {
 		// The identity lock serializes requests, as `submit` does. A
 		// disablement that committed since the holder was checked is seen
@@ -167,7 +168,7 @@ impl DashboardRegistrationRequest {
 			));
 		}
 		let registration = Self::build()
-			.id(Uuid::new_v4())
+			.id(registration_id)
 			.identity(identity)
 			.status("pending".to_owned())
 			.created_at(now)
@@ -338,26 +339,58 @@ impl DashboardRegistrationRequest {
 			None => true,
 		};
 		db.atomic(&scope, async |tx| {
-			let administrator = actor.tenant_administrator();
-			// Authority, including its exclusive policy lock, precedes every
-			// identity lock, as at execution boundaries.
-			let mut snapshot = match administrator {
-				Some(administrator) => Some(
-					administrator
-						.lock_change(tx, exclusive, tenant_administration::REGISTRATION_APPROVE)
-						.await?,
-				),
-				None => None,
-			};
-			let preliminary = Self::objects()
-				.filter(Self::field_id().eq(id))
-				.all_with_db(tx)
-				.await?
-				.pop()
-				.ok_or_else(|| Error::NotFound("registration".into()))?;
-			let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
-			if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
-				visible_to(administrator, &preliminary, &candidate)?;
+			Self::approve_in(
+				tx, id, input, groups, actor, token_hash, policy, exclusive, None,
+			)
+			.await
+		})
+		.await
+	}
+
+	/// Approves using the caller's transaction. Authority and policy locks must
+	/// precede identity and registration locks, as in the public approval path.
+	/// A supplied snapshot means the caller already authorized and recorded the
+	/// exact action, identity, request ID, subject and groups under that lock.
+	#[allow(clippy::too_many_arguments)] // The existing inputs and the caller's authority lease stay explicit.
+	pub(crate) async fn approve_in(
+		tx: &mut AtomicTransaction,
+		id: Uuid,
+		input: Approval,
+		groups: BTreeSet<String>,
+		actor: &AdministrationActor,
+		token_hash: Vec<u8>,
+		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
+		exclusive: bool,
+		locked_snapshot: Option<crate::authorization::Snapshot>,
+	) -> Result<ApprovedMapping> {
+		let invitation_direct_join = locked_snapshot.is_some();
+		let administrator = actor.tenant_administrator();
+		// Authority, including its exclusive policy lock, precedes every
+		// identity lock, as at execution boundaries.
+		let mut snapshot = match (locked_snapshot, administrator) {
+			(Some(snapshot), _) => Some(snapshot),
+			(None, Some(administrator)) => Some(
+				administrator
+					.lock_change(tx, exclusive, tenant_administration::REGISTRATION_APPROVE)
+					.await?,
+			),
+			(None, None) => None,
+		};
+		let preliminary = Self::objects()
+			.filter(Self::field_id().eq(id))
+			.all_with_db(tx)
+			.await?
+			.pop()
+			.ok_or_else(|| Error::NotFound("registration".into()))?;
+		if invitation_direct_join && preliminary.invitation_id.is_none() {
+			return Err(Error::Invalid(
+				"direct approval requires an Invitation".into(),
+			));
+		}
+		let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
+		if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
+			visible_to(administrator, &preliminary, &candidate)?;
+			if !invitation_direct_join {
 				administrator
 					.require(
 						tx,
@@ -372,210 +405,221 @@ impl DashboardRegistrationRequest {
 					)
 					.await?;
 			}
-			crate::authorization::identity::require_dashboard_mapping(
-				policy.as_ref(),
-				&candidate.issuer,
-				&input.tenant,
-			)?;
-			let mut snapshot = match snapshot.take() {
-				Some(snapshot) => snapshot,
-				// An invited person who was mapped before may rejoin, which rewrites
-				// the policy too.
-				None => {
-					let lock = if input.groups.is_some() || preliminary.invitation_id.is_some() {
-						LockType::Update
-					} else {
-						LockType::Share
-					};
-					lock_policy(tx, &input.tenant, lock).await?
-				}
-			};
-			// Nobody joins a deleted Tenant, a Deployment Administrator included.
-			if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &input.tenant)
-				.await?
-			{
-				return Err(Error::TenantDeleted);
-			}
-			let identity = DashboardIdentity::objects()
-				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or(Error::Forbidden)?;
-			let mut registration = Self::objects()
-				.filter(Self::field_id().eq(id))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or_else(|| Error::NotFound("registration".into()))?;
-			let now = database_time(tx).await?;
-			dashboard_rules::require_pending(&registration.status, registration.expires_at, now)?;
-			if identity.disabled_at.is_some() {
-				return Err(Error::Forbidden);
-			}
-			if registration
-				.tenant
-				.as_ref()
-				.is_some_and(|addressed| addressed != &input.tenant)
-			{
-				return Err(Error::Invalid(
-					"the request is addressed to another Tenant".into(),
-				));
-			}
-			if administrator.is_none()
-				&& !snapshot.bundle.subjects.contains_key(&input.subject)
-				&& let Some(groups) = &input.groups
-			{
-				// A Deployment Administrator may already replace the whole
-				// policy, so its new subject is not limited to Assignable Groups.
-				if let Some(group) = groups
-					.iter()
-					.find(|group| !snapshot.bundle.groups.contains_key(*group))
-				{
-					return Err(Error::Invalid(format!("unknown group: {group}")));
-				}
-				aidash_domain::policy::identifier(&input.subject)?;
-				snapshot.bundle.subjects.insert(
-					input.subject.clone(),
-					aidash_domain::policy::Subject {
-						kind: aidash_domain::policy::SubjectKind::User,
-						node: None,
-						groups: groups.clone(),
-						roles: Default::default(),
-						attributes: json!({}),
-						enabled: true,
-						delegated_by: None,
-					},
-				);
-				snapshot.bundle.validate()?;
-				snapshot.revision = AuthorizationBundle::replace(
-					tx,
-					&input.tenant,
-					snapshot.revision,
-					serde_json::to_value(&snapshot.bundle)?,
-					"deployment_administrator",
-					None,
-				)
-				.await?;
-			}
-			crate::authorization::identity::require_dashboard_mapping(
-				policy.as_ref(),
-				&identity.issuer,
-				&input.tenant,
-			)?;
-			let previously_mapped = DashboardMapping::objects()
-				.filter(DashboardMapping::field_identity_id().eq(identity.id))
-				.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
-				.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
-				.exists_with_db(tx)
-				.await?;
-			if let Some(administrator) = administrator {
-				if !snapshot.bundle.subjects.contains_key(&input.subject)
-					&& DashboardMapping::objects()
-						.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
-						.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
-						.exists_with_db(tx)
-						.await?
-				{
-					return Err(Error::Conflict("subject was previously assigned".into()));
-				}
-				match tenant_administration::approval_target(
-					&snapshot.bundle,
-					&input.subject,
-					previously_mapped,
-					&groups,
-					registration.invitation_id.is_some(),
-				)? {
-					tenant_administration::ApprovalTarget::NewSubject => {
-						tenant_administration::add_user_subject(
-							&mut snapshot.bundle,
-							&input.subject,
-							&groups,
-						)?;
-						snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
-					}
-					tenant_administration::ApprovalTarget::Rejoin => {
-						tenant_administration::rejoin(
-							&mut snapshot.bundle,
-							&input.subject,
-							&groups,
-						)?;
-						snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
-					}
-					tenant_administration::ApprovalTarget::Reapproval => {}
-				}
-			} else if let Some(invitation) = registration.invitation_id
-				&& previously_mapped
-				&& snapshot.bundle.subjects.contains_key(&input.subject)
-			{
-				// An invited person who left rejoins with the groups the
-				// approval names, or else the Invitation proposed, as with a
-				// Tenant Administrator; the old Assignable Groups do not return.
-				let rejoining = match &input.groups {
-					Some(groups) => groups.clone(),
-					None => TenantInvitation::objects()
-						.filter(TenantInvitation::field_id().eq(invitation))
-						.all_with_db(tx)
-						.await?
-						.pop()
-						.map(|invitation| {
-							crate::apps::identity::repositories::invitations::proposed(&invitation)
-						})
-						.unwrap_or_default(),
+		}
+		crate::authorization::identity::require_dashboard_mapping(
+			policy.as_ref(),
+			&candidate.issuer,
+			&input.tenant,
+		)?;
+		let mut snapshot = match snapshot.take() {
+			Some(snapshot) => snapshot,
+			// An invited person who was mapped before may rejoin, which rewrites
+			// the policy too.
+			None => {
+				let lock = if input.groups.is_some() || preliminary.invitation_id.is_some() {
+					LockType::Update
+				} else {
+					LockType::Share
 				};
-				tenant_administration::rejoin(&mut snapshot.bundle, &input.subject, &rejoining)?;
-				snapshot.revision = AuthorizationBundle::replace(
-					tx,
-					&input.tenant,
-					snapshot.revision,
-					serde_json::to_value(&snapshot.bundle)?,
-					"deployment_administrator",
-					None,
-				)
-				.await?;
+				lock_policy(tx, &input.tenant, lock).await?
 			}
-			let identity_id = registration.identity_id();
-			let mapping_id = issue_mapping(
+		};
+		// Nobody joins a deleted Tenant, a Deployment Administrator included.
+		if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, &input.tenant)
+			.await?
+		{
+			return Err(Error::TenantDeleted);
+		}
+		let identity = DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or(Error::Forbidden)?;
+		let mut registration = Self::objects()
+			.filter(Self::field_id().eq(id))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or_else(|| Error::NotFound("registration".into()))?;
+		let now = database_time(tx).await?;
+		dashboard_rules::require_pending(&registration.status, registration.expires_at, now)?;
+		if identity.disabled_at.is_some() {
+			return Err(Error::Forbidden);
+		}
+		if registration
+			.tenant
+			.as_ref()
+			.is_some_and(|addressed| addressed != &input.tenant)
+		{
+			return Err(Error::Invalid(
+				"the request is addressed to another Tenant".into(),
+			));
+		}
+		if administrator.is_none()
+			&& !snapshot.bundle.subjects.contains_key(&input.subject)
+			&& let Some(groups) = &input.groups
+		{
+			// A Deployment Administrator may already replace the whole
+			// policy, so its new subject is not limited to Assignable Groups.
+			if let Some(group) = groups
+				.iter()
+				.find(|group| !snapshot.bundle.groups.contains_key(*group))
+			{
+				return Err(Error::Invalid(format!("unknown group: {group}")));
+			}
+			aidash_domain::policy::identifier(&input.subject)?;
+			snapshot.bundle.subjects.insert(
+				input.subject.clone(),
+				aidash_domain::policy::Subject {
+					kind: aidash_domain::policy::SubjectKind::User,
+					node: None,
+					groups: groups.clone(),
+					roles: Default::default(),
+					attributes: json!({}),
+					enabled: true,
+					delegated_by: None,
+				},
+			);
+			snapshot.bundle.validate()?;
+			snapshot.revision = AuthorizationBundle::replace(
 				tx,
-				&snapshot,
 				&input.tenant,
-				&input.subject,
-				identity_id,
-				token_hash,
-				now,
+				snapshot.revision,
+				serde_json::to_value(&snapshot.bundle)?,
+				"deployment_administrator",
+				None,
 			)
 			.await?;
-			registration.status = "approved".into();
-			registration.decided_at = Some(now);
-			registration.decision_actor = Some(actor.decision_actor());
-			Self::objects().update_with_conn(tx, &registration).await?;
+		}
+		crate::authorization::identity::require_dashboard_mapping(
+			policy.as_ref(),
+			&identity.issuer,
+			&input.tenant,
+		)?;
+		let previously_mapped = DashboardMapping::objects()
+			.filter(DashboardMapping::field_identity_id().eq(identity.id))
+			.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+			.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+			.exists_with_db(tx)
+			.await?;
+		if let Some(administrator) = administrator {
+			if !snapshot.bundle.subjects.contains_key(&input.subject)
+				&& DashboardMapping::objects()
+					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+					.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+					.exists_with_db(tx)
+					.await?
+			{
+				return Err(Error::Conflict("subject was previously assigned".into()));
+			}
+			match tenant_administration::approval_target(
+				&snapshot.bundle,
+				&input.subject,
+				previously_mapped,
+				&groups,
+				registration.invitation_id.is_some(),
+			)? {
+				tenant_administration::ApprovalTarget::NewSubject => {
+					tenant_administration::add_user_subject(
+						&mut snapshot.bundle,
+						&input.subject,
+						&groups,
+					)?;
+					snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
+				}
+				tenant_administration::ApprovalTarget::Rejoin => {
+					tenant_administration::rejoin(&mut snapshot.bundle, &input.subject, &groups)?;
+					snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
+				}
+				tenant_administration::ApprovalTarget::Reapproval => {}
+			}
+		} else if let Some(invitation) = registration.invitation_id
+			&& previously_mapped
+			&& snapshot.bundle.subjects.contains_key(&input.subject)
+		{
+			// An invited person who left rejoins with the groups the
+			// approval names, or else the Invitation proposed, as with a
+			// Tenant Administrator; the old Assignable Groups do not return.
+			let rejoining = match &input.groups {
+				Some(groups) => groups.clone(),
+				None => TenantInvitation::objects()
+					.filter(TenantInvitation::field_id().eq(invitation))
+					.all_with_db(tx)
+					.await?
+					.pop()
+					.map(|invitation| {
+						crate::apps::identity::repositories::invitations::proposed(&invitation)
+					})
+					.unwrap_or_default(),
+			};
+			tenant_administration::rejoin(&mut snapshot.bundle, &input.subject, &rejoining)?;
+			snapshot.revision = AuthorizationBundle::replace(
+				tx,
+				&input.tenant,
+				snapshot.revision,
+				serde_json::to_value(&snapshot.bundle)?,
+				"deployment_administrator",
+				None,
+			)
+			.await?;
+		}
+		let identity_id = registration.identity_id();
+		let mapping_id = issue_mapping(
+			tx,
+			&snapshot,
+			&input.tenant,
+			&input.subject,
+			identity_id,
+			token_hash,
+			now,
+		)
+		.await?;
+		registration.status = "approved".into();
+		registration.decided_at = Some(now);
+		registration.decision_actor = Some(actor.decision_actor());
+		Self::objects().update_with_conn(tx, &registration).await?;
+		let event = AdministrationEvent {
+			action: tenant_administration::REGISTRATION_APPROVE,
+			identity: Some(identity_id),
+			registration: Some(id),
+			mapping: Some(mapping_id),
+			tenant: Some(&input.tenant),
+			subject: Some(&input.subject),
+			// Correlates the decision with the Invitation it came from.
+			invitation: registration.invitation_id,
+		};
+		if invitation_direct_join {
+			actor.record_invitation_approval(tx, event, &groups).await?;
+			// A distinct immutable event feeds the Tenant notification center;
+			// ordinary manual approvals may also record groups in future.
 			actor
 				.record(
 					tx,
 					AdministrationEvent {
-						action: tenant_administration::REGISTRATION_APPROVE,
+						action: "invitation.direct_join",
 						identity: Some(identity_id),
 						registration: Some(id),
 						mapping: Some(mapping_id),
 						tenant: Some(&input.tenant),
 						subject: Some(&input.subject),
-						// Correlates the decision with the Invitation it came from.
 						invitation: registration.invitation_id,
 					},
 				)
 				.await?;
-			Ok(ApprovedMapping {
-				id: mapping_id,
-				identity_id,
-				tenant: input.tenant,
-				subject: input.subject,
-			})
+		} else {
+			actor.record(tx, event).await?;
+		}
+		Ok(ApprovedMapping {
+			id: mapping_id,
+			identity_id,
+			tenant: input.tenant,
+			subject: input.subject,
 		})
-		.await
 	}
 
 	/// A Tenant Administrator rejects in its Tenant's scope. A Deployment
@@ -740,6 +784,8 @@ pub(super) async fn issue_mapping(
 		.revoked_at(None)
 		.issued_by("dashboard-oidc".to_owned())
 		.mapping_id(None)
+		.end_reason(None)
+		.parent_id(None)
 		.finish();
 	AuthorizationCredential::objects()
 		.create_with_conn(tx, &credential)
@@ -1287,10 +1333,19 @@ impl DashboardMapping {
 		let own = credential.revoked_at.is_none().then_some(credential);
 		for mut credential in own.into_iter().chain(issued) {
 			credential.revoked_at = Some(revoked_at);
+			credential.end_reason = Some("mapping_disabled".into());
 			AuthorizationCredential::objects()
 				.update_with_conn(tx, &credential)
 				.await?;
 		}
+		// The person's Schedules stop with their Mapping and wait for a
+		// successor; nobody runs them in their name (#557, ADR 0134).
+		crate::apps::workspaces::services::schedules::stop_for_registrant(
+			tx,
+			&self.tenant,
+			&self.subject,
+		)
+		.await?;
 		actor
 			.record(
 				tx,
@@ -1337,47 +1392,56 @@ impl DashboardDeploymentAdministratorGrant {
 		revision: i64,
 	) -> Result<DeploymentAdministratorGrant> {
 		db.atomic(&TenancyScope::NoTenant, async |tx| {
-			let identity = DashboardIdentity::objects()
-				.filter(DashboardIdentity::field_id().eq(identity))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
-				.pop()
-				.ok_or_else(|| Error::NotFound("identity".into()))?;
-			if enabled && identity.disabled_at.is_some() {
-				return Err(Error::Forbidden);
-			}
-			let existing = Self::objects()
-				.filter(Self::field_identity_id().eq(identity.id))
-				.all_with_db(tx)
-				.await?
-				.pop();
-			let grant = if let Some(mut grant) = existing {
-				if grant.revision != revision {
-					return Err(Error::Conflict(
-						"Deployment Administrator grant revision changed".into(),
-					));
-				}
-				grant.enabled = enabled;
-				grant.revision = dashboard_rules::next_revision(grant.revision)?;
-				Self::objects().update_with_conn(tx, &grant).await?
-			} else {
-				if revision != 0 {
-					return Err(Error::Conflict(
-						"Deployment Administrator grant revision changed".into(),
-					));
-				}
-				let grant = Self::build()
-					.identity_id(identity.id)
-					.enabled(enabled)
-					.revision(1)
-					.finish();
-				Self::objects().create_with_conn(tx, &grant).await?
-			};
-			Ok(grant.contract())
+			Self::change_enabled_in(tx, identity, enabled, revision).await
 		})
 		.await
+	}
+
+	pub(crate) async fn change_enabled_in(
+		tx: &mut AtomicTransaction,
+		identity: Uuid,
+		enabled: bool,
+		revision: i64,
+	) -> Result<DeploymentAdministratorGrant> {
+		let identity = DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_id().eq(identity))
+			.select_for_update()
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or_else(|| Error::NotFound("identity".into()))?;
+		if enabled && identity.disabled_at.is_some() {
+			return Err(Error::Forbidden);
+		}
+		let existing = Self::objects()
+			.filter(Self::field_identity_id().eq(identity.id))
+			.all_with_db(tx)
+			.await?
+			.pop();
+		let grant = if let Some(mut grant) = existing {
+			if grant.revision != revision {
+				return Err(Error::Conflict(
+					"Deployment Administrator grant revision changed".into(),
+				));
+			}
+			grant.enabled = enabled;
+			grant.revision = dashboard_rules::next_revision(grant.revision)?;
+			Self::objects().update_with_conn(tx, &grant).await?
+		} else {
+			if revision != 0 {
+				return Err(Error::Conflict(
+					"Deployment Administrator grant revision changed".into(),
+				));
+			}
+			let grant = Self::build()
+				.identity_id(identity.id)
+				.enabled(enabled)
+				.revision(1)
+				.finish();
+			Self::objects().create_with_conn(tx, &grant).await?
+		};
+		Ok(grant.contract())
 	}
 }
 

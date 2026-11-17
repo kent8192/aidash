@@ -4,8 +4,9 @@ pub(crate) mod activity;
 pub mod entities;
 
 pub use channels::{
-	ChannelAttachment, ChannelAttachmentUploadQuery, ChannelHistoryQuery, ChannelMessage,
-	ChannelMessageInput, ChannelMessagePage, ChannelThread, ChannelThreadInput,
+	ChannelAttachment, ChannelAttachmentDescription, ChannelAttachmentUploadQuery,
+	ChannelHistoryQuery, ChannelMessage, ChannelMessageInput, ChannelMessagePage, ChannelThread,
+	ChannelThreadInput,
 };
 
 pub mod channels;
@@ -18,4 +19,6 @@ pub mod tasks;
 
 pub(crate) mod openapi;
 
+pub mod schedule_settings;
+pub(crate) mod schedules;
 pub(crate) mod scratch;

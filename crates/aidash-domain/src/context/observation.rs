@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 50;
 
+pub use crate::unconfirmed::NOTE as UNCONFIRMED_NOTE;
+
 fn preview(text: &str, limit: usize) -> String {
 	let mut chars = text.chars();
 	let mut head: String = chars.by_ref().take(limit).collect();
@@ -40,6 +42,8 @@ pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Val
 		})).collect::<Vec<_>>(),
 		"details":"Use workspace_read with kind and id for full records. Concatenate its content chunks in offset order to recover the JSON record."
 	});
+	// Only when something was left out, so an ordinary result does not change.
+	crate::unconfirmed::attach(&mut value, snapshot.unconfirmed.clone());
 	for (name, count) in [
 		("tasks", snapshot.tasks.len()),
 		("artifacts", snapshot.artifacts.len()),
@@ -50,6 +54,22 @@ pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Val
 		value["pages"][name] = json!({"offset":offset,"limit":limit,"total":count,"next_offset":(end<count).then_some(end)});
 	}
 	value
+}
+
+/// Drop the Workspace events that `run` produced itself (`data.run_id`) from
+/// a snapshot, before it is projected for that Run's per-step view (#942).
+/// They are the Run's own lifecycle telemetry, which its history already
+/// holds; every step mints new ones, so as evidence they would never repeat
+/// and history would grow each step. The model's observe tool keeps them.
+pub fn without_run_events(snapshot: &mut WorkspaceSnapshot, run: uuid::Uuid) {
+	snapshot.events.retain(|event| {
+		event
+			.data
+			.get("run_id")
+			.and_then(Value::as_str)
+			.and_then(|id| id.parse::<uuid::Uuid>().ok())
+			!= Some(run)
+	});
 }
 
 /// Select the largest observation page that fits without causing authorization

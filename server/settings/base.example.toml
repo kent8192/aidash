@@ -87,9 +87,11 @@ federation = true
 
 # Previews (ADR 0068): HTML and PDF File versions and Live previews are
 # served from one random subdomain each of a registrable domain separate from
-# the dashboard's. Leave `domain` unset to offer none. A local cluster uses
-# `localhost`, whose previews are served from `*.localhost`. The section may be
-# omitted; leaving every value unset makes previews unavailable.
+# the dashboard's. When unset, a localhost or loopback dashboard that sets
+# `public_port` (the HTTPS endpoint in front of the gateway, which itself serves
+# plain HTTP) defaults to `localhost`, with previews under `*.localhost`.
+# Otherwise Live previews need a domain; local PDF and HTML source previews
+# remain available without one.
 [preview]
 # domain = "aidashusercontent.app"
 # The gateway listener. In-process Self-hosted binds loopback; a Helm
@@ -119,6 +121,7 @@ federation = true
 # Cloud turns Personal Tenants and Tenant creation on. Identities restricted to
 # one Tenant are never covered.
 [tenancy]
+credential_max_days = 90
 # Create a Personal Tenant for each External Identity at its first sign-in.
 # personal_tenants = false
 # Let signed-in External Identities create Tenants. Deployment Administrators
@@ -165,6 +168,7 @@ enabled = false
 # ca_certificate_file = "/run/auth-tls/ca.pem"
 # client_certificate_file = "/run/auth-tls/cloud.pem"
 # client_private_key_file = "/run/auth-tls/cloud-key.pem"
+# validity_cache_seconds = 30 # 0 disables reuse; maximum 300
 # [dashboard.common_auth.source_issuers]
 # "https://securetoken.google.com/PROJECT/tenants/shared-pool" = "" # unrestricted
 # "https://securetoken.google.com/PROJECT/tenants/corporate-pool" = "acme" # Tenant-bound
@@ -230,6 +234,15 @@ enabled = false
 # max_concurrent = 32
 # payload_days = 365
 # incident_evidence_days = 3650
+
+# Schedules (#557): the most Schedules any Tenant and any person may hold, the
+# shortest gap between two fire times (a Tenant may only raise it) and how
+# often each replica looks for due Schedules. Takes effect on restart.
+# [schedules]
+# max_schedules = 1000
+# max_per_person = 100
+# min_interval_seconds = 900
+# poll_seconds = 15
 
 # Research providers this Deployment offers to every Tenant (ADR 0048). Each
 # Tenant still approves one before use. Takes effect on restart. The

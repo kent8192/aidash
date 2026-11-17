@@ -5,6 +5,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::time::Duration;
 
+/// How long a stop waits for the Runner to show the process ended.
+const STOP_CONFIRMATION: Duration = Duration::from_secs(15);
+const STOP_POLL: Duration = Duration::from_millis(300);
+
 fn pod_timeout(path: &str, body: &Value) -> Duration {
 	let seconds = match path {
 		"/v2/previews/start" => 75,
@@ -78,6 +82,32 @@ impl RunnerHttp {
 			.map_err(aidash_application::Error::from)
 			.map_err(Into::into)
 	}
+	/// Stop a Background process through `path` and wait until the Runner shows
+	/// it ended: a stop route answers `stopping` as soon as it signals the
+	/// process, and a caller that took that as the end would drop the process's
+	/// state (a preview's hold, a plugin's data) while it may still run.
+	async fn stop_confirmed(&self, path: &str, operation_id: &str) -> Result<()> {
+		let mut reply: CommandResult = self
+			.pod_call(path, &json!({"operation_id":operation_id}))
+			.await?;
+		let deadline = tokio::time::Instant::now() + STOP_CONFIRMATION;
+		loop {
+			if matches!(
+				reply.status.as_str(),
+				"completed" | "stopped" | "cancelled" | "timed_out"
+			) {
+				return Ok(());
+			}
+			if tokio::time::Instant::now() >= deadline {
+				return Err(ExecutionPodError::Remote {
+					code: ExecutionPodErrorCode::TerminationUnconfirmed,
+					message: format!("the process is still {}", reply.status),
+				});
+			}
+			tokio::time::sleep(STOP_POLL).await;
+			reply = self.result(operation_id).await?;
+		}
+	}
 	async fn pod_effect(&self, path: &str, body: &impl Serialize, field: &str) -> Result<()> {
 		let value: Value = self.pod_call(path, body).await?;
 		if value.get(field) != Some(&Value::Bool(true)) {
@@ -119,6 +149,10 @@ impl ExecutionPodRuntime for RunnerHttp {
 			"cancelled_waiting",
 		)
 		.await
+	}
+	async fn stop_command(&self, operation_id: &str) -> Result<CommandResult> {
+		self.pod_call("/v2/commands/stop", &json!({"operation_id":operation_id}))
+			.await
 	}
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses> {
 		self.pod_call(
@@ -175,16 +209,10 @@ impl ExecutionPodRuntime for RunnerHttp {
 		self.pod_call("/v2/mcp/call", request).await
 	}
 	async fn preview_stop(&self, operation_id: &str) -> Result<()> {
-		let _: Value = self
-			.pod_call("/v2/previews/stop", &json!({"operation_id":operation_id}))
-			.await?;
-		Ok(())
+		self.stop_confirmed("/v2/previews/stop", operation_id).await
 	}
 	async fn mcp_stop(&self, operation_id: &str) -> Result<()> {
-		let _: Value = self
-			.pod_call("/v2/mcp/stop", &json!({"operation_id":operation_id}))
-			.await?;
-		Ok(())
+		self.stop_confirmed("/v2/mcp/stop", operation_id).await
 	}
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult> {
 		self.pod_call("/v2/python/cell", request).await

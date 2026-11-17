@@ -4,6 +4,7 @@ import {
   NoticeStore,
   NOTICE_INTERVAL,
   NOTICE_HISTORY_LIMIT,
+  storedWatermarks,
   taskEventScope,
 } from "../src/notifications/model.ts";
 
@@ -328,6 +329,154 @@ test("connection notifications carry the complete resource and consent scopes in
     ),
     null,
   );
+});
+
+test("a stopped Schedule waits in the pending section and announces once", () => {
+  const store = new NoticeStore();
+  const stopped = {
+    ...entry("weekly", "schedule_stopped", "home:schedules", "failures:t1"),
+    target: { kind: "schedule", node: "home", id: "weekly", workspace: "one" },
+  };
+  store.observe(frame([], ["home:schedules"]));
+  store.observe(frame([stopped], ["home:schedules"]));
+  assert.equal(store.getSnapshot().pending.length, 1);
+  assert.equal(store.getSnapshot().pending[0].kind, "schedule_stopped");
+  assert.equal(store.takeBatch(0).length, 1);
+  store.observe(frame([stopped], ["home:schedules"]));
+  assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), []);
+  assert.equal(store.getSnapshot().recent.length, 0);
+});
+test("a scheduled Run's completion reaches the bell without a toast, its failure toasts", () => {
+  const store = new NoticeStore();
+  store.observe(
+    frame([
+      entry("quiet", null, "home:one", "RUNNING"),
+      entry("loud", null, "home:one", "RUNNING"),
+    ]),
+  );
+  store.observe(
+    frame([
+      { ...entry("quiet", "completed"), quiet: true },
+      { ...entry("loud", "failed"), quiet: false },
+    ]),
+  );
+  const batch = store.takeBatch(0);
+  assert.deepEqual(
+    batch.map((item) => item.target.id),
+    ["loud"],
+  );
+  const view = store.getSnapshot();
+  assert.equal(view.unread, true);
+  assert.deepEqual(view.recent.map((item) => item.target.id).sort(), [
+    "loud",
+    "quiet",
+  ]);
+});
+
+test("an invitation approval is announced to an administrator once", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  store.observe(frame([], [scope]));
+  const approval = {
+    ...entry("invitation-1", "completed", scope),
+    target: {
+      kind: "administration",
+      node: "home",
+      id: "invitation-1",
+      workspace: "",
+    },
+  };
+  store.observe(frame([approval], [scope]));
+  assert.equal(store.takeBatch(0).length, 1);
+  assert.equal(store.getSnapshot().recent.length, 1);
+  store.observe(frame([approval], [scope]));
+  assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), []);
+});
+
+test("an existing invitation approval remains visible after a notification center loads", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  const approval = {
+    ...entry("old-invitation", "joined", scope),
+    target: {
+      kind: "administration",
+      node: "home",
+      id: "old-invitation",
+      workspace: "",
+    },
+  };
+  store.observe(frame([approval], [scope]));
+  assert.equal(store.getSnapshot().recent.length, 1);
+  assert.equal(store.getSnapshot().unread, true);
+  assert.deepEqual(store.takeBatch(0), []);
+});
+
+function join(id, occurredAt, scope = "tenant:team") {
+  return {
+    ...entry(id, "joined", scope),
+    occurredAt,
+    target: { kind: "administration", node: "home", id, workspace: "" },
+  };
+}
+
+test("a read join stays read across a failed invitation-approvals poll", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  const old = join("join-1", "2026-11-01T00:00:00Z");
+  store.observe(frame([old], [scope]));
+  assert.equal(store.getSnapshot().unread, true);
+  store.markRead();
+  // The failed poll leaves the join scope out of the frame.
+  store.observe(frame([], []));
+  store.observe(frame([old], [scope]));
+  assert.equal(store.getSnapshot().unread, false);
+  assert.equal(store.getSnapshot().recent.length, 1);
+  const later = join("join-2", "2026-11-02T00:00:00Z");
+  store.observe(frame([old, later], []));
+  store.observe(frame([old, later], [scope]));
+  assert.equal(store.getSnapshot().unread, true);
+});
+
+test("read joins stay read after a reload, newer ones are unread", () => {
+  const saved = new Map();
+  const storage = {
+    getItem: (key) => saved.get(key) ?? null,
+    setItem: (key, value) => void saved.set(key, value),
+  };
+  const key = "notice-watermarks";
+  const scope = "tenant:team";
+  const old = join("join-1", "2026-11-01T00:00:00Z");
+  const first = new NoticeStore(storedWatermarks(storage, key));
+  first.observe(frame([old], [scope]));
+  first.markRead();
+  const reloaded = new NoticeStore(storedWatermarks(storage, key));
+  reloaded.observe(frame([old], [scope]));
+  assert.equal(reloaded.getSnapshot().unread, false);
+  assert.equal(reloaded.getSnapshot().recent.length, 1);
+  const later = join("join-2", "2026-11-02T00:00:00Z");
+  const again = new NoticeStore(storedWatermarks(storage, key));
+  again.observe(frame([later, old], [scope]));
+  assert.equal(again.getSnapshot().unread, true);
+  again.markRead(`${later.key}:joined`);
+  assert.equal(again.getSnapshot().unread, false);
+});
+
+test("reading one join does not acknowledge an older unread one", () => {
+  const saved = new Map();
+  const storage = {
+    getItem: (key) => saved.get(key) ?? null,
+    setItem: (key, value) => void saved.set(key, value),
+  };
+  const scope = "tenant:team";
+  const older = join("join-1", "2026-11-01T00:00:00Z");
+  const newer = join("join-2", "2026-11-02T00:00:00Z");
+  const store = new NoticeStore(storedWatermarks(storage, "marks"));
+  store.observe(frame([newer, older], [scope]));
+  store.markRead(`${newer.key}:joined`);
+  assert.equal(saved.has("marks"), false);
+  const reloaded = new NoticeStore(storedWatermarks(storage, "marks"));
+  reloaded.observe(frame([newer, older], [scope]));
+  assert.equal(reloaded.getSnapshot().unread, true);
 });
 
 test("each Node's task events have their own baseline, seeded silently", () => {

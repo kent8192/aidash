@@ -224,7 +224,12 @@ pub async fn invoke(
 			let search: ScratchSearch = parse(input)?;
 			tokio::time::timeout(
 				std::time::Duration::from_secs(scope.limits()?.search_seconds),
-				super::pod::files::search(pod, search, scope.limits()?.search_matches),
+				super::pod::files::search(
+					pod,
+					search,
+					scope.limits()?.search_matches,
+					scope.limits()?.search_bytes,
+				),
 			)
 			.await
 			.map_err(|_| Error::Invalid("SEARCH_TIME_LIMIT".into()))??
@@ -248,7 +253,7 @@ pub async fn invoke(
 		("process_stop", Some(pod)) => {
 			super::pod::processes::stop(pod, &run.id.to_string(), parse(input)?).await?
 		}
-		_ => legacy(scope, run, name, &mut area, input, key).await?,
+		_ => legacy(scope, run, name, &mut area, legacy_input(name, input), key).await?,
 	};
 	envelope(scope, &area, key, result)
 }
@@ -274,6 +279,23 @@ fn scratch_call(name: &str, input: &Value) -> bool {
 fn without_nulls(mut input: Value) -> Value {
 	if let Some(object) = input.as_object_mut() {
 		object.retain(|_, value| !value.is_null());
+	}
+	input
+}
+/// A `file_read` or `file_search` call in the 1.0.1 schema, as the Working Area
+/// tools read it: the nullable fields that schema added are absent when null,
+/// and an omitted `representation` reads text.
+fn legacy_input(name: &str, input: Value) -> Value {
+	if !matches!(name, "file_read" | "file_search") {
+		return input;
+	}
+	let mut input = without_nulls(input);
+	if name == "file_read"
+		&& let Some(object) = input.as_object_mut()
+	{
+		object
+			.entry("representation")
+			.or_insert_with(|| json!("text"));
 	}
 	input
 }

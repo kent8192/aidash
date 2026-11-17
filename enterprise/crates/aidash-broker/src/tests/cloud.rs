@@ -135,6 +135,7 @@ fn row(id: Uuid, tenant: &str, version: &str) -> ProviderCredential {
 		fingerprint: "fixture".into(),
 		last4: "test".into(),
 		key_digest: None,
+		key_origin: Default::default(),
 		state: CredentialState::Active,
 		created_at: chrono::Utc::now(),
 		rotated_at: None,
@@ -276,6 +277,7 @@ impl Cloud {
 			request_estimator: None,
 			provider_route: None,
 			estimate_diagnostics: None,
+			reasoning_passback: None,
 		}
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {

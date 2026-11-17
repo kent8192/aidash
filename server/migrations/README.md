@@ -1,5 +1,14 @@
 # Aidash native migration history
 
+`federation/0022_delegation_unused_columns` (after
+`federation/0021_node_preview_origin_merge`) drops the `delegations_retry` index
+and the `binding_snapshot`, `human_requests`, `next_attempt_at` and `delivered`
+columns of `delegations`, which nothing writes or reads since outbound delivery
+and the foreign Agent closure import were removed (#373). A delegation row now
+records only the agent version that runs a locally delegated Task.
+`0023_delegation_unused_columns_state` records the model state. Both use typed
+operations; the reverse restores the columns empty.
+
 `identity/0068_decision_coalescing` adds `run_id`, `remote_grant_id` and
 `coalesced` to `authorization_decisions`. Existing rows name neither and stay as
 they are. `identity/0069_decision_coalescing_indexes` is database-only and adds
@@ -494,6 +503,13 @@ The forward and backward SQL assets from `registry/0008_provider_descriptors` to
    `BYPASSRLS`. Configure all new replicas to use that database, the
    `aidash_server` login and the same pinned image; servers and workers refuse
    to start as a superuser, a `BYPASSRLS` role or an owner of database objects.
+   For a non-Compose database, run `aidash setup-roles --superuser-url <url>`
+   once to create the roles, database ownership, default privileges and
+   extensions. Save
+   the printed URLs securely; existing roles retain their passwords unless
+   `--owner-password` or `--server-password` is supplied. The PostgreSQL image
+   or package must provide the extensions; `local-dev-db` and `migrate` check
+   for `pg_jsonschema` 0.3.4.
 3. Run the native migration command once as `aidash_owner`. Inspect `showmigrations` and verify
    replay, schema constraints, and configured Federation and identity settings before
    accepting writes.
@@ -767,6 +783,21 @@ operations (#752). A record holds them once its outcome settles, so a record tha
 never settled and a record older than this migration leave them null. The typed
 operations update the ORM snapshot, so no state-only checkpoint is needed.
 
+`execution/0129_host_connection_limits` (after
+`execution/0128_remove_generated_summary_state`) adds the nullable `error` and
+`wait_ms` of `egress_scope_connections` and drops `suspended`,
+`window_started_at` and `connections_in_window` from `egress_scope_state`, with
+typed operations (#845). Nothing suspends a scope any more, so a suspended scope
+opens again. A Host connection that held its limits records the code its client
+received and its wait. Rows older than the migration leave the new columns
+null. The reverse restores the state columns with their defaults, so every scope
+comes back unsuspended. `execution/0130_scope_refusals` is database-only and
+creates `egress_scope_refusals`, the per-minute counts of connections that ended
+before they held a limit, with its index and the Tenant isolation policy that
+`0110` gives the other scope tables; Reinhardt migrations cannot express row
+policies. `execution/0131_scope_refusals_state` is its state-only checkpoint, as
+`0111` is for `0109`.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -793,6 +824,7 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
 `registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
+`registry/0069_schedule_tools` admits the four `core.schedules@1` builtins (`schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete`, #557) in `aidash_descriptor_is_valid`, and lets an Agent's `remove_default` name them in `aidash_agent_bindings_is_valid`, since they are default tools. It copies both current bodies to `aidash_descriptor_is_valid_before_schedules_0069` and `aidash_agent_before_schedules_0069`; a Schedule descriptor is checked with the established builtin rules of `core.tasks@1`, and every other `remove_default` entry by the previous rules, so nothing else is relaxed. PostgreSQL function bodies have no typed Reinhardt operation, so it is a reversible SQL asset. Reversal refuses with SQLSTATE `55000` while a registry tool declares `core.schedules@1` or an Agent removes a Schedule tool, then restores both previous bodies. It follows the Tenant Registry migrations of #243 and is listed in `TENANT_REGISTRY_MIGRATIONS`.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
@@ -915,6 +947,16 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `identity/0072_remote_execution_activation` adds the nullable `authorization_remote_execution.activated_at` (#772). The Home sets it after the receiving Node's activation response matched, so a binding left behind by a refused activation is not read as a Run that started. One Reinhardt `AddColumn` carries both the table and the model state; nothing is backfilled, because nothing is deployed. A binding counts as live only while its `task_revision` equals the Task's revision, so a Task reopened after its remote Run ended is an Unassigned Task again.
 
+`identity/0077_provider_credential_origin` adds `provider_credentials.key_origin` (#892): `authorization`, `pasted` or `host_access`, saying how the pinned Key Material arrived. A Reinhardt `AddColumn` with the default `'authorization'` fills existing rows, which all came from Provider Authorization, and an `AlterColumn` then drops the default so every write names its origin.
+
+`identity/0080_schedule_member_policy` adds `schedule.create` (#557) to unchanged default member policies with a Reinhardt Query-generated data asset, as `identity/0067_scratch_member_policy` added `scratch.create`. It opens Deployment Scope, increments the revisions of the bundles it changes, and leaves custom member policies alone. Its reverse is a no-op for the same reason as 0067's. The 0067 builder pins the member policy as it stood then, so later grants do not change its asset; `migrationseeds` checks both.
+
+`identity/0081_scheduled_executions` adds `authorization_execution.scheduled` (#557, ADR 0134), false by default. The scheduler sets it on the Run a tick starts, and every admission by a Run that carries it marks the admitted Run too, whatever Task it delegates, so no Run descended from a Schedule registers or changes Schedules. One Reinhardt `AddColumn` carries both the table and the model state; nothing is backfilled, because nothing is deployed.
+
+`execution/0132_generation_scheduled` adds `generation_requests.scheduled` (#557, ADR 0134), false by default. A generation request made by a Run that carries the mark above carries it too, and the Run its generated Agent is delegated takes it on, so `task_assign` cannot lead out of a Schedule either. One Reinhardt `AddColumn` carries both the table and the model state.
+
+`workspaces/0029_schedules` creates `schedules`, `schedule_ticks` and `schedule_limits` with typed operations (#557, ADR 0134). A Schedule belongs to one Workspace through `(tenant, workspace_id)` and is deleted with it; its ticks go with it. `schedules_due` is the partial index the scheduler of every replica reads, and `schedule_ticks_slot_key` is the unique key `(schedule_id, scheduled_at)` of scheduled ticks that keeps a scheduled time to one Task across restarts and replicas ("Run now" ticks, which carry `started_by`, are outside it). Checks keep a halt's reason, its time and a successor consistent. `halt_reason` keeps a stop's reason in words, and `creation_key` with `created_by_run_id` (unique in `schedules_creation_key`) lets an Agent's retried tool call find the Schedule its first call registered. `workspaces/0030_schedules_row_level_security` enforces the forced Tenant policy on the three tables with the rendered policy template, and `workspaces/0031_schedules_model_state` is the generated state-only checkpoint.
+
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 
 `execution/0094_subnodes`, `0095_subnodes_row_level_security`, and
@@ -942,14 +984,22 @@ rewritten until the migration is reapplied.
 
 `registry/0068_reject_new_compaction_deciders` adds a `NOT VALID` check that preserves existing compaction Decider rows while rejecting new or updated ones. PostgreSQL `NOT VALID` constraint DDL is expressed as raw SQL because Reinhardt does not provide it.
 
-`registry/0069_remove_package_index_draft_bindings` removes draft Bindings to the removed package indexes `core.npm` and `core.pypi` (#745). Rewriting a JSON array inside `agent_drafts.entry` is a one-time data change Reinhardt has no typed operation for, so it is SQL; reversal leaves the drafts as they are. Registered Agent versions keep their Bindings.
+`identity/0073_invitation_direct_join` stores the issuer Mapping or bearer fingerprint and direct-join choice on Invitations and records approved groups in administration history. Existing Invitations retain the pending-request behavior. `identity/0074_invitation_notification_index` indexes the Tenant and action with the event time for the bounded notification feed.
 
-`registry/0070_execution_pod_tools` admits the built-in descriptors of the Execution Pod groups (#745): `file_save`, `file_remove` and `file_copy` of `core.scratch@1`, `process_list`, `process_log` and `process_stop` of `core.processes@1`, and `mcp_stdio` of `core.mcp_stdio@1`, all Sandboxed and without a lifecycle. Without it every Tenant creation fails the `registry_tool_config` check. Its SQL keeps the previous function body and delegates to it; PostgreSQL function bodies are DDL that Reinhardt migrations cannot express. Reversal refuses while definitions use these providers.
+`identity/0078_bootstrap_reservations` records each Tenant reservation source and adds a Deployment-wide Host Access email reservation for the first sign-in. It allows one Demo and one Host Access reservation per Tenant and email, and extends the Tenant and Node creator checks to accept `host_access`; `identity/0079_bootstrap_reservations_state` records the new field and table in ORM state, keeping physical checks out of that state. Rollback removes pending Deployment Administrator reservations and the reservation source column, and refuses while Tenant or Node records name Host Access as their creator or when Demo and Host Access reservations share an address in a Tenant.
 
-`registry/0071_remove_agent_external_service_draft_bindings` removes `external_service` Bindings from Agent drafts (#738): External services are made available to a Scratch Space only, and an Agent no longer binds one. Rewriting a JSON array inside `agent_drafts.entry` is a one-time data change Reinhardt has no typed operation for, so it is SQL; reversal leaves the drafts as they are. Registered Agent versions are immutable and digest-pinned: they keep the Binding, which Run start, Approval Review and Marketplace publication leave out. The Binding contract function is not changed, so an imported older definition still inserts; new registrations are refused by the application.
+`workspaces/0028_attachment_description` adds the nullable `channel_attachments.description` (#622 part 2): the Image Description that the person or Agent who posted an image wrote for it. One Reinhardt `AddColumn` carries both the table and the model state. Nothing is backfilled; an image posted earlier has no description until its poster writes one. Thread Attachment images are indexed in the existing `semantic_entries` under the key `attachment-image:<attachment id>`, so no knowledge table changes.
 
-`identity/0073_remove_package_index_approvals` deletes the Catalog Approvals of `core.npm` and `core.pypi` (#745). A one-time data deletion Reinhardt cannot express as a typed operation; reversal does not restore them.
+`registry/0072_remove_agent_external_service_draft_bindings` (after `registry/0071_execution_pod_tools`) removes `external_service` Bindings from Agent drafts (#738): External services are made available to a Scratch Space only, and an Agent no longer binds one. Rewriting a JSON array inside `agent_drafts.entry` is a one-time data change Reinhardt has no typed operation for, so it is SQL; reversal leaves the drafts as they are. Registered Agent versions are immutable and digest-pinned: they keep the Binding, which Run start, Approval Review and Marketplace publication leave out. The Binding contract function is not changed, so an imported older definition still inserts; new registrations are refused by the application.
 
-`execution/0129_egress_run_revocations` records revoked Runs and adds Run attribution and timing to scope connections. `0130_egress_run_revocations_rls` adds the key to the Tenant root and the forced Tenant policy; raw SQL is required because Reinhardt migrations do not express row-level policies.
+`knowledge/0055_attachment_images` (after `0054_memory_constraint_state`) widens the `semantic_entries_counters` CHECK so a semantic entry may name a Thread Attachment image: `{"kind":"attachment_image","message_id":…,"attachment_id":…}` with exactly those keys and UUID strings (#622 part 2). Reinhardt can only replace a named CHECK by dropping and re-adding it, so the migration repeats the `0041_working_images` expression and adds one alternative. It is database-only, like `0041`. Rolling back fails while any attachment image entry remains.
 
-`execution/0134_remove_legacy_egress_tokens` drops the `egress_budgets` and `egress_sessions` tables, the `egress_requests.session_id` and `operation_id` columns and the `core_live_previews.egress_expires_at` column (#738): External services are reached only through the Execution Pod proxy, so operation tokens, per-operation budgets and Live preview session tokens are gone. `egress_requests.operation_id` and its key to `core_operations` go too: a record names only its Run, and Node purge follows that Run. `0135_remove_legacy_egress_tokens_state` updates the model state. Dependent keys, indexes and the `egress_counters` check are dropped with typed operations first, so reversal restores them; the table drops reverse to the historical schema with the original `created_at` default. Raw SQL is needed only for the two row-level policies, which Reinhardt migrations cannot express; the backward asset restores them after the tables return. Reversal restores empty tables.
+`registry/0070_remove_package_index_draft_bindings` (after `registry/0069_schedule_tools`) removes draft Bindings to the removed package indexes `core.npm` and `core.pypi` (#745). Rewriting a JSON array inside `agent_drafts.entry` is a one-time data change Reinhardt has no typed operation for, so it is SQL; reversal leaves the drafts as they are. Registered Agent versions keep their Bindings.
+
+`registry/0071_execution_pod_tools` admits the built-in descriptors of the Execution Pod groups (#745): `file_save`, `file_remove` and `file_copy` of `core.scratch@1`, `process_list`, `process_log` and `process_stop` of `core.processes@1`, and `mcp_stdio` of `core.mcp_stdio@1`, all Sandboxed and without a lifecycle. Without it every Tenant creation fails the `registry_tool_config` check. Its SQL keeps the previous function body and delegates to it; PostgreSQL function bodies are DDL that Reinhardt migrations cannot express. Reversal refuses while definitions use these providers.
+
+`identity/0082_remove_package_index_approvals` (after `identity/0081_scheduled_executions`) deletes the Catalog Approvals of `core.npm` and `core.pypi` (#745). A one-time data deletion Reinhardt cannot express as a typed operation; reversal does not restore them.
+
+`execution/0133_egress_run_revocations` (after `execution/0132_generation_scheduled`) records revoked Runs and adds Run attribution and timing to scope connections. `0134_egress_run_revocations_rls` adds the key to the Tenant root and the forced Tenant policy; raw SQL is required because Reinhardt migrations do not express row-level policies. `execution/0135_agent_plugin_data` is database-only and creates `agent_plugin_data`, the saved `${PLUGIN_DATA}` of an Agent Plugin per Tenant, Scratch Space and Agent, with its Tenant key, owner key, bounds check and a cascading key to `workspaces` `scratch_spaces`; `0136_agent_plugin_data_rls` adds its forced Tenant policy in raw SQL for the same reason, and `0137_agent_plugin_data_state` is its state-only checkpoint.
+
+`execution/0138_remove_legacy_egress_tokens` (after `execution/0137_agent_plugin_data_state`) drops the `egress_budgets` and `egress_sessions` tables, the `egress_requests.session_id` and `operation_id` columns and the `core_live_previews.egress_expires_at` column (#738): External services are reached only through the Execution Pod proxy, so operation tokens, per-operation budgets and Live preview session tokens are gone. `egress_requests.operation_id` and its key to `core_operations` go too: a record names only its Run, and Node purge follows that Run. `0139_remove_legacy_egress_tokens_state` updates the model state. Dependent keys, indexes and the `egress_counters` check are dropped with typed operations first, so reversal restores them; the table drops reverse to the historical schema with the original `created_at` default. Raw SQL is needed only for the two row-level policies, which Reinhardt migrations cannot express; the backward asset restores them after the tables return. Reversal restores empty tables.

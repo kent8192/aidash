@@ -1,5 +1,7 @@
 //! Provider Credential HTTP composition, live policy decisions, and immutable admission pins.
-use super::super::serializers::provider_credentials::{BindingUpdate, Page, Revision};
+use super::super::serializers::provider_credentials::{
+	BindingUpdate, Page, Revision, Supplied, Supply,
+};
 use crate::{
 	Error, Result,
 	authorization::{access::NativeAccess, identity::Actor},
@@ -11,7 +13,7 @@ use aidash_application::{
 };
 use aidash_domain::{
 	policy::Resource,
-	provider_credentials::{Binding, Provider, State},
+	provider_credentials::{Binding, KeyOrigin, Provider, State},
 };
 use reinhardt::injectable;
 use secrecy::SecretString;
@@ -217,6 +219,65 @@ impl Management {
 				error,
 				key_settings_url,
 			})
+	}
+	/// Stores Key Material a person pasted, under the same live
+	/// `provider_credential.create` or `.rotate` decision Provider Authorization
+	/// uses (#892). The Deployment's Offering decides whether pasting is
+	/// accepted at all; a new Provider Credential is bound like a connection.
+	pub async fn supply(&self, actor: Actor, tenant: String, input: Supply) -> Result<Supplied> {
+		let service = self.service()?;
+		let provider = Provider::credential(&input.provider)?;
+		let target = match (input.provider_credential_id, input.expected_revision) {
+			(None, None) => Target::Connect { id: Uuid::now_v7() },
+			(Some(id), Some(expected_revision)) => Target::Reconnect {
+				id,
+				expected_revision,
+			},
+			_ => {
+				return Err(Error::Invalid(
+					"replacing a key requires provider_credential_id and expected_revision".into(),
+				));
+			}
+		};
+		let authority = self
+			.authorize(
+				&actor,
+				&tenant,
+				&target.id().to_string(),
+				provider,
+				"provider_credential",
+				Self::authorization_verb(target),
+			)
+			.await?;
+		let result = service
+			.supply(
+				&tenant,
+				provider,
+				target,
+				input.key,
+				KeyOrigin::Pasted,
+				Self::actor(&actor),
+			)
+			.await
+			.map_err(Error::from);
+		let validated = authority.finish_operation(result).await?;
+		let bound = match target {
+			Target::Connect { id } => self.bind_if_unbound(actor, tenant, provider, id).await,
+			Target::Reconnect { id, .. } => {
+				let mut scope = service
+					.repository
+					.begin(&validated.provider_credential.tenant)
+					.await?;
+				let bound = scope
+					.bindings()
+					.await?
+					.iter()
+					.any(|b| b.provider == provider && b.provider_credential_id == Some(id));
+				scope.commit().await?;
+				bound
+			}
+		};
+		Ok(Supplied { validated, bound })
 	}
 	/// A connection serves the Tenant's Runs right away when the provider has no
 	/// usable binding (none, or one to a revoked Provider Credential) and the

@@ -33,6 +33,8 @@ pub mod save;
 
 pub const SHELL: &str = "shell";
 pub const PYTHON: &str = "code_interpreter";
+/// Leads a cell's output when its interpreter was started afresh.
+const SESSION_RESET_NOTICE: &str = "[The Python session restarted because the Execution Pod was replaced; earlier variables and imports are gone.]\n";
 
 /// Admit a command or Python cell for the Execution Pod. The Working Area is
 /// neither checked nor held: the command writes the Scratch Space, so
@@ -180,6 +182,27 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 				),
 			};
 		}
+	} else if python && status == "completed" {
+		// The cell helper ended without a cell result: the interpreter exited or
+		// crashed (os._exit, a closed socket). Its diagnostic is the output.
+		failed = true;
+		output = decode(reply.stdout.as_deref());
+		let stderr = decode(reply.stderr.as_deref());
+		if !stderr.is_empty() {
+			if !output.is_empty() && !output.ends_with(b"\n") {
+				output.push(b'\n');
+			}
+			output.extend_from_slice(&stderr);
+		}
+		error = error_value(
+			"PYTHON_SESSION_ENDED",
+			&format!(
+				"The Python interpreter ended before the cell finished (exit code {}); its variables are gone.",
+				reply
+					.exit_code
+					.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+			),
+		);
 	} else if !python {
 		output = decode(reply.stdout.as_deref());
 		// While the command runs only stdout grows, so offsets stay valid;
@@ -196,6 +219,13 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 		if reply.truncated == Some(true) {
 			object.insert("truncated".into(), json!(true));
 		}
+	}
+	if python && reply.session_replaced == Some(true) {
+		// The cell ran in a new interpreter: say so before its output (#745).
+		object.insert("session_reset".into(), json!(true));
+		let mut notice = SESSION_RESET_NOTICE.as_bytes().to_vec();
+		notice.extend_from_slice(&output);
+		output = notice;
 	}
 	object.insert("preview_bytes".into(), json!(STANDARD.encode(&output)));
 	object.remove("preview");
@@ -412,6 +442,25 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 				.await?;
 			return Ok(());
 		}
+		// A row the Runner may already hold can no longer be observed or stopped
+		// through this Run: its authority was revoked (the Read Recheck stops the
+		// Run's processes) or its Scratch Space is gone. Retrying would keep it
+		// active forever, so it ends with an unknown outcome.
+		Err(Error::Forbidden | Error::NotFound(_) | Error::Unauthorized) => {
+			let mut result = operation.result.clone();
+			if !result.is_object() {
+				result = json!({});
+			}
+			result["termination_confirmed"] = json!(false);
+			result["error"] = error_value(
+				"EXECUTION_UNVERIFIED",
+				"The Run's authority or its Scratch Space ended while this command was active; its effects are unknown.",
+			);
+			repository
+				.save(operation.id, &operation.state, "uncertain", &result)
+				.await?;
+			return Ok(());
+		}
 		Err(error) => return Err(error),
 	};
 	let dispatch_pending = operation.result["dispatch_pending"] == true;
@@ -457,15 +506,29 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 		}
 		"cancelling" | "submitted" | "running" => {
 			let stopping = operation.state == "cancelling" || operation.run_finished;
-			if stopping {
-				// The Runner serializes a Run's foreground commands, so stopping
-				// the Run's foreground work stops this one and leaves its
+			if stopping && operation.run_finished {
+				// The Run ended: stop all its foreground work, leaving its
 				// Background processes and previews running.
 				context
 					.runtime
 					.cancel_waiting(context.scratch_space_id(), &operation.run_id.to_string())
 					.await
 					.map_err(tool_error)?;
+			} else if stopping {
+				// An explicit cancel stops only this command: a Run may have
+				// several foreground commands running at once.
+				match context
+					.runtime
+					.stop_command(&operation.id.to_string())
+					.await
+				{
+					Ok(_)
+					| Err(ExecutionPodError::Remote {
+						code: ExecutionPodErrorCode::CommandNotFound,
+						..
+					}) => {}
+					Err(error) => return Err(tool_error(error)),
+				}
 			}
 			match context.runtime.result(&operation.id.to_string()).await {
 				Ok(reply) => {

@@ -925,7 +925,17 @@ impl aidash_application::egress::EgressScopes for GatewayScopes {
 	async fn record(&self, _: aidash_application::egress::ConnectionRecord) -> Result<(), Error> {
 		unreachable!("a service request is not a Host connection")
 	}
-	async fn lift_suspension(&self, _: &aidash_domain::egress::ScopeId) -> Result<(), Error> {
+	async fn record_refusals(
+		&self,
+		_: Vec<aidash_application::egress::RefusalTally>,
+	) -> Result<(), Error> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn notify_many_hosts(
+		&self,
+		_: &aidash_domain::egress::ScopeId,
+		_: usize,
+	) -> Result<(), Error> {
 		unreachable!("a service request is not a Host connection")
 	}
 }

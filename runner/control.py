@@ -1741,7 +1741,8 @@ class Handler(BaseHTTPRequestHandler):
                     'error': getattr(runner.execution_pods, 'admission_error', None)}
         if self.command == 'POST' and path in (
                 '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
-                '/v2/commands/submit', '/v2/commands/result', '/v2/commands/refuse', '/v2/runs/cancel', '/v2/runs/stop',
+                '/v2/commands/submit', '/v2/commands/result', '/v2/commands/refuse', '/v2/commands/stop',
+                '/v2/runs/cancel', '/v2/runs/stop',
                 '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
                 '/v2/previews/start', '/v2/previews/stop',
@@ -1767,6 +1768,8 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.command_result(request['operation_id'])
             if path == '/v2/commands/refuse':
                 return runner.execution_pods.refuse_command(request['operation_id'], request['scratch_space_id'], request['run_id'])
+            if path == '/v2/commands/stop':
+                return runner.execution_pods.stop_command(request['operation_id'])
             if path == '/v2/runs/cancel':
                 return runner.execution_pods.cancel_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/runs/stop':
@@ -1782,7 +1785,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/v2/previews/start':
                 return runner.execution_pods.start_preview(request)
             if path == '/v2/previews/stop':
-                return runner.execution_pods.stop_background(request['operation_id'])
+                return runner.execution_pods.stop_preview(request['operation_id'])
             if path == '/v2/mcp/start':
                 return runner.execution_pods.start_mcp(request)
             if path == '/v2/mcp/call':

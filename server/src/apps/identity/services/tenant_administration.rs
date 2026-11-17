@@ -8,8 +8,8 @@ use crate::apps::identity::serializers::oidc::{
 	Approval, ApprovedMapping, MappingRevision, Registration,
 };
 use crate::apps::identity::serializers::tenant_administration::{
-	Membership, MembershipUpdate, TenantAdministration, TenantApproval, TenantMapping,
-	TenantRegistration,
+	InvitationApprovalNotice, Membership, MembershipUpdate, TenantAdministration, TenantApproval,
+	TenantMapping, TenantRegistration,
 };
 use crate::authorization::identity::Actor;
 use crate::federation::Federation;
@@ -30,6 +30,46 @@ pub async fn provide(#[inject] runtime: Federation) -> TenantAdministrations {
 }
 
 impl TenantAdministrations {
+	pub(crate) async fn credential_maximum(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<crate::apps::identity::serializers::tenant_administration::CredentialMaximum> {
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let maximum = self.runtime.config.credential_max_seconds;
+		let result =
+			self.runtime
+				.store
+				.pool
+				.atomic(&administrator.scope()?, async |tx| {
+					administrator.lock(tx, false).await?;
+					let seconds = crate::apps::identity::models::Tenant::credential_maximum(
+						tx, &tenant, maximum, false,
+					)
+					.await?;
+					Ok(crate::apps::identity::serializers::tenant_administration::CredentialMaximum { seconds })
+				})
+				.await;
+		self.finish(&administrator, result).await
+	}
+
+	pub(crate) async fn set_credential_maximum(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		input: crate::apps::identity::serializers::tenant_administration::CredentialMaximum,
+	) -> Result<crate::apps::identity::serializers::tenant_administration::CredentialMaximum> {
+		let deployment = self.runtime.config.credential_max_seconds;
+		aidash_domain::identity::credentials::validate_tenant_maximum(input.seconds, deployment)?;
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let result = administrator
+			.set_credential_maximum(&self.runtime.store.pool, input.seconds, deployment)
+			.await;
+		self.finish(&administrator, result).await?;
+		Ok(input)
+	}
 	/// Bearer Subject Credentials and Deployment Administrators are never Tenant Administrators.
 	pub(crate) async fn administrator(
 		&self,
@@ -101,6 +141,19 @@ impl TenantAdministrations {
 			});
 		}
 		Ok(overview)
+	}
+
+	pub(crate) async fn invitation_approvals(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<Vec<InvitationApprovalNotice>> {
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let result = administrator
+			.invitation_approvals(&self.runtime.store.pool)
+			.await;
+		self.finish(&administrator, result).await
 	}
 
 	pub(crate) async fn subnode_limits(

@@ -66,8 +66,6 @@ pub enum DeploymentScopeReason {
 	ApprovalObservation,
 	/// Claiming and publishing the event outbox.
 	OutboxDispatch,
-	/// Claiming and delivering delegations that are due for a retry.
-	DelegationRetry,
 	/// Listing and reconciling generation requests and foreign generation
 	/// intents.
 	GenerationReconcile,
@@ -114,6 +112,8 @@ pub enum DeploymentScopeReason {
 	/// Mapping. The Tenant's name is drawn inside the transaction (ADR 0050),
 	/// so no Tenant Scope can name it when the transaction begins.
 	TenantCreation,
+	/// Host Access first-run and administrator recovery.
+	Bootstrap,
 	/// Revalidating External Identities that have work in any Tenant, and
 	/// stopping a disabled identity's Runs in every Tenant.
 	IdentityStatus,
@@ -125,6 +125,10 @@ pub enum DeploymentScopeReason {
 	RunTenant,
 	/// Resolve the Tenant of a Scratch Space named by an operator.
 	ScratchSpaceTenant,
+	/// Finding due Schedules and the started ticks whose Runs ended, across
+	/// Tenants (#557). Each one is then handled in its Tenant's scope, as its
+	/// Registrant.
+	ScheduleTicks,
 	/// Reading current Data Protection policies along a Run's delegation ancestry.
 	DataProtectionEvaluation,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
@@ -164,7 +168,6 @@ impl DeploymentScopeReason {
 			Self::ActivationClaim => "activation-claim",
 			Self::ApprovalObservation => "approval-observation",
 			Self::OutboxDispatch => "outbox-dispatch",
-			Self::DelegationRetry => "delegation-retry",
 			Self::GenerationReconcile => "generation-reconcile",
 			Self::SemanticIndexing => "semantic-indexing",
 			Self::SemanticMaintenance => "semantic-maintenance",
@@ -181,10 +184,12 @@ impl DeploymentScopeReason {
 			Self::DeploymentAdministration => "deployment-administration",
 			Self::IdentityTenants => "identity-tenants",
 			Self::TenantCreation => "tenant-creation",
+			Self::Bootstrap => "bootstrap",
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
 			Self::ScratchSpaceTenant => "scratch-space-tenant",
+			Self::ScheduleTicks => "schedule-ticks",
 			Self::DataProtectionEvaluation => "data-protection-evaluation",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::OAuthAuthorization => "oauth-authorization",
@@ -207,7 +212,6 @@ impl DeploymentScopeReason {
 			Self::ActivationClaim
 			| Self::ApprovalObservation
 			| Self::OutboxDispatch
-			| Self::DelegationRetry
 			| Self::SemanticMaintenance
 			| Self::GenerationReconcile
 			| Self::Retention
@@ -219,6 +223,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministration
 			| Self::IdentityTenants
 			| Self::TenantCreation
+			| Self::Bootstrap
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
 			| Self::TenantPurge
@@ -232,6 +237,7 @@ impl DeploymentScopeReason {
 			| Self::FederationInbound
 			| Self::RunTenant
 			| Self::ScratchSpaceTenant
+			| Self::ScheduleTicks
 			| Self::DataProtectionEvaluation
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
@@ -265,7 +271,6 @@ mod tests {
 		let reasons = [
 			DeploymentScopeReason::ActivationClaim,
 			DeploymentScopeReason::OutboxDispatch,
-			DeploymentScopeReason::DelegationRetry,
 			DeploymentScopeReason::GenerationReconcile,
 			DeploymentScopeReason::SemanticIndexing,
 			DeploymentScopeReason::SemanticMaintenance,
@@ -282,10 +287,12 @@ mod tests {
 			DeploymentScopeReason::DeploymentAdministration,
 			DeploymentScopeReason::IdentityTenants,
 			DeploymentScopeReason::TenantCreation,
+			DeploymentScopeReason::Bootstrap,
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::ScratchSpaceTenant,
+			DeploymentScopeReason::ScheduleTicks,
 			DeploymentScopeReason::DataProtectionEvaluation,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::OAuthAuthorization,

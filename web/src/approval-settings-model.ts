@@ -218,6 +218,16 @@ export function answeredAtDeadline(request: unknown): boolean {
   return answered === false && reason === "answer_deadline";
 }
 
+/** Whether the system closed an unanswered request when its Run ended. */
+export function closedWhenRunEnded(request: unknown): boolean {
+  if (!request || typeof request !== "object") return false;
+  const { response, answered_by } = request as Record<string, unknown>;
+  if (answered_by !== "system" || !response || typeof response !== "object")
+    return false;
+  const value = response as Record<string, unknown>;
+  return value.answered === false && value.reason === "run_ended";
+}
+
 /** The moment shown for a deadline, which can be days away. */
 export function deadlineTime(at: string, locale: string): string {
   return new Date(at).toLocaleString(locale, {

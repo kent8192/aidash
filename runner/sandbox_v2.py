@@ -22,6 +22,7 @@ class _Data(ctypes.Structure):
                 ('inheritable', ctypes.c_uint32)]
 
 
+
 def drop_user_capabilities(docker_enabled):
     """Permanently reduce this process only; call after forking bootstrap."""
     if type(docker_enabled) is not bool:
@@ -819,7 +820,8 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
-    if len(sys.argv) == 4 and sys.argv[1] == 'port-check':
+    if len(sys.argv) in (4, 5) and sys.argv[1] == 'port-check':
+        import ipaddress
         import json
         import socket
         if os.environ.get('AIDASH_POD_UID') != sys.argv[2]:
@@ -827,8 +829,10 @@ if __name__ == '__main__':
         port = int(sys.argv[3])
         if not 1 <= port <= 65535:
             raise ValueError('invalid port')
+        # The Pod's own address unless a caller names one (loopback for an occupancy check).
+        host = str(ipaddress.ip_address(sys.argv[4])) if len(sys.argv) == 5 else '127.0.0.1'
         try:
-            with socket.create_connection(('127.0.0.1', port), timeout=1):
+            with socket.create_connection((host, port), timeout=1):
                 ready = True
         except OSError:
             ready = False
@@ -840,14 +844,14 @@ if __name__ == '__main__':
         if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
             raise ValueError('Execution Pod identity changed')
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from files_v2 import FileService, InvalidPath
+        from files_v2 import FileService, InvalidPath, run_bounded
         try:
             request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
             service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
             operation = sys.argv[2]
             if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
                 raise ValueError('invalid file operation')
-            result = {'result': getattr(service, operation)(request)}
+            result = {'result': run_bounded(service, operation, request)}
         except InvalidPath as error:
             result = {'error': {'code': 'invalid_path', 'message': str(error)}}
         except (ValueError, KeyError, TypeError, OSError) as error:

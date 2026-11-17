@@ -8,10 +8,16 @@ use reinhardt::{
 use serde_json::Value;
 use uuid::Uuid;
 
-async fn records(tx: &mut dyn TransactionExecutor, grant: Uuid, lock: bool) -> Result<Vec<Record>> {
+struct Journal {
+	admission: Uuid,
+	requests: Vec<Record>,
+	ended: bool,
+}
+
+async fn records(tx: &mut dyn TransactionExecutor, grant: Uuid, lock: bool) -> Result<Journal> {
 	let mut query = Query::select();
 	query
-		.column(Alias::new("human_requests"))
+		.columns([Alias::new("human_requests"), Alias::new("admission_id")])
 		.from(Alias::new("authorization_remote_execution"))
 		.and_where(Expr::col("grant_id").eq(Expr::value(grant)));
 	if lock {
@@ -22,12 +28,38 @@ async fn records(tx: &mut dyn TransactionExecutor, grant: Uuid, lock: bool) -> R
 		.fetch_optional(&sql, convert_values(values))
 		.await?
 		.ok_or(Error::Forbidden)?;
-	let value = reinhardt::db::orm::QueryRow::from_backend_row(row).data["human_requests"].clone();
-	Ok(serde_json::from_value(value)?)
+	let row = reinhardt::db::orm::QueryRow::from_backend_row(row);
+	let admission = row.get("admission_id").ok_or(Error::Forbidden)?;
+	let entries = row.data["human_requests"]
+		.as_array()
+		.ok_or_else(|| Error::Invalid("invalid Home human-request journal".into()))?;
+	let mut requests = Vec::new();
+	let mut ended = false;
+	for entry in entries {
+		if entry == &serde_json::json!({"run_ended": true}) {
+			ended = true;
+		} else {
+			requests.push(serde_json::from_value(entry.clone())?);
+		}
+	}
+	Ok(Journal {
+		admission,
+		requests,
+		ended,
+	})
 }
-async fn save(tx: &mut dyn TransactionExecutor, grant: Uuid, requests: &[Record]) -> Result<()> {
-	let content = serde_json::to_value(requests)?;
-	if serde_json::to_vec(&content)?.len() > 1_048_576 {
+async fn save(tx: &mut dyn TransactionExecutor, grant: Uuid, journal: &Journal) -> Result<()> {
+	let mut entries = serde_json::to_value(&journal.requests)?;
+	if journal.ended {
+		entries
+			.as_array_mut()
+			.expect("serialized requests are an array")
+			.push(serde_json::json!({"run_ended": true}));
+	}
+	let content = entries;
+	// A closing marker must fit even when the existing journal is at its limit.
+	let limit = 1_048_576 + if journal.ended { 32_768 } else { 0 };
+	if serde_json::to_vec(&content)?.len() > limit {
 		return Err(Error::Invalid(
 			"Home human-request journal exceeds 1 MiB".into(),
 		));
@@ -53,7 +85,14 @@ pub(crate) async fn create_in(
 	if prompt.len() > 64_000 {
 		return Err(Error::Invalid("human prompt exceeds 64 KiB".into()));
 	}
-	let mut requests = records(tx, grant, true).await?;
+	let mut journal = records(tx, grant, true).await?;
+	if journal.admission != admission {
+		return Err(Error::Forbidden);
+	}
+	if journal.ended {
+		return Err(Error::Conflict("run has ended".into()));
+	}
+	let requests = &mut journal.requests;
 	if requests
 		.iter()
 		.any(|record| record.request.run_id != admission)
@@ -93,7 +132,7 @@ pub(crate) async fn create_in(
 		key: key.into(),
 		request: request.clone(),
 	});
-	save(tx, grant, &requests).await?;
+	save(tx, grant, &journal).await?;
 	Ok(request)
 }
 pub(crate) async fn answer_in(
@@ -105,17 +144,33 @@ pub(crate) async fn answer_in(
 	actor: &str,
 ) -> Result<HumanRequest> {
 	crate::apps::execution::services::human_interaction::validate_response(&response)?;
-	let mut requests = records(tx, grant, true).await?;
-	let record = requests
+	let mut journal = records(tx, grant, true).await?;
+	if journal.admission != admission {
+		return Err(Error::Forbidden);
+	}
+	let record = journal
+		.requests
 		.iter_mut()
 		.find(|r| r.request.id == id && r.request.run_id == admission)
 		.ok_or(Error::Forbidden)?;
+	let request = &mut record.request;
+	if request.answered_by.as_deref() == Some("system")
+		&& request
+			.response
+			.as_ref()
+			.and_then(|value| value.get("reason"))
+			.and_then(Value::as_str)
+			== Some("run_ended")
+	{
+		return Err(Error::Conflict(
+			"human request closed because the run ended".into(),
+		));
+	}
 	if record.key.ends_with(":reconcile") && response.get("result").is_none() {
 		return Err(Error::Invalid(
 			"tool reconciliation requires a JSON object containing result".into(),
 		));
 	}
-	let request = &mut record.request;
 	if let Some(previous) = &request.response {
 		if previous != &response {
 			return Err(Error::Conflict("human request is already answered".into()));
@@ -131,7 +186,7 @@ pub(crate) async fn answer_in(
 	request.response = Some(response);
 	request.answered_by = Some(actor.into());
 	let answered = request.clone();
-	save(tx, grant, &requests).await?;
+	save(tx, grant, &journal).await?;
 	Ok(answered)
 }
 
@@ -145,9 +200,9 @@ pub(crate) async fn read_in(
 	grant: Uuid,
 	lock: bool,
 ) -> Result<Vec<HumanRequest>> {
-	let mut requests = records(tx, grant, lock).await?;
+	let mut journal = records(tx, grant, lock).await?;
 	let mut changed = false;
-	for record in &mut requests {
+	for record in &mut journal.requests {
 		let request = &mut record.request;
 		if request.response.is_none()
 			&& crate::apps::execution::services::human_interaction::approval_expired(
@@ -163,10 +218,40 @@ pub(crate) async fn read_in(
 		if !lock {
 			return read_locked(tx, grant).await;
 		}
-		save(tx, grant, &requests).await?;
+		save(tx, grant, &journal).await?;
 	}
-	Ok(requests.into_iter().map(|r| r.request).collect())
+	Ok(journal.requests.into_iter().map(|r| r.request).collect())
 }
+/// Persist Home's knowledge of the ended execution in the same journal lock
+/// that serializes incoming questions and answers.
+pub(crate) async fn close_for_run(
+	tx: &mut dyn TransactionExecutor,
+	grant: Uuid,
+	admission: Uuid,
+) -> Result<()> {
+	let mut journal = records(tx, grant, true).await?;
+	if journal.admission != admission
+		|| journal
+			.requests
+			.iter()
+			.any(|record| record.request.run_id != admission)
+	{
+		return Err(Error::Forbidden);
+	}
+	if journal.ended {
+		return Ok(());
+	}
+	for record in &mut journal.requests {
+		if record.request.response.is_none() {
+			record.request.response =
+				Some(serde_json::json!({"answered":false,"reason":"run_ended"}));
+			record.request.answered_by = Some("system".into());
+		}
+	}
+	journal.ended = true;
+	save(tx, grant, &journal).await
+}
+
 async fn read_locked(tx: &mut dyn TransactionExecutor, grant: Uuid) -> Result<Vec<HumanRequest>> {
 	Box::pin(read_in(tx, grant, true)).await
 }

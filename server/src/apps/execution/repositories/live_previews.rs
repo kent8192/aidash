@@ -4,7 +4,6 @@
 //! dispatches the Runner's long-lived `serve` operation outside any authority
 //! transaction, because waiting for a port must not hold one. Stops settle a
 //! row and release its holds only after the Runner proves the Pod is gone.
-use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
 use crate::{
 	Error as NativeError, Result as NativeResult,
 	apps::execution::capabilities::{
@@ -283,6 +282,33 @@ pub(crate) async fn finish_start(
 		run: run.clone(),
 		domain,
 	};
+	// Lock the current row before using the pre-dispatch snapshot. A stop can
+	// commit while the Runner is starting; its reason must remain authoritative.
+	let current = Row::objects()
+		.filter(Row::field_id().eq(pending.id))
+		.select_for_update()
+		.all_with_executor(&mut **scope.access.tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop()
+		.ok_or_else(|| NativeError::NotFound("live preview".into()))?;
+	let mut current = self::domain(current)?;
+	if current.state.is_stopped() {
+		if current.termination_confirmed
+			&& dispatched.pod_host.is_some()
+			&& dispatched.failure.is_none()
+		{
+			// An earlier termination proof cannot cover a later running observation.
+			// Re-arm the stopped row so the sweep retries if cancellation fails.
+			current.termination_confirmed = false;
+			application::Scope::save(&mut scope, &current).await?;
+		}
+		return Ok(Started {
+			status: Status::of(&current, current.revision),
+			startup_log: aidash_domain::preview::live::startup_tail(&dispatched.startup_log),
+		});
+	}
 	match dispatched.pod_host {
 		Some(pod_host) if dispatched.failure.is_none() => application::serving(
 			&mut scope,
@@ -471,7 +497,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 	let grant = crate::bootstrap::execution_grants(store)
 		.grant(preview.run_id)
 		.await?;
-	let (identity, subjects) = match grant {
+	let (identity, subjects, remote) = match grant {
 		Some(grant) => (
 			SubjectIdentity {
 				http_session: None,
@@ -480,45 +506,60 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				subject: grant.root_subject,
 			},
 			Some(grant.subject_chain),
+			false,
 		),
-		// A Run started through a Remote Grant has no local grant. Its admission
-		// names the credential and the subject chain that hold the preview.
+		// A Remote Grant Run has an admission instead of a local grant. It names
+		// the credential and the subject chain that hold the preview.
 		None => {
 			let mut tx = store
 				.pool
 				.begin(&TenancyScope::tenant(&preview.tenant)?)
 				.await?;
-			let admission = AuthorizationRemoteAdmission::objects()
-				.filter(AuthorizationRemoteAdmission::field_id().eq(preview.run_id))
-				.filter(AuthorizationRemoteAdmission::field_tenant().eq(preview.tenant.clone()))
-				.all_with_executor(&mut *tx)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(NativeError::from)?
-				.pop();
+			let admission = crate::apps::federation::peer::repositories::admissions::for_run(
+				&mut *tx,
+				preview.run_id,
+			)
+			.await?;
 			tx.commit().await?;
 			let Some(admission) = admission else {
 				return Ok(false);
 			};
-			let Some(person) = admission.subject_chain.first().cloned() else {
+			let subjects = admission.subject_chain;
+			let Some(root) = subjects.first().cloned() else {
 				return Ok(false);
 			};
-			(
-				SubjectIdentity {
-					http_session: None,
-					credential_id: admission.credential_id,
-					tenant: admission.tenant,
-					subject: person,
-				},
-				Some(admission.subject_chain),
-			)
+			let identity = SubjectIdentity {
+				http_session: None,
+				credential_id: admission.credential_id,
+				tenant: admission.tenant,
+				subject: root,
+			};
+			(identity, Some(subjects), true)
 		}
 	};
 	let mut access = Access::begin(store, &identity).await?;
 	if let Some(subjects) = subjects {
 		access.subjects = subjects;
 	}
-	let result = access.recheck_run_reads(preview.run_id).await.map(|_| ());
+	let result = if remote {
+		// Skip only the local Workspace step (#904): the Run itself is still
+		// checked, through its admission (expiry, Peer Mapping, the chain's
+		// read policies), and then what it has read.
+		let mut check = access.rechecking(preview.run_id);
+		match crate::apps::execution::models::Run::read_in(check.tx.as_mut(), preview.run_id, None)
+			.await
+		{
+			Ok(Some(run)) => match check.run_visible(&run).await {
+				Ok(true) => Ok(()),
+				Ok(false) => Err(NativeError::Forbidden),
+				Err(error) => Err(error),
+			},
+			Ok(None) => Err(NativeError::Forbidden),
+			Err(error) => Err(error),
+		}
+	} else {
+		access.recheck_run_reads(preview.run_id).await.map(|_| ())
+	};
 	access.finish(result).await.map(|()| true)
 }
 

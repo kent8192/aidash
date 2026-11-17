@@ -60,13 +60,19 @@ pub struct Launch {
 	pub executable: Option<String>,
 }
 
-/// The tree of a plugin copy, relative to the Scratch Space root.
-pub fn plugin_root(digest: &str) -> String {
+/// The tree of a plugin copy in one Run, relative to the Scratch Space root. Runs share the
+/// Execution Pod, so each has its own copy: preparing one never removes another's.
+pub fn plugin_root(digest: &str, run: Uuid) -> String {
 	let name: String = digest
 		.chars()
 		.map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
 		.collect();
-	format!("{PLUGINS_DIR}/{name}")
+	format!("{}/{name}", run_plugins(run))
+}
+
+/// Every plugin tree of a Run, removed when its sessions close.
+pub fn run_plugins(run: Uuid) -> String {
+	format!("{PLUGINS_DIR}/{run}")
 }
 
 /// One plugin's live data area in a Run, relative to the Scratch Space root. Every stdio server
@@ -87,7 +93,7 @@ pub fn launch(
 	run: Uuid,
 	server: &StdioServer,
 ) -> Result<Launch, &'static str> {
-	let root = plugin_root(digest);
+	let root = plugin_root(digest, run);
 	let data = plugin_data(run, plugin);
 	let (pod_root, pod_data) = (in_pod(&root), in_pod(&data));
 	let (program, executable) = match &server.command {

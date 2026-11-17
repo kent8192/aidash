@@ -117,3 +117,82 @@ def test_manifest_subdirectory_honors_ancestor_ignore_file(tmp_path):
     result = service.manifest({'root': 'nested', 'ignore_files': ['.gitignore'],
                                'include': [], 'exclude': [], 'max_files': 20})
     assert [item['path'] for item in result['files']] == ['nested/shown.txt']
+
+
+def test_patch_changes_only_the_lines_it_names(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / 'crlf').write_bytes(b'one\r\ntwo\r\nthree\r\n')
+    (scratch / 'feed').write_bytes(b'a\x0cb\nold\nlast')
+    service = FileService(scratch, tmp_path / 'state')
+    patch = ('*** Begin Patch\n*** Update File: crlf\n@@\n-two\n+TWO\n+added\n'
+             '*** Update File: feed\n@@\n-old\n+new\n*** End Patch\n')
+    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['crlf', 'feed']}
+    assert (scratch / 'crlf').read_bytes() == b'one\r\nTWO\r\nadded\r\nthree\r\n'
+    assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nlast'
+    patch = '*** Begin Patch\n*** Update File: feed\n@@\n-last\n+final\n*** End of File\n*** End Patch\n'
+    service.patch({'run_id': 'r', 'patch': patch})
+    assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal'
+    patch = '*** Begin Patch\n*** Update File: feed\n@@ final\n+appended\n*** End Patch\n'
+    service.patch({'run_id': 'r', 'patch': patch})
+    assert (scratch / 'feed').read_bytes() == b'a\x0cb\nnew\nfinal\nappended'
+
+
+def test_a_fifo_is_refused_at_once_and_writes_keep_a_readable_mode(tmp_path):
+    import os
+    import stat
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    os.mkfifo(scratch / 'pipe')
+    (scratch / 'kept').write_bytes(b'old')
+    os.chmod(scratch / 'kept', 0o755)
+    service = FileService(scratch, tmp_path / 'state')
+    with pytest.raises(InvalidPath):
+        service.read({'path': 'pipe', 'limit': 10})
+    assert service.search({'pattern': 'x', 'regex': False, 'max_results': 10})['matches'] == []
+    chunk = {'run_id': 'r', 'data': base64.b64encode(b'new').decode(), 'offset': 0, 'final': True}
+    service.write(dict(chunk, path='fresh'))
+    service.write(dict(chunk, path='kept'))
+    assert stat.S_IMODE(os.stat(scratch / 'fresh').st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(scratch / 'kept').st_mode) == 0o755
+
+
+def test_a_pathological_search_pattern_stops_at_the_time_budget(tmp_path):
+    import time
+    from files_v2 import run_bounded
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (scratch / 'a').write_text('a' * 64 + 'b\n')
+    service = FileService(scratch, tmp_path / 'state')
+    started = time.monotonic()
+    with pytest.raises(ValueError, match='time budget'):
+        run_bounded(service, 'search', {'pattern': '(a+)+$', 'regex': True, 'max_results': 1}, seconds=1)
+    assert time.monotonic() - started < 5
+
+
+def test_new_files_get_their_missing_parent_directories(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    (tmp_path / 'outside').mkdir()
+    (scratch / 'link').symlink_to(tmp_path / 'outside', target_is_directory=True)
+    service = FileService(scratch, tmp_path / 'state')
+    patch = '*** Begin Patch\n*** Add File: src/pkg/main.py\n+print(1)\n*** End Patch\n'
+    assert service.patch({'run_id': 'r', 'patch': patch}) == {'changed': ['src/pkg/main.py']}
+    assert (scratch / 'src' / 'pkg' / 'main.py').read_text() == 'print(1)\n'
+    chunk = {'run_id': 'r', 'data': base64.b64encode(b'x').decode(), 'offset': 0, 'final': True}
+    service.write(dict(chunk, path='copies/deep/x'))
+    assert (scratch / 'copies' / 'deep' / 'x').read_bytes() == b'x'
+    with pytest.raises(InvalidPath):
+        service.write(dict(chunk, path='link/new/x'))
+    assert list((tmp_path / 'outside').iterdir()) == []
+
+
+def test_a_sync_manifest_of_a_deleted_path_lists_nothing(tmp_path):
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    service = FileService(scratch, tmp_path / 'state')
+    request = {'root': 'gone/dir', 'ignore_files': [], 'exclude': [], 'include': [], 'max_files': 10}
+    with pytest.raises(FileNotFoundError):
+        service.manifest(request)
+    assert service.manifest(dict(request, missing_ok=True)) == {
+        'files': [], 'skipped_symlinks': [], 'truncated': False}

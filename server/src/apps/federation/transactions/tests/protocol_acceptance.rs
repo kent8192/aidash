@@ -1063,7 +1063,6 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 					reinhardt::query::Alias::new("node_id"),
 					reinhardt::query::Alias::new("agent_id"),
 					reinhardt::query::Alias::new("agent_version"),
-					reinhardt::query::Alias::new("delivered"),
 					reinhardt::query::Alias::new("tenant"),
 				])
 				.from_subquery(
@@ -1084,7 +1083,6 @@ async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt
 							"(?)".to_owned(),
 							vec![reinhardt::query::Expr::value(query_bind_4.to_owned()).into()],
 						))
-						.expr(reinhardt::query::Expr::cust("TRUE"))
 						.expr(reinhardt::query::Expr::value("acme"))
 						.to_owned(),
 				)

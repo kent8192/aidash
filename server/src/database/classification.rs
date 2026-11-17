@@ -155,6 +155,7 @@ pub const TABLES: &[Table] = &[
 	table("execution", "egress_run_revocations", TenantOwned),
 	table("execution", "agent_plugin_data", TenantOwned),
 	table("execution", "egress_scope_events", TenantOwned),
+	table("execution", "egress_scope_refusals", TenantOwned),
 	table("execution", "core_quotas", TenantOwned),
 	table("execution", "core_records", TenantOwned),
 	table("execution", "core_requests", TenantOwned),
@@ -280,6 +281,12 @@ pub const TABLES: &[Table] = &[
 	// back-channel logout
 	table("identity", "dashboard_logout_tokens", DeploymentWide),
 	table("identity", "dashboard_mappings", TenantOwned),
+	// Host Access reservations are Deployment-wide.
+	table(
+		"identity",
+		"bootstrap_deployment_administrator_reservations",
+		DeploymentWide,
+	),
 	// Deployment Administrator grants
 	table(
 		"identity",
@@ -296,7 +303,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "dashboard_sessions", DeploymentWide),
 	// the digests of the Demo data the `demo-data` command finished loading
 	table("identity", "demo_data_loads", DeploymentWide),
-	// a Demo Reservation, spent by the sign-in of the email it names
+	// a Tenant reservation from Demo data or Host Access, spent by sign-in
 	table("identity", "demo_reservations", TenantOwned),
 	// The Tenant each Demo data structure key was assigned. Purge keeps this
 	// pointer: a later load resolves the purged Tenant through it and, seeing
@@ -432,6 +439,9 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "channel_message_context", TenantOwned),
 	table("workspaces", "channel_threads", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),
+	table("workspaces", "schedules", TenantOwned),
+	table("workspaces", "schedule_ticks", TenantOwned),
+	table("workspaces", "schedule_limits", TenantOwned),
 	table("workspaces", "scratch_spaces", TenantOwned),
 	table("workspaces", "scratch_space_settings", TenantOwned),
 	table("workspaces", "scratch_space_members", TenantOwned),

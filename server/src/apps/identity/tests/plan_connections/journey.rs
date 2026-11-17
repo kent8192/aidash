@@ -318,6 +318,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 			.iter()
 			.map(|call| call.id.clone())
 			.collect(),
+		reasoning: None,
 	});
 	for call in response.tool_calls {
 		let result = json!({"path":call.arguments["path"],"text":"fixture file contents"});

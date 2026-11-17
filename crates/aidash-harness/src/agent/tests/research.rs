@@ -287,6 +287,7 @@ async fn a_native_model_turn_records_no_text_the_citation_gate_withheld(mut fixt
 			epoch: 4,
 			text: String::new(),
 			calls: vec!["call-0".into()],
+			reasoning: None,
 		})
 	);
 }
@@ -367,6 +368,21 @@ async fn revoked_research_results_never_reach_a_model_request_again(fixture: Fix
 			if call.id == "call-page" && ContextEvent::is_revoked_result(result)
 	)));
 	assert!(fixture.run.context.research_revoked);
+	// Reasoning from the revoked result on is no longer resent (#942).
+	let revoked = fixture
+		.run
+		.context
+		.history
+		.iter()
+		.find(
+			|entry| matches!(&entry.event, ContextEvent::Tool { call, .. } if call.id == "call-page"),
+		)
+		.unwrap()
+		.seq;
+	assert_eq!(
+		fixture.run.context.reasoning_withheld_from_seq,
+		Some(revoked)
+	);
 }
 
 #[rstest]
@@ -818,5 +834,70 @@ async fn provider_tools_reported_sources_cannot_publish_source_citations(mut fix
 				event, ContextEvent::Assistant { text, .. } if text.contains("Reported source")
 			)),
 		"the answer the citation gate rejected must not be recorded"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn research_expired_before_a_continued_summary_redoes_the_step(mut fixture: Fixture) {
+	// Arrange: a Native Run due for a summary whose oldest turn read a page
+	// that expires after the step began.
+	let through = chrono::Utc::now();
+	{
+		let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+		state.scoped = true;
+		state.context_policy = Some(recovery_policy(true));
+		state.summarizer_window = 62_000;
+		*state.summary_text.lock().unwrap() = Some(valid_summary());
+		state.projection = ProjectionVersion::Native;
+		state.expired_research = aidash_domain::research::expiry::ExpiredResults {
+			sources: Default::default(),
+			documents: [EXPIRED_DOCUMENT.parse().unwrap()].into(),
+			through: Some(through),
+		};
+		state.expired_research_after = Some(1);
+	}
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..8 {
+		let id = format!("old-{i}");
+		fixture.run.context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: i,
+			text: "Reading.".into(),
+			calls: vec![id.clone()],
+			reasoning: None,
+		});
+		let result = if i == 0 {
+			let mut page = research_result("an expired passage");
+			page["data"]["document_id"] = json!(EXPIRED_DOCUMENT);
+			page
+		} else {
+			json!("x".repeat(1000))
+		};
+		fixture.run.context.push(ContextEvent::tool(
+			call(
+				&id,
+				"renamed_page",
+				json!({"url": "https://example.com/sent"}),
+			),
+			result,
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	fixture.run.context.offload_reads.summary_pending = true;
+	// Act
+	let _ = advance_sources(&mut fixture).await;
+	// Assert: no summarizer saw the expired page; the step is redone from the
+	// redacted projection, as before a main request.
+	assert!(!calls(&fixture).contains(&"summarizer.infer"));
+	assert_eq!(
+		events(&fixture).last().map(String::as_str),
+		Some("run.research_expired")
+	);
+	assert_eq!(fixture.run.context.research_expired_through, Some(through));
+	assert!(
+		!serde_json::to_string(&fixture.run.context)
+			.unwrap()
+			.contains("an expired passage")
 	);
 }

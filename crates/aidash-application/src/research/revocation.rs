@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 /// Revoke all of one Run's Research evidence. Revocation is irreversible:
 /// revoking a Run again returns its first record unchanged. When `expected`
-/// names a Tenant, a Run of any other Tenant is unavailable, so a Run ID
-/// pasted into the wrong Tenant's form revokes nothing.
+/// names a Tenant, a Run of any other Tenant is unavailable, so a caller that
+/// names the wrong Tenant revokes nothing.
 pub async fn revoke(
 	repository: &dyn RevocationRepository,
 	run: Uuid,
@@ -236,6 +236,8 @@ pub async fn revoke_projection(context: &mut Context, journal: &dyn Journal) -> 
 		context.research_revoked = true;
 	}
 	revocation::redact(&mut context.history, &originals);
+	// Later turns stop resending reasoning that may quote it (#942).
+	context.withhold_reasoning_after_withheld_results();
 	Ok(())
 }
 

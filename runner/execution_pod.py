@@ -2129,6 +2129,14 @@ print(json.dumps(r))'''
                 raise ExecutionPodError('stop_failed', '; '.join(failures))
         return {'cancelled_waiting': True}
 
+    def stop_command(self, operation_id):
+        """Stop one foreground command; the Run's other commands keep running."""
+        record = self._read_command(operation_id)
+        if record.get('background'):
+            raise ExecutionPodError('invalid_request', 'Use the Background process stop for this operation')
+        with self._space_lock(record['scratch_space_id']):
+            return self._stop_command(operation_id)
+
     def stop_run(self, scratch_space_id, run_id):
         import json
         import time
@@ -2321,6 +2329,12 @@ print(json.dumps(r))'''
         finally:
             lock.release()
 
+    def stop_preview(self, operation_id):
+        """Stop a Live preview; another kind of Background process is refused."""
+        if self._read_command(operation_id).get('kind') != 'preview':
+            raise ExecutionPodError('command_not_found', 'Live preview does not exist')
+        return self.stop_background(operation_id)
+
     def stop_mcp(self, operation_id):
         if self._read_command(operation_id).get('kind') != 'mcp_session':
             raise ExecutionPodError('mcp_unavailable', 'MCP session does not exist')
@@ -2329,7 +2343,6 @@ print(json.dumps(r))'''
     def start_preview(self, request):
         import base64
         import ipaddress
-        import json
         import time
         from control import scratch_resource_name
         operation, scratch, port = request['operation_id'], request['scratch_space_id'], request['port']
@@ -2340,6 +2353,14 @@ print(json.dumps(r))'''
             refresh()
         if port != self.config.get('preview_port'):
             raise ValueError('preview port not allowed')
+        # Runs share the Pod and its one preview port: a port that already answers
+        # belongs to another process, whose server must not be shown as this one.
+        pod = self._get('pod', scratch_resource_name(scratch))
+        uid = (pod or {}).get('metadata', {}).get('uid')
+        if uid and any(self._port_answers(scratch, uid, port, host)
+                       for host in ('127.0.0.1', (pod or {}).get('status', {}).get('podIP')) if host):
+            raise ExecutionPodError('preview_start_failed',
+                                    f'Port {port} is already serving in this Scratch Space; stop that process first')
         command = {key: request[key] for key in ('operation_id', 'scratch_space_id', 'run_id', 'code', 'proxy_credential')
                    if key in request}
         command.update(background=True, cwd=request.get('cwd') or '.')
@@ -2357,13 +2378,9 @@ print(json.dumps(r))'''
             if record.get('status') not in ('queued', 'running'):
                 break
             if record.get('status') == 'running' and uid and address:
-                try:
-                    probe = self.backend.kube(['exec', scratch_resource_name(scratch), '-c', 'execution', '--'] +
-                                              helper_command('port-check', uid, str(port)), check=False, timeout=5)
-                    ready = probe.returncode == 0 and json.loads(probe.stdout).get('ready') is True
-                except Exception:
-                    ready = False
-                if ready:
+                # Probe the Pod address the preview gateway uses: a loopback-only
+                # server is not ready for it.
+                if self._port_answers(scratch, uid, port, address):
                     parsed = ipaddress.ip_address(address)
                     host = '[' + str(parsed) + ']' if parsed.version == 6 else str(parsed)
                     return {'operation_id': operation, 'address': f'{host}:{port}'}
@@ -2387,6 +2404,16 @@ print(json.dumps(r))'''
         if stop_failed:
             message += '\nCould not stop the preview process.'
         raise ExecutionPodError('preview_start_failed', message or 'Preview did not accept connections within 60 seconds')
+
+    def _port_answers(self, scratch, uid, port, host):
+        import json
+        from control import scratch_resource_name
+        try:
+            probe = self.backend.kube(['exec', scratch_resource_name(scratch), '-c', 'execution', '--'] +
+                                      helper_command('port-check', uid, str(port), host), check=False, timeout=5)
+            return probe.returncode == 0 and json.loads(probe.stdout).get('ready') is True
+        except Exception:
+            return False
 
     def file_operation(self, operation, request):
         import json

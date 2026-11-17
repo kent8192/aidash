@@ -76,7 +76,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "egress_scope_state"
 		| "egress_scope_daily"
 		| "egress_scope_connections"
-		| "egress_scope_events" => Node("node"),
+		| "egress_scope_events"
+		| "egress_scope_refusals" => Node("node"),
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
@@ -97,10 +98,13 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"registry_requests" | "core_requests" => Subject("principal"),
 		"subnode_members" => Link("subnode_id", Subnode),
 		"scratch_space_settings" | "scratch_space_members" => Link("space_id", ScratchSpace),
+		"agent_plugin_data" => Link("scratch_space_id", ScratchSpace),
 		"identity_thread_approval_modes" => Link("thread_id", Thread),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
 		"tasks"
+		| "schedules"
+		| "schedule_ticks"
 		| "artifacts"
 		| "messages"
 		| "conversations"
@@ -238,6 +242,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "dashboard_login_transactions"
 		| "dashboard_logout_tokens"
 		| "dashboard_mappings"
+		| "bootstrap_deployment_administrator_reservations"
 		| "dashboard_deployment_administrator_grants"
 		| "dashboard_registration_requests"
 		| "dashboard_sessions"
@@ -282,11 +287,11 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "agent_incidents"
 		| "agent_knowledge_images"
 		| "subnode_limits"
+		| "schedule_limits"
 		| "tenant_data_protection_history"
 		| "tenant_data_protection"
 		| "agent_knowledge"
 		| "agent_plugin_copies"
-		| "agent_plugin_data"
 		| "agent_test_limits"
 		| "agent_test_profiles"
 		| "agent_test_sessions"

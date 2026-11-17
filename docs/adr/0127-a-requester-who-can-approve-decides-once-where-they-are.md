@@ -1,5 +1,7 @@
 # A requester who can approve decides once, where they are
 
+Amended by ADR 0135 (2026-11-13): "Designated approver" below now reads Eligible approver; when the requester cannot approve, every Eligible approver is offered the approval.
+
 Decided on 2026-11-11 for #874 (part of #872). Several rules exist so that a requester cannot stand in for a separate approver. They also applied when the requester and the approver are the same person, who then decided twice, often somewhere other than where they were working. The rules stay; what changes is where and how often that person is asked.
 
 ## Decisions

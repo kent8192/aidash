@@ -219,6 +219,7 @@ pub(crate) async fn record(
 	let (sql, values) = Query::update()
 		.table(Alias::new(TenantInvitation::table_name()))
 		.value_expr(Alias::new("revoked_at"), Expr::value(now))
+		.value_expr(Alias::new("issued_by_token_hash"), Expr::value(Option::<Vec<u8>>::None))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.and_where(Expr::col("revoked_at").is_null())
 		.and_where(Expr::col("redeemed_at").is_null())
@@ -227,6 +228,8 @@ pub(crate) async fn record(
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	stop_runs(tx, tenant).await?;
+	// A restore leaves them stopped, as it leaves stopped Runs (#557).
+	crate::apps::workspaces::services::schedules::stop_for_tenant(tx, tenant).await?;
 	Ok(row)
 }
 

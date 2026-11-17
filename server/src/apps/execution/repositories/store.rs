@@ -103,6 +103,12 @@ pub struct Store {
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
+	/// The Deployment's Schedule ceilings from `[schedules]` (#557).
+	pub schedule_ceilings: aidash_domain::schedules::Ceilings,
+	/// How often each replica looks for due Schedules.
+	pub schedule_poll: std::time::Duration,
+	/// The build's Tier limits, which may lower a Tenant's Schedule total.
+	pub schedule_tier: std::sync::Arc<dyn aidash_application::ports::nodes::TierLimits>,
 	/// The Deployment's ceilings on Live preview lifetimes from
 	/// `[preview_limits]` (ADR 0070).
 	pub preview_limits: aidash_domain::preview::live::Limits,
@@ -128,6 +134,10 @@ pub struct Store {
 	/// reaches the other Nodes of its Deployment (#751). Empty in a process
 	/// that never built a `Federation`. Shared by every clone of this Store.
 	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
+	/// Nodes that did not answer a list read, so the next list does not wait on
+	/// them again (#770). Shared by every clone of this Store.
+	pub(crate) silent_nodes:
+		std::sync::Arc<crate::apps::federation::remote::services::wire::SilentNodes>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -528,6 +538,9 @@ impl Store {
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
 			data_protection_floor: Default::default(),
 			test_limit_ceilings: Default::default(),
+			schedule_ceilings: Default::default(),
+			schedule_poll: std::time::Duration::from_secs(15),
+			schedule_tier: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview_limits: aidash_domain::preview::live::Limits::default(),
 			preview_domain: None,
 			preview_pod_port: None,
@@ -546,6 +559,7 @@ impl Store {
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 			in_process: Default::default(),
+			silent_nodes: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -593,6 +607,15 @@ impl Store {
 		self
 	}
 
+	pub fn with_schedules(
+		mut self,
+		ceilings: aidash_domain::schedules::Ceilings,
+		poll: std::time::Duration,
+	) -> Self {
+		self.schedule_ceilings = ceilings;
+		self.schedule_poll = poll;
+		self
+	}
 	pub fn with_test_limit_ceilings(
 		mut self,
 		ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -676,6 +699,9 @@ impl Store {
 			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
+			schedule_ceilings: self.schedule_ceilings,
+			schedule_poll: self.schedule_poll,
+			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
 			preview_pod_port: self.preview_pod_port,
@@ -694,6 +720,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
 
@@ -737,6 +764,9 @@ impl Store {
 			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
+			schedule_ceilings: self.schedule_ceilings,
+			schedule_poll: self.schedule_poll,
+			schedule_tier: self.schedule_tier.clone(),
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
 			preview_pod_port: self.preview_pod_port,
@@ -755,6 +785,7 @@ impl Store {
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 			in_process: self.in_process.clone(),
+			silent_nodes: self.silent_nodes.clone(),
 		})
 	}
 	pub async fn event(
@@ -2537,6 +2568,7 @@ impl Store {
 						.into_iter()
 						.map(Into::into)
 						.collect(),
+					unconfirmed: vec![],
 				})
 			})
 			.await
@@ -3509,6 +3541,7 @@ impl Store {
 		if saved.phase().is_terminal() {
 			// Closing an open attempt appends an event, so lock first; see `lock_end`.
 			super::subnodes::lock_for_end(tx, saved.id).await?;
+			HumanRequestRecord::close_for_run(tx.as_mut(), saved.id).await?;
 		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
@@ -3569,6 +3602,7 @@ impl Store {
 			)
 			.await?;
 			self.close_plugin_sessions_soon(saved.id);
+			self.stop_python_soon(saved.id);
 		}
 		self.run_event(
 			tx,
@@ -3594,7 +3628,16 @@ impl Store {
 		event_kind: &str,
 		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		self.pause_for_execution_reason(run, worker, reason, event_kind, None, refusal)
+		let suspension = reason
+			.strip_prefix("account_suspended:")
+			.and_then(|value| value.parse::<u64>().ok());
+		let recovery = suspension.map(|epoch| ("account_suspension_epoch", json!(epoch)));
+		let reason = if suspension.is_some() {
+			"account_suspended"
+		} else {
+			reason
+		};
+		self.pause_for_execution_reason(run, worker, reason, event_kind, recovery, refusal)
 			.await
 	}
 	pub(crate) async fn cancel_execution(
@@ -3636,6 +3679,7 @@ impl Store {
 		}
 		// Before the first event below; see `lock_end`.
 		super::subnodes::lock_for_end(&mut tx, run.id).await?;
+		HumanRequestRecord::close_for_run(tx.as_mut(), run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3833,7 +3877,22 @@ impl Store {
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		self.close_plugin_sessions_soon(run.id);
+		self.stop_python_soon(run.id);
 		Ok(())
+	}
+
+	/// Stops an ended Run's Python session in its Execution Pod without making
+	/// the caller wait. A paused Run keeps its session for when it resumes.
+	fn stop_python_soon(&self, run: Uuid) {
+		let store = self.clone();
+		tokio::spawn(async move {
+			if let Err(error) =
+				crate::apps::execution::repositories::operations::pods::stop_python(&store, run)
+					.await
+			{
+				tracing::info!(%run, %error, "Python session not stopped at the Run's end");
+			}
+		});
 	}
 
 	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for
@@ -3975,6 +4034,7 @@ impl Store {
 			Error::Conflict("run is terminal or cancellation is already requested".into())
 		})?;
 		if action == RunControlAction::Cancel {
+			HumanRequestRecord::close_for_run(tx, id).await?;
 			crate::apps::execution::repositories::live_previews::mark_stopped_for_run(
 				tx,
 				id,
@@ -4058,7 +4118,11 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		// Match a Subnode end, which locks the Subnode before its member Runs:
+		// take the Subnode's share lock first, then the Run. An ended Subnode
+		// therefore refuses as Forbidden ahead of the Run's own end.
 		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -4224,6 +4288,12 @@ impl Store {
 		actor: &str,
 	) -> Result<HumanRequest> {
 		human_interaction::validate_response(&response)?;
+		let original = HumanRequestRecord::read_in(tx, id, false)
+			.await?
+			.ok_or_else(|| Error::NotFound("human request".into()))?;
+		if original.response.is_none() {
+			HumanRequestRecord::require_active_run(tx, original.run_id).await?;
+		}
 		let old = HumanRequestRecord::read_in(tx, id, true)
 			.await?
 			.ok_or_else(|| Error::NotFound("human request".into()))?;
@@ -5678,7 +5748,27 @@ impl Store {
 		// that decides it; `STARTED` and `COMPLETED` rows record nothing.
 		let recovery_reason = match (recovery_reason, refusal) {
 			(None, Some(refusal)) => match self.declinable_pause(&mut tx, run.id, refusal).await? {
-				Some(paused) => Some(("paused_call", serde_json::to_value(paused)?)),
+				Some(paused) => {
+					if self
+						.standing_decline_in(&mut tx, run.id, worker, &paused)
+						.await?
+					{
+						let closed =
+							crate::apps::execution::repositories::inference::close_pending(
+								tx.as_mut(),
+								self.deployment.as_str(),
+								run.id,
+								None,
+							)
+							.await?;
+						tx.commit().await?;
+						crate::apps::execution::repositories::inference::record_interruptions(
+							&closed,
+						);
+						return Ok(());
+					}
+					Some(("paused_call", serde_json::to_value(paused)?))
+				}
 				None => None,
 			},
 			(reason, _) => reason,
@@ -5837,6 +5927,7 @@ impl Store {
 		prompt: &str,
 		key: &str,
 	) -> Result<HumanRequest> {
+		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		if !matches!(
 			kind,
 			"QUESTION" | "APPROVAL_REQUIRED" | "CONFIRMATION" | "INFORMATION_REQUEST"

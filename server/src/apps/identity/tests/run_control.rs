@@ -1,5 +1,6 @@
 //! A person's Run Control when an approval is withdrawn (#753, #769): a Run that only read the
 //! version goes on, a Run whose Binding names it cannot be resumed, and `registry.read` alone hides.
+//! The owner's resume of every Run a suspension paused goes through the same checks (#876).
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use aidash_domain::registry::EntityRef;
 use aidash_server::federation::Federation;
@@ -264,6 +265,34 @@ impl World {
 		.unwrap();
 	}
 
+	/// The person resumes every Run of theirs that an Account suspension paused (#876).
+	async fn resume_suspended(&self, token: &str) -> (u16, Value) {
+		common::request(
+			&self.app,
+			token,
+			"POST",
+			"/api/suspended-runs/resume",
+			Value::Null,
+		)
+		.await
+	}
+
+	/// Records `error` as the reason the paused Run stopped. An Account suspension's pause also
+	/// records the epoch it paused under, as `pause_for_execution` does.
+	async fn paused_for(&self, error: &str) {
+		sqlx::query(
+			"UPDATE runs SET error = $1, pending = CASE WHEN $1 = 'account_suspended' \
+			 THEN jsonb_set(pending, '{recovery}', \
+			 COALESCE(pending->'recovery', '{}'::jsonb) || '{\"account_suspension_epoch\": 1}') \
+			 ELSE pending END WHERE id = $2 AND control = 'PAUSED'",
+		)
+		.bind(error)
+		.bind(self.run)
+		.execute(self.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+
 	/// `carol` may control Runs but not read them.
 	async fn add_carol(&self) -> String {
 		self.add_policies(
@@ -491,4 +520,57 @@ async fn a_read_met_before_the_runs_own_policy_is_not_reported_to_someone_that_p
 	assert!(body.get("run_reads").is_none(), "{body}");
 	// She can still stop it.
 	assert_eq!(w.management(&alice).await.1["control"], "PAUSED");
+}
+
+// #876 decision 17: one action resumes the owner's Runs a suspension paused, each through the
+// manual resume and its checks. The Account authority's recheck needs a Cloud authority and is
+// covered with the manual resume, not here.
+#[rstest::rstest]
+#[tokio::test]
+async fn the_owner_resumes_the_runs_a_suspension_paused_each_with_the_manual_resume_checks(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let alice = w.alice.clone();
+	let (status, paused) = w.control(&alice, "pause").await;
+	assert_eq!(status, 200, "{paused}");
+
+	// A Run paused for another reason is not offered.
+	w.paused_for("external identity disabled").await;
+	let (status, body) = w.resume_suspended(&alice).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["runs"], json!([]));
+	assert_eq!(w.management(&alice).await.1["control"], "PAUSED");
+
+	// Someone else's suspension-paused Run is not theirs to resume.
+	w.paused_for("account_suspended").await;
+	let carol = w.add_carol().await;
+	let (status, body) = w.resume_suspended(&carol).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["runs"], json!([]));
+	assert_eq!(w.management(&alice).await.1["control"], "PAUSED");
+
+	// The manual resume's checks still apply: a withdrawn Agent blocks it, and the Run stays paused.
+	w.approve_entry("fixture-agent", false).await;
+	let (status, body) = w.resume_suspended(&alice).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["runs"][0]["run_id"], json!(w.run), "{body}");
+	assert_eq!(body["runs"][0]["outcome"], "blocked", "{body}");
+	assert!(body["runs"][0]["error"].is_string(), "{body}");
+	assert_eq!(w.management(&alice).await.1["control"], "PAUSED");
+
+	// Once nothing blocks it, the owner's action resumes it, and nothing is left to resume.
+	w.approve_entry("fixture-agent", true).await;
+	let (status, body) = w.resume_suspended(&alice).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body["runs"],
+		json!([{"run_id": w.run, "outcome": "resumed"}])
+	);
+	assert_eq!(w.management(&alice).await.1["control"], "ACTIVE");
+	let (status, body) = w.resume_suspended(&alice).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(body["runs"], json!([]));
 }

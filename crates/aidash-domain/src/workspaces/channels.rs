@@ -95,6 +95,13 @@ pub struct ChannelAttachment {
 	/// Computed for the Workspace's currently assigned Agents, not persisted.
 	#[serde(default)]
 	pub no_assigned_agent_can_read: bool,
+	/// The Image Description its writer gave an image, if any (#622).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub description: Option<String>,
+	/// Where an image stands in the Workspace index: `pending`, `indexed`,
+	/// `unsupported` or `failed`. Absent when the image has no index entry.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub index_state: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -102,10 +109,24 @@ pub struct ChannelMessagePage {
 	/// Each page is chronological; next_before retrieves an older page.
 	pub messages: Vec<ChannelMessage>,
 	pub next_before: Option<Uuid>,
+	/// Messages of this page's candidates that could not be confirmed because a
+	/// Node did not answer, for each Node.
+	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 }
 
 /// One attachment may use the whole 8 MiB that a Run accepts as media input.
 pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Only an image carries an Image Description, and the description is bounded
+/// prose (#622 decision 7).
+pub fn validate_attachment_description(media_type: &str, description: &str) -> Result<()> {
+	if !media_type.starts_with("image/") {
+		return Err(Error::Invalid(
+			"only an image attachment has an Image Description".into(),
+		));
+	}
+	crate::semantic::indexing::validate_image_description(description)
+}
 
 pub fn validate_attachment(filename: &str, media_type: &str, content: &[u8]) -> Result<()> {
 	if content.is_empty() {
@@ -159,6 +180,7 @@ pub struct AttachmentState {
 	pub content: Option<Vec<u8>>,
 	pub object_id: Option<Uuid>,
 	pub message_id: Option<Uuid>,
+	pub description: Option<String>,
 }
 impl AttachmentState {
 	pub fn metadata(&self) -> ChannelAttachment {
@@ -168,6 +190,8 @@ impl AttachmentState {
 			media_type: self.media_type.clone(),
 			size_bytes: self.size_bytes,
 			no_assigned_agent_can_read: false,
+			description: self.description.clone(),
+			index_state: None,
 		}
 	}
 }

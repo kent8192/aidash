@@ -18,7 +18,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { session as getSession, workspaceGet } from "./generated/aidash";
+import {
+  session as getSession,
+  suspendedRuns,
+  suspendedRunsResume,
+  workspaceGet,
+} from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
 import { AdministratorTenantNotice } from "./administrator-notice";
@@ -26,6 +31,7 @@ import { subscribe } from "./event-stream";
 import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
+  apiFetch,
   sessionFetch,
   authenticatedFetch,
   signIn,
@@ -103,6 +109,7 @@ import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { NotificationProvider } from "./notifications";
 import { useApprovalInbox } from "./capabilities/inbox";
+import type { ScheduleNotices } from "./schedules-model";
 import type { NoticeTarget } from "./notifications/model";
 import {
   storedThemePreference,
@@ -176,6 +183,7 @@ const queryClient = new QueryClient({
 type Search = { channel?: string; focus?: string; view?: string };
 type BrowserSession = {
   id: string;
+  sign_in_method_prompt?: { identity_id: string; account_url: string };
   deployment_administrator: boolean;
   personal_account?: boolean;
   /** Whether the Tenancy Rules let this identity create Tenants now. */
@@ -195,6 +203,110 @@ type BrowserSession = {
   /** Whether this identity's Personal Tenant is deleted and it may start a new one. */
   personal_tenant_deleted?: boolean;
 };
+
+function SignInMethodPrompt({
+  prompt,
+}: {
+  prompt: { identity_id: string; account_url: string };
+}) {
+  const { t } = useI18n();
+  const storageKey = `aidash.sign-in-method-prompt.${prompt.identity_id}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return Number(localStorage.getItem(storageKey) ?? 0) > Date.now();
+    } catch {
+      return false;
+    }
+  });
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
+    >
+      <span>
+        {t("signInMethodPrompt")}{" "}
+        <a className="underline" href={prompt.account_url}>
+          {t("signInMethodPromptAccount")}
+        </a>
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          try {
+            localStorage.setItem(
+              storageKey,
+              String(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            );
+          } catch {
+            /* Keep the prompt dismissed for this page. */
+          }
+          setDismissed(true);
+        }}
+      >
+        {t("signInMethodPromptDismiss")}
+      </button>
+    </div>
+  );
+}
+/**
+ * One action that resumes every Run of this person that an Account suspension
+ * paused (#876). The server lists them, since `/api/state` holds only a window
+ * of Runs (#664) and does not say who started one.
+ */
+function SuspendedRunsPrompt() {
+  const { t } = useI18n();
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState("");
+  const listed = useQuery({
+    queryKey: ["suspended-runs"],
+    queryFn: () => suspendedRuns(),
+    refetchInterval: 60_000,
+  });
+  const paused = listed.data?.runs ?? [];
+  if (paused.length === 0) return null;
+  async function resume() {
+    setBusy(true);
+    setOutcome("");
+    try {
+      const { runs: results } = await suspendedRunsResume();
+      const resumed = results.filter(
+        (result) => result.outcome === "resumed",
+      ).length;
+      if (results.length > 0)
+        setOutcome(
+          t("suspendedRunsResumed")
+            .replace("{resumed}", String(resumed))
+            .replace("{total}", String(results.length)),
+        );
+    } catch (reason) {
+      setOutcome(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["suspended-runs"] }),
+        client.invalidateQueries({ queryKey: ["state"] }),
+      ]);
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
+    >
+      <span>{outcome || t("suspendedRunsPaused")}</span>
+      <Button
+        type="button"
+        size="sm"
+        disabled={busy}
+        onClick={() => void resume()}
+      >
+        {t("suspendedRunsResume")}
+      </Button>
+    </div>
+  );
+}
 type Registration = { status: string; expires_at: string } | null;
 function sessionContext(session: BrowserSession, selected: string | null) {
   // An inactive credential fails with 401 and ends the browser session, so
@@ -493,6 +605,14 @@ function Dashboard({
   );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
+  // Stopped Schedules and the Tasks Schedules started, for the bell (#557).
+  const scheduleNotices = useQuery({
+    queryKey: ["schedule-notices"],
+    queryFn: () => apiFetch<ScheduleNotices>("/api/schedules/notices"),
+    refetchInterval: 15000,
+    retry: false,
+    enabled: connected && subjectTenant !== null,
+  });
   const [queueOpen, setQueueOpen] = useState(false);
   const discovery = useQuery({
     ...discoveryQuery(current),
@@ -980,6 +1100,11 @@ function Dashboard({
   const visit = async (target: NoticeTarget) => {
     // An approval is decided in the decision queue, where its card lives.
     if (target.kind === "approval") return setQueueOpen(true);
+    if (target.kind === "administration")
+      return window.location.assign("/trust?view=authorization");
+    // A stopped Schedule is resumed or handed over among the person's Schedules.
+    if (target.kind === "schedule")
+      return go("settings", { settings: "schedules" });
     const item =
       target.kind === "human"
         ? requests.find(
@@ -1047,10 +1172,18 @@ function Dashboard({
         data={everything}
         node={remembered.selected?.name ?? ""}
         approvals={inbox.pending}
+        schedules={scheduleNotices.data}
         locale={locale}
         theme={theme}
         onSelect={visit}
       >
+        {browserSession?.sign_in_method_prompt && (
+          <SignInMethodPrompt
+            key={browserSession.sign_in_method_prompt.identity_id}
+            prompt={browserSession.sign_in_method_prompt}
+          />
+        )}
+        {subjectTenant !== null && <SuspendedRunsPrompt />}
         <AppShell
           section={route.section}
           settings={route.settings}

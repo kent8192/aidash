@@ -19,7 +19,10 @@ use uuid::Uuid;
 /// retried either ([`after_effect`]).
 fn authority_gone_after_effect(error: Error) -> Error {
 	match error {
-		Error::Forbidden | Error::Unauthorized => {
+		Error::Forbidden
+		| Error::Unauthorized
+		| Error::CredentialForbidden(_)
+		| Error::CredentialUnauthorized(_) => {
 			Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 				tool: String::new(),
 				check: aidash_domain::tool::RefusalCheck::RunAuthority,
@@ -430,22 +433,51 @@ impl WorkerAuthority {
 		run: &Run,
 		input: Value,
 	) -> Result<Value> {
-		let image = if input.get("image").is_some_and(|value| !value.is_null()) {
-			let selected: aidash_domain::media::WorkingImageSelection =
-				serde_json::from_value(input["image"].clone())?;
-			Some(aidash_domain::semantic::retrieval::ImageQuery {
-				run_id: run.id,
-				area_id: selected.area_id,
-				generation: selected.generation,
-				file_id: selected.file_id,
-				path: selected.path,
-				expected_digest: selected.expected_digest,
-			})
-		} else {
-			None
-		};
 		let mut access = self.access.write().await;
-		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
+		// A search leaves a Node that did not answer alone for a while, like the
+		// lists a person reads; the Run's other reads still ask it (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = Self::workspace_search_in(&mut access, store, run, input).await;
+		access.lists = lists;
+		result
+	}
+	async fn workspace_search_in(
+		access: &mut Access,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
+		// An image query names a File version in the Run's own Working Area, or
+		// a Thread Attachment by the selection `workspace_read` returned (#622).
+		let (image, attachment) = if input.get("image").is_some_and(|value| !value.is_null()) {
+			if let Ok(selected) = serde_json::from_value::<
+				aidash_domain::media::WorkingImageSelection,
+			>(input["image"].clone())
+			{
+				let query = aidash_domain::semantic::retrieval::ImageQuery {
+					run_id: run.id,
+					area_id: selected.area_id,
+					generation: selected.generation,
+					file_id: selected.file_id,
+					path: selected.path,
+					expected_digest: selected.expected_digest,
+				};
+				(Some(query), None)
+			} else {
+				let selected: aidash_domain::media::ThreadAttachmentSelection =
+					serde_json::from_value(input["image"].clone())?;
+				let query = aidash_domain::semantic::retrieval::AttachmentImageQuery {
+					run_id: run.id,
+					message_id: selected.message_id,
+					attachment_id: selected.attachment_id,
+					expected_digest: selected.expected_digest,
+				};
+				(None, Some(query))
+			}
+		} else {
+			(None, None)
+		};
+		let mut lease = crate::semantic::service::Lease::Inherited(access);
 		lease.durable();
 		lease.workspace(run.workspace_id, "semantic.search").await?;
 		let reference = run
@@ -493,6 +525,7 @@ impl WorkerAuthority {
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
 			image: image.clone(),
+			attachment: attachment.clone(),
 			agent: None,
 			metadata: json!({}),
 			limit: input["limit"].as_u64().map_or_else(
@@ -530,14 +563,35 @@ impl WorkerAuthority {
 		if reference.is_some() {
 			use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession;
 			let limit = limit.min(8);
-			let reference = if let Some(image) = &image {
-				let content = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
-					.query_image(
-						run.workspace_id,
-						image,
-						aidash_domain::semantic::indexing::default_max_image_bytes(),
+			// The same image query, read under the same rules as the Workspace
+			// search, against this agent version's private Reference Documents.
+			let max_bytes = aidash_domain::semantic::indexing::default_max_image_bytes();
+			let read = async |lease: &mut crate::semantic::service::Lease<'_>| -> Result<
+				Option<aidash_application::ports::semantic::IndexImage>,
+			> {
+				let mut scope = crate::bootstrap::semantic_retrieval_scope(store, lease);
+				Ok(if let Some(image) = &image {
+					Some(
+						scope
+							.query_image(run.workspace_id, image, max_bytes)
+							.await?,
 					)
-					.await?;
+				} else if let Some(attachment) = &attachment {
+					if !scope.attachment_seen(attachment).await? {
+						return Err(
+							aidash_application::semantic::retrieval::attachment_not_seen().into(),
+						);
+					}
+					Some(
+						scope
+							.query_attachment(run.workspace_id, attachment, max_bytes)
+							.await?,
+					)
+				} else {
+					None
+				})
+			};
+			let reference = if let Some(content) = read(&mut lease).await? {
 				let found = crate::apps::registry::services::knowledge::reference_image_context(
 					lease.access().ok_or(Error::Forbidden)?,
 					store,
@@ -549,13 +603,7 @@ impl WorkerAuthority {
 					limit,
 				)
 				.await?;
-				let current = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
-					.query_image(
-						run.workspace_id,
-						image,
-						aidash_domain::semantic::indexing::default_max_image_bytes(),
-					)
-					.await?;
+				let current = read(&mut lease).await?.ok_or(Error::Forbidden)?;
 				if current.media_type != content.media_type || current.bytes != content.bytes {
 					return Err(Error::Conflict(
 						"image query changed during retrieval".into(),
@@ -580,6 +628,7 @@ impl WorkerAuthority {
 				max_tokens,
 			)?;
 		}
+		aidash_domain::unconfirmed::for_tool(&mut result);
 		Ok(result)
 	}
 	pub(crate) async fn workspace_image(
@@ -645,6 +694,7 @@ impl WorkerAuthority {
 		key: &str,
 		content: &str,
 		paths: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
 	) -> Result<()> {
 		use sha2::{Digest, Sha256};
 		fn operation_id(run: Uuid, key: &str, position: usize) -> Uuid {
@@ -656,8 +706,17 @@ impl WorkerAuthority {
 			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
 		}
 		let receipt_key = operation_id(run.id, key, 9);
-		let receipt_digest =
-			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
+		let receipt_digest = if descriptions.is_empty() {
+			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]))
+		} else {
+			crate::registry::digest(&json!([
+				"workspace_message_files",
+				run.id,
+				content,
+				paths,
+				descriptions
+			]))
+		};
 		let agent = run.executor_subject(store.deployment.as_str());
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
@@ -725,6 +784,17 @@ impl WorkerAuthority {
 			Ok(None) => return access.finish(Ok(())).await,
 			Err(error) => return access.finish(Err(error)).await,
 		};
+		// An Agent describes every image it posts, so people and Agents that
+		// cannot see it can still find and understand it (#622 decision 7).
+		if let Some((file, _)) = snapshots.iter().find(|(file, _)| {
+			file.media_type.starts_with("image/") && !descriptions.contains_key(&file.path)
+		}) {
+			let missing = Error::Invalid(format!(
+				"{} is an image: give it an Image Description in image_descriptions",
+				file.path
+			));
+			return access.finish(Err(missing)).await;
+		}
 		let mut lease = crate::collaboration::access::Lease::from_access(access);
 		let result: Result<()> = async {
 			let mut ids = Vec::with_capacity(snapshots.len());
@@ -734,6 +804,7 @@ impl WorkerAuthority {
 					filename,
 					media_type: file.media_type.clone(),
 					idempotency_key: operation_id(run.id, key, index),
+					description: descriptions.get(&file.path).cloned(),
 				};
 				let attachment = crate::collaboration::attachments::upload_for_run(
 					store,
@@ -1076,7 +1147,16 @@ impl WorkerAuthority {
 				previews::Dispatch::failed(String::new()),
 			)
 			.await;
-			access.finish(result).await?;
+			let started = access.finish(result).await?;
+			drop(outer);
+			if started.status.state.is_stopped() {
+				// Admission was refused before any dispatch, so no Pod can exist.
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result =
+					previews::settle(store, &mut access, run, domain.clone(), pending.id).await;
+				access.finish(result).await?;
+			}
 		}
 		let pod = accepted?;
 		let dispatched = match aidash_application::capabilities::pod::previews::start(
@@ -1098,9 +1178,36 @@ impl WorkerAuthority {
 		};
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result =
-			previews::finish_start(store, &mut access, run, domain, pending, dispatched).await;
+		let result = previews::finish_start(
+			store,
+			&mut access,
+			run,
+			domain.clone(),
+			pending.clone(),
+			dispatched,
+		)
+		.await;
 		let started = access.finish(result).await?;
+		drop(outer);
+		if started.status.state.is_stopped() {
+			let confirmed = match previews::terminate(store, &pending).await {
+				Ok(true) => true,
+				Ok(false) => {
+					tracing::warn!(preview_id = %pending.id, "live preview termination is not confirmed; the sweep will retry");
+					false
+				}
+				Err(error) => {
+					tracing::warn!(preview_id = %pending.id, %error, "could not terminate stopped live preview; the sweep will retry");
+					false
+				}
+			};
+			if confirmed {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::settle(store, &mut access, run, domain, pending.id).await;
+				access.finish(result).await?;
+			}
+		}
 		Ok(json!(started))
 	}
 
@@ -1477,7 +1584,10 @@ impl WorkerAuthority {
 		key: &str,
 		query: aidash_domain::memory::RecallQuery,
 		reflect: bool,
-	) -> Result<crate::semantic::native_memory::Outcome> {
+	) -> Result<(
+		crate::semantic::native_memory::Outcome,
+		Vec<aidash_domain::unconfirmed::Unconfirmed>,
+	)> {
 		let mut outer = self.access.write().await;
 		if outer.tx.is_active() {
 			outer.suspend().await?;
@@ -1488,11 +1598,16 @@ impl WorkerAuthority {
 				.ok_or(Error::Forbidden)?;
 			memory_run_check(&mut access, &run.metadata()).await?;
 			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			lease.lists();
 			let result = crate::semantic::native_memory::run_recall(
 				store, &mut lease, run, key, query, reflect,
 			)
 			.await;
-			lease.finish(result).await
+			let left_out = lease.take_unconfirmed().into_entries();
+			lease
+				.finish(result)
+				.await
+				.map(|outcome| (outcome, left_out))
 		}
 		.await;
 		restore_outer(&mut outer, store, run, result).await
@@ -1937,17 +2052,23 @@ impl WorkerAuthority {
 			.await
 	}
 
+	/// `exclude_run` leaves that Run's own events out (#942).
 	pub async fn workspace_observation(
 		&self,
 		workspace: Uuid,
 		offset: usize,
 		limit: usize,
+		exclude_run: Option<Uuid>,
 	) -> Result<Value> {
-		self.access
-			.write()
-			.await
-			.workspace_observation(workspace, offset, limit)
-			.await
+		let mut access = self.access.write().await;
+		// An observation lists the Workspace, so it leaves a Node that did not
+		// answer alone for a while (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = access
+			.workspace_observation(workspace, offset, limit, exclude_run)
+			.await;
+		access.lists = lists;
+		result
 	}
 
 	pub async fn workspace_observation_fitted<F>(
@@ -1960,11 +2081,14 @@ impl WorkerAuthority {
 	where
 		F: FnMut(usize, &Value) -> Result<bool>,
 	{
-		self.access
-			.write()
-			.await
+		let mut access = self.access.write().await;
+		// See `workspace_observation` (#770, Q16).
+		let lists = std::mem::replace(&mut access.lists, true);
+		let result = access
 			.workspace_observation_fitted(workspace, offset, limit, fits)
-			.await
+			.await;
+		access.lists = lists;
+		result
 	}
 
 	pub async fn skill_context(&self, store: &Store, run: &Run) -> Result<String> {
@@ -2153,6 +2277,28 @@ pub(crate) struct Guard {
 	agent: AgentConfig,
 	/// The Run's Tenant, learned from its authority when the step began.
 	tenancy: aidash_application::tenancy::TenancyScope,
+}
+
+/// A Run's step as a worker begins it, for integration tests outside this
+/// crate that call tools as the Run (#557). Production code holds the same
+/// `Guard` inside the worker.
+#[doc(hidden)]
+pub struct Step(Guard);
+
+impl Step {
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
+		Ok(Self(Guard::begin(f, run).await?))
+	}
+
+	/// The Run's Home carrying the step's authority, as the worker's tools see it.
+	pub fn home(&self, f: Federation) -> crate::federation::Home {
+		crate::federation::Home::new(f, self.0.run.clone()).with_authority(self.0.local_authority())
+	}
+
+	/// Commits what the step wrote, as the worker does when it waits.
+	pub async fn commit(&self) -> Result<()> {
+		self.0.suspend().await
+	}
 }
 
 pub(in crate::apps::identity) async fn authorize_guard(
@@ -2767,16 +2913,43 @@ pub async fn resume(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Res
 	.map_err(Into::into)
 }
 
+/// The Runs `identity` started that an Account suspension paused, in Run
+/// order, for its owner to resume them together (#876 decision 17).
+pub async fn suspension_paused(f: &Federation, identity: &SubjectIdentity) -> Result<Vec<Uuid>> {
+	use crate::apps::execution::models::Run;
+	use crate::apps::execution::services::states::RunControl;
+	use crate::apps::identity::models::AuthorizationExecution;
+	use reinhardt::db::orm::{Model, QuerySet};
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&identity.tenant)?;
+	let mut tx = f.store.pool.begin(&scope).await?.into_executor().await?;
+	let grants = AuthorizationExecution::objects()
+		.filter(AuthorizationExecution::field_tenant().eq(identity.tenant.clone()))
+		.filter(AuthorizationExecution::field_root_subject().eq(identity.subject.clone()))
+		.filter_in_subquery("run_id", |runs: QuerySet<Run>| {
+			runs.filter(Run::field_control().eq(RunControl::Paused))
+				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
+				.values(&["id"])
+		})?
+		.order_by(&["run_id"])
+		.all_with_executor(tx.as_mut())
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?;
+	tx.commit().await?;
+	Ok(grants.into_iter().map(|grant| grant.run_id).collect())
+}
+
 pub async fn decline_call(
 	f: &Federation,
 	identity: &SubjectIdentity,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<RunInspection> {
 	aidash_application::authorization::runs::decline_call(
 		&crate::bootstrap::run_control_repository(f, identity),
 		id,
 		call,
+		rest_of_run,
 	)
 	.await
 	.map_err(Into::into)

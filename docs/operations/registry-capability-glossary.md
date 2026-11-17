@@ -232,7 +232,7 @@ The bounded work performed for a person attaching an Agent Plugin to fix the pac
 _Avoid_: preparation Run, installation (the separate work at session start)
 
 **Agent Plugin data**:
-The persistent data of one Agent Plugin for one Working Area scope, shared by its stdio servers and retained across Agent versions. It is separate from the Working Area's published files.
+The persistent data of one Agent Plugin for one Agent in one Scratch Space, shared by its stdio servers and retained across Agent versions. It is separate from the Working Area's published files.
 _Avoid_: plugin state (also used for session memory), Working Area publication
 
 **Sandboxed**:
@@ -248,11 +248,11 @@ One provider call for one Run step or for one Sampling approval. It has a public
 _Avoid_: attempt (unqualified), request, claim
 
 **Tool call approval**:
-An eligible person's authorization for one exact call of a Tenant's HTTP or MCP tool, which the Run waits for and then makes. Like a Web disclosure approval, it is addressed to a Designated approver and may be given once or as a Run grant. A call to a remote MCP server of an Agent Plugin needs one too; a call to its stdio MCP server does not, because that server is Sandboxed.
+An eligible person's authorization for one exact call of a Tenant's HTTP or MCP tool, which the Run waits for and then makes. Like a Web disclosure approval, it is decided by an Eligible approver and may be given once or as a Run grant. A call to a remote MCP server of an Agent Plugin needs one too; a call to its stdio MCP server does not, because that server is Sandboxed.
 _Avoid_: External approval, workbench approval, external write approval
 
 **Sampling approval**:
-An eligible person's authorization for one MCP server of an Agent Plugin to have the Run's model write one completion for it, without any of the Run's context. Like a Tool call approval it is addressed to a Designated approver and may be given once or as a Run grant, while the tool operation remains unfinished within the approval and MCP waiting limits.
+An eligible person's authorization for one MCP server of an Agent Plugin to have the Run's model write one completion for it, without any of the Run's context. Like a Tool call approval it is decided by an Eligible approver and may be given once or as a Run grant, while the tool operation remains unfinished within the approval and MCP waiting limits.
 _Avoid_: sampling permission, model access approval, LLM request approval
 
 **Elicitation**:

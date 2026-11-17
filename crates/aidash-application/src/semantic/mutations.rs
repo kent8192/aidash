@@ -1,8 +1,11 @@
 //! Mutations apply the same authority and replay rules for HTTP and worker callers.
 use crate::{Error, Result, ports::semantic::mutations::*};
-use aidash_domain::semantic::{
-	indexing::{IndexingSpec, validate_text},
-	mutations::{self, Entry, History, Index, Put},
+use aidash_domain::{
+	semantic::{
+		indexing::{IndexingSpec, validate_text},
+		mutations::{self, Entry, History, Index, Put},
+	},
+	unconfirmed::{Kind, Tally, Unconfirmed},
 };
 use chrono::Utc;
 use uuid::Uuid;
@@ -67,6 +70,19 @@ pub fn validate_public_put(input: &Put) -> Result<()> {
 	) {
 		return Err(Error::Invalid(
 			"Working Area images are indexed through File publication".into(),
+		));
+	}
+	if matches!(
+		input.source,
+		aidash_domain::semantic::Source::AttachmentImage { .. }
+	) {
+		return Err(Error::Invalid(
+			"Thread Attachment images are indexed when they are posted".into(),
+		));
+	}
+	if aidash_domain::semantic::indexing::is_managed_image_key(&input.key) {
+		return Err(Error::Invalid(
+			"image entry keys are managed by the Workspace index".into(),
 		));
 	}
 	if input.key.starts_with("agent-memory:")
@@ -167,31 +183,37 @@ pub async fn put(
 	Ok(entry)
 }
 
+/// The entries the reader may see, and how many were left out because a Node
+/// did not answer (#770).
 pub async fn entries(
 	scope: &mut dyn SemanticEntriesSession,
 	workspace: Uuid,
-) -> Result<Vec<Entry>> {
+) -> Result<(Vec<Entry>, Vec<Unconfirmed>)> {
 	scope.workspace(workspace, "semantic.read").await?;
 	scope.index(workspace, false).await?;
 	let mut visible = vec![];
+	let mut unconfirmed = Tally::new();
 	for entry in scope.list(workspace).await? {
+		scope.begin_row();
 		if !scope.permits(&entry, "semantic.read").await? {
+			let silence = scope.take_row_silence();
+			unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
 			continue;
 		}
-		let source = serde_json::from_value(entry.source.clone())?;
-		let source_visible =
-			if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. }) {
-				scope.image_visible(workspace, &source).await?
-			} else if entry.deleted {
-				true
-			} else {
-				scope.source(workspace, &source).await?.is_some()
-			};
-		if source_visible {
+		let source: aidash_domain::semantic::Source = serde_json::from_value(entry.source.clone())?;
+		let source_visible = if source.is_image() {
+			scope.image_visible(workspace, &source).await?
+		} else if entry.deleted {
+			true
+		} else {
+			scope.source(workspace, &source).await?.is_some()
+		};
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::SemanticEntry, workspace, source_visible) {
 			visible.push(entry);
 		}
 	}
-	Ok(visible)
+	Ok((visible, unconfirmed.into_entries()))
 }
 
 pub async fn change(
@@ -225,13 +247,18 @@ pub async fn change(
 	if !scope.permits(&entry, action).await? || !scope.permits(&entry, "semantic.read").await? {
 		return Err(Error::Forbidden);
 	}
-	if matches!(
-		serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())?,
-		aidash_domain::semantic::Source::WorkingImage { .. }
-	) {
-		return Err(Error::Invalid(
-			"Working Area images are managed through File publication".into(),
-		));
+	match serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())? {
+		aidash_domain::semantic::Source::WorkingImage { .. } => {
+			return Err(Error::Invalid(
+				"Working Area images are managed through File publication".into(),
+			));
+		}
+		aidash_domain::semantic::Source::AttachmentImage { .. } => {
+			return Err(Error::Invalid(
+				"Thread Attachment images are managed through their attachment".into(),
+			));
+		}
+		_ => {}
 	}
 	if !delete
 		&& !entry.deleted
@@ -294,10 +321,9 @@ pub async fn history(
 				if !scope.permits(&entry, "semantic.read").await? {
 					continue;
 				}
-				let source = serde_json::from_value(entry.source.clone())?;
-				if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. })
-					&& !scope.image_visible(workspace, &source).await?
-				{
+				let source: aidash_domain::semantic::Source =
+					serde_json::from_value(entry.source.clone())?;
+				if source.is_image() && !scope.image_visible(workspace, &source).await? {
 					continue;
 				}
 			}

@@ -122,6 +122,9 @@ impl HomeScope for SourceSession {
 	) -> Result<Vec<aidash_domain::HumanRequest>> {
 		Ok(vec![])
 	}
+	async fn close_human_requests(&mut self, _: Uuid, _: Uuid) -> Result<()> {
+		Ok(())
+	}
 	async fn answer_human(
 		&mut self,
 		_: Uuid,

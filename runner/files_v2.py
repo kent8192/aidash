@@ -24,10 +24,16 @@ def parts(path, allow_root=False):
     return components
 
 
-def open_dir(root, components):
+def open_dir(root, components, create=False):
+    """Open a directory below root without following links; `create` makes missing ones (0755)."""
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for component in components:
+            if create:
+                try:
+                    os.mkdir(component, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
             try:
                 child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except OSError as error:
@@ -43,16 +49,30 @@ def open_dir(root, components):
 
 
 def open_file(fd, name, flags=os.O_RDONLY, mode=0o600):
+    import fcntl
+    # Non-blocking, so a FIFO is refused at once instead of waiting for a writer.
     try:
-        result = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=fd)
+        result = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=fd)
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise InvalidPath('symlinks are not allowed') from None
+        if error.errno == errno.ENXIO:
+            raise InvalidPath('path is not a regular file') from None
         raise
     if not stat.S_ISREG(os.fstat(result).st_mode):
         os.close(result)
         raise InvalidPath('path is not a regular file')
+    fcntl.fcntl(result, fcntl.F_SETFL, fcntl.fcntl(result, fcntl.F_GETFL) & ~os.O_NONBLOCK)
     return result
+
+
+def split_lines(text):
+    r"""Split on '\n' only, keeping each line's ending: '\r\n', '\n' or '' for a last line without one."""
+    pieces = text.split('\n')
+    lines = [(piece[:-1], '\r\n') if piece.endswith('\r') else (piece, '\n') for piece in pieces[:-1]]
+    if pieces[-1]:
+        lines.append((pieces[-1], ''))
+    return lines
 
 
 def pattern_matches(path, pattern, *, is_dir=False):
@@ -134,7 +154,7 @@ class FileService:
         self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
         state = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            parent = open_dir(self.root, path[:-1])
+            parent = open_dir(self.root, path[:-1], create=True)
         except BaseException:
             os.close(state)
             raise
@@ -163,7 +183,14 @@ class FileService:
                     if not stat.S_ISREG(existing.st_mode):
                         raise InvalidPath('target is not a regular file')
                 except FileNotFoundError:
-                    pass
+                    existing = None
+                if mode is None:
+                    # Without a mode, keep the target's or give a new file the usual 0644.
+                    staged = open_file(state, key + '.tmp')
+                    try:
+                        os.fchmod(staged, stat.S_IMODE(existing.st_mode) if existing else 0o644)
+                    finally:
+                        os.close(staged)
                 os.replace(key + '.tmp', path[-1], src_dir_fd=state, dst_dir_fd=parent)
                 os.fsync(parent)
             return {'size': size}
@@ -263,7 +290,17 @@ class FileService:
         for name in ignore_files:
             if len(parts(name)) != 1:
                 raise ValueError('ignore file names must be single path components')
-        parts(root, allow_root=True)
+        components = parts(root, allow_root=True)
+        if request.get('missing_ok') is True and components:
+            # A sync save may select a path that was deleted: it lists nothing.
+            try:
+                parent = open_dir(self.root, components[:-1])
+                try:
+                    os.stat(components[-1], dir_fd=parent, follow_symlinks=False)
+                finally:
+                    os.close(parent)
+            except FileNotFoundError:
+                return {'files': [], 'skipped_symlinks': [], 'truncated': False}
         rule_cache = {}
         def rules(directory):
             key = '/'.join(directory)
@@ -339,7 +376,11 @@ class FileService:
         text = request['patch']
         if not isinstance(text, str) or len(text.encode()) > 1048576:
             raise ValueError('invalid patch size')
-        lines = text.splitlines()
+        # Split on newlines only: splitlines() would also split on form feeds
+        # and other separators that can appear inside a line.
+        lines = [line[:-1] if line.endswith('\r') else line for line in text.split('\n')]
+        if lines and lines[-1] == '':
+            lines.pop()
         if len(lines) < 3 or lines[0] != '*** Begin Patch' or lines[-1] != '*** End Patch':
             raise ValueError('invalid patch grammar')
         edits, seen, i = [], set(), 1
@@ -404,7 +445,7 @@ class FileService:
             fcntl.flock(lock, fcntl.LOCK_EX)
             for path, mode, change in edits:
                 components = parts(path)
-                parent = open_dir(self.root, components[:-1])
+                parent = open_dir(self.root, components[:-1], create=mode == 0)
                 opened.append(parent)
                 name = components[-1]
                 try:
@@ -423,22 +464,35 @@ class FileService:
                     if len(original) > 16 << 20:
                         raise ValueError('patch source exceeds limit')
                 if mode == 2:
-                    source = original.decode('utf-8').splitlines()
+                    # Lines keep their own endings, so a patch changes only the
+                    # lines it names (CRLF, a missing final newline, form feeds).
+                    source = split_lines(original.decode('utf-8'))
+                    default = next((ending for _, ending in source if ending), '\n')
                     cursor = 0
                     for context, old, new, eof in change:
                         if context is not None:
                             try:
-                                cursor = source.index(context, cursor) + 1
-                            except ValueError:
+                                cursor = next(pos for pos in range(cursor, len(source))
+                                              if source[pos][0] == context) + 1
+                            except StopIteration:
                                 raise ValueError('patch context not found') from None
                         found = next((pos for pos in range(cursor, len(source) + 1)
-                                      if source[pos:pos + len(old)] == old
+                                      if [line for line, _ in source[pos:pos + len(old)]] == old
                                       and (not eof or pos + len(old) == len(source))), None)
                         if found is None:
                             raise ValueError('patch hunk not found')
-                        source[found:found + len(old)] = new
+                        replaced = source[found:found + len(old)]
+                        endings = [replaced[k][1] if k < len(replaced) and replaced[k][1] else default
+                                   for k in range(len(new))]
+                        at_end = found + len(old) == len(source)
+                        if at_end and new and (replaced[-1][1] == '' if replaced
+                                               else bool(source) and source[-1][1] == ''):
+                            endings[-1] = ''
+                            if not replaced and source:
+                                source[-1] = (source[-1][0], default)
+                        source[found:found + len(old)] = list(zip(new, endings))
                         cursor = found + len(new)
-                    change = (''.join(line + '\n' for line in source)).encode()
+                    change = ''.join(line + ending for line, ending in source).encode()
                 token = '.aidash-patch-' + uuid.uuid4().hex
                 temp, backup = token + '.new', token + '.old'
                 prepared.append((parent, name, temp, backup, mode))
@@ -485,3 +539,26 @@ class FileService:
             for parent in opened:
                 os.close(parent)
             os.close(lock)
+
+
+# Read-only operations end well before the Runner's 45 s transport limit, which
+# holds the Scratch Space's lock while it waits.
+FILE_OPERATION_SECONDS = 30
+
+
+def run_bounded(service, operation, request, seconds=FILE_OPERATION_SECONDS):
+    """Run one file operation; a read-only walk or pathological pattern stops at the budget."""
+    if operation not in ('read', 'search', 'manifest'):
+        return getattr(service, operation)(request)
+    import signal
+
+    def over_budget(*_):
+        raise ValueError(f'file operation exceeded its {seconds} s time budget')
+
+    previous = signal.signal(signal.SIGALRM, over_budget)
+    signal.alarm(seconds)
+    try:
+        return getattr(service, operation)(request)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)

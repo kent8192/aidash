@@ -19,3 +19,7 @@ Revocation may be decided by a subject whose Tenant policy permits `research.rev
 ## Amendment: Research references (#331, 2026-10-23)
 
 [ADR 0083](0083-research-journals-retain-content-addressed-references-and-purges-remove-the-owned-bytes.md) replaces the original inline-journal exception: the journal remains append-only but holds immutable Research references. Revocation removes their Research-owned contents and every fitted variant, so journal reads resolve to placeholders while integrity commitments remain valid. The original claim that provider content stays until Run deletion no longer applies to this format; Runs are never deleted.
+
+## Amendment: only a Tenant subject revokes (#484, #300, 2026-11-13)
+
+Since #484 no Deployment Administrator decides or reads an Evidence Revocation: [ADR 0102](0102-a-deployment-administrators-role-grants-no-tenant-content-authority.md) gives that role no authority over Tenant content, and stopping a known Run stays its only content-free reach into a Tenant's work. A Deployment Administrator who must revoke acts through its own Mapping, under the Tenant's policy. Records written before #484 may still name a Deployment Administrator; the dashboard shows such an actor without its identity. #300 kept the readers above: a reader of the Run sees only that and when it was revoked, because the reason often concerns a removal request or personal data. With ADR 0083 the confirmation states that the model's own text, published answers included, is what stays and may quote the revoked pages.

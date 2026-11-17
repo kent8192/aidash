@@ -17,3 +17,14 @@ Decided on 2026-10-09. A Provider Credential is obtained only through Provider A
 - Compaction calls Jev through OpenRouter's System One API (`https://openrouter.ai/api/v1/systemone`, model `typesafe/jev-1.13`), decided on 2026-10-09. It therefore uses the Tenant's OpenRouter Provider Credential like every other model-provider call, and TypeSafe needs no Catalog entry of its own. Zero data retention is required on that path; whether `/systemone` accepts `provider.zdr` is verified during #158.
 
 Superseded in part by ADR 0036: Keyless endpoints, which carry no key, remain allowed; only calls that carry a key must use a Tenant's Provider Credential.
+
+## Amendment (2026-11-11, #877)
+
+A Self-hosted Deployment also accepts Key Material that a person supplies, because its host already reads the Secret Store (ADR 0008) and a pasted key trusts nothing more than that. Cloud and Dedicated stay as decided above.
+
+- On a Self-hosted Deployment, a person whom the Tenant's policy allows `provider_credential.create` (or `.rotate` for a new version) may paste Key Material for a Provider Catalog entry in the dashboard. The decision is the same one Provider Authorization uses; no role is added.
+- Whoever has Host Access may store Key Material into a named Tenant with the host-side `manage store-provider-credential` command, which reads the key from standard input.
+- Each Provider Credential records how its current key arrived: Provider Authorization, pasted, or Host Access. The record and its lifecycle events carry it, so the Tenant's audit history tells the paths apart.
+- A supplied key has no key digest and no key-settings deep link. The digest exception above rests on every authorization issuing a fresh key; a supplied key may be stored in several Tenants, so a digest would correlate them.
+- Environment-variable model keys (`AIDASH_SECRET_*`, `credential_env`) stay removed on every Offering: such a variable could still be named by Registry configuration and sent to a configured endpoint.
+- Adding providers that issue keys only by hand, such as Anthropic or Gemini, to the Provider Catalog is a separate decision.

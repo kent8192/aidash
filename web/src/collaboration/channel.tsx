@@ -31,6 +31,13 @@ import type {
 } from "../types";
 import { Badge, JsonView, useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
+import {
+  readUnconfirmed,
+  unconfirmedFor,
+  type UnconfirmedKind,
+  type UnconfirmedLine,
+} from "../unconfirmed";
+import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { isLocalRun } from "../node-selection";
 import { answeredAtDeadline } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
@@ -60,6 +67,7 @@ import { FileCitationProvider } from "./file-citations";
 import { corePreviewAvailability } from "../generated/aidash";
 import type { PreviewAvailability } from "../generated/models";
 import { TimelineStrip } from "./request/timeline";
+import { SchedulesPanel } from "../schedules";
 import { Phase, SegmentedProgress } from "./request/progress";
 import { parseOwner, runDisplayStatus } from "./request/canvas-model";
 import { Button } from "../components/ui/button";
@@ -90,6 +98,7 @@ const requestCopy = {
     files: "ファイル",
     viewProgress: "進捗を見る",
     progressTitle: "依頼の進捗",
+    schedules: "スケジュール",
     overview: "概要",
     recovery: "整合性と復旧",
     details: "依頼の詳細",
@@ -124,6 +133,7 @@ const requestCopy = {
     files: "Files",
     viewProgress: "View progress",
     progressTitle: "Request progress",
+    schedules: "Schedules",
     overview: "Overview",
     recovery: "Consistency and recovery",
     details: "Request details",
@@ -192,9 +202,12 @@ function eventTask(event: MeshEvent, tasks: readonly Task[]) {
 
 export function ArtifactList({
   artifacts,
+  unconfirmed = [],
   hasOlder = false,
 }: {
   artifacts: Artifact[];
+  /** Artifacts a silent Node kept out of `artifacts`. */
+  unconfirmed?: UnconfirmedLine[];
   hasOlder?: boolean;
 }) {
   const { locale } = useI18n();
@@ -202,6 +215,7 @@ export function ArtifactList({
   return (
     <section className="grid gap-2" aria-label={copy.results}>
       <h3 className="text-[11px] font-medium text-faint">{copy.results}</h3>
+      <UnconfirmedNotice lines={unconfirmed} />
       {hasOlder && (
         <p className="text-xs text-faint">
           {locale === "ja-JP"
@@ -209,7 +223,7 @@ export function ArtifactList({
             : "Older artifacts exist"}
         </p>
       )}
-      {artifacts.length === 0 && (
+      {artifacts.length === 0 && unconfirmed.length === 0 && (
         <p className="text-xs text-faint">{copy.empty}</p>
       )}
       {artifacts.length > 0 && (
@@ -299,7 +313,7 @@ export function Channel({
     null,
   );
   const [tab, setTab] = useState<
-    "conversation" | "canvas" | "tasks" | "results"
+    "conversation" | "canvas" | "tasks" | "results" | "schedules"
   >("conversation");
   const [dockOpen, setDockOpen] = useState(true);
   const [sheetTab, setSheetTab] = useState<
@@ -412,6 +426,23 @@ export function Channel({
       : "preparing";
   const artifacts = query.isError ? [] : (query.data?.artifacts ?? []);
   const events = query.isError ? [] : (query.data?.events ?? []);
+  // Tasks, Artifacts and events are read with the snapshot; Runs and requests
+  // come from State. Until the snapshot answers, Tasks fall back to State.
+  const missing = (kinds: UnconfirmedKind[], fromSnapshot: boolean) =>
+    query.isError
+      ? []
+      : unconfirmedFor(
+          fromSnapshot && query.data
+            ? readUnconfirmed(query.data)
+            : data.unconfirmed,
+          kinds,
+          [workspace.id],
+        );
+  const missingTasks = missing(["task"], true);
+  const missingArtifacts = missing(["artifact"], true);
+  const missingEvents = missing(["event"], true);
+  const missingRuns = missing(["run"], false);
+  const missingRequests = missing(["human_request"], false);
   // The workspace snapshot refreshes every 2 s; its fetch time is the render's "now".
   const now = query.dataUpdatedAt;
   const system: SystemLine[] = events.flatMap((event) => {
@@ -465,10 +496,16 @@ export function Channel({
     </Alert>
   );
   const decisions = (
-    <ChannelRequests className="mt-3" requests={scopedRequests} open={open} />
+    <>
+      <UnconfirmedNotice className="mt-3" lines={missingRequests} />
+      <ChannelRequests className="mt-3" requests={scopedRequests} open={open} />
+    </>
   );
   const canvas = (
     <>
+      {desktop && (
+        <UnconfirmedNotice className="mx-5 mt-3" lines={missingRequests} />
+      )}
       <RequestCanvas
         data={data}
         discovery={discovery}
@@ -531,7 +568,8 @@ export function Channel({
           {copy.newTask}
         </Button>
       </div>
-      {tasks.length === 0 && (
+      <UnconfirmedNotice className="mx-4 mb-2" lines={missingTasks} />
+      {tasks.length === 0 && missingTasks.length === 0 && (
         <p className="px-4 py-6 text-center text-xs text-muted-foreground">
           {copy.noTasks}
         </p>
@@ -591,6 +629,7 @@ export function Channel({
     <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto p-4">
       <ArtifactList
         artifacts={artifacts}
+        unconfirmed={missingArtifacts}
         hasOlder={data.next_cursors.artifacts !== null}
       />
       <ChannelFiles workspace={workspace.id} />
@@ -785,6 +824,7 @@ export function Channel({
                   {view.results}
                   {count(artifacts.length)}
                 </TabsTrigger>
+                <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
               </TabsList>
             )}
             {desktop ? (
@@ -841,6 +881,9 @@ export function Channel({
                       {view.results}
                       {count(artifacts.length)}
                     </TabsTrigger>
+                    <TabsTrigger value="schedules">
+                      {view.schedules}
+                    </TabsTrigger>
                   </TabsList>
                   <Button
                     variant="ghost"
@@ -873,6 +916,14 @@ export function Channel({
                 className="flex min-h-0 flex-1 flex-col"
               >
                 {resultPane}
+              </TabsContent>
+              <TabsContent
+                value="schedules"
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+              >
+                <SchedulesPanel
+                  scope={{ kind: "workspace", workspace: workspace.id }}
+                />
               </TabsContent>
             </aside>
           </Tabs>
@@ -924,6 +975,7 @@ export function Channel({
                 discovery={discovery}
                 open={inspect}
                 showTasks={() => setSheetTab("work")}
+                unconfirmed={missingTasks}
               />
             </TabsContent>
             <TabsContent
@@ -958,8 +1010,13 @@ export function Channel({
                   {copy.newTask}
                 </Button>
               </div>
+              <UnconfirmedNotice lines={missingTasks} />
               {tasks.length === 0 ? (
-                <p className="text-xs text-muted-foreground">{copy.noTasks}</p>
+                missingTasks.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {copy.noTasks}
+                  </p>
+                )
               ) : (
                 <ul className="divide-y divide-border rounded-md border border-border">
                   {tasks.map((task) => (
@@ -1038,6 +1095,7 @@ export function Channel({
             >
               <ArtifactList
                 artifacts={artifacts}
+                unconfirmed={missingArtifacts}
                 hasOlder={data.next_cursors.artifacts !== null}
               />
               <ChannelFiles workspace={workspace.id} />
@@ -1049,6 +1107,7 @@ export function Channel({
               <p className="text-xs text-muted-foreground">
                 {copy.limitedHistory}
               </p>
+              <UnconfirmedNotice lines={missingRuns} />
               {scopedRuns.length > 0 && (
                 <ul className="divide-y divide-border rounded-md border border-border">
                   {scopedRuns.map((item) => (
@@ -1072,6 +1131,7 @@ export function Channel({
                   ))}
                 </ul>
               )}
+              <UnconfirmedNotice lines={missingEvents} />
               {events.length > 0 && (
                 <ul className="divide-y divide-border rounded-md border border-border">
                   {[...events].reverse().map((event) => (

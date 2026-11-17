@@ -69,26 +69,63 @@ async fn a_line_search_is_bounded_and_keeps_the_runners_matches() {
 		truncated: true,
 	});
 	let context = context(runtime.clone());
-	let result = search(
-		&context,
-		ScratchSearch {
-			query: "fn main".into(),
-			mode: SearchMode::Literal,
-			scope: ScratchScope::Scratch,
-			path: Some("src".into()),
-			glob: Some("*.rs".into()),
-			limit: Some(10_000),
-		},
-		20,
-	)
-	.await
-	.unwrap();
+	let input = |limit| ScratchSearch {
+		query: "fn main".into(),
+		mode: SearchMode::Literal,
+		scope: ScratchScope::Scratch,
+		path: Some("src".into()),
+		glob: Some("*.rs".into()),
+		limit: Some(limit),
+	};
+	// A limit over the Deployment's ceiling is refused, as for the Working Area.
+	assert!(matches!(
+		search(&context, input(21), 20, 32_768).await,
+		Err(Error::Invalid(code)) if code == "INVALID_SEARCH_BUDGET"
+	));
+	let result = search(&context, input(10), 20, 32_768).await.unwrap();
 	let request = runtime.searches.lock().unwrap()[0].clone();
-	assert_eq!(request.max_results, 500);
+	assert_eq!(request.max_results, 10);
 	assert!(!request.regex);
 	assert_eq!(request.path.as_deref(), Some("src"));
 	assert_eq!(result["matches"][0]["path"], "src/main.rs");
 	assert_eq!(result["matches"][0]["location"]["line"], 3);
+	assert_eq!(result["truncated"], true);
+}
+
+#[tokio::test]
+async fn line_matches_stop_before_the_deployments_byte_ceiling() {
+	let runtime = Arc::new(Runtime::default());
+	*runtime.search.lock().unwrap() = Some(FileSearchResult {
+		matches: (1..=50)
+			.map(
+				|line| crate::ports::capabilities::execution_pod::FileMatch {
+					path: "big.txt".into(),
+					line,
+					text: "x".repeat(2000),
+				},
+			)
+			.collect(),
+		truncated: false,
+	});
+	let context = context(runtime.clone());
+	let result = search(
+		&context,
+		ScratchSearch {
+			query: "x".into(),
+			mode: SearchMode::Literal,
+			scope: ScratchScope::Scratch,
+			path: None,
+			glob: None,
+			limit: None,
+		},
+		50,
+		32_768,
+	)
+	.await
+	.unwrap();
+	let matches = result["matches"].as_array().unwrap();
+	assert!(!matches.is_empty() && matches.len() < 50);
+	assert!(result["matches"].to_string().len() <= 32_768);
 	assert_eq!(result["truncated"], true);
 }
 
@@ -110,6 +147,7 @@ async fn a_path_search_lists_matching_paths_from_the_manifest() {
 			limit: Some(1),
 		},
 		20,
+		32_768,
 	)
 	.await
 	.unwrap();

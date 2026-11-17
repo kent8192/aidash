@@ -301,7 +301,9 @@ async fn execution_pod_routes_exchange_their_v2_wire_contracts() {
 			"/v2/files/patch" => { assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","patch":"patch"})); json!({"changed":["a"]}) },
 			"/v2/files/manifest" => { assert_eq!(body, json!({"scratch_space_id":"s","root":".","ignore_files":[".gitignore"],"exclude":[],"include":[],"max_files":4})); json!({"files":[{"path":"a","size":2,"sha256":"digest"}],"skipped_symlinks":["b"],"truncated":false}) },
 			"/v2/previews/start" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","code":"serve","port":8080,"proxy_credential":"secret"})); json!({"operation_id":"op","address":"10.0.0.1:8080"}) },
-			"/v2/previews/stop" | "/v2/mcp/stop" => { assert_eq!(body, json!({"operation_id":"op"})); json!({"stopped":true}) },
+			// A stop answers as soon as it signals; the end shows in the result.
+			"/v2/previews/stop" | "/v2/mcp/stop" => { assert_eq!(body, json!({"operation_id":"op"})); json!({"operation_id":"op","status":"stopping"}) },
+			"/v2/commands/result" => { assert_eq!(body, json!({"operation_id":"op"})); json!({"operation_id":"op","status":"stopped"}) },
 			"/v2/mcp/start" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","install":"","command":["server"],"env":{"MODE":"test"},"plugin_data":"data","proxy_credential":"secret"})); json!({"operation_id":"op"}) },
 			"/v2/mcp/call" => { assert_eq!(body, json!({"operation_id":"op","message":{"jsonrpc":"2.0","id":1},"timeout_seconds":3})); json!({"message":{"jsonrpc":"2.0","id":1,"result":{}}}) },
 			other => panic!("unexpected path {other}"),

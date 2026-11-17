@@ -1011,7 +1011,9 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
-	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+	// A deadlock never ends, so the limit only needs to outlast slow runners:
+	// the six steps took 6 s on a local machine with the Schedule tools (#557).
+	tokio::time::timeout(std::time::Duration::from_secs(30), async {
 		for _ in 0..6 {
 			worker.worker_once().await.unwrap();
 		}
@@ -1127,7 +1129,7 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 	);
 	let (_, events) = request(&app, &token, "GET", "/api/events", Value::Null).await;
 	assert!(
-		events
+		events["events"]
 			.as_array()
 			.unwrap()
 			.iter()
@@ -2262,11 +2264,11 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	.await;
 	assert_eq!(status, 200, "{events}");
 	assert_eq!(
-		events.as_array().unwrap().len(),
+		events["events"].as_array().unwrap().len(),
 		1,
 		"the preceding generation context must not overwrite the next run's owner"
 	);
-	assert_eq!(events[0]["kind"], "generation.changed");
+	assert_eq!(events["events"][0]["kind"], "generation.changed");
 	cleanup(f, &url, &schema).await;
 }
 

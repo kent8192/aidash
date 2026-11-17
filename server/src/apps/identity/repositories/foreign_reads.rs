@@ -14,7 +14,9 @@ use aidash_domain::{
 	registry::{EntityRef, Entry},
 };
 use async_trait::async_trait;
-use reinhardt::query::{Alias, Expr, JoinType, LockType, PostgresQueryBuilder, Query, SimpleExpr};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, JoinType, LockType, PostgresQueryBuilder, Query, SimpleExpr,
+};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -73,6 +75,42 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 		run: &RunMetadata,
 		d: &Description,
 	) -> Result<Option<Uuid>> {
+		// Nodes of the same Tenant use subject authority without a Peer Mapping.
+		// Recheck the source Node and bind the authority to this exact admission.
+		if let Ok(source) = aidash_domain::nodes::NodeAddress::parse(&run.home_node)
+			&& source.deployment.as_str() == self.0.node_id
+		{
+			let same_tenant: bool = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(
+						crate::apps::identity::repositories::nodes::live_node_condition(
+							Expr::value(self.0.identity.tenant.clone()).into(),
+							Expr::value(source.node.to_string()).into(),
+						),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **self.0.tx)
+			.await?;
+			if same_tenant {
+				let admission: Option<(Uuid, Vec<String>)> = crate::database::native::query_as(
+					&Query::select()
+						.columns(["credential_id", "subject_chain"].map(Alias::new))
+						.from(Alias::new("authorization_remote_admissions"))
+						.and_where(Expr::col("id").eq(Expr::value(run.id)))
+						.and_where(Expr::col("tenant").eq(self.0.identity.tenant.clone()))
+						.and_where(Expr::col("source_node").eq(run.home_node.clone()))
+						.lock(LockType::Share)
+						.to_string(PostgresQueryBuilder),
+				)
+				.columns(&["credential_id", "subject_chain"])
+				.fetch_optional(&mut **self.0.tx)
+				.await?;
+				return Ok(admission.and_then(|(credential, subjects)| {
+					(subjects.first() == Some(&d.source_subject)).then_some(credential)
+				}));
+			}
+		}
 		let mapped: Option<Uuid> = {
 			let query_bind_1 = &run.home_node;
 			let query_bind_2 = run.node.as_str();
@@ -102,6 +140,15 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 		Ok(mapped)
 	}
 	async fn source_snapshot(&mut self, credential_id: Uuid, root: &str) -> Result<Snapshot> {
+		if credential_id.is_nil() {
+			// A same-Tenant admission is intentionally credentialless. The
+			// mapped_credential check above establishes its source boundary.
+			let snapshot = self.0.snapshot.clone();
+			crate::authorization::identity::require_live_subject(&mut **self.0.tx, &snapshot, root)
+				.await
+				.map_err(aidash_application::Error::from)?;
+			return Ok(snapshot);
+		}
 		SubjectIdentity {
 			http_session: None,
 			credential_id,

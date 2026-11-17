@@ -69,6 +69,7 @@ impl Run {
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
+		super::HumanRequest::close_for_run(tx, id).await?;
 		Ok(())
 	}
 }

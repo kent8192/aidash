@@ -16,6 +16,12 @@ mod snapshot;
 pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
+/// Default Tool sets an Agent version may have been normalized with: today's
+/// (0) and six historical ones (see `AgentBindings::normalize_mode`).
+const HISTORICAL_DEFAULT_SETS: u8 = 7;
+/// Default file tools whose builtin moved to 1.0.1 with the Execution Pod
+/// (#745). Every historical default set bound them at 1.0.0.
+const POD_FILE_TOOLS: &[&str] = &["file_read", "file_search", "attachment_copy"];
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
 pub const MAX_TOOL_PARALLELISM: u8 = 16;
 fn sequential_tools() -> u8 {
@@ -44,6 +50,18 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
+	"schedule_create",
+	"schedule_list",
+	"schedule_update",
+	"schedule_delete",
+];
+/// The core capability `schedules` (#557): on by default, so its tools are
+/// default tools an Agent definition removes with `remove_default`.
+pub const SCHEDULE_TOOLS: &[&str] = &[
+	"schedule_create",
+	"schedule_list",
+	"schedule_update",
+	"schedule_delete",
 ];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
@@ -392,18 +410,26 @@ impl AgentBindings {
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		self.normalize_mode(node, 0)
 	}
-	fn normalize_version(&self, node: &str, legacy: bool) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, if legacy { 1 } else { 0 })
-	}
+	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
+	/// version was normalized with (0 today, 1–6 historical, where 5 is
+	/// today's set before the Schedule tools of #557, which sets 1–5 lack, and
+	/// 6 is today's set before the file tools moved to 1.0.1 with #745, which
+	/// every historical set predates); `mode >=
+	/// HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and `subnode_task`
+	/// at the 1.0.0 they had before they moved to 1.1.0.
 	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
-		let previous_builtin_versions = mode >= 4;
-		let mode = mode % 4;
+		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
+		let mode = mode % HISTORICAL_DEFAULT_SETS;
+		let previous_file_tools = mode != 0;
+		// Set 6 is today's set in every other way.
+		let mode = if mode == 6 { 0 } else { mode };
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
 					|| (mode == 2 && name == "workspace_search")
 					|| (mode == 3 && name == "attachment_copy")
+					|| SCHEDULE_TOOLS.contains(&name.as_str())
 			}) {
 			return Err(Error::Invalid("unknown historical default".into()));
 		}
@@ -417,6 +443,7 @@ impl AgentBindings {
 			if (mode == 1 && matches!(*operation, "workspace_search" | "attachment_copy"))
 				|| (mode == 2 && *operation == "workspace_search")
 				|| (mode == 3 && *operation == "attachment_copy")
+				|| (mode != 0 && SCHEDULE_TOOLS.contains(operation))
 			{
 				continue;
 			}
@@ -425,19 +452,31 @@ impl AgentBindings {
 				continue;
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
-			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
+			// Mode 2 predates image retrieval and mode 4 predates Thread
+			// Attachment images (#622). `workspace_read` keeps the version each
+			// pinned; `workspace_message` and `workspace_search` move to 1.1.0,
+			// which only adds inputs (see `upgraded`).
+			if mode == 1
+				|| (mode == 3 && *operation != "workspace_read")
+				|| (previous_file_tools && POD_FILE_TOOLS.contains(operation))
+			{
 				target.version = "1.0.0".into();
 			} else if mode == 2 && *operation == "workspace_read" {
 				target.version = "1.0.1".into();
-			} else if (mode == 0 || mode == 3)
-				&& *operation == "workspace_read"
-				&& let Some(binding) = self.bindings.iter().find(|b| {
-					b.target.id == target.id
-						&& b.target.registry_deployment == node
-						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
-				}) {
+			}
+			let pinned: &[&str] = match *operation {
+				"workspace_read" if matches!(mode, 0 | 3 | 4 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_message" if matches!(mode, 0 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_search" if matches!(mode, 0 | 5) => &["1.0.0", "1.1.0"],
+				_ => &[],
+			};
+			if let Some(binding) = self.bindings.iter().find(|b| {
+				b.target.id == target.id
+					&& b.target.registry_deployment == node
+					&& pinned.contains(&b.target.version.as_str())
+			}) {
 				target = binding.target.clone();
-			} else if matches!(*operation, "file_read" | "file_search" | "attachment_copy")
+			} else if POD_FILE_TOOLS.contains(operation)
 				&& let Some(binding) = self.bindings.iter().find(|b| {
 					b.target.id == target.id
 						&& b.target.registry_deployment == node
@@ -530,20 +569,20 @@ impl Entry {
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			let current = config.normalize(node);
-			let legacy = config.normalize_version(node, true);
-			if !current.is_ok_and(|expected| saved.bindings == expected)
-				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
-				&& !(2..8).any(|mode| {
-					config
-						.normalize_mode(node, mode)
-						.is_ok_and(|expected| saved.bindings == expected)
-				}) {
+			// A saved normalization is compared, and resolved, with the tool
+			// versions it would bind today.
+			let saved_bindings = upgraded(node, saved.bindings.clone());
+			let matches = |mode: u8| {
+				config
+					.normalize_mode(node, mode)
+					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+			};
+			if !(0..2 * HISTORICAL_DEFAULT_SETS).any(matches) {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			return Ok(saved.bindings.clone());
+			return Ok(saved_bindings);
 		}
 		config.normalize(node)
 	}
@@ -559,6 +598,28 @@ impl Entry {
 				&& attachment_selection_tool(&item.binding.target, &item.binding.narrow, node)
 		}))
 	}
+}
+
+/// Bind `workspace_message` 1.0.1 and `workspace_search` 1.0.0 as 1.1.0, in
+/// Agent versions normalized before #622 part 2 too. 1.1.0 only adds inputs
+/// (Image Descriptions, and a selected Thread Attachment as an image query),
+/// so earlier calls behave the same; without it a pinned 1.0.1 could not post
+/// an image, since every posted image needs a description. This is an owner
+/// decision (2026-11-13) that departs, for these two tools only, from #640's
+/// rule that a pinned tool does not change. `workspace_read` keeps its pins:
+/// its versions decide whether an Agent can select a Thread Attachment at all.
+fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
+	for item in &mut bindings {
+		let target = &mut item.binding.target;
+		if target.registry_deployment == node
+			&& matches!(
+				(target.id.as_str(), target.version.as_str()),
+				("aidash.workspace_message", "1.0.1") | ("aidash.workspace_search", "1.0.0")
+			) {
+			target.version = "1.1.0".into();
+		}
+	}
+	bindings
 }
 
 fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
@@ -616,15 +677,16 @@ impl QualifiedRef {
 			id: format!("aidash.{operation}"),
 			version: if matches!(
 				operation,
-				"workspace_read" | "memory_mutate" | "subnode_task"
+				"workspace_read"
+					| "workspace_search"
+					| "workspace_message"
+					| "memory_mutate"
+					| "subnode_task"
 			) {
 				"1.1.0"
 			} else if matches!(
 				operation,
-				"workspace_observe"
-					| "workspace_message"
-					| "file_read" | "file_search"
-					| "attachment_copy"
+				"workspace_observe" | "file_read" | "file_search" | "attachment_copy"
 			) {
 				"1.0.1"
 			} else {
@@ -963,15 +1025,38 @@ pub struct BindingSnapshot {
 	pub remote: bool,
 	pub bindings: Vec<ResolvedBinding>,
 	pub definitions: Vec<ResolvedDefinition>,
-	/// Public Deployment Administrator Agent transports retain the receiver's complete admitted closure.
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub foreign_agents: Vec<ForeignAgentSnapshot>,
 	/// The Skills of each Agent Plugin copy the Agent definition takes in, in its order.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub agent_plugins: Vec<crate::agent_plugin::PinnedAgentPlugin>,
 }
 
+/// Why a Workbench test does not offer a Schedule tool (#557).
+pub const WORKBENCH_SCHEDULE_EXCLUSION: &str = "Schedules are not offered in Workbench tests";
+
 impl BindingSnapshot {
+	/// The Bindings a Workbench test offers. A sandboxed test cannot register a
+	/// real Schedule, and the four Schedule tools would take about a quarter of
+	/// the default test token limit, so the test excludes them (#557). Both the
+	/// admission and each step apply this, so their snapshots stay equal.
+	pub fn for_workbench_test(mut self) -> Self {
+		for binding in &mut self.bindings {
+			if binding.excluded_reason.is_none()
+				&& binding.definition.kind == "tool"
+				&& binding
+					.definition
+					.config
+					.get("provider")
+					.and_then(Value::as_str)
+					== Some("core.schedules@1")
+			{
+				binding.excluded_reason = Some(WORKBENCH_SCHEDULE_EXCLUSION.into());
+				// An excluded tool carries no Provider implementation.
+				binding.provider_implementation = None;
+			}
+		}
+		self
+	}
+
 	/// Whether the admitted, pinned Tools can select a Thread Attachment for model input.
 	pub fn supports_thread_attachment_selection(&self) -> bool {
 		self.bindings.iter().any(|binding| {
@@ -1014,69 +1099,6 @@ impl BindingSnapshot {
 				model.modalities.iter().any(|modality| modality == "image")
 					&& model.has_current_media_route_for_type("image/png")
 			})
-	}
-}
-
-/// One authenticated receiver's public closure. Nested foreign or private
-/// dependencies require their own supported disclosure/admission protocol.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ForeignAgentSnapshot {
-	pub schema_version: u8,
-	pub agent: QualifiedRef,
-	pub bindings: Vec<ResolvedBinding>,
-	pub definitions: Vec<ResolvedDefinition>,
-}
-
-impl ForeignAgentSnapshot {
-	pub fn snapshot(&self) -> BindingSnapshot {
-		BindingSnapshot {
-			schema_version: self.schema_version,
-			agent: self.agent.clone(),
-			remote: true,
-			bindings: self.bindings.clone(),
-			definitions: self.definitions.clone(),
-			foreign_agents: vec![],
-			agent_plugins: vec![],
-		}
-	}
-	pub fn from_snapshot(snapshot: BindingSnapshot) -> Result<Self> {
-		if !snapshot.remote || !snapshot.foreign_agents.is_empty() {
-			return Err(Error::Invalid(
-				"foreign Agent requires a single receiver closure".into(),
-			));
-		}
-		let result = Self {
-			schema_version: snapshot.schema_version,
-			agent: snapshot.agent,
-			bindings: snapshot.bindings,
-			definitions: snapshot.definitions,
-		};
-		result.validate()?;
-		Ok(result)
-	}
-	pub fn validate(&self) -> Result<()> {
-		let builtins = memory_defaults::definitions()?;
-		if self.definitions.iter().any(|definition| {
-			definition.identity.registry_deployment != self.agent.registry_deployment
-				|| definition.definition.installation.is_some()
-				|| matches!(
-					definition.definition.kind.as_str(),
-					"memory" | "source" | "skill"
-				) && !builtins
-					.iter()
-					.any(|builtin| builtin == &definition.definition)
-					&& !source_defaults::workspace_observation()
-						.is_ok_and(|source| source == definition.definition)
-				|| definition.definition.kind == "agent"
-					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
-						.is_ok_and(|agent| !agent.agent_plugins.is_empty())
-		}) {
-			return Err(Error::Invalid(
-				"foreign Agent has an unsupported private or cross-Node dependency".into(),
-			));
-		}
-		self.snapshot().validate()
 	}
 }
 
@@ -1207,47 +1229,19 @@ impl BindingSnapshot {
 			serde_json::from_value(agent_definition.definition.config.clone())?;
 		config.validate()?;
 		self.validate_closure(&config, &definitions)?;
-		let expected_foreign =
-			self.definitions
-				.iter()
-				.try_fold(BTreeSet::new(), |mut roots, definition| {
-					for (reference, kind) in
-						definition_references(&definition.identity, &definition.definition)?
-					{
-						if kind == "agent"
-							&& reference.registry_deployment
-								!= definition.identity.registry_deployment
-						{
-							roots.insert(reference);
-						}
-					}
-					Ok::<_, Error>(roots)
-				})?;
-		let mut foreign = BTreeSet::new();
-		for snapshot in &self.foreign_agents {
-			snapshot.validate()?;
-			if !expected_foreign.contains(&snapshot.agent)
-				|| !foreign.insert(snapshot.agent.clone())
-			{
+		// An Agent cannot bind an Agent on another Node; work for one is handed
+		// over with a Remote Grant instead.
+		for definition in &self.definitions {
+			if definition_references(&definition.identity, &definition.definition)?
+				.into_iter()
+				.any(|(reference, kind)| {
+					kind == "agent"
+						&& reference.registry_deployment != definition.identity.registry_deployment
+				}) {
 				return Err(Error::Invalid(
-					"foreign Agent snapshot has an unrelated or duplicate root".into(),
+					"snapshot binds an Agent on another Node".into(),
 				));
 			}
-			for definition in &snapshot.definitions {
-				if definitions
-					.get(&definition.identity)
-					.is_none_or(|saved| **saved != *definition)
-				{
-					return Err(Error::Invalid(
-						"foreign Agent closure differs from the pinned definitions".into(),
-					));
-				}
-			}
-		}
-		if foreign != expected_foreign {
-			return Err(Error::Invalid(
-				"snapshot lacks an exact foreign Agent closure".into(),
-			));
 		}
 		if config.instructions.trim().is_empty()
 			&& !config.has_plugin_skills()

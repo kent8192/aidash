@@ -78,6 +78,13 @@ pub struct Context {
 	/// Execution Summary holds them. A purge after it is applied next.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
+	/// The smallest journal sequence whose content was replaced because it
+	/// was revoked or expired. Model Turns from it on never resend their
+	/// recorded reasoning, which may quote that content (#942). It only ever
+	/// lowers and outlives the placeholder itself, so a Summary or offload
+	/// that absorbs the placeholder cannot bring the reasoning back.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reasoning_withheld_from_seq: Option<u64>,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
@@ -150,6 +157,8 @@ struct StoredContext {
 	research_revoked: bool,
 	#[serde(default)]
 	research_expired_through: Option<chrono::DateTime<chrono::Utc>>,
+	#[serde(default)]
+	reasoning_withheld_from_seq: Option<u64>,
 	#[serde(default, rename = "summary")]
 	legacy_summary: Option<String>,
 	run_message_summary: String,
@@ -257,6 +266,7 @@ impl<'de> Deserialize<'de> for Context {
 			revoked_summary_dependencies: stored.revoked_summary_dependencies,
 			research_revoked: stored.research_revoked,
 			research_expired_through: stored.research_expired_through,
+			reasoning_withheld_from_seq: stored.reasoning_withheld_from_seq,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
 			media_inferred_seq: stored.media_inferred_seq,
@@ -359,6 +369,38 @@ impl Context {
 	}
 
 	/// Provider-visible projection of this context.
+	/// Lower [`Self::reasoning_withheld_from_seq`] to the earliest result now
+	/// replaced as revoked or expired, and put the withheld form in place of
+	/// the reasoning of every turn from it on, so no reader of the projection
+	/// sees it either; the Context Journal keeps the original. Call it after
+	/// every pass that replaces results so; it never raises the mark (#942).
+	pub fn withhold_reasoning_after_withheld_results(&mut self) {
+		let earliest = self
+			.history
+			.iter()
+			.filter(|entry| {
+				matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_withheld_result(result))
+			})
+			.map(|entry| entry.seq)
+			.min();
+		if let Some(seq) = earliest {
+			self.reasoning_withheld_from_seq = Some(
+				self.reasoning_withheld_from_seq
+					.map_or(seq, |kept| kept.min(seq)),
+			);
+		}
+		let Some(from) = self.reasoning_withheld_from_seq else {
+			return;
+		};
+		for entry in self.history.iter_mut().filter(|entry| entry.seq >= from) {
+			if let ContextEvent::Assistant { reasoning, .. } = &mut entry.event
+				&& let Some(recorded) = reasoning.as_ref()
+			{
+				*reasoning = recorded.withheld();
+			}
+		}
+	}
+
 	pub fn model_view(&self, current: &Value) -> Value {
 		let projected = source::project(self, current);
 		let mut current = projected.snapshot;
@@ -971,13 +1013,17 @@ pub enum ContextEvent {
 	/// The accepted response that opens a Model Turn, recorded only for Runs
 	/// on the Native Projection Version: its text and the IDs of its tool
 	/// calls in the model's order. Each executed call's `Tool` event follows
-	/// and carries the call itself. Reasoning output is never recorded.
+	/// and carries the call itself. The provider's reasoning is recorded as
+	/// received when the route passes it back, and every later request of the
+	/// Run resends it unchanged (#942); events recorded before have none.
 	Assistant {
 		#[serde(default, skip_serializing_if = "Vec::is_empty")]
 		provider_activity: Vec<Value>,
 		epoch: i64,
 		text: String,
 		calls: Vec<String>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		reasoning: Option<crate::provider::reasoning::Reasoning>,
 	},
 	/// A final answer cited evidence this Run never received. Recorded once
 	/// per user input (`through_seq` is the Run's observed input sequence); a
@@ -1002,6 +1048,62 @@ pub enum ContextEvent {
 		instruction: String,
 		through_seq: i64,
 	},
+	/// The bookkeeping of a Native step (#942): the Agent's state, this
+	/// step's instructions and deferred reads, and open markers. It holds no
+	/// evidence, so no authority change ever alters it. It is recorded only
+	/// when it differs from the last one in history and is sent at its
+	/// position, so later requests keep the same prefix.
+	StepState {
+		state: Value,
+		/// The Harness requirements of a `structured@*` contract, sent with
+		/// trust `aidash` after the state.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		harness: Option<Value>,
+	},
+	/// Evidence a Native step admitted that history did not hold yet (#942):
+	/// workspace observation entries and Run messages. Like a tool result it
+	/// is appended once and sent at its position; only offloading or
+	/// compaction removes it.
+	Evidence {
+		items: Vec<EvidenceItem>,
+	},
+}
+
+/// One admitted piece of per-step evidence: an entry of a collection, or a
+/// whole field, of one pinned key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceItem {
+	/// The pinned key, such as `workspace` or `run_messages`.
+	pub key: String,
+	/// The field of the key's object the item belongs to; absent when the key
+	/// holds a list.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub field: Option<String>,
+	/// Whether the item is one entry of a list rather than a whole field.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub listed: bool,
+	/// Digest of the key, field and content. It identifies the item after
+	/// its content was offloaded, so a later step never appends it again.
+	pub digest: String,
+	pub content: Value,
+}
+
+impl EvidenceItem {
+	pub fn new(key: &str, field: Option<&str>, listed: bool, content: Value) -> Self {
+		Self {
+			key: key.to_owned(),
+			field: field.map(str::to_owned),
+			listed,
+			digest: Self::digest(key, field, &content),
+			content,
+		}
+	}
+
+	/// The identity of `content` under `key` and `field`.
+	pub fn digest(key: &str, field: Option<&str>, content: &Value) -> String {
+		crate::registry::rules::digest(&json!([key, field, content]))
+	}
 }
 
 /// A subtask the model was told has nobody to run it.
@@ -1072,6 +1174,22 @@ impl ContextEvent {
 		result["contract"] == EXPIRED_RESULT_CONTRACT
 			&& result["expired"] == json!(true)
 			&& result["invocation"].is_string()
+	}
+
+	/// This event without recorded reasoning, as every reader other than the
+	/// Run's own later requests receives it (#942).
+	pub fn without_reasoning(mut self) -> Self {
+		if let Self::Assistant { reasoning, .. } = &mut self {
+			*reasoning = None;
+		}
+		self
+	}
+
+	/// Whether this result is a placeholder for content the Run may no longer
+	/// send: revoked (ADR 0046) or expired research. Reasoning recorded after
+	/// it is not resent (#942).
+	pub fn is_withheld_result(result: &Value) -> bool {
+		Self::is_revoked_result(result) || Self::is_expired_result(result)
 	}
 
 	/// What replaces a revoked research call's arguments, which name the

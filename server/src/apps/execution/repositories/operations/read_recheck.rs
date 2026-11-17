@@ -18,7 +18,7 @@ use aidash_domain::preview::live::StopReason;
 use async_trait::async_trait;
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, IntoValue, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait as _, IntoValue, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
 };
 use uuid::Uuid;
@@ -48,6 +48,36 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 			.column(Alias::new("id"))
 			.from(Alias::new("core_operations"))
 			.and_where(Expr::col(Alias::new("state")).is_in(["prepared", "submitted", "running"]))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(store.pool.in_scope(&TenancyScope::Deployment(
+		DeploymentScopeReason::CapabilityMaintenance,
+	)))
+	.await
+}
+
+/// One ended Pod command per Run that left Background processes running, for
+/// Runs not yet refused. Background processes outlive their command and the
+/// Run, and use its credential, so their Run's reads are rechecked like a
+/// running command's (ADR 0136). A refusal marks the Run, which ends the target.
+async fn background_runs(store: &Store) -> NativeResult<Vec<Uuid>> {
+	crate::database::native::query_scalar(
+		&Query::select()
+			.distinct_on([Alias::new("run_id")])
+			.column(Alias::new("id"))
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("state")).is_not_in([
+				"prepared",
+				"submitted",
+				"running",
+			]))
+			.and_where(Expr::cust("input->>'runtime' = 'pod'"))
+			.and_where(Expr::cust("result->>'left_running' IS NOT NULL"))
+			.and_where(Expr::cust(
+				"NOT EXISTS (SELECT 1 FROM egress_run_revocations r WHERE r.run_id = core_operations.run_id)",
+			))
+			.order_by(Alias::new("run_id"), Order::Asc)
+			.order_by(Alias::new("updated_at"), Order::Desc)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_all(store.pool.in_scope(&TenancyScope::Deployment(
@@ -196,6 +226,7 @@ impl ReadRecheckRepository for Repository<'_> {
 		let mut targets: Vec<Target> = running_commands(self.store)
 			.await?
 			.into_iter()
+			.chain(background_runs(self.store).await?)
 			.map(Target::Operation)
 			.collect();
 		targets.extend(

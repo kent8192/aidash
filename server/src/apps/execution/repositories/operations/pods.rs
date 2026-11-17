@@ -119,38 +119,123 @@ pub(crate) async fn tool_context(
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
+/// Stop the ended Run's Python session in its Execution Pod: each session
+/// holds one of the Space's session slots until it stops, and nothing else
+/// stops it. Nothing happens for a Run that ran no Python cell.
+pub(crate) async fn stop_python(store: &Store, run: Uuid) -> NativeResult<()> {
+	if store.capabilities.0.runner.is_none() {
+		return Ok(());
+	}
+	let space: Option<String> = crate::database::native::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("input->>'scratch_space_id'"))
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+			.and_where(
+				Expr::col(Alias::new("kind")).eq(aidash_application::capabilities::pod::PYTHON),
+			)
+			.and_where(Expr::cust(POD_ROWS))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(store.pool.in_scope(&MAINTENANCE))
+	.await?;
+	let Some(space) = space else {
+		return Ok(());
+	};
+	let runner = crate::bootstrap::operation_runner(store)?;
+	runner
+		.python_stop(&space, &run.to_string())
+		.await
+		.map_err(|error| NativeError::External(error.to_string()))
+}
+
+/// The Scratch Space whose Execution Pod a Run's tools use.
+pub(crate) async fn run_space(
+	store: &Store,
+	access: &mut Access,
+	run: &RunMetadata,
+) -> Result<Uuid> {
+	let policy = policy(store)?;
+	let mut services = scratch::NativeScratchServices { policy: &policy };
+	let (space_id, _) = services.run_binding_metadata(access, run).await?;
+	Ok(space_id)
+}
+
 /// Stop a Live preview, a Background process of its Run in the Execution Pod.
-/// Returns whether the Runner confirmed the stop.
+/// Returns whether the Runner confirmed the stop; a failed stop request is an
+/// error so callers can tell it from an unconfirmed stop (#781).
 pub(crate) async fn stop_preview(store: &Store, preview: Uuid) -> NativeResult<bool> {
 	let runner = crate::bootstrap::operation_runner(store)?;
-	Ok(
-		aidash_application::capabilities::pod::previews::stop(&runner, preview)
-			.await
-			.is_ok(),
-	)
+	aidash_application::capabilities::pod::previews::stop(&runner, preview)
+		.await
+		.map_err(|error| NativeError::External(error.to_string()))?;
+	Ok(true)
+}
+
+/// Active Pod operations one sweep looks at.
+const SCAN_BATCH: usize = 16;
+
+/// Where the last sweep stopped. A sweep writes only rows that changed, so
+/// ordering by `updated_at` let 16 quiet long-running commands take every
+/// slot and starve new ones. Sweeps instead walk the active rows in id order
+/// from here and wrap around, so each row is seen within a few sweeps.
+static SCAN_AFTER: std::sync::Mutex<Option<Uuid>> = std::sync::Mutex::new(None);
+
+/// The next `SCAN_BATCH` active Pod operations after `after` in id order.
+async fn scan_after(store: &Store, after: Option<Uuid>) -> NativeResult<Vec<Uuid>> {
+	let mut query = Query::select();
+	query
+		.column(Alias::new("id"))
+		.from(Alias::new("core_operations"))
+		.and_where(Expr::col(Alias::new("state")).is_in([
+			"prepared",
+			"submitted",
+			"running",
+			"cancelling",
+		]))
+		.and_where(Expr::cust(POD_ROWS))
+		.order_by(Alias::new("id"), Order::Asc)
+		.limit(SCAN_BATCH as u64);
+	if let Some(after) = after {
+		query.and_where(Expr::col(Alias::new("id")).gt(Expr::value(after)));
+	}
+	crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
+		.scalar_all(store.pool.in_scope(&MAINTENANCE))
+		.await
+}
+
+/// One sweep's batch: the rows after the cursor, wrapping to the start of the
+/// id order when fewer remain.
+pub(crate) async fn next_batch(store: &Store) -> NativeResult<Vec<Uuid>> {
+	let after = *SCAN_AFTER
+		.lock()
+		.unwrap_or_else(|poisoned| poisoned.into_inner());
+	let mut ids = scan_after(store, after).await?;
+	if ids.len() < SCAN_BATCH && after.is_some() {
+		for id in scan_after(store, None).await? {
+			if ids.len() == SCAN_BATCH {
+				break;
+			}
+			if !ids.contains(&id) {
+				ids.push(id);
+			}
+		}
+	}
+	*SCAN_AFTER
+		.lock()
+		.unwrap_or_else(|poisoned| poisoned.into_inner()) = if ids.len() == SCAN_BATCH {
+		ids.last().copied()
+	} else {
+		None
+	};
+	Ok(ids)
 }
 
 #[async_trait]
 impl PodOperationRepository for Repository<'_> {
 	async fn pending(&self) -> Result<Vec<Uuid>> {
-		let ids: Vec<Uuid> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("id"))
-				.from(Alias::new("core_operations"))
-				.and_where(Expr::col(Alias::new("state")).is_in([
-					"prepared",
-					"submitted",
-					"running",
-					"cancelling",
-				]))
-				.and_where(Expr::cust(POD_ROWS))
-				.order_by(Alias::new("updated_at"), Order::Asc)
-				.limit(16)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_all(self.store.pool.in_scope(&MAINTENANCE))
-		.await?;
-		Ok(ids)
+		Ok(next_batch(self.store).await?)
 	}
 
 	async fn load(&self, id: Uuid) -> Result<PodOperation> {

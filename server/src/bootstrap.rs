@@ -24,6 +24,7 @@ pub mod management;
 
 pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	let mut registry = reinhardt::commands::CommandRegistry::new();
+	registry.register_capability(Box::new(crate::database::setup_roles::Command));
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::worker::RunWorker,
 	));
@@ -52,10 +53,16 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 		crate::apps::identity::services::secret_store_recovery::Command,
 	));
 	registry.register_capability(Box::new(
+		crate::apps::identity::services::bootstrap_command::Command,
+	));
+	registry.register_capability(Box::new(
 		crate::apps::identity::services::demo_data::Command,
 	));
 	registry.register_capability(Box::new(
 		crate::apps::identity::services::subject_credential_command::Command,
+	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::provider_credential_command::Command,
 	));
 	registry
 }
@@ -150,6 +157,7 @@ pub async fn initialize_as(
 		.with_research_retention(settings.research_retention.rules()?)
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
+		.with_schedules(settings.schedules.ceilings()?, settings.schedules.poll()?)
 		.with_preview_limits(settings.preview_limits.limits()?)
 		.with_preview(
 			config
@@ -166,6 +174,7 @@ pub async fn initialize_as(
 	)?;
 	build::current().extension.install(&mut store)?;
 	config.tier_limits = build::current().extension.tier_limits(&store)?;
+	store.schedule_tier = config.tier_limits.clone();
 	let oauth = Arc::new(aidash_integrations::oauth::McpOAuth::new()?);
 	configure_oauth_connections(
 		&mut store,
@@ -281,10 +290,22 @@ impl RuntimeTasks {
 				),
 			);
 			let stopping = receiver.clone();
+			// Waiting Host connections hold open files, so their budget follows
+			// the limit the process runs under (#845).
+			#[cfg(unix)]
+			let open_files: u64 = aidash_runtime::open_files::raise_soft_limit().unwrap_or(1024);
+			#[cfg(not(unix))]
+			let open_files = 1024;
 			let limits = aidash_integrations::egress::ProxyLimits {
 				global_concurrent: egress.proxy_global_tunnels,
 				tenant_concurrent: egress.proxy_tenant_tunnels,
+				waiting: aidash_integrations::egress::waiting_budget(open_files),
 			};
+			tracing::info!(
+				waiting = limits.waiting,
+				open_files,
+				"Egress gateway waiting budget"
+			);
 			tasks.spawn_service(
 				"egress gateway",
 				runtime_task(async move {
@@ -511,6 +532,39 @@ impl RuntimeTasks {
 				)),
 			);
 		}
+		// Every replica runs the scheduler; SKIP LOCKED and the tick key keep a
+		// scheduled time to one Task (#557).
+		let scheduler = federation.clone();
+		tasks.spawn_service(
+			"schedules",
+			runtime_task(watched_loop::run(
+				"schedules",
+				federation.store.schedule_poll,
+				move |_| {
+					let scheduler = scheduler.clone();
+					async move {
+						match crate::apps::workspaces::services::schedules::pass(
+							&scheduler,
+							chrono::Utc::now(),
+						)
+						.await
+						{
+							Ok(pass) if !pass.started.is_empty() || !pass.stopped.is_empty() => {
+								tracing::info!(
+									started = pass.started.len(),
+									skipped = pass.skipped.len(),
+									failed = pass.failed.len(),
+									stopped = pass.stopped.len(),
+									"schedules pass"
+								);
+							}
+							Ok(_) => {}
+							Err(error) => tracing::warn!(%error, "schedules pass failed"),
+						}
+					}
+				},
+			)),
+		);
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
@@ -897,11 +951,11 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 			.as_ref()
 			.is_some_and(|s| s.provider_credentials.offers_tenant_secrets()),
 	)
-	.with_preview_available(
-		settings
-			.as_ref()
-			.is_some_and(|s| s.preview.domain.is_some()),
-	)
+	.with_preview_available(settings.as_ref().is_some_and(|s| {
+		let origin = s.dashboard.oidc.as_ref().map(|oidc| oidc.public_origin.as_str())
+			.unwrap_or(&s.deployment.endpoint);
+		s.preview.configured(origin).ok().flatten().is_some()
+	}))
 }
 pub fn registry_validation_for(
 	store: &Store,
@@ -2646,8 +2700,9 @@ pub(crate) fn dashboard_logout(
 pub(crate) fn dashboard_login(
 	pool: crate::database::native::Pool,
 	node: &str,
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 ) -> crate::apps::identity::repositories::dashboard::Login {
-	crate::apps::identity::repositories::dashboard::Login(pool, node.into())
+	crate::apps::identity::repositories::dashboard::Login(pool, node.into(), policy)
 }
 
 pub(crate) fn graph_visibility<'a, 'scope>(
@@ -2790,6 +2845,9 @@ pub async fn configure_provider_credentials(
 			),
 			fingerprint_key,
 			max_per_tenant: settings.max_per_tenant,
+			// A Self-hosted host already reads the Secret Store (ADR 0008), so
+			// a key a person pastes trusts nothing new (#877).
+			supplied_keys: build::offering() == aidash_domain::offering::Offering::SelfHosted,
 		},
 	));
 	store.provider_key_material_reader = reader;

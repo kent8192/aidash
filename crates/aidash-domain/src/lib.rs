@@ -28,6 +28,7 @@ pub mod retention;
 pub mod run_input;
 pub mod run_state;
 pub mod safety_stop;
+pub mod schedules;
 pub mod scratch;
 pub mod subnodes;
 pub mod unassigned;
@@ -35,6 +36,7 @@ pub mod unassigned;
 pub mod semantic;
 pub mod tenancy;
 pub mod tenant_secrets;
+pub mod unconfirmed;
 
 pub use entities::*;
 

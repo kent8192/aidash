@@ -234,7 +234,12 @@ impl RunControlScope for Scope {
 		run.metadata.revision += 1;
 		Ok(run)
 	}
-	async fn decline_call(&mut self, key: Uuid, call: &str) -> Result<RunInspection> {
+	async fn decline_call(
+		&mut self,
+		key: Uuid,
+		call: &str,
+		_rest_of_run: bool,
+	) -> Result<RunInspection> {
 		assert_eq!(key, id(1));
 		let mut run = {
 			let mut state = self.state.lock().unwrap();
@@ -312,6 +317,64 @@ async fn resume_says_what_blocks_it_and_changes_nothing(repository: Repository) 
 	assert!(!state.calls.contains(&"control".into()));
 	assert!(!state.calls.contains(&"notify".into()));
 	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
+}
+fn invalidated(state: &mut State) {
+	state.raw.as_mut().unwrap().pending["recovery"]["semantic_reason"] = json!("invalidated");
+	// Its disclosure is withheld for the same change, and the read walk has
+	// nothing more to say about it.
+	state.visible = false;
+}
+#[rstest]
+#[tokio::test]
+async fn an_invalidated_run_is_refused_with_its_cause_to_the_person_who_could_resume_it(
+	repository: Repository,
+) {
+	invalidated(&mut repository.0.lock().unwrap());
+	let result = resume(&repository, id(1)).await;
+	assert!(
+		matches!(
+			result,
+			Err(Error::ResumeBlocked(RunReadsBlock::SourceChanged))
+		),
+		"{result:?}"
+	);
+	let state = repository.0.lock().unwrap();
+	assert!(!state.committed);
+	assert_eq!(state.credential, None);
+	assert!(!state.calls.contains(&"visible".into()));
+	assert!(!state.calls.contains(&"control".into()));
+	assert!(!state.calls.contains(&"notify".into()));
+}
+#[rstest]
+#[case::no_control("run.control")]
+#[case::not_the_root("subject")]
+#[tokio::test]
+async fn someone_who_may_not_resume_an_invalidated_run_never_learns_why(
+	repository: Repository,
+	#[case] boundary: &'static str,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		invalidated(&mut state);
+		match boundary {
+			"run.control" => state.deny = Some("run.control"),
+			"subject" => state.grant.as_mut().unwrap().root_subject = "other".into(),
+			_ => panic!("unexpected boundary"),
+		}
+	}
+	assert!(matches!(
+		resume(&repository, id(1)).await,
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+#[tokio::test]
+async fn another_semantic_pause_is_still_resumed_through_the_read_walk(repository: Repository) {
+	repository.0.lock().unwrap().raw.as_mut().unwrap().pending["recovery"]["semantic_reason"] =
+		json!("retries_exhausted");
+	let run = resume(&repository, id(1)).await.unwrap();
+	assert_eq!(run.control, RunControl::Active);
+	assert_eq!(repository.0.lock().unwrap().calls, expected());
 }
 #[rstest]
 #[case::completed(RunPhase::Completed, RunControl::Active)]
@@ -523,7 +586,9 @@ fn expected_decline() -> Vec<&'static str> {
 async fn the_runs_person_declines_under_run_control_and_takes_the_credential(
 	repository: Repository,
 ) {
-	let run = decline_call(&repository, id(1), call()).await.unwrap();
+	let run = decline_call(&repository, id(1), call(), false)
+		.await
+		.unwrap();
 	assert_eq!(run.control, RunControl::Active);
 	let state = repository.0.lock().unwrap();
 	assert_eq!(state.calls, expected_decline());
@@ -541,7 +606,9 @@ async fn a_holder_of_run_decline_call_declines_and_leaves_the_credential(reposit
 		.as_mut()
 		.unwrap()
 		.root_subject = "other".into();
-	decline_call(&repository, id(1), call()).await.unwrap();
+	decline_call(&repository, id(1), call(), false)
+		.await
+		.unwrap();
 	let state = repository.0.lock().unwrap();
 	assert!(state.calls.contains(&"run.decline_call".into()));
 	assert!(!state.calls.contains(&"run.control".into()));
@@ -560,7 +627,9 @@ async fn someone_else_declines_a_run_they_cannot_read_by_its_read_walk_alone(
 		// The Run is private to its person, as a Run with a Working Area is.
 		state.visible = false;
 	}
-	decline_call(&repository, id(1), call()).await.unwrap();
+	decline_call(&repository, id(1), call(), false)
+		.await
+		.unwrap();
 	let state = repository.0.lock().unwrap();
 	assert!(!state.calls.contains(&"visible".into()));
 	assert!(!state.calls.contains(&"block".into()));
@@ -575,7 +644,7 @@ async fn what_the_run_read_still_stops_someone_else_with_the_same_reason(reposit
 		state.grant.as_mut().unwrap().root_subject = "other".into();
 		state.stop = Some(withdrawn());
 	}
-	let result = decline_call(&repository, id(1), call()).await;
+	let result = decline_call(&repository, id(1), call(), false).await;
 	assert!(matches!(result, Err(Error::ResumeBlocked(block)) if block == withdrawn()));
 	let state = repository.0.lock().unwrap();
 	assert!(state.declined.is_none());
@@ -597,7 +666,7 @@ async fn nobody_declines_without_the_authority_for_their_relation(
 		state.deny = Some(denied);
 	}
 	assert!(matches!(
-		decline_call(&repository, id(1), call()).await,
+		decline_call(&repository, id(1), call(), false).await,
 		Err(Error::Forbidden)
 	));
 	let state = repository.0.lock().unwrap();
@@ -613,7 +682,7 @@ async fn a_run_another_node_executes_is_never_declined_here(repository: Reposito
 			"aidash://elsewhere/brave-otter-k3m9q2xa".into();
 	}
 	assert!(matches!(
-		decline_call(&repository, id(1), call()).await,
+		decline_call(&repository, id(1), call(), false).await,
 		Err(Error::Forbidden)
 	));
 	let state = repository.0.lock().unwrap();
@@ -629,7 +698,7 @@ async fn declining_says_what_blocks_it_only_to_someone_who_may_decline(repositor
 		state.visible = false;
 		state.block = Some(withdrawn());
 	}
-	let result = decline_call(&repository, id(1), call()).await;
+	let result = decline_call(&repository, id(1), call(), false).await;
 	assert!(matches!(result, Err(Error::ResumeBlocked(block)) if block == withdrawn()));
 	{
 		let state = repository.0.lock().unwrap();
@@ -639,7 +708,7 @@ async fn declining_says_what_blocks_it_only_to_someone_who_may_decline(repositor
 	// A holder of neither right never learns it.
 	repository.0.lock().unwrap().deny = Some("run.control");
 	assert!(matches!(
-		decline_call(&repository, id(1), call()).await,
+		decline_call(&repository, id(1), call(), false).await,
 		Err(Error::Forbidden)
 	));
 }
@@ -649,7 +718,7 @@ async fn declining_says_what_blocks_it_only_to_someone_who_may_decline(repositor
 #[tokio::test]
 async fn the_call_key_is_bounded(repository: Repository, #[case] key: &str) {
 	assert!(matches!(
-		decline_call(&repository, id(1), key).await,
+		decline_call(&repository, id(1), key, false).await,
 		Err(Error::Invalid(_))
 	));
 	assert_eq!(

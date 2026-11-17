@@ -26,8 +26,12 @@ fn develop_seed() -> Vec<Entry> {
 fn compare_develop_builtin_declarations() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let current = entries(&validation, NODE).unwrap();
-	let mut legacy = legacy_journal_entries(&validation, NODE).unwrap();
-	legacy.extend(legacy_file_entries(&validation, NODE).unwrap());
+	let legacy = legacy_journal_entries(&validation, NODE)
+		.unwrap()
+		.into_iter()
+		.chain(legacy_workspace_entries(&validation, NODE).unwrap())
+		.chain(legacy_file_entries(&validation, NODE).unwrap())
+		.collect::<Vec<_>>();
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
 	for old in develop_seed().iter().filter(|entry| entry.kind == "tool") {
@@ -73,6 +77,8 @@ fn compare_develop_builtin_declarations() {
 	assert_eq!(
 		changed,
 		[
+			"aidash.workspace_search",
+			"aidash.workspace_message",
 			"aidash.attachment_copy",
 			"aidash.memory_mutate",
 			"aidash.subnode_task"
@@ -85,16 +91,16 @@ fn workspace_attachment_tools_keep_original_declarations_immutable() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let current = entries(&validation, NODE).unwrap();
 	let old = legacy_workspace_entries(&validation, NODE).unwrap();
-	assert_eq!(old.len(), 4);
+	assert_eq!(old.len(), 6);
 	for legacy in old {
 		assert!(matches!(legacy.version.as_str(), "1.0.0" | "1.0.1"));
 		let new = current.iter().find(|entry| entry.id == legacy.id).unwrap();
 		assert_eq!(
 			new.version,
-			if legacy.id == "aidash.workspace_read" {
-				"1.1.0"
-			} else {
+			if legacy.id == "aidash.workspace_observe" {
 				"1.0.1"
+			} else {
+				"1.1.0"
 			}
 		);
 		assert_ne!(new.description, legacy.description);
@@ -343,14 +349,19 @@ async fn seeding_an_existing_registry_preserves_old_workspace_declarations() {
 		writer.insert_definition(entry).await.unwrap();
 	}
 	seed(&mut writer, &validation, NODE).await.unwrap();
+	let current = entries(&validation, NODE).unwrap();
 	for entry in original {
 		assert_eq!(
 			writer.definition(&entry.id, &entry.version).await.unwrap(),
 			entry
 		);
+		let declared = current.iter().find(|item| item.id == entry.id).unwrap();
 		assert_eq!(
-			writer.definition(&entry.id, "1.0.1").await.unwrap().version,
-			"1.0.1"
+			writer
+				.definition(&entry.id, &declared.version)
+				.await
+				.unwrap(),
+			*declared
 		);
 	}
 }

@@ -1,5 +1,5 @@
 //! The saved `${PLUGIN_DATA}` of an Agent's Agent Plugin (ADR 0073), one current version per
-//! Tenant, Agent and plugin.
+//! Tenant, Scratch Space, Agent and plugin.
 use chrono::{DateTime, Utc};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,10 @@ pub struct AgentPluginData {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
+	/// The Scratch Space whose Pod the data lives in; everyone who may use the
+	/// Space already shares that Pod.
+	#[field]
+	pub scratch_space_id: Uuid,
 	#[field(field_type = "text")]
 	pub agent_id: String,
 	#[field(field_type = "text")]

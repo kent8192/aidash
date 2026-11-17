@@ -183,6 +183,10 @@ pub struct CommandResult {
 	pub message: Option<String>,
 	pub python_result: Option<Value>,
 	pub left_running: Option<String>,
+	/// The Run's Python interpreter was started afresh for this cell (the Pod
+	/// was replaced), so earlier variables are gone.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub session_replaced: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundProcesses {
@@ -289,6 +293,10 @@ pub struct FileManifestRequest {
 	pub exclude: Vec<String>,
 	pub include: Vec<String>,
 	pub max_files: u32,
+	/// A `root` that does not exist lists no files instead of failing, so a
+	/// sync save can select a deleted path.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub missing_ok: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManifestFile {
@@ -374,6 +382,12 @@ pub trait ExecutionPodRuntime: Send + Sync {
 		)))
 	}
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
+	/// Stop one foreground command; the Run's other commands keep running.
+	async fn stop_command(&self, _operation_id: &str) -> Result<CommandResult> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot stop one command".into(),
+		)))
+	}
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses>;
 	async fn stop_background(&self, operation_id: &str) -> Result<CommandResult>;
 	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession>;

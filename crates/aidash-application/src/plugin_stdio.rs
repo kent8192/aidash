@@ -171,6 +171,14 @@ impl StdioSessions {
 				tracing::info!(%run, plugin = plugin.as_str(), "live plugin data not removed");
 			}
 		}
+		// Each Run has its own plugin trees, so another Run's sessions never lose theirs.
+		let trees = stdio_session::run_plugins(run);
+		if command(&pod, run, format!("rm -rf -- {}", quote(&trees)))
+			.await
+			.is_err()
+		{
+			tracing::info!(%run, "plugin trees not removed");
+		}
 	}
 }
 
@@ -244,13 +252,6 @@ impl StdioPluginSessions for RunStdio {
 			let session = start(&mut state, run, server, config, true)
 				.await
 				.map_err(|Setup(cause)| not_delivered(&cause))?;
-			// A session started for this call checks the tool the Run pinned (ADR 0073).
-			if session.digests.get(tool).map(String::as_str) != Some(schema_digest) {
-				state.sessions.insert(key, session);
-				return Err(Error::Invalid(format!(
-					"CAPABILITY_CHANGED: the server no longer offers {tool} as pinned"
-				)));
-			}
 			state.sessions.insert(key.clone(), session);
 		}
 		let pod = state
@@ -258,6 +259,13 @@ impl StdioPluginSessions for RunStdio {
 			.clone()
 			.ok_or_else(|| not_delivered(STDIO_UNAVAILABLE))?;
 		let session = state.sessions.get_mut(&key).expect("session started above");
+		// Every call checks the tool the Run pinned (ADR 0073), not only the call that started
+		// the session: a kept session must not run a tool whose schema changed.
+		if session.digests.get(tool).map(String::as_str) != Some(schema_digest) {
+			return Err(Error::Invalid(format!(
+				"CAPABILITY_CHANGED: the server no longer offers {tool} as pinned"
+			)));
+		}
 		let message = session.request("tools/call", json!({"name": tool, "arguments": arguments}));
 		let reply = pod
 			.runtime
@@ -270,8 +278,11 @@ impl StdioPluginSessions for RunStdio {
 		match reply {
 			Ok(reply) => call_result(reply.message),
 			Err(ExecutionPodError::Remote { code, message }) if unsent(&code) => {
-				// The session is gone or busy, so the request never reached the server.
-				state.sessions.remove(&key);
+				// The session is gone or busy, so the request never reached the server. A busy
+				// one still runs, so it is stopped before it is forgotten.
+				if let Some(session) = state.sessions.remove(&key) {
+					stop_session(&pod, run, &session).await;
+				}
 				Err(Error::ToolNotDelivered {
 					message: format!("{code}: {message}"),
 					retry_after: None,
@@ -283,12 +294,22 @@ impl StdioPluginSessions for RunStdio {
 			}) => Err(Error::Invalid(format!("MCP_REQUEST_INVALID: {message}"))),
 			Err(error) => {
 				// The helper ends a session whose call failed; the request may have reached the
-				// server, so it is reconciled and never sent again.
-				state.sessions.remove(&key);
+				// server, so it is reconciled and never sent again. The stop makes sure it ended.
+				if let Some(session) = state.sessions.remove(&key) {
+					stop_session(&pod, run, &session).await;
+				}
 				tracing::warn!(%run, %error, "stdio MCP call outcome unknown");
 				Err(Error::External("MCP answer was lost after send".into()))
 			}
 		}
+	}
+}
+
+/// Stops a session that is being dropped; a failure is logged, since the Run's close stops the
+/// rest and the Pod's end stops everything.
+async fn stop_session(pod: &StdioPod, run: Uuid, session: &Session) {
+	if let Err(error) = pod.runtime.mcp_stop(&session.operation_id).await {
+		tracing::info!(%run, operation_id = session.operation_id, %error, "stdio session stop failed");
 	}
 }
 
@@ -387,7 +408,11 @@ async fn start(
 	} else {
 		None
 	};
-	prepare(&pod, run, &launch, &tree, data.as_deref()).await?;
+	let write_tree = !state
+		.sessions
+		.keys()
+		.any(|(_, digest, _)| *digest == server.digest);
+	prepare(&pod, run, &launch, &tree, data.as_deref(), write_tree).await?;
 	if restore {
 		state.restored.insert(server.plugin.clone());
 	}
@@ -528,33 +553,41 @@ async fn prepare(
 	launch: &Launch,
 	tree: &[PluginFile],
 	data: Option<&[PluginFile]>,
+	write_tree: bool,
 ) -> std::result::Result<(), Setup> {
-	let mut script = format!("rm -rf -- {root}", root = quote(&launch.plugin_root));
-	if data.is_some() {
-		script.push_str(&format!(" {}", quote(&launch.plugin_data)));
+	// A tree that a live session of this Run already runs from is kept: deleting it would
+	// leave that session in a removed working directory.
+	let mut removed = vec![];
+	let mut made = BTreeSet::new();
+	if write_tree {
+		removed.push(quote(&launch.plugin_root));
+		made = directories(
+			&launch.plugin_root,
+			tree.iter().map(|file| file.path.as_str()),
+		);
 	}
-	let mut made = directories(
-		&launch.plugin_root,
-		tree.iter().map(|file| file.path.as_str()),
-	);
 	if let Some(data) = data {
+		removed.push(quote(&launch.plugin_data));
 		made.extend(directories(
 			&launch.plugin_data,
 			data.iter().map(|file| file.path.as_str()),
 		));
 	}
-	script.push_str(" && mkdir -p --");
-	for directory in &made {
-		script.push(' ');
-		script.push_str(&quote(directory));
+	if !made.is_empty() {
+		let mut script = format!("rm -rf -- {} && mkdir -p --", removed.join(" "));
+		for directory in &made {
+			script.push(' ');
+			script.push_str(&quote(directory));
+		}
+		command(pod, run, script).await?;
 	}
-	command(pod, run, script).await?;
 	for file in tree {
-		let mode = if launch.executable.as_deref() == Some(file.path.as_str()) {
-			0o755
-		} else {
-			0o644
-		};
+		let executable = launch.executable.as_deref() == Some(file.path.as_str());
+		// On a kept tree only this server's executable is written again, to make it runnable.
+		if !write_tree && !executable {
+			continue;
+		}
+		let mode = if executable { 0o755 } else { 0o644 };
 		let path = format!("{}/{}", launch.plugin_root, file.path);
 		write(pod, run, &path, &file.bytes, mode).await?;
 	}
@@ -647,6 +680,7 @@ async fn save_data(
 			// `.git` is listed only when included.
 			include: vec!["**".into()],
 			max_files: stdio_session::MAX_PLUGIN_DATA_FILES,
+			missing_ok: false,
 		})
 		.await
 		.map_err(|error| Setup::from(error).0)?;

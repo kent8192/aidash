@@ -1145,7 +1145,7 @@ async fn approvals_bind_invocations_and_never_override_upper_denials(
 	let (status, pending) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{pending}");
 	assert_eq!(pending["status"], "approval_required");
-	assert_eq!(pending["approver"], "alice");
+	assert!(pending["decided_by"].is_null(), "{pending}");
 	let decision_path = format!(
 		"/api/capabilities/approvals/{}/decide",
 		pending["approval_id"].as_str().unwrap()
@@ -1865,6 +1865,9 @@ mod transfer_tests;
 
 #[path = "core_capabilities/lifecycle.rs"]
 mod lifecycle_tests;
+
+#[path = "core_capabilities/schedules.rs"]
+mod schedule_tests;
 
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/runtime_faults.rs"]

@@ -368,7 +368,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	assert_json(oversized, 400);
 	assert_eq!(
 		assert_json(member.get(&entries_path).await.unwrap(), 200),
-		json!([])
+		json!({"entries": [], "unconfirmed": []})
 	);
 	// Act
 	let saved = assert_json(member.post(&entries_path, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"あ".repeat(80)},"metadata":{}}), "json").await.unwrap(), 200);
@@ -396,7 +396,7 @@ async fn memory_byte_limit_and_index_revisions_are_enforced_over_http(
 	let unchanged = assert_json(member.get(&index_path).await.unwrap(), 200);
 	assert_eq!(unchanged["revision"], 1);
 	assert_eq!(unchanged["spec"]["max_input_bytes"], 256);
-	let entries = assert_json(member.get(&entries_path).await.unwrap(), 200);
+	let entries = assert_json(member.get(&entries_path).await.unwrap(), 200)["entries"].clone();
 	assert_eq!(entries[0]["id"], saved["id"]);
 }
 
@@ -620,7 +620,7 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 	assert_json_rejection(member.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"safe"},"metadata":{},"authority":{"subject":"forged"}}), "json").await.unwrap(), 422);
 	assert_eq!(
 		assert_json(member.get(&entries).await.unwrap(), 200),
-		json!([])
+		json!({"entries": [], "unconfirmed": []})
 	);
 	let mut db = app.database.lease.handle();
 	assert!(
@@ -702,7 +702,8 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	assert_eq!(second, replay);
 	assert_eq!(second["revision"], 2);
 	assert_ne!(first["collection"], second["collection"]);
-	let reconfigured = assert_json(member.get(&entries_path).await.unwrap(), 200);
+	let reconfigured =
+		assert_json(member.get(&entries_path).await.unwrap(), 200)["entries"].clone();
 	assert_eq!(reconfigured[0]["revision"], 1);
 	assert_eq!(reconfigured[0]["index_revision"], 2);
 	assert_ne!(original["point_id"], reconfigured[0]["point_id"]);
@@ -1217,7 +1218,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_a_tenants_semantic_
 	let index = assert_json(member.get(&index_path).await.unwrap(), 200);
 	assert_eq!(index["revision"], 1);
 	assert_eq!(index["spec"]["max_results"], index_spec["max_results"]);
-	let entries = assert_json(member.get(&entries_path).await.unwrap(), 200);
+	let entries = assert_json(member.get(&entries_path).await.unwrap(), 200)["entries"].clone();
 	assert_eq!(entries.as_array().unwrap().len(), 1);
 	assert_eq!(entries[0]["revision"], 1);
 }

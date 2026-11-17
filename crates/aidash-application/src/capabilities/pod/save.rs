@@ -170,6 +170,7 @@ pub async fn save(
 			exclude: input.exclude.clone(),
 			include: input.include.clone(),
 			max_files: u32::try_from(MAX_AREA_FILES + 1).expect("bounded"),
+			missing_ok: input.sync,
 		};
 		let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
 		if manifest.truncated {
@@ -234,6 +235,8 @@ async fn copy_in(
 	};
 	scope.begin_pending(area.id, file.size).await?;
 	let mut offset = 0;
+	// Enough leading bytes to recognize an image, as command output publication did.
+	let mut prefix = Vec::with_capacity(12);
 	while offset < file.size {
 		let request = FileReadRequest {
 			scratch_space_id: context.scratch_space_id().to_owned(),
@@ -248,6 +251,8 @@ async fn copy_in(
 		if bytes.is_empty() || chunk.size != file.size {
 			return Err(changed());
 		}
+		let needed = 12_usize.saturating_sub(prefix.len());
+		prefix.extend_from_slice(&bytes[..bytes.len().min(needed)]);
 		offset += bytes.len() as u64;
 		scope.write_pending(&bytes).await?;
 	}
@@ -264,10 +269,16 @@ async fn copy_in(
 		path: file.path.clone(),
 		digest: saved_digest,
 		size: file.size,
-		media_type: "application/octet-stream".into(),
+		media_type: media_type(&prefix).into(),
 		scope: FileScope::Working,
 		provenance: json!({"kind": "scratch", "run_id": run.id}),
 	})
+}
+
+/// The media type a saved file records: an image the models accept is
+/// recognized by its signature, so `file_read` can give it to a model.
+fn media_type(prefix: &[u8]) -> &'static str {
+	aidash_domain::provider::detect_image(prefix).unwrap_or("application/octet-stream")
 }
 
 /// Remove registered files, or every registered file under a directory.
