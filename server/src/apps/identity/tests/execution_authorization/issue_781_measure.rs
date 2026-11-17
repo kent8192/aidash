@@ -139,14 +139,23 @@ async fn m1_a_question_the_run_waits_on_when_it_is_cancelled(
 			.iter()
 			.any(|item| item["id"] == json!(id))
 	);
-	let (status, state) = request(app, &token, "GET", "/api/state", Value::Null).await;
-	assert_eq!(status, 200);
-	let closed = state["human_requests"]
+	// `/api/state` lists pending requests only (#664); the closed one is answered.
+	let (status, answered) = request(
+		app,
+		&token,
+		"GET",
+		&format!("/api/human-requests?state=answered&run={}", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{answered}");
+	let closed = answered["items"]
 		.as_array()
+		.or(answered.as_array())
 		.unwrap()
 		.iter()
 		.find(|item| item["id"] == json!(id))
-		.unwrap();
+		.unwrap_or_else(|| panic!("{case}: closed request missing from {answered}"));
 	assert_eq!(closed["answered_by"], "system");
 	assert_eq!(closed["response"]["reason"], "run_ended");
 	person_sees(&format!("{case} / after cancel"), app, &token, run.id, id).await;
