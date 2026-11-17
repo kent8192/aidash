@@ -578,6 +578,10 @@ export async function setup(
       : data.access;
     if (path === "/api/session")
       return route.fulfill({ json: { access, node_id: data.deployment.id } });
+    // Every page lists Runs a suspension paused (#876). Unmocked, its 404 is
+    // retried, and every action's query refresh waits for that retry.
+    if (path === "/api/suspended-runs")
+      return route.fulfill({ json: { runs: [] } });
     if (path === "/api/state")
       return route.fulfill({
         json: {

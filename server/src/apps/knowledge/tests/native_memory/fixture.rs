@@ -180,11 +180,13 @@ pub(super) async fn setup_endpoint_policy(
 	decay: Option<Decay>,
 	diversity_lambda_millionths: Option<u32>,
 ) -> (Store, Registry, Uuid) {
+	// The default tools, including the Schedule tools (#557), outgrow a
+	// window much smaller than this.
 	setup_endpoint_policy_with_window(
 		database,
 		bounds,
 		endpoint,
-		(flags, 34816, "deployment_administrator"),
+		(flags, 65_536, "deployment_administrator"),
 		unit_max_age_days,
 		decay,
 		diversity_lambda_millionths,
