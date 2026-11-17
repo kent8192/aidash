@@ -2,8 +2,8 @@
 // ORM state of the Tenant Data Protection switches; 0080 changed the database.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0081_data_protection_switches_state", "identity")
-		.add_dependency("identity", "0080_data_protection_switches")
+	Migration::new("0083_data_protection_switches_state", "identity")
+		.add_dependency("identity", "0082_data_protection_switches")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {

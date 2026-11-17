@@ -27,6 +27,7 @@ pub mod provider_credentials;
 pub mod run_input;
 pub mod run_state;
 pub mod safety_stop;
+pub mod schedules;
 pub mod scratch;
 pub mod subnodes;
 pub mod unassigned;

@@ -6,8 +6,8 @@
 // SET LOCAL opens the Deployment Scope the forced row-level policies require.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0080_data_protection_switches", "identity")
-		.add_dependency("identity", "0079_bootstrap_reservations_state")
+	Migration::new("0082_data_protection_switches", "identity")
+		.add_dependency("identity", "0081_scheduled_executions")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::DropConstraintDefinition {
@@ -53,8 +53,8 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0080_data_protection_switches.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0080_data_protection_switches.sql").into()),
+			sql: include_str!("sql/forward/0082_data_protection_switches.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0082_data_protection_switches.sql").into()),
 		})
 		// Restoring the column on rollback needs a value for existing rows;
 		// it used to start true for every Tenant.

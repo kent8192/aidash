@@ -4,8 +4,8 @@
 // Research definitions go. Deleting them is SQL; the check is typed.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0082_remove_research_approvals", "identity")
-		.add_dependency("identity", "0081_data_protection_switches_state")
+	Migration::new("0084_remove_research_approvals", "identity")
+		.add_dependency("identity", "0083_data_protection_switches_state")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::DropConstraintDefinition {
@@ -16,8 +16,8 @@ pub(super) fn migration() -> Migration {
 			},
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0082_remove_research_approvals.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0082_remove_research_approvals.sql").into()),
+			sql: include_str!("sql/forward/0084_remove_research_approvals.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0084_remove_research_approvals.sql").into()),
 		})
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "identity_approval_rules".into(),

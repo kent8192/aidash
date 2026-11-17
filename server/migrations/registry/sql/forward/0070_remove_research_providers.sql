@@ -5,11 +5,11 @@ SET LOCAL aidash.scope = 'deployment';
 DO $$
 DECLARE original text; copied text;
 BEGIN
- IF to_regprocedure('public.aidash_descriptor_before_research_0069(jsonb)') IS NOT NULL THEN
+ IF to_regprocedure('public.aidash_descriptor_before_research_0070(jsonb)') IS NOT NULL THEN
   RAISE EXCEPTION 'Research descriptor contract backup already exists';
  END IF;
  original := pg_get_functiondef('public.aidash_descriptor_is_valid(jsonb)'::regprocedure);
- copied := replace(original, 'FUNCTION public.aidash_descriptor_is_valid(', 'FUNCTION public.aidash_descriptor_before_research_0069(');
+ copied := replace(original, 'FUNCTION public.aidash_descriptor_is_valid(', 'FUNCTION public.aidash_descriptor_before_research_0070(');
  IF copied = original THEN RAISE EXCEPTION 'Descriptor contract header missing'; END IF;
  EXECUTE copied;
 END $$;
@@ -21,7 +21,7 @@ BEGIN
  AND (value->>'provider', value->>'operation', value->>'tier') IS DISTINCT FROM ('research.page@1', 'fetch', 'research') THEN
   RETURN false;
  END IF;
- RETURN public.aidash_descriptor_before_research_0069(value);
+ RETURN public.aidash_descriptor_before_research_0070(value);
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END $$;
 

@@ -4,9 +4,9 @@
 DO $$
 DECLARE original text; restored text;
 BEGIN
- original := pg_get_functiondef('public.aidash_descriptor_before_research_0069(jsonb)'::regprocedure);
- restored := replace(original, 'FUNCTION public.aidash_descriptor_before_research_0069(', 'FUNCTION public.aidash_descriptor_is_valid(');
+ original := pg_get_functiondef('public.aidash_descriptor_before_research_0070(jsonb)'::regprocedure);
+ restored := replace(original, 'FUNCTION public.aidash_descriptor_before_research_0070(', 'FUNCTION public.aidash_descriptor_is_valid(');
  IF restored = original THEN RAISE EXCEPTION 'Descriptor contract backup header missing'; END IF;
  EXECUTE restored;
 END $$;
-DROP FUNCTION public.aidash_descriptor_before_research_0069(jsonb);
+DROP FUNCTION public.aidash_descriptor_before_research_0070(jsonb);

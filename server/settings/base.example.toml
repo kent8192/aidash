@@ -236,6 +236,15 @@ enabled = false
 # payload_days = 365
 # incident_evidence_days = 3650
 
+# Schedules (#557): the most Schedules any Tenant and any person may hold, the
+# shortest gap between two fire times (a Tenant may only raise it) and how
+# often each replica looks for due Schedules. Takes effect on restart.
+# [schedules]
+# max_schedules = 1000
+# max_per_person = 100
+# min_interval_seconds = 900
+# poll_seconds = 15
+
 # Page reading, offered to every Tenant as the `research.page@1` built-in
 # (#987). Each Tenant still approves it before use, and every call waits for a
 # Tool call approval. Takes effect on restart.

@@ -31,6 +31,7 @@ import { subscribe } from "./event-stream";
 import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
+  apiFetch,
   sessionFetch,
   authenticatedFetch,
   signIn,
@@ -108,6 +109,7 @@ import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { NotificationProvider } from "./notifications";
 import { useApprovalInbox } from "./capabilities/inbox";
+import type { ScheduleNotices } from "./schedules-model";
 import type { NoticeTarget } from "./notifications/model";
 import {
   storedThemePreference,
@@ -603,6 +605,14 @@ function Dashboard({
   );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
+  // Stopped Schedules and the Tasks Schedules started, for the bell (#557).
+  const scheduleNotices = useQuery({
+    queryKey: ["schedule-notices"],
+    queryFn: () => apiFetch<ScheduleNotices>("/api/schedules/notices"),
+    refetchInterval: 15000,
+    retry: false,
+    enabled: connected && subjectTenant !== null,
+  });
   const [queueOpen, setQueueOpen] = useState(false);
   const discovery = useQuery({
     ...discoveryQuery(current),
@@ -1092,6 +1102,9 @@ function Dashboard({
     if (target.kind === "approval") return setQueueOpen(true);
     if (target.kind === "administration")
       return window.location.assign("/trust?view=authorization");
+    // A stopped Schedule is resumed or handed over among the person's Schedules.
+    if (target.kind === "schedule")
+      return go("settings", { settings: "schedules" });
     const item =
       target.kind === "human"
         ? requests.find(
@@ -1159,6 +1172,7 @@ function Dashboard({
         data={everything}
         node={remembered.selected?.name ?? ""}
         approvals={inbox.pending}
+        schedules={scheduleNotices.data}
         locale={locale}
         theme={theme}
         onSelect={visit}
