@@ -1,11 +1,13 @@
 import {
   describeComponent,
+  describeSecret,
   describeServer,
   httpsLink,
   type AgentPluginRef,
   type Finding,
   type FindingOutcome,
   type McpServer,
+  type ServerSettings,
 } from "./agent-plugins";
 import { Facts, Hint, type Fact } from "./components/patterns";
 import { Badge, useI18n } from "./ui";
@@ -18,7 +20,38 @@ const componentLabels = {
   server: "agentPluginServer",
 } as const;
 
-function Server({ name, server }: { name: string; server: McpServer }) {
+/** A server secret as Catalog Approval shows it: name, header, form and owner, never the value. */
+export function SecretFact({ settings }: { settings?: ServerSettings }) {
+  const { t } = useI18n();
+  if (!settings?.secret) return <>{t("agentPluginSecretNone")}</>;
+  const secret = describeSecret(settings.secret);
+  return (
+    <>
+      {secret.name} → {secret.header} (
+      {t(
+        secret.form === "bearer"
+          ? "agentPluginSecretBearer"
+          : "agentPluginSecretRaw",
+      )}
+      ) ·{" "}
+      {t(
+        secret.owner === "personal"
+          ? "agentPluginSecretPersonal"
+          : "agentPluginSecretEither",
+      )}
+    </>
+  );
+}
+
+function Server({
+  name,
+  server,
+  settings,
+}: {
+  name: string;
+  server: McpServer;
+  settings?: ServerSettings;
+}) {
   const { t } = useI18n();
   const description = describeServer(server);
   const facts: Fact[] =
@@ -59,6 +92,13 @@ function Server({ name, server }: { name: string; server: McpServer }) {
           [
             t("agentPluginHeaders"),
             description.headers.join(", ") || "-",
+            true,
+          ],
+          [t("agentPluginSecret"), <SecretFact settings={settings} />, true],
+          [
+            t("agentPluginReadOnly"),
+            settings?.read_only?.map((tool) => tool.name).join(", ") ||
+              t("agentPluginNone"),
             true,
           ],
         ];
@@ -130,14 +170,18 @@ function Findings({
  * What an Agent Plugin brings into an Agent: its Skills, the servers it may
  * start or call, and everything left out. The importer shows it before the
  * plugin is added, and the Catalog Approval screen shows it before the
- * version is approved. `denied` is known only at import.
+ * version is approved, with how each remote server authenticates and which
+ * tools are declared Read-only. `denied` is known only at import.
  */
 export function AgentPluginSummary({
   plugin,
   denied = [],
+  settings,
 }: {
   plugin: AgentPluginRef;
   denied?: string[];
+  /** What the Agent definition decides about this plugin's servers, by server name. */
+  settings?: Record<string, ServerSettings>;
 }) {
   const { t } = useI18n();
   const link = httpsLink(plugin.source);
@@ -174,7 +218,12 @@ export function AgentPluginSummary({
           </h5>
           <ul className="grid gap-2.5">
             {servers.map(([name, server]) => (
-              <Server key={name} name={name} server={server} />
+              <Server
+                key={name}
+                name={name}
+                server={server}
+                settings={settings?.[name]}
+              />
             ))}
           </ul>
         </div>

@@ -105,6 +105,17 @@ const RESERVED_HEADERS: [&str; 13] = [
 /// (ADR 0100).
 const CREDENTIAL_HEADERS: [&str; 2] = ["authorization", "proxy-authorization"];
 
+/// Whether the pasted secret of a remote server may travel in header `name` (ADR 0073, amended
+/// 2026-11-16). A name is refused when either the transports own it or the Credential Broker's
+/// rule ([`crate::tenant_secrets::header_valid`]) refuses it, so a definition that works on a
+/// self-hosted Deployment also works where the broker attaches the secret. `Authorization` is the
+/// one credential header allowed here: the secret replaces the plugin's literal headers instead.
+pub fn secret_header_valid(name: &str) -> bool {
+	http::header::HeaderName::from_bytes(name.as_bytes()).is_ok()
+		&& !RESERVED_HEADERS.contains(&name.to_ascii_lowercase().as_str())
+		&& crate::tenant_secrets::header_valid(name)
+}
+
 /// RFC 9110 token names and values without control characters other than horizontal tab; the
 /// same name in two casings is a duplicate. Names the transports own are refused, and so is
 /// authentication through a literal header.

@@ -33,6 +33,10 @@ test("readiness kind labels distinguish tools, services and package slots", () =
     "External service",
   );
   assert.equal(readinessKindLabel("slot", "ja-JP"), "Secret スロット");
+  assert.equal(
+    readinessKindLabel("agent_plugin_server", "en-US"),
+    "Agent Plugin server",
+  );
 });
 
 test("ready is the only success tone; missing secrets warn and deployment faults fail", () => {

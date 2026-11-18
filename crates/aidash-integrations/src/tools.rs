@@ -123,9 +123,13 @@ impl ToolClients {
 			Destination::PublicOnly => &self.mcp_public,
 			Destination::Forbidden => return Err(Error::Forbidden),
 		};
-		// Only a brokered connection is routed to the broker by the plugin transport.
+		// A brokered connection or Tenant Secret is routed to the broker, which is Deployment
+		// configuration and may be an in-cluster private address.
 		Ok(
-			if matches!(auth, Some(CallSecret::BrokeredConnection { .. })) {
+			if matches!(
+				auth,
+				Some(CallSecret::BrokeredConnection { .. } | CallSecret::Brokered { .. })
+			) {
 				&self.mcp_permitted
 			} else {
 				client
@@ -284,7 +288,11 @@ impl ToolTransport for HttpTools {
 					return Err(failure.into_error());
 				}
 				if let Some(error) = auth::challenge(&response, endpoint) {
-					return Err(auth::finish(error));
+					let error = auth::finish(error, secret);
+					return match auth::error_value(&error) {
+						Some(value) => Ok(value),
+						None => Err(error),
+					};
 				}
 				let status = response.status();
 				let unsafe_failure = status.is_server_error()
@@ -379,7 +387,7 @@ impl ToolTransport for HttpTools {
 				}
 				match result {
 					Err(error) => {
-						let error = auth::finish(error);
+						let error = auth::finish(error, secret);
 						match auth::error_value(&error) {
 							Some(value) => Ok(value),
 							None => tool_service_failure(

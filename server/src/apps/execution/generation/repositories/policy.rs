@@ -114,6 +114,17 @@ impl PolicySession for Session {
 			.await
 			.map_err(Into::into)
 	}
+	async fn may_use_secret(&mut self, name: &str) -> aidash_application::Result<bool> {
+		let access = &mut self.access;
+		let secret = access.resource("secret", name, json!({"name": name}));
+		access
+			.decide(
+				&secret,
+				aidash_domain::identity::tenant_administration::SECRET_USE,
+			)
+			.await
+			.map_err(Into::into)
+	}
 	async fn bundle(&mut self, tenant: &str) -> aidash_application::Result<Value> {
 		let tx = self.tx();
 		let document: Value = {

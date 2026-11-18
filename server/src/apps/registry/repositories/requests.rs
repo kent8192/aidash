@@ -159,7 +159,7 @@ impl RegistrationScope for TenantRegistration<'_> {
 		self.access.require(&resource, "registry.create").await?;
 		// Naming a Tenant Secret needs `secret.use` on it, separate from
 		// `secret.manage` (ADR 0051).
-		if let Some(name) = aidash_domain::tenant_secrets::definition_secret(entry) {
+		for name in aidash_domain::tenant_secrets::definition_secret_names(entry) {
 			let secret = self
 				.access
 				.resource("secret", name.clone(), json!({"name": name}));

@@ -71,6 +71,12 @@ pub async fn validate_references(
 		let hosts = scope.tenant_secret_hosts(&name).await?;
 		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
 	}
+	// A remote server of an Agent Plugin that may use the shared secret is checked as a Registry
+	// tool is; a personal-only one is checked against the person's own row at dispatch.
+	for (name, endpoint) in aidash_domain::tenant_secrets::plugin_shared_targets(entry) {
+		let hosts = scope.tenant_secret_hosts(&name).await?;
+		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
+	}
 	if entry.kind == "bundle" {
 		let bundle: aidash_domain::registry::bindings::BundleConfig =
 			serde_json::from_value(entry.config.clone())?;

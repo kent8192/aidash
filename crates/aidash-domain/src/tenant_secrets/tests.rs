@@ -155,3 +155,52 @@ fn a_personal_secret_wins_and_may_fall_back_only_when_any_owner_is_allowed() {
 	assert!(pick_secret(None, Some(&shared), crate::tool::SecretOwner::Personal).is_none());
 	assert!(pick_secret(None, None, owner).is_none());
 }
+
+fn agent_with_server_secrets(settings: serde_json::Value) -> crate::registry::Entry {
+	let plugin = crate::agent_plugin::fixtures::reference_with_servers(
+		"acme-tools",
+		serde_json::json!({
+			"docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp"},
+			"wiki": {"type": "streamable-http", "url": "https://wiki.example.com/mcp"},
+		}),
+	);
+	serde_json::from_value(serde_json::json!({
+		"id":"agent","version":"1.0.0","kind":"agent",
+		"name":{"en":"agent"},"description":{"en":"agent"},
+		"config":{
+			"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"agent_plugins":[plugin],"agent_plugin_settings":{"acme-tools":settings}
+		}
+	}))
+	.unwrap()
+}
+
+#[test]
+fn an_agent_names_the_shared_capable_secrets_of_its_plugin_servers_for_secret_use() {
+	let agent = agent_with_server_secrets(serde_json::json!({
+		"docs": {"secret": {"name": "docs-token"}},
+		"wiki": {"secret": {"name": "wiki-token", "owner": "personal"}},
+	}));
+
+	// A personal-only server secret names only each person's own row.
+	assert_eq!(definition_secret_names(&agent), ["docs-token"]);
+	assert_eq!(
+		plugin_shared_targets(&agent),
+		[(
+			"docs-token".to_owned(),
+			"https://docs.example.com/mcp".to_owned()
+		)]
+	);
+	// An Agent has no Tool secret of its own.
+	assert_eq!(definition_secret(&agent), None);
+}
+
+#[test]
+fn the_same_secret_on_two_servers_is_named_once() {
+	let agent = agent_with_server_secrets(serde_json::json!({
+		"docs": {"secret": {"name": "shared-token"}},
+		"wiki": {"secret": {"name": "shared-token"}},
+	}));
+
+	assert_eq!(definition_secret_names(&agent), ["shared-token"]);
+}

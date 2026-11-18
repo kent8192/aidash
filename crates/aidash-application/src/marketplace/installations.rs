@@ -296,7 +296,7 @@ pub async fn configure(
 /// `secret.manage`: whoever installs a package cannot also choose where a
 /// secret may go (ADR 0051).
 async fn require_secret_use(scope: &mut dyn InstallationScope, entry: &Entry) -> Result<()> {
-	if let Some(name) = aidash_domain::tenant_secrets::definition_secret(entry) {
+	for name in aidash_domain::tenant_secrets::definition_secret_names(entry) {
 		scope
 			.require(&scope.secret_resource(&name), "secret.use")
 			.await?;

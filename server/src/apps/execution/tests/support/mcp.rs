@@ -27,6 +27,11 @@ pub struct FakeMcp {
 	live: Mutex<HashSet<String>>,
 	issued: AtomicUsize,
 	seen: Mutex<Vec<(String, Value)>>,
+	/// The value of `credential_header` on every request, `None` where it was absent.
+	credentials: Mutex<Vec<Option<String>>>,
+	credential_header: Mutex<Option<String>>,
+	/// Every request of any method, parsed or not.
+	received: AtomicUsize,
 	deleted: Mutex<Vec<String>>,
 }
 
@@ -108,6 +113,21 @@ impl FakeMcp {
 			.collect()
 	}
 
+	/// Every request the server received, of any HTTP method and whether or not it parsed.
+	pub fn request_count(&self) -> usize {
+		self.received.load(SeqCst)
+	}
+
+	/// Record the value of `header` on every later request.
+	pub fn record_header(&self, header: &str) {
+		*self.credential_header.lock().unwrap() = Some(header.to_owned());
+	}
+
+	/// What each request carried in the recorded header, in arrival order.
+	pub fn credentials(&self) -> Vec<Option<String>> {
+		self.credentials.lock().unwrap().clone()
+	}
+
 	pub fn sessions_issued(&self) -> usize {
 		self.issued.load(SeqCst)
 	}
@@ -118,6 +138,7 @@ impl FakeMcp {
 	}
 
 	fn handle(self: &Arc<Self>, request: &Request) -> Response {
+		self.received.fetch_add(1, SeqCst);
 		let Ok(body) = request.json::<Value>() else {
 			return Response::new(StatusCode::BAD_REQUEST);
 		};
@@ -131,6 +152,15 @@ impl FakeMcp {
 			.lock()
 			.unwrap()
 			.push((method.clone(), body["params"].clone()));
+		if let Some(header) = self.credential_header.lock().unwrap().as_deref() {
+			self.credentials.lock().unwrap().push(
+				request
+					.headers
+					.get(header)
+					.and_then(|value| value.to_str().ok())
+					.map(str::to_owned),
+			);
+		}
 		let id = body.get("id").cloned();
 		if method.is_empty() && (body.get("result").is_some() || body.get("error").is_some()) {
 			self.input_replies.lock().unwrap().push(body);
@@ -207,6 +237,7 @@ impl FakeMcp {
 	/// Routes for `PATH`. The caller adds its own routes to the same server, such as a model.
 	pub fn routes(self: &Arc<Self>, routes: StubRouter) -> StubRouter {
 		let posted = self.clone();
+		let probed = self.clone();
 		let ended = self.clone();
 		routes
 			.route(
@@ -221,12 +252,16 @@ impl FakeMcp {
 			.route(
 				PATH,
 				Method::GET,
-				reply(|_request: Request| async { Response::new(StatusCode::METHOD_NOT_ALLOWED) }),
+				reply(move |_request: Request| {
+					probed.received.fetch_add(1, SeqCst);
+					async { Response::new(StatusCode::METHOD_NOT_ALLOWED) }
+				}),
 			)
 			.route(
 				PATH,
 				Method::DELETE,
 				reply(move |request: Request| {
+					ended.received.fetch_add(1, SeqCst);
 					if let Some(session) = request
 						.headers
 						.get("mcp-session-id")

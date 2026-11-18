@@ -24195,6 +24195,71 @@
   {
     "json": true,
     "method": "POST",
+    "name": "agent-plugin-tools",
+    "path": "/api/agent-plugins/tools",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "AttachListing": {
+            "description": "The answer of an attach-time listing. When it is `unavailable`, Read-only cannot be declared\nfor the server; `reason` is a typed cause code, never a URL or a response body:\n`connection_required` or `connection_scope_insufficient` (no usable OAuth Connection),\n`secret_unavailable` (the person has no personal secret of the named secret's name; the\nshared Tenant Secret is never used here), `secret_rejected` (the server refused the person's\nsecret), or a transport cause such as `unreachable`, `initialize_failed`, `invalid_response`,\n`forbidden` or `timeout`.",
+            "oneOf": [
+              {
+                "properties": {
+                  "outcome": {
+                    "enum": ["listed"],
+                    "type": "string"
+                  },
+                  "tools": {
+                    "items": {
+                      "$ref": "#/components/schemas/AttachTool"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": ["outcome", "tools"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "outcome": {
+                    "enum": ["unavailable"],
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": ["outcome", "reason"],
+                "type": "object"
+              }
+            ]
+          },
+          "AttachTool": {
+            "description": "One tool an attach-time listing returned: its name and the `inputSchema` digest a Read-only\ndeclaration records, computed exactly as the Run-start pin computes it.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "schema_digest": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "schema_digest"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/AttachListing"
+        }
+      }
+    },
+    "source": "server/src/apps/registry/views/management.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
     "name": "task-delegate",
     "path": "/api/tasks/{id}/delegate",
     "query_parameters": [],
@@ -48223,6 +48288,11 @@
                 "description": "One Secret slot a Marketplace package declares, before the installer\nchooses which of their Tenant Secrets fills it.",
                 "enum": ["slot"],
                 "type": "string"
+              },
+              {
+                "description": "One remote server of an Agent Plugin the Agent takes in, whose settings name a secret\nthat may be the shared Tenant Secret. `item` is `<plugin>/<server>`.",
+                "enum": ["agent_plugin_server"],
+                "type": "string"
               }
             ]
           },
@@ -48315,6 +48385,11 @@
               {
                 "description": "One Secret slot a Marketplace package declares, before the installer\nchooses which of their Tenant Secrets fills it.",
                 "enum": ["slot"],
+                "type": "string"
+              },
+              {
+                "description": "One remote server of an Agent Plugin the Agent takes in, whose settings name a secret\nthat may be the shared Tenant Secret. `item` is `<plugin>/<server>`.",
+                "enum": ["agent_plugin_server"],
                 "type": "string"
               }
             ]

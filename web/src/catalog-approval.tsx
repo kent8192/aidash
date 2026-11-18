@@ -13,7 +13,12 @@ import { useBusyRetry } from "./policy-busy";
 import { keylessOrigin } from "./keyless";
 import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
-import { agentPlugins, type AgentPluginRef } from "./agent-plugins";
+import {
+  agentPlugins,
+  pluginSettings,
+  type AgentPluginRef,
+  type PluginSettings,
+} from "./agent-plugins";
 import { AgentPluginSummary } from "./agent-plugin-summary";
 import { Badge, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
@@ -113,9 +118,12 @@ export function DeciderRecipients({
  *  and every part left out (ADR 0072, ADR 0073). */
 export function AgentPluginsDisclosure({
   plugins,
+  settings = {},
   admits,
 }: {
   plugins: AgentPluginRef[];
+  /** The version's `agent_plugin_settings`: how each remote server authenticates. */
+  settings?: PluginSettings;
   /** The viewer is about to approve this version. */
   admits: boolean;
 }) {
@@ -146,7 +154,10 @@ export function AgentPluginsDisclosure({
             key={plugin.digest}
             className="min-w-0 rounded-md border border-border bg-surface px-3 py-2.5"
           >
-            <AgentPluginSummary plugin={plugin} />
+            <AgentPluginSummary
+              plugin={plugin}
+              settings={settings[plugin.name]}
+            />
           </li>
         ))}
       </ul>
@@ -378,6 +389,7 @@ export function CatalogApprovalSection({
       {plugins && (
         <AgentPluginsDisclosure
           plugins={plugins}
+          settings={pluginSettings(entry.config as Record<string, unknown>)}
           admits={decides && state !== "approved"}
         />
       )}

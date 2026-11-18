@@ -1,7 +1,7 @@
 //! OpenAPI payload contracts for native endpoints.
 use super::super::views;
 use crate::apps::registry::serializers::agent_plugin_import::{
-	AgentPluginImportResult, PluginImportRequest,
+	AgentPluginImportResult, AttachListing, PluginImportRequest, PluginToolsRequest,
 };
 use crate::apps::registry::serializers::contracts::Entry as RegistryContractsEntry;
 use crate::apps::registry::serializers::contracts::Search;
@@ -86,6 +86,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts
 		.request::<_, PluginImportRequest>(document, views::management::agent_plugin_import)?;
+	contracts.response::<_, AttachListing>(
+		document,
+		views::management::agent_plugin_tools,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, PluginToolsRequest>(document, views::management::agent_plugin_tools)?;
 	contracts.response::<_, RegistryContractsEntry>(
 		document,
 		views::personal_agents::create,
