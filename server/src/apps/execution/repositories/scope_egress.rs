@@ -55,11 +55,7 @@ impl DurableScopes {
 		if self.initialized.lock().unwrap().contains(id) {
 			return Ok(());
 		}
-		let mut tx = self
-			.store
-			.pool
-			.begin(&TenancyScope::tenant(&id.tenant)?)
-			.await?;
+		let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("egress_scope_state"))
 			.columns(["scope_id", "tenant", "node"].map(Alias::new))
@@ -75,7 +71,7 @@ impl DurableScopes {
 			)
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
-		let _ = locked_state(&mut tx, id).await?;
+		let _ = locked_state_now(&mut tx, id).await?;
 		tx.commit().await?;
 		self.initialized.lock().unwrap().insert(id.clone());
 		Ok(())
@@ -106,12 +102,8 @@ impl DurableScopes {
 		};
 		let id = current.as_ref().map_or(&settings.id, |current| &current.id);
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
-		let mut tx = self
-			.store
-			.pool
-			.begin(&TenancyScope::tenant(&id.tenant)?)
-			.await?;
-		let _ = locked_state(&mut tx, id).await?;
+		let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
+		let _ = locked_state(&mut tx, id, "debit").await?;
 		let mut total = daily(&mut tx, id, day, "").await?;
 		let max = current
 			.as_ref()
@@ -160,12 +152,8 @@ impl DurableScopes {
 		service: Option<&str>,
 	) -> Result<()> {
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
-		let mut tx = self
-			.store
-			.pool
-			.begin(&TenancyScope::tenant(&id.tenant)?)
-			.await?;
-		let _ = locked_state(&mut tx, id).await?;
+		let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
+		let _ = locked_state(&mut tx, id, "refund").await?;
 		for name in [Some(""), service].into_iter().flatten() {
 			let mut row = daily(&mut tx, id, day, name).await?;
 			let counter = match direction {
@@ -185,7 +173,47 @@ impl DurableScopes {
 	}
 }
 
-async fn locked_state(tx: &mut Transaction, id: &ScopeId) -> Result<ScopeState> {
+/// Opens a Tenant transaction for Scratch Space egress, recording how long that
+/// took: the wait for a pooled connection, `BEGIN` and the scope statement
+/// (#909). Every transaction of `DurableScopes` and `ScratchAuthority` opens
+/// here, admission and records as well as debits, so the histogram holds all
+/// of Scratch Space egress's waits on the pool. The operation route's egress
+/// store is not timed here.
+pub(super) async fn begin_timed(
+	pool: &crate::database::native::Pool,
+	tenant: &str,
+) -> Result<Transaction> {
+	let scope = TenancyScope::tenant(tenant)?;
+	let _elapsed = Elapsed(
+		metrics::histogram!("aidash_egress_store_begin_seconds"),
+		std::time::Instant::now(),
+	);
+	pool.begin(&scope).await
+}
+
+/// Records the time since it was made when it is dropped, so that a wait the
+/// gateway gives up on is measured too: those are the slow ones (#909).
+struct Elapsed(metrics::Histogram, std::time::Instant);
+impl Drop for Elapsed {
+	fn drop(&mut self) {
+		self.0.record(self.1.elapsed().as_secs_f64());
+	}
+}
+
+/// Locks the Scratch Space's state row, which every debit and refund of that
+/// Space waits on in turn; `operation` labels how long it waited (#909).
+async fn locked_state(
+	tx: &mut Transaction,
+	id: &ScopeId,
+	operation: &'static str,
+) -> Result<ScopeState> {
+	let _elapsed = Elapsed(
+		metrics::histogram!("aidash_egress_budget_lock_seconds", "operation" => operation),
+		std::time::Instant::now(),
+	);
+	locked_state_now(tx, id).await
+}
+async fn locked_state_now(tx: &mut Transaction, id: &ScopeId) -> Result<ScopeState> {
 	ScopeState::objects()
 		.filter(ScopeState::field_scope_id().eq(id.scratch_space))
 		.filter(ScopeState::field_tenant().eq(id.tenant.clone()))
@@ -371,11 +399,7 @@ impl EgressScopes for DurableScopes {
 	async fn admit_connection(&self, settings: &ScopeSettings) -> aidash_application::Result<()> {
 		let current = self.live(&settings.id).await?;
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&current.id.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &current.id.tenant).await?;
 			// A revoked Run's credential opens no Host connection (ADR 0136).
 			if let Some(run_id) = settings.run_id {
 				let revoked = RunRevocation::objects()
@@ -432,11 +456,7 @@ impl EgressScopes for DurableScopes {
 
 	async fn record(&self, record: ConnectionRecord) -> aidash_application::Result<()> {
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&record.scope.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &record.scope.tenant).await?;
 			let existing = ScopeConnection::objects()
 				.filter(ScopeConnection::field_id().eq(record.id))
 				.all_with_executor(&mut *tx)
@@ -508,11 +528,7 @@ impl EgressScopes for DurableScopes {
 		let mut failed = None;
 		for (tenant, tallies) in by_tenant {
 			let result: Result<()> = async {
-				let mut tx = self
-					.store
-					.pool
-					.begin(&TenancyScope::tenant(&tenant)?)
-					.await?;
+				let mut tx = begin_timed(&self.store.pool, &tenant).await?;
 				for tally in tallies {
 					let row = ScopeRefusal::build()
 						.id(Uuid::new_v4())
@@ -545,11 +561,7 @@ impl EgressScopes for DurableScopes {
 	) -> aidash_application::Result<()> {
 		tracing::warn!(tenant = %id.tenant, node = %id.node, scope = %id.scratch_space, hosts, "an Egress scope that may reach any host reached many hosts in a minute");
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&id.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
 			let event = ScopeEvent::build()
 				.id(Uuid::new_v4())
 				.tenant(id.tenant.clone())

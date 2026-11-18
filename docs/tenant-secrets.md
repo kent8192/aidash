@@ -331,8 +331,9 @@ waiting plain HTTP requests may hold at most a quarter of the slots (128); one
 beyond that is refused at once with `egress_tenant_tunnel_limit`. A connection
 that waited is checked against its scope once more before it is forwarded. Clients keep tunnels open between requests, so while a
 connection of a scope waits, that scope's tunnels that carried nothing for two
-seconds close as `egress_idle_reclaimed` and give their slots to the waiters;
-the client opens a new tunnel when it needs one. A credential resolved for a new
+seconds close as `egress_idle_reclaimed` and give their slots to the waiters
+(a tunnel whose bytes wait on a debit is not idle); the client opens a new
+tunnel when it needs one. A credential resolved for a new
 connection is reused for five seconds, so a burst of connections reads the
 store once; a revoked credential may still open connections for that long, and
 each open tunnel's own five-second recheck closes them.
@@ -354,9 +355,24 @@ deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
 allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
-checks close it as `egress_authority_unavailable`. A traffic debit that fails because the store is unavailable ends it
-the same way, and a refund that fails ends it as `egress_refund_failed`; neither
-counts as an upstream failure. A scope credential is a MAC over the Tenant and
+checks close it as `egress_authority_unavailable`. A slow store is not a
+refusal: a traffic debit the store does not answer stops the tunnel's bytes and
+is tried again, and it closes the tunnel as `egress_budget_wait_timeout` only
+after 30 seconds without an answer (#909). A refund runs after the bytes have
+moved, so one that fails or times out is counted in
+`aidash_egress_settle_failures_total` and logged, and the connection keeps the
+outcome its transfer had. Neither counts as an upstream failure. The times of
+these checks, debits and refunds are in
+`aidash_egress_host_connection_check_seconds`, `aidash_egress_debit_seconds`
+and `aidash_egress_refund_seconds`; debits the store did not answer are counted
+in `aidash_egress_debit_retries_total`. Where the store's time goes is in
+`aidash_egress_store_begin_seconds` (waiting for a pooled connection and
+opening the transaction; read it with the pool gauges below),
+`aidash_egress_budget_lock_seconds{operation}` (waiting on the Scratch Space's
+state lock, which its debits and refunds take in turn) and
+`aidash_db_pool_connections{pool,state}` with `aidash_db_pool_max_connections`,
+sampled every five seconds. A wait the gateway gives up on is recorded at the
+time it gave up. A scope credential is a MAC over the Tenant and
 Scratch Space under the server's key, verified in constant time, and is excluded
 from records and logs. It has one value per Scratch Space and stays valid until
 the space is deleted; deleting its Tenant or its Node closes it at once, before
@@ -379,9 +395,11 @@ record cannot be written after retries, the gateway refuses the connection with
 `egress_audit_unavailable`. The final record is retried for about 60 seconds
 without holding the connection's concurrency slot, or once more if the process
 is stopping. A process crash or sustained audit-store failure can leave a record
-`unsettled`, with incomplete byte counts. Tunnel budget reservations and
-refunds each have a five-second deadline. An interrupted connection or timed-out
-refund may retain unused reserved budget.
+`unsettled`, with incomplete byte counts. A tunnel's debit against its Scratch
+Space egress allowance waits at most 30 seconds and its refund five. An
+interrupted connection, a refund that fails, or a debit tried again after its
+answer was lost may leave bytes counted against the day's allowance that never
+moved.
 
 Sandboxed code can repeat failures of a Host connection at will, so each kind of
 failure logs at most one line per 10 seconds, with the number since the last

@@ -141,11 +141,7 @@ impl ScratchAuthority {
 		space: Uuid,
 	) -> aidash_application::Result<Option<ScopeSettings>> {
 		let found: crate::Result<_> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(tenant)?)
-				.await?;
+			let mut tx = super::begin_timed(&self.store.pool, tenant).await?;
 			let found = scratch::read(&mut *tx, tenant, space).await?;
 			// Deleting a Tenant or a Node closes admission at once, although the
 			// Scratch Space stays Active until its data is purged.
