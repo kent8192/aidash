@@ -2632,12 +2632,13 @@ async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() 
 	}
 }
 
-/// An Agent version pinned before #745 may bind the removed `core.npm`
-/// package index. Its registered definition stays, so Run start resolves the
-/// Binding as before: it is inert, because the gateway no longer rewrites
-/// package indexes and the migration removed its Catalog Approvals.
+/// Binding resolution alone, without Catalog Approvals: a `core.npm` Binding
+/// resolves while its definition row exists, and a missing row is a plain
+/// NotFound. Run start also needs each bound definition's Catalog Approval,
+/// which `identity/0082` deletes, so `registry/0070` removes the Bindings
+/// themselves; the `run_control` test checks Run start on the migrated rows.
 #[tokio::test]
-async fn a_pinned_agent_that_bound_a_removed_package_index_still_starts() {
+async fn binding_resolution_of_a_removed_package_index_needs_only_its_definition_row() {
 	let mut catalog = Catalog::new();
 	catalog.insert(entry(
 		"core.npm",
@@ -2662,8 +2663,7 @@ async fn a_pinned_agent_that_bound_a_removed_package_index_still_starts() {
 			.iter()
 			.any(|binding| binding.identity.id == "core.npm")
 	);
-	// Had the definition itself been deleted, Run start would refuse with a
-	// plain NotFound naming it, which is why the migration keeps definitions.
+	// Without the definition row, resolution refuses with a plain NotFound.
 	let mut without = Catalog::new();
 	assert!(matches!(
 		snapshot(&mut without, &config, false).await,
