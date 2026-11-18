@@ -299,6 +299,29 @@ pub async fn register(
 	Ok(entry)
 }
 
+/// External services are made available to a Scratch Space, never bound by an
+/// Agent (#738). Registered versions that still carry the legacy Binding keep
+/// it, since their digests are pinned; nothing reads it any more, so it grants
+/// nothing. A new registration may not add one.
+fn reject_external_service_bindings(entry: &Entry) -> Result<()> {
+	if entry.kind != "agent" {
+		return Ok(());
+	}
+	// Read loosely: a malformed config keeps the error normalization gives it.
+	let binds_service = entry.config["bindings"].as_array().is_some_and(|bindings| {
+		bindings
+			.iter()
+			.any(|binding| binding["kind"] == "external_service")
+	});
+	if binds_service {
+		return Err(Error::Invalid(
+			"External services are made available to a Scratch Space, not bound by an Agent (#738)"
+				.into(),
+		));
+	}
+	Ok(())
+}
+
 pub async fn register_definition(
 	scope: &mut dyn DefinitionWriter,
 	validation: &DefinitionValidation,
@@ -306,6 +329,7 @@ pub async fn register_definition(
 	node: &str,
 ) -> Result<bool> {
 	system::reject_owner_definition(entry)?;
+	reject_external_service_bindings(entry)?;
 	let mut entry = entry.clone();
 	apply_definition_defaults(scope, &mut entry).await;
 	bindings::normalize_agent(

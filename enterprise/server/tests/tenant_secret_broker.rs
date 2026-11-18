@@ -6,7 +6,6 @@
 
 use aidash_application::{
 	Error,
-	egress::{Admission, Authority, Direction, Meter, RequestTimes},
 	ports::tools::ToolTransport,
 	provider_access::KeylessAccess,
 	provider_credentials::Store as SecretStore,
@@ -24,16 +23,14 @@ use aidash_capability::{
 		Attach, Destination, SealedSecretSource, SecretClaims, SecretSubject, mint_secret, sealed,
 	},
 };
-use aidash_domain::{
-	egress::{Authentication, ExternalService},
-	keyless::{Destination as Address, PermittedOrigins},
-	tenant_secrets::TenantSecret,
-	tool::ToolConfig,
-};
+use aidash_domain::{keyless::PermittedOrigins, tenant_secrets::TenantSecret, tool::ToolConfig};
 use aidash_gcp::capability::{
 	secret_calls::SecretCallsAdapter, secret_issuer::SecretIssuerConfiguration,
 };
-use aidash_integrations::{egress, tools::HttpTools, tools::ToolClients};
+use aidash_integrations::{
+	egress,
+	tools::{HttpTools, ToolClients},
+};
 use async_trait::async_trait;
 use axum::{
 	Json, Router,
@@ -54,7 +51,7 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-	sync::{Mutex as AsyncMutex, OwnedMutexGuard, watch},
+	sync::{Mutex as AsyncMutex, OwnedMutexGuard},
 	task::JoinHandle,
 };
 use uuid::Uuid;
@@ -64,10 +61,10 @@ const KID: &str = "projects/app/locations/us-central1/keyRings/broker/cryptoKeys
 const AUDIENCE: &str = "env-tsec";
 const VALUE: &str = "canary-tenant-secret-value-never-in-the-sandbox";
 const HTTP_HOST: &str = "upstream.test";
-const HTTP_ENDPOINT: &str = "https://upstream.test/v1/tools/invoke";
-const MCP_ENDPOINT: &str = "https://upstream.test/v1/mcp";
 const IMAGE_HOST: &str = "images.example.test";
 const IMAGE_ENDPOINT: &str = "https://images.example.test/v1/";
+const HTTP_ENDPOINT: &str = "https://upstream.test/v1/tools/invoke";
+const MCP_ENDPOINT: &str = "https://upstream.test/v1/mcp";
 
 fn now() -> u64 {
 	SystemTime::now()
@@ -793,7 +790,8 @@ async fn an_mcp_streamable_http_session_passes_through_the_broker_with_its_sessi
 }
 
 // ---------------------------------------------------------------------------
-// A.3 Egress gateway -> broker -> upstream, and a no-secret service direct.
+// A.3 Egress gateway -> broker -> upstream for a Scratch Space's External
+// service (#738), and a no-secret service direct.
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -803,16 +801,25 @@ struct GatewayLog {
 	finished: Mutex<Vec<(u16, Option<String>)>>,
 }
 #[async_trait]
-impl Meter for GatewayLog {
-	async fn charge(&self, direction: Direction, bytes: usize) -> Result<(), Error> {
+impl aidash_application::egress::Meter for GatewayLog {
+	async fn charge(
+		&self,
+		direction: aidash_application::egress::Direction,
+		bytes: usize,
+	) -> Result<(), Error> {
 		match direction {
-			Direction::Sent => &self.sent,
-			Direction::Received => &self.received,
+			aidash_application::egress::Direction::Sent => &self.sent,
+			aidash_application::egress::Direction::Received => &self.received,
 		}
 		.fetch_add(bytes, Ordering::Relaxed);
 		Ok(())
 	}
-	async fn finish(&self, status: u16, _: RequestTimes, error: Option<&str>) -> Result<(), Error> {
+	async fn finish(
+		&self,
+		status: u16,
+		_: aidash_application::egress::RequestTimes,
+		error: Option<&str>,
+	) -> Result<(), Error> {
 		self.finished
 			.lock()
 			.unwrap()
@@ -821,23 +828,32 @@ impl Meter for GatewayLog {
 	}
 }
 
-struct GatewayAuthority {
+/// The proxy credential the Pod process in this test holds.
+const POD_CREDENTIAL: &str = "run-credential";
+
+/// Admits the Scratch Space's two External services; it is never asked about
+/// a Host connection.
+struct GatewayScopes {
 	direct_base: String,
 	route: Option<aidash_application::tenant_secrets::SecretRoute>,
 	log: Arc<GatewayLog>,
 }
 #[async_trait]
-impl Authority for GatewayAuthority {
-	async fn admit(
+impl aidash_application::egress::EgressScopes for GatewayScopes {
+	async fn resolve(&self, _: &str) -> Result<aidash_application::egress::ScopeSettings, Error> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn admit_external(
 		&self,
-		token: &str,
+		credential: &str,
 		service: &str,
 		_method: &str,
 		_path: &str,
 		_digest: &str,
-	) -> Result<Admission, Error> {
-		if token != "operation-token" {
-			return Err(Error::Forbidden);
+	) -> Result<aidash_application::egress::ExternalAdmission, Error> {
+		use aidash_domain::egress::{Authentication, ExternalService};
+		if credential != POD_CREDENTIAL {
+			return Err(Error::Unauthorized);
 		}
 		let (definition, route) = match service {
 			"images" => (
@@ -862,26 +878,73 @@ impl Authority for GatewayAuthority {
 			),
 			_ => return Err(Error::Forbidden),
 		};
-		Ok(Admission {
-			gateway_origin: "http://gateway.test".into(),
-			destination: Address::Permitted,
-			request: Uuid::new_v4(),
-			operation: Some(Uuid::new_v4()),
-			session: None,
-			service: service.into(),
-			definition,
-			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
-			credential: None,
-			route,
-			meter: self.log.clone(),
-		})
+		Ok(aidash_application::egress::ExternalAdmission::Admitted(
+			Box::new(aidash_application::egress::Admission {
+				destination: aidash_domain::keyless::Destination::Permitted,
+				request: Uuid::new_v4(),
+				service: service.into(),
+				definition,
+				expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+				credential: None,
+				route,
+				meter: self.log.clone(),
+			}),
+		))
+	}
+	async fn admit_connection(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+	) -> Result<(), Error> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn check_active(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+		_: &str,
+	) -> Result<aidash_application::egress::ScopeSettings, Error> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn debit(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+		_: aidash_application::egress::Direction,
+		_: u64,
+		_: chrono::NaiveDate,
+	) -> Result<(), Error> {
+		unreachable!("a service request is metered by its own meter")
+	}
+	async fn refund(
+		&self,
+		_: &aidash_application::egress::ScopeSettings,
+		_: aidash_application::egress::Direction,
+		_: u64,
+		_: chrono::NaiveDate,
+	) -> Result<(), Error> {
+		unreachable!("a service request is metered by its own meter")
+	}
+	async fn record(&self, _: aidash_application::egress::ConnectionRecord) -> Result<(), Error> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn record_refusals(
+		&self,
+		_: Vec<aidash_application::egress::RefusalTally>,
+	) -> Result<(), Error> {
+		unreachable!("a service request is not a Host connection")
+	}
+	async fn notify_many_hosts(
+		&self,
+		_: &aidash_domain::egress::ScopeId,
+		_: usize,
+	) -> Result<(), Error> {
+		unreachable!("a service request is not a Host connection")
 	}
 }
 
 #[tokio::test]
-async fn the_egress_gateway_forwards_a_secret_service_and_not_a_plain_one() {
+async fn the_egress_gateway_forwards_a_scratch_space_secret_service_and_not_a_plain_one() {
 	let h = Harness::new().await;
 	h.put_secret("tenant-a", "image-key", &[IMAGE_HOST]).await;
+	let space = Uuid::new_v4();
 	let route = match h
 		.service
 		.resolve(
@@ -892,9 +955,10 @@ async fn the_egress_gateway_forwards_a_secret_service_and_not_a_plain_one() {
 				destination: endpoint_destination(IMAGE_ENDPOINT).unwrap(),
 				methods: vec!["GET".into(), "POST".into()],
 				attach: Attach::Bearer,
-				subject: SecretSubject::Operation {
-					operation: Uuid::new_v4(),
+				subject: SecretSubject::ScratchSpace {
 					tenant: "tenant-a".into(),
+					node: "node-a".into(),
+					space,
 				},
 				max_response_bytes: None,
 			}),
@@ -906,21 +970,33 @@ async fn the_egress_gateway_forwards_a_secret_service_and_not_a_plain_one() {
 		Resolved::Value(_) => panic!("the Cloud path never reads a value"),
 	};
 	let log = Arc::new(GatewayLog::default());
-	let authority = Arc::new(GatewayAuthority {
+	let scopes = Arc::new(GatewayScopes {
 		direct_base: format!("{}/", h.upstream_base),
 		route: Some(route),
 		log: log.clone(),
 	});
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let gateway_base = format!("http://{}", listener.local_addr().unwrap());
-	let (stop, receiver) = watch::channel(false);
-	let gateway = tokio::spawn(egress::serve(listener, authority, receiver));
-	let client = reqwest::Client::builder().no_proxy().build().unwrap();
+	let (stop, receiver) = tokio::sync::watch::channel(false);
+	let gateway = tokio::spawn(egress::serve_with_scopes(
+		listener,
+		scopes,
+		egress::ProxyLimits::default(),
+		receiver,
+	));
+	// The Pod process reaches the gateway only as its HTTP proxy.
+	let client = reqwest::Client::builder()
+		.proxy(
+			reqwest::Proxy::http(&gateway_base)
+				.unwrap()
+				.basic_auth("aidash", POD_CREDENTIAL),
+		)
+		.build()
+		.unwrap();
+	let services = format!("http://{}", aidash_domain::egress::SERVICES_HOST);
 
 	let response = client
-		.get(format!(
-			"{gateway_base}/v1/operation-token/images/upload?q=1"
-		))
+		.get(format!("{services}/images/upload?q=1"))
 		.send()
 		.await
 		.unwrap();
@@ -929,25 +1005,24 @@ async fn the_egress_gateway_forwards_a_secret_service_and_not_a_plain_one() {
 	assert!(!body.contains(VALUE), "the sandbox saw the value: {body}");
 	{
 		let seen = h.upstream.seen.lock().unwrap();
-		assert_eq!(seen.last().unwrap().path, "/v1/upload");
+		let last = seen.last().unwrap();
+		assert_eq!(last.path, "/v1/upload");
 		assert_eq!(
-			seen.last().unwrap().headers[header::AUTHORIZATION]
-				.to_str()
-				.unwrap(),
+			last.headers[header::AUTHORIZATION].to_str().unwrap(),
 			format!("Bearer {VALUE}")
 		);
-		assert!(
-			!seen
-				.last()
-				.unwrap()
-				.headers
-				.contains_key("x-aidash-secret-call")
-		);
+		assert!(!last.headers.contains_key("x-aidash-secret-call"));
+		assert!(!last.headers.contains_key("proxy-authorization"));
 	}
+	let audits = h.logs.entries();
+	assert!(
+		!audits.is_empty(),
+		"the broker records the Scratch Space's secret call"
+	);
 
 	let broker_calls = h.logs.entries().len();
 	let plain = client
-		.get(format!("{gateway_base}/v1/operation-token/direct/ping"))
+		.get(format!("{services}/direct/ping"))
 		.send()
 		.await
 		.unwrap();

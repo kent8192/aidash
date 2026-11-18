@@ -7,16 +7,13 @@ use secrecy::SecretString;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// One admitted request from a Scratch Space to an External service.
 pub struct Admission {
-	pub gateway_origin: String,
 	pub destination: aidash_domain::keyless::Destination,
 	pub request: Uuid,
-	/// The operation or Live preview owner; absent for a Scratch Space call.
-	pub operation: Option<Uuid>,
-	/// Set when the token is a session token; the request record carries it.
-	pub session: Option<Uuid>,
 	pub service: String,
 	pub definition: ExternalService,
+	/// When the request must have finished, whatever it is still sending.
 	pub expires_at: DateTime<Utc>,
 	/// The value a self-hosted gateway attaches itself. A brokered request
 	/// never carries it (ADR 0095).
@@ -25,6 +22,22 @@ pub struct Admission {
 	/// Secret broker is configured. The broker attaches the value.
 	pub route: Option<SecretRoute>,
 	pub meter: Arc<dyn Meter>,
+}
+
+/// Why an External service is not usable from a Scratch Space, said to the
+/// code that called it together with the services it can use now (#738).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceRefusal {
+	/// One of the `aidash_domain::egress::SERVICE_*` codes.
+	pub code: &'static str,
+	/// The External services this Scratch Space can use now, by id.
+	pub available: Vec<String>,
+}
+
+/// The outcome of asking to call an External service from a Scratch Space.
+pub enum ExternalAdmission {
+	Admitted(Box<Admission>),
+	Refused(ServiceRefusal),
 }
 
 /// A debit committed its bytes and decided that the stream must stop.
@@ -96,12 +109,9 @@ pub trait Meter: Send + Sync {
 		Ok(())
 	}
 	/// Atomically adds body bytes the gateway has streamed, in batches, to the
-	/// request record and to the operation's and this service's budgets. The
-	/// bytes are always committed, even past a limit. Afterwards the call
-	/// reports why the stream must stop: `Conflict(LIMIT_EXCEEDED)` when a
-	/// budget is exhausted, `Conflict(OPERATION_EXPIRED)` when the operation or
-	/// session expired, `Conflict(OPERATION_INACTIVE)` when the operation ended,
-	/// and `Forbidden` when its authority was revoked.
+	/// request record. The bytes are always committed, even past a limit.
+	/// Afterwards the call reports why the stream must stop, for example
+	/// `Forbidden` when its authority was revoked.
 	/// Scoped meters can also refuse for their budget or suspension. When their
 	/// Scratch Space's live authority refuses, they still add the bytes to its
 	/// daily totals and return `Forbidden`, which outranks their other
@@ -112,21 +122,6 @@ pub trait Meter: Send + Sync {
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
 	/// Completes the metadata-only request record, including failures and partial bodies.
 	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()>;
-}
-
-#[async_trait]
-pub trait Authority: Send + Sync {
-	/// Rechecks the operation, Run, Tenant, pinned Binding and live Catalog Approval.
-	/// The token reaches only this operation's services. `path` excludes the query;
-	/// `query_digest` is the only query material admitted into the audit record.
-	async fn admit(
-		&self,
-		token: &str,
-		service: &str,
-		method: &str,
-		path: &str,
-		query_digest: &str,
-	) -> Result<Admission>;
 }
 
 /// Compare stored opaque credentials without early exit on matching bytes.
@@ -199,17 +194,23 @@ pub struct ConnectionRecord {
 pub trait ScopeAuthority: Send + Sync {
 	async fn authenticate(&self, credential: &str) -> Result<ScopeSettings>;
 	async fn current(&self, scope: &aidash_domain::egress::ScopeId) -> Result<ScopeSettings>;
-	/// The returned meter records request metadata and bytes; scope budgets are
-	/// charged by the durable adapter, not by the authority's meter.
+	/// Admits one request from an authenticated scope to an External service
+	/// made available to its Scratch Space, attaching its Tenant Secret. The
+	/// returned meter records request metadata and bytes, and its
+	/// `check_active` rechecks that the service is still on the Scratch Space
+	/// and still approved; scope budgets are charged by the durable adapter,
+	/// not by the authority's meter. A scope without a Run is refused. So is a
+	/// scope whose daily allowance or the service's own daily share is spent
+	/// (`Refused("egress_budget_exhausted")`), before any secret is attached or
+	/// request record written, so that a refused request leaves no record.
 	async fn admit_external(
 		&self,
-		credential: &str,
-		scope: &aidash_domain::egress::ScopeId,
+		scope: &ScopeSettings,
 		service: &str,
 		method: &str,
 		path: &str,
 		query_digest: &str,
-	) -> Result<Admission>;
+	) -> Result<ExternalAdmission>;
 }
 
 /// Durable scope authority. Implementations must serialize budget debits across
@@ -228,7 +229,7 @@ pub trait EgressScopes: Send + Sync {
 		method: &str,
 		path: &str,
 		query_digest: &str,
-	) -> Result<Admission>;
+	) -> Result<ExternalAdmission>;
 	/// Refuses a new connection once the scope's daily budget is spent. It reads
 	/// and writes nothing else, so a connection costs the store no write before
 	/// it holds a Host connection limit (#845).

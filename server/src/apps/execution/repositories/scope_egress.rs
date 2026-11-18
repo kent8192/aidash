@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use aidash_application::egress::{
-	Admission, ConnectionRecord, DebitRefusal, Direction, EgressScopes, Meter, RefusalTally,
-	RequestTimes, ScopeAuthority, ScopeSettings,
+	ConnectionRecord, DebitRefusal, Direction, EgressScopes, ExternalAdmission, Meter,
+	RefusalTally, RequestTimes, ScopeAuthority, ScopeSettings,
 };
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::ScopeId;
@@ -287,7 +287,10 @@ fn budget_available(row: &ScopeDaily, sent: u64, received: u64) -> Result<()> {
 	}
 	Ok(())
 }
-async fn check_budget(
+/// Refuses with `egress_budget_exhausted` once the scope's daily allowance, or
+/// `service`'s own daily share, is spent. External service admission runs it
+/// in the transaction that writes the request record.
+pub(super) async fn check_budget(
 	tx: &mut Transaction,
 	settings: &ScopeSettings,
 	service: Option<(&str, aidash_domain::egress::Limits)>,
@@ -338,31 +341,24 @@ impl EgressScopes for DurableScopes {
 		method: &str,
 		path: &str,
 		digest: &str,
-	) -> aidash_application::Result<Admission> {
+	) -> aidash_application::Result<ExternalAdmission> {
 		let settings = self.resolve(credential).await?;
 		let settings = self.check_active(&settings, credential).await?;
-		let mut admission = self
+		let mut admission = match self
 			.authority
-			.admit_external(credential, &settings.id, service, method, path, digest)
-			.await?;
-		if admission.operation.is_some()
-			|| admission.session.is_some()
-			|| admission.service != service
+			.admit_external(&settings, service, method, path, digest)
+			.await?
 		{
+			ExternalAdmission::Admitted(admission) => *admission,
+			refused @ ExternalAdmission::Refused(_) => return Ok(refused),
+		};
+		if admission.service != service {
 			return Err(aidash_application::Error::Forbidden);
 		}
+		// The authority refuses a spent daily allowance or service share before
+		// it writes the request record (#738), so no check here can leave that
+		// record unfinished.
 		let limits = admission.definition.limits;
-		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&settings.id.tenant)?)
-				.await?;
-			check_budget(&mut tx, &settings, limits.map(|l| (service, l))).await?;
-			tx.commit().await
-		}
-		.await;
-		result.map_err(application_error)?;
 		admission.meter = Arc::new(ScopedMeter::new(
 			self.clone(),
 			settings,
@@ -370,7 +366,7 @@ impl EgressScopes for DurableScopes {
 			limits,
 			admission.meter,
 		));
-		Ok(admission)
+		Ok(ExternalAdmission::Admitted(Box::new(admission)))
 	}
 	async fn admit_connection(&self, settings: &ScopeSettings) -> aidash_application::Result<()> {
 		let current = self.live(&settings.id).await?;

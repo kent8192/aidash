@@ -7418,3 +7418,42 @@ async fn delivered_aliased_journal_read_is_recorded_before_intake(mut fixture: F
 	let restored: Context = serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
 	assert_eq!(restored.offload_reads.ranges.len(), 1);
 }
+
+fn service_line(id: &str, methods: &[&str], description: &str) -> ExternalServiceLine {
+	ExternalServiceLine {
+		id: id.into(),
+		url: format!("http://services.aidash.internal/{id}/"),
+		methods: methods.iter().map(|method| (*method).to_owned()).collect(),
+		description: description.into(),
+	}
+}
+
+#[test]
+fn a_run_without_usable_external_services_hears_nothing_about_them() {
+	assert_eq!(external_services_section(&[]), None);
+}
+
+#[test]
+fn starting_instructions_list_each_usable_external_service() {
+	let section = external_services_section(&[
+		service_line("weather", &["GET"], "Forecasts by city"),
+		service_line("tickets", &["GET", "POST"], ""),
+	])
+	.unwrap();
+	assert!(section.contains("plain HTTP"), "{section}");
+	assert!(
+		section.contains("names the services usable now"),
+		"{section}"
+	);
+	assert!(
+		section.contains(
+			"- weather: http://services.aidash.internal/weather/ (methods GET): Forecasts by city"
+		),
+		"{section}"
+	);
+	assert!(
+		section
+			.contains("- tickets: http://services.aidash.internal/tickets/ (methods GET, POST)\n"),
+		"{section}"
+	);
+}
