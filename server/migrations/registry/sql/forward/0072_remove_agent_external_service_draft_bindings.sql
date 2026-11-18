@@ -1,3 +1,8 @@
+-- A one-time data rewrite kept as SQL (#738). Reinhardt Query at the pinned
+-- revision cannot build this statement: a FROM source is only a table or a
+-- subquery (no set-returning function such as jsonb_array_elements, no WITH
+-- ORDINALITY and no column alias list), and a function call takes plain
+-- arguments only, so jsonb_agg cannot carry ORDER BY to keep Binding order.
 SET LOCAL aidash.scope = 'deployment';
 UPDATE agent_drafts
 SET entry = jsonb_set(entry, '{config,bindings}', (
