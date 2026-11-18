@@ -16,6 +16,8 @@ pub trait PolicySession: Send {
 		entry: &aidash_domain::registry::Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn decide(&mut self, id: &str, action: &str) -> Result<bool>;
+	/// Whether the caller holds `secret.use` on the Tenant Secret `name` (ADR 0051).
+	async fn may_use_secret(&mut self, name: &str) -> Result<bool>;
 	async fn bundle(&mut self, tenant: &str) -> Result<Value>;
 	async fn previous(&mut self, tenant: &str, id: &str, revision: i64) -> Result<Option<Value>>;
 	async fn approved(&mut self, tenant: &str, reference: &EntityRef) -> Result<Option<Value>>;
