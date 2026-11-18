@@ -301,6 +301,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		sandbox: Default::default(),
 		registry,
 		config: Config {
+			smtp: None,
 			scratch_policy: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(

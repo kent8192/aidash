@@ -180,7 +180,14 @@ function SignInEntry({
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
 });
-type Search = { channel?: string; focus?: string; view?: string };
+type Search = {
+  channel?: string;
+  focus?: string;
+  view?: string;
+  tenant?: string;
+  node?: string;
+  request?: string;
+};
 type BrowserSession = {
   id: string;
   sign_in_method_prompt?: { identity_id: string; account_url: string };
@@ -308,6 +315,22 @@ function SuspendedRunsPrompt() {
   );
 }
 type Registration = { status: string; expires_at: string } | null;
+/** The Mapping an emailed approval link (`?tenant=`) names, when the saved
+ *  selection is in another Tenant and exactly one active Mapping is in it. */
+function linkedContext(
+  session: BrowserSession,
+  selected: string | null,
+): string | null {
+  const tenant = new URLSearchParams(window.location.search).get("tenant");
+  if (!tenant) return selected;
+  const active = session.mappings.filter(
+    (mapping) =>
+      mapping.tenant === tenant && mapping.credential_active !== false,
+  );
+  if (active.some((mapping) => mappingContext(mapping) === selected))
+    return selected;
+  return active.length === 1 ? mappingContext(active[0]) : selected;
+}
 function sessionContext(session: BrowserSession, selected: string | null) {
   // An inactive credential fails with 401 and ends the browser session, so
   // neither a saved selection nor the default may use it.
@@ -670,7 +693,10 @@ function Dashboard({
         const previousSession = sessionStorage.getItem("aidash-session-id");
         if (previousSession !== session.id) selectDashboardContext(null);
         sessionStorage.setItem("aidash-session-id", session.id);
-        const selected = sessionContext(session, dashboardContext());
+        const selected = sessionContext(
+          session,
+          linkedContext(session, dashboardContext()),
+        );
         selectDashboardContext(selected);
         setBrowserSession(session);
         setContext(selected);
@@ -900,6 +926,32 @@ function Dashboard({
     setError("");
     try {
       const result = await request();
+      if (selection?.kind === "entity" || selection?.kind === "cluster") {
+        const registration = result as {
+          id?: string;
+          version?: string;
+          carry_results?: {
+            node: string;
+            source_version: string | null;
+            changed: string[];
+            unapproved_dependencies: { id: string; version: string }[];
+            carried: boolean;
+          }[];
+        };
+        if (
+          registration.id &&
+          registration.version &&
+          registration.carry_results?.some((item) => !item.carried)
+        ) {
+          void client.invalidateQueries();
+          setSelection({
+            kind: "registrationCarry",
+            entity: result as Selection["entity"],
+            carryResults: registration.carry_results,
+          });
+          return true;
+        }
+      }
       if (selection?.kind === "workspace" || selection?.kind === "goal") {
         // A channel renders only once the dashboard state lists it, so the
         // new one is opened after the refresh.
@@ -1474,6 +1526,9 @@ const rootRoute = createRootRoute({
     channel: typeof search.channel === "string" ? search.channel : undefined,
     focus: typeof search.focus === "string" ? search.focus : undefined,
     view: typeof search.view === "string" ? search.view : undefined,
+    tenant: typeof search.tenant === "string" ? search.tenant : undefined,
+    node: typeof search.node === "string" ? search.node : undefined,
+    request: typeof search.request === "string" ? search.request : undefined,
   }),
 });
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });

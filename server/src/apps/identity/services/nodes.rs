@@ -177,10 +177,15 @@ impl Nodes {
 		let node = self
 			.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
+				let exclusive = administrator
+					.may_change(&f.store.pool, rules::NODE_CREATE)
+					.await?;
 				f.store
 					.pool
 					.atomic(&administrator.scope()?, async |tx| {
-						let snapshot = administrator.lock(tx, false).await?;
+						let mut snapshot = administrator
+							.lock_change(tx, exclusive, rules::NODE_CREATE)
+							.await?;
 						administrator
 							.require(tx, &snapshot, rules::NODE_CREATE, &tenant, json!({}))
 							.await?;
@@ -192,6 +197,7 @@ impl Nodes {
 							&label,
 							Creator::Identity(administrator.identity_id),
 							&actor,
+							&mut snapshot,
 						)
 						.await
 					})
@@ -463,6 +469,15 @@ async fn change_in(
 			)
 			.map_err(|domain::NodeLimitReached| Error::Conflict("node_limit_reached".into()))?;
 			node_deletions::restore(tx, &row, actor).await?;
+			// The caller holds the policy exclusively, as Node creation does.
+			let restored = domain::NodeName::parse(name)?;
+			crate::apps::identity::repositories::catalog_node_copy::reconcile_restored(
+				tx,
+				tenant,
+				&f.config.deployment,
+				&restored,
+			)
+			.await?;
 			None
 		}
 		Change::Purge => {
@@ -507,6 +522,7 @@ async fn create_in(
 	label: &str,
 	creator: Creator,
 	actor: &AdministrationActor,
+	snapshot: &mut crate::authorization::Snapshot,
 ) -> Result<Node> {
 	nodes::lock_tenant(tx, tenant).await?;
 	let count = nodes::count_live(tx, tenant).await?;
@@ -518,6 +534,15 @@ async fn create_in(
 	domain::check_creation(domain::node_limit(&f.config.tenancy, tier), count)
 		.map_err(|domain::NodeLimitReached| Error::NodeLimitReached)?;
 	let node = nodes::create(tx, tenant, label, false, creator).await?;
+	crate::apps::identity::repositories::catalog_node_copy::copy(
+		tx,
+		tenant,
+		&f.config.deployment,
+		&node.name,
+		snapshot,
+	)
+	.await?;
+
 	actor
 		.record_node(
 			tx,

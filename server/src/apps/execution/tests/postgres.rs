@@ -977,6 +977,7 @@ fn federation(
 				.unwrap()
 				.with_keyless_origins(store.keyless.clone()),
 			config: Config {
+				smtp: None,
 				scratch_policy: Default::default(),
 				credential_max_seconds: 90 * 24 * 60 * 60,
 				deployment: store.deployment.clone(),
@@ -2522,6 +2523,7 @@ fn authenticated_runtime(
 		runtime.federation.store = store.clone();
 		runtime.federation.registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 		runtime.federation.config = Config {
+			smtp: None,
 			scratch_policy: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			deployment: store.deployment.clone(),

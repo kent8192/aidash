@@ -41,3 +41,7 @@ as a standing refusal.
   names, so the dependency-first order works when different approvers own the two.
 - Agent subjects carry their version (ADR 0062), so a new agent version needs its dependencies'
   restrictions widened again. The Approval Review of the new version shows this.
+
+## Amendment (2026-11-11, #873)
+
+"A new agent version needs its dependencies' restrictions widened again" no longer holds for a Carried Approval (ADR 0128): every restriction naming the version it came from widens to name the new one too, as a new revision attributed to carry-over.

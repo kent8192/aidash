@@ -46,6 +46,7 @@ pub async fn configure(
 	let admitted = AgentConfig::from_snapshot(&snapshot)?;
 	validate_references(scope, &admitted).await?;
 	let inserted = scope.register(&entry).await?;
+	let (catalog_approval_required, carry_results) = scope.carry(&entry, inserted).await?;
 	if inserted {
 		scope
 			.provenance(
@@ -58,7 +59,7 @@ pub async fn configure(
 			.await?;
 		scope.event("capability.agent_configured",json!({"agent_id":id,"source_version":input.source_version,"version":entry.version,"actor":scope.principal()})).await?;
 	}
-	let result = json!({"entry":entry,"catalog_approval_required":true});
+	let result = json!({"entry":entry,"catalog_approval_required":catalog_approval_required,"carry_results":carry_results});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	Ok(result)
 }

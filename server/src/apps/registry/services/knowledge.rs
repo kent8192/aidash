@@ -304,7 +304,7 @@ impl PersonalAgents {
 		actor: crate::authorization::identity::Actor,
 		headers: HeaderMap,
 		input: PersonalAgent,
-	) -> Result<Entry> {
+	) -> Result<crate::apps::registry::serializers::contracts::RegistryCreateResult> {
 		let crate::authorization::identity::Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
@@ -321,6 +321,7 @@ impl PersonalAgents {
 			let mut scope = crate::apps::registry::repositories::requests::TenantRegistration {
 				access: &mut access,
 				store: &f.store,
+				carry_results: Vec::new(),
 			};
 			let registration = aidash_application::registry::personal::prepare(
 				&mut scope,
@@ -335,7 +336,12 @@ impl PersonalAgents {
 		.await;
 		let (registration, replay) = access.finish(preflight).await?;
 		if let Some(entry) = replay {
-			return Ok(entry);
+			return Ok(
+				crate::apps::registry::serializers::contracts::RegistryCreateResult::new(
+					entry,
+					Vec::new(),
+				),
+			);
 		}
 		let prepared = if let Some((reference, images)) =
 			aidash_application::registry::personal::reference_images(&registration)?
@@ -344,7 +350,12 @@ impl PersonalAgents {
 		} else {
 			None
 		};
-		let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
+		let mut access = crate::authorization::access::Access::begin_change(
+			&f.store,
+			&identity,
+			&["registry.create"],
+		)
+		.await?;
 		let result = register(f, &mut access, registration, prepared, key).await;
 		access.finish(result).await
 	}
@@ -356,7 +367,7 @@ async fn register(
 	registration: aidash_application::registry::personal::PersonalRegistration,
 	prepared: Option<(Entry, Vec<Vec<f32>>)>,
 	key: Uuid,
-) -> Result<Entry> {
+) -> Result<crate::apps::registry::serializers::contracts::RegistryCreateResult> {
 	if let Some((embedding, _)) = &prepared {
 		let reference = aidash_domain::registry::EntityRef {
 			id: embedding.id.clone(),
@@ -380,8 +391,9 @@ async fn register(
 	let mut scope = crate::apps::registry::repositories::requests::TenantRegistration {
 		access,
 		store: &f.store,
+		carry_results: Vec::new(),
 	};
-	Ok(aidash_application::registry::personal::register(
+	let entry = aidash_application::registry::personal::register(
 		&mut scope,
 		&validation,
 		registration,
@@ -389,5 +401,11 @@ async fn register(
 		key,
 		f.config.deployment.as_str(),
 	)
-	.await?)
+	.await?;
+	Ok(
+		crate::apps::registry::serializers::contracts::RegistryCreateResult::new(
+			entry,
+			scope.carry_results,
+		),
+	)
 }

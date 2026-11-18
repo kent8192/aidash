@@ -25,3 +25,7 @@ available to its Nodes and subjects, and they run inside a Node.
 - Catalog Approval no longer means a Deployment Administrator's approval for a Tenant. It is a
   Tenant Administrator's decision that one exact version in the Tenant's
   Registry may be used on one Node, optionally only by certain subjects there.
+
+## Amendment (2026-11-11, #873)
+
+A Catalog Approval now covers the Nodes of its Approval Scope: one Node, or every Node of the Tenant on the same Deployment (ADR 0128). Its approver may also choose Version Carry-over, which approves later versions whose consent is unchanged.
