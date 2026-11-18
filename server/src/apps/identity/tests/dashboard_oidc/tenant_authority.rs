@@ -1885,3 +1885,69 @@ async fn node_instructions_follow_the_node_read_policy(
 			.await;
 	assert_eq!(status, 403, "{hidden}");
 }
+
+/// A Tenant's Lease Recovery limit (#1009): every member reads it, 5 by
+/// default; only an administrator's browser session sets it, from 1 to 20.
+#[rstest::rstest]
+#[tokio::test]
+async fn execution_settings_set_the_lease_recovery_limit(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let path = format!("/api/tenants/{}/execution-settings", t.tenant);
+	let (status, defaults) =
+		t.d.as_person(&t.bob, "GET", &path, Some(&t.bob_context), Value::Null)
+			.await;
+	assert_eq!(status, 200, "{defaults}");
+	assert_eq!(defaults["lease_recovery_limit"], 5);
+	assert_eq!(defaults["revision"], 0);
+	let (status, denied) =
+		t.d.as_person(
+			&t.bob,
+			"PUT",
+			&path,
+			Some(&t.bob_context),
+			json!({"lease_recovery_limit":2,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 403, "{denied}");
+	for limit in [0, 21] {
+		let (status, invalid) =
+			t.d.as_person(
+				&t.alice,
+				"PUT",
+				&path,
+				Some(&t.alice_context),
+				json!({"lease_recovery_limit":limit,"expected_revision":0}),
+			)
+			.await;
+		assert_eq!(status, 400, "{limit}: {invalid}");
+	}
+	let (status, saved) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&path,
+			Some(&t.alice_context),
+			json!({"lease_recovery_limit":2,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(saved["lease_recovery_limit"], 2);
+	assert_eq!(saved["revision"], 1);
+	let (status, stale) =
+		t.d.as_person(
+			&t.alice,
+			"PUT",
+			&path,
+			Some(&t.alice_context),
+			json!({"lease_recovery_limit":3,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 409, "{stale}");
+	let (status, read) =
+		t.d.as_person(&t.bob, "GET", &path, Some(&t.bob_context), Value::Null)
+			.await;
+	assert_eq!(status, 200, "{read}");
+	assert_eq!(read["lease_recovery_limit"], 2);
+}

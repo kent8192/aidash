@@ -131,7 +131,7 @@ impl Runtime {
 				return Err(Error::Invalid("Egress requires a Runner".into()));
 			}
 		}
-		if !(1..=3600).contains(&profile.mcp.human_wait_seconds)
+		if !(1..=30 * 86_400).contains(&profile.mcp.human_wait_seconds)
 			|| !(1..=100).contains(&profile.mcp.continuation_sends)
 			|| !(1..=1_000_000).contains(&profile.mcp.sampling_tokens)
 			|| !profile.limits.valid()

@@ -261,7 +261,16 @@ pub async fn lease(
 			// The count includes the recovery a lost Isolated Step charged when it
 			// started, so a count above the bound means this claim would be one
 			// recovery too many (#604).
-			if !cancelled && run.recovery.lease_recoveries > LEASE_RECOVERY_LIMIT {
+			// Only a count above the smallest limit a Tenant may set needs its own.
+			let limit = if !cancelled
+				&& run.recovery.lease_recoveries
+					> *aidash_domain::run_state::LEASE_RECOVERY_LIMITS.start()
+			{
+				scope.lease_recovery_limit(m.id).await?
+			} else {
+				LEASE_RECOVERY_LIMIT
+			};
+			if !cancelled && run.recovery.lease_recoveries > limit {
 				let state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
 					target: FailureTarget::Failed,
 					wake_at: now,
@@ -269,7 +278,7 @@ pub async fn lease(
 				}));
 				if let Some(owned) = scope.repair_lease(m, token, seconds).await? {
 					let reason = format!(
-						"This step was taken over from its worker {LEASE_RECOVERY_LIMIT} times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
+						"This step was taken over from its worker {limit} times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
 					);
 					scope
 						.crash_loop(

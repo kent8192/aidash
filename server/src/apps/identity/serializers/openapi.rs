@@ -119,6 +119,25 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::update, &["String"])?;
 	}
 	{
+		use super::execution_settings::{TenantExecutionSettings, TenantExecutionSettingsUpdate};
+		use views::execution_settings as view;
+		contracts.response::<_, TenantExecutionSettings>(
+			document,
+			view::get,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::get, &["String"])?;
+		contracts.request::<_, TenantExecutionSettingsUpdate>(document, view::update)?;
+		contracts.response::<_, TenantExecutionSettings>(
+			document,
+			view::update,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::update, &["String"])?;
+	}
+	{
 		use super::standing_instructions::{Instructions, Update};
 		use views::standing_instructions as view;
 		contracts.response::<_, Instructions>(document, view::tenant, 200, "application/json")?;

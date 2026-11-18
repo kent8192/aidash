@@ -348,6 +348,8 @@ struct State {
 	deferred: Mutex<Vec<Option<DateTime<Utc>>>>,
 	/// Whether this process reached the database again within a lease period.
 	holds_recoveries: AtomicBool,
+	/// The owning Tenant's Lease Recovery limit; `None` keeps the default.
+	lease_recovery_limit: Mutex<Option<u32>>,
 }
 impl State {
 	fn record(&self, event: impl Into<String>) {
@@ -389,6 +391,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		capabilities: Mutex::new(PersistedCapability::supported()),
 		deferred: Mutex::new(vec![]),
 		holds_recoveries: AtomicBool::new(false),
+		lease_recovery_limit: Mutex::new(None),
 	}))
 }
 struct Scope {
@@ -409,6 +412,14 @@ impl SchedulingScope for Scope {
 	}
 	fn holds_recoveries(&self) -> bool {
 		self.state.holds_recoveries.load(Ordering::Acquire)
+	}
+	async fn lease_recovery_limit(&mut self, _run: Uuid) -> Result<u32> {
+		Ok(self
+			.state
+			.lease_recovery_limit
+			.lock()
+			.unwrap()
+			.unwrap_or(LEASE_RECOVERY_LIMIT))
 	}
 	async fn now(&mut self) -> Result<DateTime<Utc>> {
 		self.state.record("now");
@@ -1113,6 +1124,46 @@ async fn consecutive_lease_recoveries_are_bounded(
 		assert_eq!(claimed.unwrap().recovery.lease_recoveries, count.max(1));
 		assert!(events.iter().any(|event| event == "lease"));
 	}
+}
+
+/// A Tenant may set its own limit from 1 to 20 (#1009).
+#[rstest]
+#[case::within_the_limit(2, false)]
+#[case::above_the_limit(3, true)]
+#[tokio::test]
+async fn a_tenant_sets_its_own_lease_recovery_limit(
+	repository: Repository,
+	now: DateTime<Utc>,
+	#[case] count: u32,
+	#[case] fails: bool,
+) {
+	*repository.0.lease_recovery_limit.lock().unwrap() = Some(2);
+	let mut row = raw(now);
+	row.metadata.lease_owner = Some(Uuid::new_v4());
+	row.metadata.lease_until = Some(now);
+	row.pending["recovery"]["lease_recoveries"] = serde_json::json!(count);
+	*repository.0.run.lock().unwrap() = Some(row);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let claimed = lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		None,
+		repository.node_id(),
+		&mut None,
+	)
+	.await
+	.unwrap();
+	let events = repository.0.events.lock().unwrap();
+	assert_eq!(claimed.is_none(), fails);
+	assert_eq!(
+		events.iter().any(|event| event
+			.starts_with("crash_loop:2:This step was taken over from its worker 2 times in a row")),
+		fails
+	);
 }
 
 #[rstest]

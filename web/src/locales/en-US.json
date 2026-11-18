@@ -1137,5 +1137,8 @@
   "modelSafetyRetentionOnly": "Only Safety Retention routes, so not usable at Zero Data Retention",
   "modelNoZdrRoute": "No zero data retention route, so not usable at this Data Protection Level",
   "degradedCauseDataProtection": "The embedding model cannot meet the Data Protection Level",
-  "semanticDataProtection": "The embedding model cannot meet this Tenant's Data Protection Level. Switch the embedding model to index this item."
+  "semanticDataProtection": "The embedding model cannot meet this Tenant's Data Protection Level. Switch the embedding model to index this item.",
+  "executionSettings": "Execution settings",
+  "leaseRecoveryLimit": "Takeovers before a step fails",
+  "leaseRecoveryLimitHelp": "When the worker running a step stops or is cut off, another worker takes the step over. After this many takeovers in a row, the step fails instead of being retried. From 1 to 20; 5 by default."
 }

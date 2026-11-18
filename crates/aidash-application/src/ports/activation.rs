@@ -31,6 +31,10 @@ pub trait SchedulingScope: Send {
 		false
 	}
 	async fn now(&mut self) -> Result<DateTime<Utc>>;
+	/// The Lease Recovery limit of the Tenant that owns `run` (#1009).
+	async fn lease_recovery_limit(&mut self, _run: Uuid) -> Result<u32> {
+		Ok(aidash_domain::run_state::LEASE_RECOVERY_LIMIT)
+	}
 	/// Oldest first, at most 128 rows, FOR UPDATE SKIP LOCKED; target is exact.
 	async fn candidates(
 		&mut self,

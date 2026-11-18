@@ -490,8 +490,11 @@ impl RunState {
 	}
 }
 /// Maximum consecutive Lease Recoveries before a Crash Loop Failure (#604),
-/// widened from 3 to 5 (#1009).
+/// widened from 3 to 5 (#1009), unless the Tenant sets a limit within
+/// [`LEASE_RECOVERY_LIMITS`].
 pub const LEASE_RECOVERY_LIMIT: u32 = 5;
+/// The Lease Recovery limits a Tenant may set (#1009).
+pub const LEASE_RECOVERY_LIMITS: std::ops::RangeInclusive<u32> = 1..=20;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

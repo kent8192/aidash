@@ -1,5 +1,6 @@
 import { DataProtectionSettings } from "./data-protection";
 import { StandingInstructionsSettings } from "./standing-instructions";
+import { ExecutionSettings } from "./execution-settings";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
 import { ScopeCeilings } from "./connections/ceilings";
@@ -63,6 +64,11 @@ export function TenantAccess({
         key={`instructions-${tenant}`}
         tenant={tenant}
         canUpdate={can("tenant.instructions.update")}
+      />
+      <ExecutionSettings
+        key={`execution-${tenant}`}
+        tenant={tenant}
+        canUpdate={can("tenant.update")}
       />
       {can("policy.read") && (
         <DataProtectionSettings

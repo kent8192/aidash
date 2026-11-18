@@ -242,6 +242,37 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.collect::<Result<_>>()
 			.map_err(Into::into)
 	}
+	async fn lease_recovery_limit(&mut self, run: Uuid) -> aidash_application::Result<u32> {
+		// The Tenant's own limit (#1009), else the default.
+		let settings = Alias::new("tenant_execution_settings");
+		let query = Query::select()
+			.column((settings.clone(), Alias::new("lease_recovery_limit")))
+			.from(Alias::new("runs"))
+			.inner_join(
+				settings.clone(),
+				Expr::col((settings, Alias::new("tenant")))
+					.equals((Alias::new("runs"), Alias::new("tenant"))),
+			)
+			.and_where(Expr::col((Alias::new("runs"), Alias::new("id"))).eq(Expr::value(run)))
+			.to_owned();
+		let (sql, values) = query.build(PostgresQueryBuilder);
+		let row = self
+			.tx
+			.executor()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?;
+		Ok(match row {
+			Some(row) => {
+				let limit: i32 = row
+					.get("lease_recovery_limit")
+					.map_err(FrameworkError::from)
+					.map_err(Error::from)?;
+				u32::try_from(limit).unwrap_or(aidash_domain::run_state::LEASE_RECOVERY_LIMIT)
+			}
+			None => aidash_domain::run_state::LEASE_RECOVERY_LIMIT,
+		})
+	}
 	async fn unblocked(&mut self, id: Uuid) -> aidash_application::Result<bool> {
 		let candidate = Query::select()
 			.expr(Expr::value(1_i64))

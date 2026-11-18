@@ -1137,5 +1137,8 @@
   "modelSafetyRetentionOnly": "Safety Retention の経路しかないため、Zero Data Retention では使えません",
   "modelNoZdrRoute": "ゼロデータ保持の経路がないため、このデータ保護レベルでは使えません",
   "degradedCauseDataProtection": "埋め込みモデルがデータ保護レベルを満たせません",
-  "semanticDataProtection": "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。索引に入れるには埋め込みモデルを切り替えてください。"
+  "semanticDataProtection": "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。索引に入れるには埋め込みモデルを切り替えてください。",
+  "executionSettings": "実行の設定",
+  "leaseRecoveryLimit": "失敗とするまでの引き継ぎ回数",
+  "leaseRecoveryLimitHelp": "処理中の worker が止まったり切断されたりすると、別の worker がその処理を引き継ぎます。この回数だけ続けて引き継いだら、再試行をやめて失敗にします。1〜20 回で、既定は 5 回です。"
 }

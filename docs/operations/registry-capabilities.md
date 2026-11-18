@@ -567,11 +567,12 @@ Deadline and the remaining MCP human-wait allowance; expiry declines the form.
 Late answers are rejected atomically under the request lock.
 
 The capability profile (`AIDASH_CAPABILITY_PROFILE`) accepts an optional `mcp`
-object. Defaults are `human_wait_seconds: 900`, `continuation_sends: 10`, and
+object. Defaults are `human_wait_seconds: 604800` (7 days: the Stint sleeps while
+a person answers), `continuation_sends: 10`, and
 `sampling_tokens: 4096`. Human waiting is cumulative across all inputs and rounds
 of one logical call and is also capped by `approval_seconds`; sampling output is
 further capped by the Run model's output limit. Supported Deployment ranges are
-1-3600 seconds, 1-100 continuation sends, and 1-1,000,000 sampling tokens. Initial
+1-2592000 seconds (30 days), 1-100 continuation sends, and 1-1,000,000 sampling tokens. Initial
 requests do not count as continuations; state-only continuation rounds do.
 Exhaustion produces `MCP_CONTINUATION_LIMIT` and an `mcp.input_failed` event.
 

@@ -85,7 +85,9 @@ pub struct InteractionLimits {
 impl Default for InteractionLimits {
 	fn default() -> Self {
 		Self {
-			human_wait_seconds: 900,
+			// The Stint sleeps while a person answers, so the wait may last a
+			// week (#1009, ADR 0141); a Run's approval wait still bounds it.
+			human_wait_seconds: 7 * 86_400,
 			continuation_sends: 10,
 			sampling_tokens: 4096,
 		}

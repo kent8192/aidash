@@ -111,6 +111,8 @@ pub mod tenant_secrets;
 
 mod authorization_remote_terminal_receipts;
 pub use authorization_remote_terminal_receipts::AuthorizationRemoteTerminalReceipt;
+mod execution_settings;
+pub use execution_settings::TenantExecutionSettings;
 mod standing_instructions;
 pub use standing_instructions::{NodeInstructions, TenantInstructions};
 mod tenant_data_protection;
