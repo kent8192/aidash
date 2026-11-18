@@ -1,3 +1,5 @@
+-- Raw SQL: removing elements from the JSON array agent_drafts.entry->config->bindings needs
+-- jsonb_array_elements ... WITH ORDINALITY and jsonb_agg, which Reinhardt Query cannot express.
 SET LOCAL aidash.scope = 'deployment';
 UPDATE agent_drafts
 SET entry = jsonb_set(entry, '{config,bindings}', (
