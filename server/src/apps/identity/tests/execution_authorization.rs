@@ -9175,6 +9175,255 @@ async fn withdrawing_a_deployment_approval_reaches_every_node_unless_kept_to_one
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_deleted_node_neither_supplies_nor_revives_a_withdrawn_deployment_approval(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let source = aidash_domain::nodes::NodeName::derived("acme");
+	let add_node = async |label: &str| -> aidash_domain::nodes::NodeName {
+		let (status, node) = common::administer_node(
+			&f,
+			"acme",
+			"/api/tenants/acme/nodes",
+			json!({ "label": label }),
+		)
+		.await;
+		assert_eq!(status, 201, "{node}");
+		node["name"].as_str().unwrap().parse().unwrap()
+	};
+	let model = async |node: &aidash_domain::nodes::NodeName| -> Option<Value> {
+		let (status, catalog) = request(
+			&app,
+			&alice,
+			"GET",
+			&format!("/api/authorization/acme/catalog?node={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{catalog}");
+		catalog
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry_id"] == "model" && row["entry_version"] == "1.0.0")
+			.cloned()
+	};
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": source, "entry": {"id": "model", "version": "1.0.0"}, "enabled": true,
+			"expected_revision": 1, "carry_over": false, "scope": "deployment",
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let deleted = add_node("Deleted").await;
+	assert_eq!(model(&deleted).await.unwrap()["enabled"], true);
+	let (status, body) = common::administer_node(
+		&f,
+		"acme",
+		&format!("/api/tenants/acme/nodes/{deleted}/deletion"),
+		json!({ "confirmation": deleted.as_str() }),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+
+	// Withdrawn on every live Node while the deleted Node keeps its row.
+	let revision = model(&source).await.unwrap()["revision"].clone();
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": source, "entry": {"id": "model", "version": "1.0.0"},
+			"enabled": false, "expected_revision": revision,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(model(&source).await.unwrap()["enabled"], false);
+
+	// A new Node copies nothing from the deleted Node's stale row.
+	let fresh = add_node("Fresh").await;
+	assert!(
+		model(&fresh)
+			.await
+			.is_none_or(|row| row["enabled"] == false)
+	);
+
+	// Restoring the Node does not bring the approval back there, nor to a
+	// Node created afterwards.
+	let (status, body) = common::administer_node(
+		&f,
+		"acme",
+		&format!("/api/tenants/acme/nodes/{deleted}/restore"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(model(&deleted).await.unwrap()["enabled"], false);
+	let later = add_node("Later").await;
+	assert!(
+		model(&later)
+			.await
+			.is_none_or(|row| row["enabled"] == false)
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn stopping_and_withdrawing_carried_versions_reach_partial_carries_on_other_nodes(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let source = aidash_domain::nodes::NodeName::derived("acme");
+	let rows = async |node: &aidash_domain::nodes::NodeName| -> Vec<Value> {
+		let (status, versions) = request(
+			&app,
+			&alice,
+			"GET",
+			&format!("/api/registry/versions?node={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{versions}");
+		versions["versions"].as_array().unwrap().clone()
+	};
+	let approval = async |node: &aidash_domain::nodes::NodeName, id: &str, version: &str| {
+		rows(node)
+			.await
+			.into_iter()
+			.find(|row| row["entry"]["id"] == id && row["entry"]["version"] == version)
+			.unwrap()["approval"]
+			.clone()
+	};
+	for (id, carry) in [("model", false), ("research", true)] {
+		let (status, body) = request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({
+				"node": source, "entry": {"id": id, "version": "1.0.0"}, "enabled": true,
+				"expected_revision": 1, "carry_over": carry, "scope": "deployment",
+			}),
+		)
+		.await;
+		assert_eq!(status, 200, "{id}: {body}");
+	}
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling: aidash_domain::nodes::NodeName =
+		sibling["name"].as_str().unwrap().parse().unwrap();
+	assert_eq!(
+		approval(&sibling, "research", "1.0.0").await["enabled"],
+		true
+	);
+
+	// The model is withdrawn on the source only, so 1.1.0 carries on the
+	// sibling alone and its row there is Node-scoped.
+	let revision = approval(&source, "model", "1.0.0").await["revision"].clone();
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": source, "entry": {"id": "model", "version": "1.0.0"}, "enabled": false,
+			"expected_revision": revision, "scope": "node",
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut next = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	next.version = "1.1.0".into();
+	next.binding_normalization = None;
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/registry",
+		serde_json::to_value(&next).unwrap(),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let carried = approval(&sibling, "research", "1.1.0").await;
+	assert_eq!(carried["enabled"], true, "{body}");
+	assert_eq!(carried["scope"], "node");
+	assert_eq!(carried["carry_over"], true);
+	assert!(approval(&source, "research", "1.1.0").await.is_null());
+
+	// "Stop carrying" on the Deployment-wide approval reaches the sibling's
+	// own lineage, even when the request names this Node.
+	let revision = approval(&source, "research", "1.0.0").await["revision"].clone();
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": source, "entry": {"id": "research", "version": "1.0.0"}, "enabled": true,
+			"expected_revision": revision, "stop_carrying": true, "carry_over": false,
+			"scope": "node",
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for version in ["1.0.0", "1.1.0"] {
+		assert_eq!(
+			approval(&sibling, "research", version).await["carry_over"],
+			false,
+			"{version}"
+		);
+	}
+
+	// Withdrawing on every Node with its carried versions withdraws the
+	// sibling's Node-scoped carry too.
+	let revision = approval(&source, "research", "1.0.0").await["revision"].clone();
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": source, "entry": {"id": "research", "version": "1.0.0"}, "enabled": false,
+			"expected_revision": revision, "withdraw_carried": true,
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for version in ["1.0.0", "1.1.0"] {
+		assert_eq!(
+			approval(&sibling, "research", version).await["enabled"],
+			false,
+			"{version}"
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn stopping_carry_prevents_descendants_from_carrying_again(
 	#[future(awt)]
 	#[from(common::native_application)]

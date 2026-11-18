@@ -615,7 +615,8 @@ export function CatalogApprovalSection({
                 authorizationSetCatalog(path, {
                   ...approvalRequest(version, true),
                   node: selected.name,
-                  scope: "node",
+                  // A Deployment-wide approval stops carrying on every Node.
+                  scope: deploymentWide ? "deployment" : "node",
                   carry_over: false,
                   stop_carrying: true,
                 }),

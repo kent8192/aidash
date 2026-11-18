@@ -140,6 +140,8 @@ async fn request_review_for(
 }
 
 /// Record stopping carry as a new revision without changing approval or lineage.
+/// Each Node's row needs `catalog.approve` on that Node, as an approval does.
+/// It leaves `access` on `node`.
 async fn stop_carrying_revision(
 	access: &mut Access,
 	deployment: &aidash_domain::nodes::DeploymentId,
@@ -147,15 +149,28 @@ async fn stop_carrying_revision(
 	binding: &Binding,
 	actor: &str,
 ) -> Result<Binding> {
+	use aidash_application::ports::catalog::CatalogApprovalScope;
+	access.set_node(node.clone());
+	let reference = crate::registry::EntityRef {
+		id: binding.entry_id.clone(),
+		version: binding.entry_version.clone(),
+	};
+	let definition = crate::apps::identity::repositories::catalog_approvals::definition(
+		&mut access.tx,
+		&reference,
+	)
+	.await?;
 	let mut scope = TenantCatalog {
 		access,
 		node: deployment.node(node.clone()),
 		deployment_scope_orchestrated: false,
 	};
-	let reference = crate::registry::EntityRef {
-		id: binding.entry_id.clone(),
-		version: binding.entry_version.clone(),
-	};
+	scope
+		.require(
+			&definition,
+			aidash_application::authorization::catalog::approvals::CATALOG_APPROVE,
+		)
+		.await?;
 	let updated = scope
 		.compare_and_set(
 			&binding.tenant,
@@ -232,14 +247,46 @@ async fn approve_scoped(
 				} else {
 					// The approver never saw this Node's state: create the
 					// approval where there is none, and leave an existing one
-					// as it is rather than overwrite it unseen.
+					// as it is rather than overwrite it unseen. The
+					// Deployment-wide scope still needs `catalog.approve` on
+					// every current Node (decision 10 of #873).
 					if catalog_row(&mut **access.tx, &tenant, &node, &item.entry)
 						.await?
 						.is_some()
 					{
+						use aidash_application::ports::catalog::CatalogApprovalScope;
+						access.set_node(node.clone());
+						let definition =
+							crate::apps::identity::repositories::catalog_approvals::definition(
+								&mut access.tx,
+								&item.entry,
+							)
+							.await?;
+						TenantCatalog {
+							access,
+							node: address.clone(),
+							deployment_scope_orchestrated: true,
+						}
+						.require(
+							&definition,
+							aidash_application::authorization::catalog::approvals::CATALOG_APPROVE,
+						)
+						.await?;
 						continue;
 					}
 					item.expected_revision = 0;
+				}
+				// Groups are chosen when an Agent's subject is created. A Node
+				// that already has the subject keeps its groups.
+				if item.groups.is_some()
+					&& access.snapshot.bundle.subjects.contains_key(
+						&aidash_domain::qualified_agent(
+							&address,
+							&item.entry.id,
+							&item.entry.version,
+						),
+					) {
+					item.groups = None;
 				}
 			} else {
 				// A withdrawal reaches every Node that still holds the same
@@ -291,6 +338,81 @@ async fn approve_scoped(
 		}
 	}
 	Ok(source_bindings)
+}
+
+/// Every approval row of one definition on one Node.
+async fn entry_rows(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	id: &str,
+) -> Result<Vec<AuthorizationCatalog>> {
+	Ok(AuthorizationCatalog::objects()
+		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+		.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+		.filter(AuthorizationCatalog::field_entry_key().eq(id.to_owned()))
+		.all_with_executor(tx)
+		.await
+		.map_err(FrameworkError::from)?)
+}
+
+fn lineage_edges(rows: &[AuthorizationCatalog]) -> Vec<(String, Option<String>)> {
+	rows.iter()
+		.map(|row| (row.entry_version.clone(), row.carried_from_version.clone()))
+		.collect()
+}
+
+/// `root` and the versions carried from it on one Node, directly or through
+/// another carried version. `rows` pairs each version with its source.
+fn carried_lineage(
+	rows: &[(String, Option<String>)],
+	root: &str,
+) -> std::collections::BTreeSet<String> {
+	let mut versions = std::collections::BTreeSet::from([root.to_owned()]);
+	loop {
+		let before = versions.len();
+		for (version, source) in rows {
+			if source
+				.as_ref()
+				.is_some_and(|source| versions.contains(source))
+			{
+				versions.insert(version.clone());
+			}
+		}
+		if before == versions.len() {
+			return versions;
+		}
+	}
+}
+
+/// [`refresh_requests_on_node`] on `node` and, after a Deployment-wide write,
+/// on every other live Node it may have changed, so a request fulfilled there
+/// stays fulfilled. It leaves `access` on `node`.
+async fn refresh_requests_on_nodes(
+	access: &mut Access,
+	store: &crate::store::Store,
+	deployment: &aidash_domain::nodes::DeploymentId,
+	identity: &SubjectIdentity,
+	node: &aidash_domain::nodes::NodeName,
+	everywhere: bool,
+) -> Result<()> {
+	refresh_requests_on_node(access, store, deployment, identity, node).await?;
+	if everywhere {
+		let others: Vec<_> = crate::apps::identity::repositories::nodes::list_live(
+			&mut **access.tx,
+			&identity.tenant,
+		)
+		.await?
+		.into_iter()
+		.map(|other| other.name)
+		.filter(|other| other != node)
+		.collect();
+		for other in others {
+			refresh_requests_on_node(access, store, deployment, identity, &other).await?;
+		}
+	}
+	access.set_node(node.clone());
+	Ok(())
 }
 
 async fn catalog_row(
@@ -949,6 +1071,33 @@ impl PolicyAdministration {
 				&request_audit_actor(&identity),
 			)
 			.await?;
+			// A Deployment-wide approval may have fulfilled requests on the
+			// other Nodes too; this Node's were refreshed above.
+			let deployment_wide = plan.approvals.iter().any(|approval| {
+				approval.scope == aidash_domain::identity::catalog::ApprovalScope::Deployment
+			}) || !deployment_activations.is_empty();
+			if deployment_wide {
+				let others: Vec<_> = crate::apps::identity::repositories::nodes::list_live(
+					&mut **access.tx,
+					&tenant,
+				)
+				.await?
+				.into_iter()
+				.map(|other| other.name)
+				.filter(|other| other != &node)
+				.collect();
+				for other in others {
+					refresh_requests_on_node(
+						&mut access,
+						&f.store,
+						&f.config.deployment,
+						&identity,
+						&other,
+					)
+					.await?;
+				}
+				access.set_node(node.clone());
+			}
 			Ok(CatalogReviewResult {
 				bindings,
 				installations,
@@ -1628,38 +1777,15 @@ impl PolicyAdministration {
 				}
 			}
 			let mut stop_descendants = Vec::new();
-			let mut lineage = std::collections::BTreeSet::new();
 			if withdraw_carried || stop_carrying {
 				let root = approvals
 					.first()
 					.cloned()
 					.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
-				let rows = AuthorizationCatalog::objects()
-					.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
-					.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
-					.filter(AuthorizationCatalog::field_entry_key().eq(root.entry.id.clone()))
-					.all_with_executor(&mut **access.tx)
-					.await
-					.map_err(FrameworkError::from)?;
-				let mut versions = std::collections::BTreeSet::from([root.entry.version.clone()]);
-				loop {
-					let before = versions.len();
-					for row in &rows {
-						if row
-							.carried_from_version
-							.as_ref()
-							.is_some_and(|source| versions.contains(source))
-						{
-							versions.insert(row.entry_version.clone());
-						}
-					}
-					if before == versions.len() {
-						break;
-					}
-				}
-				lineage.clone_from(&versions);
+				let rows = entry_rows(&mut **access.tx, &tenant, &node, &root.entry.id).await?;
+				let lineage = carried_lineage(&lineage_edges(&rows), &root.entry.version);
 				for row in rows.into_iter().filter(|row| {
-					row.entry_version != root.entry.version && versions.contains(&row.entry_version)
+					row.entry_version != root.entry.version && lineage.contains(&row.entry_version)
 				}) {
 					if stop_carrying {
 						stop_descendants.push(Binding {
@@ -1732,6 +1858,15 @@ impl PolicyAdministration {
 					.next()
 					.filter(|row| row.enabled && row.revision == decision.expected_revision)
 					.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
+				// Stopping only changes carry-over, so the stored scope decides
+				// where: a Deployment-wide approval stops on every Node, or a
+				// later version would still carry on the others and be copied
+				// to new Nodes.
+				approvals[0].scope = if row.scope == "deployment" {
+					aidash_domain::identity::catalog::ApprovalScope::Deployment
+				} else {
+					aidash_domain::identity::catalog::ApprovalScope::Node
+				};
 				bindings.push(Binding {
 					tenant: tenant.clone(),
 					node: node.clone(),
@@ -1804,33 +1939,83 @@ impl PolicyAdministration {
 					)
 					.await?;
 				}
-				let root = approvals
-					.first()
-					.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
-				if root.scope == aidash_domain::identity::catalog::ApprovalScope::Deployment {
-					let others: Vec<_> = crate::apps::identity::repositories::nodes::list_live(
-						&mut **access.tx,
-						&tenant,
-					)
-					.await?
-					.into_iter()
-					.map(|other| other.name)
-					.filter(|other| other != &node)
-					.collect();
-					for other in others {
-						for version in &lineage {
-							let entry = crate::registry::EntityRef {
-								id: root.entry.id.clone(),
-								version: version.clone(),
-							};
-							let Some(row) =
-								catalog_row(&mut **access.tx, &tenant, &other, &entry).await?
-							else {
-								continue;
-							};
-							if row.scope != "deployment" || !row.carry_over {
-								continue;
-							}
+			}
+			let root = approvals
+				.first()
+				.cloned()
+				.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
+			// A Deployment-wide withdrawal or stop reaches each other Node that
+			// holds the version Deployment-wide, with the lineage of that Node:
+			// a carry that succeeded on only some Nodes wrote Node-scoped rows
+			// there, which no Deployment-scoped write reaches (decisions 6 and
+			// 18 of #873). Each Node's rows need `catalog.approve` on that Node.
+			let everywhere =
+				root.scope == aidash_domain::identity::catalog::ApprovalScope::Deployment;
+			if everywhere && (withdraw_carried || stop_carrying) {
+				let others: Vec<_> = crate::apps::identity::repositories::nodes::list_live(
+					&mut **access.tx,
+					&tenant,
+				)
+				.await?
+				.into_iter()
+				.map(|other| other.name)
+				.filter(|other| other != &node)
+				.collect();
+				for other in others {
+					let rows =
+						entry_rows(&mut **access.tx, &tenant, &other, &root.entry.id).await?;
+					if !rows.iter().any(|row| {
+						row.entry_version == root.entry.version && row.scope == "deployment"
+					}) {
+						continue;
+					}
+					let lineage = carried_lineage(&lineage_edges(&rows), &root.entry.version);
+					if withdraw_carried {
+						let withdrawals: Vec<_> = rows
+							.iter()
+							.filter(|row| {
+								row.enabled
+									&& row.entry_version != root.entry.version
+									&& lineage.contains(&row.entry_version)
+							})
+							.map(|row| {
+								aidash_application::authorization::catalog::approvals::Approval {
+									expected_node_revisions: Default::default(),
+									entry: crate::registry::EntityRef {
+										id: row.entry_key.clone(),
+										version: row.entry_version.clone(),
+									},
+									enabled: false,
+									expected_revision: row.revision,
+									carry_over: false,
+									scope: root.scope,
+									provider_warning_acknowledged: false,
+									groups: None,
+									restriction: None,
+								}
+							})
+							.collect();
+						for chunk in withdrawals.chunks(128) {
+							access.set_node(other.clone());
+							aidash_application::authorization::catalog::approvals::approve_with_satisfied(
+								&mut TenantCatalog {
+									access: &mut access,
+									node: f.config.deployment.node(other.clone()),
+									deployment_scope_orchestrated: true,
+								},
+								chunk,
+								&std::collections::BTreeSet::new(),
+								&std::collections::BTreeSet::new(),
+							)
+							.await?;
+						}
+					}
+					if stop_carrying {
+						for row in entry_rows(&mut **access.tx, &tenant, &other, &root.entry.id)
+							.await?
+							.into_iter()
+							.filter(|row| row.carry_over && lineage.contains(&row.entry_version))
+						{
 							stop_carrying_revision(
 								&mut access,
 								&f.config.deployment,
@@ -1849,15 +2034,20 @@ impl PolicyAdministration {
 							.await?;
 						}
 					}
-					access.set_node(node.clone());
 				}
+				access.set_node(node.clone());
 			}
-			refresh_requests_on_node(
+			refresh_requests_on_nodes(
 				&mut access,
 				&f.store,
 				&f.config.deployment,
 				&identity,
 				&node,
+				everywhere
+					|| approvals.iter().any(|approval| {
+						approval.scope
+							== aidash_domain::identity::catalog::ApprovalScope::Deployment
+					}),
 			)
 			.await?;
 			Ok(bindings)
@@ -2234,5 +2424,32 @@ impl PolicyAdministration {
 					.await
 			})
 			.await
+	}
+}
+
+#[cfg(test)]
+mod lineage_tests {
+	use super::carried_lineage;
+
+	#[test]
+	fn lineage_follows_carried_versions_transitively_and_nothing_else() {
+		let rows = [
+			("1.0.0".to_owned(), None),
+			("1.1.0".to_owned(), Some("1.0.0".to_owned())),
+			("1.2.0".to_owned(), Some("1.1.0".to_owned())),
+			("2.0.0".to_owned(), None),
+			("2.1.0".to_owned(), Some("2.0.0".to_owned())),
+		];
+		assert_eq!(
+			carried_lineage(&rows, "1.0.0"),
+			["1.0.0", "1.1.0", "1.2.0"]
+				.map(str::to_owned)
+				.into_iter()
+				.collect()
+		);
+		assert_eq!(
+			carried_lineage(&rows, "1.1.0"),
+			["1.1.0", "1.2.0"].map(str::to_owned).into_iter().collect()
+		);
 	}
 }
