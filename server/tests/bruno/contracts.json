@@ -46865,6 +46865,13 @@
                 },
                 "type": "object"
               },
+              "unapproved_nodes": {
+                "description": "For an item approved on this Node, the other current Nodes where it is\nnot. A Deployment-wide submission may select it again to approve it\nthere, so the items that depend on it can be approved on every Node.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "previous_version": {
                 "description": "The earlier approved version used for the consent comparison, if visible.",
                 "type": ["string", "null"]
@@ -46895,6 +46902,7 @@
               "can_approve",
               "expected_revision",
               "expected_node_revisions",
+              "unapproved_nodes",
               "carry_over",
               "scope",
               "restriction",

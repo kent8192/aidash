@@ -414,7 +414,8 @@ test("stopping carry keeps an approval enabled", async ({ page }) => {
     expected_revision: 3,
     stop_carrying: true,
     carry_over: false,
-    scope: "node",
+    // A Deployment-wide approval stops carrying on every Node.
+    scope: "deployment",
     node: defaultNode.name,
   });
 });
@@ -946,6 +947,73 @@ test("the Review shows saved carry options for an existing approval", async ({
     review.getByLabel("Carry approval to later versions"),
   ).not.toBeChecked();
   await expect(review.getByLabel("Approval scope")).toHaveValue("node");
+});
+
+test("the Review submits the carry options it shows for every item", async ({
+  page,
+}) => {
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approvable", {
+          carry_over: true,
+          scope: "node",
+        }),
+        reviewItem("model", "model", "approvable", {
+          carry_over: false,
+          scope: "deployment",
+        }),
+      ]),
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  await expect(review.getByLabel("Approval scope")).toHaveValue("node");
+  await review.getByRole("button", { name: /Approve selected \(2\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body.items).toMatchObject([
+    { carry_over: true, scope: "node" },
+    { carry_over: true, scope: "node" },
+  ]);
+});
+
+test("a Review for every Node also approves a dependency the other Nodes lack", async ({
+  page,
+}) => {
+  const restriction = {
+    subjects: ["acme/agents/writer@1.0.0"],
+    groups: [],
+  };
+  const { decisions } = await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approvable"),
+        reviewItem("model", "model", "approved", {
+          restriction,
+          proposed_restriction: null,
+          unapproved_nodes: ["calm-heron-p4t7w2zb"],
+          expected_node_revisions: { "calm-heron-p4t7w2zb": 0 },
+        }),
+      ]),
+    answer: () => ({ json: { bindings: [], installations: [] } }),
+  });
+  const review = await openReview(page);
+  await expect(review).toContainText("also approves it on the 1 Nodes");
+  await review.getByRole("button", { name: /Approve selected \(2\)/ }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  const items = decisions[0].body.items as {
+    reference: { id: string };
+  }[];
+  expect(items.map((item) => item.reference.id).sort()).toEqual([
+    "model",
+    "writer",
+  ]);
+  expect(items.find((item) => item.reference.id === "model")).toMatchObject({
+    scope: "deployment",
+    restriction,
+    expected_node_revisions: { "calm-heron-p4t7w2zb": 0 },
+  });
 });
 
 test("the Review shows the whole closure and approves local items and activations in one submission", async ({

@@ -77,6 +77,10 @@ pub struct ReviewItem {
 	/// The current Catalog Approval revision, `0` when none exists.
 	pub expected_revision: i64,
 	pub expected_node_revisions: BTreeMap<String, i64>,
+	/// For an item approved on this Node, the other current Nodes where it is
+	/// not. A Deployment-wide submission may select it again to approve it
+	/// there, so the items that depend on it can be approved on every Node.
+	pub unapproved_nodes: Vec<String>,
 	/// Existing carry preferences, or absent for a new approval.
 	pub carry_over: Option<bool>,
 	pub scope: Option<aidash_domain::identity::catalog::ApprovalScope>,
@@ -372,6 +376,7 @@ pub async fn review(
 			can_approve: false,
 			expected_revision: 0,
 			expected_node_revisions: BTreeMap::new(),
+			unapproved_nodes: Vec::new(),
 			carry_over: None,
 			scope: None,
 			restriction: None,
@@ -439,6 +444,16 @@ async fn review_item(
 			version: entry.version.clone(),
 		})
 		.await?;
+	let unapproved_nodes = if approved && installed.is_none() {
+		scope
+			.unapproved_nodes(&EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			})
+			.await?
+	} else {
+		Vec::new()
+	};
 	let provider_available = scope.provider_available(entry).await?;
 	let source_available = scope.source_slot_available(entry).await?;
 	let can_approve = scope.can_approve(entry).await? && !hidden_consumer;
@@ -532,6 +547,7 @@ async fn review_item(
 		can_approve,
 		expected_revision,
 		expected_node_revisions,
+		unapproved_nodes,
 		carry_over: approval.as_ref().map(|approval| approval.carry_over),
 		scope: approval.as_ref().map(|approval| approval.scope),
 		restriction: if hidden_consumer { None } else { current },
@@ -602,7 +618,17 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 		match reviewed.status {
 			ReviewStatus::Approvable => {}
 			ReviewStatus::Approved => {
-				if item.restriction.is_none() || item.restriction == reviewed.restriction {
+				// Approving it again Deployment-wide approves it on the Nodes
+				// that lack it, which the items using it may need there.
+				let spreads = item
+					.scope
+					.or(reviewed.scope)
+					.unwrap_or_else(approvals::default_scope)
+					== aidash_domain::identity::catalog::ApprovalScope::Deployment
+					&& !reviewed.unapproved_nodes.is_empty();
+				if !spreads
+					&& (item.restriction.is_none() || item.restriction == reviewed.restriction)
+				{
 					return Err(Error::Invalid("APPROVAL_REVIEW_NO_CHANGE".into()));
 				}
 			}

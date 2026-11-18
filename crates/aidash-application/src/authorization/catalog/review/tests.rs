@@ -15,6 +15,8 @@ struct Fixture {
 	provider_missing: BTreeSet<(String, String)>,
 	slot_missing: BTreeSet<(String, String)>,
 	groups: BTreeMap<String, BTreeSet<String>>,
+	/// Other Nodes where every approved item here is still unapproved.
+	unapproved_elsewhere: Vec<String>,
 }
 fn key(id: &str, version: &str) -> (String, String) {
 	(id.into(), version.into())
@@ -78,6 +80,7 @@ impl Fixture {
 			provider_missing: BTreeSet::new(),
 			slot_missing: BTreeSet::new(),
 			groups: BTreeMap::new(),
+			unapproved_elsewhere: Vec::new(),
 		}
 	}
 	fn approve(&mut self, id: &str, restriction: Option<CatalogRestriction>) {
@@ -110,6 +113,9 @@ impl ApprovalReviewScope for Fixture {
 				scope: aidash_domain::identity::catalog::ApprovalScope::Node,
 				restriction: restriction.clone(),
 			}))
+	}
+	async fn unapproved_nodes(&mut self, _reference: &EntityRef) -> Result<Vec<String>> {
+		Ok(self.unapproved_elsewhere.clone())
 	}
 	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
 		let candidates: Vec<_> = self
@@ -979,4 +985,42 @@ async fn review_reports_changes_from_highest_lower_approved_version() {
 		"{:?}",
 		item.consent_changes
 	);
+}
+
+#[tokio::test]
+async fn a_deployment_wide_submission_may_approve_a_dependency_missing_on_other_nodes() {
+	use aidash_domain::identity::catalog::ApprovalScope;
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[]),
+		entry("model", "model", json!({})),
+	]);
+	fixture.approve("model", None);
+	fixture.unapproved_elsewhere = vec!["calm-heron-p4t7w2zb".into()];
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	assert_eq!(
+		item(&review, "model").unapproved_nodes,
+		["calm-heron-p4t7w2zb"]
+	);
+	assert!(item(&review, "writer").unapproved_nodes.is_empty());
+	let mut request = submission(&review, &["model", "writer"]);
+	for item in &mut request.items {
+		item.scope = Some(ApprovalScope::Deployment);
+		item.restriction = None;
+	}
+	let planned = plan(&review, &request).unwrap();
+	assert_eq!(planned.approvals.len(), 2);
+	assert!(
+		planned
+			.approvals
+			.iter()
+			.all(|approval| approval.scope == ApprovalScope::Deployment)
+	);
+	// On this Node alone the dependency has nothing left to change.
+	for item in &mut request.items {
+		item.scope = Some(ApprovalScope::Node);
+	}
+	assert!(matches!(
+		plan(&review, &request),
+		Err(Error::Invalid(message)) if message == "APPROVAL_REVIEW_NO_CHANGE"
+	));
 }

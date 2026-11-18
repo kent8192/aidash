@@ -85,6 +85,30 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			.map(|row| (row.node, row.revision))
 			.collect())
 	}
+	async fn unapproved_nodes(&mut self, reference: &EntityRef) -> Result<Vec<String>> {
+		let tenant = self.tenant().to_owned();
+		let approved: std::collections::BTreeSet<String> = AuthorizationCatalog::objects()
+			.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+			.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
+			.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
+			.filter(AuthorizationCatalog::field_enabled().eq(true))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?
+			.into_iter()
+			.map(|row| row.node)
+			.collect();
+		Ok(crate::apps::identity::repositories::nodes::list_live(
+			&mut **self.access.tx.native_mut(),
+			&tenant,
+		)
+		.await?
+		.into_iter()
+		.map(|node| node.name.as_str().to_owned())
+		.filter(|node| node != self.node.node.as_str() && !approved.contains(node))
+		.collect())
+	}
 	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
 		let rows = AuthorizationCatalog::objects()
 			.filter(AuthorizationCatalog::field_tenant().eq(self.tenant().to_owned()))

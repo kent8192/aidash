@@ -43,6 +43,10 @@ pub trait ApprovalReviewScope: Send {
 	) -> Result<std::collections::BTreeMap<String, i64>> {
 		Ok(Default::default())
 	}
+	/// The other current Nodes where this exact version is not approved.
+	async fn unapproved_nodes(&mut self, _reference: &EntityRef) -> Result<Vec<String>> {
+		Ok(Vec::new())
+	}
 	/// Highest lower enabled approval on this Node, if its definition is readable.
 	async fn previous_approved(&mut self, _entry: &Entry) -> Result<Option<Entry>> {
 		Ok(None)

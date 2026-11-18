@@ -265,6 +265,26 @@ export function ApprovalReviewPanel({
       : selection?.digest === current.closure_digest
         ? selection.keys
         : defaultSelection(current);
+  // An approval for every Node also needs each dependency on every Node. One
+  // approved only here is approved again with the others, keeping its
+  // restriction, so the Nodes that lack it get it too.
+  const spreads = (item: ReviewItem) =>
+    displayedScope === "deployment" &&
+    item.status === "approved" &&
+    item.can_approve &&
+    !item.installation &&
+    ((item as ReviewItem & { unapproved_nodes?: string[] }).unapproved_nodes
+      ?.length ?? 0) > 0;
+  const chosen =
+    current === undefined || selected.length === 0
+      ? selected
+      : [
+          ...selected,
+          ...current.items
+            .filter(spreads)
+            .map(itemKey)
+            .filter((key) => !selected.includes(key)),
+        ];
   const request = requestId
     ? mine.data?.requests.find((value) => value.id === requestId)
     : current
@@ -291,7 +311,7 @@ export function ApprovalReviewPanel({
     try {
       const body = reviewSubmission(
         current,
-        selected,
+        chosen,
         edits,
         answeredRequest(request, requestId),
         Object.fromEntries(
@@ -313,25 +333,35 @@ export function ApprovalReviewPanel({
               expected_node_revisions?: Record<string, number>;
             })
           | undefined;
+        // The panel shows one choice, the root's; every item gets it.
         return {
           ...(item?.expected_node_revisions &&
           Object.keys(item.expected_node_revisions).length > 0
             ? { expected_node_revisions: item.expected_node_revisions }
             : {}),
-          carry_over: !carryOptionsEdited
-            ? (item?.carry_over ?? carryOver)
-            : carryOver,
-          scope: !carryOptionsEdited
-            ? (item?.scope ?? approvalScope)
-            : approvalScope,
+          carry_over: displayedCarry,
+          scope: displayedScope,
         };
       };
       await authorizationSubmitCatalogReview(tenant, {
         ...body,
-        items: (body.items ?? []).map((item) => ({
-          ...item,
-          ...optionsFor(item.reference),
-        })),
+        items: (body.items ?? []).map((item) => {
+          const reviewed = current.items.find(
+            (candidate) =>
+              candidate.reference.id === item.reference.id &&
+              candidate.reference.version === item.reference.version,
+          );
+          const keepRestriction =
+            reviewed !== undefined &&
+            spreads(reviewed) &&
+            !reviewed.widen &&
+            !Object.prototype.hasOwnProperty.call(edits, itemKey(reviewed));
+          return {
+            ...item,
+            ...(keepRestriction ? { restriction: reviewed.restriction } : {}),
+            ...optionsFor(item.reference),
+          };
+        }),
         installations: (body.installations ?? []).map((item) => ({
           ...item,
           ...optionsFor(
@@ -488,7 +518,13 @@ export function ApprovalReviewPanel({
             consent_changes?: string[];
           };
           const checked = selected.includes(key);
-          const restriction = restrictionFor(item, edits);
+          const spreading = chosen.includes(key) && spreads(item);
+          const restriction =
+            spreading &&
+            !item.widen &&
+            !Object.prototype.hasOwnProperty.call(edits, key)
+              ? item.restriction
+              : restrictionFor(item, edits);
           const actionable = needsAction(item);
           const editable =
             item.can_approve &&
@@ -596,6 +632,25 @@ export function ApprovalReviewPanel({
                   </span>
                 </Hint>
               )}
+              {spreading && (
+                <Hint>
+                  {locale === "ja-JP"
+                    ? `このNodeでは承認済みです。すべてのNodeで承認するため、未承認の${
+                        (
+                          item as ReviewItem & {
+                            unapproved_nodes?: string[];
+                          }
+                        ).unapproved_nodes?.length ?? 0
+                      }個のNodeでも承認します`
+                    : `Approved on this Node. Approving every Node also approves it on the ${
+                        (
+                          item as ReviewItem & {
+                            unapproved_nodes?: string[];
+                          }
+                        ).unapproved_nodes?.length ?? 0
+                      } Nodes that lack it`}
+                </Hint>
+              )}
               <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                 {!(
                   item.status === "needs_other_approver" &&
@@ -664,7 +719,7 @@ export function ApprovalReviewPanel({
               selected.length === 0 ||
               current.items.some(
                 (item) =>
-                  selected.includes(itemKey(item)) &&
+                  chosen.includes(itemKey(item)) &&
                   !!item.provider_warning &&
                   !item.installation &&
                   !acknowledged[`${current.closure_digest}:${itemKey(item)}`],
@@ -672,7 +727,7 @@ export function ApprovalReviewPanel({
             }
             onClick={() => void submit()}
           >
-            {t("approvalApproveSelected")} ({selected.length})
+            {t("approvalApproveSelected")} ({chosen.length})
           </Button>
         </div>
       )}
