@@ -155,6 +155,12 @@ impl DraftAuthority for Scope {
 #[async_trait]
 impl DraftScope for Scope {
 	async fn read(&mut self, id: Uuid, lock: bool) -> Result<Draft> {
+		// Lock the Tenant policy before the draft row, the order a publication
+		// that may carry an approval takes with the exclusive policy lock, so a
+		// concurrent save of the same draft cannot deadlock with it (#873).
+		if lock {
+			self.authority().lock_identity().await?;
+		}
 		Ok(AgentDraft::read(&mut self.tx, id, lock).await?.into())
 	}
 	async fn insert(&mut self, draft: &Draft, managed_id: &str) -> Result<Draft> {
