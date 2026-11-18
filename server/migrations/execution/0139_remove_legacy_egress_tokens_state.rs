@@ -1,5 +1,5 @@
 // reinhardt-migration-source: 1
-// Logical model state; 0134 owns the physical change.
+// Logical model state; 0138 owns the physical change.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
