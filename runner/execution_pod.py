@@ -2137,7 +2137,7 @@ print(json.dumps(r))'''
         with self._space_lock(record['scratch_space_id']):
             return self._stop_command(operation_id)
 
-    def stop_run(self, scratch_space_id, run_id):
+    def stop_run(self, scratch_space_id, run_id, kinds=None):
         import json
         import time
         from control import scratch_resource_name
@@ -2157,7 +2157,8 @@ print(json.dumps(r))'''
                     operation = record['operation_id']
                     if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
                             or operation in resolved or record.get('run_stop_confirmed') or
-                            record.get('status') not in ('queued', 'running', 'interrupted')):
+                            record.get('status') not in ('queued', 'running', 'interrupted')
+                            or (kinds is not None and record.get('kind') not in kinds)):
                         continue
                     active.append(operation)
                     if record.get('status') == 'interrupted' and not record.get('docker_enabled'):
@@ -2344,52 +2345,10 @@ print(json.dumps(r))'''
         """Stop every stdio MCP session of a Run, as `stop_python` does for its Python session.
 
         The server stops the sessions it knows by id; this also reaches one whose start it lost
-        track of (a dropped or timed-out start). Other Background processes of the Run keep
-        running. Returns once each session has ended or its Pod is gone."""
-        import json
-        import time
-        from control import scratch_resource_name
-        scratch_resource_name(scratch_space_id)
-        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
-            raise ValueError('invalid run_id')
-        signaled, gone = set(), set()
-        deadline = time.monotonic() + 30
-        while True:
-            active, failures = [], []
-            for path in self._space_journal_paths(scratch_space_id):
-                try:
-                    record = json.loads(path.read_bytes())
-                except FileNotFoundError:
-                    continue
-                operation = record['operation_id']
-                if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
-                        or record.get('kind') != 'mcp_session' or operation in gone
-                        or record.get('status') not in ('queued', 'running')):
-                    continue
-                active.append(operation)
-                if operation in signaled:
-                    continue
-                try:
-                    response = self.stop_background(operation)
-                    signaled.add(operation)
-                    if isinstance(response, dict) and response.get('status') not in ('queued', 'running', 'stopping'):
-                        gone.add(operation)
-                except ExecutionPodError as error:
-                    # The Pod that ran it is gone, and the process with it.
-                    if error.code == 'pod_interrupted':
-                        gone.add(operation)
-                        signaled.add(operation)
-                    else:
-                        failures.append(error.message)
-                except Exception as error:
-                    failures.append(str(error) or type(error).__name__)
-            if failures:
-                raise ExecutionPodError('stop_failed', '; '.join(failures))
-            if all(operation in gone for operation in active):
-                return {'stopped': sorted(signaled)}
-            if time.monotonic() >= deadline:
-                raise ExecutionPodError('stop_failed', 'MCP sessions did not confirm termination')
-            time.sleep(.1)
+        track of (a dropped or timed-out start). It is the Run stop limited to MCP sessions, so an
+        interrupted session counts as stopped only on the same evidence: its Pod was replaced, or
+        the Pod shows no process of it. Other Background processes of the Run keep running."""
+        return self.stop_run(scratch_space_id, run_id, kinds=('mcp_session',))
 
     def start_preview(self, request):
         import base64

@@ -275,10 +275,20 @@ async fn account(pod: &StdioPod, run: Uuid, operation_id: &str) -> bool {
 		Ok(CommandRefusal { refused: true, .. }) => true,
 		Ok(_) => match pod.runtime.mcp_stop(operation_id).await {
 			Ok(()) => true,
-			Err(error) => {
-				tracing::info!(%run, operation_id, %error, "stdio MCP process stop failed");
-				false
-			}
+			// A stop by id cannot confirm a session whose Pod was replaced. The Runner's stop of
+			// the Run's sessions can: it counts one as stopped only when its Pod is gone or the
+			// Pod shows no process of it, and it covers every session the Runner accepted.
+			Err(error) => match pod
+				.runtime
+				.mcp_stop_run(&pod.settings.scratch_space_id, &run.to_string())
+				.await
+			{
+				Ok(()) => true,
+				Err(run_error) => {
+					tracing::info!(%run, operation_id, %error, %run_error, "stdio MCP process stop failed");
+					false
+				}
+			},
 		},
 		Err(error) => {
 			tracing::info!(%run, operation_id, %error, "stdio MCP start not fenced");

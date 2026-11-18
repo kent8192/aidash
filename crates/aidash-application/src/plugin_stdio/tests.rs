@@ -33,6 +33,8 @@ struct Pod {
 	refused: Mutex<Vec<String>>,
 	/// Runs whose MCP sessions the Runner was asked to stop.
 	run_stops: Mutex<Vec<String>>,
+	/// A stop by id cannot be confirmed, as when the session's Pod was replaced.
+	stop_fails: Mutex<bool>,
 }
 
 impl Pod {
@@ -224,6 +226,12 @@ impl ExecutionPodRuntime for Pod {
 	}
 	async fn mcp_stop(&self, operation_id: &str) -> PodResult<()> {
 		self.call("mcp_stop");
+		if *self.stop_fails.lock().unwrap() {
+			return Err(ExecutionPodError::Remote {
+				code: ExecutionPodErrorCode::TerminationUnconfirmed,
+				message: "the process is still interrupted".into(),
+			});
+		}
 		self.stopped.lock().unwrap().push(operation_id.into());
 		Ok(())
 	}
@@ -1004,4 +1012,46 @@ async fn a_call_waiting_while_the_run_closes_starts_a_fresh_session_after_the_cl
 	let fresh = sessions.runs.lock().unwrap()[&run()].clone();
 	assert!(!Arc::ptr_eq(&fresh, &state));
 	drop(bound);
+}
+
+#[tokio::test]
+async fn a_session_whose_pod_was_replaced_is_accounted_for_by_the_runs_stop() {
+	// Arrange: a call's answer is lost, and the stop by id cannot confirm the session's end
+	// because its Pod was replaced.
+	let (pod, host, sessions, bound) = setup();
+	bound.list(run(), &server(), &node()).await.unwrap();
+	*pod.stop_fails.lock().unwrap() = true;
+	pod.answer(Err(ExecutionPodError::Remote {
+		code: ExecutionPodErrorCode::Unknown("mcp_call_failed".into()),
+		message: "MCP call outcome is unknown".into(),
+	}));
+	let lost = bound
+		.call(
+			run(),
+			&server(),
+			&node(),
+			"search",
+			&digest(),
+			json!({}),
+			"k1",
+		)
+		.await;
+	assert!(matches!(lost, Err(Error::External(_))));
+	for _ in 0..2 {
+		pod.refusals.lock().unwrap().push_back(CommandRefusal {
+			refused: false,
+			status: Some("interrupted".into()),
+		});
+	}
+
+	// Act
+	let tools = bound.list(run(), &server(), &node()).await;
+	sessions.close(run()).await;
+
+	// Assert: the Runner's stop of the Run's sessions confirmed it, so a new session started
+	// and the close saved the plugin data.
+	assert!(tools.is_ok(), "{tools:?}");
+	assert_eq!(pod.starts.lock().unwrap().len(), 2);
+	assert!(!pod.run_stops.lock().unwrap().is_empty());
+	assert_eq!(*host.saves.lock().unwrap(), 1);
 }
