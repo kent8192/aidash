@@ -91,6 +91,18 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		200
 	);
 	let token = &common::subject_credential(&f.store, "acme", "alice").await;
+	// The default test limits (20,000 input bytes, 16,384 total tokens) no
+	// longer hold an Agent with every default tool. This test is about the
+	// simulated tool, so it raises them to the Deployment's ceilings.
+	let limits_path = "/api/workbench/test-limits/acme";
+	let (status, read) = common::get(&app, token, limits_path).await;
+	assert_eq!(status, 200, "test limits: {read}");
+	let mut limits = read["limits"].clone();
+	for field in ["max_input_bytes", "max_total_tokens"] {
+		limits[field] = read["ceilings"][field].clone();
+	}
+	let (status, saved) = request(&app, token, "PUT", limits_path, limits).await;
+	assert_eq!(status, 200, "test limits: {saved}");
 	let mut entry = agent();
 	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	let (status, draft) =
