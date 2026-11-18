@@ -1133,6 +1133,23 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 		hidden.len() as u64,
 	)];
 	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
+	// A second list within the memory does not wait on the Node again. Without
+	// the memory every list read asks the silent Node, which cannot get a
+	// connection before the pool's one-second acquire timeout, so the read
+	// takes at least that second and this bound fails whatever the host's load
+	// (#770, Q16). With the memory only the read's own work remains, which took
+	// about 0.6 s on a loaded host. It runs straight after the first list: the
+	// reads below took over 40 s together on slow runners, longer than the
+	// 30 s memory (#1006).
+	let second = std::time::Instant::now();
+	let (status, tasks) = world.get("/api/tasks").await;
+	let second = second.elapsed();
+	assert_eq!(status, 200, "{tasks}");
+	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
+	assert!(
+		second < Duration::from_secs(1),
+		"the second list waited {second:?} after {first:?}"
+	);
 	let (status, graph) = common::post_graph(
 		&world.app,
 		&source,
@@ -1186,21 +1203,7 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	assert_eq!(status, 200, "{tasks_bob}");
 	assert_eq!(tasks_bob["unconfirmed"], json!([]), "{tasks_bob}");
 	assert!(hidden.iter().all(|child| !listed(&tasks_bob, child.id)));
-	// A second list within the memory does not wait on the Node again, and a
-	// single read still asks it. Without the memory every list read asks the
-	// silent Node, which cannot get a connection before the pool's one-second
-	// acquire timeout, so the read takes at least that second and this bound
-	// fails whatever the host's load (#770, Q16). With the memory only the
-	// read's own work remains, which took about 0.6 s on a loaded host.
-	let second = std::time::Instant::now();
-	let (status, tasks) = world.get("/api/tasks").await;
-	let second = second.elapsed();
-	assert_eq!(status, 200, "{tasks}");
-	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
-	assert!(
-		second < Duration::from_secs(1),
-		"the second list waited {second:?} after {first:?}"
-	);
+	// A single read still asks the Node, whatever the lists remember.
 	let asking = std::time::Instant::now();
 	let (status, body) = world.get(&single).await;
 	assert_eq!(status, 503, "{body}");
