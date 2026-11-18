@@ -4785,6 +4785,30 @@ impl Scripted {
 			keys: Mutex::new(vec![]),
 		})
 	}
+	/// A tool bound from `descriptor` as `identity`, with the contract the
+	/// Binding admits: its identity is the descriptor's, never a built-in one.
+	fn bound(
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+		identity: QualifiedRef,
+		specification: ToolSpec,
+	) -> Arc<Self> {
+		let contract = descriptor.declared_contract(identity).unwrap();
+		assert!(matches!(
+			contract.identity,
+			aidash_domain::tool::ToolIdentity::Descriptor(_)
+		));
+		Arc::new(Self {
+			mcp: false,
+			specification,
+			contract,
+			external_target: None,
+			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
+		})
+	}
 	/// A Tenant's HTTP tool, whose calls wait for a Tool call approval.
 	fn tenant(name: &str) -> Arc<Self> {
 		Arc::new(Self {

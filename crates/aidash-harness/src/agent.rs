@@ -3323,21 +3323,19 @@ connection: None,
                 if !returning_refusal && (contract.behavior.tool_call_approval
                     || (contract.behavior.read_only_operation && home.local() && guard.is_some()))
                 {
+					let page_reading = page_reading(run, &contract.identity);
 					let target = match &contract.identity {
+						// Page reading is the one built-in that waits for a Tool call
+						// approval (#987), named alike however it was bound.
+						_ if page_reading => ToolCallTarget::Registry(aidash_domain::tool::providers::page_reading_target()),
 						ToolIdentity::Descriptor(reference) => ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
 							id: reference.id.clone(),
 							version: reference.version.clone(),
 						}),
 						ToolIdentity::Registry(reference) => ToolCallTarget::Registry(reference.clone()),
-						// Page reading is the one built-in that waits for a Tool call
-						// approval (#987).
-						ToolIdentity::Builtin(name) if name == aidash_domain::tool::providers::PAGE_READING_IDENTITY => {
-							ToolCallTarget::Registry(aidash_domain::tool::providers::page_reading_target())
-						}
 						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
 						ToolIdentity::AgentPlugin(tool) => ToolCallTarget::AgentPlugin(tool.clone()),
 					};
-					let page_reading = matches!(&contract.identity, ToolIdentity::Builtin(name) if name == aidash_domain::tool::providers::PAGE_READING_IDENTITY);
 					if home.local() {
 						let Some(guard) = guard else {
 							return self
@@ -4390,6 +4388,37 @@ fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error 
 			Error::RemoteSemantic(Failure::ContextBudget)
 		}
 		error => error,
+	}
+}
+
+/// Whether a tool is page reading (#987), whose Run grant covers one host
+/// until the Run's next user input. A bound tool's contract carries its
+/// Binding's descriptor identity, so page reading is recognised by the
+/// provider operation of that Binding, as the Workbench does.
+fn page_reading(run: &Run, identity: &ToolIdentity) -> bool {
+	match identity {
+		ToolIdentity::Builtin(name) => {
+			name == aidash_domain::tool::providers::PAGE_READING_IDENTITY
+		}
+		ToolIdentity::Descriptor(identity) => run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.and_then(|snapshot| {
+				snapshot
+					.bindings
+					.iter()
+					.find(|binding| binding.identity == *identity)
+			})
+			.is_some_and(|binding| {
+				let config = &binding.definition.config;
+				aidash_domain::tool::providers::research_operation(
+					config["provider"].as_str().unwrap_or_default(),
+					config["operation"].as_str().unwrap_or_default(),
+				)
+				.is_some()
+			}),
+		ToolIdentity::Registry(_) | ToolIdentity::AgentPlugin(_) => false,
 	}
 }
 
