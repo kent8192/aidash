@@ -469,8 +469,9 @@ without Tenant Secrets or toward plain HTTP other than a loopback literal, and,
 unless `owner` is `personal`, one whose shared Tenant Secret does not exist or
 does not record the server's host. Naming such a secret also needs `secret.use`
 on it, as for a Tool's `secret`, when the Agent is registered (including a
-personal Agent or a Workbench draft) or installed from the Marketplace; a
-personal-only server secret names only each person's own row and needs none.
+personal Agent or a Workbench draft), installed from the Marketplace, or
+written as a Generation Policy's Agent template; a personal-only server secret
+names only each person's own row and needs none.
 The Agent version's secret readiness lists each such server as
 `agent_plugin_server` with item `<plugin>/<server>`, so a missing or
 host-mismatched shared secret shows as a warning.
