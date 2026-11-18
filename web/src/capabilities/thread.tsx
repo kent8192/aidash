@@ -83,7 +83,7 @@ function OperationCard({
     queryKey: ["core-operation", run, operation.operation_id, offset],
     queryFn: () =>
       post<Operation>(
-        `/runs/${run}/${["code_interpreter", "python_install"].includes(operation.kind ?? "") ? "python" : operation.kind}/poll`,
+        `/runs/${run}/${operation.kind === "code_interpreter" ? "python" : operation.kind}/poll`,
         {
           operation_id: operation.operation_id,
           offset,
@@ -144,7 +144,7 @@ function OperationCard({
             onClick={async () => {
               try {
                 await post(
-                  `/runs/${run}/${["code_interpreter", "python_install"].includes(operation.kind ?? "") ? "python" : operation.kind}/cancel`,
+                  `/runs/${run}/${operation.kind === "code_interpreter" ? "python" : operation.kind}/cancel`,
                   {
                     operation_id: operation.operation_id,
                   },
