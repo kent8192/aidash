@@ -1856,3 +1856,31 @@ async fn standing_instructions_are_written_only_by_administrators_in_a_browser(
 		.await;
 	assert_eq!(status, 404);
 }
+
+/// Reading a Node's Instructions needs `node.read` on that Node, so a policy
+/// that hides a Node from a member hides its instructions too (#1010).
+#[rstest::rstest]
+#[tokio::test]
+async fn node_instructions_follow_the_node_read_policy(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let path = format!("/api/tenants/{}/nodes/{}/instructions", t.tenant, t.node);
+	let (status, read) =
+		t.d.as_person(&t.bob, "GET", &path, Some(&t.bob_context), Value::Null)
+			.await;
+	assert_eq!(status, 200, "{read}");
+	let (status, response) = t
+		.replace(|bundle| {
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id":"hide-node","effect":"deny","subjects":{"ids":["bob"]},
+				"actions":["node.read"],"resources":{"kinds":["node"],"ids":[t.node]}
+			}));
+		})
+		.await;
+	assert_eq!(status, 200, "{response}");
+	let (status, hidden) =
+		t.d.as_person(&t.bob, "GET", &path, Some(&t.bob_context), Value::Null)
+			.await;
+	assert_eq!(status, 403, "{hidden}");
+}

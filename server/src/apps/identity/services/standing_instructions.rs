@@ -9,10 +9,13 @@ use crate::apps::identity::{
 	serializers::standing_instructions::{Instructions, Update},
 };
 use crate::{Result, authorization::identity::Actor};
-use aidash_domain::identity::tenant_administration::{NODE_ADMINISTER, TENANT_INSTRUCTIONS_UPDATE};
+use aidash_domain::identity::tenant_administration::{
+	NODE_ADMINISTER, NODE_READ, TENANT_INSTRUCTIONS_UPDATE,
+};
 
 impl TenantAdministrations {
-	/// Every member of the Tenant reads its Tenant Instructions; writing needs
+	/// Every member of the Tenant reads its Tenant Instructions, which every
+	/// Agent of the Tenant receives anyway; writing needs
 	/// `tenant.instructions.update`.
 	pub(crate) async fn tenant_instructions(
 		&self,
@@ -61,8 +64,8 @@ impl TenantAdministrations {
 		self.finish(&administrator, result).await
 	}
 
-	/// Every member of the Tenant reads a Node's Instructions; writing needs
-	/// `node.administer` on that Node.
+	/// Reading a Node's Instructions needs `node.read` on that Node, as listing
+	/// it does; writing needs `node.administer` on it.
 	pub(crate) async fn node_instructions(
 		&self,
 		actor: Actor,
@@ -77,20 +80,26 @@ impl TenantAdministrations {
 			.store
 			.pool
 			.atomic(&administrator.scope()?, async |tx| {
-				if let Some(update) = update {
-					let snapshot = administrator.lock(tx, false).await?;
-					let current =
-						crate::apps::identity::repositories::nodes::get_live(tx, &tenant, &node)
-							.await?;
-					administrator
-						.require(
-							tx,
-							&snapshot,
-							NODE_ADMINISTER,
-							&node,
-							serde_json::json!({"label": current.label, "default": current.default}),
-						)
+				let snapshot = administrator.lock(tx, false).await?;
+				let current =
+					crate::apps::identity::repositories::nodes::get_live(tx, &tenant, &node)
 						.await?;
+				let attributes =
+					serde_json::json!({"label": current.label, "default": current.default});
+				administrator
+					.require(
+						tx,
+						&snapshot,
+						if update.is_some() {
+							NODE_ADMINISTER
+						} else {
+							NODE_READ
+						},
+						&node,
+						attributes,
+					)
+					.await?;
+				if let Some(update) = update {
 					let by = AdministrationActor::TenantAdministrator(administrator.clone());
 					repository::set(
 						tx,
