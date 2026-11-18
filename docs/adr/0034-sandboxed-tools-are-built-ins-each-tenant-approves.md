@@ -29,6 +29,10 @@ limits, and a Deployment without a runner offers none.
 
 - Research providers, built in or declared (ADR 0048, ADR 0055), need a Catalog Approval like Sandboxed tools, though they do not run in an Execution Pod. Each provider's research operations, including the host-supplied `find`, are approved as one group.
 
+## Amendment (2026-11-11, #873)
+
+The one approval step stays, with no exception for Personal Tenants. With the Deployment-wide Approval Scope and Version Carry-over (ADR 0128), it covers every Node of the Tenant on the Deployment and later versions of the tool.
+
 ## Amendment (2026-11-16, #987)
 
 - Research is no longer a category (ADR 0138). Brave Web search and the fixture provider are removed, and page reading is the only built-in left under the `research.` identifier. It is an ordinary opt-in built-in: one group a Tenant approves, version 2.0.0, whose calls go through Tool call approval.

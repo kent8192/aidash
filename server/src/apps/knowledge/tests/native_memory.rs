@@ -2665,6 +2665,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		sandbox: Default::default(),
 		registry,
 		config: Config {
+			smtp: None,
 			scratch_policy: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
@@ -5272,6 +5273,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 		sandbox: Default::default(),
 		registry,
 		config: Config {
+			smtp: None,
 			scratch_policy: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(

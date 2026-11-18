@@ -60,6 +60,10 @@ pub(crate) async fn page(
 			.map_err(FrameworkError::from)?
 			.pop()
 			.map(|row| VersionApproval {
+				carry_over: row.carry_over,
+				scope: row.scope,
+				carried_from_version: row.carried_from_version,
+				carried_from_approver: row.carried_from_approver,
 				enabled: row.enabled,
 				revision: row.revision,
 				restriction: row
@@ -77,6 +81,10 @@ pub(crate) async fn page(
 			.map_err(FrameworkError::from)?
 			.into_iter()
 			.map(|row| ApprovalRecord {
+				carry_over: row.carry_over,
+				scope: row.scope,
+				carried_from_version: row.carried_from_version,
+				carried_from_approver: row.carried_from_approver,
 				provider_warning_acknowledgment: row.provider_warning_acknowledgment,
 				revision: row.revision,
 				enabled: row.enabled,

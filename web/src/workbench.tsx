@@ -5,6 +5,7 @@ import {
 } from "./agent-bindings";
 import { extractDocument } from "./agent-documents";
 import { registryDeployment } from "./node-selection";
+import { ApprovalReviewPanel } from "./approval-review";
 import { Button } from "./components/ui/button";
 import { Badge as ToneBadge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
@@ -140,6 +141,13 @@ type Registration = {
   revision: number;
   entry: AgentEntry;
   behavioral_tested: boolean;
+  carry_results: {
+    node: string;
+    source_version: string | null;
+    changed: string[];
+    unapproved_dependencies: { id: string; version: string }[];
+    carried: boolean;
+  }[];
 };
 type RegisteredVersion = {
   registered_knowledge_digest?: string | null;
@@ -515,6 +523,11 @@ export function Workbench({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [carryReview, setCarryReview] = useState<{
+    entry: { id: string; version: string };
+    results: Registration["carry_results"];
+    node?: string;
+  }>();
   const [working, setBusy] = useState(false);
   const [readingImages, setReadingImages] = useState(false);
   const busy = working || readingImages;
@@ -1155,6 +1168,10 @@ export function Workbench({
           },
         );
         setMessage(t.registered);
+        setCarryReview({
+          entry: result.entry,
+          results: (result.carry_results ?? []).filter((item) => !item.carried),
+        });
         setValidation({
           draft_id: saved.id,
           revision: saved.revision,
@@ -3377,6 +3394,43 @@ export function Workbench({
           {message}
         </Notice>
       )}
+      {carryReview &&
+        carryReview.results.length > 0 &&
+        data.access.kind === "subject" &&
+        (carryReview.node ? (
+          <ApprovalReviewPanel
+            tenant={data.access.tenant}
+            node={carryReview.node}
+            root={carryReview.entry}
+            onClose={() => setCarryReview(undefined)}
+          />
+        ) : (
+          <Notice
+            tone="info"
+            className="shrink-0 rounded-none border-x-0 border-t-0 px-4 md:px-6"
+          >
+            {carryReview.results.map((item) => (
+              <div key={item.node} className="flex items-center gap-2">
+                <span>
+                  {item.node}: {item.changed.join(", ")}
+                  {item.unapproved_dependencies
+                    .map(
+                      (dependency) => ` ${dependency.id}@${dependency.version}`,
+                    )
+                    .join("")}
+                </span>
+                <Button
+                  type="button"
+                  onClick={() =>
+                    setCarryReview({ ...carryReview, node: item.node })
+                  }
+                >
+                  {translate("approvalRequest")}
+                </Button>
+              </div>
+            ))}
+          </Notice>
+        ))}
     </>
   );
 

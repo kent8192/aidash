@@ -1530,6 +1530,8 @@ def render():
             "authorization-catalog",
             "authorization-catalog-requests-mine",
             "authorization-catalog-requests-pending",
+            "authorization-catalog-requests-pending-count",
+            "catalog-mail-preference",
             "authorization-safety-stops",
             "workbench-inspect-version",
             "workbench-export-report",

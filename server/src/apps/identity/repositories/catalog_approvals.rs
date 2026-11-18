@@ -23,6 +23,7 @@ pub(crate) struct TenantCatalog<'a> {
 	pub(crate) access: &'a mut Access,
 	/// The Node the approvals apply to.
 	pub(crate) node: aidash_domain::nodes::NodeAddress,
+	pub(crate) deployment_scope_orchestrated: bool,
 }
 
 #[async_trait]
@@ -52,6 +53,23 @@ impl CatalogMutation for TenantCatalog<'_> {
 			)
 			.await
 	}
+	async fn carry_options(
+		&mut self,
+		binding: &Binding,
+		carry_over: bool,
+		scope: aidash_domain::identity::catalog::ApprovalScope,
+	) -> aidash_application::Result<()> {
+		NativeMutation(&mut self.access.tx)
+			.carry_options(binding, carry_over, scope)
+			.await
+	}
+
+	async fn stop_carrying(&mut self, binding: &Binding) -> Result<()> {
+		NativeMutation(&mut self.access.tx)
+			.stop_carrying(binding)
+			.await
+	}
+
 	async fn history(
 		&mut self,
 		binding: &Binding,
@@ -99,6 +117,9 @@ impl CatalogApprovalScope for TenantCatalog<'_> {
 	}
 	fn node(&self) -> &aidash_domain::nodes::NodeAddress {
 		&self.node
+	}
+	fn deployment_scope_orchestrated(&self) -> bool {
+		self.deployment_scope_orchestrated
 	}
 	fn actor(&self) -> &str {
 		&self.access.identity.subject
@@ -177,6 +198,7 @@ pub(crate) async fn admit_agents(
 		TenantCatalog {
 			access,
 			node: node.clone(),
+			deployment_scope_orchestrated: false,
 		}
 		.save_policy()
 		.await?;

@@ -20,6 +20,16 @@ pub struct AuthorizationCatalogHistory {
 	pub revision: i64,
 	#[field]
 	pub enabled: bool,
+	/// Whether this approval may carry to later versions.
+	#[field(default = false)]
+	pub carry_over: bool,
+	/// The scope selected by the approver: node or deployment.
+	#[field(field_type = "text")]
+	pub scope: String,
+	#[field(field_type = "text", null = true)]
+	pub carried_from_version: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub carried_from_approver: Option<String>,
 	/// The restriction stored by this revision (ADR 0095).
 	#[field(null = true)]
 	pub restriction: Option<reinhardt::db::orm::Json<serde_json::Value>>,

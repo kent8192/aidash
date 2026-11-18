@@ -65,7 +65,12 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 		register_keyed(&app, &token, &entry, &key),
 	);
 	assert_eq!(first.0, 200, "{first:?}");
-	assert_eq!(first, concurrent);
+	// Carry outcomes describe only the request that registered (#873).
+	let without_carry = |mut response: (u16, serde_json::Value)| {
+		response.1.as_object_mut().unwrap().remove("carry_results");
+		response
+	};
+	assert_eq!(without_carry(first.clone()), without_carry(concurrent));
 	assert_eq!(
 		Uuid::parse_str(first.1["id"].as_str().unwrap())
 			.unwrap()
@@ -74,8 +79,10 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	);
 	// A new router models a retry after the committed response was lost.
 	assert_eq!(
-		register_keyed(&common::application(f.clone()).await, &token, &entry, &key).await,
-		first
+		without_carry(
+			register_keyed(&common::application(f.clone()).await, &token, &entry, &key).await
+		),
+		without_carry(first.clone())
 	);
 	let mut changed = entry.clone();
 	changed
