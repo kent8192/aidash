@@ -102,6 +102,11 @@ pub(crate) async fn copy(
 		if &source == target {
 			continue;
 		}
+		if !row.enabled {
+			// Withdrawn on a live Node: never copied from another.
+			copies.insert((row.entry_key, row.entry_version), None);
+			continue;
+		}
 		let history = AuthorizationCatalogHistory::objects()
 			.filter(AuthorizationCatalogHistory::field_tenant().eq(tenant.to_owned()))
 			.filter(AuthorizationCatalogHistory::field_node().eq(row.node.clone()))
@@ -193,7 +198,7 @@ pub(crate) async fn copy(
 		}
 	}
 	let mut policy_changed = false;
-	for row in copies.values().flatten().filter(|row| row.enabled) {
+	for row in copies.values().flatten() {
 		if let Some(subject) = &row.agent {
 			let name = aidash_domain::qualified_agent(
 				&deployment.node(target.clone()),
