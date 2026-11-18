@@ -331,13 +331,23 @@ export function ApprovalReviewPanel({
               carry_over?: boolean | null;
               scope?: ApprovalScope | null;
               expected_node_revisions?: Record<string, number>;
+              unapproved_nodes?: string[];
             })
           | undefined;
+        // An item approved here is approved again only on the Nodes that
+        // lack it; the others keep their approval as it is.
+        const revisions =
+          item !== undefined && spreads(item)
+            ? Object.fromEntries(
+                Object.entries(item.expected_node_revisions ?? {}).filter(
+                  ([node]) => item.unapproved_nodes?.includes(node),
+                ),
+              )
+            : item?.expected_node_revisions;
         // The panel shows one choice, the root's; every item gets it.
         return {
-          ...(item?.expected_node_revisions &&
-          Object.keys(item.expected_node_revisions).length > 0
-            ? { expected_node_revisions: item.expected_node_revisions }
+          ...(revisions && Object.keys(revisions).length > 0
+            ? { expected_node_revisions: revisions }
             : {}),
           carry_over: displayedCarry,
           scope: displayedScope,

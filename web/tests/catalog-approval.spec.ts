@@ -993,7 +993,11 @@ test("a Review for every Node also approves a dependency the other Nodes lack", 
           restriction,
           proposed_restriction: null,
           unapproved_nodes: ["calm-heron-p4t7w2zb"],
-          expected_node_revisions: { "calm-heron-p4t7w2zb": 0 },
+          // A Node that already approves it is left as it is.
+          expected_node_revisions: {
+            "calm-heron-p4t7w2zb": 0,
+            "brave-otter-k3m9q2xa": 4,
+          },
         }),
       ]),
     answer: () => ({ json: { bindings: [], installations: [] } }),
@@ -1004,15 +1008,16 @@ test("a Review for every Node also approves a dependency the other Nodes lack", 
   await expect.poll(() => decisions.length).toBe(1);
   const items = decisions[0].body.items as {
     reference: { id: string };
+    expected_node_revisions?: Record<string, number>;
   }[];
   expect(items.map((item) => item.reference.id).sort()).toEqual([
     "model",
     "writer",
   ]);
-  expect(items.find((item) => item.reference.id === "model")).toMatchObject({
-    scope: "deployment",
-    restriction,
-    expected_node_revisions: { "calm-heron-p4t7w2zb": 0 },
+  const model = items.find((item) => item.reference.id === "model");
+  expect(model).toMatchObject({ scope: "deployment", restriction });
+  expect(model?.expected_node_revisions).toEqual({
+    "calm-heron-p4t7w2zb": 0,
   });
 });
 
