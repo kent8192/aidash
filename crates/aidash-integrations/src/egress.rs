@@ -1,7 +1,6 @@
 //! Internal HTTP streaming adapter. The dashboard framework buffers incoming
 //! bodies, so this listener uses Hyper directly; it has no public API routes.
 use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
@@ -23,7 +22,6 @@ use url::Url;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Body = UnsyncBoxBody<Bytes, BoxError>;
 const IDLE: Duration = Duration::from_secs(30);
-const INDEX_BYTES: usize = 8 * 1024 * 1024;
 const BROKER_ERROR: &str = "x-aidash-broker-error";
 const SECRET_CALL: &str = "x-aidash-secret-call";
 /// Body bytes are debited in batches. Each debit is a PostgreSQL transaction
@@ -69,7 +67,6 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
 /// Sandboxed code can fill the slots at will, so the log is thinned. The
 /// counter stays exact.
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
-const INDEX_LIMIT_MESSAGE: &str = "package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.";
 const CONNECTION_LIMIT: &str = "egress_connection_limit";
 /// How much of a request body may be discarded after the answer, and for how
 /// long. These bytes never leave the gateway, so they are not charged.
@@ -1228,121 +1225,6 @@ fn forwarded_header(name: &str, connection: &[String]) -> bool {
 		&& !connection.iter().any(|v| v == name)
 }
 
-/// A rewritten package index must reach the gateway uncompressed: the client's
-/// own `accept-encoding` would sit beside the gateway's `identity` and let the
-/// index answer with gzip, which the JSON/HTML rewrite cannot read (#679).
-fn request_header_forwarded(name: &str, connection: &[String], rewrites_index: bool) -> bool {
-	forwarded_header(name, connection) && !(rewrites_index && name == "accept-encoding")
-}
-
-fn package_url(service: &str, url: &Url) -> bool {
-	url.scheme() == "https"
-		&& url.username().is_empty()
-		&& url.password().is_none()
-		&& url.port_or_known_default() == Some(443)
-		&& matches!(
-			(service, url.host_str()),
-			("core.npm", Some("registry.npmjs.org"))
-				| ("core.pypi", Some("pypi.org" | "files.pythonhosted.org"))
-		)
-}
-fn package_link(
-	value: &str,
-	source: &Url,
-	origin: &str,
-	token: &str,
-	service: &str,
-) -> Option<String> {
-	let url = source.join(value).ok()?;
-	if !package_url(service, &url) {
-		return None;
-	}
-	let mut url = url;
-	let fragment = url.fragment().map(str::to_owned);
-	url.set_fragment(None);
-	Some(format!(
-		"{}/v1/{token}/{service}/__asset/{}{}",
-		origin.trim_end_matches('/'),
-		URL_SAFE_NO_PAD.encode(url.as_str()),
-		fragment.map(|f| format!("#{f}")).unwrap_or_default()
-	))
-}
-fn rewrite_json(
-	bytes: &[u8],
-	source: &Url,
-	origin: &str,
-	token: &str,
-	service: &str,
-) -> Result<Vec<u8>, BoxError> {
-	fn visit(
-		value: &mut serde_json::Value,
-		source: &Url,
-		origin: &str,
-		token: &str,
-		service: &str,
-	) {
-		match value {
-			serde_json::Value::Array(items) => {
-				for item in items {
-					visit(item, source, origin, token, service);
-				}
-			}
-			serde_json::Value::Object(items) => {
-				for (key, value) in items {
-					if matches!(key.as_str(), "tarball" | "url" | "href")
-						&& let Some(link) = value
-							.as_str()
-							.and_then(|v| package_link(v, source, origin, token, service))
-					{
-						*value = link.into();
-					} else {
-						visit(value, source, origin, token, service);
-					}
-				}
-			}
-			_ => {}
-		}
-	}
-	let mut value = serde_json::from_slice(bytes)?;
-	visit(&mut value, source, origin, token, service);
-	Ok(serde_json::to_vec(&value)?)
-}
-fn rewrite_html(
-	bytes: &[u8],
-	source: &Url,
-	origin: &str,
-	token: &str,
-	service: &str,
-) -> Result<Vec<u8>, BoxError> {
-	let text = std::str::from_utf8(bytes)?;
-	let mut result = String::with_capacity(text.len());
-	let mut rest = text;
-	// PyPI's Simple API uses quoted href attributes. Unknown or foreign links
-	// remain unreachable under the Pod's NetworkPolicy.
-	while let Some(start) = rest.find("href=") {
-		result.push_str(&rest[..start + 5]);
-		rest = &rest[start + 5..];
-		let Some(quote) = rest.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
-			continue;
-		};
-		result.push(quote);
-		rest = &rest[quote.len_utf8()..];
-		let Some(end) = rest.find(quote) else {
-			return Err(io_error("invalid_package_index"));
-		};
-		let value = &rest[..end];
-		let decoded = value.replace("&amp;", "&");
-		result.push_str(
-			&package_link(&decoded, source, origin, token, service)
-				.unwrap_or_else(|| value.to_owned()),
-		);
-		result.push(quote);
-		rest = &rest[end + quote.len_utf8()..];
-	}
-	result.push_str(rest);
-	Ok(result.into_bytes())
-}
-
 async fn forward(
 	request: Request<hyper::body::Incoming>,
 	authority: Arc<dyn Authority>,
@@ -1399,28 +1281,8 @@ async fn forward(
 	{
 		return refuse(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
-	let asset = if let Some(encoded) = path.strip_prefix("__asset/") {
-		if scoped {
-			return refuse(StatusCode::BAD_REQUEST, "invalid_egress_path");
-		}
-		let decoded = URL_SAFE_NO_PAD
-			.decode(encoded)
-			.ok()
-			.and_then(|b| String::from_utf8(b).ok())
-			.and_then(|s| Url::parse(&s).ok());
-		let Some(url) = decoded.filter(|u| package_url(service, u)) else {
-			return refuse(StatusCode::BAD_REQUEST, "invalid_package_url");
-		};
-		Some(url)
-	} else {
-		None
-	};
-	let query = asset
-		.as_ref()
-		.and_then(Url::query)
-		.or_else(|| request.uri().query())
-		.map(str::to_owned);
-	let audit_path = asset.as_ref().map(Url::path).unwrap_or(path);
+	let query = request.uri().query().map(str::to_owned);
+	let audit_path = path;
 	let head = request.method() == hyper::Method::HEAD;
 	let query_digest = format!(
 		"{:x}",
@@ -1552,21 +1414,7 @@ async fn forward(
 			.fail(StatusCode::FORBIDDEN, "operation_expired", "egress_expired")
 			.await;
 	}
-	let index = !scoped && admission.definition.builtin_index(service);
-	if asset.is_some() && !index {
-		return completion
-			.fail(
-				StatusCode::FORBIDDEN,
-				"invalid_package_service",
-				"egress_forbidden",
-			)
-			.await;
-	}
-	let service_url = match asset
-		.clone()
-		.map(Ok)
-		.unwrap_or_else(|| target(&admission, path, query.as_deref()))
-	{
+	let service_url = match target(&admission, path, query.as_deref()) {
 		Ok(url) => url,
 		Err(_) => {
 			return completion
@@ -1627,9 +1475,8 @@ async fn forward(
 		}
 	};
 	let mut upstream = selected.request(request.method().clone(), upstream_url);
-	let rewrites_index = index && asset.is_none();
 	for (name, value) in request.headers() {
-		if request_header_forwarded(name.as_str(), &connection, rewrites_index)
+		if forwarded_header(name.as_str(), &connection)
 			&& name.as_str()
 				!= admission
 					.definition
@@ -1676,9 +1523,6 @@ async fn forward(
 				upstream.header(name, value)
 			}
 		};
-	}
-	if rewrites_index {
-		upstream = upstream.header("accept-encoding", "identity");
 	}
 	let debits = completion.debits.clone();
 	let mut incoming = request.into_body().into_data_stream();
@@ -1841,122 +1685,7 @@ async fn forward(
 		*result.headers_mut() = headers;
 		return result;
 	}
-	let index_type = response
-		.headers()
-		.get("content-type")
-		.and_then(|v| v.to_str().ok())
-		.unwrap_or("")
-		.to_owned();
 	let mut downstream = response.bytes_stream();
-	if index
-		&& asset.is_none()
-		&& !head
-		&& (index_type.contains("json") || index_type.starts_with("text/html"))
-	{
-		let mut buffer = Vec::new();
-		loop {
-			let next = tokio::select! {
-				refusal = stopped(&mut active_rx) => {
-					completion.status = refusal.status.as_u16();
-					completion.interrupted(refusal.code);
-					return refusal.response();
-				}
-				next = tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next())) => next,
-			};
-			let bytes = match next {
-				Ok(Ok(Some(Ok(bytes)))) => bytes,
-				Ok(Ok(None)) => break,
-				failed => {
-					let cause = match failed {
-						Ok(Ok(Some(Err(error)))) => upstream_cause(error),
-						_ => "timed out".to_owned(),
-					};
-					upstream_failed(&completion.debits.label, &cause);
-					return completion
-						.fail(
-							StatusCode::BAD_GATEWAY,
-							"index_unavailable",
-							"package_index_unavailable",
-						)
-						.await;
-				}
-			};
-			completion.debits.count(Direction::Received, bytes.len());
-			if let Err(refusal) = completion
-				.debits
-				.flush_due(Direction::Received, deadline)
-				.await
-			{
-				completion.status = refusal.status.as_u16();
-				completion.finish(Some(refusal.code)).await;
-				return refusal.response();
-			}
-			if buffer.len().saturating_add(bytes.len()) > INDEX_BYTES {
-				let mut response = completion
-					.fail(
-						StatusCode::UNPROCESSABLE_ENTITY,
-						"index_limit_exceeded",
-						INDEX_LIMIT_MESSAGE,
-					)
-					.await;
-				response.extensions_mut().insert(
-					hyper::ext::ReasonPhrase::try_from(INDEX_LIMIT_MESSAGE.as_bytes())
-						.expect("valid reason phrase"),
-				);
-				return response;
-			}
-			buffer.extend_from_slice(&bytes);
-		}
-		let rewritten = if index_type.contains("json") {
-			rewrite_json(
-				&buffer,
-				&service_url,
-				&admission.gateway_origin,
-				token,
-				service,
-			)
-		} else {
-			rewrite_html(
-				&buffer,
-				&service_url,
-				&admission.gateway_origin,
-				token,
-				service,
-			)
-		};
-		let Ok(rewritten) = rewritten else {
-			return completion
-				.fail(
-					StatusCode::BAD_GATEWAY,
-					"invalid_package_index",
-					"invalid_package_index",
-				)
-				.await;
-		};
-		// Rewritten links can lengthen the index the sandbox receives.
-		completion.debits.count(
-			Direction::Received,
-			rewritten.len().saturating_sub(buffer.len()),
-		);
-		if let Some(refusal) = completion.settle_final().await {
-			completion.status = refusal.status.as_u16();
-			completion.close(Some(refusal.code)).await;
-			return refusal.response();
-		}
-		completion.close(None).await;
-		headers.remove("content-length");
-		headers.remove("content-encoding");
-		headers.remove("etag");
-		headers.remove("content-md5");
-		let mut result = Response::new(
-			Full::new(Bytes::from(rewritten))
-				.map_err(|never| match never {})
-				.boxed_unsync(),
-		);
-		*result.status_mut() = status;
-		*result.headers_mut() = headers;
-		return result;
-	}
 	completion.expected = headers
 		.get(hyper::header::CONTENT_LENGTH)
 		.and_then(|value| value.to_str().ok())

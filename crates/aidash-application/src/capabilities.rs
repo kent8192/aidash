@@ -5,9 +5,7 @@ use crate::{
 };
 use aidash_domain::{
 	RunMetadata,
-	capabilities::operations::{
-		ShellRequest, VERIFICATION, available, package_files, request_validation_failure,
-	},
+	capabilities::operations::{ShellRequest, available, request_validation_failure},
 };
 use serde_json::{Value, json};
 pub async fn prepare<O: Send>(
@@ -41,22 +39,12 @@ pub async fn prepare<O: Send>(
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	scope.require_write().await?;
-	let files = scope.request_files(run.id, package_files(&extra)?).await?;
+	let files = scope.request_files(run.id).await?;
 	if let Some((code, _)) = request_validation_failure(limits.working_bytes, &files) {
 		return Err(Error::Conflict(code.into()));
 	}
 	scope.verified_health(kind == "code_interpreter").await?;
 	scope.admit_sandboxed_tool().await?;
-	// A Check needs the Area's pod slot just as the model's shell does.
-	if matches!(kind, "shell" | "python_install" | VERIFICATION) {
-		scope
-			.release_python(if kind == "python_install" {
-				"packages_changed"
-			} else {
-				"shell_requested"
-			})
-			.await?;
-	}
 	let id = scope.operation_id();
 	let epoch = area.epoch + 1;
 	scope.set_running(epoch).await?;
@@ -95,11 +83,9 @@ pub async fn poll(
 	if cancel && let Some(change) = operation.cancellation() {
 		let never_dispatched = change.never_dispatched;
 		scope.apply_cancellation(change)?;
-		if never_dispatched {
+		// A Pod operation never took the Area's writer, so it has none to give back.
+		if never_dispatched && !operation.pod {
 			scope.activate_area().await?;
-			if operation.kind == "code_interpreter" {
-				scope.complete_python_without_writer().await?;
-			}
 		}
 		scope.persist().await?;
 	}
@@ -132,8 +118,6 @@ pub mod sessions;
 pub mod cleanup;
 
 pub mod journal_query;
-pub mod packages;
-pub mod python;
 
 pub mod files;
 
@@ -150,4 +134,5 @@ pub mod transfer;
 
 pub mod projection;
 
+pub mod pod;
 pub mod pod_usage;

@@ -1117,14 +1117,17 @@ impl WorkerAuthority {
 					refused = true;
 					return Err(error);
 				}
-				let area = crate::apps::execution::capabilities::services::sessions::load(
+				// The preview runs in the Execution Pod as a Background process of
+				// the Run, outside this transaction (#745).
+				crate::apps::execution::repositories::operations::pods::tool_context(
+					store,
 					&mut access,
-					pending.area_id,
+					&run.metadata(),
 				)
-				.await?;
-				let files =
-					crate::apps::execution::capabilities::services::operations::pod_files(&area)?;
-				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
+				.await?
+				.ok_or_else(|| {
+					Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into())
+				})
 			}
 			.await;
 			access.finish(result).await
@@ -1155,10 +1158,24 @@ impl WorkerAuthority {
 				access.finish(result).await?;
 			}
 		}
-		accepted?;
-		let dispatched = previews::wait_ready(store, &pending)
-			.await
-			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
+		let pod = accepted?;
+		let dispatched = match aidash_application::capabilities::pod::previews::start(
+			&pod,
+			pending.id,
+			run.id,
+			&input.command,
+			pending.port,
+		)
+		.await
+		{
+			Ok(host) => previews::Dispatch {
+				pod_host: Some(host),
+				startup_log: String::new(),
+				started_at: chrono::Utc::now(),
+				failure: None,
+			},
+			Err(error) => previews::Dispatch::failed(error.to_string()),
+		};
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = previews::finish_start(
@@ -3024,5 +3041,7 @@ pub(crate) mod management;
 #[path = "execution/safety_stop.rs"]
 pub(crate) mod safety_stop;
 
+#[path = "execution/plugin_stdio.rs"]
+mod plugin_stdio;
 #[path = "execution/subnodes.rs"]
 pub(crate) mod subnodes;

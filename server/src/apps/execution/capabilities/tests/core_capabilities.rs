@@ -1873,10 +1873,6 @@ mod schedule_tests;
 #[path = "core_capabilities/runtime_faults.rs"]
 mod runtime_fault_tests;
 
-#[cfg(feature = "capability-runtime-tests")]
-#[path = "core_capabilities/packages.rs"]
-mod package_tests;
-
 #[path = "core_capabilities/configuration.rs"]
 mod configuration_tests;
 

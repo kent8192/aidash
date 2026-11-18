@@ -574,3 +574,130 @@ async fn the_owner_resumes_the_runs_a_suspension_paused_each_with_the_manual_res
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["runs"], json!([]));
 }
+
+/// #745: an Agent version registered before the package indexes were removed may bind `core.npm`.
+/// `identity/0082` deletes the index's Catalog Approval, so on the registered row as it was the
+/// Run is refused at start. `registry/0070` removes the Binding from the registered version and
+/// its saved normalization, and the Run starts.
+#[rstest::rstest]
+#[tokio::test]
+async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the index as the seed wrote it, and an approved Agent that binds it.
+	let (f, _, _) = fixture.runtime.parts();
+	common::tenant_token(&f.store, "acme").await;
+	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let workspace = f
+		.store
+		.create_workspace(&acme, "alice", "Package indexes", "Run an older Agent")
+		.await
+		.unwrap();
+	let task = f
+		.store
+		.create_task(
+			&acme,
+			workspace.id,
+			&aidash_server::domain::NewTask {
+				title: "Work".into(),
+				description: "An Agent that bound core.npm".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let npm = json!({"id":"core.npm","version":"1.0.0","kind":"external_service","name":{"en":"npm"},"description":{"en":"Package index"},"capabilities":[],"tags":["system"],"languages":[],"skills":[],"schema":{},"config":{"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}});
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','core.npm','1.0.0','external_service',$1)")
+		.bind(&npm)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let node = f.config.deployment.as_str().to_owned();
+	let mut registered = vec![];
+	for (kind, id, config) in [
+		(
+			"model",
+			"fixture-model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"npm-agent",
+			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Install packages","bindings":[{"kind":"external_service","target":{"registry_deployment":node,"id":"core.npm","version":"1.0.0"},"narrow":{}}],"remove_default":[]}),
+		),
+	] {
+		registered.push(
+			f.registry
+				.register(
+					acme.tenant_name().unwrap(),
+					serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"schema":{},"config":config})).unwrap(),
+				)
+				.await
+				.unwrap(),
+		);
+	}
+	let agent = registered[1].clone();
+	let normalized = |entry: &aidash_server::registry::Entry| {
+		entry
+			.binding_normalization
+			.as_ref()
+			.unwrap()
+			.bindings
+			.iter()
+			.any(|item| item.binding.target.id == "core.npm")
+	};
+	assert!(
+		normalized(&agent),
+		"registration saves the Binding in the normalization"
+	);
+	common::approve_agent(&f, "acme", &agent).await;
+	let migrate = async |sql: &str| {
+		let owner = sqlx::PgPool::connect(fixture.runtime.owner_url())
+			.await
+			.unwrap();
+		let mut tx = owner.begin().await.unwrap();
+		sqlx::raw_sql(sql).execute(&mut *tx).await.unwrap();
+		tx.commit().await.unwrap();
+		owner.close().await;
+	};
+
+	// Act: the approval goes, as identity/0082 deletes it.
+	migrate(include_str!(
+		"../../../../migrations/identity/sql/forward/0082_remove_package_index_approvals.sql"
+	))
+	.await;
+	let refused = common::subject_claim(&f, "acme", &task, &agent).await;
+
+	// Assert: with the Binding still registered, the Run is refused at start.
+	assert!(refused.is_err(), "{refused:?}");
+
+	// Act: registry/0070 removes the Binding from the registered version.
+	migrate(include_str!(
+		"../../../../migrations/registry/sql/forward/0070_remove_package_index_draft_bindings.sql"
+	))
+	.await;
+
+	// Assert: the version keeps a consistent normalization, and its Run starts.
+	let name = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let migrated = f.registry.get(&name, "npm-agent", "1.0.0").await.unwrap();
+	assert_eq!(migrated.config["bindings"], json!([]));
+	assert!(!normalized(&migrated));
+	common::subject_claim(&f, "acme", &task, &agent)
+		.await
+		.expect("the Run of the migrated Agent starts");
+	assert!(
+		f.store
+			.runs(&acme)
+			.await
+			.unwrap()
+			.iter()
+			.any(|run| run.task_id == task.id),
+		"admission queues a Run"
+	);
+}

@@ -2061,6 +2061,99 @@ mod agent_plugin_tools {
 		);
 		assert!(matches!(own.identity, ToolIdentity::AgentPlugin(_)));
 	}
+
+	/// A Run that pinned `search` from the stdio server `docs`.
+	fn stdio_setup(
+		repository: &mut Repository,
+		agent: &mut AgentConfig,
+	) -> (ToolContract, ToolCall) {
+		let stored = crate::test_support::stored_plugin_with_servers(
+			"acme",
+			json!({"docs": {"type": "stdio", "command": "node"}}),
+			&[],
+		);
+		let reference = plugin_reference(&stored);
+		let listed = BTreeMap::from([(
+			(reference.name.clone(), server()),
+			Listing::Listed(vec![listed_tool("search")]),
+		)]);
+		let tools = pin(
+			std::slice::from_ref(&reference),
+			&PluginSettings::new(),
+			&listed,
+			&BTreeSet::new(),
+		);
+		agent.agent_plugins = vec![reference.clone()];
+		repository.plugin_tools = Some(tools);
+		(
+			ToolContract::agent_plugin_stdio(identity(&reference)),
+			call("acme__docs__search", json!({"q": "rust"})),
+		)
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_stdio_tool_needs_no_approval_but_checks_the_unapproved_call_deny(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (contract, input) = stdio_setup(&mut repository, &mut agent);
+		// `core_capabilities.shell` is derived from a shell Binding (agent_settings.rs
+		// `operation`). An Agent that attaches a plugin without binding the shell keeps it off,
+		// so requiring it would refuse every stdio call of such an Agent.
+		agent.core_capabilities.shell = false;
+
+		super::super::authorize(&repository, &run, &agent, &input, &contract)
+			.await
+			.unwrap();
+
+		assert!(!contract.behavior.tool_call_approval);
+		assert!(contract.authorization.core.is_none());
+		let calls = repository.calls();
+		assert_eq!(calls.len(), 3, "{calls:?}");
+		assert!(calls[1].starts_with("denied:agent-plugin:acme/docs/search:"));
+		assert!(calls[1].ends_with(CALL_UNAPPROVED));
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_tenant_deny_of_unapproved_calls_stops_a_stdio_call(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (contract, input) = stdio_setup(&mut repository, &mut agent);
+		let id = "agent-plugin:acme/docs/search".to_owned();
+		repository
+			.outcomes
+			.insert((id, CALL_UNAPPROVED.into()), Outcome::Forbidden);
+
+		let result = super::super::authorize(&repository, &run, &agent, &input, &contract).await;
+
+		assert!(
+			matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::CallUnapprovedDeny),
+			"{result:?}"
+		);
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn a_stdio_tool_does_not_take_the_remote_contract(
+		mut repository: Repository,
+		run: RunMetadata,
+		mut agent: AgentConfig,
+	) {
+		let (contract, input) = stdio_setup(&mut repository, &mut agent);
+		let ToolIdentity::AgentPlugin(identity) = contract.identity else {
+			unreachable!()
+		};
+		let remote = ToolContract::agent_plugin(identity, false);
+
+		let result = super::super::authorize(&repository, &run, &agent, &input, &remote).await;
+
+		assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+	}
 }
 
 #[rstest]

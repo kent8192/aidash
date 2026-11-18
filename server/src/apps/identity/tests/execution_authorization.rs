@@ -637,7 +637,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	for (id, version) in [
 		("aidash.workspace_read", "1.1.0"),
 		("aidash.workspace_search", "1.1.0"),
-		("aidash.attachment_copy", "1.0.0"),
+		("aidash.attachment_copy", "1.0.1"),
 	] {
 		assert!(
 			catalog

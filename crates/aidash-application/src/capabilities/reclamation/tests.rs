@@ -75,9 +75,6 @@ impl ReclamationRepository for Repository {
 	async fn working(&self, _: Uuid) -> Result<Vec<Uuid>> {
 		Ok(vec![])
 	}
-	async fn python(&self, _: &mut Uuid) -> Result<()> {
-		Ok(())
-	}
 	async fn orphans(&self) -> Result<()> {
 		Ok(())
 	}

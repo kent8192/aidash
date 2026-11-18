@@ -29,6 +29,11 @@ pub enum ExecutionPodErrorCode {
 	CommandInterrupted,
 	RequestRejected,
 	RunnerUnavailable,
+	PythonUnavailable,
+	InvalidPath,
+	PreviewStartFailed,
+	/// The operation id was refused before the Runner accepted it.
+	CommandRefused,
 	Unknown(String),
 }
 impl From<&str> for ExecutionPodErrorCode {
@@ -58,6 +63,10 @@ impl From<&str> for ExecutionPodErrorCode {
 			"command_interrupted" => Self::CommandInterrupted,
 			"request_rejected" => Self::RequestRejected,
 			"runner_unavailable" => Self::RunnerUnavailable,
+			"python_unavailable" => Self::PythonUnavailable,
+			"invalid_path" => Self::InvalidPath,
+			"preview_start_failed" => Self::PreviewStartFailed,
+			"command_refused" => Self::CommandRefused,
 			other => Self::Unknown(other.into()),
 		}
 	}
@@ -89,6 +98,10 @@ impl std::fmt::Display for ExecutionPodErrorCode {
 			Self::CommandInterrupted => "command_interrupted",
 			Self::RequestRejected => "request_rejected",
 			Self::RunnerUnavailable => "runner_unavailable",
+			Self::PythonUnavailable => "python_unavailable",
+			Self::InvalidPath => "invalid_path",
+			Self::PreviewStartFailed => "preview_start_failed",
+			Self::CommandRefused => "command_refused",
 			Self::Unknown(value) => value,
 		};
 		f.write_str(value)
@@ -117,9 +130,6 @@ pub struct ExecutionPodSettings {
 	pub docker_enabled: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub tenant_id: Option<String>,
-	/// The Pod's proof to the Egress gateway that it belongs to this Scratch Space.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub egress_credential: Option<EgressCredential>,
 }
 /// Serializes to the Runner as is, and never appears in `Debug` output.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,6 +163,8 @@ pub struct CommandRequest {
 	pub timeout_seconds: Option<u32>,
 	#[serde(default)]
 	pub background: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub proxy_credential: Option<EgressCredential>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CommandResult {
@@ -170,6 +182,11 @@ pub struct CommandResult {
 	pub error_code: Option<String>,
 	pub message: Option<String>,
 	pub python_result: Option<Value>,
+	pub left_running: Option<String>,
+	/// The Run's Python interpreter was started afresh for this cell (the Pod
+	/// was replaced), so earlier variables are gone.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub session_replaced: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundProcesses {
@@ -189,6 +206,162 @@ pub struct ChangeLogChunk {
 	pub eof: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PythonStartRequest {
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub proxy_credential: Option<EgressCredential>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogRequest {
+	pub operation_id: String,
+	pub stream: String,
+	pub offset: Option<u64>,
+	pub limit: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogChunk {
+	pub data: String,
+	pub next_offset: u64,
+	pub eof: bool,
+	pub size: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileReadRequest {
+	pub scratch_space_id: String,
+	pub path: String,
+	pub offset: Option<u64>,
+	pub limit: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileChunk {
+	pub data: String,
+	pub size: u64,
+	pub next_offset: u64,
+	pub eof: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileSearchRequest {
+	pub scratch_space_id: String,
+	pub pattern: String,
+	pub path: Option<String>,
+	pub glob: Option<String>,
+	pub regex: bool,
+	pub max_results: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMatch {
+	pub path: String,
+	pub line: u64,
+	pub text: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileSearchResult {
+	pub matches: Vec<FileMatch>,
+	pub truncated: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilePatchRequest {
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub patch: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilePatchResult {
+	pub changed: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileWriteRequest {
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub path: String,
+	pub data: String,
+	pub offset: u64,
+	#[serde(rename = "final")]
+	pub final_chunk: bool,
+	pub mode: Option<u32>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileWriteResult {
+	pub size: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileManifestRequest {
+	pub scratch_space_id: String,
+	pub root: String,
+	pub ignore_files: Vec<String>,
+	pub exclude: Vec<String>,
+	pub include: Vec<String>,
+	pub max_files: u32,
+	/// A `root` that does not exist lists no files instead of failing, so a
+	/// sync save can select a deleted path.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub missing_ok: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestFile {
+	pub path: String,
+	pub size: u64,
+	pub sha256: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileManifestResult {
+	pub files: Vec<ManifestFile>,
+	pub skipped_symlinks: Vec<String>,
+	pub truncated: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreviewStartRequest {
+	pub operation_id: String,
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub code: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub cwd: Option<String>,
+	pub port: u16,
+	pub proxy_credential: Option<EgressCredential>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreviewTarget {
+	pub operation_id: String,
+	pub address: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpStartRequest {
+	pub operation_id: String,
+	pub scratch_space_id: String,
+	pub run_id: String,
+	pub install: String,
+	pub command: Vec<String>,
+	pub env: std::collections::BTreeMap<String, String>,
+	pub plugin_data: String,
+	pub proxy_credential: Option<EgressCredential>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSession {
+	pub operation_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct McpCallRequest {
+	pub operation_id: String,
+	pub message: Value,
+	pub timeout_seconds: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct McpCallResult {
+	pub message: Value,
+}
+
+/// The Runner's answer to refusing an operation id it may not have received.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandRefusal {
+	/// True when the id was never accepted: a later submit of it is refused.
+	pub refused: bool,
+	/// The accepted command's status when it was not refused.
+	#[serde(default)]
+	pub status: Option<String>,
+}
+
 /// Calls are idempotent only where the Runner's operation ID contract says so;
 /// an interrupted operation has an unknown outcome and must never be replayed.
 #[async_trait]
@@ -196,10 +369,48 @@ pub trait ExecutionPodRuntime: Send + Sync {
 	async fn ensure(&self, settings: &ExecutionPodSettings) -> Result<PodReceipt>;
 	async fn execute(&self, request: &CommandRequest) -> Result<CommandResult>;
 	async fn result(&self, operation_id: &str) -> Result<CommandResult>;
+	/// Refuse an operation id before the Runner accepts it, so a delayed submit
+	/// of it can never start (#745). Idempotent.
+	async fn refuse_command(
+		&self,
+		_operation_id: &str,
+		_scratch_space_id: &str,
+		_run_id: &str,
+	) -> Result<CommandRefusal> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot refuse a command".into(),
+		)))
+	}
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
+	/// Stop one foreground command; the Run's other commands keep running.
+	async fn stop_command(&self, _operation_id: &str) -> Result<CommandResult> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot stop one command".into(),
+		)))
+	}
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses>;
 	async fn stop_background(&self, operation_id: &str) -> Result<CommandResult>;
-	async fn python_start(&self, scratch_space_id: &str, run_id: &str) -> Result<PythonSession>;
+	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession>;
+	async fn stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<Vec<String>>;
+	async fn background_log(&self, request: &LogRequest) -> Result<LogChunk>;
+	async fn file_read(&self, request: &FileReadRequest) -> Result<FileChunk>;
+	async fn file_search(&self, request: &FileSearchRequest) -> Result<FileSearchResult>;
+	async fn file_patch(&self, request: &FilePatchRequest) -> Result<FilePatchResult>;
+	async fn file_write(&self, request: &FileWriteRequest) -> Result<FileWriteResult>;
+	async fn file_manifest(&self, request: &FileManifestRequest) -> Result<FileManifestResult>;
+	async fn preview_start(&self, request: &PreviewStartRequest) -> Result<PreviewTarget>;
+	async fn preview_stop(&self, operation_id: &str) -> Result<()>;
+	async fn mcp_start(&self, request: &McpStartRequest) -> Result<McpSession>;
+	async fn mcp_call(&self, request: &McpCallRequest) -> Result<McpCallResult>;
+	async fn mcp_stop(&self, operation_id: &str) -> Result<()>;
+	/// Stop every stdio MCP session the Runner holds for the Run in this Scratch Space,
+	/// including one whose start the caller lost track of. Other Background processes of
+	/// the Run keep running. Returns once each session ended.
+	async fn mcp_stop_run(&self, _scratch_space_id: &str, _run_id: &str) -> Result<()> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot stop a Run's MCP sessions".into(),
+		)))
+	}
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult>;
 	async fn python_stop(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
 	async fn change_log(
@@ -239,9 +450,37 @@ mod tests {
 			ExecutionPodErrorCode::from("termination_unconfirmed"),
 			ExecutionPodErrorCode::TerminationUnconfirmed
 		);
+		for (wire, expected) in [
+			(
+				"python_unavailable",
+				ExecutionPodErrorCode::PythonUnavailable,
+			),
+			("invalid_path", ExecutionPodErrorCode::InvalidPath),
+			(
+				"preview_start_failed",
+				ExecutionPodErrorCode::PreviewStartFailed,
+			),
+			("command_refused", ExecutionPodErrorCode::CommandRefused),
+		] {
+			let code = ExecutionPodErrorCode::from(wire);
+			assert_eq!(code, expected);
+			assert_eq!(code.to_string(), wire);
+		}
 		assert_eq!(
 			ExecutionPodErrorCode::from("future_code"),
 			ExecutionPodErrorCode::Unknown("future_code".into())
+		);
+	}
+	#[test]
+	fn command_result_carries_adopted_background_operation() {
+		let result: CommandResult = serde_json::from_value(serde_json::json!({
+			"operation_id":"op", "status":"completed", "left_running":"op.left"
+		}))
+		.unwrap();
+		assert_eq!(result.left_running.as_deref(), Some("op.left"));
+		assert_eq!(
+			serde_json::to_value(result).unwrap()["left_running"],
+			"op.left"
 		);
 	}
 	#[test]
@@ -265,19 +504,14 @@ mod egress_credential_tests {
 	}
 
 	#[test]
-	fn the_runner_finds_it_under_the_name_it_reads() {
-		let settings = super::ExecutionPodSettings {
+	fn process_credential_uses_the_wire_name_and_is_redacted() {
+		let request = super::PythonStartRequest {
 			scratch_space_id: "s".into(),
-			image: "image".into(),
-			cpu: 1,
-			memory_bytes: 1,
-			capacity_bytes: 1,
-			docker_enabled: false,
-			tenant_id: None,
-			egress_credential: Some(EgressCredential("canary".into())),
+			run_id: "r".into(),
+			proxy_credential: Some(EgressCredential("canary".into())),
 		};
-		let value = serde_json::to_value(&settings).unwrap();
-		assert_eq!(value["egress_credential"], "canary");
-		assert!(!format!("{settings:?}").contains("canary"));
+		let value = serde_json::to_value(&request).unwrap();
+		assert_eq!(value["proxy_credential"], "canary");
+		assert!(!format!("{request:?}").contains("canary"));
 	}
 }

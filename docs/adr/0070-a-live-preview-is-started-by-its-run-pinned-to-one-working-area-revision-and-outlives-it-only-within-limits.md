@@ -29,3 +29,7 @@ For a Remote Grant Run, the receiver rechecks the admission subject chain and an
 ## Amendment (start racing a stop)
 
 If a stop wins while a Live preview start waits for the Runner, the stopped state and its original reason remain authoritative. The Runner is asked to stop the operation, and the revision hold remains until termination is confirmed.
+
+## Amendment (2026-11-14, #745)
+
+ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.

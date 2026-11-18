@@ -17,8 +17,11 @@ pub mod source_defaults;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
 /// Default Tool sets an Agent version may have been normalized with: today's
-/// (0) and five historical ones (see `AgentBindings::normalize_mode`).
-const HISTORICAL_DEFAULT_SETS: u8 = 6;
+/// (0) and six historical ones (see `AgentBindings::normalize_mode`).
+const HISTORICAL_DEFAULT_SETS: u8 = 7;
+/// Default file tools whose builtin moved to 1.0.1 with the Execution Pod
+/// (#745). Every historical default set bound them at 1.0.0.
+const POD_FILE_TOOLS: &[&str] = &["file_read", "file_search", "attachment_copy"];
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
 pub const MAX_TOOL_PARALLELISM: u8 = 16;
 fn sequential_tools() -> u8 {
@@ -406,15 +409,19 @@ impl AgentBindings {
 		self.normalize_mode(node, 0)
 	}
 	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
-	/// version was normalized with (0 today, 1–5 historical, where 5 is
-	/// today's set before the Schedule tools of #557, which every historical
-	/// set lacks); `mode >=
+	/// version was normalized with (0 today, 1–6 historical, where 5 is
+	/// today's set before the Schedule tools of #557, which sets 1–5 lack, and
+	/// 6 is today's set before the file tools moved to 1.0.1 with #745, which
+	/// every historical set predates); `mode >=
 	/// HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and `subnode_task`
 	/// at the 1.0.0 they had before they moved to 1.1.0.
 	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
 		let mode = mode % HISTORICAL_DEFAULT_SETS;
+		let previous_file_tools = mode != 0;
+		// Set 6 is today's set in every other way.
+		let mode = if mode == 6 { 0 } else { mode };
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
@@ -447,7 +454,10 @@ impl AgentBindings {
 			// Attachment images (#622). `workspace_read` keeps the version each
 			// pinned; `workspace_message` and `workspace_search` move to 1.1.0,
 			// which only adds inputs (see `upgraded`).
-			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
+			if mode == 1
+				|| (mode == 3 && *operation != "workspace_read")
+				|| (previous_file_tools && POD_FILE_TOOLS.contains(operation))
+			{
 				target.version = "1.0.0".into();
 			} else if mode == 2 && *operation == "workspace_read" {
 				target.version = "1.0.1".into();
@@ -463,6 +473,15 @@ impl AgentBindings {
 					&& b.target.registry_deployment == node
 					&& pinned.contains(&b.target.version.as_str())
 			}) {
+				target = binding.target.clone();
+			} else if POD_FILE_TOOLS.contains(operation)
+				&& let Some(binding) = self.bindings.iter().find(|b| {
+					b.target.id == target.id
+						&& b.target.registry_deployment == node
+						&& b.target.version == "1.0.0"
+				}) {
+				// An Agent that binds the declaration from before #745 keeps it as
+				// its default rather than gaining a second one under the same alias.
 				target = binding.target.clone();
 			}
 			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
@@ -663,7 +682,10 @@ impl QualifiedRef {
 					| "subnode_task"
 			) {
 				"1.1.0"
-			} else if operation == "workspace_observe" {
+			} else if matches!(
+				operation,
+				"workspace_observe" | "file_read" | "file_search" | "attachment_copy"
+			) {
 				"1.0.1"
 			} else {
 				"1.0.0"

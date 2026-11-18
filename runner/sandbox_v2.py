@@ -22,6 +22,7 @@ class _Data(ctypes.Structure):
                 ('inheritable', ctypes.c_uint32)]
 
 
+
 def drop_user_capabilities(docker_enabled):
     """Permanently reduce this process only; call after forking bootstrap."""
     if type(docker_enabled) is not bool:
@@ -115,10 +116,13 @@ def image_environment(root):
             or not k or '=' in k or '\x00' in k or '\x00' in v for k, v in values.items()):
         raise ValueError('invalid image environment')
     environment = {key: value for key, value in values.items()
-                   if not key.startswith(('AIDASH_', 'KUBERNETES_'))}
+                   if not key.startswith(('AIDASH_', 'KUBERNETES_')) and key not in
+                   ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY')}
     for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy'):
         if key in os.environ:
             environment[key] = os.environ[key]
+    if 'HTTPS_PROXY' in os.environ:
+        environment['NODE_USE_ENV_PROXY'] = '1'
     return environment
 
 
@@ -192,7 +196,26 @@ def mount_rootfs(docker_enabled):
 FORWARD_GRACE_SECONDS = 5
 
 
-def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None, operation_id=None, output_limit=8388608):
+def validate_operation_id(operation_id):
+    import uuid
+    if not isinstance(operation_id, str):
+        raise ValueError('invalid operation ID')
+    base = operation_id[:-5] if operation_id.endswith('.left') else operation_id
+    if str(uuid.UUID(base)) != base:
+        raise ValueError('canonical operation UUID required')
+
+
+def sign_result(result, key):
+    import hashlib
+    import hmac
+    import json
+    payload = {name: value for name, value in result.items() if name != 'auth'}
+    data = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
+def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None, operation_id=None, output_limit=8388608,
+                   on_left=None):
     """Run one command in a dedicated supervisor and reap escaped descendants.
 
     This must be called in a single-purpose process: becoming a subreaper also
@@ -216,6 +239,7 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
     readers = []
     output_state = {'used': 0, 'incomplete': False, 'truncated': False, 'forward_incomplete': False}
     output_lock = threading.Lock()
+    forward_lock = threading.Lock()
     reader_stop = threading.Event()
     forward_stop = threading.Event()
     if output_directory is not None:
@@ -270,12 +294,15 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                     try:
                         view = memoryview(data)
                         while view and not reader_stop.is_set() and not forward_stop.is_set():
-                            _, writable, _ = select.select([], [target], [], .1)
-                            if writable:
-                                count = os.write(target, view[:4096])
-                                if not count:
-                                    raise BrokenPipeError()
-                                view = view[count:]
+                            with forward_lock:
+                                if forward_stop.is_set():
+                                    break
+                                _, writable, _ = select.select([], [target], [], .1)
+                                if writable:
+                                    count = os.write(target, view[:4096])
+                                    if not count:
+                                        raise BrokenPipeError()
+                                    view = view[count:]
                         if view:
                             forwarding = False
                             output_state['forward_incomplete'] = True
@@ -318,12 +345,26 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
             result['output_truncated'] = output_state['truncated']
             result['forward_incomplete'] = output_state['forward_incomplete'] or unfinished
         return result
+    def stop_forwarding():
+        forward_stop.set()
+        with forward_lock:
+            null = os.open('/dev/null', os.O_WRONLY)
+            try:
+                os.dup2(null, 1)
+                os.dup2(null, 2)
+            finally:
+                os.close(null)
+
     expires = None if timeout is None else time.monotonic() + timeout
+    exited_at = None
     while expires is None or time.monotonic() < expires:
         if stop_requested is not None and stop_requested.is_set():
             break
         exit_code = process.poll()
         if exit_code is not None:
+            if on_left is not None and exited_at is None:
+                exited_at = time.monotonic()
+                expires = None
             # Orphaned descendants are adopted by this supervisor, even after
             # the shell has exited. Keep them tracked until they have stopped.
             try:
@@ -331,6 +372,11 @@ def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None,
                     pass
             except ChildProcessError:
                 return finish({'status': 'completed', 'exit_code': exit_code})
+            if on_left is not None and time.monotonic() - exited_at >= 2:
+                with output_lock:
+                    state = dict(output_state)
+                on_left(exit_code, stop_forwarding, state)
+                on_left = None
         time.sleep(0.02)
 
     stopped = stop_requested is not None and stop_requested.is_set()
@@ -395,7 +441,7 @@ def disk_tolerant_track(action, reserve, on_full=None):
 
 
 def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, *, expected_pod_uid,
-                      record_changes=True, output_limit=8388608):
+                      record_changes=True, output_limit=8388608, notify_left=None, left_auth=None):
     """Execute once, persist its outcome, and record its observed system changes."""
     import json
     from pathlib import Path
@@ -432,6 +478,43 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
         file.flush()
         os.fsync(file.fileno())
     os.replace(pending_running, running)
+    left_id = operation_id + '.left'
+    adopted = False
+    def persist_result(identifier, result):
+        temporary = state / (identifier + '.new')
+        with temporary.open('x', encoding='utf-8') as file:
+            json.dump(result, file, separators=(',', ':'))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, state / (identifier + '.json'))
+        directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def adopt(exit_code, stop_forwarding, output_state):
+        nonlocal adopted
+        if not claim_operation(left_id, state):
+            raise FileExistsError('adopted operation already exists')
+        for stream in ('stdout', 'stderr'):
+            source = Path(OUTPUT_DIRECTORY) / (operation_id + '.' + stream)
+            try:
+                os.link(source, Path(OUTPUT_DIRECTORY) / (left_id + '.' + stream), follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+        left_running = state / (left_id + '.running')
+        with left_running.open('x', encoding='utf-8') as file:
+            json.dump({'pid': os.getpid(), 'start_time': process_start_time(os.getpid()), 'pod_uid': pod_uid}, file)
+            file.flush()
+            os.fsync(file.fileno())
+        result = {'operation_id': operation_id, 'run_id': run_id, 'status': 'completed',
+                  'exit_code': exit_code, 'left_running': left_id,
+                  'output_incomplete': output_state['incomplete'], 'output_truncated': output_state['truncated']}
+        persist_result(operation_id, result)
+        adopted = True
+        stop_forwarding()
+        notify_left(result)
     interval_stop = threading.Event()
     interval_errors = []
     disk_full = threading.Event()
@@ -459,7 +542,8 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     try:
         result = run_supervised(argv, timeout, stop_requested=stopping,
                                 output_directory=OUTPUT_DIRECTORY,
-                                operation_id=operation_id, output_limit=output_limit)
+                                operation_id=operation_id, output_limit=output_limit,
+                                on_left=adopt if notify_left else None)
     finally:
         if tracking_started:
             interval_stop.set()
@@ -472,20 +556,54 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
         raise RuntimeError('change tracking failed: ' + str(interval_errors[0]))
     if disk_full.is_set():
         result.update(error_code='disk_full', message='System change tracking was incomplete because the Scratch Space is full')
-    result.update(operation_id=operation_id, run_id=run_id)
-    temporary = state / (operation_id + '.new')
-    with temporary.open('x', encoding='utf-8') as file:
-        json.dump(result, file, separators=(',', ':'))
-        file.flush()
-        os.fsync(file.fileno())
-    os.replace(temporary, state / (operation_id + '.json'))
+    result.update(operation_id=left_id if adopted else operation_id, run_id=run_id)
+    if adopted and left_auth:
+        result['auth'] = sign_result(result, left_auth)
+    persist_result(result['operation_id'], result)
     running.unlink(missing_ok=True)
-    directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+    if adopted:
+        (state / (left_id + '.running')).unlink(missing_ok=True)
     return result
+
+
+def supervise_foreground(*args, **kwargs):
+    """Return the main result while a child supervisor keeps adopted processes alive."""
+    import json
+    read_fd, write_fd = os.pipe()
+    child = os.fork()
+    if child:
+        os.close(write_fd)
+        with os.fdopen(read_fd, 'rb') as stream:
+            data = stream.readline(65537)
+        if not data or len(data) > 65536:
+            os.waitpid(child, 0)
+            raise RuntimeError('foreground supervisor failed')
+        result = json.loads(data)
+        if not result.get('left_running'):
+            os.waitpid(child, 0)
+        if 'supervisor_error' in result:
+            raise RuntimeError('foreground supervisor failed')
+        return result
+    os.close(read_fd)
+    sent = False
+    def notify(result):
+        nonlocal sent
+        sent = True
+        try:
+            os.write(write_fd, json.dumps(result, separators=(',', ':')).encode() + b'\n')
+        except BrokenPipeError:
+            pass
+    try:
+        os.setsid()
+        result = supervise_command(*args, notify_left=notify, **kwargs)
+        if not sent:
+            notify(result)
+    except BaseException:
+        if not sent:
+            notify({'supervisor_error': True})
+    finally:
+        os.close(write_fd)
+        os._exit(0)
 
 
 def process_start_time(pid):
@@ -498,12 +616,10 @@ def process_start_time(pid):
 def stop_operation(operation_id):
     import json
     import signal
-    import uuid
     from pathlib import Path
 
-    if str(uuid.UUID(operation_id)) != operation_id:
-        raise ValueError('canonical operation UUID required')
-    path = Path('/scratch-system/operations') / (operation_id + '.running')
+    validate_operation_id(operation_id)
+    path = Path(OPERATION_DIRECTORY) / (operation_id + '.running')
     record = json.loads(path.read_bytes())
     if not os.environ.get('AIDASH_POD_UID') or record['pod_uid'] != os.environ['AIDASH_POD_UID']:
         raise ValueError('operation belongs to another Pod')
@@ -522,25 +638,26 @@ def stop_operation(operation_id):
 def log_chunk(path, offset, limit):
     import base64
     import fcntl
-    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 262144:
+    if (offset is not None and (type(offset) is not int or offset < 0)) or type(limit) is not int or not 1 <= limit <= 262144:
         raise ValueError('invalid log offset or limit')
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return {'data': '', 'next_offset': offset, 'eof': True}
+        return {'data': '', 'next_offset': offset or 0, 'eof': True, 'size': 0}
     with os.fdopen(fd, 'rb') as file:
         fcntl.flock(file, fcntl.LOCK_SH)
+        size = os.fstat(file.fileno()).st_size
+        if offset is None:
+            offset = max(0, size - limit)
         file.seek(offset)
         data = file.read(limit)
-        eof = file.tell() >= os.fstat(file.fileno()).st_size
-    return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof}
+        eof = file.tell() >= size
+    return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof, 'size': size}
 
 
 def claim_operation(operation_id, directory='/scratch-system/operations'):
-    import uuid
     from pathlib import Path
-    if str(uuid.UUID(operation_id)) != operation_id:
-        raise ValueError('canonical operation UUID required')
+    validate_operation_id(operation_id)
     directory = Path(directory)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
@@ -561,9 +678,9 @@ def claim_operation(operation_id, directory='/scratch-system/operations'):
 
 
 def operation_output(operation_id, stream, offset, limit, directory='/scratch-system/operation-output'):
-    import uuid
     from pathlib import Path
-    if str(uuid.UUID(operation_id)) != operation_id or stream not in ('stdout', 'stderr'):
+    validate_operation_id(operation_id)
+    if stream not in ('stdout', 'stderr'):
         raise ValueError('invalid operation output')
     path = Path(directory) / (operation_id + '.' + stream)
     if not path.exists():
@@ -572,10 +689,8 @@ def operation_output(operation_id, stream, offset, limit, directory='/scratch-sy
 
 
 def forget_operation(operation_id, directory='/scratch-system/operations', output_directory='/scratch-system/operation-output'):
-    import uuid
     from pathlib import Path
-    if str(uuid.UUID(operation_id)) != operation_id:
-        raise ValueError('canonical operation UUID required')
+    validate_operation_id(operation_id)
     for suffix in ('.started', '.running', '.running.new', '.new', '.json'):
         (Path(directory) / (operation_id + suffix)).unlink(missing_ok=True)
     for suffix in ('.stdout', '.stderr'):
@@ -584,11 +699,9 @@ def forget_operation(operation_id, directory='/scratch-system/operations', outpu
 
 def operation_running(operation_id):
     import json
-    import uuid
     from pathlib import Path
-    if str(uuid.UUID(operation_id)) != operation_id:
-        raise ValueError('canonical operation UUID required')
-    path = Path('/scratch-system/operations') / (operation_id + '.running')
+    validate_operation_id(operation_id)
+    path = Path(OPERATION_DIRECTORY) / (operation_id + '.running')
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, 'rb') as file:
@@ -602,11 +715,9 @@ def operation_running(operation_id):
 
 def read_result(operation_id):
     import json
-    import uuid
     from pathlib import Path
-    if str(uuid.UUID(operation_id)) != operation_id:
-        raise ValueError('canonical operation UUID required')
-    path = Path('/scratch-system/operations') / (operation_id + '.json')
+    validate_operation_id(operation_id)
+    path = Path(OPERATION_DIRECTORY) / (operation_id + '.json')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd, 'rb') as file:
         data = file.read(65537)
@@ -660,6 +771,8 @@ def bootstrap():
     fd = os.open(BOOTSTRAP_READY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as file:
         file.write(uid.encode('utf-8'))
+    if os.getpid() == 1:
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
     while True:
         signal.pause()
 
@@ -707,21 +820,85 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
-    if (len(sys.argv) == 11 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
+    if len(sys.argv) in (4, 5) and sys.argv[1] == 'port-check':
+        import ipaddress
+        import json
+        import socket
+        if os.environ.get('AIDASH_POD_UID') != sys.argv[2]:
+            raise ValueError('Execution Pod identity changed')
+        port = int(sys.argv[3])
+        if not 1 <= port <= 65535:
+            raise ValueError('invalid port')
+        # The Pod's own address unless a caller names one (loopback for an occupancy check).
+        host = str(ipaddress.ip_address(sys.argv[4])) if len(sys.argv) == 5 else '127.0.0.1'
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                ready = True
+        except OSError:
+            ready = False
+        print(json.dumps({'ready': ready}))
+        raise SystemExit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == 'files':
+        import json
+        from pathlib import Path
+        if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
+            raise ValueError('Execution Pod identity changed')
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from files_v2 import FileService, InvalidPath, run_bounded
+        try:
+            request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
+            service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
+            operation = sys.argv[2]
+            if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+                raise ValueError('invalid file operation')
+            result = {'result': run_bounded(service, operation, request)}
+        except InvalidPath as error:
+            result = {'error': {'code': 'invalid_path', 'message': str(error)}}
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            result = {'error': {'code': 'file_error', 'message': str(error)}}
+        print(json.dumps(result, separators=(',', ':')))
+        raise SystemExit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == 'python-check' and sys.argv[2] in ('docker', 'normal'):
+        import json
+        import subprocess
+        from pathlib import Path
+        if os.environ.get('AIDASH_POD_UID') != sys.argv[3]:
+            raise ValueError('Execution Pod identity changed')
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from execution_pod import helper_command
+        probe = subprocess.run(helper_command('chroot', sys.argv[2], '/scratch-system/image-root/rootfs', '.',
+            'python3', '-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        print(json.dumps({'available': probe.returncode == 0}))
+        raise SystemExit(0)
+    if (len(sys.argv) in (11, 12) and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
         token = None
+        for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY'):
+            os.environ.pop(key, None)
         if sys.argv[2] == 'docker':
             import re
             token = sys.stdin.buffer.readline(66).strip()
             if not re.fullmatch(b'[0-9a-f]{64}', token):
                 raise ValueError('invalid result nonce')
+        if len(sys.argv) == 12:
+            if sys.argv[11] != 'proxy-stdin':
+                raise ValueError('invalid supervisor input')
+            proxy = sys.stdin.buffer.readline(2049).decode('ascii').strip()
+            if not proxy.startswith('http://aidash:') or len(proxy) > 2048:
+                raise ValueError('invalid process proxy')
+            for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+                os.environ[key] = proxy
+        if sys.argv[2] == 'docker' or len(sys.argv) == 12:
             null = os.open('/dev/null', os.O_RDONLY)
             os.dup2(null, 0)
             os.close(null)
-        outcome = supervise_command(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
+        supervise = supervise_foreground if seconds is not None and sys.argv[3] == 'command' else supervise_command
+        outcome = supervise(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
-                                    record_changes=sys.argv[3] == 'command', output_limit=int(sys.argv[10]))
+                                    record_changes=sys.argv[3] == 'command', output_limit=int(sys.argv[10]),
+                                    left_auth=token)
         if token is not None:
             import json
             frame = b'\x1eaidash-result:' + token + b':' + json.dumps(outcome, separators=(',', ':')).encode() + b'\n'
@@ -733,7 +910,8 @@ if __name__ == '__main__':
         raise SystemExit(0)
     if len(sys.argv) == 6 and sys.argv[1] == 'output':
         import json
-        print(json.dumps(operation_output(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]))))
+        offset = None if sys.argv[4] == 'tail' else int(sys.argv[4])
+        print(json.dumps(operation_output(sys.argv[2], sys.argv[3], offset, int(sys.argv[5]))))
         raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])

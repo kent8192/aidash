@@ -100,6 +100,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"registry_requests" | "core_requests" => Subject("principal"),
 		"subnode_members" => Link("subnode_id", Subnode),
 		"scratch_space_settings" | "scratch_space_members" => Link("space_id", ScratchSpace),
+		"agent_plugin_data" => Link("scratch_space_id", ScratchSpace),
 		"identity_thread_approval_modes" => Link("thread_id", Thread),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
@@ -123,7 +124,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "memory_banks"
 		| "memory_participants" => Link("workspace_id", Workspace),
 		"core_operations" => Link("area_id", Area),
-		"core_runs" => Link("run_id", Run),
+		"core_runs" | "egress_run_revocations" => Link("run_id", Run),
 		"core_task_sessions"
 		| "delegations"
 		| "memory_task_participants"

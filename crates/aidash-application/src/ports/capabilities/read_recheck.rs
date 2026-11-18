@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub enum Target {
 	Operation(Uuid),
 	LivePreview(Uuid),
+	/// A durable revocation whose Pod stop has not yet been confirmed.
+	RevokedRun(Uuid),
 }
 
 /// What one Read Recheck found.

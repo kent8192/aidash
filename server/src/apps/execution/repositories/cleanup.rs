@@ -10,7 +10,6 @@ use crate::apps::execution::capabilities::{
 		contracts::{Area as NativeArea, FileEntry},
 	},
 	services::{
-		python,
 		records::{self, Record as NativeRecord},
 		service, sessions, sharing, thread_lifecycle,
 	},
@@ -696,16 +695,6 @@ impl CleanupScope for Scope<'_> {
 		sessions::cache(self.access, key, digest, result)
 			.await
 			.map_err(Into::into)
-	}
-	async fn release_python(&mut self, area: &Area, reason: &str) -> Result<()> {
-		python::release(
-			self.store.ok_or_else(missing)?,
-			self.access,
-			&area.clone().into(),
-			reason,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn copy_owned(
 		&mut self,

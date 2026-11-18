@@ -9,6 +9,7 @@ fn operation() -> OperationState {
 		principal: "saved-subject".into(),
 		kind: "code_interpreter".into(),
 		state: "prepared".into(),
+		pod: false,
 	}
 }
 #[rstest]
@@ -29,31 +30,6 @@ fn operation_disclosure_requires_same_area_run_principal_and_kind(
 		operation.visible_to(Uuid::from_u128(area), Uuid::from_u128(run), principal, kind),
 		visible
 	);
-}
-#[rstest]
-fn python_poll_accepts_an_install_without_loosening_other_kind_checks(
-	mut operation: OperationState,
-) {
-	operation.kind = "python_install".into();
-	assert!(operation.visible_to(
-		operation.area_id,
-		operation.run_id,
-		&operation.principal,
-		"code_interpreter"
-	));
-	assert!(!operation.visible_to(
-		operation.area_id,
-		operation.run_id,
-		&operation.principal,
-		"shell"
-	));
-	operation.kind = "code_interpreter".into();
-	assert!(!operation.visible_to(
-		operation.area_id,
-		operation.run_id,
-		&operation.principal,
-		"python_install"
-	));
 }
 #[rstest]
 #[case::prepared("prepared", Some("cancelled"), true)]
@@ -210,16 +186,6 @@ fn mounted_inputs_preserve_quota_boundaries_and_collision_precedence(
 	);
 }
 #[rstest]
-fn package_files_preserve_all_metadata_and_reject_incomplete_or_wrong_scope_input() {
-	let mounted = file(FileScope::References, "package.whl", 7);
-	let encoded = serde_json::to_value(&mounted).unwrap();
-	let decoded = package_files(&json!({"package_files":[encoded]})).unwrap();
-	assert_eq!(serde_json::to_value(&decoded[0]).unwrap(), encoded);
-	assert!(package_files(&json!({"package_files":[{"path":"missing"}]})).is_err());
-	assert!(package_files(&json!({"package_files":[{"scope":"unknown"}]})).is_err());
-	assert_eq!(package_files(&json!({})).unwrap().len(), 0);
-}
-#[rstest]
 #[case::active("active", None)]
 #[case::running("running", Some("AREA_BUSY"))]
 #[case::uncertain("uncertain", Some("AREA_UNAVAILABLE"))]
@@ -255,4 +221,11 @@ fn reference_files_use_none_of_the_working_area() {
 	];
 	assert!(files[0].is_reference_file());
 	assert_eq!(counted_files(&files).count(), 3);
+}
+
+#[test]
+fn only_a_recorded_pod_runtime_marks_a_pod_operation() {
+	assert!(runs_in_pod(&json!({"runtime": "pod", "command": "ls"})));
+	assert!(!runs_in_pod(&json!({"command": "ls"})));
+	assert!(!runs_in_pod(&json!({"runtime": "runner"})));
 }

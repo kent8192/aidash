@@ -4,10 +4,7 @@ use crate::apps::execution::capabilities::{
 		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
 		Materialize as NativeMaterialize, MaterializeSource as NativeMaterializeSource,
 	},
-	services::{
-		approvals, objects::PendingObject, operations, packages, patch, python, sessions, sharing,
-		skills,
-	},
+	services::{approvals, objects::PendingObject, operations, patch, sessions, sharing, skills},
 };
 use crate::{
 	Error as NativeError, Result as NativeResult,
@@ -321,6 +318,13 @@ impl FileScopePort for Scope<'_> {
 		}
 		Ok(area)
 	}
+	async fn pod(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<Option<aidash_application::ports::capabilities::pod_operations::PodContext>> {
+		let store = self.store.ok_or_else(missing)?;
+		super::operations::pods::tool_context(store, self.access, run).await
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()> {
 		aidash_application::capabilities::sessions::authorize(
 			&mut crate::bootstrap::session_scope(None, self.access),
@@ -350,36 +354,13 @@ impl FileScopePort for Scope<'_> {
 		action: Action<'_>,
 		area: &mut Area,
 		input: Value,
-		key: &str,
+		_key: &str,
 	) -> Result<Value> {
 		let store = self.store.ok_or_else(missing)?;
 		let run = self.run.ok_or_else(missing)?;
 		let mut native: NativeArea = area.clone().into();
 		let result: NativeResult<Value> = async {
 			Ok(match action {
-				Action::Package => {
-					packages::prepare(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
-				Action::Python => {
-					python::prepare(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-						key,
-					)
-					.await?
-				}
 				Action::Outbound => {
 					approvals::prepare(
 						store,
@@ -414,18 +395,6 @@ impl FileScopePort for Scope<'_> {
 					)
 					.await?
 				}
-				Action::Shell => {
-					operations::prepare(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-						key,
-					)
-					.await?
-				}
 				Action::Verify => {
 					operations::prepare_kind(
 						store,
@@ -436,6 +405,21 @@ impl FileScopePort for Scope<'_> {
 							.map_err(|e| NativeError::Invalid(e.to_string()))?,
 						aidash_domain::capabilities::operations::VERIFICATION,
 						serde_json::json!({}),
+					)
+					.await?
+				}
+				Action::PodCommand {
+					kind,
+					scratch_space_id,
+				} => {
+					operations::prepare_pod(
+						store,
+						self.access,
+						run,
+						&mut native,
+						input,
+						kind,
+						&scratch_space_id,
 					)
 					.await?
 				}

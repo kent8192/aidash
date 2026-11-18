@@ -27,6 +27,14 @@ impl OperationProcessingRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 
+	fn pods(
+		&self,
+	) -> Option<&dyn aidash_application::ports::capabilities::pod_operations::PodOperationRepository>
+	{
+		let pods: &dyn aidash_application::ports::capabilities::pod_operations::PodOperationRepository = self;
+		self.store.capabilities.0.runner.is_some().then_some(pods)
+	}
+
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
 			let ids: Vec<Uuid> = crate::database::native::query_scalar(
@@ -39,6 +47,8 @@ impl OperationProcessingRepository for Repository<'_> {
 						"running",
 						"cancelling",
 					]))
+					// Pod operations have their own sweep and never reach `/v1` (#745).
+					.and_where(Expr::cust("COALESCE(input->>'runtime', '') <> 'pod'"))
 					.order_by(Alias::new("updated_at"), Order::Asc)
 					.limit(16)
 					.to_string(PostgresQueryBuilder),

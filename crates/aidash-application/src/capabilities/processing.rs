@@ -24,6 +24,11 @@ pub async fn sweep(
 	if let Err(error) = super::pod_usage::sweep(repository, &mut cursor.allocation).await {
 		tracing::warn!(%error, "allocation usage delivery pending");
 	}
+	if let Some(pods) = repository.pods()
+		&& let Err(error) = super::pod::sweep(pods).await
+	{
+		tracing::warn!(%error, "pod operation sweep pending");
+	}
 	let ids = repository.active_operations().await?;
 	for id in ids {
 		if let Err(error) = Box::pin(super::reconciliation::drive(repository, id)).await {

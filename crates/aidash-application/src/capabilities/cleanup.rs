@@ -209,16 +209,14 @@ pub async fn prepare(
 			.await?;
 		return result(&recovery);
 	}
-	if !matches!(input.choice, Choice::Keep) {
-		if !matches!(
+	if !matches!(input.choice, Choice::Keep)
+		&& !matches!(
 			area.state.as_str(),
 			"active" | "retained" | "recoverable" | "deleted"
 		) {
-			return Err(Error::Conflict(
-				"AREA_BUSY: cancel and reconcile the active writer before cleanup".into(),
-			));
-		}
-		scope.release_python(&area, "cleanup").await?;
+		return Err(Error::Conflict(
+			"AREA_BUSY: cancel and reconcile the active writer before cleanup".into(),
+		));
 	}
 	let operation = Uuid::new_v4();
 	let mut snapshot = vec![];

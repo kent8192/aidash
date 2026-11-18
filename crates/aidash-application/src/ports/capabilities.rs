@@ -20,15 +20,10 @@ pub trait OperationAdmissionScope<O: Send>: Send {
 	async fn result(&mut self, operation: &O, offset: usize) -> Result<Value>;
 	async fn active_run(&mut self) -> Result<Option<Uuid>>;
 	async fn require_write(&mut self) -> Result<()>;
-	async fn request_files(
-		&mut self,
-		run: Uuid,
-		package_files: Vec<MountedFile>,
-	) -> Result<Vec<MountedFile>>;
+	async fn request_files(&mut self, run: Uuid) -> Result<Vec<MountedFile>>;
 	async fn verified_health(&mut self, python: bool) -> Result<()>;
 	/// Whether the build admits another Sandboxed tool in the Run's Tenant.
 	async fn admit_sandboxed_tool(&mut self) -> Result<()>;
-	async fn release_python(&mut self, reason: &str) -> Result<()>;
 	fn operation_id(&self) -> Uuid;
 	async fn set_running(&mut self, epoch: i64) -> Result<()>;
 	async fn accept(&mut self, operation: AcceptedOperation) -> Result<O>;
@@ -49,7 +44,6 @@ pub trait OperationControlScope: Send {
 		change: aidash_domain::capabilities::operations::Cancellation,
 	) -> Result<()>;
 	async fn activate_area(&mut self) -> Result<()>;
-	async fn complete_python_without_writer(&mut self) -> Result<()>;
 	async fn persist(&mut self) -> Result<()>;
 	async fn project(&mut self, offset: usize) -> Result<Value>;
 }
@@ -57,6 +51,7 @@ pub trait OperationControlScope: Send {
 pub mod withdrawal;
 
 pub mod execution_pod;
+pub mod pod_operations;
 pub mod runner;
 
 pub mod reconciliation;
@@ -80,8 +75,6 @@ pub mod sessions;
 pub mod cleanup;
 
 pub mod journal_query;
-pub mod packages;
-pub mod python;
 
 pub mod files;
 

@@ -1,17 +1,20 @@
-//! A tool of a remote MCP server that a Run pinned from an Agent Plugin copy (ADR 0073). The Run's
+//! A tool of an MCP server that a Run pinned from an Agent Plugin copy (ADR 0073). The Run's
 //! session port lists and calls it; the pin decides its name, schema and Read-only declaration.
+//! A stdio server's tools run in the Run's Execution Pod and need no Tool call approval.
 use super::validate_arguments;
 use crate::{
 	Error, Result,
 	plugin_tools::agent_bindings,
 	ports::{
 		execution::ExecutionTool,
-		tools::{PluginServer, PluginSessions},
+		tools::{PluginServer, PluginSessions, StdioPluginSessions},
 	},
 };
 use aidash_domain::{
 	Run,
-	agent_plugin::{McpServer, PinnedTool, PluginName, PluginTools, RemoteServer, ServerName},
+	agent_plugin::{
+		McpServer, PinnedTool, PluginName, PluginTools, RemoteServer, ServerName, StdioServer,
+	},
 	provider::ToolSpec,
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	tool::{AgentPluginTool, ToolContract},
@@ -41,19 +44,41 @@ pub fn pinned_specifications(pinned: Option<&PluginTools>) -> BTreeMap<String, T
 		.collect()
 }
 
+fn declared_server<'a>(
+	agent: &'a AgentBindings,
+	plugin: &PluginName,
+	digest: &str,
+	server: &ServerName,
+) -> Option<&'a McpServer> {
+	agent
+		.agent_plugins
+		.iter()
+		.find(|reference| &reference.name == plugin && reference.digest == digest)?
+		.servers
+		.get(server)
+}
+
 fn remote_server<'a>(
 	agent: &'a AgentBindings,
 	plugin: &PluginName,
 	digest: &str,
 	server: &ServerName,
 ) -> Option<&'a RemoteServer> {
-	let reference = agent
-		.agent_plugins
-		.iter()
-		.find(|reference| &reference.name == plugin && reference.digest == digest)?;
-	match reference.servers.get(server)? {
+	match declared_server(agent, plugin, digest, server)? {
 		McpServer::Remote(remote) => Some(remote),
 		McpServer::Stdio(_) => None,
+	}
+}
+
+fn stdio_server<'a>(
+	agent: &'a AgentBindings,
+	plugin: &PluginName,
+	digest: &str,
+	server: &ServerName,
+) -> Option<&'a StdioServer> {
+	match declared_server(agent, plugin, digest, server)? {
+		McpServer::Stdio(stdio) => Some(stdio),
+		McpServer::Remote(_) => None,
 	}
 }
 
@@ -70,10 +95,45 @@ pub fn pinned_tools(
 	let agent = agent_bindings(snapshot)?;
 	let mut tools: Vec<(String, Arc<dyn ExecutionTool>)> = Vec::new();
 	for server in &pinned.servers {
-		let config = remote_server(&agent, &server.plugin, &server.digest, &server.server)
+		let declared = declared_server(&agent, &server.plugin, &server.digest, &server.server)
 			.ok_or_else(|| {
 				Error::Conflict("Run pins a plugin server its Agent no longer declares".into())
 			})?;
+		let config = match declared {
+			McpServer::Remote(config) => config,
+			McpServer::Stdio(config) => {
+				let stdio = sessions.stdio().ok_or_else(|| {
+					Error::Conflict(
+						"RUNTIME_UNAVAILABLE: Run pins a stdio plugin server and has no Execution Pod sessions"
+							.into(),
+					)
+				})?;
+				for tool in &server.tools {
+					let identity = AgentPluginTool {
+						plugin: server.plugin.clone(),
+						digest: server.digest.clone(),
+						server: server.server.clone(),
+						tool: tool.name.clone(),
+					};
+					tools.push((
+						tool.alias.clone(),
+						Arc::new(StdioPluginTool {
+							sessions: stdio.clone(),
+							run: run.id,
+							server: PluginServer {
+								plugin: server.plugin.clone(),
+								digest: server.digest.clone(),
+								server: server.server.clone(),
+							},
+							config: config.clone(),
+							contract: ToolContract::agent_plugin_stdio(identity),
+							tool: tool.clone(),
+						}),
+					));
+				}
+				continue;
+			}
+		};
 		for tool in &server.tools {
 			let identity = AgentPluginTool {
 				plugin: server.plugin.clone(),
@@ -208,6 +268,87 @@ impl ExecutionTool for McpPluginTool {
 				admitted,
 				key,
 				None,
+			)
+			.await
+	}
+}
+
+/// Whether `run` pinned exactly `tool` of `server`.
+fn pinned_in(run: &Run, server: &PluginServer, tool: &PinnedTool) -> bool {
+	run.context
+		.plugin_tools
+		.iter()
+		.flat_map(|pinned| &pinned.servers)
+		.filter(|pinned| {
+			pinned.plugin == server.plugin
+				&& pinned.digest == server.digest
+				&& pinned.server == server.server
+		})
+		.flat_map(|pinned| &pinned.tools)
+		.any(|pinned| pinned == tool)
+}
+
+/// A tool of a stdio server, called over the Run's session in its Execution Pod.
+struct StdioPluginTool {
+	sessions: Arc<dyn StdioPluginSessions>,
+	run: Uuid,
+	server: PluginServer,
+	config: StdioServer,
+	contract: ToolContract,
+	tool: PinnedTool,
+}
+
+impl StdioPluginTool {
+	fn declared(&self, run: &Run) -> Result<bool> {
+		let snapshot = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
+		let agent = agent_bindings(snapshot)?;
+		Ok(stdio_server(
+			&agent,
+			&self.server.plugin,
+			&self.server.digest,
+			&self.server.server,
+		) == Some(&self.config))
+	}
+}
+
+#[async_trait]
+impl ExecutionTool for StdioPluginTool {
+	fn specification(&self) -> ToolSpec {
+		pinned_specification(&self.tool)
+	}
+	fn contract(&self) -> ToolContract {
+		self.contract.clone()
+	}
+	fn replay_safe(&self) -> bool {
+		self.contract.replay_safe()
+	}
+	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
+		let admitted = self.admit(run, input).await?;
+		self.dispatch(run, admitted, key).await
+	}
+	async fn admit(&self, run: &Run, input: Value) -> Result<Value> {
+		if run.id != self.run || !pinned_in(run, &self.server, &self.tool) || !self.declared(run)? {
+			return Err(Error::Conflict(
+				"plugin tool dispatch belongs to a different pinned Run".into(),
+			));
+		}
+		validate_arguments(&self.tool.input_schema, &input)?;
+		Ok(input)
+	}
+	async fn dispatch(&self, run: &Run, admitted: Value, key: &str) -> Result<Value> {
+		self.sessions
+			.call(
+				run.id,
+				&self.server,
+				&self.config,
+				&self.tool.name,
+				&self.tool.schema_digest,
+				admitted,
+				key,
 			)
 			.await
 	}

@@ -158,6 +158,8 @@ impl Default for TunnelLimits {
 /// Settings resolved from a revocable Execution Pod proxy credential.
 #[derive(Clone, Debug)]
 pub struct ScopeSettings {
+	/// Run associated with a process credential; preparation has no Run.
+	pub run_id: Option<Uuid>,
 	pub id: aidash_domain::egress::ScopeId,
 	pub allowed_hosts: aidash_domain::egress::AllowedHosts,
 	pub budget: aidash_domain::egress::DailyBudget,
@@ -169,6 +171,9 @@ pub struct ScopeSettings {
 /// Metadata for a completed connection; URL paths and bodies are never recorded.
 #[derive(Clone, Debug)]
 pub struct ConnectionRecord {
+	pub run_id: Option<Uuid>,
+	pub admission_ms: Option<u64>,
+	pub settle_ms: Option<u64>,
 	/// Stable identity permits retries and updates to the same live record.
 	pub id: Uuid,
 	pub scope: aidash_domain::egress::ScopeId,

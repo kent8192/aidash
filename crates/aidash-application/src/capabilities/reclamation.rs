@@ -177,7 +177,6 @@ async fn working_objects(repository: &dyn ReclamationRepository, cursor: &mut Uu
 }
 #[derive(Default)]
 pub struct Cursor {
-	python: Uuid,
 	journal: Uuid,
 	records: Uuid,
 	working: Uuid,
@@ -185,9 +184,6 @@ pub struct Cursor {
 pub async fn sweep(repository: &dyn ReclamationRepository, cursor: &mut Cursor) -> Result<()> {
 	if let Err(error) = working_objects(repository, &mut cursor.working).await {
 		tracing::warn!(%error,"superseded working bytes reclamation pending");
-	}
-	if let Err(error) = repository.python(&mut cursor.python).await {
-		tracing::warn!(%error,"Python memory reclamation pending");
 	}
 	if let Err(error) = repository.journal(&mut cursor.journal).await {
 		tracing::warn!(%error, "Journal kernel reclamation pending");

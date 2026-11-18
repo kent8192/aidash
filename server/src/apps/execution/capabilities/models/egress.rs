@@ -140,6 +140,12 @@ pub struct ScopeConnection {
 	pub node: String,
 	#[field]
 	pub scope_id: Uuid,
+	#[field(null = true)]
+	pub run_id: Option<Uuid>,
+	#[field(null = true)]
+	pub admission_ms: Option<i64>,
+	#[field(null = true)]
+	pub settle_ms: Option<i64>,
 	#[field(field_type = "text")]
 	pub host: String,
 	#[field]
@@ -207,4 +213,20 @@ pub struct ScopeEvent {
 	pub created_at: DateTime<Utc>,
 	#[field(null = true)]
 	pub delivered_at: Option<DateTime<Utc>>,
+}
+
+/// A Run whose read authority has been revoked.
+#[model(app_label = "execution", table_name = "egress_run_revocations")]
+#[derive(Serialize, Deserialize)]
+pub struct RunRevocation {
+	#[field(primary_key = true)]
+	pub run_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub revoked_at: DateTime<Utc>,
+	#[field(field_type = "text")]
+	pub reason: String,
+	#[field(null = true)]
+	pub stopped_at: Option<DateTime<Utc>>,
 }

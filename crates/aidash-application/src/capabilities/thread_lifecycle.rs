@@ -53,7 +53,6 @@ pub async fn delete(
 			let mut area = cleanup::load(scope, area.id, "file.manage").await?;
 			require_idle(&area, choice.expected_revision)?;
 			let keep = matches!(choice.choice, Choice::Keep);
-			scope.release_python(&area, "thread_deleted").await?;
 			let result = cleanup::prepare(
 				scope,
 				area.id,

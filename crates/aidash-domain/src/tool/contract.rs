@@ -370,6 +370,21 @@ impl ToolContract {
 			remote_exposure: false,
 		}
 	}
+	/// A tool of an Agent Plugin's stdio server. It runs in the Run's Execution Pod, bounded by
+	/// the `mcp_stdio` group's Catalog Approval and the Scratch Space's allowed hosts like the
+	/// shell, so it needs no Tool call approval; it stays Unsafe, so an uncertain call is
+	/// reconciled and never replayed (ADR 0073). Like a group-bound shell it carries no core
+	/// permission: the group's approval decides availability.
+	pub fn agent_plugin_stdio(identity: AgentPluginTool) -> Self {
+		Self {
+			provider_owned: false,
+			identity: ToolIdentity::AgentPlugin(identity),
+			authorization: ToolAuthorization::none(),
+			behavior: external_behavior(ToolEffect::Unsafe, false),
+			disclosure: DisclosureBoundary::Local,
+			remote_exposure: false,
+		}
+	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
 		let (effect, approval, disclosure) = match config {
 			// A Read-only operation still sends its arguments to the registered
@@ -647,6 +662,19 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Patch);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
+		// Save, remove and copy between the Scratch Space and the Working Area (#745).
+		"file_save" | "file_remove" | "file_copy" => {
+			auth.core = Some(CorePermission::Files);
+			contract.disclosure = DisclosureBoundary::Local;
+		}
+		// A Run's Background processes in its Execution Pod (#745).
+		"process_list" | "process_log" | "process_stop" => {
+			auth.core = Some(CorePermission::Shell);
+			if name != "process_stop" {
+				behavior.effect = ToolEffect::ReadOnly;
+			}
+			contract.disclosure = DisclosureBoundary::Local;
+		}
 		"file_share" => {
 			auth.core = Some(CorePermission::Sharing);
 		}
@@ -661,6 +689,14 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Outbound);
 			behavior.effect = ToolEffect::ReadOnly;
 			contract.disclosure = DisclosureBoundary::External;
+		}
+		// The Catalog Approval of the `mcp_stdio` group lets the stdio MCP servers of
+		// Agent Plugins run in the Run's Execution Pod (ADR 0073). Their tools are
+		// called by their pinned names; this operation does nothing of its own.
+		"mcp_stdio" => {
+			auth.core = Some(CorePermission::Shell);
+			behavior.effect = ToolEffect::Unsafe;
+			contract.disclosure = DisclosureBoundary::Local;
 		}
 		// Schedules act as the person at the root of the Run's chain (ADR 0134).
 		// A change passes that person's Approval Mode and Approval Rules as a

@@ -90,6 +90,9 @@ pub struct Store {
 	/// The MCP sessions of Runs with their Agent Plugins' remote servers, shared by every
 	/// clone of this Store and connecting under the same Keyless rule as `tool_clients`.
 	pub plugin_sessions: std::sync::Arc<aidash_integrations::plugin_sessions::McpPluginSessions>,
+	/// The stdio MCP sessions of Runs in their Execution Pods (ADR 0073), shared like
+	/// `plugin_sessions`.
+	pub stdio_sessions: std::sync::Arc<aidash_application::plugin_stdio::StdioSessions>,
 	/// The Deployment Key and the switch Federation requests to other
 	/// Deployments are signed and gated by, for callers that hold a Store and
 	/// no Federation runtime (ADR 0064).
@@ -528,6 +531,7 @@ impl Store {
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			plugin_sessions: plugin_sessions(&keyless, &tool_clients),
+			stdio_sessions: Default::default(),
 			tool_clients,
 			keyless,
 			egress: Default::default(),
@@ -690,6 +694,7 @@ impl Store {
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
 			plugin_sessions: self.plugin_sessions.clone(),
+			stdio_sessions: self.stdio_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
@@ -754,6 +759,7 @@ impl Store {
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
 			plugin_sessions: self.plugin_sessions.clone(),
+			stdio_sessions: self.stdio_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
@@ -3596,6 +3602,7 @@ impl Store {
 			)
 			.await?;
 			self.close_plugin_sessions_soon(saved.id);
+			self.stop_python_soon(saved.id);
 		}
 		self.run_event(
 			tx,
@@ -3870,7 +3877,22 @@ impl Store {
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		self.close_plugin_sessions_soon(run.id);
+		self.stop_python_soon(run.id);
 		Ok(())
+	}
+
+	/// Stops an ended Run's Python session in its Execution Pod without making
+	/// the caller wait. A paused Run keeps its session for when it resumes.
+	fn stop_python_soon(&self, run: Uuid) {
+		let store = self.clone();
+		tokio::spawn(async move {
+			if let Err(error) =
+				crate::apps::execution::repositories::operations::pods::stop_python(&store, run)
+					.await
+			{
+				tracing::info!(%run, %error, "Python session not stopped at the Run's end");
+			}
+		});
 	}
 
 	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for
@@ -3878,8 +3900,10 @@ impl Store {
 	/// a session closed too early reopens on the next call.
 	fn close_plugin_sessions_soon(&self, run: Uuid) {
 		let sessions = self.plugin_sessions.clone();
+		let stdio = self.stdio_sessions.clone();
 		tokio::spawn(async move {
 			aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run).await;
+			stdio.close(run).await;
 		});
 	}
 

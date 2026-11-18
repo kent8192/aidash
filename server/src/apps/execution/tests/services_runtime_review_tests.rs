@@ -70,6 +70,7 @@ async fn interruption_store(
 		provider_clients: crate::semantic::backend::clients().unwrap(),
 		tool_clients: tool_clients.clone(),
 		plugin_sessions: crate::store::plugin_sessions(&keyless, &tool_clients),
+		stdio_sessions: Default::default(),
 		keyless,
 		egress: Default::default(),
 		research_retention: aidash_domain::retention::RetentionRules::DEFAULT,

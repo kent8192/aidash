@@ -223,6 +223,7 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 		cwd: None,
 		timeout_seconds: None,
 		background: true,
+		proxy_credential: None,
 	};
 	let accepted = client.execute(&request).await.unwrap();
 	assert_eq!(accepted.status, "queued");
@@ -232,4 +233,138 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 		matches!(client.stop("space-a").await, Err(ExecutionPodError::Remote { code, message }) if code == ExecutionPodErrorCode::TerminationUnconfirmed && message == "guard unavailable")
 	);
 	assert!(client.delete("space-a").await.is_err());
+}
+
+#[tokio::test]
+async fn execution_pod_v2_transports_process_credentials_and_file_bytes() {
+	use aidash_application::ports::capabilities::execution_pod::{
+		EgressCredential, FileWriteRequest, PythonStartRequest,
+	};
+	let app = Router::new()
+		.route("/v2/python/start", post(|Json(body): Json<Value>| async move {
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","proxy_credential":"secret"}));
+			Json(json!({"operation_id":"p","scratch_space_id":"s","run_id":"r","socket_path":"/tmp/p"}))
+		}))
+		.route("/v2/files/write", post(|Json(body): Json<Value>| async move {
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","path":"x","data":"AP8=","offset":0,"final":true,"mode":null}));
+			Json(json!({"size":2}))
+		}))
+		.route("/v2/runs/stop", post(|Json(body): Json<Value>| async move {
+			assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r"}));
+			Json(json!({"stopped":["p","left"]}))
+		}));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap()
+	}));
+	let client = RunnerHttp {
+		endpoint,
+		credential_env: "RUNNER_KEY".into(),
+		credentials: Arc::new(Keys(RwLock::new(Some("before-rotation".into())))),
+	};
+	let session = client
+		.python_start(&PythonStartRequest {
+			scratch_space_id: "s".into(),
+			run_id: "r".into(),
+			proxy_credential: Some(EgressCredential("secret".into())),
+		})
+		.await
+		.unwrap();
+	assert_eq!(session.operation_id, "p");
+	let written = client
+		.file_write(&FileWriteRequest {
+			scratch_space_id: "s".into(),
+			run_id: "r".into(),
+			path: "x".into(),
+			data: "AP8=".into(),
+			offset: 0,
+			final_chunk: true,
+			mode: None,
+		})
+		.await
+		.unwrap();
+	assert_eq!(written.size, 2);
+	assert_eq!(client.stop_run("s", "r").await.unwrap(), vec!["p", "left"]);
+}
+
+#[tokio::test]
+async fn execution_pod_routes_exchange_their_v2_wire_contracts() {
+	use aidash_application::ports::capabilities::execution_pod::*;
+	use axum::extract::OriginalUri;
+	let app = Router::new().route("/v2/{*tail}", post(|OriginalUri(uri): OriginalUri, Json(body): Json<Value>| async move {
+		let response = match uri.path() {
+			"/v2/commands/refuse" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r"})); json!({"refused":false,"status":"running"}) },
+			"/v2/background/log" => { assert_eq!(body, json!({"operation_id":"op","stream":"stderr","offset":null,"limit":4})); json!({"data":"AP8=","next_offset":2,"eof":true,"size":2}) },
+			"/v2/files/read" => { assert_eq!(body, json!({"scratch_space_id":"s","path":"a","offset":1,"limit":4})); json!({"data":"/w==","size":2,"next_offset":2,"eof":true}) },
+			"/v2/files/search" => { assert_eq!(body, json!({"scratch_space_id":"s","pattern":"needle","path":null,"glob":null,"regex":false,"max_results":5})); json!({"matches":[{"path":"a","line":2,"text":"needle"}],"truncated":false}) },
+			"/v2/files/patch" => { assert_eq!(body, json!({"scratch_space_id":"s","run_id":"r","patch":"patch"})); json!({"changed":["a"]}) },
+			"/v2/files/manifest" => { assert_eq!(body, json!({"scratch_space_id":"s","root":".","ignore_files":[".gitignore"],"exclude":[],"include":[],"max_files":4})); json!({"files":[{"path":"a","size":2,"sha256":"digest"}],"skipped_symlinks":["b"],"truncated":false}) },
+			"/v2/previews/start" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","code":"serve","port":8080,"proxy_credential":"secret"})); json!({"operation_id":"op","address":"10.0.0.1:8080"}) },
+			// A stop answers as soon as it signals; the end shows in the result.
+			"/v2/previews/stop" | "/v2/mcp/stop" => { assert_eq!(body, json!({"operation_id":"op"})); json!({"operation_id":"op","status":"stopping"}) },
+			"/v2/commands/result" => { assert_eq!(body, json!({"operation_id":"op"})); json!({"operation_id":"op","status":"stopped"}) },
+			"/v2/mcp/start" => { assert_eq!(body, json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","install":"","command":["server"],"env":{"MODE":"test"},"plugin_data":"data","proxy_credential":"secret"})); json!({"operation_id":"op"}) },
+			"/v2/mcp/call" => { assert_eq!(body, json!({"operation_id":"op","message":{"jsonrpc":"2.0","id":1},"timeout_seconds":3})); json!({"message":{"jsonrpc":"2.0","id":1,"result":{}}}) },
+			other => panic!("unexpected path {other}"),
+		}; Json(response)
+	}));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap()
+	}));
+	let client = RunnerHttp {
+		endpoint,
+		credential_env: "RUNNER_KEY".into(),
+		credentials: Arc::new(Keys(RwLock::new(Some("before-rotation".into())))),
+	};
+	let log: LogRequest = serde_json::from_value(
+		json!({"operation_id":"op","stream":"stderr","offset":null,"limit":4}),
+	)
+	.unwrap();
+	assert_eq!(client.background_log(&log).await.unwrap().data, "AP8=");
+	assert_eq!(
+		client.refuse_command("op", "s", "r").await.unwrap(),
+		CommandRefusal {
+			refused: false,
+			status: Some("running".into()),
+		}
+	);
+	let read: FileReadRequest =
+		serde_json::from_value(json!({"scratch_space_id":"s","path":"a","offset":1,"limit":4}))
+			.unwrap();
+	assert_eq!(client.file_read(&read).await.unwrap().data, "/w==");
+	let search: FileSearchRequest = serde_json::from_value(json!({"scratch_space_id":"s","pattern":"needle","path":null,"glob":null,"regex":false,"max_results":5})).unwrap();
+	assert_eq!(
+		client.file_search(&search).await.unwrap().matches[0].line,
+		2
+	);
+	let patch: FilePatchRequest =
+		serde_json::from_value(json!({"scratch_space_id":"s","run_id":"r","patch":"patch"}))
+			.unwrap();
+	assert_eq!(client.file_patch(&patch).await.unwrap().changed, vec!["a"]);
+	let manifest: FileManifestRequest = serde_json::from_value(json!({"scratch_space_id":"s","root":".","ignore_files":[".gitignore"],"exclude":[],"include":[],"max_files":4})).unwrap();
+	assert_eq!(
+		client
+			.file_manifest(&manifest)
+			.await
+			.unwrap()
+			.skipped_symlinks,
+		vec!["b"]
+	);
+	let preview: PreviewStartRequest = serde_json::from_value(json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","code":"serve","cwd":null,"port":8080,"proxy_credential":"secret"})).unwrap();
+	assert_eq!(
+		client.preview_start(&preview).await.unwrap().address,
+		"10.0.0.1:8080"
+	);
+	client.preview_stop("op").await.unwrap();
+	let mcp: McpStartRequest = serde_json::from_value(json!({"operation_id":"op","scratch_space_id":"s","run_id":"r","install":"","command":["server"],"env":{"MODE":"test"},"plugin_data":"data","proxy_credential":"secret"})).unwrap();
+	assert_eq!(client.mcp_start(&mcp).await.unwrap().operation_id, "op");
+	let call: McpCallRequest = serde_json::from_value(
+		json!({"operation_id":"op","message":{"jsonrpc":"2.0","id":1},"timeout_seconds":3}),
+	)
+	.unwrap();
+	assert_eq!(client.mcp_call(&call).await.unwrap().message["id"], 1);
+	client.mcp_stop("op").await.unwrap();
 }

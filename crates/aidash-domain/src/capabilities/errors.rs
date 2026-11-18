@@ -42,7 +42,6 @@ pub struct TimedOut {
 	pub maximum_seconds: u64,
 	pub revision: i64,
 	pub python: bool,
-	pub install: bool,
 }
 /// A refusal's message once the command had also reached its Time Limit.
 pub fn also_timed_out(message: &str, limit_seconds: u64) -> String {
@@ -52,6 +51,28 @@ pub fn also_timed_out(message: &str, limit_seconds: u64) -> String {
 	)
 }
 impl CapabilityError {
+	/// A Pod timeout leaves its Scratch Space on disk for subsequent tools.
+	pub fn command_timed_out_in_pod(stop: &TimedOut) -> Self {
+		let longer = if stop.limit_seconds < stop.maximum_seconds {
+			format!("raise timeout_seconds (at most {}), ", stop.maximum_seconds)
+		} else {
+			String::new()
+		};
+		let pieces = if stop.python {
+			"shorter cells"
+		} else {
+			"shorter commands"
+		};
+		Self {
+			code: COMMAND_TIMED_OUT.into(),
+			message: format!(
+				"Stopped at its {} s time limit. The Scratch Space keeps what the command wrote. Running it again unchanged will stop the same way: {longer}split it into {pieces} or print progress.",
+				stop.limit_seconds,
+			),
+			retryable: false,
+			details: Some(json!({"limit_seconds": stop.limit_seconds, "revision": stop.revision})),
+		}
+	}
 	pub fn message(status: u16, message: &str) -> Self {
 		let code = leading_code(message).unwrap_or(match status {
 			400 | 413 | 415 | 422 => "INVALID_INPUT",
@@ -78,7 +99,6 @@ impl CapabilityError {
 			maximum_seconds,
 			revision,
 			python,
-			install,
 		} = stop;
 		let (stopped, lost, pieces) = if python {
 			(
@@ -98,13 +118,7 @@ impl CapabilityError {
 		} else {
 			String::new()
 		};
-		let advice = if install {
-			format!(
-				"{longer}choose a smaller complete set of wheels, including its dependencies, for the replacement environment."
-			)
-		} else {
-			format!("{longer}split it into {pieces} or print progress.")
-		};
+		let advice = format!("{longer}split it into {pieces} or print progress.");
 		Self {
 			code: COMMAND_TIMED_OUT.into(),
 			message: format!(

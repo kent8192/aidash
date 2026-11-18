@@ -904,6 +904,7 @@ where
 
 #[derive(Default)]
 struct TunnelReports {
+	settle_ms: Arc<AtomicU64>,
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
 	failure: FailureReport,
@@ -931,6 +932,7 @@ where
 	let sent = counts.sent;
 	let received = counts.received;
 	let failure = counts.failure;
+	let settle_ms = counts.settle_ms;
 	let reclaim = counts.reclaim;
 	let mut sent_batch = Batch::new(
 		scopes.clone(),
@@ -1076,6 +1078,7 @@ where
 			(None, None) => unreachable!(),
 		}
 	};
+	let settling = std::time::Instant::now();
 	let sent_settle = tokio::time::timeout(std::time::Duration::from_secs(5), sent_batch.settle())
 		.await
 		.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
@@ -1083,6 +1086,10 @@ where
 		tokio::time::timeout(std::time::Duration::from_secs(5), received_batch.settle())
 			.await
 			.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
+	settle_ms.store(
+		settling.elapsed().as_millis().min(u64::MAX as u128) as u64,
+		Ordering::Relaxed,
+	);
 	for settled in [&sent_settle, &received_settle] {
 		if let Err(error) = settled {
 			super::settle_failure("refund", "abandoned");
@@ -1121,6 +1128,9 @@ async fn public_addresses(host: &str, port: u16) -> io::Result<Vec<std::net::Soc
 }
 
 struct Audit {
+	run_id: Option<uuid::Uuid>,
+	admission_ms: Option<u64>,
+	settle_ms: Arc<AtomicU64>,
 	id: uuid::Uuid,
 	manager: Arc<TunnelManager>,
 	scopes: Arc<dyn EgressScopes>,
@@ -1210,6 +1220,9 @@ fn is_stopping(stopping: &tokio::sync::watch::Receiver<bool>) -> bool {
 impl Audit {
 	fn record(&self) -> aidash_application::egress::ConnectionRecord {
 		aidash_application::egress::ConnectionRecord {
+			run_id: self.run_id,
+			admission_ms: self.admission_ms,
+			settle_ms: None,
 			id: self.id,
 			scope: self.scope.clone(),
 			host: self.host.clone(),
@@ -1254,9 +1267,11 @@ impl Audit {
 		self.started_record
 	}
 	async fn finish(&mut self) {
+		let mut record = self.record();
+		record.settle_ms = Some(self.settle_ms.load(Ordering::Relaxed));
 		settle_record(
 			self.scopes.clone(),
-			self.record(),
+			record,
 			self.manager.stopping.clone(),
 			self.report(),
 		)
@@ -1506,6 +1521,9 @@ pub(super) async fn forward(
 		Err(NotAdmitted::Stopped((status, code))) => return refuse(&host, status, code),
 	};
 	let mut audit = Audit {
+		run_id: scope.run_id,
+		admission_ms: Some(admitting.elapsed().as_millis().min(u64::MAX as u128) as u64),
+		settle_ms: Arc::new(AtomicU64::new(0)),
 		id: uuid::Uuid::new_v4(),
 		manager: manager.clone(),
 		scopes: scopes.clone(),
@@ -1655,6 +1673,7 @@ async fn connect_tunnel(
 					credential,
 					audit.host.clone(),
 					TunnelReports {
+						settle_ms: audit.settle_ms.clone(),
 						sent: sent.clone(),
 						received: received.clone(),
 						failure: report.clone(),
@@ -1737,6 +1756,7 @@ async fn forward_http(
 				credential,
 				audit.host.clone(),
 				TunnelReports {
+					settle_ms: audit.settle_ms.clone(),
 					sent: sent.clone(),
 					received: received.clone(),
 					failure: report.clone(),
@@ -1876,6 +1896,7 @@ mod tests {
 
 	fn test_settings() -> ScopeSettings {
 		ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -2865,6 +2886,7 @@ mod tests {
 	#[tokio::test]
 	async fn tunnel_counts_both_directions_and_enforces_budget() {
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3014,6 +3036,7 @@ mod tests {
 	#[tokio::test]
 	async fn proxy_requires_scope_credential_and_rejects_private_resolution() {
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3333,6 +3356,7 @@ mod tests {
 				.unwrap();
 		});
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3362,6 +3386,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3469,6 +3496,9 @@ mod tests {
 				let waiter = gateway_waiter.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3571,6 +3601,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3682,6 +3715,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3783,6 +3819,7 @@ mod tests {
 			socket.shutdown().await.unwrap();
 		});
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3812,6 +3849,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -4020,6 +4060,9 @@ mod tests {
 		settings: &ScopeSettings,
 	) -> super::Audit {
 		super::Audit {
+			run_id: None,
+			admission_ms: None,
+			settle_ms: Arc::new(super::AtomicU64::new(0)),
 			id: uuid::Uuid::new_v4(),
 			manager: manager.clone(),
 			scopes,
@@ -4604,6 +4647,9 @@ mod tests {
 
 	fn record(settings: &ScopeSettings) -> aidash_application::egress::ConnectionRecord {
 		aidash_application::egress::ConnectionRecord {
+			run_id: settings.run_id,
+			admission_ms: None,
+			settle_ms: None,
 			id: uuid::Uuid::new_v4(),
 			scope: settings.id.clone(),
 			host: HOST.into(),

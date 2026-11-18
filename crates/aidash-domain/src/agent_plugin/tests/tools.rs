@@ -262,7 +262,7 @@ fn an_unavailable_server_is_skipped_with_its_cause_and_the_others_still_pin() {
 }
 
 #[test]
-fn stdio_servers_are_reported_unavailable_and_not_pinned() {
+fn an_unlisted_stdio_server_is_reported_unavailable_and_a_listed_one_is_pinned() {
 	let plugin = reference_with_servers(
 		"acme-tools",
 		json!({"docs": remote("docs"), "local": {"type": "stdio", "command": "node"}}),
@@ -281,16 +281,22 @@ fn stdio_servers_are_reported_unavailable_and_not_pinned() {
 		]),
 	);
 
-	assert_eq!(unlisted, listed);
 	assert_eq!(
-		listed.findings[0].finding.detail,
+		unlisted.findings[0].finding.detail,
 		"stdio_session_unavailable"
 	);
 	assert_eq!(
-		pinned_names(&listed),
+		pinned_names(&unlisted),
 		[("acme-tools".into(), "docs".into(), vec!["a"])]
 	);
-	assert_eq!(listed.findings.len(), 1);
+	assert!(listed.findings.is_empty());
+	assert_eq!(
+		pinned_names(&listed),
+		[
+			("acme-tools".into(), "docs".into(), vec!["a"]),
+			("acme-tools".into(), "local".into(), vec!["b"])
+		]
+	);
 }
 
 #[test]

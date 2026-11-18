@@ -34,9 +34,7 @@ pub trait OperationReconciliationScope: Send {
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded>;
 	async fn configuration(&mut self) -> Result<CoreCapabilities>;
 	async fn require_builtin(&mut self, kind: &str) -> Result<()>;
-	async fn authorize_packages(&mut self, request: &Value) -> Result<()>;
 	async fn set_area(&mut self, state: &str) -> Result<()>;
-	async fn complete_python(&mut self, operation: &Snapshot, observed: &Value) -> Result<()>;
 	async fn persist(&mut self, operation: &Snapshot) -> Result<()>;
 	async fn health(&mut self, cancelling: bool, python: bool) -> Result<Value>;
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;
@@ -50,7 +48,6 @@ pub trait OperationReconciliationScope: Send {
 	async fn write_output(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_output(&mut self, expected: &str) -> Result<(Uuid, String)>;
 	async fn put(&mut self, kind: &str, bytes: &[u8]) -> Result<(Uuid, String)>;
-	async fn publish(&mut self, entries: Vec<MountedFile>) -> Result<i64>;
 	async fn event(&mut self, data: Value) -> Result<()>;
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()>;
 }

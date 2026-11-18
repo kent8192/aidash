@@ -9,6 +9,7 @@ OUTPUT_RETRY_SECONDS = 60
 # margin. RunnerHttp's v2 command calls time out after 30s and its execution_pod
 # adapter does not retry requests itself (crates/aidash-integrations/src/runner).
 JOURNAL_RETENTION_SECONDS = max(LATE_RESULT_SECONDS, STOP_RETRY_SECONDS) + STOP_RETRY_SECONDS
+REFUSAL_RETENTION_SECONDS = 7 * 86400
 JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
 # stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
@@ -30,6 +31,23 @@ def python_helper_command(*args):
     return ['/.aidash-helpers/loader', '--library-path',
             '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
             '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/python_session.py', *args]
+
+
+def mcp_helper_command(*args):
+    return ['/.aidash-helpers/loader', '--library-path',
+            '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
+            '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/mcp_session.py', *args]
+
+
+def verify_adopted_result(result, key):
+    import hashlib
+    import hmac
+    import json
+    if not isinstance(result, dict) or not isinstance(key, bytes) or not isinstance(result.get('auth'), str):
+        return False
+    payload = {name: value for name, value in result.items() if name != 'auth'}
+    data = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+    return hmac.compare_digest(result['auth'], hmac.new(key, data, hashlib.sha256).hexdigest())
 
 
 class CommandQueue:
@@ -440,12 +458,6 @@ def execution_manifests(settings, config):
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
         v2_network_policy(config)  # validate before passing the proxy to user processes
-        # Node's built-in fetch, which corepack uses, ignores the proxy variables
-        # unless asked to read them (#845).
-        podspec['containers'][0]['env'].append({'name': 'NODE_USE_ENV_PROXY', 'value': '1'})
-        proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
-        podspec['containers'][0]['env'] += [
-            {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
         # Loopback (Live previews) and the gateway itself must not be sent through the proxy.
         bypass = 'localhost,127.0.0.1,::1,' + urlsplit(config['proxy_endpoint']).hostname
         podspec['containers'][0]['env'] += [{'name': key, 'value': bypass} for key in ('NO_PROXY', 'no_proxy')]
@@ -494,6 +506,9 @@ class ExecutionPodController:
         self.lock = RLock()
         self.queues = {}
         self.futures = {}
+        self.process_proxies = {}
+        self.mcp_locks = {}
+        self.left_result_keys = {}
         self.live_output = {}
         self.foreground_jobs = {}
         self.viewers = {}
@@ -561,8 +576,9 @@ class ExecutionPodController:
                 if metadata is None:
                     continue
                 status, terminal_at, stop_pending = metadata
-                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
-                        or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                retention = REFUSAL_RETENTION_SECONDS if status == 'refused' else JOURNAL_RETENTION_SECONDS
+                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
+                        or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
                         or stop_pending):
                     continue
                 expired.append((terminal_at, path))
@@ -572,8 +588,9 @@ class ExecutionPodController:
                         continue
                     record = json.loads(path.read_bytes())
                     terminal_at = record.get('terminal_at')
-                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
-                            or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                    retention = REFUSAL_RETENTION_SECONDS if record.get('status') == 'refused' else JOURNAL_RETENTION_SECONDS
+                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted', 'refused')
+                            or not isinstance(terminal_at, (int, float)) or terminal_at > current - retention
                             or record.get('stop_pending') or record.get('operation_id') in self.futures):
                         continue
                     # A Python session pointer cannot outlive the record it names.
@@ -583,6 +600,14 @@ class ExecutionPodController:
                         if session_path.exists() and json.loads(session_path.read_bytes()).get('operation_id') == record['operation_id']:
                             session_path.unlink()
                             self.session_index.get(scratch_space_id, set()).discard(session_path.name)
+                    if record.get('background') and record.get('pod'):
+                        try:
+                            pod = self._get('pod', record['pod'])
+                            if pod and pod.get('metadata', {}).get('uid') == record.get('pod_uid'):
+                                self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                                  helper_command('forget', record['operation_id']), check=False, timeout=5)
+                        except Exception:
+                            continue
                     path.unlink()
                     self.journal_index.get(scratch_space_id, set()).discard(path.name)
                     self.journal_metadata.pop(path.name, None)
@@ -1387,7 +1412,8 @@ print(json.dumps(r))'''
 
     def _command_path(self, operation_id):
         import uuid
-        if not isinstance(operation_id, str) or str(uuid.UUID(operation_id)) != operation_id:
+        base = operation_id[:-5] if isinstance(operation_id, str) and operation_id.endswith('.left') else operation_id
+        if not isinstance(base, str) or str(uuid.UUID(base)) != base:
             raise ValueError('canonical operation UUID required')
         directory = self.backend.root / 'execution-v2'
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1456,7 +1482,7 @@ print(json.dumps(r))'''
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
                       'status', 'background', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
-                      'error_code', 'message', 'session_replaced', 'output_fetched_at') if key in record}
+                      'error_code', 'message', 'session_replaced', 'output_fetched_at', 'left_running') if key in record}
             if record['status'] == 'running' and operation_id in self.live_output:
                 result.update(self.live_output[operation_id])
             if record.get('kind') == 'python_cell' and record['status'] == 'completed' and record.get('exit_code') == 0:
@@ -1466,6 +1492,35 @@ print(json.dumps(r))'''
                     result['python_result'] = {'status': 'failed', 'code': 'python_result_invalid',
                                                'message': 'Python result was unavailable or truncated'}
             return result
+
+    def refuse_command(self, operation_id, scratch_space_id, run_id):
+        import time
+        from control import save, scratch_resource_name
+        scratch_resource_name(scratch_space_id)
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
+            raise ValueError('invalid run_id')
+        if not isinstance(operation_id, str) or operation_id.endswith('.left'):
+            raise ValueError('canonical operation UUID required')
+        path = self._command_path(operation_id)
+        with self._space_lock(scratch_space_id):
+            self.prune_space(scratch_space_id)
+            with self.lock:
+                if path.exists():
+                    prior = self._read_command(operation_id)
+                    if prior.get('status') == 'refused':
+                        if prior.get('scratch_space_id') != scratch_space_id or prior.get('run_id') != run_id:
+                            raise ExecutionPodError('command_conflict', 'Operation ID belongs to another Run')
+                        return {'refused': True}
+                    return {'refused': False, 'status': prior['status']}
+                record = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
+                          'run_id': run_id, 'status': 'refused', 'terminal_at': time.time()}
+                save(path, record)
+                self.journal_index.setdefault(scratch_space_id, set()).add(path.name)
+                self.journal_metadata[path.name] = self._prune_metadata(record)
+                space_path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+                if not space_path.exists():
+                    self.touch_space(scratch_space_id)
+                return {'refused': True}
 
     def submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None, session_replaced=False):
         with self._space_lock(request['scratch_space_id']):
@@ -1477,11 +1532,18 @@ print(json.dumps(r))'''
         import time
         from control import save, scratch_resource_name
 
-        if not self.admitted:
-            raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         operation_id = request['operation_id']
+        if not isinstance(operation_id, str) or operation_id.endswith('.left'):
+            raise ValueError('canonical operation UUID required')
         path = self._command_path(operation_id)
         scratch_id, run_id, code = request['scratch_space_id'], request['run_id'], request['code']
+        if path.exists():
+            self.prune_space(scratch_id)
+        with self.lock:
+            if path.exists() and self._read_command(operation_id).get('status') == 'refused':
+                raise ExecutionPodError('command_refused', 'Command operation was refused')
+        if not self.admitted:
+            raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         name = scratch_resource_name(scratch_id)
         if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
             raise ValueError('run_id must be a nonempty string without NUL')
@@ -1500,11 +1562,19 @@ print(json.dumps(r))'''
         if type(background) is not bool:
             raise ValueError('background must be a boolean')
         seconds = execution_timeout(request)
+        credential = request.get('proxy_credential')
+        proxy = None
+        if credential is not None:
+            if not self.config.get('proxy_endpoint'):
+                raise ValueError('proxy endpoint is unavailable')
+            proxy = pod_proxy_url(self.config['proxy_endpoint'], credential)
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self.lock:
             self._require_space_termination_confirmed(scratch_id)
             if path.exists():
                 prior = self._read_command(operation_id)
+                if prior.get('status') == 'refused':
+                    raise ExecutionPodError('command_refused', 'Command operation was refused')
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
@@ -1517,6 +1587,8 @@ print(json.dumps(r))'''
             # may have claimed this operation while the Pod lookup was running.
             if path.exists():
                 prior = self._read_command(operation_id)
+                if prior.get('status') == 'refused':
+                    raise ExecutionPodError('command_refused', 'Command operation was refused')
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
@@ -1541,6 +1613,7 @@ print(json.dumps(r))'''
                       'code': code, 'cwd': cwd, 'timeout_seconds': seconds, 'background': background,
                       'pod': name, 'pod_uid': uid, 'docker_enabled': docker, 'status': 'queued',
                       'request_digest': digest, 'accepted_at': time.time(), 'kind': kind}
+            record['proxy_credential_given'] = credential is not None
             if session_replaced:
                 record['session_replaced'] = True
             if session_operation_id:
@@ -1548,6 +1621,8 @@ print(json.dumps(r))'''
             if client_digest:
                 record['client_digest'] = client_digest
             save(path, record)
+            if proxy is not None:
+                self.process_proxies[operation_id] = proxy
             self.journal_index.setdefault(scratch_id, set()).add(path.name)
             self.journal_metadata[path.name] = self._prune_metadata(record)
             self.touch_space(scratch_id)
@@ -1566,8 +1641,11 @@ print(json.dumps(r))'''
 
     def _cancelled_command(self, operation_id, future):
         with self.lock:
+            if future.done():
+                self.left_result_keys.pop(operation_id, None)
             try:
                 if future.cancelled():
+                    self.process_proxies.pop(operation_id, None)
                     self._update_command(operation_id, status='cancelled', outcome='not_started')
                 record = self._read_command(operation_id)
             except ExecutionPodError as error:
@@ -1608,7 +1686,13 @@ print(json.dumps(r))'''
                 observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                              helper_command('result', operation_id), check=False)
                 if observed.returncode == 0:
-                    return json.loads(observed.stdout)
+                    outcome = json.loads(observed.stdout)
+                    if record.get('kind') == 'left' and record.get('docker_enabled'):
+                        with self.lock:
+                            key = self.left_result_keys.get(operation_id)
+                        if not verify_adopted_result(outcome, key):
+                            raise ValueError('unverified adopted result')
+                    return outcome
                 pod = self._get('pod', name)
                 if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                     if publish_saved:
@@ -1637,6 +1721,7 @@ print(json.dumps(r))'''
         import time
         with self.lock:
             record = self._read_command(operation_id)
+            proxy = self.process_proxies.pop(operation_id, None)
             if record['status'] != 'queued':
                 return
             record = self._update_command(operation_id, status='running', running_at=time.time())
@@ -1645,8 +1730,10 @@ print(json.dumps(r))'''
         deadline = 'background' if record['background'] else str(record['timeout_seconds'])
         kind = 'session' if record.get('kind') == 'python_session' else 'command'
         limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
-        argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] else []) + [name, '-c', 'execution', '--'] + helper_command(
+        argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] or proxy else []) + [name, '-c', 'execution', '--'] + helper_command(
             'supervise', mode, kind, operation_id, record['run_id'], record['cwd'], deadline, uid, record['code'], str(limit))
+        if proxy:
+            argv.append('proxy-stdin')
 
         def publish(output):
             with self.lock:
@@ -1655,12 +1742,21 @@ print(json.dumps(r))'''
         try:
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
             result_deadline = None if transport_timeout is None else time.monotonic() + transport_timeout
+            nonce = None
             if record['docker_enabled']:
                 import secrets
                 nonce = secrets.token_hex(32)
-                transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish, frame_token=nonce)
+                if proxy:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
+                                              frame_token=nonce, input_data=(proxy + '\n').encode())
+                else:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish, frame_token=nonce)
             else:
-                transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
+                if proxy:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish,
+                                              input_data=(proxy + '\n').encode())
+                else:
+                    transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
             if record['docker_enabled']:
@@ -1688,7 +1784,7 @@ print(json.dumps(r))'''
                                      **transport['output'])
                 self._stop_untracked_command(record)
             else:
-                self._finish_command(record, outcome, transport['output'])
+                self._finish_command(record, outcome, transport['output'], left_auth=nonce.encode('ascii') if nonce else None)
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
@@ -1789,7 +1885,7 @@ print(json.dumps(r))'''
         public['truncated'] |= outcome.get('output_incomplete', False) or outcome.get('output_truncated', False)
         return public
 
-    def _finish_command(self, record, outcome, output, *, allow_late=False):
+    def _finish_command(self, record, outcome, output, *, allow_late=False, left_auth=None):
         operation_id = record['operation_id']
         if (record.get('kind') == 'python_cell' and
             (outcome['status'] in ('timed_out', 'stopped') or
@@ -1799,17 +1895,52 @@ print(json.dumps(r))'''
             except Exception:
                 if not allow_late:
                     self._stop_matching_pod(record['scratch_space_id'], record['pod_uid'])
-        fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message') if key in outcome}
+        left = outcome.get('left_running')
+        if left is not None:
+            if record.get('background') or left != operation_id + '.left':
+                raise ValueError('invalid adopted operation ID')
+            self._adopt_left(record, left, left_auth)
+        fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message', 'left_running') if key in outcome}
         if output.get('truncated') and not fields.get('message') and outcome.get('output_incomplete'):
             fields['message'] = 'Output was lost to a Runner restart or a full disk'
         if allow_late:
             fields['outcome'] = 'known'
         self._update_command(operation_id, allow_late=allow_late, status=outcome['status'], **fields, **output)
+        if record.get('background'):
+            return
         try:
             self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
                               helper_command('forget', operation_id), check=False, timeout=5)
         except Exception:
             pass
+
+    def _adopt_left(self, record, operation_id, left_auth=None):
+        import time
+        from control import save
+        scratch = record['scratch_space_id']
+        if record.get('docker_enabled') and not left_auth:
+            raise ValueError('adopted Docker process requires authenticated result tracking')
+        with self._space_lock(scratch):
+            self._ensure_journal_index()
+            path = self._command_path(operation_id)
+            with self.lock:
+                if path.exists():
+                    return
+                adopted = {key: record[key] for key in ('scratch_space_id', 'run_id', 'pod', 'pod_uid',
+                           'docker_enabled', 'cwd') if key in record}
+                adopted.update(operation_id=operation_id, status='running', background=True,
+                               kind='left', accepted_at=time.time(), running_at=time.time())
+                save(path, adopted)
+                self.journal_index.setdefault(scratch, set()).add(path.name)
+                self.journal_metadata[path.name] = self._prune_metadata(adopted)
+                if left_auth:
+                    self.left_result_keys[operation_id] = left_auth
+                if scratch not in self.queues:
+                    self.queues[scratch] = CommandQueue()
+                future = self.queues[scratch].submit(record['run_id'], operation_id, self._resume_command,
+                                                     background=True)
+                self.futures[operation_id] = future
+                future.add_done_callback(lambda done: self._cancelled_command(operation_id, done))
 
     def _resume_command(self, operation_id):
         import json
@@ -1837,6 +1968,10 @@ print(json.dumps(r))'''
                     if type(created) is not bool:
                         raise ValueError('invalid claim response')
                     if created:
+                        if record.get('kind') == 'left' and record.get('docker_enabled'):
+                            self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True)
+                            self._stop_untracked_command(record)
+                            return
                         self._update_command(operation_id, status='cancelled', outcome='not_started')
                         return
                     break
@@ -1872,7 +2007,8 @@ print(json.dumps(r))'''
     def _stop_untracked_command(self, record):
         import uuid
         operation_id = record['operation_id']
-        gate = self.command_stop_locks[uuid.UUID(operation_id).int % len(self.command_stop_locks)]
+        base = operation_id[:-5] if operation_id.endswith('.left') else operation_id
+        gate = self.command_stop_locks[uuid.UUID(base).int % len(self.command_stop_locks)]
         with gate:
             current = self._read_command(operation_id)
             if current.get('status') != 'interrupted' or not current.get('stop_pending'):
@@ -1993,6 +2129,102 @@ print(json.dumps(r))'''
                 raise ExecutionPodError('stop_failed', '; '.join(failures))
         return {'cancelled_waiting': True}
 
+    def stop_command(self, operation_id):
+        """Stop one foreground command; the Run's other commands keep running."""
+        record = self._read_command(operation_id)
+        if record.get('background'):
+            raise ExecutionPodError('invalid_request', 'Use the Background process stop for this operation')
+        with self._space_lock(record['scratch_space_id']):
+            return self._stop_command(operation_id)
+
+    def stop_run(self, scratch_space_id, run_id, kinds=None):
+        import json
+        import time
+        from control import scratch_resource_name
+        scratch_resource_name(scratch_space_id)
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
+            raise ValueError('invalid run_id')
+        stopped, resolved, first_seen = set(), set(), {}
+        deadline = time.monotonic() + 60
+        while True:
+            active, failures = [], []
+            with self._space_lock(scratch_space_id):
+                for path in self._space_journal_paths(scratch_space_id):
+                    try:
+                        record = json.loads(path.read_bytes())
+                    except FileNotFoundError:
+                        continue
+                    operation = record['operation_id']
+                    if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
+                            or operation in resolved or record.get('run_stop_confirmed') or
+                            record.get('status') not in ('queued', 'running', 'interrupted')
+                            or (kinds is not None and record.get('kind') not in kinds)):
+                        continue
+                    active.append(operation)
+                    if record.get('status') == 'interrupted' and not record.get('docker_enabled'):
+                        try:
+                            first_seen.setdefault(operation, time.monotonic())
+                            done, signaled = self._stop_interrupted_run_process(
+                                record, operation in stopped, time.monotonic() - first_seen[operation])
+                            if signaled:
+                                stopped.add(operation)
+                            if done:
+                                self._update_command(operation, status='interrupted', stop_pending=False,
+                                                     run_stop_confirmed=True)
+                                resolved.add(operation)
+                        except Exception as error:
+                            failures.append(str(error) or type(error).__name__)
+                        continue
+                    if operation in stopped and record.get('status') != 'interrupted':
+                        continue
+                    try:
+                        response = self._stop_command(operation)
+                        stopped.add(operation)
+                        if isinstance(response, dict) and response.get('status') in ('completed', 'stopped', 'cancelled', 'timed_out', 'interrupted'):
+                            resolved.add(operation)
+                    except Exception as error:
+                        failures.append(str(error) or type(error).__name__)
+                if failures:
+                    raise ExecutionPodError('stop_failed', '; '.join(failures))
+            if not active or all(operation in resolved for operation in active):
+                # Re-scan after a signal: a foreground process may have adopted
+                # descendants while its result was being published.
+                if active:
+                    continue
+                return {'stopped': sorted(stopped)}
+            if time.monotonic() >= deadline:
+                raise ExecutionPodError('stop_failed', 'Run processes did not confirm termination')
+            time.sleep(.1)
+
+    def _stop_interrupted_run_process(self, record, signaled, elapsed):
+        import json
+        pod = self._get('pod', record['pod'])
+        if not pod or pod.get('metadata', {}).get('uid') != record.get('pod_uid'):
+            return True, signaled
+        operation = record['operation_id']
+        result = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                   helper_command('running', operation), check=False, timeout=5)
+        if result.returncode != 0:
+            raise RuntimeError('Could not confirm interrupted process state')
+        running = json.loads(result.stdout).get('running')
+        if type(running) is not bool:
+            raise ValueError('Invalid interrupted process state')
+        if running:
+            if not signaled:
+                self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                  helper_command('stop', operation), timeout=5)
+            return False, True
+        if signaled:
+            return True, True
+        claim = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                  helper_command('claim', operation), check=False, timeout=5)
+        if claim.returncode != 0:
+            raise RuntimeError('Could not fence interrupted process startup')
+        created = json.loads(claim.stdout).get('created')
+        if type(created) is not bool:
+            raise ValueError('Invalid interrupted process claim')
+        return created or elapsed >= 10, False
+
     def background_processes(self, scratch_space_id):
         import json
         import time
@@ -2015,6 +2247,227 @@ print(json.dumps(r))'''
                               'status', 'background', 'outcome', 'exit_code', 'truncated',
                               'error_code', 'message') if key in record})
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
+
+    def _mcp_exec(self, record, action, *args, data=None, timeout=10):
+        pod = self._get('pod', record['pod'])
+        if not pod or pod.get('metadata', {}).get('uid') != record.get('pod_uid'):
+            raise ExecutionPodError('pod_interrupted', 'The original Execution Pod is unavailable')
+        mode = 'docker' if record.get('docker_enabled') else 'normal'
+        return self.backend.kube(['exec', '-i', record['pod'], '-c', 'execution', '--'] +
+            helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.',
+                           *mcp_helper_command(action, *args)), data=data, check=False, timeout=timeout)
+
+    def start_mcp(self, request):
+        import json
+        import shlex
+        import time
+        operation = request['operation_id']
+        self._command_path(operation)
+        config = {key: request[key] for key in ('install', 'command', 'env', 'plugin_data')}
+        if (not isinstance(config['install'], str) or '\x00' in config['install']
+                or not isinstance(config['command'], list) or not config['command']
+                or any(not isinstance(value, str) or not value or '\x00' in value for value in config['command'])
+                or not isinstance(config['env'], dict)
+                or any(not isinstance(k, str) or not isinstance(v, str) or not k or '=' in k or '\x00' in k + v
+                       for k, v in config['env'].items())
+                or not isinstance(config['plugin_data'], str)
+                or (config['plugin_data'].startswith('/') and config['plugin_data'] != '/scratch'
+                    and not config['plugin_data'].startswith('/scratch/'))
+                or '..' in config['plugin_data'].split('/') or '\x00' in config['plugin_data']):
+            raise ValueError('invalid MCP start request')
+        socket_path = '/run/aidash/mcp-' + operation + '.sock'
+        script = shlex.join(mcp_helper_command('serve', socket_path, json.dumps(config, separators=(',', ':'))))
+        command = {'operation_id': operation, 'scratch_space_id': request['scratch_space_id'],
+                   'run_id': request['run_id'], 'background': True, 'code': 'exec ' + script,
+                   'proxy_credential': request.get('proxy_credential')}
+        self.submit_command(command, kind='mcp_session')
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            status = self.command_result(operation)
+            if status.get('status') not in ('queued', 'running'):
+                break
+            record = self._read_command(operation)
+            try:
+                result = self._mcp_exec(record, 'ping', socket_path, timeout=5)
+                if result.returncode == 0 and json.loads(result.stdout).get('ready') is True:
+                    return {'operation_id': operation}
+            except Exception:
+                pass
+            time.sleep(.5)
+        try:
+            self.stop_background(operation)
+        except Exception:
+            pass
+        raise ExecutionPodError('mcp_start_failed', 'MCP process did not become ready')
+
+    def call_mcp(self, request):
+        import json
+        operation, message, timeout = request['operation_id'], request['message'], request['timeout_seconds']
+        if not isinstance(message, dict) or type(timeout) is not int or not 1 <= timeout <= 3600:
+            raise ValueError('invalid MCP call')
+        data = json.dumps(message, separators=(',', ':'), ensure_ascii=False).encode()
+        if len(data) > 4 * 1048576:
+            raise ValueError('MCP message exceeds 4 MiB')
+        record = self._read_command(operation)
+        if record.get('kind') != 'mcp_session' or record.get('status') not in ('running', 'queued'):
+            raise ExecutionPodError('mcp_unavailable', 'MCP session is not running')
+        with self.lock:
+            lock = self.mcp_locks.setdefault(operation, Lock())
+        if not lock.acquire(blocking=False):
+            raise ExecutionPodError('mcp_busy', 'An MCP call is already in flight')
+        try:
+            socket_path = '/run/aidash/mcp-' + operation + '.sock'
+            try:
+                result = self._mcp_exec(record, 'call', socket_path, str(timeout), data=data + b'\n', timeout=timeout + 10)
+            except Exception:
+                raise ExecutionPodError('mcp_call_failed', 'MCP call outcome is unknown') from None
+            if result.returncode:
+                raise ExecutionPodError('mcp_call_failed', 'MCP call outcome is unknown')
+            response = json.loads(result.stdout)
+            if not isinstance(response.get('message'), dict):
+                raise ExecutionPodError('mcp_call_failed', 'Invalid MCP response')
+            return response
+        finally:
+            lock.release()
+
+    def stop_preview(self, operation_id):
+        """Stop a Live preview; another kind of Background process is refused."""
+        if self._read_command(operation_id).get('kind') != 'preview':
+            raise ExecutionPodError('command_not_found', 'Live preview does not exist')
+        return self.stop_background(operation_id)
+
+    def stop_mcp(self, operation_id):
+        if self._read_command(operation_id).get('kind') != 'mcp_session':
+            raise ExecutionPodError('mcp_unavailable', 'MCP session does not exist')
+        return self.stop_background(operation_id)
+
+    def stop_mcp_run(self, scratch_space_id, run_id):
+        """Stop every stdio MCP session of a Run, as `stop_python` does for its Python session.
+
+        The server stops the sessions it knows by id; this also reaches one whose start it lost
+        track of (a dropped or timed-out start). It is the Run stop limited to MCP sessions, so an
+        interrupted session counts as stopped only on the same evidence: its Pod was replaced, or
+        the Pod shows no process of it. Other Background processes of the Run keep running."""
+        return self.stop_run(scratch_space_id, run_id, kinds=('mcp_session',))
+
+    def start_preview(self, request):
+        import base64
+        import ipaddress
+        import time
+        from control import scratch_resource_name
+        operation, scratch, port = request['operation_id'], request['scratch_space_id'], request['port']
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError('invalid preview port')
+        refresh = getattr(self.backend, 'ensure_v2_network_policy', None)
+        if refresh is not None:
+            refresh()
+        if port != self.config.get('preview_port'):
+            raise ValueError('preview port not allowed')
+        # Runs share the Pod and its one preview port: a port that already answers
+        # belongs to another process, whose server must not be shown as this one.
+        pod = self._get('pod', scratch_resource_name(scratch))
+        uid = (pod or {}).get('metadata', {}).get('uid')
+        if uid and any(self._port_answers(scratch, uid, port, host)
+                       for host in ('127.0.0.1', (pod or {}).get('status', {}).get('podIP')) if host):
+            raise ExecutionPodError('preview_start_failed',
+                                    f'Port {port} is already serving in this Scratch Space; stop that process first')
+        command = {key: request[key] for key in ('operation_id', 'scratch_space_id', 'run_id', 'code', 'proxy_credential')
+                   if key in request}
+        command.update(background=True, cwd=request.get('cwd') or '.')
+        self.submit_command(command, kind='preview')
+        original_uid = self._read_command(operation)['pod_uid']
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            record = self.command_result(operation)
+            pod = self._get('pod', scratch_resource_name(scratch))
+            if not pod or pod.get('status', {}).get('phase') != 'Running':
+                break
+            uid, address = pod.get('metadata', {}).get('uid'), pod.get('status', {}).get('podIP')
+            if uid != original_uid:
+                break
+            if record.get('status') not in ('queued', 'running'):
+                break
+            if record.get('status') == 'running' and uid and address:
+                # Probe the Pod address the preview gateway uses: a loopback-only
+                # server is not ready for it.
+                if self._port_answers(scratch, uid, port, address):
+                    parsed = ipaddress.ip_address(address)
+                    host = '[' + str(parsed) + ']' if parsed.version == 6 else str(parsed)
+                    return {'operation_id': operation, 'address': f'{host}:{port}'}
+            time.sleep(.5)
+        tail = []
+        for stream in ('stdout', 'stderr'):
+            try:
+                chunk = self.background_log({'operation_id': operation, 'stream': stream, 'limit': 4096})
+                tail.append(base64.b64decode(chunk['data'], validate=True).decode('utf-8', errors='replace'))
+            except Exception:
+                pass
+        stop_failed = False
+        try:
+            self.stop_background(operation)
+        except Exception:
+            stop_failed = True
+        message = ''.join(tail)[-8192:]
+        credential = request.get('proxy_credential')
+        if isinstance(credential, str) and credential:
+            message = message.replace(credential, '[redacted]')
+        if stop_failed:
+            message += '\nCould not stop the preview process.'
+        raise ExecutionPodError('preview_start_failed', message or 'Preview did not accept connections within 60 seconds')
+
+    def _port_answers(self, scratch, uid, port, host):
+        import json
+        from control import scratch_resource_name
+        try:
+            probe = self.backend.kube(['exec', scratch_resource_name(scratch), '-c', 'execution', '--'] +
+                                      helper_command('port-check', uid, str(port), host), check=False, timeout=5)
+            return probe.returncode == 0 and json.loads(probe.stdout).get('ready') is True
+        except Exception:
+            return False
+
+    def file_operation(self, operation, request):
+        import json
+        from control import scratch_resource_name
+        if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+            raise ValueError('invalid file operation')
+        scratch = request['scratch_space_id']
+        name = scratch_resource_name(scratch)
+        with self._space_lock(scratch):
+            pod = self._get('pod', name)
+            if not pod or pod.get('status', {}).get('phase') != 'Running':
+                raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
+            uid = pod.get('metadata', {}).get('uid')
+            if not self.admitted or not uid or self._admitted_uid(scratch) != uid:
+                raise ExecutionPodError('admission_unverified', 'Execution Pod has not passed admission')
+            result = self.backend.kube(['exec', '-i', name, '-c', 'execution', '--'] +
+                                       helper_command('files', operation, uid),
+                                       data=json.dumps(request, separators=(',', ':')).encode(), check=False, timeout=45)
+            if result.returncode:
+                # The Pod is running, so the helper may have changed files before the exec
+                # failed: unlike `pod_unavailable`, this is no proof that nothing happened,
+                # and callers must not repeat a patch or write on it.
+                raise ExecutionPodError('file_helper_failed', 'File helper failed; the call may have taken effect')
+            response = json.loads(result.stdout)
+            if 'error' in response:
+                raise ExecutionPodError(response['error']['code'], response['error']['message'])
+            return response['result']
+
+    def background_log(self, request):
+        import json
+        operation_id = request['operation_id']
+        record = self._read_command(operation_id)
+        if not record.get('background'):
+            raise ExecutionPodError('not_background', 'Command is not a background process')
+        stream, offset, limit = request['stream'], request.get('offset'), request['limit']
+        if (stream not in ('stdout', 'stderr') or type(limit) is not int or not 1 <= limit <= 262144
+                or (offset is not None and (type(offset) is not int or offset < 0))):
+            raise ValueError('invalid log request')
+        result = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+            helper_command('output', operation_id, stream, 'tail' if offset is None else str(offset), str(limit)),
+            check=False, timeout=45)
+        if result.returncode != 0:
+            raise ExecutionPodError('log_unavailable', 'Background output unavailable')
+        return json.loads(result.stdout)
 
     def stop_background(self, operation_id):
         record = self._read_command(operation_id)
@@ -2178,6 +2631,15 @@ print(json.dumps(r))'''
         import time
         from control import scratch_resource_name
         current = time.time() if now is None else now
+        self._ensure_journal_index()
+        with self.lock:
+            spaces_with_records = tuple(self.journal_index)
+        for scratch_id in spaces_with_records:
+            try:
+                self.prune_space(scratch_id, now=current)
+            except Exception as error:
+                import sys
+                print('Execution Pod journal cleanup failed: ' + str(error), file=sys.stderr, flush=True)
         directory = self.backend.root / 'execution-v2-spaces'
         if not directory.exists():
             return
@@ -2185,7 +2647,6 @@ print(json.dumps(r))'''
             try:
                 scratch_id = json.loads(path.read_bytes())['scratch_space_id']
                 with self._space_lock(scratch_id):
-                    self.prune_space(scratch_id, now=current)
                     with self.lock:
                         space = json.loads(path.read_bytes())
                         unconfirmed = space.get('termination_unconfirmed', False)
@@ -2242,11 +2703,11 @@ print(json.dumps(r))'''
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         return directory / (key + '.json')
 
-    def start_python(self, scratch_space_id, run_id):
+    def start_python(self, scratch_space_id, run_id, proxy_credential=None):
         with self._space_lock(scratch_space_id):
-            return self._start_python(scratch_space_id, run_id)
+            return self._start_python(scratch_space_id, run_id, proxy_credential)
 
-    def _start_python(self, scratch_space_id, run_id):
+    def _start_python(self, scratch_space_id, run_id, proxy_credential=None):
         import json
         import shlex
         import uuid
@@ -2278,11 +2739,13 @@ print(json.dumps(r))'''
             replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
         else:
             replaced = False
+        self._check_python(scratch_space_id)
         operation_id = str(uuid.uuid4())
         socket_path = '/run/aidash/' + operation_id + '.sock'
-        code = 'exec ' + shlex.join(python_helper_command('serve', socket_path))
+        code = 'exec ' + shlex.join(['python3', '-I', '/.aidash-helpers/python_session.py', 'serve', socket_path])
         self.submit_command({'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
-                             'run_id': run_id, 'code': code, 'background': True}, kind='python_session')
+                             'run_id': run_id, 'code': code, 'background': True,
+                             'proxy_credential': proxy_credential}, kind='python_session')
         session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
                    'run_id': run_id, 'socket_path': socket_path}
         self._ensure_journal_index()
@@ -2290,6 +2753,24 @@ print(json.dumps(r))'''
         with self.lock:
             self.session_index.setdefault(scratch_space_id, set()).add(path.name)
         return dict(session, session_replaced=True) if replaced else session
+
+    def _check_python(self, scratch_space_id):
+        import json
+        from control import scratch_resource_name
+        pod = self._get('pod', scratch_resource_name(scratch_space_id))
+        if not pod or pod.get('status', {}).get('phase') != 'Running':
+            raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
+        uid = pod.get('metadata', {}).get('uid')
+        containers = pod.get('spec', {}).get('containers', [])
+        execution = next((item for item in containers if item.get('name') == 'execution'), {})
+        caps = execution.get('securityContext', {}).get('capabilities', {}).get('add', [])
+        mode = 'docker' if 'NET_ADMIN' in caps else 'normal'
+        probe = self.backend.kube(['exec', scratch_resource_name(scratch_space_id), '-c', 'execution', '--'] +
+                                  helper_command('python-check', mode, uid), check=False, timeout=20)
+        if probe.returncode != 0:
+            raise ExecutionPodError('pod_unavailable', 'Could not check the image Python interpreter')
+        if json.loads(probe.stdout).get('available') is not True:
+            raise ExecutionPodError('python_unavailable', 'This image has no python3. Install it with apt (for example `apt-get install -y python3`) and try again.')
 
     def python_cell(self, request):
         import base64
@@ -2318,7 +2799,7 @@ print(json.dumps(r))'''
         if any(not isinstance(request.get(key, '.'), str) or '\x00' in request.get(key, '.') for key in ('cwd', 'run_id')):
             raise ValueError('Python request contains NUL')
         seconds = execution_timeout(request)
-        session = self.start_python(request['scratch_space_id'], request['run_id'])
+        session = self.start_python(request['scratch_space_id'], request['run_id'], request.get('proxy_credential'))
         output_limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         cell_limit = max(1, min(8388608, (output_limit - 4096) // 6))
         encoded = base64.b64encode(code.encode('utf-8')).decode('ascii')
@@ -2407,7 +2888,7 @@ class _ResultFrameReader:
             self.pending = self.pending[1:]
 
 
-def drain_process(argv, environment, output_limit, timeout, on_output=None, *, frame_token=None):
+def drain_process(argv, environment, output_limit, timeout, on_output=None, *, frame_token=None, input_data=None):
     """Drain a trusted transport without buffering unbounded command output."""
     import os
     import selectors
@@ -2417,11 +2898,14 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None, *, f
 
     output = BoundedOutput(output_limit)
     frame = _ResultFrameReader(frame_token, output) if frame_token else None
-    process = subprocess.Popen(argv, stdin=subprocess.PIPE if frame else subprocess.DEVNULL, stdout=subprocess.PIPE,
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE if frame or input_data else subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment, start_new_session=True)
-    if frame:
+    if frame or input_data:
         try:
-            process.stdin.write((frame_token + '\n').encode('ascii'))
+            if frame:
+                process.stdin.write((frame_token + '\n').encode('ascii'))
+            if input_data:
+                process.stdin.write(input_data)
             process.stdin.close()
         except BrokenPipeError:
             pass
@@ -2511,6 +2995,61 @@ def verify_network_probe(report, *, docker, spoof_seen):
         raise ValueError('spoofed packet isolation is unverified')
 
 
+def preview_ingress_from_legacy(policies):
+    """Read the gateway identity and port from the deployed v1 Preview policy."""
+    candidates = [policy for policy in policies if policy.get('metadata', {}).get('name', '').endswith('-preview-sandbox')]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise ValueError('multiple Preview gateway policies')
+    policy = candidates[0]
+    release = policy['metadata']['name'][:-len('-preview-sandbox')]
+    spec = policy.get('spec', {})
+    selector = spec.get('podSelector', {})
+    expressions = selector.get('matchExpressions', [])
+    if (not release or spec.get('policyTypes') != ['Ingress'] or spec.get('egress') or
+            selector.get('matchLabels') != {'aidash-sandbox': 'true'} or
+            len(expressions) != 2 or
+            {(item.get('key'), item.get('operator')) for item in expressions} !=
+            {('aidash-v2', 'DoesNotExist'), ('aidash-journal', 'DoesNotExist')} or
+            any(set(item) != {'key', 'operator'} for item in expressions)):
+        raise ValueError('invalid Preview gateway policy selector')
+    rules = spec.get('ingress')
+    if not isinstance(rules, list) or len(rules) != 1:
+        raise ValueError('invalid Preview gateway ingress')
+    rule = rules[0]
+    peers, ports = rule.get('from'), rule.get('ports')
+    if set(rule) != {'from', 'ports'} or not isinstance(peers, list) or len(peers) != 1 or not isinstance(ports, list) or len(ports) != 1:
+        raise ValueError('invalid Preview gateway ingress')
+    peer, port = peers[0], ports[0]
+    namespace = peer.get('namespaceSelector', {}).get('matchLabels', {})
+    selector = peer.get('podSelector', {}).get('matchLabels', {})
+    if (set(peer) != {'namespaceSelector', 'podSelector'} or
+            set(peer['namespaceSelector']) != {'matchLabels'} or set(peer['podSelector']) != {'matchLabels'} or
+            set(namespace) != {'kubernetes.io/metadata.name'} or not isinstance(namespace['kubernetes.io/metadata.name'], str) or
+            not namespace['kubernetes.io/metadata.name'] or
+            set(selector) != {'app.kubernetes.io/instance', 'app.kubernetes.io/component'} or
+            selector['app.kubernetes.io/instance'] != release or selector['app.kubernetes.io/component'] not in ('server', 'preview') or
+            set(port) - {'protocol', 'port'} or port.get('protocol', 'TCP') != 'TCP' or
+            type(port.get('port')) is not int or not 1 <= port['port'] <= 65535):
+        raise ValueError('invalid Preview gateway identity or port')
+    return {'preview_namespace': namespace['kubernetes.io/metadata.name'],
+            'preview_selector': selector, 'preview_port': port['port']}
+
+
+def v2_preview_ingress(config):
+    port, namespace, selector = (config.get(key) for key in ('preview_port', 'preview_namespace', 'preview_selector'))
+    if port is None and namespace is None and selector is None:
+        return []
+    if (type(port) is not int or not 1 <= port <= 65535 or not isinstance(namespace, str) or not namespace or
+            not isinstance(selector, dict) or set(selector) != {'app.kubernetes.io/instance', 'app.kubernetes.io/component'} or
+            not isinstance(selector['app.kubernetes.io/instance'], str) or not selector['app.kubernetes.io/instance'] or
+            selector['app.kubernetes.io/component'] not in ('server', 'preview')):
+        raise ValueError('invalid Preview gateway configuration')
+    return [{'from': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': namespace}},
+                      'podSelector': {'matchLabels': selector}}], 'ports': [{'protocol': 'TCP', 'port': port}]}]
+
+
 def v2_network_policy(config):
     """Restrict v2 Pods to the configured, internal Egress gateway."""
     import ipaddress
@@ -2534,7 +3073,7 @@ def v2_network_policy(config):
     return {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
             'metadata': {'name': 'aidash-v2-egress', 'namespace': config['namespace']},
             'spec': {'podSelector': {'matchLabels': {'aidash-sandbox': 'true', 'aidash-v2': 'true'}},
-                     'policyTypes': ['Ingress', 'Egress'], 'ingress': [],
+                     'policyTypes': ['Ingress', 'Egress'], 'ingress': v2_preview_ingress(config),
                      'egress': [{'to': [{'namespaceSelector': {'matchLabels': {
                          'kubernetes.io/metadata.name': namespace}}, 'podSelector': {'matchLabels': selector}}],
                          'ports': [{'protocol': 'TCP', 'port': port}]}]}}
@@ -2609,7 +3148,9 @@ def verify_network_policies(policies, labels, expected):
     allowed = expected['spec']['egress'][0]
     allowed_peer = allowed['to'][0]
     allowed_port = allowed['ports'][0]['port']
+    allowed_ingress = expected['spec'].get('ingress', [])
     found = False
+    found_ingress = []
     for policy in policies:
         spec = policy['spec']
         if not _selector_matches(spec.get('podSelector', {}), labels):
@@ -2617,8 +3158,10 @@ def verify_network_policies(policies, labels, expected):
         types = spec.get('policyTypes')
         ingress = types is None or 'Ingress' in types
         egress = ('Egress' in types) if types is not None else 'egress' in spec
-        if ingress and spec.get('ingress'):
+        if ingress and any(rule not in allowed_ingress for rule in spec.get('ingress', [])):
             raise ValueError('network policy admits unexpected ingress')
+        if ingress:
+            found_ingress.extend(spec.get('ingress', []))
         if not egress:
             continue
         for rule in spec.get('egress', []):
@@ -2631,3 +3174,5 @@ def verify_network_policies(policies, labels, expected):
             found = True
     if not found:
         raise ValueError('network policy does not admit the Egress gateway')
+    if any(rule not in found_ingress for rule in allowed_ingress):
+        raise ValueError('network policy does not admit Preview gateway ingress')

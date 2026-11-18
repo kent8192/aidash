@@ -165,9 +165,6 @@ pub(crate) mod sessions;
 
 pub(crate) mod cleanup;
 
-pub(crate) mod packages;
-pub(crate) mod python;
-
 pub(crate) mod files;
 
 pub(crate) mod configuration;

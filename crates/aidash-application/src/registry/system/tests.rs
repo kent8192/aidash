@@ -30,6 +30,7 @@ fn compare_develop_builtin_declarations() {
 		.unwrap()
 		.into_iter()
 		.chain(legacy_workspace_entries(&validation, NODE).unwrap())
+		.chain(legacy_file_entries(&validation, NODE).unwrap())
 		.collect::<Vec<_>>();
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
@@ -65,6 +66,10 @@ fn compare_develop_builtin_declarations() {
 				Some(old)
 			);
 			changed.push(old.id.clone());
+		} else if now.version != old.version {
+			// Bumped for #745 where the test catalog cannot show the change; the
+			// old declaration must stay seeded byte for byte.
+			assert!(legacy.contains(old), "{}@{} not kept", old.id, old.version);
 		} else {
 			assert_eq!(now, old);
 		}
@@ -74,6 +79,7 @@ fn compare_develop_builtin_declarations() {
 		[
 			"aidash.workspace_search",
 			"aidash.workspace_message",
+			"aidash.attachment_copy",
 			"aidash.memory_mutate",
 			"aidash.subnode_task"
 		]

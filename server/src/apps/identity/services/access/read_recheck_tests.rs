@@ -775,7 +775,10 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 		.set_policy(1, Some(("helper", "message.read")))
 		.await;
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-	repository.stop_refused(target).await.unwrap();
+	assert!(
+		repository.stop_refused(target).await.is_err(),
+		"no Runner is configured"
+	);
 	assert_eq!(
 		preview_stop(&fixture, preview).await,
 		("stopped".into(), Some("run_authority_revoked".into()))
@@ -810,7 +813,12 @@ async fn remote_preview_recheck_stops_when_the_peer_mapping_is_disabled(
 		.await
 		.unwrap();
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-	repository.stop_refused(target).await.unwrap();
+	// The Pod stop of the Run's processes needs a Runner (ADR 0136); the preview row
+	// stops regardless.
+	assert!(
+		repository.stop_refused(target).await.is_err(),
+		"no Runner is configured"
+	);
 	assert_eq!(
 		preview_stop(&fixture, preview).await,
 		("stopped".into(), Some("run_authority_revoked".into()))
@@ -1035,7 +1043,10 @@ async fn the_loop_stops_what_is_running_when_a_read_is_revoked(
 	let targets = [Target::Operation(operation), Target::LivePreview(preview)];
 	for target in targets {
 		assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-		repository.stop_refused(target).await.unwrap();
+		assert!(
+			repository.stop_refused(target).await.is_err(),
+			"no Runner is configured"
+		);
 	}
 
 	// Assert
@@ -1050,7 +1061,56 @@ async fn the_loop_stops_what_is_running_when_a_read_is_revoked(
 		)
 	);
 	let targets = repository.targets().await.unwrap();
-	assert!(targets.is_empty(), "{targets:?}");
+	assert_eq!(targets, vec![Target::RevokedRun(fixture.run)]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_whose_command_left_background_processes_is_still_rechecked(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	// Arrange: the command ended and left a Background process running in the Pod.
+	let fixture = fixture(database.await, 3).await;
+	let (operation, _) = running_targets(&fixture).await;
+	sqlx::query("UPDATE core_operations SET state='completed', input='{\"runtime\":\"pod\"}', result='{\"left_running\":\"x.left\"}' WHERE id=$1")
+		.bind(operation)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		targets.contains(&Target::Operation(operation)),
+		"{targets:?}"
+	);
+
+	// Act
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	let checked = repository
+		.check(Target::Operation(operation))
+		.await
+		.unwrap();
+	let stopped = repository.stop_refused(Target::Operation(operation)).await;
+
+	// Assert: the refusal marks the Run, which ends the target.
+	assert_eq!(checked, Outcome::Refused);
+	assert!(stopped.is_err(), "no Runner is configured");
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		!targets.contains(&Target::Operation(operation)),
+		"{targets:?}"
+	);
+	assert!(
+		targets.contains(&Target::RevokedRun(fixture.run)),
+		"{targets:?}"
+	);
 }
 
 #[rstest]
@@ -1601,7 +1661,11 @@ async fn a_command_is_marked_withdrawn_even_when_the_runner_cannot_be_asked(
 	let targets = repository.targets().await.unwrap();
 	assert!(
 		!targets.contains(&target),
-		"the loop is done with it: the sweep goes on asking the Runner, {targets:?}"
+		"legacy withdrawal handles the operation: {targets:?}"
+	);
+	assert!(
+		targets.contains(&Target::RevokedRun(fixture.run)),
+		"the Pod stop remains pending: {targets:?}"
 	);
 }
 
@@ -1677,4 +1741,121 @@ async fn a_write_a_subnode_fences_is_checked_afresh_inside_a_check(
 
 	// Assert
 	assert!(matches!(repeat, Err(Error::Forbidden)), "{repeat:?}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_success(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::{
+		capabilities::read_recheck::{self, Schedule},
+		ports::{
+			Credentials,
+			capabilities::read_recheck::{ReadRecheckRepository, Target},
+		},
+	};
+	use aidash_integrations::runner::RunnerHttp;
+	use std::sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	};
+	use wiremock::{
+		Mock, MockServer, Request, ResponseTemplate,
+		matchers::{method, path},
+	};
+
+	struct Keys;
+	impl Credentials for Keys {
+		fn resolve(&self, _: &str) -> aidash_application::Result<String> {
+			Ok("runner-key".into())
+		}
+	}
+	let fixture = fixture(database.await, 1).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	sqlx::query("UPDATE runs SET home_node = $1 WHERE id = $2")
+		.bind(format!("{DEPLOYMENT}/{node}"))
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let space: Uuid = sqlx::query_scalar("SELECT scratch_space_id FROM workspaces WHERE id = $1")
+		.bind(fixture.workspace)
+		.fetch_one(fixture.driver())
+		.await
+		.unwrap();
+	let (operation, _) = running_targets(&fixture).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	assert!(
+		repository
+			.stop_refused(Target::Operation(operation))
+			.await
+			.is_err()
+	);
+	assert_eq!(operation_state(&fixture, operation).await.0, "withdrawn");
+	let pending = Target::RevokedRun(fixture.run);
+	assert!(repository.targets().await.unwrap().contains(&pending));
+
+	// The old in-memory schedule has been lost; the durable row is still picked up.
+	let mut restarted = Schedule::default();
+	read_recheck::pass(&repository, &mut restarted, std::time::Instant::now())
+		.await
+		.unwrap();
+	assert!(repository.targets().await.unwrap().contains(&pending));
+	let server = MockServer::start().await;
+	let calls = Arc::new(AtomicUsize::new(0));
+	let observed = calls.clone();
+	let run = fixture.run.to_string();
+	let scratch = space.to_string();
+	Mock::given(method("POST"))
+		.and(path("/v2/runs/stop"))
+		.respond_with(move |request: &Request| {
+			let body: Value = request.body_json().unwrap();
+			assert_eq!(body, json!({"scratch_space_id":scratch,"run_id":run}));
+			if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+				ResponseTemplate::new(503)
+					.set_body_json(json!({"code":"runner_unavailable","message":"retry"}))
+			} else {
+				ResponseTemplate::new(200).set_body_json(json!({"stopped":["op"]}))
+			}
+		})
+		.expect(2)
+		.mount(&server)
+		.await;
+	let runner = RunnerHttp {
+		endpoint: server.uri(),
+		credential_env: "test".into(),
+		credentials: Arc::new(Keys),
+	};
+	let stop = || {
+		crate::apps::execution::repositories::operations::stop_pending_run_with_runner(
+			&fixture.store,
+			"acme",
+			fixture.run,
+			&runner,
+		)
+	};
+	assert!(stop().await.is_err());
+	let stopped_at: Option<chrono::DateTime<chrono::Utc>> =
+		sqlx::query_scalar("SELECT stopped_at FROM egress_run_revocations WHERE run_id = $1")
+			.bind(fixture.run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert!(stopped_at.is_none());
+	stop().await.unwrap();
+	let stopped_at: Option<chrono::DateTime<chrono::Utc>> =
+		sqlx::query_scalar("SELECT stopped_at FROM egress_run_revocations WHERE run_id = $1")
+			.bind(fixture.run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert!(stopped_at.is_some());
+	assert!(!repository.targets().await.unwrap().contains(&pending));
+	assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

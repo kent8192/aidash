@@ -110,6 +110,41 @@ pub async fn get_of<E: OrmExecutor>(
 		.transpose()
 }
 
+/// The files of a named Tenant's copy, which a stdio server starts from (ADR 0073).
+pub async fn files_of(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	digest: &str,
+) -> Result<Option<Vec<PluginFile>>> {
+	let (sql, values) = Query::select()
+		.column(Alias::new("files"))
+		.from(Alias::new(AgentPluginCopy::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("digest").eq(Expr::value(digest)))
+		.build(PostgresQueryBuilder);
+	let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+		return Ok(None);
+	};
+	let row = QueryRow::from_backend_row(row).data;
+	let stored: Vec<StoredFile> = serde_json::from_value(row["files"].clone())?;
+	stored
+		.into_iter()
+		.map(|file| {
+			let bytes = match file.encoding {
+				Encoding::Utf8 => file.content.into_bytes(),
+				Encoding::Base64 => base64::engine::general_purpose::STANDARD
+					.decode(file.content)
+					.map_err(|_| invalid("a stored file is not base64"))?,
+			};
+			Ok(PluginFile {
+				path: file.path,
+				bytes,
+			})
+		})
+		.collect::<Result<_>>()
+		.map(Some)
+}
+
 /// Keeps the import in the transaction's Tenant scope and returns the stored
 /// copy. A copy with the same digest stays as it is, so a later change to how
 /// plugins load never alters what earlier Agent definitions pinned.

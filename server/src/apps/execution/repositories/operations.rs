@@ -187,8 +187,11 @@ pub(crate) async fn persist(access: &mut Access, operation: &Operation) -> Resul
 }
 pub(crate) mod reconciliation;
 
+pub(crate) mod pods;
 mod processing;
 mod read_recheck;
+#[cfg(test)]
+pub(crate) use read_recheck::stop_pending_run_with_runner;
 mod receipt_output;
 
 mod pod_usage;

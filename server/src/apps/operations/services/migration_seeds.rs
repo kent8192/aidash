@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 14] {
+fn assets() -> [(&'static str, String); 16] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -80,6 +80,17 @@ fn assets() -> [(&'static str, String); 14] {
 		(
 			"identity/sql/backward/0080_schedule_member_policy.sql",
 			crate::apps::identity::services::schedule_policy_backfill::backward(),
+		),
+		(
+			"identity/sql/forward/0082_remove_package_index_approvals.sql",
+			format!(
+				"SET LOCAL aidash.scope = 'deployment';\n{};\n",
+				crate::apps::identity::services::package_index_approvals::forward()
+			),
+		),
+		(
+			"identity/sql/backward/0082_remove_package_index_approvals.sql",
+			crate::apps::identity::services::package_index_approvals::backward(),
 		),
 	]
 }

@@ -153,6 +153,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "egress_scope_state", TenantOwned),
 	table("execution", "egress_scope_daily", TenantOwned),
 	table("execution", "egress_scope_connections", TenantOwned),
+	table("execution", "egress_run_revocations", TenantOwned),
+	table("execution", "agent_plugin_data", TenantOwned),
 	table("execution", "egress_scope_events", TenantOwned),
 	table("execution", "egress_scope_refusals", TenantOwned),
 	table("execution", "egress_sessions", TenantOwned),

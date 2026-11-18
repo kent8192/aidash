@@ -23,8 +23,6 @@ pub(crate) mod network;
 pub mod objects;
 #[path = "operations.rs"]
 pub mod operations;
-#[path = "packages.rs"]
-pub(crate) mod packages;
 #[path = "patch.rs"]
 pub(crate) mod patch;
 #[path = "python.rs"]
@@ -63,7 +61,6 @@ impl Default for Profile {
 			egress: None,
 			admission: false,
 			outbound_origins: vec![],
-			package_origins: vec![],
 			storage: PathBuf::from("/var/lib/aidash/capabilities"),
 			blob_storage: Default::default(),
 			working_bytes: 1 << 30,
@@ -74,7 +71,6 @@ impl Default for Profile {
 			processes: 128,
 			operation_seconds: 120,
 			maximum_seconds: 600,
-			install_seconds: 300,
 			idle_seconds: 1800,
 			recovery_seconds: 7 * 86400,
 			grant_seconds: 3600,
@@ -171,7 +167,6 @@ impl Runtime {
 			|| profile.memory_bytes > i64::MAX as u64
 			|| !(16..=4096).contains(&profile.processes)
 			|| profile.operation_seconds == 0
-			|| profile.install_seconds == 0
 			|| !(1..=600).contains(&profile.maximum_seconds)
 			|| !(1..=1800).contains(&profile.idle_seconds)
 			|| profile.recovery_seconds == 0
@@ -185,18 +180,13 @@ impl Runtime {
 			|| profile.output_bytes == 0
 			|| profile.output_bytes > 8 << 20
 			|| profile.operation_seconds > profile.maximum_seconds
-			|| profile.install_seconds > profile.maximum_seconds
 			|| profile.grant_seconds > 3600
 		{
 			return Err(Error::Invalid(
 				"invalid capability execution profile".into(),
 			));
 		}
-		for origin in profile
-			.outbound_origins
-			.iter()
-			.chain(&profile.package_origins)
-		{
+		for origin in profile.outbound_origins.iter() {
 			let url = reqwest::Url::parse(origin)
 				.map_err(|_| Error::Invalid("invalid outbound origin".into()))?;
 			if url.scheme() != "https"

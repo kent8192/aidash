@@ -62,4 +62,7 @@ pub struct OperationResult {
 	/// only when true.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub deadline_expired: Option<bool>,
+	/// Background process adopted after the foreground command exited.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub left_running: Option<String>,
 }

@@ -321,31 +321,20 @@ Without egress settings, sandbox networking remains deny-all.
 
 ## Package indexes
 
-The Runner image includes Node.js 22 LTS, npm/npx and uv/uvx. Built-in
-External services `core.npm` and `core.pypi` need their own Tenant Catalog
-Approvals and Agent bindings. The operation points npm's registry and uv's
-index at the gateway. npm's `replace-registry-host` stays `npmjs`, so lockfile
-links on registry.npmjs.org go through the gateway while the gateway's own
-rewritten links are used unchanged. Python downloads are disabled with
-`UV_PYTHON_DOWNLOADS=never`.
-
-Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
-package file addresses onto the gateway. An index exceeding this limit is refused
-with HTTP 422 and the message `package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.` in both the error body and HTTP reason phrase. npm files remain on
-`registry.npmjs.org`; PyPI files may also use `files.pythonhosted.org`.
-Integrity fields and URL hash fragments remain intact, and package files
-stream unchanged under the operation's cumulative budget. `python_install`
-and its wheel-selection API/UI have been removed; use uv through the gateway.
-
-File previews, Retained versions and message citations are described in
-[File previews and Retained versions](file-previews-and-retained-versions.md).
-Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).
+Agents install packages from the shell of their Execution Pod. npm, pip and uv
+reach their public registries through the Pod's HTTPS proxy, limited by the
+Scratch Space's allowed hosts and named by the Run's proxy credential (ADR 0136).
+There are no built-in package index External services and no index rewriting
+(#745, #729).
 
 ## Scratch Space proxy integration
 
 The server connects the scope-authenticated forward proxy to Scratch Space
 credentials and durable scope policy. The operation-token gateway described
-above also remains available. The Pod needs
+above also remains available, but no Execution Pod process is issued an
+operation token, and the scoped route below refuses Run credentials, so until
+#738 lands processes in the Execution Pod cannot reach External services (#952
+waits on #738). The Pod needs
 `HTTPS_PROXY` and `HTTP_PROXY` set to the internal Egress gateway. The gateway
 accepts HTTP Basic proxy authentication with the scope credential as the password
 (for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;
