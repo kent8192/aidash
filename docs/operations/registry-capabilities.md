@@ -14,20 +14,18 @@ New Tool registrations require qualified Provider descriptors. Old transport-tag
 
 Every Tenant's Registry holds the built-in declarations at exact immutable versions (`aidash.<operation>@1.0.0`): the 17 legacy required/default operations, `capability_search`, `capability_describe`, `capability_load`, `capability_unload`, `skill_asset_read` and `task_assign`. Tenant creation writes them, and startup writes any that a Tenant lacks (ADR 0033). All are seeded whatever Exposure policies Agents use; an Agent's [Exposure policy](#deferred-capability-exposure) decides which of them it binds implicitly. Seeding verifies existing bytes and fails on a reserved-name conflict. These built-ins need no Catalog Approval and add no resource grants. Built-ins cannot be published, installed or mutated through Marketplace.
 
-## Sandboxed and research built-ins
+## Sandboxed built-ins and page reading
 
-The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and the research providers are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one whose `[research_providers]` settings do not declare a research provider offers no group for it. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
+The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and page reading are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one without `page_reading = true` under `[research_providers]` offers no page reading group. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
 
-| Group              | Bundle                           | Operations                                              |
-| ------------------ | -------------------------------- | ------------------------------------------------------- |
-| `shell`            | `aidash.bundle.shell`            | `shell`, `shell_poll`, `shell_cancel`                   |
-| `python`           | `aidash.bundle.python`           | `code_interpreter`, `python_poll`, `python_cancel`      |
-| `outbound_get`     | `aidash.bundle.outbound_get`     | `outbound_get`                                          |
-| `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                           |
-| `file_share`       | `aidash.bundle.file_share`       | `file_share`                                            |
-| `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                            |
-| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`              |
-| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view` |
+| Group           | Bundle                        | Operations                                         |
+| --------------- | ----------------------------- | -------------------------------------------------- |
+| `shell`         | `aidash.bundle.shell`         | `shell`, `shell_poll`, `shell_cancel`              |
+| `python`        | `aidash.bundle.python`        | `code_interpreter`, `python_poll`, `python_cancel` |
+| `outbound_get`  | `aidash.bundle.outbound_get`  | `outbound_get`                                     |
+| `apply_patch`   | `aidash.bundle.apply_patch`   | `apply_patch`                                      |
+| `file_share`    | `aidash.bundle.file_share`    | `file_share`                                       |
+| `research_page` | `aidash.bundle.research_page` | `research.page@1`: `fetch`                         |
 
 `shell` and `code_interpreter` wait for completion by default without another
 model call. Their poll companions do the same: `wait_seconds` defaults to 300,
@@ -40,7 +38,7 @@ output; if the window has advanced past an older offset, the reply starts at the
 available window. When nothing has changed they omit `output` and set
 `output_unchanged`.
 
-Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
+Sandboxed operations have the `sandboxed` tier and page reading the `research` tier, a name kept from the removed Research category (ADR 0138). Page reading is `aidash.research.page.fetch@2.0.0` with the default Model alias `research_fetch`. It takes `url` and an optional 1-based `part`, fetches the page again on every call and returns one bounded part of its text; each call waits for a Tool call approval, and a Run grant covers one host until the next input from a person. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. Brave search, the fixture provider and page reading's `find` and `view` are removed; their definitions stay so pinned Agent versions resolve, but they no longer bind.
 
 A Tenant subject with `catalog.approve` approves a group by approving its bundle and every member in one `POST /api/authorization/{tenant}/catalog/approvals` request; a bundle's approval is refused while a member is unapproved. `task_assign` only starts a generation inside Aidash, so it is an ordinary built-in.
 
@@ -391,8 +389,11 @@ findings it was imported with.
 ### Catalog Approval
 
 The Catalog Approval of an Agent version lists every MCP server of its plugins,
-with a remote server's URL and headers, and every entry the import skipped, and
-approving it admits that they exist. A plugin is not a Registry definition, so
+with a remote server's URL and header names, and every entry the import skipped,
+and approving it admits that they exist. For a remote server it also shows how
+it authenticates: the Tenant Secret name, the effective header and form (Bearer
+or raw), and whether only each person's own secret may be used, never the value.
+It lists the tools declared Read-only. A plugin is not a Registry definition, so
 it adds no dependency to approve first.
 
 ### Skills
@@ -431,6 +432,83 @@ The tools a server listed are pinned as follows.
   changed since the declaration is not Read-only for the Run, and that is
   reported. What a server says about its own tools, such as `readOnlyHint`, never
   declares anything.
+- `secret` names the pasted secret a remote server authenticates with when it
+  offers no OAuth; see below.
+
+### Authentication of remote servers
+
+A remote server authenticates as a Registry MCP tool does (ADR 0100, ADR 0073
+amended 2026-11-16). The Run's chain-root person's OAuth Connection to the
+server comes first. Without one, the server uses the pasted secret its
+`agent_plugin_settings` entry names:
+
+```json
+{
+  "secret": { "name": "docs-token", "header": "X-Api-Key", "owner": "personal" }
+}
+```
+
+`name` is a Tenant Secret name. The person's own secret of that name wins over
+the shared Tenant Secret; `owner: personal` refuses the shared one. `header`
+defaults to `Authorization`. `form` is `bearer` or `raw`; without it,
+`Authorization` carries `Bearer <value>` and any other header the raw value.
+`form: raw` sends the raw value in `Authorization` too, for a server that
+expects `Authorization: <key>`. `form: bearer` is refused on any other header,
+because the Credential Broker sends the Bearer form only in `Authorization`.
+The secret replaces a header of the plugin with the same
+name, compared without case. A header name is refused when either the plugin
+transport's list above or the Credential Broker's rule refuses it: the broker
+accepts only letters, digits and `-`, and refuses `cookie`, `expect`,
+`proxy-authorization`, `sec-*`, `x-forwarded-*` and `x-aidash-*` besides the
+framing headers. There is no separate per-server Tenant Secret binding.
+Registering or installing the Agent refuses a server secret on a Deployment
+without Tenant Secrets or toward plain HTTP other than a loopback literal, and,
+unless `owner` is `personal`, one whose shared Tenant Secret does not exist or
+does not record the server's host. Naming such a secret also needs `secret.use`
+on it, as for a Tool's `secret`, when the Agent is registered (including a
+personal Agent or a Workbench draft), installed from the Marketplace, or
+written as a Generation Policy's Agent template; a personal-only server secret
+names only each person's own row and needs none.
+The Agent version's secret readiness lists each such server as
+`agent_plugin_server` with item `<plugin>/<server>`, so a missing or
+host-mismatched shared secret shows as a warning.
+
+The secret is resolved at each session, after the arguments are valid and
+before anything is sent, with the same checks as a Registry tool's: the row
+must be active and record the server's host. On Cloud and Dedicated the
+Credential Broker attaches it and the application host never reads it. A call
+that carried a secret records its id, pinned version and host. A missing
+personal secret answers the call with `secret_unavailable` and a hint, and the
+listing at Run start leaves the server out with the cause `secret_unavailable`;
+the server never receives an unauthenticated request in its place. A Run with no
+person at the root of its chain can use only the shared secret.
+
+When a server refuses a pasted secret with `401`, or with `403` and
+`insufficient_scope`, the call fails with `secret_rejected` instead of
+`connection_required`: the operation did not execute, no connection a person
+could make would change the answer, and nothing waits. The model reads it as an
+ordinary tool result, and the listing at Run start leaves the server out with
+the cause `secret_rejected`. Registry HTTP and MCP tools that carry a pasted
+secret answer the same way.
+
+### Declaring Read-only tools at attach time
+
+`POST /api/agent-plugins/tools` lists one remote server of the Tenant's copy of
+a plugin for the person attaching or editing it, with `digest`, `server` and
+optionally the `secret` the definition names. It needs `registry.create` on an
+Agent, as importing does. It uses that person's OAuth Connection, otherwise
+their own personal secret of the named secret's name, through the same
+public-address rule and transport as a Run's sessions. It never uses the shared
+Tenant Secret, whatever `owner` says: a listing has no Run and no Catalog
+Approval. The answer is
+`{"outcome": "listed", "tools": [{"name", "schema_digest"}]}`, with digests
+computed as the Run-start pin computes them, or
+`{"outcome": "unavailable", "reason": "<code>"}` such as `connection_required`,
+`secret_unavailable` (no personal secret of that name) or `secret_rejected`
+(the server refused it). Nothing is stored: no row is written. The Agent form offers the secret
+choice, the listing and a Read-only checkbox per listed tool, and Read-only
+cannot be declared for a server it could not list. Run start still checks every
+declared digest against the Run's own listing.
 
 A server that times out, is refused, cannot initialize or answers nonsense is
 left out with a typed cause and the Run continues without its tools. The event
@@ -504,8 +582,8 @@ responses in both protocols. Lost sent calls and continuations are reconciled;
 even Read-only calls are never automatically replayed.
 
 Stdio servers are currently left out with `stdio_session_unavailable`. Their
-runner, package preparation/installation, PLUGIN_DATA and remote Tenant Secret
-bindings follow the remaining #405-dependent phase; importing their package
+runner, package preparation/installation and PLUGIN_DATA follow the remaining
+#405-dependent phase; importing their package
 still executes nothing. See [the accepted remaining-work decisions](../design/agent-plugin-mcp-continuations.md).
 
 ### Tool call approval
@@ -692,8 +770,6 @@ A `memory` Binding may target the immutable Rust Hindsight provider. Its exact e
 
 A `memory` descriptor's configuration is the `ProviderConfig` in `crates/aidash-domain/src/memory.rs`: the engine and its policy only. It rejects unknown fields, so do not add operation, pinning, disclosure or binding controls to it. Those are separate Registry and admission controls: the memory operations are their own builtin Tool descriptors, the admitted Binding snapshot pins exact versions, authorization governs disclosure, and the Agent's Binding list selects the provider. Private memory bodies and credentials are not part of a descriptor: they stay in authorized provider storage, and catalog metadata never exposes them (see [Registry boundary](../architecture.md#registry-boundary)). The memory contracts that these providers serve are described in [architecture](../architecture.md#memory-contracts).
 
-The page and fixture research bundles publish page viewing in version `1.1.0`
-(#391). Existing `1.0.0` bundle declarations remain immutable and are left in
-place during seeding; approve and bind the new bundle version to add `view`.
-A viewed page is admitted against the Run's current model-media headroom before
-its fragment/image is recorded or its page-view quota is consumed.
+Page reading's definitions moved to `2.0.0` when it became an ordinary tool
+(#987). Earlier declarations remain immutable and are left in place during
+seeding; approve and bind `2.0.0` to read pages.

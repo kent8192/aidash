@@ -1,7 +1,7 @@
 //! Provider-owned operation facts. Descriptors select and constrain these facts.
 use super::{
 	AuthorizationRequirement, Concurrency, Continuation, DisclosureBoundary, ToolAuthorization,
-	ToolBehavior, ToolConfig, ToolContract, ToolEffect, ToolIdentity, Yield, builtin_contract,
+	ToolBehavior, ToolConfig, ToolContract, ToolEffect, ToolIdentity, builtin_contract,
 };
 use crate::{
 	Error, Result,
@@ -82,29 +82,34 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"outbound_get" => "core.egress@1",
 		"file_share" => "core.sharing@1",
 		"live_preview_start" | "live_preview_stop" => "core.preview@1",
+		"file_save" | "file_remove" | "file_copy" => "core.scratch@1",
+		"process_list" | "process_log" | "process_stop" => "core.processes@1",
+		"mcp_stdio" => "core.mcp_stdio@1",
 		"schedule_create" | "schedule_list" | "schedule_update" | "schedule_delete" => {
 			"core.schedules@1"
 		}
 		_ => return None,
 	})
 }
-/// Node providers of the host-owned research contract and the operations each
-/// implements. Providers are interchangeable: the host behavior is selected by
-/// the research operation, so replacing one search provider with another needs
-/// no configuration change.
-pub const RESEARCH_PROVIDERS: &[(&str, &[&str], ToolTier)] = &[
-	("research.brave@1", &["search"], ToolTier::Research),
-	(
-		"research.page@1",
-		&["fetch", "find", "view"],
-		ToolTier::Research,
-	),
-	(
-		"research.fixture@1",
-		&["search", "fetch", "find", "view"],
-		ToolTier::Fixture,
-	),
-];
+/// Page reading, the one built-in that keeps the `research.` identifier it
+/// was stored under (#987). Search, find, view, Brave and the fixture
+/// provider are gone; their definition rows stay so that pinned Agent
+/// versions still resolve, and they no longer bind.
+pub const RESEARCH_PROVIDERS: &[(&str, &[&str], ToolTier)] =
+	&[("research.page@1", &["fetch"], ToolTier::Research)];
+/// The identity of page reading's contract.
+pub const PAGE_READING_IDENTITY: &str = "research:fetch";
+/// The version of page reading's built-in definitions since #987.
+pub const PAGE_READING_VERSION: &str = "2.0.0";
+/// The built-in definition a page reading Tool call approval names, so
+/// Approval Rules, Run grants, observations and the dashboard treat it like a
+/// Tenant's tool definition.
+pub fn page_reading_target() -> crate::registry::EntityRef {
+	crate::registry::EntityRef {
+		id: "aidash.research.page.fetch".into(),
+		version: PAGE_READING_VERSION.into(),
+	}
+}
 pub fn research_operation(
 	provider: &str,
 	operation: &str,
@@ -114,13 +119,10 @@ pub fn research_operation(
 		.find(|(name, operations, _)| *name == provider && operations.contains(&operation))
 		.and_then(|(_, _, tier)| Some((ResearchOperation::parse(operation)?, *tier)))
 }
-/// The stable default Model alias of a research operation.
+/// The stable default Model alias of page reading.
 pub fn research_alias(operation: ResearchOperation) -> &'static str {
 	match operation {
-		ResearchOperation::Search => "research_search",
 		ResearchOperation::Fetch => "research_fetch",
-		ResearchOperation::Find => "research_find",
-		ResearchOperation::View => "research_view",
 	}
 }
 pub fn research_descriptor(node: &str, provider: &str, operation: &str) -> Result<ToolDescriptor> {
@@ -137,21 +139,13 @@ pub fn research_descriptor(node: &str, provider: &str, operation: &str) -> Resul
 		lifecycle: None,
 	})
 }
-/// Declared behavior of one research operation, identical for every provider.
-pub fn research_contract(operation: ResearchOperation) -> ToolContract {
-	let (yields, disclosure) = match operation {
-		ResearchOperation::Search => (vec![Yield::Search], DisclosureBoundary::External),
-		ResearchOperation::Fetch => (
-			vec![Yield::Fetch, Yield::Citations],
-			DisclosureBoundary::External,
-		),
-		ResearchOperation::Find | ResearchOperation::View => {
-			(vec![Yield::Citations], DisclosureBoundary::Local)
-		}
-	};
+/// Declared behavior of page reading. Every call waits for a Tool call
+/// approval unless the Tenant's policy permits it directly; a Run grant covers
+/// one host until the Run's next user input (#987).
+pub fn research_contract(_operation: ResearchOperation) -> ToolContract {
 	ToolContract {
 		provider_owned: false,
-		identity: ToolIdentity::Builtin(format!("research:{}", operation.as_str())),
+		identity: ToolIdentity::Builtin(PAGE_READING_IDENTITY.into()),
 		authorization: ToolAuthorization {
 			flag: None,
 			core: None,
@@ -159,25 +153,19 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 		},
 		behavior: ToolBehavior {
 			connection_request: false,
-			// Reading public sources leaves user resources unchanged. A repeated
-			// invocation key reuses the recorded attempt instead of dispatching.
+			// Reading public pages leaves user resources unchanged.
 			effect: ToolEffect::ReadOnly,
 			fitting: None,
 			continuation: Continuation::Ordinary,
 			catch_up: false,
 			media_pending: false,
-			// A viewed page reaches the model as an image (ADR 0053).
-			yields_model_media: operation == ResearchOperation::View,
-			tool_call_approval: false,
+			yields_model_media: false,
+			tool_call_approval: true,
 			read_only_operation: false,
-			// Web disclosure approval takes the worker's outer authority lease.
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
-			yields,
-			disclosure_approval: operation.discloses(),
 		},
-		disclosure,
-		// Evidence is retained by the executing Node and cited from its store.
+		disclosure: DisclosureBoundary::External,
 		remote_exposure: false,
 	}
 }
@@ -192,6 +180,13 @@ pub fn requires_runner(operation: &str) -> bool {
 			| "python_cancel"
 			| "live_preview_start"
 			| "live_preview_stop"
+			| "file_save"
+			| "file_remove"
+			| "file_copy"
+			| "process_list"
+			| "process_log"
+			| "process_stop"
+			| "mcp_stdio"
 	)
 }
 pub fn tier(operation: &str) -> Option<ToolTier> {
@@ -210,6 +205,13 @@ pub fn tier(operation: &str) -> Option<ToolTier> {
 				| "file_share"
 				| "live_preview_start"
 				| "live_preview_stop"
+				| "file_save"
+				| "file_remove"
+				| "file_copy"
+				| "process_list"
+				| "process_log"
+				| "process_stop"
+				| "mcp_stdio"
 		) {
 			ToolTier::Sandboxed
 		} else {
@@ -315,11 +317,11 @@ impl ToolDescriptor {
 					"incompatible Provider tool descriptor".into(),
 				));
 			}
-			let mut contract = research_contract(ResearchOperation::Search);
+			let mut contract = research_contract(ResearchOperation::Fetch);
 			contract.identity = ToolIdentity::Builtin(tool.id.into());
 			contract.provider_owned = true;
-			contract.behavior.yields = vec![];
-			contract.behavior.disclosure_approval = false;
+			// A Provider tool needs only its Catalog Approval (ADR 0103).
+			contract.behavior.tool_call_approval = false;
 			contract
 		} else if self.provider.starts_with("research.") {
 			let (operation, tier) = research_operation(&self.provider, &self.operation)

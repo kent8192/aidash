@@ -417,7 +417,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 					.map(|member| json!({"id":member["id"],"version":member["version"]})),
 			)
 		})
-		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0}))
+		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0,"scope":"node"}))
 		.collect();
 	let (status, approved) = request(
 		&app,
@@ -442,7 +442,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true,"scope":"node"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
@@ -462,7 +462,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true,"carry_over":false,"scope":"node"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");
@@ -1873,10 +1873,6 @@ mod schedule_tests;
 #[path = "core_capabilities/runtime_faults.rs"]
 mod runtime_fault_tests;
 
-#[cfg(feature = "capability-runtime-tests")]
-#[path = "core_capabilities/packages.rs"]
-mod package_tests;
-
 #[path = "core_capabilities/configuration.rs"]
 mod configuration_tests;
 
@@ -1971,9 +1967,6 @@ mod deferred_exposure_tests;
 
 #[path = "core_capabilities/completion_gate.rs"]
 mod completion_gate_tests;
-
-#[path = "core_capabilities/web_research.rs"]
-mod web_research_tests;
 
 #[path = "core_capabilities/journal_query.rs"]
 mod journal_query_tests;

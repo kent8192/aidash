@@ -78,21 +78,6 @@ pub(crate) async fn get(access: &mut Access, id: Uuid) -> Result<Operation> {
 	.ok_or_else(|| Error::NotFound("operation unavailable".into()))
 }
 
-/// Read the latest committed state without holding an Operation row lock.
-pub(crate) async fn get_unlocked(access: &mut Access, id: Uuid) -> Result<Operation> {
-	crate::database::native::query_as(
-		&sessions::select("core_operations")
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-			.and_where(
-				Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.clone())),
-			)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_optional(&mut **access.tx)
-	.await?
-	.ok_or_else(|| Error::NotFound("operation unavailable".into()))
-}
-
 pub(crate) async fn set_area(access: &mut Access, id: Uuid, state: &str, epoch: i64) -> Result<()> {
 	{
 		let query_bind_1 = id;
@@ -187,8 +172,11 @@ pub(crate) async fn persist(access: &mut Access, operation: &Operation) -> Resul
 }
 pub(crate) mod reconciliation;
 
+pub(crate) mod pods;
 mod processing;
 mod read_recheck;
+#[cfg(test)]
+pub(crate) use read_recheck::stop_pending_run_with_runner;
 mod receipt_output;
 
 mod pod_usage;

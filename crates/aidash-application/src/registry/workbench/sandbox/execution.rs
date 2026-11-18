@@ -209,14 +209,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				_ => None,
 			};
 			let approval = if admitted.is_ok() && evaluated.is_none() && real_rule.is_some() {
-				approval_for(
-					execution.repository.as_ref(),
-					&job.plugin_tools,
-					binding,
-					&admitted_session.tenant,
-					&call,
-					&conversation,
-				)
+				approval_for(&job.plugin_tools, binding, &admitted_session.tenant, &call)
 			} else {
 				Ok(None)
 			};
@@ -333,12 +326,10 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 }
 
 fn approval_for(
-	repository: &dyn ExecutionRepository,
 	plugins: &PluginTools,
 	binding: Option<&aidash_domain::registry::bindings::ResolvedBinding>,
 	tenant: &str,
 	call: &aidash_domain::provider::ToolCall,
-	conversation: &[Value],
 ) -> Result<Option<TestApproval>> {
 	use aidash_domain::{
 		policy::Resource,
@@ -376,52 +367,20 @@ fn approval_for(
 				true,
 			)));
 		}
-		if let Some((operation, _)) = aidash_domain::tool::providers::research_operation(
+		// Page reading waits for a Tool call approval like a Tenant's tool (#987).
+		if aidash_domain::tool::providers::research_operation(
 			&descriptor.provider,
 			&descriptor.operation,
-		) {
-			use aidash_domain::research::Operation;
-			if operation == Operation::Fetch
-				&& ["url", "source_id", "document_id"]
-					.iter()
-					.filter(|key| call.arguments[**key].is_string())
-					.count() != 1
-			{
-				return Err(Error::Forbidden);
-			}
-			let destination = match operation {
-				Operation::Search => repository
-					.search_destination(&descriptor.provider, &call.arguments)?
-					.ok_or(Error::Forbidden)?,
-				Operation::Fetch if call.arguments["document_id"].is_string() => return Ok(None),
-				Operation::Fetch => {
-					let source = call.arguments["source_id"].as_str();
-					let address = call.arguments["url"]
-						.as_str()
-						.or_else(|| {
-							conversation
-								.iter()
-								.rev()
-								.filter_map(|item| {
-									item["content"]["fixture"]["response"]["sources"].as_array()
-								})
-								.flatten()
-								.find(|item| {
-									item["source_id"].as_str() == source && source.is_some()
-								})
-								.and_then(|item| item["url"].as_str())
-						})
-						.ok_or(Error::Forbidden)?;
-					aidash_domain::research::search::candidate_host(address)
-						.ok_or(Error::Forbidden)?
-				}
-				Operation::Find | Operation::View => return Ok(None),
-			};
+		)
+		.is_some()
+		{
+			crate::research::page_host(&call.arguments).ok_or(Error::Forbidden)?;
+			let page = aidash_domain::tool::providers::page_reading_target();
 			return Ok(Some(approval(
-				"research",
-				destination.clone(),
-				json!({"destination":destination,"action":"research.disclose"}),
-				"research.disclose",
+				"tool",
+				page.id,
+				json!({"version":page.version,"operation":"invoke","action":"tool.call_unapproved"}),
+				"tool.call_unapproved",
 				true,
 			)));
 		}

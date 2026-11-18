@@ -1,19 +1,8 @@
 //! Durable operation admission and reconciliation. Workers never run host commands.
 use super::{contracts::*, service};
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
-
-pub(crate) async fn prepare(
-	store: &Store,
-	access: &mut Access,
-	run: &Run,
-	area: &mut Area,
-	input: Shell,
-	_key: &str,
-) -> Result<Value> {
-	prepare_kind(store, access, run, area, input, "shell", json!({})).await
-}
 
 /// What a Pod receives from an Area: Reference files stay with the file tools.
 pub(crate) fn pod_files(area: &Area) -> Result<Vec<FileEntry>> {
@@ -29,11 +18,9 @@ pub(in crate::apps::execution) async fn request_files(
 	access: &mut Access,
 	run: Uuid,
 	area: &Area,
-	package_files: Vec<FileEntry>,
 ) -> Result<Vec<FileEntry>> {
 	let mut files = pod_files(area)?;
 	files.extend(super::skills::mounted(access, run).await?);
-	files.extend(package_files);
 	Ok(files)
 }
 
@@ -88,6 +75,48 @@ pub(crate) async fn prepare_kind(
 		input.into(),
 		kind,
 		extra,
+	)
+	.await
+	.map_err(Into::into)
+}
+
+/// Admit a command or Python cell for the Execution Pod of the Run's Scratch
+/// Space (#745). The capability worker dispatches it.
+pub(crate) async fn prepare_pod(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	area: &mut Area,
+	input: Value,
+	kind: &str,
+	scratch_space_id: &str,
+) -> Result<Value> {
+	let request: aidash_domain::capabilities::operations::ShellRequest =
+		if kind == aidash_application::capabilities::pod::PYTHON {
+			let python: super::python::Python = serde_json::from_value(input)
+				.map_err(|error| crate::Error::Invalid(error.to_string()))?;
+			aidash_domain::capabilities::operations::ShellRequest {
+				idempotency_key: python.idempotency_key,
+				command: python.code,
+				timeout_seconds: python.timeout_seconds,
+				expected_revision: python.expected_revision,
+			}
+		} else {
+			serde_json::from_value::<Shell>(input)
+				.map_err(|error| crate::Error::Invalid(error.to_string()))?
+				.into()
+		};
+	crate::apps::execution::repositories::node_cancellations::require_area_open(
+		&mut **access.tx,
+		area.id,
+	)
+	.await?;
+	aidash_application::capabilities::pod::accept(
+		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
+		&run.metadata(),
+		request,
+		kind,
+		scratch_space_id,
 	)
 	.await
 	.map_err(Into::into)

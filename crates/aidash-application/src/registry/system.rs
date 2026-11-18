@@ -156,6 +156,37 @@ pub fn legacy_workspace_entries(
 	Ok(entries)
 }
 
+/// The declarations of the file tools before they reached the Scratch Space
+/// (#745). A database seeded with them keeps them; new Bindings use 1.0.1.
+pub fn legacy_file_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let legacy = validation.legacy_node_specifications();
+	let mut old: Vec<Entry> = entries(validation, node)?
+		.into_iter()
+		.filter(|entry| {
+			matches!(
+				entry.id.as_str(),
+				"aidash.file_read" | "aidash.file_search" | "aidash.attachment_copy"
+			)
+		})
+		.collect();
+	for entry in &mut old {
+		entry.version = "1.0.0".into();
+		let operation = entry.id.trim_start_matches("aidash.");
+		if operation == "attachment_copy" {
+			entry
+				.description
+				.insert("en".into(), ATTACHMENT_COPY_1_0_0.into());
+		} else if let Some(spec) = legacy.get(operation) {
+			entry
+				.description
+				.insert("en".into(), spec.description.clone());
+			entry.schema = spec.parameters.clone();
+		}
+	}
+	Ok(old)
+}
+const ATTACHMENT_COPY_1_0_0: &str = "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.";
+
 /// The declarations deployed before Journal ranges were added to these tools.
 pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut old = entries(validation, node)?
@@ -211,6 +242,7 @@ pub fn pinned_declaration(
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_file_entries(validation, node)?)
 		.find(|entry| entry.id == reference.id && entry.version == reference.version))
 }
 
@@ -292,16 +324,17 @@ pub async fn seed(
 		.into_iter()
 		.flat_map(|group| group.operations.into_iter().chain([group.bundle]));
 	let deciders = [approval_decider()?];
-	for entry in entries(validation, node)?
+	let entries: Vec<_> = entries(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
+		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
 		.chain(aidash_domain::registry::bindings::memory_defaults::definitions()?)
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
-		.chain(external_services())
-	{
+		.collect();
+	for entry in dependencies_first(entries, node) {
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;
 		// Restart may precede recovery of a prepared transaction. Even an
 		// INSERT that does nothing takes Registry's statement-level write guard.
@@ -318,6 +351,34 @@ pub async fn seed(
 		scope.insert_definition(&entry).await?;
 	}
 	Ok(())
+}
+
+/// Preserve declaration order among independent definitions while ensuring a
+/// carried dependency is available before its dependent is registered.
+fn dependencies_first(entries: Vec<Entry>, node: &str) -> Vec<Entry> {
+	let mut pending = entries;
+	let mut ordered = Vec::with_capacity(pending.len());
+	while !pending.is_empty() {
+		let index = pending.iter().position(|entry| {
+			crate::authorization::catalog::approvals::dependencies(entry, node)
+				.unwrap_or_default()
+				.iter()
+				.all(|dependency| {
+					!pending.iter().any(|candidate| {
+						candidate.id == dependency.id && candidate.version == dependency.version
+					})
+				})
+		});
+		match index {
+			Some(index) => ordered.push(pending.remove(index)),
+			None => {
+				// Cycles cannot satisfy each other's approvals. Still seed the
+				// definitions so startup does not fail on a carry attempt.
+				ordered.append(&mut pending);
+			}
+		}
+	}
+	ordered
 }
 
 pub fn is_builtin(entry: &Entry) -> bool {
@@ -364,7 +425,12 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),
-				"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+				"aidash.workspace_read"
+					| "aidash.workspace_observe"
+					| "aidash.workspace_message"
+					| "aidash.file_read"
+					| "aidash.file_search"
+					| "aidash.attachment_copy"
 			))) && (reference.id
 		== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
 		|| reference
@@ -416,31 +482,3 @@ pub fn attributes(entry: &Entry) -> serde_json::Value {
 pub mod packages;
 #[cfg(test)]
 mod tests;
-
-/// Package indexes still require each Tenant's Catalog Approval and explicit Binding.
-fn external_services() -> Vec<Entry> {
-	[
-		("npm", "https://registry.npmjs.org/"),
-		("pypi", "https://pypi.org/"),
-	]
-	.into_iter()
-	.map(|(name, base_url)| Entry {
-		binding_normalization: None,
-		installation: None,
-		id: format!("core.{name}"),
-		version: "1.0.0".into(),
-		kind: "external_service".into(),
-		name: std::collections::BTreeMap::from([("en".into(), name.into())]),
-		description: std::collections::BTreeMap::from([(
-			"en".into(),
-			aidash_domain::egress::DISCLOSURE.into(),
-		)]),
-		capabilities: vec![],
-		tags: vec!["system".into()],
-		languages: vec![],
-		skills: vec![],
-		schema: json!({}),
-		config: json!({"base_url":base_url,"methods":["GET","HEAD"],"authentication":{"type":"bearer"}}),
-	})
-	.collect()
-}

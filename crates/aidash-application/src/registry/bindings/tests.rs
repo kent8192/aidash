@@ -91,6 +91,12 @@ impl Catalog {
 			current.version = "1.0.1".into();
 			self.insert(current);
 		}
+		if matches!(operation, "file_read" | "file_search" | "attachment_copy") {
+			// The declarations from before #745 stay seeded for pinned Agents.
+			let mut previous = self.entries[&reference].clone();
+			previous.version = "1.0.0".into();
+			self.insert(previous);
+		}
 		reference
 	}
 	fn bundle(&mut self, id: &str, members: Vec<QualifiedRef>) -> QualifiedRef {
@@ -249,6 +255,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.file_read"
+				| "aidash.file_search"
 		) {
 			binding.binding.target.version = "1.0.0".into();
 		}
@@ -2216,11 +2224,8 @@ async fn sequential_narrowing_lowers_shared_read(#[case] descriptor: bool) {
 	let mut config = agent_config();
 	let target = QualifiedRef::builtin(NODE, "file_read");
 	if descriptor {
-		catalog
-			.entries
-			.get_mut(&reference(&target.id))
-			.unwrap()
-			.config["narrow"]["concurrency"] = json!("sequential");
+		catalog.entries.get_mut(&target).unwrap().config["narrow"]["concurrency"] =
+			json!("sequential");
 	} else {
 		let mut read = Binding::tool(target);
 		read.narrow = serde_json::from_value(json!({"concurrency":"sequential"})).unwrap();
@@ -2625,4 +2630,46 @@ async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() 
 		catalog.insert(entry("model", "model", denied));
 		assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	}
+}
+
+/// An Agent version pinned before #745 may bind the removed `core.npm`
+/// package index, and one pinned before #738 any External service. Run start
+/// resolves such a version without the Binding (#738): the definition is not
+/// even loaded, so the Run starts whether or not it still exists.
+/// `registry/0070` also removes `core.npm` and `core.pypi` Bindings from
+/// registered versions; the `run_control` test checks Run start on those rows.
+#[tokio::test]
+async fn binding_resolution_skips_a_removed_package_index() {
+	let mut catalog = Catalog::new();
+	catalog.insert(entry(
+		"core.npm",
+		"external_service",
+		json!({"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}),
+	));
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(aidash_domain::registry::bindings::Binding {
+			kind: aidash_domain::registry::bindings::BindingKind::ExternalService,
+			target: reference("core.npm"),
+			alias: None,
+			narrow: Default::default(),
+			members: vec![],
+			exposure: None,
+		});
+	let resolved = snapshot(&mut catalog, &config, false).await.unwrap();
+	assert!(
+		!resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.identity.id == "core.npm")
+	);
+	let mut without = Catalog::new();
+	let resolved = snapshot(&mut without, &config, false).await.unwrap();
+	assert!(
+		!resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.definition.kind == "external_service")
+	);
 }

@@ -131,9 +131,6 @@ impl PageReader {
 
 #[async_trait]
 impl PageProvider for PageReader {
-	fn deployment_hosted(&self) -> bool {
-		true
-	}
 	fn admit(&self, url: &Url) -> Result<(), Failure> {
 		(self.admit)(url)
 	}
@@ -255,8 +252,8 @@ pub fn pdf_page(url: &Url, bytes: &[u8], text: PdfText) -> Result<ExtractedPage,
 	})
 }
 
-/// The next address of a redirect. The Web disclosure approved one destination
-/// host, so another host needs its own request and approval; an encrypted read
+/// The next address of a redirect. A page read is approved for one host, so
+/// another host needs its own call and approval; an encrypted read
 /// is never downgraded. A fragment is never sent, so it is dropped: the page
 /// is recorded under the address actually fetched.
 pub fn redirect_target(current: &Url, location: &str) -> Result<Url, Failure> {

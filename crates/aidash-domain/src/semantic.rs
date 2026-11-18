@@ -28,6 +28,12 @@ pub enum Failure {
 	ProviderContract,
 	#[error("The embedding provider cannot find the configured model")]
 	EmbeddingModelNotFound,
+	/// No route of the embedding model meets the Tenant's Data Protection
+	/// Level. Waiting does not change that; switch the embedding model (#963).
+	#[error(
+		"The embedding model cannot meet this Tenant's Data Protection Level; switch the Workspace to a model that meets it"
+	)]
+	DataProtection,
 	#[error("Semantic context does not fit the available context budget")]
 	ContextBudget,
 	#[error(
@@ -38,6 +44,12 @@ pub enum Failure {
 	Allowance,
 	#[error("The semantic backend is temporarily unavailable")]
 	Unavailable,
+	// The vector backend answered but lacks points the index's READY entries
+	// need. Waiting will not repair the index, so a Run retries it like an
+	// outage and then pauses instead of entering an Outage Wait (ADR 0059).
+	// Established peers read it as `Unavailable`.
+	#[error("The semantic index is missing vector points and needs repair")]
+	IndexRepair,
 	#[error("Semantic retries are exhausted; an authorized manual retry is required")]
 	RetriesExhausted,
 	#[error("The semantic operation is already in progress")]
@@ -63,12 +75,16 @@ impl Failure {
 		match self {
 			Self::DurableMemoryBudget => Self::ContextBudget,
 			Self::EmbeddingModelNotFound => Self::ProviderContract,
+			Self::IndexRepair => Self::Unavailable,
+			Self::DataProtection => Self::Configuration,
 			other => other,
 		}
 	}
 
+	/// Retried with the outage backoff. Only `Unavailable` then waits in an
+	/// Outage Wait; `IndexRepair` pauses (ADR 0059, ADR 0129).
 	pub fn transient(self) -> bool {
-		matches!(self, Self::Unavailable)
+		matches!(self, Self::Unavailable | Self::IndexRepair)
 	}
 }
 

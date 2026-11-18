@@ -35,7 +35,28 @@ pub async fn provide_metrics() -> ProcessMetrics {
 			.clone(),
 	)
 }
-pub async fn run(shutdown: ShutdownCoordinator) -> Result<()> {
+/// How often the database pools' use is sampled.
+const POOL_SAMPLE: Duration = Duration::from_secs(5);
+
+/// Records how many connections each named pool holds, how many of them are
+/// idle and the most it may hold, so that waiting on the pool can be told apart
+/// from waiting on a lock (#909).
+fn sample_pools(pools: &[(&'static str, crate::database::native::Pool)]) {
+	for (name, pool) in pools {
+		let usage = pool.usage();
+		let idle = usage.idle as f64;
+		metrics::gauge!("aidash_db_pool_connections", "pool" => *name, "state" => "in_use")
+			.set((f64::from(usage.open) - idle).max(0.0));
+		metrics::gauge!("aidash_db_pool_connections", "pool" => *name, "state" => "idle").set(idle);
+		metrics::gauge!("aidash_db_pool_max_connections", "pool" => *name)
+			.set(f64::from(usage.max));
+	}
+}
+
+pub async fn run(
+	shutdown: ShutdownCoordinator,
+	pools: Vec<(&'static str, crate::database::native::Pool)>,
+) -> Result<()> {
 	let handle = initialize_recorder()?;
 	let mut stopping = shutdown.subscribe();
 	let listener_handle = handle.clone();
@@ -62,9 +83,12 @@ pub async fn run(shutdown: ShutdownCoordinator) -> Result<()> {
 	};
 	tokio::pin!(listener);
 	let mut upkeep = tokio::time::interval(Duration::from_secs(30));
+	let mut sample = tokio::time::interval(POOL_SAMPLE);
+	sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	loop {
 		tokio::select! {
 			_ = upkeep.tick() => { handle.render(); }
+			_ = sample.tick() => sample_pools(&pools),
 			result = &mut listener => return result,
 			_ = stopping.recv() => return Ok(()),
 		}

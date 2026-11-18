@@ -1,8 +1,8 @@
 //! URL intents: a person's request, made with their input, that the Run read
 //! particular pages. The host records the pages beside the person's text and
-//! never in it (ADR 0052); a URL intent never approves the Web disclosure the
-//! Page reading leads to.
-use super::{Operation, search::candidate_host};
+//! never in it (ADR 0052); a URL intent never approves the page read it leads
+//! to.
+use super::{Operation, address::candidate_host};
 use crate::{
 	registry::bindings::BindingSnapshot,
 	tool::providers::{ToolDescriptor, research_operation},
@@ -19,7 +19,7 @@ pub const MAX_CARRIED_PAGES: usize = 4 * MAX_URL_INTENTS;
 
 /// Most bytes of carried page addresses: no more than one input's own
 /// request may take, so carrying never renders more than a single input can.
-pub const MAX_CARRIED_PAGE_BYTES: usize = MAX_URL_INTENTS * super::search::MAX_URL_BYTES;
+pub const MAX_CARRIED_PAGE_BYTES: usize = MAX_URL_INTENTS * super::address::MAX_URL_BYTES;
 
 /// The pages one step asks the model to read, each once and in order: the
 /// Task's own; the newest of those asked for by the inputs the Run already
@@ -61,7 +61,7 @@ pub fn requested_pages(
 
 /// What a request's step state tells the model about recorded URL intents.
 /// It is rendered into every step that carries one and is never stored.
-pub const URL_INTENT_INSTRUCTION: &str = "The person asked you to read these pages with the page reading tool before you answer. Each page still needs its own Web disclosure approval.";
+pub const URL_INTENT_INSTRUCTION: &str = "The person asked you to read these pages with the page reading tool before you answer. Reading a page may still need approval.";
 
 /// The pages one input asked the Run to read: the Run's Task when
 /// `input_key` is `None`, otherwise the run input with that idempotency key.

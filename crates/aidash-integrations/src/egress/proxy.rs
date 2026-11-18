@@ -7,12 +7,50 @@ use std::{
 	io,
 	sync::{
 		Arc,
-		atomic::{AtomicU64, Ordering},
+		atomic::{AtomicU64, AtomicUsize, Ordering},
 	},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const BATCH: u64 = 1024 * 1024;
+/// How long one debit may wait for the store before its Host connection ends.
+/// A slow store is not a refusal: the connection stops moving bytes and waits,
+/// and only the monitor's three failed checks decide that the store is gone
+/// (ADR 0112). This bound names a debit stuck behind the daily row's lock (#909).
+const DEBIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The first pause after a debit the store did not answer; it doubles up to
+/// [`DEBIT_RETRY_MAX`].
+const DEBIT_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+const DEBIT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest a refund may take, when a tunnel ends or a day turns.
+const REFUND_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// A debit that waited [`DEBIT_WAIT`] without an answer.
+const BUDGET_WAIT_TIMEOUT: &str = "egress_budget_wait_timeout";
+
+/// Records the time since it was made when it is dropped, so that a debit cut
+/// short by [`DEBIT_WAIT`] or a closing tunnel is still measured. Those are the
+/// slow waits that the measurement is for (#909).
+struct Elapsed(metrics::Histogram, tokio::time::Instant);
+impl Drop for Elapsed {
+	fn drop(&mut self) {
+		self.0.record(self.1.elapsed().as_secs_f64());
+	}
+}
+/// Counts a debit in flight for as long as it lives. A tunnel whose bytes wait
+/// on the store, through the debit's retries and pauses, is busy rather than
+/// quiet, so it does not make way for a waiting connection (#909 decision 2).
+struct Charging<'a>(&'a AtomicUsize);
+impl<'a> Charging<'a> {
+	fn start(count: &'a AtomicUsize) -> Self {
+		count.fetch_add(1, Ordering::Relaxed);
+		Self(count)
+	}
+}
+impl Drop for Charging<'_> {
+	fn drop(&mut self) {
+		self.0.fetch_sub(1, Ordering::Relaxed);
+	}
+}
 /// A Pod can repeat these failures at will, by reaching a host that always fails
 /// or by opening connections during a stall, so each kind logs at most one line
 /// per interval. The rest go to `debug`, and the counters stay exact.
@@ -736,6 +774,9 @@ struct Batch {
 	day: chrono::NaiveDate,
 	remaining: u64,
 	failure: FailureReport,
+	/// Why the store last did not answer a debit, for a connection that ends
+	/// waiting on it.
+	unanswered: Option<String>,
 }
 /// A failed debit, named so that `tunnel_ended` tells our own store from the
 /// upstream. A decision keeps the code it was made with.
@@ -746,6 +787,12 @@ fn debit_failed(error: aidash_application::Error) -> io::Error {
 		Error::Forbidden | Error::Unauthorized => io::Error::other("egress_credential_revoked"),
 		error => io::Error::other(format!("egress_authority_unavailable: {error}")),
 	}
+}
+/// Whether the store answered a debit with a decision. Anything else is a store
+/// that did not answer, and the debit is tried again (#909).
+fn debit_decided(error: &aidash_application::Error) -> bool {
+	aidash_application::egress::DebitRefusal::of(error).is_some()
+		|| matches!(error, aidash_application::Error::Refused(_))
 }
 impl Batch {
 	fn new(
@@ -761,6 +808,7 @@ impl Batch {
 			day: chrono::Utc::now().date_naive(),
 			remaining: 0,
 			failure,
+			unanswered: None,
 		}
 	}
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
@@ -768,15 +816,12 @@ impl Batch {
 		if day != self.day {
 			if self.remaining != 0 {
 				// Reported like the refund that ends a tunnel, which this one is.
-				if let Err(error) = self
-					.scopes
-					.refund(&self.settings, self.direction, self.remaining, self.day)
-					.await
-				{
-					let error = io::Error::other(format!("egress_refund_failed: {error}"));
+				// The day's unused bytes stay counted; the connection goes on.
+				let remaining = self.remaining;
+				let previous = self.day;
+				if let Err(error) = self.refund(remaining, previous).await {
 					super::settle_failure("refund", "abandoned");
 					self.failure.internal("refund", &error);
-					return Err(error);
 				}
 			}
 			self.day = day;
@@ -786,19 +831,12 @@ impl Batch {
 		if self.remaining < bytes {
 			let need = bytes - self.remaining;
 			let amount = BATCH.max(need);
-			match self
-				.scopes
-				.debit(&self.settings, self.direction, amount, day)
-				.await
-			{
+			match self.debit(amount, day).await {
 				Ok(()) => self.remaining += amount,
 				Err(aidash_application::Error::Refused(code))
 					if code == "egress_budget_exhausted" && amount != need =>
 				{
-					self.scopes
-						.debit(&self.settings, self.direction, need, day)
-						.await
-						.map_err(debit_failed)?;
+					self.debit(need, day).await.map_err(debit_failed)?;
 					self.remaining += need;
 				}
 				Err(error) => return Err(debit_failed(error)),
@@ -806,15 +844,66 @@ impl Batch {
 		}
 		Ok(())
 	}
+	/// Debits until the store decides. A store that does not answer is tried
+	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
+	///
+	/// A debit carries no key, so one whose commit landed but whose answer was
+	/// lost is debited again: the same `amount`, at most one batch, counts
+	/// twice and stays counted for the day. That errs toward the allowance,
+	/// never past it; keying each reservation would need a store change.
+	async fn debit(
+		&mut self,
+		amount: u64,
+		day: chrono::NaiveDate,
+	) -> std::result::Result<(), aidash_application::Error> {
+		let _elapsed = Elapsed(
+			metrics::histogram!("aidash_egress_debit_seconds"),
+			tokio::time::Instant::now(),
+		);
+		let mut pause = DEBIT_RETRY;
+		let result = loop {
+			match self
+				.scopes
+				.debit(&self.settings, self.direction, amount, day)
+				.await
+			{
+				Err(error) if !debit_decided(&error) => {
+					metrics::counter!("aidash_egress_debit_retries_total").increment(1);
+					tracing::debug!(%error, "the store did not answer a debit; trying again");
+					self.unanswered = Some(error.to_string());
+					tokio::time::sleep(pause).await;
+					pause = (pause * 2).min(DEBIT_RETRY_MAX);
+				}
+				result => break result,
+			}
+		};
+		self.unanswered = None;
+		result
+	}
+	/// Returns unused bytes of `day`, waiting at most [`REFUND_WAIT`].
+	async fn refund(&self, bytes: u64, day: chrono::NaiveDate) -> io::Result<()> {
+		let started = tokio::time::Instant::now();
+		let result = tokio::time::timeout(
+			REFUND_WAIT,
+			self.scopes
+				.refund(&self.settings, self.direction, bytes, day),
+		)
+		.await;
+		metrics::histogram!("aidash_egress_refund_seconds").record(started.elapsed().as_secs_f64());
+		match result {
+			Ok(Ok(())) => Ok(()),
+			Ok(Err(error)) => Err(io::Error::other(format!("egress_refund_failed: {error}"))),
+			Err(_) => Err(io::Error::other("egress_refund_timeout")),
+		}
+	}
 }
 impl Batch {
+	/// Returns the unused reservation. A refund that fails leaves those bytes
+	/// counted for the day; it does not change how the connection ended (#909).
 	async fn settle(&mut self) -> io::Result<()> {
 		let remaining = std::mem::take(&mut self.remaining);
 		if remaining != 0 {
-			self.scopes
-				.refund(&self.settings, self.direction, remaining, self.day)
-				.await
-				.map_err(|error| io::Error::other(format!("egress_refund_failed: {error}")))?;
+			self.refund(remaining, self.day).await?;
 		}
 		Ok(())
 	}
@@ -825,6 +914,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 	mut write: W,
 	batch: &mut Batch,
 	activity: tokio::sync::watch::Sender<()>,
+	charging: &AtomicUsize,
 	mut cancel: tokio::sync::watch::Receiver<bool>,
 	count: Arc<AtomicU64>,
 ) -> io::Result<()> {
@@ -844,9 +934,15 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 			};
 		}
 		activity.send_replace(());
-		tokio::select! {
-			result = tokio::time::timeout(std::time::Duration::from_secs(5), batch.charge(n)) => result.map_err(|_| io::Error::other("egress_authority_unavailable"))??,
-			_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
+		{
+			let _charging = Charging::start(charging);
+			tokio::select! {
+				result = tokio::time::timeout(DEBIT_WAIT, batch.charge(n)) => result.map_err(|_| match batch.unanswered.take() {
+					Some(cause) => io::Error::other(format!("{BUDGET_WAIT_TIMEOUT}: {cause}")),
+					None => io::Error::other(BUDGET_WAIT_TIMEOUT),
+				})??,
+				_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
+			}
 		}
 		let mut written = 0;
 		while written < n {
@@ -904,6 +1000,7 @@ where
 
 #[derive(Default)]
 struct TunnelReports {
+	settle_ms: Arc<AtomicU64>,
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
 	failure: FailureReport,
@@ -931,6 +1028,7 @@ where
 	let sent = counts.sent;
 	let received = counts.received;
 	let failure = counts.failure;
+	let settle_ms = counts.settle_ms;
 	let reclaim = counts.reclaim;
 	let mut sent_batch = Batch::new(
 		scopes.clone(),
@@ -945,6 +1043,7 @@ where
 		failure.clone(),
 	);
 	let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
+	let charging = AtomicUsize::new(0);
 	let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 	let result = {
 		let transfer = async {
@@ -954,6 +1053,7 @@ where
 					upstream_write,
 					&mut sent_batch,
 					activity_tx.clone(),
+					&charging,
 					cancel_rx.clone(),
 					sent.clone(),
 				)
@@ -972,6 +1072,7 @@ where
 					client_write,
 					&mut received_batch,
 					activity_tx.clone(),
+					&charging,
 					cancel_rx.clone(),
 					received.clone(),
 				)
@@ -1005,12 +1106,15 @@ where
 			let mut failures = 0;
 			loop {
 				checks.tick().await;
-				let cause = match tokio::time::timeout(
+				let started = tokio::time::Instant::now();
+				let checked = tokio::time::timeout(
 					std::time::Duration::from_secs(5),
 					scopes.check_active(&settings, &credential),
 				)
-				.await
-				{
+				.await;
+				metrics::histogram!("aidash_egress_host_connection_check_seconds")
+					.record(started.elapsed().as_secs_f64());
+				let cause = match checked {
 					Ok(Ok(current)) => {
 						failures = 0;
 						if !current
@@ -1053,7 +1157,13 @@ where
 					idle.as_mut().reset(quiet_since + settings.tunnel_limits.idle_timeout);
 				},
 				_ = reclaim_check.tick(), if reclaim.is_some() => {
-					if let Some(reclaim) = &reclaim
+					// A debit in flight is not quiet, and quiet starts again once
+					// it ends. Gating on the count alone is not enough: `select!`
+					// may run this tick after a debit lands but before its write
+					// reports activity, with `quiet_since` from before the debit.
+					if charging.load(Ordering::Relaxed) != 0 {
+						quiet_since = tokio::time::Instant::now();
+					} else if let Some(reclaim) = &reclaim
 						&& quiet_since.elapsed() >= RECLAIM_IDLE
 						&& reclaim.manager.has_waiters(&reclaim.scope)
 					{
@@ -1076,23 +1186,26 @@ where
 			(None, None) => unreachable!(),
 		}
 	};
-	let sent_settle = tokio::time::timeout(std::time::Duration::from_secs(5), sent_batch.settle())
-		.await
-		.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
-	let received_settle =
-		tokio::time::timeout(std::time::Duration::from_secs(5), received_batch.settle())
-			.await
-			.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
-	for settled in [&sent_settle, &received_settle] {
+	// The bytes have already moved, so a refund that fails or times out is the
+	// store's loss only: it is counted and reported, and the connection ends
+	// the way its transfer did (#909).
+	let settling = std::time::Instant::now();
+	let sent_settle = sent_batch.settle().await;
+	let received_settle = received_batch.settle().await;
+	settle_ms.store(
+		settling.elapsed().as_millis().min(u64::MAX as u128) as u64,
+		Ordering::Relaxed,
+	);
+	for settled in [sent_settle, received_settle] {
 		if let Err(error) = settled {
 			super::settle_failure("refund", "abandoned");
-			failure.internal("refund", error);
+			failure.internal("refund", &error);
 		}
 	}
 	(
 		sent.load(Ordering::Relaxed),
 		received.load(Ordering::Relaxed),
-		result.and(sent_settle).and(received_settle),
+		result,
 	)
 }
 
@@ -1121,6 +1234,9 @@ async fn public_addresses(host: &str, port: u16) -> io::Result<Vec<std::net::Soc
 }
 
 struct Audit {
+	run_id: Option<uuid::Uuid>,
+	admission_ms: Option<u64>,
+	settle_ms: Arc<AtomicU64>,
 	id: uuid::Uuid,
 	manager: Arc<TunnelManager>,
 	scopes: Arc<dyn EgressScopes>,
@@ -1210,6 +1326,9 @@ fn is_stopping(stopping: &tokio::sync::watch::Receiver<bool>) -> bool {
 impl Audit {
 	fn record(&self) -> aidash_application::egress::ConnectionRecord {
 		aidash_application::egress::ConnectionRecord {
+			run_id: self.run_id,
+			admission_ms: self.admission_ms,
+			settle_ms: None,
 			id: self.id,
 			scope: self.scope.clone(),
 			host: self.host.clone(),
@@ -1254,9 +1373,11 @@ impl Audit {
 		self.started_record
 	}
 	async fn finish(&mut self) {
+		let mut record = self.record();
+		record.settle_ms = Some(self.settle_ms.load(Ordering::Relaxed));
 		settle_record(
 			self.scopes.clone(),
-			self.record(),
+			record,
 			self.manager.stopping.clone(),
 			self.report(),
 		)
@@ -1281,7 +1402,7 @@ impl Drop for Audit {
 	}
 }
 
-fn credential(headers: &hyper::HeaderMap) -> Option<String> {
+pub(super) fn credential(headers: &hyper::HeaderMap) -> Option<String> {
 	use base64::Engine;
 	let mut values = headers.get_all(hyper::header::PROXY_AUTHORIZATION).iter();
 	let value = values.next()?.to_str().ok()?;
@@ -1305,7 +1426,7 @@ fn credential(headers: &hyper::HeaderMap) -> Option<String> {
 	None
 }
 
-fn auth_required() -> hyper::Response<super::Body> {
+pub(super) fn auth_required() -> hyper::Response<super::Body> {
 	let mut response = super::refuse(
 		hyper::StatusCode::PROXY_AUTHENTICATION_REQUIRED,
 		"proxy_auth_required",
@@ -1506,6 +1627,9 @@ pub(super) async fn forward(
 		Err(NotAdmitted::Stopped((status, code))) => return refuse(&host, status, code),
 	};
 	let mut audit = Audit {
+		run_id: scope.run_id,
+		admission_ms: Some(admitting.elapsed().as_millis().min(u64::MAX as u128) as u64),
+		settle_ms: Arc::new(AtomicU64::new(0)),
 		id: uuid::Uuid::new_v4(),
 		manager: manager.clone(),
 		scopes: scopes.clone(),
@@ -1583,7 +1707,9 @@ fn tunnel_ended(report: &FailureReport, result: &io::Result<()>) -> &'static str
 	if let Err(error) = result {
 		match outcome {
 			"interrupted" => report.upstream("transfer", error),
-			"egress_authority_unavailable" => report.internal("authority", error),
+			"egress_authority_unavailable" | BUDGET_WAIT_TIMEOUT => {
+				report.internal("authority", error)
+			}
 			_ => {}
 		}
 	}
@@ -1604,6 +1730,7 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 		"egress_credential_revoked",
 		"egress_host_revoked",
 		"egress_authority_unavailable",
+		BUDGET_WAIT_TIMEOUT,
 		"egress_refund_failed",
 		"egress_refund_timeout",
 		CLIENT_CLOSED,
@@ -1655,6 +1782,7 @@ async fn connect_tunnel(
 					credential,
 					audit.host.clone(),
 					TunnelReports {
+						settle_ms: audit.settle_ms.clone(),
 						sent: sent.clone(),
 						received: received.clone(),
 						failure: report.clone(),
@@ -1737,6 +1865,7 @@ async fn forward_http(
 				credential,
 				audit.host.clone(),
 				TunnelReports {
+					settle_ms: audit.settle_ms.clone(),
 					sent: sent.clone(),
 					received: received.clone(),
 					failure: report.clone(),
@@ -1876,6 +2005,7 @@ mod tests {
 
 	fn test_settings() -> ScopeSettings {
 		ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -2417,7 +2547,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.0.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -2482,7 +2612,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.0.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -2643,7 +2773,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.0.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -2865,6 +2995,7 @@ mod tests {
 	#[tokio::test]
 	async fn tunnel_counts_both_directions_and_enforces_budget() {
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -2901,20 +3032,6 @@ mod tests {
 		assert_eq!(result.1, 3);
 		assert!(result.2.is_err());
 	}
-	struct DenyLegacy;
-	#[async_trait::async_trait]
-	impl aidash_application::egress::Authority for DenyLegacy {
-		async fn admit(
-			&self,
-			_: &str,
-			_: &str,
-			_: &str,
-			_: &str,
-			_: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
-			Err(aidash_application::Error::Forbidden)
-		}
-	}
 
 	#[tokio::test]
 	async fn public_ipv6_literal_is_resolved_without_brackets() {
@@ -2938,8 +3055,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -2975,8 +3091,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3014,6 +3129,7 @@ mod tests {
 	#[tokio::test]
 	async fn proxy_requires_scope_credential_and_rejects_private_resolution() {
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3034,8 +3150,7 @@ mod tests {
 		let (stop, stopping) = tokio::sync::watch::channel(false);
 		let gateway = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			stopping,
 		));
@@ -3102,8 +3217,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3148,8 +3262,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3178,8 +3291,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3224,8 +3336,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3256,8 +3367,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3292,8 +3402,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -3333,6 +3442,7 @@ mod tests {
 				.unwrap();
 		});
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3362,6 +3472,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3469,6 +3582,9 @@ mod tests {
 				let waiter = gateway_waiter.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3571,6 +3687,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3682,6 +3801,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3783,6 +3905,7 @@ mod tests {
 			socket.shutdown().await.unwrap();
 		});
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "t".into(),
 				node: "n".into(),
@@ -3812,6 +3935,9 @@ mod tests {
 				let settings = settings.clone();
 				async move {
 					let audit = super::Audit {
+						run_id: None,
+						admission_ms: None,
+						settle_ms: Arc::new(super::AtomicU64::new(0)),
 						id: uuid::Uuid::new_v4(),
 						manager: manager.clone(),
 						scopes: scopes.clone(),
@@ -3889,6 +4015,10 @@ mod tests {
 		memory: Arc<MemoryScopes>,
 		resolve_fails: bool,
 		debit_fails: bool,
+		/// The number of debits still to fail before the store answers again.
+		debit_failures: std::sync::atomic::AtomicU32,
+		/// How long each debit takes before it is answered.
+		debit_delay: std::time::Duration,
 		refund_fails: bool,
 		record_hangs: bool,
 		record_fails:
@@ -3900,6 +4030,8 @@ mod tests {
 				memory: Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone())),
 				resolve_fails: false,
 				debit_fails: false,
+				debit_failures: Default::default(),
+				debit_delay: std::time::Duration::ZERO,
 				refund_fails: false,
 				record_hangs: false,
 				record_fails: Box::new(|_| false),
@@ -3923,7 +4055,7 @@ mod tests {
 			m: &str,
 			p: &str,
 			d: &str,
-		) -> aidash_application::Result<aidash_application::egress::Admission> {
+		) -> aidash_application::Result<aidash_application::egress::ExternalAdmission> {
 			self.memory.admit_external(c, s, m, p, d).await
 		}
 		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
@@ -3943,7 +4075,14 @@ mod tests {
 			n: u64,
 			day: chrono::NaiveDate,
 		) -> aidash_application::Result<()> {
-			if self.debit_fails {
+			tokio::time::sleep(self.debit_delay).await;
+			let failing = self
+				.debit_failures
+				.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+					left.checked_sub(1)
+				})
+				.is_ok();
+			if self.debit_fails || failing {
 				return Err(aidash_application::Error::External(
 					"pool timed out debiting".into(),
 				));
@@ -4020,6 +4159,9 @@ mod tests {
 		settings: &ScopeSettings,
 	) -> super::Audit {
 		super::Audit {
+			run_id: None,
+			admission_ms: None,
+			settle_ms: Arc::new(super::AtomicU64::new(0)),
 			id: uuid::Uuid::new_v4(),
 			manager: manager.clone(),
 			scopes,
@@ -4113,8 +4255,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes),
+			scopes,
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -4284,8 +4425,7 @@ mod tests {
 		let (stop, receiver) = tokio::sync::watch::channel(false);
 		let task = tokio::spawn(super::super::serve_with_scopes(
 			listener,
-			Arc::new(DenyLegacy),
-			Some(scopes.clone()),
+			scopes.clone(),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -4494,8 +4634,10 @@ mod tests {
 		}
 	}
 
+	/// The bytes have moved by the time a refund runs, so its failure is reported
+	/// but does not change how the connection ended (#909).
 	#[tokio::test(start_paused = true)]
-	async fn a_failed_refund_leaves_its_cause_and_is_not_an_interruption() {
+	async fn a_failed_refund_leaves_its_cause_and_keeps_the_connection_s_outcome() {
 		let observed = super::super::tests::Observed::start();
 		let settings = test_settings();
 		let mut scopes = FaultyScopes::new(&settings);
@@ -4519,7 +4661,13 @@ mod tests {
 		drop(client);
 		drop(server);
 		let (_, _, result) = task.await.unwrap();
-		assert_eq!(super::tunnel_outcome(&result), "egress_refund_failed");
+		assert_ne!(super::tunnel_outcome(&result), "egress_refund_failed");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("refund")),
+			"{result:?}"
+		);
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "ERROR", "refund").len(), 1, "{logs}");
 		assert!(logs.contains("pool timed out refunding"), "{logs}");
@@ -4531,11 +4679,13 @@ mod tests {
 		);
 	}
 
-	/// A store that cannot be asked is our own failure, not the upstream's.
+	/// A store that cannot be asked is our own failure, not the upstream's. Its
+	/// debit is tried again, and the connection ends only after waiting
+	/// [`super::DEBIT_WAIT`], naming why (#909).
 	#[tokio::test(start_paused = true)]
-	async fn a_failed_debit_is_the_authority_s_failure_and_not_an_upstream_transfer() {
+	async fn a_debit_the_store_never_answers_ends_as_a_budget_wait_and_not_an_upstream_transfer() {
 		let observed = super::super::tests::Observed::start();
-		let settings = test_settings();
+		let settings = settings_allowing_any_host();
 		let mut scopes = FaultyScopes::new(&settings);
 		scopes.debit_fails = true;
 		let (mut client, gateway_client) = tokio::io::duplex(64);
@@ -4554,17 +4704,190 @@ mod tests {
 			receiver,
 		));
 		client.write_all(b"hello").await.unwrap();
+		let started = tokio::time::Instant::now();
 		let (_, _, result) = task.await.unwrap();
+		assert!(
+			started.elapsed() >= super::DEBIT_WAIT,
+			"{:?}",
+			started.elapsed()
+		);
 		assert_eq!(
 			super::tunnel_ended(&report, &result),
-			"egress_authority_unavailable",
+			super::BUDGET_WAIT_TIMEOUT,
 			"{result:?}"
 		);
+		assert!(observed.count("aidash_egress_debit_retries_total") > 1);
+		// The debit cut short by the wait is still measured.
+		assert_eq!(observed.count("aidash_egress_debit_seconds_count"), 1);
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		let logs = observed.logs();
 		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
 		assert!(logs.contains("pool timed out debiting"), "{logs}");
 		assert!(lines_at(&logs, "WARN", "transfer").is_empty(), "{logs}");
+	}
+
+	/// Settings whose monitor keeps allowing [`HOST`], for a tunnel that lives
+	/// past its first five-second check.
+	fn settings_allowing_any_host() -> ScopeSettings {
+		let mut settings = test_settings();
+		settings.allowed_hosts.allow_all = true;
+		settings.operator_allows_all = true;
+		settings
+	}
+
+	/// Runs one tunnel over `scopes`, sends `hello` upstream, and returns what
+	/// the upstream read and how the tunnel ended once both sides close.
+	async fn hello_through(
+		settings: ScopeSettings,
+		scopes: FaultyScopes,
+		reports: super::TunnelReports,
+	) -> ([u8; 5], std::io::Result<()>) {
+		let (mut client, gateway_client) = tokio::io::duplex(64);
+		let (gateway_server, mut server) = tokio::io::duplex(64);
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			Arc::new(scopes),
+			settings,
+			CREDENTIAL.into(),
+			HOST.into(),
+			reports,
+			receiver,
+		));
+		client.write_all(b"hello").await.unwrap();
+		let mut received = [0; 5];
+		if let Err(error) = server.read_exact(&mut received).await {
+			panic!("{error}: {:?}", task.await.unwrap().2);
+		}
+		drop(client);
+		drop(server);
+		(received, task.await.unwrap().2)
+	}
+
+	/// A debit slower than the monitor's five-second check is a slow store, not
+	/// a refusal: the bytes wait for it and then move (#909).
+	#[tokio::test(start_paused = true)]
+	async fn a_slow_debit_holds_the_bytes_instead_of_closing_the_connection() {
+		let observed = super::super::tests::Observed::start();
+		let settings = settings_allowing_any_host();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.debit_delay = std::time::Duration::from_secs(12);
+		let (received, result) = hello_through(settings, scopes, Default::default()).await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 0);
+	}
+
+	/// A debit the store fails to answer a few times is tried again, and the
+	/// connection goes on once the store answers (#909).
+	#[tokio::test(start_paused = true)]
+	async fn a_debit_the_store_fails_for_a_while_is_tried_again() {
+		let observed = super::super::tests::Observed::start();
+		let settings = settings_allowing_any_host();
+		let scopes = FaultyScopes::new(&settings);
+		scopes.debit_failures.store(4, Ordering::SeqCst);
+		let (received, result) = hello_through(settings, scopes, Default::default()).await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
+	}
+
+	/// Sends `hello` through the only tunnel its Scratch Space may hold while
+	/// another connection of that Space waits for the slot, so the tunnel makes
+	/// way once it has been quiet for [`super::RECLAIM_IDLE`]. Returns what the
+	/// upstream read and how the tunnel ended.
+	async fn hello_while_its_space_waits(
+		configure: impl FnOnce(&mut FaultyScopes),
+	) -> ([u8; 5], std::io::Result<()>) {
+		let mut settings = settings_allowing_any_host();
+		settings.tunnel_limits.concurrent = 1;
+		let mut scopes = FaultyScopes::new(&settings);
+		configure(&mut scopes);
+		let (_stop, stopping) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			stopping,
+			super::super::ProxyLimits::default(),
+		));
+		let held = manager.try_acquire(&settings).unwrap();
+		let waiter = {
+			let manager = manager.clone();
+			let settings = settings.clone();
+			tokio::spawn(async move { manager.acquire(&settings, super::DEBIT_WAIT).await.is_ok() })
+		};
+		tokio::task::yield_now().await;
+		assert!(manager.has_waiters(&settings.id));
+		let reports = super::TunnelReports {
+			reclaim: Some(super::Reclaim {
+				manager: manager.clone(),
+				scope: settings.id.clone(),
+			}),
+			..Default::default()
+		};
+		let (received, result) = hello_through(settings.clone(), scopes, reports).await;
+		// The connection waited the whole time, so the tunnel could have made way.
+		assert!(manager.has_waiters(&settings.id));
+		drop(held);
+		assert!(waiter.await.unwrap(), "the waiter gets the slot");
+		(received, result)
+	}
+
+	/// A debit the store is slow to answer keeps its tunnel busy: the tunnel
+	/// does not make way for a waiting connection of its Space, and the bytes
+	/// move once the store answers (#909 decision 2).
+	#[tokio::test(start_paused = true)]
+	async fn a_slow_debit_is_not_an_idle_tunnel_to_reclaim() {
+		let observed = super::super::tests::Observed::start();
+		let (received, result) = hello_while_its_space_waits(|scopes| {
+			// A multiple of the reclaim check, so the debit ends on one of its
+			// ticks.
+			scopes.debit_delay = std::time::Duration::from_secs(6);
+		})
+		.await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(
+			observed.count("aidash_egress_host_connection_reclaimed_total"),
+			0
+		);
+	}
+
+	/// The pauses between debits the store did not answer are part of the
+	/// debit, not quiet on the tunnel (#909 decision 2).
+	#[tokio::test(start_paused = true)]
+	async fn a_debit_retried_after_pauses_is_not_an_idle_tunnel_to_reclaim() {
+		let observed = super::super::tests::Observed::start();
+		let (received, result) = hello_while_its_space_waits(|scopes| {
+			scopes.debit_failures.store(4, Ordering::SeqCst);
+		})
+		.await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
+		assert_eq!(
+			observed.count("aidash_egress_host_connection_reclaimed_total"),
+			0
+		);
 	}
 
 	/// A tunnel that crosses UTC midnight refunds the day before it, and that
@@ -4585,11 +4908,9 @@ mod tests {
 		batch.day = batch.day.pred_opt().unwrap();
 		batch.remaining = 10;
 		let result = batch.charge(1).await;
-		assert_eq!(
-			super::tunnel_ended(&report, &result),
-			"egress_refund_failed",
-			"{result:?}"
-		);
+		// The day's unused bytes stay counted, and the connection goes on (#909).
+		assert!(result.is_ok(), "{result:?}");
+		assert_eq!(batch.day, chrono::Utc::now().date_naive());
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		assert_eq!(
 			observed.count(
@@ -4604,6 +4925,9 @@ mod tests {
 
 	fn record(settings: &ScopeSettings) -> aidash_application::egress::ConnectionRecord {
 		aidash_application::egress::ConnectionRecord {
+			run_id: settings.run_id,
+			admission_ms: None,
+			settle_ms: None,
 			id: uuid::Uuid::new_v4(),
 			scope: settings.id.clone(),
 			host: HOST.into(),

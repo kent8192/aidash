@@ -4,6 +4,7 @@ use crate::Error;
 use async_trait::async_trait;
 use rstest::rstest;
 use std::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Default)]
 struct Repository {
@@ -11,7 +12,10 @@ struct Repository {
 	outcomes: Mutex<BTreeMap<Target, Outcome>>,
 	checks: Mutex<Vec<Target>>,
 	refused: Mutex<Vec<Target>>,
+	stop_attempts: Mutex<Vec<Target>>,
 	unconfirmed: Mutex<Vec<Uuid>>,
+	/// Since when each preview has been withheld, as the adapter persists it.
+	withheld: Mutex<BTreeMap<Uuid, chrono::DateTime<chrono::Utc>>>,
 	stop_fails: bool,
 	check_fails: bool,
 }
@@ -48,10 +52,25 @@ impl ReadRecheckRepository for Repository {
 			.unwrap_or(Outcome::Allowed))
 	}
 	async fn stop_refused(&self, target: Target) -> Result<()> {
+		self.stop_attempts.lock().unwrap().push(target);
 		if self.stop_fails {
 			return Err(Error::External("runner unavailable".into()));
 		}
 		self.refused.lock().unwrap().push(target);
+		Ok(())
+	}
+	async fn withhold(&self, preview: Uuid) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+		Ok(Some(
+			*self
+				.withheld
+				.lock()
+				.unwrap()
+				.entry(preview)
+				.or_insert_with(chrono::Utc::now),
+		))
+	}
+	async fn serve_again(&self, preview: Uuid) -> Result<()> {
+		self.withheld.lock().unwrap().remove(&preview);
 		Ok(())
 	}
 	async fn stop_unconfirmed(&self, preview: Uuid) -> Result<()> {
@@ -130,10 +149,14 @@ async fn a_failed_stop_is_retried_after_a_growing_wait_that_never_passes_a_perio
 		(94, false),
 		(95, true),
 	] {
-		let before = repository.checks();
+		let before = repository.stop_attempts.lock().unwrap().len();
 		let now = start + Duration::from_secs(seconds);
 		pass(&repository, &mut schedule, now).await.unwrap();
-		assert_eq!(repository.checks() > before, retried, "at {seconds} s");
+		assert_eq!(
+			repository.stop_attempts.lock().unwrap().len() > before,
+			retried,
+			"at {seconds} s"
+		);
 	}
 }
 
@@ -164,7 +187,8 @@ async fn a_stop_that_works_ends_the_retries() {
 
 	// Assert: one stop, and then the ordinary period.
 	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
-	assert_eq!(repository.checks(), 2);
+	assert_eq!(repository.checks(), 1);
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -188,7 +212,7 @@ async fn an_unanswered_check_leaves_a_command_running() {
 }
 
 #[tokio::test]
-async fn a_live_preview_stops_after_five_unanswered_checks_in_a_row() {
+async fn an_unanswered_check_withholds_a_live_preview_without_stopping_it() {
 	// Arrange
 	let target = preview();
 	let Target::LivePreview(id) = target else {
@@ -198,17 +222,16 @@ async fn a_live_preview_stops_after_five_unanswered_checks_in_a_row() {
 	let mut schedule = Schedule::default();
 	let start = Instant::now();
 
-	// Act and Assert: four misses keep it serving, and the fifth stops it.
-	for round in 0..4 {
+	// Act: far more misses than the old five-miss rule allowed (#906).
+	for round in 0..20 {
 		pass(&repository, &mut schedule, start + PERIOD * round)
 			.await
 			.unwrap();
 	}
+
+	// Assert
+	assert!(repository.withheld.lock().unwrap().contains_key(&id));
 	assert!(repository.unconfirmed.lock().unwrap().is_empty());
-	pass(&repository, &mut schedule, start + PERIOD * 4)
-		.await
-		.unwrap();
-	assert_eq!(*repository.unconfirmed.lock().unwrap(), vec![id]);
 	assert!(
 		repository.refused.lock().unwrap().is_empty(),
 		"an unanswered check is not a revocation"
@@ -216,39 +239,53 @@ async fn a_live_preview_stops_after_five_unanswered_checks_in_a_row() {
 }
 
 #[tokio::test]
-async fn an_answer_resets_the_unanswered_count() {
+async fn a_live_preview_withheld_for_the_outage_bound_stops_as_unconfirmed() {
+	// Arrange: withheld since just past the bound (ADR 0129).
+	let target = preview();
+	let Target::LivePreview(id) = target else {
+		unreachable!()
+	};
+	let repository = Repository::with(target, Outcome::Unconfirmed);
+	repository.withheld.lock().unwrap().insert(
+		id,
+		chrono::Utc::now() - aidash_domain::run_state::OUTAGE_BOUND - chrono::Duration::seconds(1),
+	);
+
+	// Act
+	pass(&repository, &mut Schedule::default(), Instant::now())
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(*repository.unconfirmed.lock().unwrap(), vec![id]);
+	assert!(repository.refused.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_confirmed_check_lets_a_withheld_preview_serve_again() {
 	// Arrange
 	let target = preview();
+	let Target::LivePreview(id) = target else {
+		unreachable!()
+	};
 	let repository = Repository::with(target, Outcome::Unconfirmed);
 	let mut schedule = Schedule::default();
 	let start = Instant::now();
-	for round in 0..4 {
-		pass(&repository, &mut schedule, start + PERIOD * round)
-			.await
-			.unwrap();
-	}
+	pass(&repository, &mut schedule, start).await.unwrap();
+	assert!(repository.withheld.lock().unwrap().contains_key(&id));
 
-	// Act: one answer, then four more misses.
+	// Act
 	repository
 		.outcomes
 		.lock()
 		.unwrap()
 		.insert(target, Outcome::Allowed);
-	pass(&repository, &mut schedule, start + PERIOD * 4)
+	pass(&repository, &mut schedule, start + PERIOD)
 		.await
 		.unwrap();
-	repository
-		.outcomes
-		.lock()
-		.unwrap()
-		.insert(target, Outcome::Unconfirmed);
-	for round in 5..9 {
-		pass(&repository, &mut schedule, start + PERIOD * round)
-			.await
-			.unwrap();
-	}
 
 	// Assert
+	assert!(repository.withheld.lock().unwrap().is_empty());
 	assert!(repository.unconfirmed.lock().unwrap().is_empty());
 }
 
@@ -292,5 +329,56 @@ async fn an_ended_target_is_forgotten() {
 
 	// Assert
 	assert!(schedule.checked.is_empty());
-	assert!(schedule.unconfirmed.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_stop_is_retried_after_legacy_withdrawal_ends_the_target() {
+	let target = operation();
+	let mut repository = Repository {
+		stop_fails: true,
+		..Repository::with(target, Outcome::Refused)
+	};
+	let mut schedule = Schedule::default();
+	let start = Instant::now();
+	pass(&repository, &mut schedule, start).await.unwrap();
+	repository.targets.clear();
+	repository.stop_fails = false;
+	pass(&repository, &mut schedule, start + RETRY_FROM)
+		.await
+		.unwrap();
+	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
+	assert_eq!(repository.checks(), 1);
+	assert!(schedule.failed.is_empty());
+}
+
+#[tokio::test]
+async fn durable_run_stop_is_retried_after_restart_with_backoff() {
+	let target = Target::RevokedRun(Uuid::from_u128(42));
+	let mut repository = Repository {
+		stop_fails: true,
+		..Repository::with(target, Outcome::Refused)
+	};
+	let start = Instant::now();
+	let mut schedule = Schedule::default();
+	pass(&repository, &mut schedule, start).await.unwrap();
+	pass(&repository, &mut schedule, start + Duration::from_secs(4))
+		.await
+		.unwrap();
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 1);
+	// A fresh schedule models a restarted process; the repository still lists
+	// the durable Run, so it is attempted again immediately.
+	let mut restarted = Schedule::default();
+	pass(&repository, &mut restarted, start + Duration::from_secs(4))
+		.await
+		.unwrap();
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 2);
+	pass(&repository, &mut restarted, start + Duration::from_secs(8))
+		.await
+		.unwrap();
+	assert_eq!(repository.stop_attempts.lock().unwrap().len(), 2);
+	repository.stop_fails = false;
+	pass(&repository, &mut restarted, start + Duration::from_secs(9))
+		.await
+		.unwrap();
+	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
 }

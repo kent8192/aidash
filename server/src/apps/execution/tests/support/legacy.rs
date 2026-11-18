@@ -1008,6 +1008,12 @@ impl RuntimeFixture {
 		self._database.environment.clone()
 	}
 
+	/// The owner's URL, for migration SQL a test applies itself.
+	#[allow(dead_code)] // Only targets that replay a migration's data change use it.
+	pub fn owner_url(&self) -> &str {
+		&self._database.owner_url
+	}
+
 	/// Project values while this fixture retains its disposable infrastructure.
 	#[allow(dead_code)] // Database-only and process-only targets do not unpack HTTP runtime state.
 	pub fn parts(&self) -> (Federation, String, String) {
@@ -1121,6 +1127,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			store,
 			registry,
 			config: Config {
+				smtp: None,
 				scratch_policy: Default::default(),
 				credential_max_seconds: 90 * 24 * 60 * 60,
 				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")

@@ -63,9 +63,6 @@ impl ShellRequest {
 		format!("core:{run}:{}", self.idempotency_key)
 	}
 }
-pub fn package_files(extra: &Value) -> std::result::Result<Vec<MountedFile>, serde_json::Error> {
-	serde_json::from_value(extra.get("package_files").cloned().unwrap_or(json!([])))
-}
 pub fn has_input_path_collision(files: &[MountedFile]) -> bool {
 	let mut seen = std::collections::BTreeSet::new();
 	for file in files {
@@ -167,7 +164,6 @@ pub const VERIFICATION: &str = "verification";
 pub fn capability_of(kind: &str) -> &str {
 	match kind {
 		VERIFICATION => "shell",
-		"python_install" => "code_interpreter",
 		_ => kind,
 	}
 }
@@ -200,7 +196,19 @@ pub struct OperationState {
 	pub principal: String,
 	pub kind: String,
 	pub state: String,
+	/// Runs in the Execution Pod of the Run's Scratch Space and holds no
+	/// Working Area writer, so its cancellation leaves the Area alone (#745).
+	pub pod: bool,
 }
+/// `input.runtime` of an operation that runs in an Execution Pod (#745).
+pub const POD_RUNTIME: &str = "pod";
+/// Whether an operation's recorded input says it runs in an Execution Pod.
+pub fn runs_in_pod(input: &Value) -> bool {
+	input["runtime"] == POD_RUNTIME
+}
+/// The epoch of a Pod operation. It holds no Working Area writer, so no Area
+/// epoch ever equals it and withdrawal or cancellation never reopens the Area.
+pub const POD_EPOCH: i64 = -1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancellation {
 	pub state: &'static str,
@@ -212,7 +220,7 @@ impl OperationState {
 		self.area_id == area
 			&& self.run_id == run
 			&& self.principal == principal
-			&& (self.kind == kind || (kind == "code_interpreter" && self.kind == "python_install"))
+			&& self.kind == kind
 	}
 	pub fn cancellation(&self) -> Option<Cancellation> {
 		if matches!(

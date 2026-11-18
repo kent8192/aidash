@@ -30,6 +30,7 @@ fn compare_develop_builtin_declarations() {
 		.unwrap()
 		.into_iter()
 		.chain(legacy_workspace_entries(&validation, NODE).unwrap())
+		.chain(legacy_file_entries(&validation, NODE).unwrap())
 		.collect::<Vec<_>>();
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
@@ -65,6 +66,10 @@ fn compare_develop_builtin_declarations() {
 				Some(old)
 			);
 			changed.push(old.id.clone());
+		} else if now.version != old.version {
+			// Bumped for #745 where the test catalog cannot show the change; the
+			// old declaration must stay seeded byte for byte.
+			assert!(legacy.contains(old), "{}@{} not kept", old.id, old.version);
 		} else {
 			assert_eq!(now, old);
 		}
@@ -74,11 +79,40 @@ fn compare_develop_builtin_declarations() {
 		[
 			"aidash.workspace_search",
 			"aidash.workspace_message",
+			"aidash.attachment_copy",
 			"aidash.memory_mutate",
 			"aidash.task_assign",
 			"aidash.subnode_task"
 		]
 	);
+}
+
+#[test]
+fn seed_orders_bundle_dependencies_before_the_bundle() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let group = packages::declarations(&validation, NODE)
+		.unwrap()
+		.into_iter()
+		.next()
+		.unwrap();
+	let bundle = group.bundle.clone();
+	let mut entries = vec![group.bundle];
+	entries.extend(group.operations);
+	let ordered = dependencies_first(entries, NODE);
+	let bundle_index = ordered
+		.iter()
+		.position(|entry| entry.id == bundle.id)
+		.unwrap();
+	let refs = crate::authorization::catalog::approvals::dependencies(&bundle, NODE).unwrap();
+	assert!(!refs.is_empty());
+	for dependency in refs {
+		if let Some(index) = ordered
+			.iter()
+			.position(|entry| entry.id == dependency.id && entry.version == dependency.version)
+		{
+			assert!(index < bundle_index);
+		}
+	}
 }
 
 #[test]
@@ -442,49 +476,25 @@ impl CoreToolCatalog for ResearchContracts {
 	}
 }
 
-#[rstest::rstest]
-#[case::before_page_images(false)]
-#[case::already_expanded_legacy_bundle(true)]
 #[tokio::test]
-async fn adding_page_views_preserves_existing_immutable_research_bundle_bytes(
-	#[case] had_view: bool,
-) {
+async fn page_reading_2_0_0_leaves_the_earlier_bundle_bytes_alone() {
 	let validation = DefinitionValidation::new(Arc::new(ResearchContracts));
 	let groups = packages::declarations(&validation, NODE).unwrap();
 	let mut writer = Writer::default();
-	let mut previous = vec![];
-	for group in groups
+	let group = groups
 		.iter()
-		.filter(|group| matches!(group.name.as_str(), "research_page" | "research_fixture"))
-	{
-		let mut old = group.bundle.clone();
-		old.version = "1.0.0".into();
-		if !had_view {
-			old.config["members"]
-				.as_array_mut()
-				.unwrap()
-				.retain(|member| !member["id"].as_str().unwrap().ends_with(".view"));
-			old.capabilities
-				.retain(|capability| capability != "research.view");
-		}
-		writer
-			.entries
-			.insert((old.id.clone(), old.version.clone()), old.clone());
-		previous.push(old);
-	}
+		.find(|group| group.name == "research_page")
+		.unwrap();
+	let mut old = group.bundle.clone();
+	old.version = "1.1.0".into();
+	writer
+		.entries
+		.insert((old.id.clone(), old.version.clone()), old.clone());
 	seed(&mut writer, &validation, NODE).await.unwrap();
 	seed(&mut writer, &validation, NODE).await.unwrap();
-	for old in previous {
-		assert_eq!(writer.entries[&(old.id.clone(), "1.0.0".into())], old);
-		let current = &writer.entries[&(old.id.clone(), "1.1.0".into())];
-		assert!(
-			current.config["members"]
-				.as_array()
-				.unwrap()
-				.iter()
-				.any(|member| member["id"].as_str().unwrap().ends_with(".view"))
-		);
-	}
+	assert_eq!(writer.entries[&(old.id.clone(), "1.1.0".into())], old);
+	let current = &writer.entries[&(old.id.clone(), packages::PAGE_READING_VERSION.into())];
+	assert_eq!(current.config["members"].as_array().unwrap().len(), 1);
 }
 
 #[test]

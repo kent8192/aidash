@@ -155,6 +155,7 @@ pub(crate) async fn context_in(
 	query: &str,
 	budget: usize,
 	agent: &crate::registry::AgentConfig,
+	partial: bool,
 ) -> Result<aidash_application::semantic::retrieval::WorkspaceContext> {
 	aidash_application::semantic::retrieval::workspace_context(
 		&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
@@ -163,6 +164,7 @@ pub(crate) async fn context_in(
 		query,
 		budget,
 		agent,
+		partial,
 	)
 	.await
 	.map_err(Into::into)

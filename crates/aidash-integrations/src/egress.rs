@@ -1,7 +1,8 @@
 //! Internal HTTP streaming adapter. The dashboard framework buffers incoming
 //! bodies, so this listener uses Hyper directly; it has no public API routes.
-use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use aidash_application::egress::{
+	Admission, Direction, EgressScopes, ExternalAdmission, Meter, RequestTimes, ServiceRefusal,
+};
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
@@ -23,7 +24,6 @@ use url::Url;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Body = UnsyncBoxBody<Bytes, BoxError>;
 const IDLE: Duration = Duration::from_secs(30);
-const INDEX_BYTES: usize = 8 * 1024 * 1024;
 const BROKER_ERROR: &str = "x-aidash-broker-error";
 const SECRET_CALL: &str = "x-aidash-secret-call";
 /// Body bytes are debited in batches. Each debit is a PostgreSQL transaction
@@ -69,7 +69,6 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
 /// Sandboxed code can fill the slots at will, so the log is thinned. The
 /// counter stays exact.
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
-const INDEX_LIMIT_MESSAGE: &str = "package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.";
 const CONNECTION_LIMIT: &str = "egress_connection_limit";
 /// How much of a request body may be discarded after the answer, and for how
 /// long. These bytes never leave the gateway, so they are not charged.
@@ -957,14 +956,6 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 	}
 }
 
-pub async fn serve(
-	listener: TcpListener,
-	authority: Arc<dyn Authority>,
-	stopping: watch::Receiver<bool>,
-) -> crate::Result<()> {
-	serve_with_scopes(listener, authority, None, ProxyLimits::default(), stopping).await
-}
-
 /// Per-instance proxy capacity. Tenant capacity must be at least one Scratch
 /// Space's and lower than global capacity.
 #[derive(Clone, Copy, Debug)]
@@ -1006,11 +997,11 @@ pub fn waiting_budget(open_files: u64) -> usize {
 	usize::try_from(budget).unwrap_or(usize::MAX).max(64)
 }
 
-/// Serve legacy External service calls and, when configured, scope proxy calls.
+/// Serve the Execution Pod proxy: Host connections, and External service
+/// requests sent as plain HTTP to [`aidash_domain::egress::SERVICES_HOST`].
 pub async fn serve_with_scopes(
 	listener: TcpListener,
-	authority: Arc<dyn Authority>,
-	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	scopes: Arc<dyn EgressScopes>,
 	limits: ProxyLimits,
 	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
@@ -1038,18 +1029,14 @@ pub async fn serve_with_scopes(
 		.read_timeout(IDLE)
 		.build()
 		.map_err(crate::http_error)?;
-	serve_with_clients(
-		listener, authority, scopes, limits, stopping, client, public,
-	)
-	.await
+	serve_with_clients(listener, scopes, limits, stopping, client, public).await
 }
 
 /// The serving loop, with the upstream clients supplied. Tests give it clients
 /// that reach a local stand-in for the package registries.
 async fn serve_with_clients(
 	listener: TcpListener,
-	authority: Arc<dyn Authority>,
-	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	scopes: Arc<dyn EgressScopes>,
 	limits: ProxyLimits,
 	mut stopping: watch::Receiver<bool>,
 	client: reqwest::Client,
@@ -1072,19 +1059,16 @@ async fn serve_with_clients(
 			while connections.join_next().await.is_some() {}
 			tunnels.drain().await;
 			while flushes.join_next().await.is_some() {}
-			if let Some(scopes) = &scopes {
-				tunnels.flush_tallies(&**scopes).await;
-			}
+			tunnels.flush_tallies(&*scopes).await;
 			return Ok(());
 		}
 		tokio::select! {
 			_ = stopping.changed() => {},
-			_ = tallies.tick(), if scopes.is_some() => {
-				if let Some(scopes) = scopes.clone() {
-					let tunnels = tunnels.clone();
-					while flushes.try_join_next().is_some() {}
-					flushes.spawn(async move { tunnels.flush_tallies(&*scopes).await });
-				}
+			_ = tallies.tick() => {
+				let scopes = scopes.clone();
+				let tunnels = tunnels.clone();
+				while flushes.try_join_next().is_some() {}
+				flushes.spawn(async move { tunnels.flush_tallies(&*scopes).await });
 			},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
@@ -1097,7 +1081,7 @@ async fn serve_with_clients(
 					}
 					continue;
 				};
-				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
+				let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
 				connections.spawn(async move {
 					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
@@ -1106,14 +1090,18 @@ async fn serve_with_clients(
 					let lingering_tunnel = connection_lease.clone();
 					let service = service_fn(move |request| {
 						noting.note(&request);
-						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
+						let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
 								let connect = request.method() == hyper::Method::CONNECT;
-								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit, connection_lease).await, None => refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
+								// An External service request never becomes a Host connection: it
+								// is not counted, allowlisted or resolved as one (#738).
+								let mut response = if is_services_host(&request) {
+									if connect { refuse(StatusCode::BAD_REQUEST, "external_service_requires_http") } else { forward_service(request, client, public, scopes).await }
+								} else { proxy::forward(request, scopes, tunnels, permit, connection_lease).await };
 								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
 								response
-							} else { forward(request, authority, client, public, scopes).await };
+							} else { refuse(StatusCode::NOT_FOUND, "egress_route_not_found") };
 							Ok::<_,Infallible>(response)
 						}
 					});
@@ -1228,168 +1216,55 @@ fn forwarded_header(name: &str, connection: &[String]) -> bool {
 		&& !connection.iter().any(|v| v == name)
 }
 
-/// A rewritten package index must reach the gateway uncompressed: the client's
-/// own `accept-encoding` would sit beside the gateway's `identity` and let the
-/// index answer with gzip, which the JSON/HTML rewrite cannot read (#679).
-fn request_header_forwarded(name: &str, connection: &[String], rewrites_index: bool) -> bool {
-	forwarded_header(name, connection) && !(rewrites_index && name == "accept-encoding")
+/// A proxied request whose target is the reserved External service host.
+fn is_services_host(request: &Request<hyper::body::Incoming>) -> bool {
+	request
+		.uri()
+		.host()
+		.is_some_and(|host| host.eq_ignore_ascii_case(aidash_domain::egress::SERVICES_HOST))
 }
 
-fn package_url(service: &str, url: &Url) -> bool {
-	url.scheme() == "https"
-		&& url.username().is_empty()
-		&& url.password().is_none()
-		&& url.port_or_known_default() == Some(443)
-		&& matches!(
-			(service, url.host_str()),
-			("core.npm", Some("registry.npmjs.org"))
-				| ("core.pypi", Some("pypi.org" | "files.pythonhosted.org"))
+/// A refusal that names why the service cannot be used and which services the
+/// Scratch Space can use now (#738).
+fn service_refused(refusal: &ServiceRefusal) -> Response<Body> {
+	metrics::counter!("aidash_egress_refused_total", "reason" => refusal.code).increment(1);
+	let body = serde_json::json!({
+		"error": refusal.code,
+		"available_services": refusal.available,
+	});
+	Response::builder()
+		.status(StatusCode::FORBIDDEN)
+		.header("content-type", "application/json")
+		.header("cache-control", "no-store")
+		.body(
+			Full::new(Bytes::from(body.to_string()))
+				.map_err(|never| match never {})
+				.boxed_unsync(),
 		)
-}
-fn package_link(
-	value: &str,
-	source: &Url,
-	origin: &str,
-	token: &str,
-	service: &str,
-) -> Option<String> {
-	let url = source.join(value).ok()?;
-	if !package_url(service, &url) {
-		return None;
-	}
-	let mut url = url;
-	let fragment = url.fragment().map(str::to_owned);
-	url.set_fragment(None);
-	Some(format!(
-		"{}/v1/{token}/{service}/__asset/{}{}",
-		origin.trim_end_matches('/'),
-		URL_SAFE_NO_PAD.encode(url.as_str()),
-		fragment.map(|f| format!("#{f}")).unwrap_or_default()
-	))
-}
-fn rewrite_json(
-	bytes: &[u8],
-	source: &Url,
-	origin: &str,
-	token: &str,
-	service: &str,
-) -> Result<Vec<u8>, BoxError> {
-	fn visit(
-		value: &mut serde_json::Value,
-		source: &Url,
-		origin: &str,
-		token: &str,
-		service: &str,
-	) {
-		match value {
-			serde_json::Value::Array(items) => {
-				for item in items {
-					visit(item, source, origin, token, service);
-				}
-			}
-			serde_json::Value::Object(items) => {
-				for (key, value) in items {
-					if matches!(key.as_str(), "tarball" | "url" | "href")
-						&& let Some(link) = value
-							.as_str()
-							.and_then(|v| package_link(v, source, origin, token, service))
-					{
-						*value = link.into();
-					} else {
-						visit(value, source, origin, token, service);
-					}
-				}
-			}
-			_ => {}
-		}
-	}
-	let mut value = serde_json::from_slice(bytes)?;
-	visit(&mut value, source, origin, token, service);
-	Ok(serde_json::to_vec(&value)?)
-}
-fn rewrite_html(
-	bytes: &[u8],
-	source: &Url,
-	origin: &str,
-	token: &str,
-	service: &str,
-) -> Result<Vec<u8>, BoxError> {
-	let text = std::str::from_utf8(bytes)?;
-	let mut result = String::with_capacity(text.len());
-	let mut rest = text;
-	// PyPI's Simple API uses quoted href attributes. Unknown or foreign links
-	// remain unreachable under the Pod's NetworkPolicy.
-	while let Some(start) = rest.find("href=") {
-		result.push_str(&rest[..start + 5]);
-		rest = &rest[start + 5..];
-		let Some(quote) = rest.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
-			continue;
-		};
-		result.push(quote);
-		rest = &rest[quote.len_utf8()..];
-		let Some(end) = rest.find(quote) else {
-			return Err(io_error("invalid_package_index"));
-		};
-		let value = &rest[..end];
-		let decoded = value.replace("&amp;", "&");
-		result.push_str(
-			&package_link(&decoded, source, origin, token, service)
-				.unwrap_or_else(|| value.to_owned()),
-		);
-		result.push(quote);
-		rest = &rest[end + quote.len_utf8()..];
-	}
-	result.push_str(rest);
-	Ok(result.into_bytes())
+		.unwrap()
 }
 
-async fn forward(
+/// Forwards `http://services.aidash.internal/<service>/<path>`, sent through the
+/// proxy with the process's own credential, to the External service, attaching
+/// its Tenant Secret on the way.
+async fn forward_service(
 	request: Request<hyper::body::Incoming>,
-	authority: Arc<dyn Authority>,
 	client: reqwest::Client,
 	public: reqwest::Client,
-	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	scopes: Arc<dyn EgressScopes>,
 ) -> Response<Body> {
-	if request.uri().scheme().is_some() {
-		return refuse(StatusCode::NOT_FOUND, "egress_route_not_found");
+	let Some(token) = proxy::credential(request.headers()) else {
+		return proxy::auth_required();
+	};
+	let uri = request.uri();
+	if uri.scheme_str() != Some("http")
+		|| uri.port_u16().is_some_and(|port| port != 80)
+		|| uri.authority().is_some_and(|a| a.as_str().contains('@'))
+	{
+		return refuse(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
-	let request_path = request.uri().path();
-	let scoped = request_path.starts_with("/v2/services/");
-	let route = if scoped {
-		request_path[13..].to_owned()
-	} else if let Some(path) = request_path.strip_prefix("/v1/") {
-		path.to_owned()
-	} else {
-		return refuse(StatusCode::NOT_FOUND, "egress_route_not_found");
-	};
-	let scope_token = if scoped {
-		let mut values = request
-			.headers()
-			.get_all(hyper::header::AUTHORIZATION)
-			.iter();
-		let token = values
-			.next()
-			.and_then(|v| v.to_str().ok())
-			.and_then(|s| s.split_once(' '))
-			.filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-			.map(|(_, token)| token)
-			.filter(|s| !s.is_empty());
-		if values.next().is_some() || token.is_none() {
-			return refuse(StatusCode::UNAUTHORIZED, "egress_token_required");
-		}
-		token.map(str::to_owned)
-	} else {
-		None
-	};
-	let (token, remainder) = if let Some(token) = scope_token.as_deref() {
-		(token, route.as_str())
-	} else {
-		let Some((token, remainder)) = route.split_once('/') else {
-			return refuse(StatusCode::UNAUTHORIZED, "egress_token_required");
-		};
-		(token, remainder)
-	};
-	let (service, path) = remainder.split_once('/').unwrap_or((remainder, ""));
+	let route = uri.path().trim_start_matches('/');
+	let (service, path) = route.split_once('/').unwrap_or((route, ""));
 	if token.len() > 512
 		|| service.is_empty()
 		|| service.len() > 100
@@ -1399,78 +1274,35 @@ async fn forward(
 	{
 		return refuse(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
-	let asset = if let Some(encoded) = path.strip_prefix("__asset/") {
-		if scoped {
-			return refuse(StatusCode::BAD_REQUEST, "invalid_egress_path");
-		}
-		let decoded = URL_SAFE_NO_PAD
-			.decode(encoded)
-			.ok()
-			.and_then(|b| String::from_utf8(b).ok())
-			.and_then(|s| Url::parse(&s).ok());
-		let Some(url) = decoded.filter(|u| package_url(service, u)) else {
-			return refuse(StatusCode::BAD_REQUEST, "invalid_package_url");
-		};
-		Some(url)
-	} else {
-		None
-	};
-	let query = asset
-		.as_ref()
-		.and_then(Url::query)
-		.or_else(|| request.uri().query())
-		.map(str::to_owned);
-	let audit_path = asset.as_ref().map(Url::path).unwrap_or(path);
+	let service = service.to_owned();
+	let path = path.to_owned();
+	let service = service.as_str();
+	let path = path.as_str();
+	let token = token.as_str();
+	let query = request.uri().query().map(str::to_owned);
+	let audit_path = path;
 	let head = request.method() == hyper::Method::HEAD;
 	let query_digest = format!(
 		"{:x}",
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
 	let admitting = tokio::time::Instant::now();
-	let admitted = if scoped {
-		match scopes {
-			Some(scopes) => {
-				scopes
-					.admit_external(
-						token,
-						service,
-						request.method().as_str(),
-						audit_path,
-						&query_digest,
-					)
-					.await
-			}
-			None => Err(aidash_application::Error::Forbidden),
-		}
-	} else {
-		authority
-			.admit(
-				token,
-				service,
-				request.method().as_str(),
-				audit_path,
-				&query_digest,
-			)
-			.await
-	};
+	let admitted = scopes
+		.admit_external(
+			token,
+			service,
+			request.method().as_str(),
+			audit_path,
+			&query_digest,
+		)
+		.await;
 	let admission_ms = millis(admitting.elapsed());
 	let admission = match admitted {
-		Ok(value) => value,
-		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
+		Ok(ExternalAdmission::Admitted(value)) => *value,
+		Ok(ExternalAdmission::Refused(refusal)) => return service_refused(&refusal),
+		Err(aidash_application::Error::Unauthorized) => return proxy::auth_required(),
+		Err(aidash_application::Error::Forbidden) => {
 			return refuse(StatusCode::FORBIDDEN, "egress_forbidden");
-		}
-		Err(aidash_application::Error::Conflict(code))
-			if code == aidash_domain::egress::OPERATION_EXPIRED =>
-		{
-			return refuse(Refusal::EXPIRED.status, Refusal::EXPIRED.code);
-		}
-		Err(aidash_application::Error::Conflict(code))
-			if code == aidash_domain::egress::OPERATION_INACTIVE =>
-		{
-			return refuse(Refusal::INACTIVE.status, Refusal::INACTIVE.code);
-		}
-		Err(aidash_application::Error::Conflict(_)) => {
-			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);
 		}
 		Err(aidash_application::Error::Refused(message))
 			if message == "egress_budget_exhausted" =>
@@ -1552,21 +1384,7 @@ async fn forward(
 			.fail(StatusCode::FORBIDDEN, "operation_expired", "egress_expired")
 			.await;
 	}
-	let index = !scoped && admission.definition.builtin_index(service);
-	if asset.is_some() && !index {
-		return completion
-			.fail(
-				StatusCode::FORBIDDEN,
-				"invalid_package_service",
-				"egress_forbidden",
-			)
-			.await;
-	}
-	let service_url = match asset
-		.clone()
-		.map(Ok)
-		.unwrap_or_else(|| target(&admission, path, query.as_deref()))
-	{
+	let service_url = match target(&admission, path, query.as_deref()) {
 		Ok(url) => url,
 		Err(_) => {
 			return completion
@@ -1627,9 +1445,8 @@ async fn forward(
 		}
 	};
 	let mut upstream = selected.request(request.method().clone(), upstream_url);
-	let rewrites_index = index && asset.is_none();
 	for (name, value) in request.headers() {
-		if request_header_forwarded(name.as_str(), &connection, rewrites_index)
+		if forwarded_header(name.as_str(), &connection)
 			&& name.as_str()
 				!= admission
 					.definition
@@ -1676,9 +1493,6 @@ async fn forward(
 				upstream.header(name, value)
 			}
 		};
-	}
-	if rewrites_index {
-		upstream = upstream.header("accept-encoding", "identity");
 	}
 	let debits = completion.debits.clone();
 	let mut incoming = request.into_body().into_data_stream();
@@ -1773,8 +1587,7 @@ async fn forward(
 			headers.remove(name);
 		}
 	}
-	// A redirect is followed through the gateway, with a fresh live decision and
-	// another request debit. Streaming uploads are never buffered for replay.
+	// A redirect is followed through the gateway, with a fresh live decision. Streaming uploads are never buffered for replay.
 	if response.status().is_redirection()
 		&& let Some(location) = headers.get("location")
 	{
@@ -1798,11 +1611,10 @@ async fn forward(
 				.await;
 		};
 		let relative = redirected.path().strip_prefix(base.path()).unwrap_or("");
-		let prefix = if scoped {
-			format!("/v2/services/{service}/{relative}")
-		} else {
-			format!("/v1/{token}/{service}/{relative}")
-		};
+		let prefix = format!(
+			"http://{}/{service}/{relative}",
+			aidash_domain::egress::SERVICES_HOST
+		);
 		let rewritten = format!(
 			"{prefix}{}",
 			redirected
@@ -1841,122 +1653,7 @@ async fn forward(
 		*result.headers_mut() = headers;
 		return result;
 	}
-	let index_type = response
-		.headers()
-		.get("content-type")
-		.and_then(|v| v.to_str().ok())
-		.unwrap_or("")
-		.to_owned();
 	let mut downstream = response.bytes_stream();
-	if index
-		&& asset.is_none()
-		&& !head
-		&& (index_type.contains("json") || index_type.starts_with("text/html"))
-	{
-		let mut buffer = Vec::new();
-		loop {
-			let next = tokio::select! {
-				refusal = stopped(&mut active_rx) => {
-					completion.status = refusal.status.as_u16();
-					completion.interrupted(refusal.code);
-					return refusal.response();
-				}
-				next = tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next())) => next,
-			};
-			let bytes = match next {
-				Ok(Ok(Some(Ok(bytes)))) => bytes,
-				Ok(Ok(None)) => break,
-				failed => {
-					let cause = match failed {
-						Ok(Ok(Some(Err(error)))) => upstream_cause(error),
-						_ => "timed out".to_owned(),
-					};
-					upstream_failed(&completion.debits.label, &cause);
-					return completion
-						.fail(
-							StatusCode::BAD_GATEWAY,
-							"index_unavailable",
-							"package_index_unavailable",
-						)
-						.await;
-				}
-			};
-			completion.debits.count(Direction::Received, bytes.len());
-			if let Err(refusal) = completion
-				.debits
-				.flush_due(Direction::Received, deadline)
-				.await
-			{
-				completion.status = refusal.status.as_u16();
-				completion.finish(Some(refusal.code)).await;
-				return refusal.response();
-			}
-			if buffer.len().saturating_add(bytes.len()) > INDEX_BYTES {
-				let mut response = completion
-					.fail(
-						StatusCode::UNPROCESSABLE_ENTITY,
-						"index_limit_exceeded",
-						INDEX_LIMIT_MESSAGE,
-					)
-					.await;
-				response.extensions_mut().insert(
-					hyper::ext::ReasonPhrase::try_from(INDEX_LIMIT_MESSAGE.as_bytes())
-						.expect("valid reason phrase"),
-				);
-				return response;
-			}
-			buffer.extend_from_slice(&bytes);
-		}
-		let rewritten = if index_type.contains("json") {
-			rewrite_json(
-				&buffer,
-				&service_url,
-				&admission.gateway_origin,
-				token,
-				service,
-			)
-		} else {
-			rewrite_html(
-				&buffer,
-				&service_url,
-				&admission.gateway_origin,
-				token,
-				service,
-			)
-		};
-		let Ok(rewritten) = rewritten else {
-			return completion
-				.fail(
-					StatusCode::BAD_GATEWAY,
-					"invalid_package_index",
-					"invalid_package_index",
-				)
-				.await;
-		};
-		// Rewritten links can lengthen the index the sandbox receives.
-		completion.debits.count(
-			Direction::Received,
-			rewritten.len().saturating_sub(buffer.len()),
-		);
-		if let Some(refusal) = completion.settle_final().await {
-			completion.status = refusal.status.as_u16();
-			completion.close(Some(refusal.code)).await;
-			return refusal.response();
-		}
-		completion.close(None).await;
-		headers.remove("content-length");
-		headers.remove("content-encoding");
-		headers.remove("etag");
-		headers.remove("content-md5");
-		let mut result = Response::new(
-			Full::new(Bytes::from(rewritten))
-				.map_err(|never| match never {})
-				.boxed_unsync(),
-		);
-		*result.status_mut() = status;
-		*result.headers_mut() = headers;
-		return result;
-	}
 	completion.expected = headers
 		.get(hyper::header::CONTENT_LENGTH)
 		.and_then(|value| value.to_str().ok())

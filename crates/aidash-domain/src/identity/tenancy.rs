@@ -37,7 +37,7 @@ pub const MEMBER_TOOL_APPROVAL: &str = "members-tool-call-approval";
 /// What every ordinary member may do: use the Tenant and author definitions,
 /// never administer people, change Tenant settings, approve use beyond their
 /// own tool calls (see [`MEMBER_TOOL_APPROVAL`]), hold Provider Credentials,
-/// disclose research or administer Federation. Members may approve in advance
+/// or administer Federation. Members may approve in advance
 /// and use the Auto Approval Mode, within the approvals they could give
 /// themselves; Bypass has to be named by the Tenant. An explicit list, because
 /// deny rules would make the last-administrator check unreliable.

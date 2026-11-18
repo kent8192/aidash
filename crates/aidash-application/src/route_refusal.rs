@@ -5,11 +5,21 @@ use std::fmt;
 pub enum RouteReason {
 	NotYetValid,
 	Expired,
-	MediaFormatsNotApproved { formats: Vec<String> },
-	SubTags { tags: Vec<String> },
+	MediaFormatsNotApproved {
+		formats: Vec<String>,
+	},
+	SubTags {
+		tags: Vec<String>,
+	},
 	EndpointMissing,
-	ContextTooLong { estimated: u64, limit: u64 },
+	ContextTooLong {
+		estimated: u64,
+		limit: u64,
+	},
 	NotZeroDataRetention,
+	/// The endpoint keeps content to prevent abuse, which never meets
+	/// strict zero data retention (#961).
+	SafetyRetentionOnly,
 }
 
 impl fmt::Display for RouteReason {
@@ -39,6 +49,10 @@ impl fmt::Display for RouteReason {
 				"context too long: estimated {estimated} tokens > limit {limit}"
 			),
 			Self::NotZeroDataRetention => write!(f, "not on the zero data retention list"),
+			Self::SafetyRetentionOnly => write!(
+				f,
+				"only Safety Retention, which does not meet Zero Data Retention"
+			),
 		}
 	}
 }

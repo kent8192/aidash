@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 /// The application profile `deploy/helm/aidash` renders with its default limits.
 fn chart_profile() -> Value {
-	json!({"admission":true,"cpu":2,"idle_seconds":1800,"install_seconds":300,"maximum_seconds":600,"memory_bytes":2147483648_u64,"operation_seconds":120,"output_bytes":8388608,"processes":128,"runner":{"endpoint":"http://app-execution-runner:8949","image":"reg/sandbox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","namespace":"aidash-pr-1-sandbox","runtime_class":"aidash-gvisor-pr-1","token_env":"AIDASH_CORE_RUNNER_TOKEN"},"storage":"/var/lib/aidash/capabilities","temporary_bytes":268435456,"working_bytes":1073741824})
+	json!({"admission":true,"cpu":2,"idle_seconds":1800,"maximum_seconds":600,"memory_bytes":2147483648_u64,"operation_seconds":120,"output_bytes":8388608,"processes":128,"runner":{"endpoint":"http://app-execution-runner:8949","image":"reg/sandbox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","namespace":"aidash-pr-1-sandbox","runtime_class":"aidash-gvisor-pr-1","token_env":"AIDASH_CORE_RUNNER_TOKEN"},"storage":"/var/lib/aidash/capabilities","temporary_bytes":268435456,"working_bytes":1073741824})
 }
 
 #[test]
@@ -39,24 +39,11 @@ fn a_profile_shared_with_the_runner_keeps_its_runner_only_fields() {
 }
 
 #[test]
-fn egress_profiles_require_an_internal_ip_runner_and_positive_cumulative_limits() {
+fn egress_profiles_require_a_runner_and_positive_cumulative_limits() {
 	let mut value = chart_profile();
-	value["egress"] = json!({"endpoint":"http://10.96.0.90:8950","listen":"0.0.0.0:8950"});
+	value["egress"] = json!({"listen":"0.0.0.0:8950"});
 	let profile: Profile = serde_json::from_value(value.clone()).unwrap();
 	assert!(crate::capabilities::Runtime::new(profile).is_ok());
-	for endpoint in [
-		"http://example.com:8950",
-		"http://8.8.8.8:8950",
-		"http://169.254.169.254",
-		"http://10.96.0.90:8950/?token=key",
-		"https://10.96.0.90:8950",
-	] {
-		let mut rejected = value.clone();
-		rejected["egress"]["endpoint"] = json!(endpoint);
-		assert!(
-			crate::capabilities::Runtime::new(serde_json::from_value(rejected).unwrap()).is_err()
-		);
-	}
 	let mut configured = value.clone();
 	configured["egress"]["proxy_global_tunnels"] = json!(200);
 	configured["egress"]["proxy_tenant_tunnels"] = json!(40);

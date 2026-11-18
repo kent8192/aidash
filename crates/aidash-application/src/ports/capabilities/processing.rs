@@ -49,6 +49,11 @@ pub trait OperationProcessingRepository:
 		&self,
 		receipt: &Receipt,
 	) -> Result<Box<dyn ReceiptOutputScope + '_>>;
+	/// Commands and Python cells that run in Execution Pods (#745). None where
+	/// the Deployment has no Execution Pods.
+	fn pods(&self) -> Option<&dyn super::pod_operations::PodOperationRepository> {
+		None
+	}
 }
 #[async_trait]
 pub trait CapabilityBackgroundJobs: Send + Sync {

@@ -44,6 +44,7 @@ import { useNodes } from "./nodes";
 import { RegistryModelPicker } from "./registry-model-picker";
 import { PlanModelPicker } from "./plan-model-picker";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
+import { EmbeddingModelFields } from "./embedding-model-fields";
 import { useForm } from "@tanstack/react-form";
 import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
@@ -848,7 +849,14 @@ export function EntityForm({
             </Field>
             <div key={modelSource} className="grid min-w-0 gap-4">
               {modelSource === "openrouter" ? (
-                <OpenRouterModelPicker onNameChange={setModelName} />
+                <OpenRouterModelPicker
+                  onNameChange={setModelName}
+                  tenant={
+                    data.access.kind === "subject"
+                      ? data.access.tenant
+                      : undefined
+                  }
+                />
               ) : selfHostedPlanConnections &&
                 modelSource === "chatgpt" &&
                 data.access.kind === "subject" ? (
@@ -924,28 +932,20 @@ export function EntityForm({
                 defaultValue="https://openrouter.ai/api/v1"
               />
             </Field>
-            <Field label={t("modelId")}>
-              <Input
-                name="model_id"
-                required
-                defaultValue="google/gemini-embedding-2"
-              />
-            </Field>
-            <div className={pairClass}>
-              <Field label={t("embeddingModelVersion")}>
-                <Input name="model_version" required defaultValue="1.0.0" />
-              </Field>
-              <Field label={t("embeddingDimensions")}>
-                <Input
-                  name="dimensions"
-                  type="number"
-                  required
-                  min={1}
-                  max={8192}
-                  defaultValue={3072}
-                />
-              </Field>
-            </div>
+            <EmbeddingModelFields
+              tenant={
+                data.access.kind === "subject" ? data.access.tenant : undefined
+              }
+              modelLabel={t("modelId")}
+              modelName="model_id"
+              dimensionsName="dimensions"
+              versionField={
+                <Field label={t("embeddingModelVersion")}>
+                  <Input name="model_version" required defaultValue="1.0.0" />
+                </Field>
+              }
+              dimensionsLabel={t("embeddingDimensions")}
+            />
             <Check
               name="embedding_image"
               checked={embeddingImage}

@@ -1445,6 +1445,7 @@ async fn child_runtime(
 			.unwrap(),
 		store,
 		config: aidash_server::config::Config {
+			smtp: None,
 			scratch_policy: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			deployment: aidash_domain::nodes::DeploymentId::parse(node).unwrap(),

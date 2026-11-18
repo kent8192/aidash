@@ -431,27 +431,6 @@ async fn a_conflict_from_complete_reaches_the_same_decision(mut fixture: Fixture
 }
 
 #[rstest]
-#[tokio::test]
-async fn a_completion_gate_send_back_abandons_nothing(mut fixture: Fixture) {
-	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
-	answer(&mut fixture.run, "All done.");
-	advance_sources(&mut fixture).await.unwrap();
-	fixture.run = last_write(&fixture).1;
-	// A citation correction stands in for any send-back before `complete`.
-	answer(&mut fixture.run, "Claim [[cite:ev_invented]].");
-	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.known_evidence = vec![];
-	state.custom.insert(
-		"lookup".into(),
-		Scripted::research(aidash_domain::research::Operation::Find),
-	);
-	advance_sources(&mut fixture).await.unwrap();
-	assert_eq!(last_write(&fixture).0, "run.citation_correction_required");
-	assert_eq!(calls(&fixture, "home.complete"), 0);
-	assert!(fixture.backend.0.abandoned.lock().unwrap().is_empty());
-}
-
-#[rstest]
 #[case::a_task_of_its_own(true, 3600)]
 #[case::only_other_childrens_tasks(false, 300)]
 #[tokio::test]

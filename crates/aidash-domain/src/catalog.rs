@@ -8,6 +8,9 @@ pub struct CatalogSnapshot {
 	/// The last refresh failed, so these are the models of an earlier one.
 	pub stale: bool,
 	pub fetched_at: chrono::DateTime<chrono::Utc>,
+	/// What OpenRouter's ZDR list offered every model it named, embedding
+	/// models included; empty when the list could not be read (#963).
+	pub zero_data_retention: std::collections::BTreeMap<String, ZdrRoutes>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -22,6 +25,45 @@ pub struct CatalogModel {
 	#[serde(default)]
 	pub supported_parameters: Vec<String>,
 	pub reasoning: Option<ReasoningOptions>,
+	/// What OpenRouter's ZDR catalog offers this model; absent when the
+	/// catalog could not be read. The picker uses it to say which Data
+	/// Protection Levels the model can meet (#963).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub zero_data_retention: Option<ZdrRoutes>,
+}
+
+/// The routes OpenRouter's ZDR catalog lists for one model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ZdrRoutes {
+	/// At least one route meets strict zero data retention.
+	Strict,
+	/// Every route keeps content to prevent abuse: usable up to Safety
+	/// Retention, never at Zero Data Retention.
+	SafetyRetentionOnly,
+	/// No route at all: usable only at No Restriction and No Training.
+	None,
+}
+impl ZdrRoutes {
+	pub fn of(catalog: &[serde_json::Value], model: &str) -> Self {
+		use crate::data_protection::{Requirement, admitted_routes};
+		if admitted_routes(catalog, model, Requirement::Zdr).is_ok() {
+			Self::Strict
+		} else if admitted_routes(catalog, model, Requirement::SafetyRetention).is_ok() {
+			Self::SafetyRetentionOnly
+		} else {
+			Self::None
+		}
+	}
+	/// Whether a call held to `level` can use the model.
+	pub fn meets(self, level: crate::data_protection::Level) -> bool {
+		use crate::data_protection::Level;
+		match level {
+			Level::NoRestriction | Level::NoTraining => true,
+			Level::SafetyRetention => self != Self::None,
+			Level::ZeroDataRetention => self == Self::Strict,
+		}
+	}
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -165,3 +207,5 @@ mod tests {
 		assert!(eligible(catalog.data).is_empty());
 	}
 }
+
+pub mod carry_over;

@@ -346,7 +346,8 @@ class Fixture:
         self.provider_calls = collections.Counter()
 
     def infer(self, body):
-        assert body["provider"]["zdr"] is True
+        # A new Tenant starts at No Training; stricter levels ask for ZDR (#963).
+        assert body["provider"].get("data_collection") == "deny" or body["provider"].get("zdr") is True
         self.provider_calls["openrouter"] += 1
         context = json.loads(body["messages"][0 if "system" in body else 1]["content"])
         current = context["current"]

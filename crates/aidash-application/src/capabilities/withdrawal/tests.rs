@@ -48,6 +48,7 @@ fn repository() -> Repository {
 			area_epoch: 8,
 			area_generation: 3,
 			area_state: "running".into(),
+			pod: false,
 		},
 		calls: vec![],
 		alive: 0,
@@ -425,4 +426,40 @@ async fn a_withdrawal_after_the_runner_answered_asks_for_no_refusal(repository: 
 		.await
 		.unwrap();
 	assert_eq!(repository.0.lock().unwrap().refusals, vec![None]);
+}
+
+/// A Node deletion stops a Pod command through the Pod runtime: it has no
+/// Runner instance to bind the stop to, active or left uncertain (#745).
+#[rstest]
+#[case::running("running", true)]
+#[case::uncertain("uncertain", true)]
+#[case::still_running("running", false)]
+#[tokio::test]
+async fn a_captured_pod_writer_is_stopped_through_the_pod(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] stopped: bool,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.snapshot.pod = true;
+		state.snapshot.runner_instance = None;
+		state.snapshot.epoch = -1;
+		state.snapshot.state = status.into();
+		// An uncertain row the sweep left behind carries no ACK flag.
+		state.snapshot.result = json!({"termination_confirmed":false});
+		state.stopped = stopped;
+	}
+	stop_captured_writer(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
+		.await
+		.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.calls, vec!["lock", "cancel", "commit", "drop"]);
+	assert_eq!(state.refusals, vec![None]);
+	let change = state.committed.last().unwrap();
+	assert_eq!(change.result["termination_confirmed"], json!(stopped));
+	// A confirmed stop leaves the row erasable; an unconfirmed one does not.
+	assert_eq!(change.result["runner_acknowledged"], json!(stopped));
+	// The Area's writer epoch is never a Pod operation's.
+	assert!(change.area_state.is_none());
 }

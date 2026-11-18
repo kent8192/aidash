@@ -7,8 +7,7 @@
 use crate::{
 	Error as NativeError, Result as NativeResult,
 	apps::execution::capabilities::{
-		models::{CoreLivePreviews, CorePreviewLimits, EgressSession},
-		serializers::contracts::FileEntry,
+		models::{CoreLivePreviews, CorePreviewLimits},
 		services::retention,
 	},
 	authorization::{access::Access, identity::SubjectIdentity},
@@ -18,12 +17,11 @@ use crate::{
 use aidash_application::preview::live::{self as application, RunFacts, Start, Started, Status};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::capabilities::retention::Holder;
-use aidash_domain::preview::live::{Limits, LivePreview, START_SECONDS, State, StopReason};
+use aidash_domain::preview::live::{Limits, LivePreview, State, StopReason};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::db::orm::Model;
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
-use sha2::Digest as _;
 use uuid::Uuid;
 
 type Row = CoreLivePreviews;
@@ -52,7 +50,7 @@ pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
 		expires_at: row.expires_at,
 		pod_host: row.pod_host,
 		termination_confirmed: row.termination_confirmed,
-		egress_expires_at: row.egress_expires_at,
+		unconfirmed_since: row.unconfirmed_since,
 	})
 }
 
@@ -73,7 +71,7 @@ pub(crate) fn to_row(preview: &LivePreview) -> Row {
 		.expires_at(preview.expires_at)
 		.pod_host(preview.pod_host.clone())
 		.termination_confirmed(preview.termination_confirmed)
-		.egress_expires_at(preview.egress_expires_at)
+		.unconfirmed_since(preview.unconfirmed_since)
 		.updated_at(Utc::now())
 		.finish()
 }
@@ -228,37 +226,6 @@ impl application::Scope for Scope<'_> {
 		.await?;
 		Ok(revision)
 	}
-	async fn mint_egress(&mut self, preview: &mut LivePreview) -> aidash_application::Result<()> {
-		let Some(settings) = self.store.capabilities.0.egress.as_ref() else {
-			return Ok(());
-		};
-		let expires_at = preview.expires_at;
-		EgressSession::objects()
-			.insert_with_executor(
-				&mut **self.access.tx,
-				&EgressSession::build()
-					.id(preview.id)
-					.tenant(self.access.identity.tenant.clone())
-					.run_id(preview.run_id)
-					.live_preview_id(preview.id)
-					.principal(self.access.identity.subject.clone())
-					.credential_id(self.access.identity.credential_id)
-					.expires_at(expires_at)
-					.sent_bytes(0)
-					.received_bytes(0)
-					.requests(0)
-					.max_sent_bytes(settings.limits.sent_bytes as i64)
-					.max_received_bytes(settings.limits.received_bytes as i64)
-					.max_requests(settings.limits.requests as i32)
-					.created_at(Utc::now())
-					.finish(),
-			)
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(NativeError::from)?;
-		preview.egress_expires_at = Some(expires_at);
-		Ok(())
-	}
 }
 
 /// The start row, before the Runner is dispatched.
@@ -298,160 +265,6 @@ impl Dispatch {
 			started_at: Utc::now(),
 			failure: Some(message.into()),
 		}
-	}
-}
-
-/// Accept the long-lived `serve` operation and stage its inputs in the
-/// caller's authority transaction. The Pod starts only after every File version
-/// of the pinned revision was written; the wait for readiness happens outside.
-pub(crate) async fn dispatch_accept(
-	store: &Store,
-	access: &mut Access,
-	preview: &LivePreview,
-	files: Vec<FileEntry>,
-	command: &str,
-) -> NativeResult<()> {
-	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	let wire = files
-		.iter()
-		.map(|file| {
-			serde_json::json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})
-		})
-		.collect::<Vec<_>>();
-	let mut input = serde_json::json!({
-		"operation_id": preview.id,
-		"area_id": preview.area_id,
-		"epoch": 1,
-		"digest": format!("{:x}", sha2::Sha256::digest(format!("{}\0{}\0{}", preview.area_id, preview.revision, preview.port).as_bytes())),
-		"kind": "serve",
-		"code": command,
-		"seconds": preview.limits.absolute_seconds,
-		"files": wire,
-		"port": preview.port,
-		"usage_tenant": access.identity.tenant,
-	});
-	if let Some(token) = egress_token(store, preview)? {
-		let settings = store
-			.capabilities
-			.0
-			.egress
-			.as_ref()
-			.expect("a token requires egress settings");
-		input["egress"] = serde_json::json!({"url": settings.endpoint, "token": token});
-	}
-	let runner = crate::bootstrap::operation_runner(store)?;
-	let observed = runner
-		.request("POST", "/v1/operations", Some(&input))
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
-	if observed["status"].as_str() != Some("awaiting_files") {
-		return Ok(());
-	}
-	for file in &files {
-		let mut offset = 0_u64;
-		loop {
-			let bytes = store.capabilities.read_chunk(access, file, offset).await?;
-			if bytes.is_empty() && offset < file.size {
-				return Err(NativeError::Conflict("OBJECT_INTEGRITY".into()));
-			}
-			use base64::Engine as _;
-			runner
-				.request(
-					"POST",
-					&format!(
-						"/v1/operations/{}/inputs/{}?offset={offset}",
-						preview.id, file.file_id
-					),
-					Some(
-						&serde_json::json!({"data": base64::engine::general_purpose::STANDARD.encode(&bytes)}),
-					),
-				)
-				.await
-				.map_err(|error| NativeError::External(error.to_string()))?;
-			offset += bytes.len() as u64;
-			if offset >= file.size {
-				break;
-			}
-		}
-	}
-	runner
-		.request(
-			"POST",
-			&format!("/v1/operations/{}/start", preview.id),
-			None,
-		)
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
-	Ok(())
-}
-
-/// Wait up to 120 seconds for the declared port to accept, reading only the
-/// status and the bounded startup log. Never returns a viewing address.
-pub(crate) async fn wait_ready(store: &Store, preview: &LivePreview) -> NativeResult<Dispatch> {
-	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	let runner = crate::bootstrap::operation_runner(store)?;
-	let deadline =
-		tokio::time::Instant::now() + std::time::Duration::from_secs(START_SECONDS as u64);
-	loop {
-		let observed = runner
-			.request("GET", &format!("/v1/operations/{}", preview.id), None)
-			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
-		let serve = &observed["serve"];
-		let log = serve["startup_log"].as_str().unwrap_or_default().to_owned();
-		match serve["status"].as_str() {
-			Some("running") => {
-				let Some(pod_host) = serve["pod_host"].as_str().filter(|host| !host.is_empty())
-				else {
-					return Ok(Dispatch {
-						pod_host: None,
-						startup_log: log,
-						started_at: Utc::now(),
-						failure: Some("the preview Pod reported no address".into()),
-					});
-				};
-				let started_at = observed["started_at"]
-					.as_f64()
-					.and_then(|seconds| {
-						DateTime::from_timestamp_micros((seconds * 1_000_000.0) as i64)
-					})
-					.unwrap_or_else(Utc::now);
-				return Ok(Dispatch {
-					pod_host: Some(pod_host.to_owned()),
-					startup_log: log,
-					started_at,
-					failure: None,
-				});
-			}
-			Some("stopped" | "failed")
-				if matches!(
-					observed["status"].as_str(),
-					Some("failed" | "cancelled" | "uncertain")
-				) =>
-			{
-				return Ok(Dispatch {
-					pod_host: None,
-					startup_log: log,
-					started_at: Utc::now(),
-					failure: Some(
-						serve["reason"]
-							.as_str()
-							.unwrap_or("the preview never started")
-							.to_owned(),
-					),
-				});
-			}
-			_ => {}
-		}
-		if tokio::time::Instant::now() >= deadline {
-			return Ok(Dispatch {
-				pod_host: None,
-				startup_log: log,
-				started_at: Utc::now(),
-				failure: Some("the preview port did not accept connections in time".into()),
-			});
-		}
-		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 	}
 }
 
@@ -578,30 +391,8 @@ pub(crate) async fn settle(
 
 /// Ask the Runner to stop the Pod and wait for its termination proof.
 pub(crate) async fn terminate(store: &Store, preview: &LivePreview) -> NativeResult<bool> {
-	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
-	let runner = crate::bootstrap::operation_runner(store)?;
-	runner
-		.request(
-			"POST",
-			&format!("/v1/operations/{}/cancel", preview.id),
-			None,
-		)
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		let observed = runner
-			.request("GET", &format!("/v1/operations/{}", preview.id), None)
-			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
-		if observed["termination_confirmed"] == true {
-			return Ok(true);
-		}
-		if tokio::time::Instant::now() >= deadline {
-			return Ok(false);
-		}
-		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-	}
+	// A Live preview is a Background process of its Run in the Execution Pod (#745).
+	super::operations::pods::stop_preview(store, preview.id).await
 }
 
 /// Mark every unsettled Live preview of `run` as stopping inside the caller's
@@ -656,16 +447,6 @@ pub(crate) async fn mark_stopped(
 		.await
 		.map_err(NativeError::from)?;
 	Ok(())
-}
-
-/// The session-lifetime Egress token for a Live preview: `session:<id>.<mac>`.
-pub(crate) fn egress_token(store: &Store, preview: &LivePreview) -> NativeResult<Option<String>> {
-	let Some(expires_at) = preview.egress_expires_at else {
-		return Ok(None);
-	};
-	Ok(Some(
-		crate::apps::execution::repositories::egress::session_token(preview.id, expires_at, store)?,
-	))
 }
 
 /// The Live previews a Read Recheck covers.
@@ -729,21 +510,13 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 			Some(grant.subject_chain),
 			false,
 		),
-		// A Remote Grant Run has an admission instead of a local grant. Its
-		// session, when present, also names the subject holding the preview.
+		// A Remote Grant Run has an admission instead of a local grant. It names
+		// the credential and the subject chain that hold the preview.
 		None => {
 			let mut tx = store
 				.pool
 				.begin(&TenancyScope::tenant(&preview.tenant)?)
 				.await?;
-			let session = EgressSession::objects()
-				.filter(EgressSession::field_id().eq(preview.id))
-				.filter(EgressSession::field_run_id().eq(preview.run_id))
-				.all_with_executor(&mut *tx)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(NativeError::from)?
-				.pop();
 			let admission = crate::apps::federation::peer::repositories::admissions::for_run(
 				&mut *tx,
 				preview.run_id,
@@ -753,30 +526,15 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 			let Some(admission) = admission else {
 				return Ok(false);
 			};
-			let mut subjects = admission.subject_chain;
+			let subjects = admission.subject_chain;
 			let Some(root) = subjects.first().cloned() else {
 				return Ok(false);
 			};
-			if session.is_none() && store.capabilities.0.egress.is_some() {
-				return Ok(false);
-			}
-			let identity = if let Some(session) = session {
-				if !subjects.contains(&session.principal) {
-					subjects.push(session.principal.clone());
-				}
-				SubjectIdentity {
-					http_session: None,
-					credential_id: session.credential_id,
-					tenant: session.tenant,
-					subject: session.principal,
-				}
-			} else {
-				SubjectIdentity {
-					http_session: None,
-					credential_id: admission.credential_id,
-					tenant: admission.tenant,
-					subject: root,
-				}
+			let identity = SubjectIdentity {
+				http_session: None,
+				credential_id: admission.credential_id,
+				tenant: admission.tenant,
+				subject: root,
 			};
 			(identity, Some(subjects), true)
 		}
@@ -805,6 +563,53 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 		access.recheck_run_reads(preview.run_id).await.map(|_| ())
 	};
 	access.finish(result).await.map(|()| true)
+}
+
+/// Withhold a serving Live preview's responses while its Read Recheck cannot
+/// be confirmed, or serve again once it is (ADR 0129). Returns since when it
+/// has been withheld, which survives a restart of the recheck loop.
+pub(crate) async fn set_unconfirmed(
+	store: &Store,
+	id: Uuid,
+	unconfirmed: bool,
+) -> NativeResult<Option<DateTime<Utc>>> {
+	// Only the Tenant is taken from this unlocked read: it never changes.
+	let Some(preview) = load_for_maintenance(store, id).await? else {
+		return Ok(None);
+	};
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(&preview.tenant)?)
+		.await?;
+	// Decide on the locked row and write it in the same transaction, as the
+	// gateway does, so a stop or a gateway update committed after the read
+	// above is never written back over.
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop();
+	let Some(mut preview) = row.map(domain).transpose()? else {
+		tx.commit().await?;
+		return Ok(None);
+	};
+	if !matches!(preview.state, State::Running | State::Stale) {
+		tx.commit().await?;
+		return Ok(None);
+	}
+	if preview.unconfirmed_since.is_some() != unconfirmed {
+		preview.unconfirmed_since = unconfirmed.then(Utc::now);
+		Row::objects()
+			.save_with_executor(&mut *tx, &to_row(&preview))
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+	}
+	tx.commit().await?;
+	Ok(preview.unconfirmed_since)
 }
 
 /// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the

@@ -204,6 +204,14 @@ async fn write_in(
 	};
 	if !disabling {
 		let _cfg = validate(validation, spec, &serde_json::from_value(document)?)?;
+		// Every Agent generated from the template sends the secrets it names, so naming a
+		// Tenant Secret here needs `secret.use` on it, as registering the Agent would (ADR 0051).
+		// Activation clones the template unchanged and relies on this check.
+		for name in aidash_domain::tenant_secrets::definition_secret_names(&spec.template) {
+			if !scope.may_use_secret(&name).await? {
+				return Err(Error::Forbidden);
+			}
+		}
 		let snapshot = scope.bindings(&spec.template).await?;
 		validate_template_snapshot(&snapshot)?;
 		for (reference, kind) in snapshot

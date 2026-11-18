@@ -1,5 +1,4 @@
 use super::*;
-use aidash_domain::research::document::RenderedPage;
 use rstest::rstest;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -476,9 +475,6 @@ impl PdfEngine for Scripted {
 	async fn extract(&self, _: Vec<u8>) -> Result<PdfText, Failure> {
 		tokio::time::sleep(self.1).await;
 		self.0.map(|()| unreachable!("scripted engines only fail"))
-	}
-	async fn render(&self, _: Vec<u8>, _: u32) -> Result<RenderedPage, Failure> {
-		Err(Failure::RenderFailed)
 	}
 }
 

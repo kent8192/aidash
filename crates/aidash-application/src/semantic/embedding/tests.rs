@@ -254,8 +254,8 @@ async fn provider_rejection_and_contract_violation_keep_their_typed_reason(
 #[rstest]
 #[case::network(|| Error::Forbidden)]
 #[case::data_protection(|| {
-	use aidash_domain::data_protection::{DataProtection, Destination, Level};
-	DataProtection { level: Level::NoTraining, ..Default::default() }
+	use aidash_domain::data_protection::{DataProtection, Destination};
+	DataProtection { forbid_keyless_endpoints: true, ..Default::default() }
 		.permits(Destination::TenantKeyless).unwrap_err().into()
 })]
 #[tokio::test]

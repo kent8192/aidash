@@ -1,5 +1,5 @@
 use super::*;
-use ApprovalKind::{Generation, Outbound, PageReading, ToolCall, WebSearch};
+use ApprovalKind::{Generation, Outbound, ToolCall};
 use ApprovalMode::{Auto, Bypass, DontAsk, Manual};
 use Resolution::{Approve, Ask, Judge, Proceed, Refuse};
 use rstest::rstest;
@@ -224,23 +224,9 @@ fn a_mode_the_policy_does_not_allow_acts_as_manual_for_an_ask_rule() {
 #[case::exact_target_of_another_kind(
 	Outbound,
 	RuleTarget::Exact("https://example.com".into()),
-	WebSearch,
+	Generation,
 	"https://example.com",
 	Ask
-)]
-#[case::web_search_provider(
-	WebSearch,
-	RuleTarget::Exact("research.brave@1".into()),
-	WebSearch,
-	"research.brave@1",
-	Approve(GivenBy::Rule(id(1)))
-)]
-#[case::page_host(
-	PageReading,
-	RuleTarget::Exact("example.com".into()),
-	PageReading,
-	"example.com",
-	Approve(GivenBy::Rule(id(1)))
 )]
 #[case::generation_policy(
 	Generation,
@@ -381,14 +367,8 @@ fn rules_and_modes_use_the_documented_wire_forms() {
 		json!(["manual", "auto", "dont_ask", "bypass"])
 	);
 	assert_eq!(
-		serde_json::to_value([ToolCall, Outbound, WebSearch, PageReading, Generation]).unwrap(),
-		json!([
-			"tool_call",
-			"outbound",
-			"web_search",
-			"page_reading",
-			"generation"
-		])
+		serde_json::to_value([ToolCall, Outbound, Generation]).unwrap(),
+		json!(["tool_call", "outbound", "generation"])
 	);
 	assert_eq!(ApprovalMode::default(), Manual);
 	let stored = rule(3, RuleEffect::Deny);

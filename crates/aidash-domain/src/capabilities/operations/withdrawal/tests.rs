@@ -14,6 +14,7 @@ fn snapshot() -> Snapshot {
 		area_epoch: 8,
 		area_generation: 3,
 		area_state: "running".into(),
+		pod: false,
 	}
 }
 #[rstest]

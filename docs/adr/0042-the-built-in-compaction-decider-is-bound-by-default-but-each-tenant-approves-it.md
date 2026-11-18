@@ -21,3 +21,7 @@ Decided on 2026-10-13 for #108. Every Run is pruned by Jev today, through a key 
 
 - (2026-10-23, #391) Each Node caps a Decider Route response at 8 MiB before buffering its body, for both declared lengths and streamed chunks. An oversized response is an invalid answer and follows the existing route fallback and pause rules. This transport bound also applies to debug fields; it does not introduce a tenant configuration field or change the versioned request-state budgets.
 - (2026-10-27, #540) A Run no longer starts while its compaction Decider is unapproved on the executing Node, and the default Decider is part of the Agent's Approval Review (ADR 0102). "Until it is approved, a Run … pauses" now applies only to a Run whose approval was withdrawn after it started.
+
+## Amendment (2026-11-11, #873)
+
+"A new Jev model adds a new version of the built-in Decider, which each Node approves again" no longer holds when the approval chose Version Carry-over (ADR 0128). A new Route model carries; a new Route host, or enabled or longer state retention, does not and asks again. An approval with the Deployment-wide Approval Scope covers each Node of the Tenant on the Deployment.

@@ -685,7 +685,7 @@ fn admission_description(
 /// Home is a Node on another Deployment, its Workspace exists only there, it has
 /// an admission instead of a local grant, and the Peer Mapping its admission
 /// came through is enabled. The read journal stays local.
-async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) -> RemoteRun {
+async fn remote_preview(fixture: &Fixture) -> RemoteRun {
 	let driver = fixture.driver();
 	sqlx::query("DELETE FROM authorization_execution WHERE run_id = $1")
 		.bind(fixture.run)
@@ -713,11 +713,6 @@ async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) ->
 		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
 		.bind(serde_json::to_value(&description).unwrap())
 		.execute(driver).await.unwrap();
-	if with_session {
-		sqlx::query("INSERT INTO egress_sessions (id,tenant,run_id,live_preview_id,principal,credential_id,expires_at,max_sent_bytes,max_received_bytes,max_requests) VALUES ($1,'acme',$2,$1,'reader',$3,clock_timestamp()+interval '1 hour',100,100,10)")
-			.bind(preview).bind(fixture.run).bind(fixture.identity.credential_id)
-			.execute(driver).await.unwrap();
-	}
 	RemoteRun {
 		workspace,
 		description,
@@ -725,19 +720,14 @@ async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) ->
 }
 
 #[rstest]
-#[case::with_session(true)]
-#[case::without_session(false)]
 #[tokio::test]
-async fn remote_preview_recheck_without_receiver_workspace(
-	#[future] database: DatabaseFixture,
-	#[case] with_session: bool,
-) {
+async fn remote_preview_recheck_without_receiver_workspace(#[future] database: DatabaseFixture) {
 	use aidash_application::ports::capabilities::read_recheck::{
 		Outcome, ReadRecheckRepository, Target,
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	let remote = remote_preview(&fixture, preview, with_session).await;
+	let remote = remote_preview(&fixture).await;
 	let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1)")
 		.bind(remote.workspace)
 		.fetch_one(fixture.driver())
@@ -765,7 +755,7 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
+	remote_preview(&fixture).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
@@ -775,7 +765,10 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 		.set_policy(1, Some(("helper", "message.read")))
 		.await;
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-	repository.stop_refused(target).await.unwrap();
+	assert!(
+		repository.stop_refused(target).await.is_err(),
+		"no Runner is configured"
+	);
 	assert_eq!(
 		preview_stop(&fixture, preview).await,
 		("stopped".into(), Some("run_authority_revoked".into()))
@@ -786,19 +779,16 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 /// through its admission (#904 drops only the local Workspace step): what the
 /// receiver revokes there stops the preview.
 #[rstest]
-#[case::with_session(true)]
-#[case::without_session(false)]
 #[tokio::test]
 async fn remote_preview_recheck_stops_when_the_peer_mapping_is_disabled(
 	#[future] database: DatabaseFixture,
-	#[case] with_session: bool,
 ) {
 	use aidash_application::ports::capabilities::read_recheck::{
 		Outcome, ReadRecheckRepository, Target,
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, with_session).await;
+	remote_preview(&fixture).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
@@ -810,7 +800,12 @@ async fn remote_preview_recheck_stops_when_the_peer_mapping_is_disabled(
 		.await
 		.unwrap();
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-	repository.stop_refused(target).await.unwrap();
+	// The Pod stop of the Run's processes needs a Runner (ADR 0136); the preview row
+	// stops regardless.
+	assert!(
+		repository.stop_refused(target).await.is_err(),
+		"no Runner is configured"
+	);
 	assert_eq!(
 		preview_stop(&fixture, preview).await,
 		("stopped".into(), Some("run_authority_revoked".into()))
@@ -818,19 +813,16 @@ async fn remote_preview_recheck_stops_when_the_peer_mapping_is_disabled(
 }
 
 #[rstest]
-#[case::with_session(true)]
-#[case::without_session(false)]
 #[tokio::test]
 async fn remote_preview_recheck_stops_when_the_admission_expires(
 	#[future] database: DatabaseFixture,
-	#[case] with_session: bool,
 ) {
 	use aidash_application::ports::capabilities::read_recheck::{
 		Outcome, ReadRecheckRepository, Target,
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	let mut remote = remote_preview(&fixture, preview, with_session).await;
+	let mut remote = remote_preview(&fixture).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
@@ -855,7 +847,7 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_the_run(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
+	remote_preview(&fixture).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
 		store: &fixture.store,
 	};
@@ -863,85 +855,6 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_the_run(
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
 	fixture.set_policy(1, Some(("helper", action))).await;
 	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-}
-
-#[rstest]
-#[tokio::test]
-async fn remote_preview_recheck_still_checks_a_viewer_outside_the_chain(
-	#[future] database: DatabaseFixture,
-) {
-	use aidash_application::ports::capabilities::read_recheck::{
-		Outcome, ReadRecheckRepository, Target,
-	};
-	let fixture = fixture(database.await, 1).await;
-	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
-	let credential = Uuid::new_v4();
-	sqlx::query("INSERT INTO authorization_credentials (id,tenant,subject,token_hash,created_at,expires_at,issued_by) VALUES ($1,'acme','viewer',$2,clock_timestamp(),clock_timestamp()+interval '1 day','fixture')")
-		.bind(credential).bind(vec![2u8; 32]).execute(fixture.driver()).await.unwrap();
-	sqlx::query(
-		"UPDATE egress_sessions SET principal = 'viewer', credential_id = $1 WHERE id = $2",
-	)
-	.bind(credential)
-	.bind(preview)
-	.execute(fixture.driver())
-	.await
-	.unwrap();
-	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
-		store: &fixture.store,
-	};
-	let target = Target::LivePreview(preview);
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
-	fixture
-		.set_policy(1, Some(("viewer", "message.read")))
-		.await;
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-}
-
-#[rstest]
-#[tokio::test]
-async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
-	#[future] database: DatabaseFixture,
-) {
-	use aidash_application::{
-		capabilities::read_recheck::{self, PERIOD, Schedule, UNCONFIRMED_LIMIT},
-		ports::capabilities::read_recheck::{Outcome, ReadRecheckRepository, Target},
-	};
-	let mut fixture = fixture(database.await, 1).await;
-	std::sync::Arc::make_mut(&mut fixture.store.capabilities.0).egress = Some(
-		crate::apps::execution::capabilities::serializers::core::EgressSettings {
-			endpoint: "http://10.96.0.90:8950".into(),
-			namespace: None,
-			pod_selector: Default::default(),
-			listen: "127.0.0.1:0".parse().unwrap(),
-			proxy_global_tunnels: 1024,
-			proxy_tenant_tunnels: 32,
-			limits: Default::default(),
-		},
-	);
-	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, false).await;
-	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
-		store: &fixture.store,
-	};
-	assert_eq!(
-		repository
-			.check(Target::LivePreview(preview))
-			.await
-			.unwrap(),
-		Outcome::Unconfirmed
-	);
-	let mut schedule = Schedule::default();
-	let now = std::time::Instant::now();
-	for count in 0..UNCONFIRMED_LIMIT {
-		read_recheck::pass(&repository, &mut schedule, now + PERIOD * count)
-			.await
-			.unwrap();
-	}
-	assert_eq!(
-		preview_stop(&fixture, preview).await,
-		("stopped".into(), Some("node_unreachable".into()))
-	);
 }
 
 #[rstest]
@@ -954,7 +867,7 @@ async fn remote_preview_recheck_without_admission_is_unconfirmed(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
+	remote_preview(&fixture).await;
 	sqlx::query("DELETE FROM authorization_remote_admissions WHERE id = $1")
 		.bind(fixture.run)
 		.execute(fixture.driver())
@@ -974,6 +887,66 @@ async fn remote_preview_recheck_without_admission_is_unconfirmed(
 
 #[rstest]
 #[tokio::test]
+async fn remote_preview_recheck_without_admission_is_withheld_then_stops_at_the_bound(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::{
+		capabilities::read_recheck::{self, PERIOD, Schedule},
+		ports::capabilities::read_recheck::{Outcome, ReadRecheckRepository, Target},
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture).await;
+	sqlx::query("DELETE FROM authorization_remote_admissions WHERE id = $1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	assert_eq!(
+		repository
+			.check(Target::LivePreview(preview))
+			.await
+			.unwrap(),
+		Outcome::Unconfirmed
+	);
+	// Unanswered checks withhold the preview's responses but keep it (ADR 0129).
+	let mut schedule = Schedule::default();
+	let now = std::time::Instant::now();
+	for count in 0..6 {
+		read_recheck::pass(&repository, &mut schedule, now + PERIOD * count)
+			.await
+			.unwrap();
+	}
+	let (state, unconfirmed): (String, Option<chrono::DateTime<chrono::Utc>>) =
+		sqlx::query_as("SELECT state, unconfirmed_since FROM core_live_previews WHERE id=$1")
+			.bind(preview)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert_eq!(state, "running");
+	assert!(unconfirmed.is_some());
+	// Once the wait reaches its bound, the preview stops as `node_unreachable`.
+	sqlx::query(
+		"UPDATE core_live_previews SET unconfirmed_since = now() - interval '25 hours' WHERE id=$1",
+	)
+	.bind(preview)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	read_recheck::pass(&repository, &mut schedule, now + PERIOD * 7)
+		.await
+		.unwrap();
+	assert_eq!(
+		preview_stop(&fixture, preview).await,
+		("stopped".into(), Some("node_unreachable".into()))
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_preview_recheck_with_an_empty_chain_is_unconfirmed(
 	#[future] database: DatabaseFixture,
 ) {
@@ -982,7 +955,7 @@ async fn remote_preview_recheck_with_an_empty_chain_is_unconfirmed(
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, true).await;
+	remote_preview(&fixture).await;
 	sqlx::query("UPDATE authorization_remote_admissions SET subject_chain = '{}' WHERE id = $1")
 		.bind(fixture.run)
 		.execute(fixture.driver())
@@ -1035,7 +1008,10 @@ async fn the_loop_stops_what_is_running_when_a_read_is_revoked(
 	let targets = [Target::Operation(operation), Target::LivePreview(preview)];
 	for target in targets {
 		assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-		repository.stop_refused(target).await.unwrap();
+		assert!(
+			repository.stop_refused(target).await.is_err(),
+			"no Runner is configured"
+		);
 	}
 
 	// Assert
@@ -1050,7 +1026,56 @@ async fn the_loop_stops_what_is_running_when_a_read_is_revoked(
 		)
 	);
 	let targets = repository.targets().await.unwrap();
-	assert!(targets.is_empty(), "{targets:?}");
+	assert_eq!(targets, vec![Target::RevokedRun(fixture.run)]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_whose_command_left_background_processes_is_still_rechecked(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	// Arrange: the command ended and left a Background process running in the Pod.
+	let fixture = fixture(database.await, 3).await;
+	let (operation, _) = running_targets(&fixture).await;
+	sqlx::query("UPDATE core_operations SET state='completed', input='{\"runtime\":\"pod\"}', result='{\"left_running\":\"x.left\"}' WHERE id=$1")
+		.bind(operation)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		targets.contains(&Target::Operation(operation)),
+		"{targets:?}"
+	);
+
+	// Act
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	let checked = repository
+		.check(Target::Operation(operation))
+		.await
+		.unwrap();
+	let stopped = repository.stop_refused(Target::Operation(operation)).await;
+
+	// Assert: the refusal marks the Run, which ends the target.
+	assert_eq!(checked, Outcome::Refused);
+	assert!(stopped.is_err(), "no Runner is configured");
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		!targets.contains(&Target::Operation(operation)),
+		"{targets:?}"
+	);
+	assert!(
+		targets.contains(&Target::RevokedRun(fixture.run)),
+		"{targets:?}"
+	);
 }
 
 #[rstest]
@@ -1601,7 +1626,11 @@ async fn a_command_is_marked_withdrawn_even_when_the_runner_cannot_be_asked(
 	let targets = repository.targets().await.unwrap();
 	assert!(
 		!targets.contains(&target),
-		"the loop is done with it: the sweep goes on asking the Runner, {targets:?}"
+		"legacy withdrawal handles the operation: {targets:?}"
+	);
+	assert!(
+		targets.contains(&Target::RevokedRun(fixture.run)),
+		"the Pod stop remains pending: {targets:?}"
 	);
 }
 
@@ -1677,4 +1706,121 @@ async fn a_write_a_subnode_fences_is_checked_afresh_inside_a_check(
 
 	// Assert
 	assert!(matches!(repeat, Err(Error::Forbidden)), "{repeat:?}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_success(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::{
+		capabilities::read_recheck::{self, Schedule},
+		ports::{
+			Credentials,
+			capabilities::read_recheck::{ReadRecheckRepository, Target},
+		},
+	};
+	use aidash_integrations::runner::RunnerHttp;
+	use std::sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	};
+	use wiremock::{
+		Mock, MockServer, Request, ResponseTemplate,
+		matchers::{method, path},
+	};
+
+	struct Keys;
+	impl Credentials for Keys {
+		fn resolve(&self, _: &str) -> aidash_application::Result<String> {
+			Ok("runner-key".into())
+		}
+	}
+	let fixture = fixture(database.await, 1).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	sqlx::query("UPDATE runs SET home_node = $1 WHERE id = $2")
+		.bind(format!("{DEPLOYMENT}/{node}"))
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let space: Uuid = sqlx::query_scalar("SELECT scratch_space_id FROM workspaces WHERE id = $1")
+		.bind(fixture.workspace)
+		.fetch_one(fixture.driver())
+		.await
+		.unwrap();
+	let (operation, _) = running_targets(&fixture).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	assert!(
+		repository
+			.stop_refused(Target::Operation(operation))
+			.await
+			.is_err()
+	);
+	assert_eq!(operation_state(&fixture, operation).await.0, "withdrawn");
+	let pending = Target::RevokedRun(fixture.run);
+	assert!(repository.targets().await.unwrap().contains(&pending));
+
+	// The old in-memory schedule has been lost; the durable row is still picked up.
+	let mut restarted = Schedule::default();
+	read_recheck::pass(&repository, &mut restarted, std::time::Instant::now())
+		.await
+		.unwrap();
+	assert!(repository.targets().await.unwrap().contains(&pending));
+	let server = MockServer::start().await;
+	let calls = Arc::new(AtomicUsize::new(0));
+	let observed = calls.clone();
+	let run = fixture.run.to_string();
+	let scratch = space.to_string();
+	Mock::given(method("POST"))
+		.and(path("/v2/runs/stop"))
+		.respond_with(move |request: &Request| {
+			let body: Value = request.body_json().unwrap();
+			assert_eq!(body, json!({"scratch_space_id":scratch,"run_id":run}));
+			if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+				ResponseTemplate::new(503)
+					.set_body_json(json!({"code":"runner_unavailable","message":"retry"}))
+			} else {
+				ResponseTemplate::new(200).set_body_json(json!({"stopped":["op"]}))
+			}
+		})
+		.expect(2)
+		.mount(&server)
+		.await;
+	let runner = RunnerHttp {
+		endpoint: server.uri(),
+		credential_env: "test".into(),
+		credentials: Arc::new(Keys),
+	};
+	let stop = || {
+		crate::apps::execution::repositories::operations::stop_pending_run_with_runner(
+			&fixture.store,
+			"acme",
+			fixture.run,
+			&runner,
+		)
+	};
+	assert!(stop().await.is_err());
+	let stopped_at: Option<chrono::DateTime<chrono::Utc>> =
+		sqlx::query_scalar("SELECT stopped_at FROM egress_run_revocations WHERE run_id = $1")
+			.bind(fixture.run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert!(stopped_at.is_none());
+	stop().await.unwrap();
+	let stopped_at: Option<chrono::DateTime<chrono::Utc>> =
+		sqlx::query_scalar("SELECT stopped_at FROM egress_run_revocations WHERE run_id = $1")
+			.bind(fixture.run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert!(stopped_at.is_some());
+	assert!(!repository.targets().await.unwrap().contains(&pending));
+	assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

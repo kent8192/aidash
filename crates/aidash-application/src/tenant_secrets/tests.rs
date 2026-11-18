@@ -1008,7 +1008,7 @@ async fn a_self_hosted_call_secret_returns_the_value_and_records_metadata() {
 		)
 		.await
 		.unwrap();
-	let CallSecret::Value { record, value } = secret else {
+	let CallSecret::Value { record, value, .. } = secret else {
 		panic!("a self-hosted call returns the value");
 	};
 	assert_eq!(record.id, created.id);
@@ -1367,7 +1367,7 @@ async fn named_tool_secrets_obey_the_person_and_secret_owner_policy(
 		.call_secret_for("alpha", subject, "api", owner, ENDPOINT, tool_call())
 		.await;
 	if let Some(expected) = expected {
-		let CallSecret::Value { record, value } = result.unwrap() else {
+		let CallSecret::Value { record, value, .. } = result.unwrap() else {
 			panic!("self-hosted value")
 		};
 		assert_eq!(value.expose_secret(), expected);
@@ -1531,4 +1531,39 @@ async fn an_aidash_subject_credential_is_never_a_tenant_secret() {
 			.await;
 		assert!(invalid(&result), "{value}: {result:?}");
 	}
+}
+
+/// The domain mirrors the broker's header rule because it cannot depend on the
+/// capability crate. Agent Plugin server secrets and External services rely on
+/// the two agreeing, so a header the domain accepts is one the broker attaches.
+#[rstest::rstest]
+#[case("Authorization")]
+#[case("authorization")]
+#[case("X-Api-Key")]
+#[case("x-api-key-2")]
+#[case("")]
+#[case("Host")]
+#[case("Connection")]
+#[case("Transfer-Encoding")]
+#[case("Content-Length")]
+#[case("Cookie")]
+#[case("Proxy-Authorization")]
+#[case("Upgrade")]
+#[case("TE")]
+#[case("Trailer")]
+#[case("Expect")]
+#[case("Sec-Fetch-Mode")]
+#[case("X-Forwarded-For")]
+#[case("X-Aidash-Tenant")]
+#[case("X_Api_Key")]
+#[case("X Api")]
+#[case("Accept")]
+#[case("Mcp-Session-Id")]
+#[case("Ünicode")]
+fn the_domain_header_rule_matches_the_broker(#[case] name: &str) {
+	assert_eq!(
+		aidash_domain::tenant_secrets::header_valid(name),
+		aidash_capability::tenant_secret::header_valid(name),
+		"{name}"
+	);
 }

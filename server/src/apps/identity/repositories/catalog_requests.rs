@@ -211,6 +211,44 @@ pub(crate) async fn open_page(
 		.collect()
 }
 
+/// A compact, exact fingerprint of open requests. Request revisions increase
+/// on every mutation, so creation, removal and updates all invalidate a count.
+pub(crate) async fn open_revisions(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+) -> Result<Vec<(uuid::Uuid, i64)>> {
+	let query = Query::select()
+		.columns(["id", "revision"].map(Alias::new))
+		.from(Alias::new("catalog_approval_requests"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(tenant.to_owned()))
+		.and_where(Expr::col(Alias::new("state")).eq(State::Open.as_str()))
+		.order_by(Alias::new("id"), Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	crate::database::native::query_as(&query)
+		.columns(&["id", "revision"])
+		.fetch_all(&mut **tx)
+		.await
+}
+
+/// Approval changes can change whether an open request still needs this caller.
+pub(crate) async fn approval_revisions(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+) -> Result<Vec<(String, String, String, i64)>> {
+	let query = Query::select()
+		.columns(["node", "entry_id", "entry_version", "revision"].map(Alias::new))
+		.from(Alias::new("authorization_catalog"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(tenant.to_owned()))
+		.order_by(Alias::new("node"), Order::Asc)
+		.order_by(Alias::new("entry_id"), Order::Asc)
+		.order_by(Alias::new("entry_version"), Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	crate::database::native::query_as(&query)
+		.columns(&["node", "entry_id", "entry_version", "revision"])
+		.fetch_all(&mut **tx)
+		.await
+}
+
 pub(crate) async fn insert(
 	tx: &mut crate::database::native::Transaction,
 	request: &Request,

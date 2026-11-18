@@ -123,9 +123,6 @@ impl RealDispatchRepository for Repository {
 }
 #[async_trait]
 impl ExecutionRepository for Repository {
-	fn search_destination(&self, _: &str, _: &Value) -> Result<Option<String>> {
-		Ok(Some("search.example".into()))
-	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		let mut s = self.state.lock().unwrap();
 		assert!(!s.active);
@@ -201,7 +198,6 @@ fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
 		provider_implementation: None,
 		excluded_reason: None,
 	};
-	let repository = Repository::new();
 	let plugins = PluginTools::default();
 	let call = |arguments| ToolCall {
 		id: "one".into(),
@@ -212,12 +208,10 @@ fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
 		aidash_domain::tool::providers::core_descriptor("aidash://local", "outbound_get").unwrap(),
 	);
 	let result = approval_for(
-		&repository,
 		&plugins,
 		Some(&outbound),
 		"tenant",
 		&call(json!({"url":"https://example.com/path"})),
-		&[],
 	)
 	.unwrap()
 	.unwrap();
@@ -230,21 +224,19 @@ fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
 		("outbound", "https://example.com", "network.get")
 	);
 	assert!(result.resource.attributes.get("run_id").is_none());
-	let search = make(
+	let page = make(
 		aidash_domain::tool::providers::research_descriptor(
 			"aidash://local",
-			"research.brave@1",
-			"search",
+			"research.page@1",
+			"fetch",
 		)
 		.unwrap(),
 	);
 	let result = approval_for(
-		&repository,
 		&plugins,
-		Some(&search),
+		Some(&page),
 		"tenant",
-		&call(json!({"query":"hello"})),
-		&[],
+		&call(json!({"url":"https://example.com/a"})),
 	)
 	.unwrap()
 	.unwrap();
@@ -254,7 +246,7 @@ fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
 			result.resource.id.as_str(),
 			result.action
 		),
-		("research", "search.example", "research.disclose")
+		("tool", "aidash.research.page.fetch", "tool.call_unapproved")
 	);
 	assert!(result.resource.attributes.get("workspace_id").is_none());
 }

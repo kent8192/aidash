@@ -113,7 +113,6 @@ pub fn batchable(behavior: &ToolBehavior) -> bool {
 		&& behavior.fitting.is_none()
 		&& behavior.continuation == Continuation::Ordinary
 		&& !behavior.tool_call_approval
-		&& !behavior.disclosure_approval
 }
 
 /// Derive claims and output bounds for core read operations from validated

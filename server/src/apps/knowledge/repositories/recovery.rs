@@ -216,16 +216,20 @@ impl MemoryRecovery for FileRecovery {
 			.map(|history| history.objects.clone())
 	}
 	fn require_serving(&self) -> aidash_application::Result<()> {
+		// A busy lock, an unproven publication or a restore close memory until
+		// they end by themselves (ADR 0083), so they answer `MemoryClosed`
+		// and a Run waits for them (ADR 0129). A ledger that cannot be read is
+		// not something time fixes.
 		let _guard = self
 			.lock()
-			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+			.map_err(|_| aidash_application::Error::MemoryClosed)?;
 		let ledger = self
 			.load_locked()
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		self.require_publication(ledger.epoch)
-			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+			.map_err(|_| aidash_application::Error::MemoryClosed)?;
 		if ledger.restoring {
-			return Err(aidash_application::Error::SemanticUnavailable);
+			return Err(aidash_application::Error::MemoryClosed);
 		}
 		Ok(())
 	}
@@ -236,12 +240,15 @@ impl MemoryRecovery for FileRecovery {
 	fn require_current(&self, unit: &Unit) -> aidash_application::Result<()> {
 		let _guard = self
 			.lock()
-			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+			.map_err(|_| aidash_application::Error::MemoryClosed)?;
 		let ledger = self
 			.load_locked()
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		self.require_publication(ledger.epoch)
-			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+			.map_err(|_| aidash_application::Error::MemoryClosed)?;
+		if ledger.restoring {
+			return Err(aidash_application::Error::MemoryClosed);
+		}
 		let mut selected = Ledger::new(self.home.clone());
 		if let Some(fence) = self
 			.unit_locked(&ledger, unit.id)
@@ -249,7 +256,7 @@ impl MemoryRecovery for FileRecovery {
 		{
 			selected.units.insert(unit.id, fence);
 		}
-		if ledger.restoring || !selected.matches(unit)? {
+		if !selected.matches(unit)? {
 			return Err(aidash_application::Error::SemanticUnavailable);
 		}
 		Ok(())
@@ -258,9 +265,10 @@ impl MemoryRecovery for FileRecovery {
 		let result: Result<()> = async {
 			let _guard = self.waiting_lock().await?;
 			let ledger = self.load_locked()?;
-			self.require_publication(ledger.epoch)?;
+			self.require_publication(ledger.epoch)
+				.map_err(|_| Error::MemoryClosed)?;
 			if ledger.restoring {
-				return Err(Error::SemanticUnavailable);
+				return Err(Error::MemoryClosed);
 			}
 			self.publish_locked(&ledger, units).await
 		}

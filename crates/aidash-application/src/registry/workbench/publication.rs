@@ -166,6 +166,7 @@ where
 			revision: preview.revision,
 			entry: saved,
 			behavioral_tested: previous.behavioral_tested,
+			carry_results: Vec::new(),
 		});
 	}
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(preview.documents.clone())?;
@@ -193,7 +194,7 @@ where
 	} else {
 		None
 	};
-	let mut scope = repository.begin().await?;
+	let mut scope = repository.begin_publication(&preview_entry).await?;
 	let draft = scope.read(id, true).await?;
 	authorize(&mut scope, &draft, "agent_draft.register", true).await?;
 	if draft.archived || input.expected_revision != draft.revision {
@@ -284,12 +285,14 @@ where
 	if inserted {
 		scope.append_event("registry.registered", json!({"id":entry.id,"version":entry.version,"kind":"agent","draft_id":id,"draft_revision":draft.revision})).await?;
 	}
+	let carry_results = scope.carry_results();
 	scope.commit().await?;
 	Ok(Registration {
 		draft_id: id,
 		revision: draft.revision,
 		entry,
 		behavioral_tested,
+		carry_results,
 	})
 }
 

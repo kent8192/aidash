@@ -63,18 +63,25 @@ pub enum ExecutionFailure {
 	/// A typed context-recovery outcome. It pauses the Run; never a transport retry.
 	Context(ContextFailure),
 	/// Every Decider Route was unavailable. The step is retried a bounded
-	/// number of times, then pauses as `decider_unavailable` (ADR 0066).
+	/// number of times, then waits out the outage (ADR 0066, ADR 0129).
 	DeciderOutage,
 	Authority(AuthorityFailure),
-	/// Another Node did not answer a check the Run depends on (#751). With
-	/// `retry` the step is retried a bounded number of times, then pauses as
-	/// `node_unreachable`. Without it, a tool's effect has already happened,
-	/// so the Run pauses at once.
+	/// Another Node did not answer a check the Run depends on (#751). The step
+	/// is retried a bounded number of times, then waits out the outage (ADR
+	/// 0129). Without `retry`, a tool's effect has already happened, so taking
+	/// the step up again reconciles that call instead of repeating it.
 	NodeUnreachable {
 		node: String,
 		retry: bool,
 	},
 	MediaRoute(String),
+	/// The named service does not answer, for a reason that ends by itself.
+	/// The step is retried a bounded number of times, then waits out the
+	/// outage (ADR 0129).
+	ServiceOutage(String),
+	/// The ChatGPT plan's usage limit is reached. OpenAI gives no reset time, so
+	/// the Run waits and tries again every hour (ADR 0129, amending ADR 0007).
+	PlanAllowance(String),
 	Deferred,
 	/// The database could not serve the step. The Run waits and resumes for as
 	/// long as that lasts, spending none of its attempts (#728).
@@ -112,13 +119,15 @@ impl ExecutionFailure {
 			Self::Semantic(reason) => reason.to_string(),
 			Self::Context(reason) => reason.to_string(),
 			Self::Authority(failure) => failure.reason(),
-			Self::MediaRoute(message) | Self::Inference { message, .. } | Self::Other(message) => {
-				message.clone()
-			}
+			Self::MediaRoute(message)
+			| Self::PlanAllowance(message)
+			| Self::Inference { message, .. }
+			| Self::Other(message) => message.clone(),
 			Self::Deferred => "execution state is temporarily unavailable".into(),
 			Self::DatabaseUnavailable => "the database is temporarily unavailable".into(),
 			Self::ToolRetry { message, .. } => message.clone(),
 			Self::DeciderOutage => "every Decider Route is unavailable".into(),
+			Self::ServiceOutage(service) => format!("{service} is unavailable"),
 			Self::NodeUnreachable { node, .. } => {
 				format!("Node {node} could not be reached to confirm this. Try again.")
 			}

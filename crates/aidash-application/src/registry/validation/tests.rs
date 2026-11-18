@@ -284,6 +284,31 @@ mod endpoints {
 	}
 
 	#[rstest]
+	fn a_plugin_server_secret_needs_tenant_secrets_and_an_endpoint_that_carries_one() {
+		let mut agent = agent_with_server("search", "https://search.example.com/mcp");
+		agent.config["agent_plugin_settings"] =
+			json!({"acme-tools": {"search": {"secret": {"name": "search-token"}}}});
+		let message = refusal(validation().validate_in(&agent, true));
+		assert!(
+			message.contains("Tenant Secrets are not available"),
+			"{message}"
+		);
+		validation()
+			.with_tenant_secrets(true)
+			.validate_in(&agent, true)
+			.unwrap();
+		// Plain HTTP to a permitted non-loopback origin would carry the value in plaintext.
+		let mut plain = agent_with_server("search", "http://ollama.lan:11434/mcp");
+		plain.config["agent_plugin_settings"] = agent.config["agent_plugin_settings"].clone();
+		let message = refusal(
+			permitting(&["http://ollama.lan:11434"])
+				.with_tenant_secrets(true)
+				.validate_in(&plain, true),
+		);
+		assert!(message.contains("HTTPS"), "{message}");
+	}
+
+	#[rstest]
 	fn an_agent_is_refused_for_a_plugin_server_at_a_private_address() {
 		for url in [
 			"http://127.0.0.1:8080/mcp",

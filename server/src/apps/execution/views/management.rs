@@ -102,21 +102,6 @@ pub async fn run_get(
 	crate::http::json(service.run_get(actor, id, page).await)
 }
 
-/// One Source citation of the Run. A reader who may not read the Run, and a
-/// reference the Run does not hold, both get the same 404.
-#[get(
-	"/api/runs/{id}/evidence/{reference}",
-	name = "run-evidence",
-	auth = "protected"
-)]
-pub async fn run_evidence(
-	#[inject] service: Depends<HarnessManagement>,
-	#[inject] actor: Actor,
-	Path((id, reference)): Path<(Uuid, String)>,
-) -> ViewResult<Response> {
-	crate::http::json(service.run_evidence(actor, id, &reference).await)
-}
-
 #[get("/api/runs/{id}/subnodes", name = "run-subnodes", auth = "protected")]
 pub async fn run_subnodes(
 	#[inject] service: Depends<HarnessManagement>,
@@ -282,30 +267,4 @@ pub async fn run_inference_stream(
 #[get("/health", name = "health", auth = "public")]
 pub async fn health(#[inject] service: Depends<HarnessManagement>) -> ViewResult<Response> {
 	crate::http::json(service.health().await)
-}
-
-/// The Run's research usage against its limits and its estimated cost, for
-/// anyone who may read the Run.
-#[get("/api/runs/{id}/research", name = "run-research", auth = "protected")]
-pub async fn run_research(
-	#[inject] service: Depends<HarnessManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-) -> ViewResult<Response> {
-	crate::http::json(service.run_research(actor, id).await)
-}
-
-/// The Research providers of this Deployment, whether each is set up and
-/// approved for the reader's Tenant, and the per-Run research limits.
-#[get(
-	"/api/research/providers",
-	name = "research-providers",
-	auth = "protected"
-)]
-pub async fn research_providers(
-	#[inject] service: Depends<HarnessManagement>,
-	#[inject] actor: Actor,
-	Query(input): Query<crate::apps::execution::serializers::runs::ResearchProvidersQuery>,
-) -> ViewResult<Response> {
-	crate::http::json(service.research_providers(actor, input).await)
 }

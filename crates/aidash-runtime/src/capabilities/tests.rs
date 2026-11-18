@@ -149,6 +149,12 @@ impl ReadRecheckRepository for StuckRechecks {
 	async fn stop_refused(&self, _: Target) -> Result<()> {
 		Err(Error::Forbidden)
 	}
+	async fn withhold(&self, _: Uuid) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+		Err(Error::Forbidden)
+	}
+	async fn serve_again(&self, _: Uuid) -> Result<()> {
+		Err(Error::Forbidden)
+	}
 	async fn stop_unconfirmed(&self, _: Uuid) -> Result<()> {
 		Err(Error::Forbidden)
 	}
@@ -195,6 +201,12 @@ impl ReadRecheckRepository for Repository {
 		Err(Error::Forbidden)
 	}
 	async fn stop_refused(&self, _: Target) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn withhold(&self, _: Uuid) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+		Err(Error::Forbidden)
+	}
+	async fn serve_again(&self, _: Uuid) -> Result<()> {
 		Err(Error::Forbidden)
 	}
 	async fn stop_unconfirmed(&self, _: Uuid) -> Result<()> {

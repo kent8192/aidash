@@ -124,13 +124,24 @@ struct World {
 	_servers: Vec<Arc<reinhardt::test::fixtures::server::TestServerGuard>>,
 	url: String,
 	schema: String,
+	/// The digest of the stored plugin copy the Agent takes in.
+	digest: String,
 }
 
 /// An Agent that takes in the plugin, whose `lookup` tool is declared Read-only, claimed by a
 /// member under a policy that grants no direct permission to call a plugin tool. `down` points the
 /// plugin's server at an address nothing listens on.
 async fn world(fixture: ApplicationFixture, down: bool) -> World {
-	let (f, url, schema) = fixture.runtime.parts();
+	world_with(fixture, down, None).await
+}
+
+/// The Tenant Secret value the secret-authenticated server expects.
+const SECRET_VALUE: &str = "plugin-server-secret-954";
+
+/// [`world`], where the server's settings also name `secret` and the Deployment holds Tenant
+/// Secrets in PostgreSQL with one shared `docs-token` for the fixture's loopback host.
+async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Value>) -> World {
+	let (mut f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let mcp = mcp::FakeMcp::new(vec![mcp::tool("lookup"), mcp::tool("update")]);
 	let model = Arc::new(Model::default());
@@ -163,6 +174,51 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 	let mut policy = policy(f.config.deployment.as_str());
 	require_tool_call_approval(&mut policy);
 	tenant_root(&f, "acme").await;
+	if secret.is_some() {
+		let store = Arc::new(
+			aidash_server::apps::identity::repositories::secret_store::PostgresStore::new(
+				f.store.control_pool.clone(),
+				"11".repeat(32).into(),
+				vec![],
+			)
+			.await
+			.unwrap(),
+		);
+		let service = Arc::new(aidash_application::tenant_secrets::Service {
+			repository: Arc::new(
+				aidash_server::apps::identity::repositories::tenant_secrets::NativeRepository {
+					pool: f.store.control_pool.clone(),
+				},
+			),
+			store: store.clone(),
+			reader: Some(store),
+			calls: None,
+			fingerprint_key: "tenant-secret-fingerprint-at-least-32-bytes".into(),
+			max_per_tenant: 64,
+		});
+		let host = reqwest::Url::parse(&endpoint)
+			.unwrap()
+			.host_str()
+			.unwrap()
+			.to_owned();
+		service
+			.put(
+				"acme",
+				"docs-token",
+				aidash_application::tenant_secrets::Put {
+					expected_revision: 0,
+					value: Some(SECRET_VALUE.into()),
+					hosts: Some(vec![host]),
+				},
+				"fixture",
+			)
+			.await
+			.unwrap();
+		f.store.tenant_secrets = Some(service);
+		f.registry = f.registry.clone().with_tenant_secrets(true);
+		// HTTP routes resolve the runtime the application injects.
+		app.context.set_singleton(f.clone());
+	}
 	let deployment_administrator = &f.config.api_token;
 	let (status, snapshot) = request(
 		&app,
@@ -197,6 +253,11 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 	tx.commit().await.unwrap();
 
 	let lookup_digest = schema_digest(&mcp::schema());
+	let mut server_settings =
+		json!({"read_only":[{"name":"lookup","schema_digest":lookup_digest}]});
+	if let Some(secret) = secret {
+		server_settings["secret"] = secret;
+	}
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
@@ -214,7 +275,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 				"instructions":"Use the docs server","bindings":[],
 				"remove_default":["file_search","file_read"],
 				"agent_plugins":[reference],
-				"agent_plugin_settings":{PLUGIN:{SERVER:{"read_only":[{"name":"lookup","schema_digest":lookup_digest}]}}}
+				"agent_plugin_settings":{PLUGIN:{SERVER:server_settings}}
 			}),
 		),
 	] {
@@ -300,6 +361,7 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 		_servers: vec![server],
 		url,
 		schema,
+		digest: reference.digest.clone(),
 	}
 }
 
@@ -639,6 +701,410 @@ async fn a_run_continues_without_the_tools_of_a_server_that_is_down_and_the_even
 	}
 	assert!(results(&finished).is_empty());
 	assert_eq!(world.mcp.sessions_issued(), 0);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A POST that carries its own Idempotency-Key, as the registration routes require.
+async fn post_keyed(world: &World, path: &str, body: Value) -> (u16, Value) {
+	let response = world
+		.app
+		.api_http
+		.request(Method::POST, path)
+		.header("Authorization", format!("Bearer {}", world.token))
+		.header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+		.json(&body)
+		.send()
+		.await
+		.unwrap();
+	(
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+	)
+}
+
+/// Adds `policy` to the Tenant's bundle.
+async fn add_policy(world: &World, policy: Value) {
+	let authorization = Authorization {
+		pool: world.f.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(snapshot.bundle).unwrap();
+	bundle["policies"].as_array_mut().unwrap().push(policy);
+	authorization
+		.replace(
+			"acme",
+			snapshot.revision,
+			serde_json::from_value(bundle).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn secret_readiness_reports_a_plugin_servers_shared_secret(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world_with(fixture, false, Some(json!({"name":"docs-token"}))).await;
+	let readiness = async || {
+		let (status, facts) = request(
+			&world.app,
+			&world.token,
+			"GET",
+			"/api/registry/research/1.0.0/secret-readiness",
+			json!(null),
+		)
+		.await;
+		assert_eq!(status, 200, "{facts}");
+		facts
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|fact| fact["item"] == format!("{PLUGIN}/{SERVER}"))
+			.cloned()
+			.unwrap_or_else(|| panic!("no plugin server fact: {facts}"))
+	};
+
+	let ready = readiness().await;
+	let service = world.f.store.tenant_secrets.clone().unwrap();
+	let stored = service.get("acme", "docs-token").await.unwrap();
+	service
+		.delete("acme", "docs-token", stored.revision, "fixture")
+		.await
+		.unwrap();
+	let missing = readiness().await;
+
+	assert_eq!(ready["kind"], "agent_plugin_server");
+	assert_eq!(ready["tenant_secret_name"], "docs-token");
+	assert_eq!(ready["status"], "ready");
+	assert_eq!(missing["status"], "secret_missing");
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registering_an_agent_needs_secret_use_on_a_shared_plugin_server_secret(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world_with(fixture, false, Some(json!({"name":"docs-token"}))).await;
+	// alice may create Agents but may not use any Tenant Secret.
+	add_policy(
+		&world,
+		json!({"id":"no-secret-use","effect":"deny","subjects":{"ids":["alice"]},
+			"actions":["secret.use"],"resources":{"kinds":["*"]}}),
+	)
+	.await;
+	let (status, stored) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/registry/research/1.0.0",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{stored}");
+	let copy = |id: &str, owner: Option<&str>| {
+		let mut entry = json!({"id":id,"version":"1.0.0","kind":"agent",
+			"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],
+			"schema":{"type":"object"},"config":stored["config"].clone()});
+		if let Some(owner) = owner {
+			entry["config"]["agent_plugin_settings"][PLUGIN][SERVER]["secret"]["owner"] =
+				json!(owner);
+		}
+		entry
+	};
+
+	let (shared, refused) = post_keyed(&world, "/api/registry", copy("shared-copy", None)).await;
+	let (personal_agent, personal_refused) = post_keyed(
+		&world,
+		"/api/agents/personal",
+		json!({"entry": copy("", None), "documents": [{"name":"notes.pdf",
+			"media_type":"application/pdf","text":"Fixture reference."}]}),
+	)
+	.await;
+	let (personal_only, accepted) = post_keyed(
+		&world,
+		"/api/registry",
+		copy("personal-only-copy", Some("personal")),
+	)
+	.await;
+
+	assert_eq!(shared, 403, "{refused}");
+	assert_eq!(personal_agent, 403, "{personal_refused}");
+	// A personal-only server secret names only each person's own row.
+	assert_eq!(personal_only, 200, "{accepted}");
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+/// The personal secret value alice keeps under the shared secret's name.
+const PERSONAL_VALUE: &str = "alice-personal-secret-954";
+
+/// The number of rows of every table in the public schema, by table.
+async fn row_counts(world: &World) -> std::collections::BTreeMap<String, i64> {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	let driver = world.f.store.pool.fixture_driver();
+	let tables: Vec<(String,)> = sqlx::query_as(
+		&Query::select()
+			.expr(Expr::col("tablename").cast_as(Alias::new("text")))
+			.from(Alias::new("pg_tables"))
+			.and_where(Expr::col("schemaname").eq(Expr::value("public")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(driver)
+	.await
+	.unwrap();
+	let mut counts = std::collections::BTreeMap::new();
+	for (table,) in tables {
+		let (count,): (i64,) = sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust("count(*)"))
+				.from(Alias::new(&table))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(driver)
+		.await
+		.unwrap();
+		counts.insert(table, count);
+	}
+	counts
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attaching_lists_a_servers_tools_with_the_persons_own_secret_only_and_stores_nothing(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Only the shared `docs-token` exists at first.
+	let world = world_with(
+		fixture,
+		false,
+		Some(json!({"name":"docs-token","header":"X-Api-Key"})),
+	)
+	.await;
+	world.mcp.record_header("x-api-key");
+	let list = |owner: &str| {
+		json!({"digest": world.digest, "server": SERVER,
+			"secret": {"name":"docs-token","header":"X-Api-Key","owner":owner}})
+	};
+	let before = row_counts(&world).await;
+
+	// Whatever the request says, the shared value is never sent.
+	let (shared_status, shared) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/agent-plugins/tools",
+		list("any"),
+	)
+	.await;
+	assert_eq!(shared_status, 200, "{shared}");
+	assert_eq!(
+		shared,
+		json!({"outcome":"unavailable","reason":"secret_unavailable"})
+	);
+	assert_eq!(world.mcp.request_count(), 0);
+	let after_refusal = row_counts(&world).await;
+
+	// With a personal secret of that name, the listing carries it.
+	world
+		.f
+		.store
+		.tenant_secrets
+		.as_ref()
+		.unwrap()
+		.put_owned(
+			"acme",
+			Some("alice"),
+			"docs-token",
+			aidash_application::tenant_secrets::Put {
+				expected_revision: 0,
+				value: Some(PERSONAL_VALUE.into()),
+				hosts: Some(vec!["127.0.0.1".into()]),
+			},
+			"alice",
+		)
+		.await
+		.unwrap();
+	let with_personal = row_counts(&world).await;
+	let (status, listed) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/agent-plugins/tools",
+		list("any"),
+	)
+	.await;
+	let after_listing = row_counts(&world).await;
+
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed["outcome"], "listed", "{listed}");
+	let digest = schema_digest(&mcp::schema());
+	assert_eq!(
+		listed["tools"],
+		json!([{"name":"lookup","schema_digest":digest},{"name":"update","schema_digest":digest}])
+	);
+	let credentials = world.mcp.credentials();
+	assert!(!credentials.is_empty());
+	assert!(
+		credentials
+			.iter()
+			.all(|value| value.as_deref() == Some(PERSONAL_VALUE)),
+		"{credentials:?}"
+	);
+	// Neither a refused nor a successful listing writes a row anywhere: no receipt, declaration
+	// or invocation is kept. Only the authorization audit records the access decision.
+	let stored = |mut counts: std::collections::BTreeMap<String, i64>| {
+		counts.remove("authorization_decisions");
+		counts
+	};
+	assert_eq!(stored(before), stored(after_refusal));
+	assert_eq!(stored(with_personal), stored(after_listing));
+	let (status, stored) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/registry/research/1.0.0",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{stored}");
+	assert_eq!(
+		stored["config"]["agent_plugin_settings"][PLUGIN][SERVER]["read_only"],
+		json!([{"name":"lookup","schema_digest":digest}])
+	);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn listing_a_plugin_servers_tools_needs_registry_create_on_agents(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world(fixture, false).await;
+	let authorization = Authorization {
+		pool: world.f.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(snapshot.bundle).unwrap();
+	bundle["subjects"]["bob"] = json!({"kind":"user"});
+	bundle["policies"]
+		.as_array_mut()
+		.unwrap()
+		.push(json!({"id":"no-registry-create",
+		"effect":"deny","subjects":{"ids":["bob"]},"actions":["registry.create"],
+		"resources":{"kinds":["*"]}}));
+	authorization
+		.replace(
+			"acme",
+			snapshot.revision,
+			serde_json::from_value(bundle).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let bob = common::subject_credential(&world.f.store, "acme", "bob").await;
+
+	let (status, body) = request(
+		&world.app,
+		&bob,
+		"POST",
+		"/api/agent-plugins/tools",
+		json!({"digest": world.digest, "server": SERVER}),
+	)
+	.await;
+
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(world.mcp.request_count(), 0);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_server_without_oauth_receives_the_named_secret_in_its_header_on_every_request(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	let world = world_with(
+		fixture,
+		false,
+		Some(json!({"name":"docs-token","header":"X-Api-Key"})),
+	)
+	.await;
+	world.mcp.record_header("x-api-key");
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+
+	let finished = step_until(&harness, &world, |run| run.context.plugin_tools.is_some()).await;
+
+	let plugin_tools = finished.context.plugin_tools.as_ref().unwrap();
+	assert!(plugin_tools.findings.is_empty(), "{plugin_tools:?}");
+	assert_eq!(plugin_tools.servers.len(), 1);
+	let credentials = world.mcp.credentials();
+	assert!(!credentials.is_empty());
+	assert!(
+		credentials
+			.iter()
+			.all(|value| value.as_deref() == Some(SECRET_VALUE)),
+		"{credentials:?}"
+	);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_required_personal_secret_the_person_lacks_leaves_the_server_out_without_a_request(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	// Only the shared `docs-token` exists; the definition refuses it.
+	let world = world_with(
+		fixture,
+		false,
+		Some(json!({"name":"docs-token","owner":"personal"})),
+	)
+	.await;
+	let harness = Harness {
+		federation: world.f.clone(),
+	};
+
+	let finished = step_until(&harness, &world, |run| run.context.plugin_tools.is_some()).await;
+
+	let plugin_tools = finished.context.plugin_tools.as_ref().unwrap();
+	assert!(plugin_tools.servers.is_empty());
+	assert_eq!(plugin_tools.findings.len(), 1, "{plugin_tools:?}");
+	assert_eq!(
+		plugin_tools.findings[0].finding.detail,
+		"secret_unavailable"
+	);
+	// The server never received an unauthenticated request in the secret's place.
+	assert_eq!(world.mcp.sessions_issued(), 0);
+	assert_eq!(world.mcp.request_count(), 0);
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

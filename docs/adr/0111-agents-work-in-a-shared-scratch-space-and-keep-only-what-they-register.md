@@ -32,3 +32,11 @@ An Agent's Reference set stays readable through `file_read` and `file_search` wi
 ## Amendment (2026-11-11, #845)
 
 Anomalous traffic no longer stops a Scratch Space's outbound traffic. Under a host list, every connection to another host or to an internal address is refused one by one, so stopping the Space protected nothing more. It did stop real work: a cold `pnpm install` of an ordinary app opened 600 connections in a minute and tripped the old rule (more than 600 new connections a minute), and nothing could lift a suspension. What the rule also guarded against is now handled without stopping anyone. A connection writes to the database only once it holds its Host connection limits, and connections that end before then are counted per minute, so no number of attempts loads the store. A Space that may reach any host, where scanning third parties is possible, is reported to the operator when it reaches more than 100 distinct hosts in a minute; a person decides whether to stop it.
+
+## Amendment (2026-11-14, #745)
+
+ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.
+
+## Amendment (2026-11-16, #738)
+
+ADR 0137: the External services of a Scratch Space are reached through the Execution Pod's proxy at a reserved host. Only Catalog Approvals for everyone on the Space's Node make them usable, and Agent definitions no longer bind them.

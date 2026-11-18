@@ -636,64 +636,30 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	// A page image is stored bytes too. It belongs to a Research fragment of a
-	// Run, so the Run comes from a real claim and the source, snapshot and
-	// fragment rows are the ones its foreign keys require. A Team Tenant with
-	// no paid Subscription refuses a Run, so the creator's personal Tenant
-	// runs on the Free Tier.
+	// An attachment stored inline is stored bytes too. It belongs to a
+	// Workspace, which queuing a Run creates. A Team Tenant with no paid
+	// Subscription refuses a Run, so the creator's personal Tenant runs on the
+	// Free Tier.
 	d.make_personal(&kept).await;
 	d.queue_run(&kept).await.unwrap();
 	let pool = d.federation.store.pool.fixture_driver();
-	let run: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE tenant = $1")
+	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM runs WHERE tenant = $1")
 		.bind(&kept)
 		.fetch_one(pool)
 		.await
 		.unwrap();
-	let (source, snapshot, fragment) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-	let digest = format!("sha256:{}", "0".repeat(64));
-	let mut seed = pool.begin().await.unwrap();
 	sqlx::query(
-		"INSERT INTO research_sources (id, tenant, run_id, url, title) VALUES ($1, $2, $3, 'https://example.com/report.pdf', 'Report')",
+		"INSERT INTO channel_attachments (id, tenant, workspace_id, uploaded_by, idempotency_key, filename, media_type, sha256, size_bytes, content) VALUES ($1, $2, $3, 'alice', $4, 'report.pdf', 'application/pdf', $5, 4000, $6)",
 	)
-	.bind(source)
+	.bind(Uuid::new_v4())
 	.bind(&kept)
-	.bind(run)
-	.execute(&mut *seed)
-	.await
-	.unwrap();
-	sqlx::query(
-		"INSERT INTO research_snapshots (id, tenant, run_id, source_id, requested_url, url, title, media_type, fetched_at, raw_digest, text_digest, completeness, lines, text_bytes) VALUES ($1, $2, $3, $4, 'https://example.com/report.pdf', 'https://example.com/report.pdf', 'Report', 'application/pdf', clock_timestamp(), $5, $5, 'complete', '[]'::jsonb, 0)",
-	)
-	.bind(snapshot)
-	.bind(&kept)
-	.bind(run)
-	.bind(source)
-	.bind(&digest)
-	.execute(&mut *seed)
-	.await
-	.unwrap();
-	sqlx::query(
-		"INSERT INTO research_fragments (id, tenant, run_id, snapshot_id, text, line_start, line_end, pages, image_page, image_media_type, image_width, image_height, image_digest) VALUES ($1, $2, $3, $4, '', 0, 0, '[1]'::jsonb, 1, 'image/png', 1, 1, $5)",
-	)
-	.bind(fragment)
-	.bind(&kept)
-	.bind(run)
-	.bind(snapshot)
-	.bind(&digest)
-	.execute(&mut *seed)
-	.await
-	.unwrap();
-	sqlx::query(
-		"INSERT INTO research_page_images (fragment_id, tenant, run_id, bytes, created_at) VALUES ($1, $2, $3, $4, clock_timestamp())",
-	)
-	.bind(fragment)
-	.bind(&kept)
-	.bind(run)
+	.bind(workspace)
+	.bind(Uuid::new_v4())
+	.bind("0".repeat(64))
 	.bind(vec![0_u8; 4000])
-	.execute(&mut *seed)
+	.execute(pool)
 	.await
 	.unwrap();
-	seed.commit().await.unwrap();
 	let now = Utc::now() - Duration::days(3);
 	// The sampler includes bootstrap/Personal Tenants as well as the two named
 	// fixtures. Their birth must also precede this simulated historical pass.
@@ -788,9 +754,9 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 
 	// Once the last physical file is purged, a later daily sample replaces the
 	// nonzero latest usage with an explicit zero for the still-active Tenant.
-	// Source deletion cascades through snapshots, fragments and page images,
-	// leaving no source row from which the sampler could infer this Tenant.
-	sqlx::query("DELETE FROM research_sources WHERE tenant = $1")
+	// Deleting the attachment leaves no row from which the sampler could
+	// infer this Tenant.
+	sqlx::query("DELETE FROM channel_attachments WHERE tenant = $1")
 		.bind(&kept)
 		.execute(pool)
 		.await

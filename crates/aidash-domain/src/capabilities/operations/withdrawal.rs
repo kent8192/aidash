@@ -19,6 +19,9 @@ pub struct Snapshot {
 	pub area_epoch: i64,
 	pub area_generation: i64,
 	pub area_state: String,
+	/// Runs in an Execution Pod: its stop is asked of the Pod runtime, and it
+	/// has no Runner instance to bind the stop to (#745).
+	pub pod: bool,
 }
 pub struct Change {
 	pub state: String,

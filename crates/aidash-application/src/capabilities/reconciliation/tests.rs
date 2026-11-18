@@ -1,9 +1,9 @@
 use super::*;
+use aidash_domain::capabilities::operations::{FileScope, MountedFile};
 use aidash_domain::{
 	RunControl, RunMetadata, RunPhase,
 	capabilities::{
 		CoreCapabilities,
-		errors::COMMAND_TIMED_OUT,
 		operations::reconciliation::{Area, Limits},
 	},
 };
@@ -178,15 +178,8 @@ impl OperationReconciliationScope for Scope {
 	async fn require_builtin(&mut self, kind: &str) -> Result<()> {
 		self.0.call(&format!("require:{kind}"))
 	}
-	async fn authorize_packages(&mut self, _: &Value) -> Result<()> {
-		self.0.call("packages")
-	}
 	async fn set_area(&mut self, state: &str) -> Result<()> {
 		self.0.call(&format!("area:{state}"))
-	}
-	async fn complete_python(&mut self, _: &Snapshot, observed: &Value) -> Result<()> {
-		self.0
-			.call(&format!("python:{}", observed["writer_frozen"]))
 	}
 	async fn persist(&mut self, operation: &Snapshot) -> Result<()> {
 		self.0.call("persist")?;
@@ -264,12 +257,6 @@ impl OperationReconciliationScope for Scope {
 		}
 		Ok((Uuid::from_u128(12), "saved-digest".into()))
 	}
-	async fn publish(&mut self, entries: Vec<MountedFile>) -> Result<i64> {
-		self.0.call("publish")?;
-		let mut trace = self.0.0.lock().unwrap();
-		trace.published = entries;
-		Ok(trace.area.revision + 1)
-	}
 	async fn event(&mut self, data: Value) -> Result<()> {
 		self.0.call("event")?;
 		self.0.0.lock().unwrap().events.push(data);
@@ -282,31 +269,6 @@ impl OperationReconciliationScope for Scope {
 	}
 }
 
-#[rstest]
-#[case::image("output", b"\x89PNG\r\n\x1a\nbody".as_slice(), "image/png")]
-#[case::spoofed_extension("spoof.png", b"not an image".as_slice(), "application/octet-stream")]
-#[tokio::test]
-async fn exported_file_media_type_follows_verified_image_signature(
-	repository: Repository,
-	#[case] path: &str,
-	#[case] bytes: &[u8],
-	#[case] expected: &str,
-) {
-	let object = "a".repeat(64);
-	// Output digests are validated as lowercase SHA-256 hex.
-	let digest = "d".repeat(64);
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,"files":[{"path":path,"object_id":object,"digest":digest,"size":bytes.len()}],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
-		trace.download =
-			json!({"data":STANDARD.encode(bytes),"offset":0,"size":bytes.len(),"digest":digest});
-	}
-	run(&repository).await.unwrap();
-	assert_eq!(
-		repository.0.lock().unwrap().published[0].media_type,
-		expected
-	);
-}
 async fn run(repository: &Repository) -> Result<()> {
 	drive(repository, Uuid::from_u128(1)).await
 }
@@ -543,103 +505,6 @@ async fn absent_runner_state_becomes_uncertain_instead_of_replaying_execution(
 	assert!(trace.calls.contains(&"area:uncertain".into()));
 }
 #[rstest]
-#[tokio::test]
-async fn completed_output_publication_advances_revision_before_persisting_and_emitting_the_change(
-	repository: Repository,
-) {
-	repository.0.lock().unwrap().observed = json!({"status":"completed","termination_confirmed":true,"executed":true,"files":[],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "completed");
-	assert_eq!(trace.saved[0].revision, 8);
-	assert_eq!(trace.saved[0].result["output_file"]["size"], json!(6));
-	assert_eq!(trace.saved[0].result["runner_acknowledged"], json!(false));
-	let publish = trace
-		.calls
-		.iter()
-		.position(|call| call == "publish")
-		.unwrap();
-	let persist = trace
-		.calls
-		.iter()
-		.position(|call| call == "persist")
-		.unwrap();
-	let event = trace.calls.iter().position(|call| call == "event").unwrap();
-	assert!(publish < persist && persist < event);
-	assert!(trace.commit);
-}
-#[rstest]
-#[tokio::test]
-async fn publication_reuses_an_area_blob_without_downloading_it(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.reusable = Some(Uuid::from_u128(55));
-		trace.area.manifest = json!([{"file_id":Uuid::from_u128(30),"path":"old/path","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3,"media_type":"application/octet-stream","scope":"working","provenance":{}}]);
-		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
-            "files":[{"path":"new/path", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
-            "stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.published[0].file_id, Uuid::from_u128(55));
-	assert_eq!(trace.published[0].path, "new/path");
-	assert!(
-		!trace
-			.calls
-			.iter()
-			.any(
-				|call| (call.starts_with("request:GET:") && call.contains("/files/"))
-					|| call == "begin_output"
-			)
-	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn runner_cannot_reuse_an_unmounted_tenant_blob(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.reusable = Some(Uuid::from_u128(55));
-		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
-			"files":[{"path":"stolen", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
-			"stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert!(!trace.calls.iter().any(|call| call == "reuse_output"));
-	assert!(
-		trace
-			.calls
-			.iter()
-			.any(|call| call.starts_with("request:GET:") && call.contains("/files/"))
-	);
-	assert!(trace.calls.iter().any(|call| call == "finish_output"));
-	assert_ne!(trace.published[0].file_id, Uuid::from_u128(55));
-}
-
-#[rstest]
-#[tokio::test]
-async fn mounted_operation_input_can_be_reused_without_download(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.reusable = Some(Uuid::from_u128(55));
-		trace.files = serde_json::from_value(json!([{"file_id":Uuid::from_u128(30),"path":"mounted","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3,"media_type":"application/octet-stream","scope":"references","provenance":{}}])).unwrap();
-		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
-			"files":[{"path":"copy", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
-			"stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.published[0].file_id, Uuid::from_u128(55));
-	assert!(
-		!trace
-			.calls
-			.iter()
-			.any(|call| call.starts_with("request:GET:") && call.contains("/files/"))
-	);
-}
-
-#[rstest]
 #[case::completed("completed")]
 #[case::cancelled("cancelled")]
 #[case::failed("failed")]
@@ -661,24 +526,6 @@ async fn confirmed_unexecuted_operations_need_no_output_publication(
 	assert!(trace.events.is_empty());
 }
 
-#[rstest]
-#[tokio::test]
-async fn unexecuted_python_failure_releases_its_session(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = "code_interpreter".into();
-		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":false,
-			"error":{"code":"STARTUP_TIMEOUT","message":"Startup timed out"}});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert!(trace.calls.iter().any(|call| call == "python:false"));
-	assert_eq!(
-		trace.saved[0].result["error"]["message"],
-		"Startup timed out"
-	);
-	assert!(trace.published.is_empty());
-}
 #[rstest]
 #[tokio::test]
 async fn a_shell_writer_is_not_confirmed_stopped_by_a_python_freeze_claim(repository: Repository) {
@@ -795,8 +642,6 @@ async fn a_resent_operation_the_runner_already_refused_ends_without_effects(
 #[rstest]
 #[case::shell("shell", None)]
 #[case::check(VERIFICATION, None)]
-#[case::package_install("python_install", None)]
-#[case::python_cell("code_interpreter", Some("python:false"))]
 #[tokio::test]
 async fn every_kind_of_pending_operation_ends_the_same_way(
 	repository: Repository,
@@ -993,139 +838,9 @@ fn past_its_limit(status: &str, exit_code: i64) -> Value {
 }
 /// The limit decides, whatever exit code the command then gave and whoever
 /// stopped it. Its files are published, so the error can say they were saved.
-#[rstest]
-#[case::killed("failed", 143)]
-#[case::exited_zero_after_the_limit("completed", 0)]
-#[case::stopped_by_the_runner("cancelled", 137)]
-#[tokio::test]
-async fn a_command_past_its_limit_saves_its_files_and_reports_the_time_out(
-	repository: Repository,
-	#[case] status: &str,
-	#[case] exit_code: i64,
-) {
-	repository.0.lock().unwrap().observed = past_its_limit(status, exit_code);
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.revision, 8);
-	assert_eq!(saved.result["exit_code"], exit_code);
-	assert_eq!(saved.result["deadline_expired"], true);
-	assert_eq!(saved.result["error"]["code"], COMMAND_TIMED_OUT);
-	assert_eq!(saved.result["error"]["retryable"], false);
-	assert_eq!(
-		saved.result["error"]["details"],
-		json!({"limit_seconds":1,"revision":8})
-	);
-	let message = saved.result["error"]["message"].as_str().unwrap();
-	assert!(message.contains("revision 8"), "{message}");
-	assert!(message.contains("at most 600"), "{message}");
-	assert!(trace.calls.contains(&"publish".into()));
-	assert!(trace.commit);
-}
-#[rstest]
-#[tokio::test]
-async fn a_python_cell_past_its_limit_reports_the_time_out_and_its_reset_session(
-	repository: Repository,
-) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = "code_interpreter".into();
-		trace.operation.input["session_id"] = json!(Uuid::from_u128(20));
-		trace.observed = past_its_limit("failed", 137);
-		trace.observed["error"] = json!({"code":"SESSION_LOST","message":"Interpreter stopped"});
-		trace.observed["writer_frozen"] = json!(false);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.result["error"]["code"], COMMAND_TIMED_OUT);
-	let message = saved.result["error"]["message"].as_str().unwrap();
-	assert!(message.contains("session was reset"), "{message}");
-	assert!(trace.calls.contains(&"python:false".into()));
-}
 /// A command that ended before its limit keeps the runner's own word, and its
 /// result does not grow a field that says nothing happened.
-#[rstest]
-#[case::cancelled("cancelled", 137, json!({"code":"CANCELLED","message":"Stopped"}), Some(false))]
-#[case::failed("failed", 1, Value::Null, Some(false))]
-#[case::the_runner_could_not_tell("failed", 1, Value::Null, None)]
-#[tokio::test]
-async fn a_command_that_ended_before_its_limit_keeps_its_outcome(
-	repository: Repository,
-	#[case] status: &str,
-	#[case] exit_code: i64,
-	#[case] error: Value,
-	#[case] deadline_expired: Option<bool>,
-) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.observed = past_its_limit(status, exit_code);
-		trace.observed["error"] = error.clone();
-		match deadline_expired {
-			Some(expired) => trace.observed["deadline_expired"] = json!(expired),
-			None => {
-				trace
-					.observed
-					.as_object_mut()
-					.unwrap()
-					.remove("deadline_expired");
-			}
-		}
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, status);
-	assert_eq!(saved.result["error"], error);
-	assert!(saved.result.get("deadline_expired").is_none());
-}
 /// Nothing was saved, so the refusal stays the error and the limit is added to it.
-#[rstest]
-#[tokio::test]
-async fn a_command_past_its_limit_whose_save_the_runner_refused_says_both(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.observed = refused_export("symlink", "a", Value::Null);
-		trace.observed["deadline_expired"] = json!(true);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.revision, 7);
-	assert_eq!(saved.result["deadline_expired"], true);
-	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
-	let message = saved.result["error"]["message"].as_str().unwrap();
-	assert!(
-		message.starts_with("symlinks are not supported"),
-		"{message}"
-	);
-	assert!(
-		message.ends_with("under /tmp. The command had also reached its 1 s time limit."),
-		"{message}"
-	);
-	assert!(!trace.calls.contains(&"publish".into()));
-}
-#[rstest]
-#[tokio::test]
-async fn a_command_past_its_limit_over_the_quota_says_both(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.observed = past_its_limit("failed", 143);
-		trace.observed["files"] = json!([working_file("big", 2048)]);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.revision, 7);
-	assert_eq!(saved.result["deadline_expired"], true);
-	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
-	let message = saved.result["error"]["message"].as_str().unwrap();
-	assert!(message.contains("1 s time limit"), "{message}");
-}
 /// A Check saves nothing and has its own timed-out outcome, so it never gets
 /// the time-out error, which would say that files were saved.
 #[rstest]
@@ -1292,189 +1007,7 @@ async fn stopped_uncertain_shell_reopens_without_publishing_and_preserves_error(
 	assert!(trace.published.is_empty());
 }
 
-#[rstest]
-#[tokio::test]
-async fn stopped_uncertain_python_resets_its_session_without_publishing(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = "code_interpreter".into();
-		trace.operation.state = "running".into();
-		trace.observed = json!({"status":"uncertain","termination_confirmed":true,
-			"error":{"code":"OUTPUT_LOST","message":"File changes were not saved."}});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "uncertain");
-	assert!(trace.calls.contains(&"area:active".into()));
-	assert!(trace.calls.contains(&"python:false".into()));
-	assert!(trace.published.is_empty());
-}
 /// What the runner reports when its collector refused to export `/work` (#682).
-fn refused_export(reason: &str, path: &str, limit: Value) -> Value {
-	json!({"status":"failed","termination_confirmed":true,"executed":true,"exit_code":0,
-		"stdout":STANDARD.encode("stdout"),"truncated":false,
-		"error":{"code":"WORKING_EXPORT_REFUSED","retryable":false,
-			"message":format!("symlinks are not supported in /work: {path}; use npm install --no-bin-links, or keep dependency trees under /tmp"),
-			"details":{"reason":reason,"path":path,"limit":limit}}})
-}
-#[rstest]
-#[tokio::test]
-async fn a_refused_export_fails_only_the_operation_and_keeps_the_published_revision(
-	repository: Repository,
-) {
-	repository.0.lock().unwrap().observed =
-		refused_export("symlink", "tools/node_modules/.bin/sha.js", Value::Null);
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.revision, 7);
-	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
-	assert_eq!(
-		saved.result["error"]["details"],
-		json!({"reason":"symlink","path":"tools/node_modules/.bin/sha.js","limit":null})
-	);
-	assert_eq!(saved.result["termination_confirmed"], true);
-	// The command's own output stays readable beside the refusal.
-	assert_eq!(saved.result["output_file"]["size"], json!(6));
-	assert!(trace.calls.contains(&"area:active".into()));
-	assert!(!trace.calls.contains(&"publish".into()));
-	assert!(
-		!trace
-			.calls
-			.iter()
-			.any(|call| call.starts_with("area:uncertain"))
-	);
-	assert_eq!(trace.events.len(), 1);
-	assert!(trace.commit);
-}
-#[rstest]
-#[tokio::test]
-async fn a_refused_python_export_resets_the_session_without_publishing(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = "code_interpreter".into();
-		trace.operation.input =
-			json!({"command":"print(1)","seconds":1,"session_id":Uuid::from_u128(20)});
-		trace.observed = refused_export("hard_link", "a", Value::Null);
-		trace.observed["writer_frozen"] = json!(false);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "failed");
-	assert_eq!(trace.saved[0].revision, 7);
-	assert_eq!(trace.saved[0].result["writer_frozen"], false);
-	assert!(trace.calls.contains(&"python:false".into()));
-	assert!(trace.calls.contains(&"area:active".into()));
-	assert!(!trace.calls.contains(&"publish".into()));
-}
-fn working_file(path: &str, size: u64) -> Value {
-	json!({"path":path,"size":size,"object_id":"0".repeat(64),"digest":"digest"})
-}
-#[rstest]
-#[tokio::test]
-async fn an_export_over_the_file_ceiling_is_refused_before_any_download(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		// A mounted reference counts toward the manifest's 4096 entries.
-		trace.area.manifest = json!([{"file_id":Uuid::from_u128(30),"path":"guide.md","digest":"d",
-			"size":1,"media_type":"text/plain","scope":"references","provenance":{}}]);
-		trace.limits.working_bytes = 1 << 20;
-		let files = (0..4096)
-			.map(|index| working_file(&format!("f{index:04}"), 0))
-			.collect::<Vec<_>>();
-		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
-			"files":files,"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.revision, 7);
-	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
-	assert_eq!(
-		saved.result["error"]["details"],
-		json!({"reason":"file_count","path":"f4095","limit":4096})
-	);
-	assert!(
-		saved.result["error"]["message"]
-			.as_str()
-			.unwrap()
-			.contains("at most 4096 files")
-	);
-	assert!(!trace.calls.contains(&"begin_output".into()));
-	assert!(!trace.calls.contains(&"publish".into()));
-	assert!(trace.calls.contains(&"area:active".into()));
-}
-#[test]
-fn reference_files_leave_the_whole_quota_to_an_export() {
-	let mounted = |scope, kind: &str| MountedFile {
-		file_id: Uuid::from_u128(77),
-		path: "references/manual.pdf".into(),
-		digest: "a".repeat(64),
-		size: 5000,
-		media_type: "application/pdf".into(),
-		scope,
-		provenance: json!({"kind":kind}),
-	};
-	let exported = [working_file("small", 24)];
-	assert!(
-		quota_refusal(
-			&[mounted(FileScope::References, "reference")],
-			&exported,
-			1024
-		)
-		.unwrap()
-		.is_none()
-	);
-	assert!(
-		quota_refusal(
-			&[mounted(FileScope::Received, "transfer_in")],
-			&exported,
-			1024
-		)
-		.unwrap()
-		.is_some()
-	);
-}
-#[rstest]
-#[tokio::test]
-async fn an_export_over_the_byte_quota_is_refused_before_any_download(repository: Repository) {
-	repository.0.lock().unwrap().observed = json!({"status":"completed","termination_confirmed":true,
-		"executed":true,"files":[working_file("small",24),working_file("large",1001)],
-		"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(
-		saved.result["error"]["details"],
-		json!({"reason":"bytes","path":"large","limit":1024})
-	);
-	assert!(!trace.calls.contains(&"begin_output".into()));
-	assert!(!trace.calls.contains(&"publish".into()));
-}
-
-#[rstest]
-#[tokio::test]
-async fn a_timed_out_install_gets_install_advice(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = "python_install".into();
-		trace.observed = past_its_limit("failed", 143);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
-	assert!(message.contains("wheels"), "{message}");
-	assert!(message.contains("complete"), "{message}");
-	assert!(message.contains("dependencies"), "{message}");
-	assert!(!message.contains("at a time"), "{message}");
-	assert!(!message.contains("shorter commands"), "{message}");
-	assert!(trace.calls.contains(&"require:code_interpreter".into()));
-	assert!(trace.calls.contains(&"packages".into()));
-}
-
 #[rstest]
 #[tokio::test]
 async fn timeout_advice_respects_the_binding_ceiling(repository: Repository) {
@@ -1488,4 +1021,25 @@ async fn timeout_advice_respects_the_binding_ceiling(repository: Repository) {
 	let trace = repository.0.lock().unwrap();
 	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
 	assert!(!message.contains("raise timeout_seconds"), "{message}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_finished_shell_row_publishes_nothing(repository: Repository) {
+	// Agent commands run in Execution Pods (#745); a per-command row that still
+	// finishes here fails without touching the Working Area.
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "shell".into();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,"exit_code":0,"stdout":"","files":[]});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "failed");
+	assert_eq!(
+		trace.saved[0].result["error"]["code"],
+		"EXECUTION_PATH_REMOVED"
+	);
+	assert!(trace.published.is_empty());
+	assert!(trace.calls.contains(&"area:active".to_owned()));
 }

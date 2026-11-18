@@ -159,6 +159,19 @@ pub const LIMIT_EXCEEDED: &str = "egress_limit_exceeded";
 pub const OPERATION_EXPIRED: &str = "operation_expired";
 /// The Run or operation is no longer active.
 pub const OPERATION_INACTIVE: &str = "operation_inactive";
+/// The host that code in an Execution Pod sends External service requests to,
+/// over plain HTTP through its proxy: `http://services.aidash.internal/<service>/<path>`.
+/// `.internal` is reserved for private use, so no public host can take it (#738).
+pub const SERVICES_HOST: &str = "services.aidash.internal";
+/// The service is not on the Scratch Space, or no such External service exists.
+pub const SERVICE_NOT_AVAILABLE: &str = "external_service_not_available";
+/// No Catalog Approval covers the service on the Scratch Space's Node.
+pub const SERVICE_NOT_APPROVED: &str = "external_service_not_approved";
+/// The only Catalog Approvals there are limited to certain subjects or Agents,
+/// which code in a shared Execution Pod cannot be held to (#738).
+pub const SERVICE_APPROVAL_LIMITED: &str = "external_service_approval_limited";
+/// The service does not allow the request's method.
+pub const SERVICE_METHOD_FORBIDDEN: &str = "external_service_method_forbidden";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -322,23 +335,7 @@ impl ExternalService {
 		if let Some(secret) = &self.secret {
 			crate::tenant_secrets::validate_name(secret)?;
 		}
-		let header = self.authentication.header().to_ascii_lowercase();
-		if header.is_empty()
-			|| !header
-				.bytes()
-				.all(|b| b.is_ascii_alphanumeric() || b == b'-')
-			|| matches!(
-				header.as_str(),
-				"host"
-					| "connection" | "transfer-encoding"
-					| "content-length"
-					| "cookie" | "proxy-authorization"
-					| "upgrade" | "te"
-					| "trailer" | "expect"
-			) || header.starts_with("sec-")
-			|| header.starts_with("x-forwarded-")
-			|| header.starts_with("x-aidash-")
-		{
+		if !crate::tenant_secrets::header_valid(self.authentication.header()) {
 			return Err(Error::Invalid(
 				"invalid External service credential header".into(),
 			));
@@ -347,15 +344,6 @@ impl ExternalService {
 			limits.validate()?;
 		}
 		Ok(())
-	}
-	/// Package indexes alone have response rewriting; callers cannot declare an index.
-	pub fn builtin_index(&self, id: &str) -> bool {
-		self.secret.is_none()
-			&& self.methods == ["GET", "HEAD"]
-			&& matches!(
-				(id, self.base_url.as_str()),
-				("core.npm", "https://registry.npmjs.org/") | ("core.pypi", "https://pypi.org/")
-			)
 	}
 }
 

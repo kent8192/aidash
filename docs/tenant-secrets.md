@@ -33,7 +33,7 @@ before its rows.
 
 Readiness is read-only and never returns a value, a Fingerprint or the last
 four characters. `GET /api/registry/{id}/{version}/secret-readiness` returns
-one fact for each bound tool and External service of an Agent version, and
+one fact for each bound tool of an Agent version, and
 `GET /api/marketplace/packages/{key}/secret-readiness` returns one fact for
 each Secret slot the package's install plan declares. A fact names its item,
 `kind` (`tool`, `external_service` or `slot`), the `tenant_secret_name` when
@@ -105,7 +105,7 @@ Dedicated, and definitions that name one are refused at registration.
 ## External services
 
 An `external_service` Registry entry has one HTTPS base URL, explicit HTTP
-methods, optional authentication and optional lower per-operation limits:
+methods, optional authentication and an optional daily share of its own:
 
 ```json
 {
@@ -115,8 +115,7 @@ methods, optional authentication and optional lower per-operation limits:
   "authentication": { "type": "bearer" },
   "limits": {
     "sent_bytes": 104857600,
-    "received_bytes": 104857600,
-    "requests": 100
+    "received_bytes": 104857600
   }
 }
 ```
@@ -128,112 +127,61 @@ strings and fragments cannot appear in the base URL. Private destinations
 need their exact origin in the Deployment's
 `keyless_endpoints.permitted_private_origins`, as other custom endpoints do.
 
-The Tenant gives the exact version a Catalog Approval and binds it to an
-Agent with `kind: "external_service"`. This authorizes requests without asking
-for each one: sandboxed code may send anything it can read, including Working
-Area data. Revoked Catalog Approval, changed definitions, cancelled operations
-and revoked Run authority fail closed at the gateway.
+The Tenant gives the exact version a Catalog Approval and makes the service
+available to a Scratch Space through the Space's `external_services` setting.
+An Agent does not bind it (#738). This authorizes requests without asking for
+each one: sandboxed code may send anything it can read, including Working Area
+data.
 
-Inside an operation, `AIDASH_EGRESS_URL` holds its authenticated gateway base.
-Code appends `<service-id>/<relative-path>`, for example:
+Code in an Execution Pod of that Space calls the service as plain HTTP through
+the proxy the Pod already has:
 
 ```python
-import os, urllib.request
-with urllib.request.urlopen(os.environ["AIDASH_EGRESS_URL"] + "images/status") as response:
+import urllib.request
+with urllib.request.urlopen("http://services.aidash.internal/images/status") as response:
     print(response.status)
 ```
 
-The environment contains an expiring operation token, never the Tenant Secret.
-The gateway attaches the current Secret only on its upstream request. HTTP
-bodies stream in both directions without content-type restrictions or a
-per-request body cap. The default cumulative budget per operation is 1 GiB
-sent, 1 GiB received and 1,000 requests; a service may lower those limits.
-Counters persist in PostgreSQL and are serialized on the operation, so
-concurrent requests and gateway restarts share the same budget. The operation
-deadline bounds each stream and 30 seconds without data ends a connection.
-Redirects return through the gateway and cannot change the admitted origin or
-escape the base path. Gateway failures produce `EGRESS_UNAVAILABLE`; the Pod
-has no direct fallback route.
+The address is `http://services.aidash.internal/<service-id>/<relative-path>`.
+It needs no token, header or environment variable. The proxy carries the Run's
+credential, so the gateway knows the Run, its Scratch Space and its Tenant. It
+attaches the current Tenant Secret on its own upstream HTTPS request. The hop
+from the Pod to the gateway is plain HTTP inside the cluster and carries the
+request and response, never the secret; a NetworkPolicy limits it to the
+gateway. There is no TLS interception and no per-service host name.
 
-The gateway debits body bytes in batches of 1 MiB per direction, and debits
-the remainder when a stream ends, fails or is interrupted, so the request
-record always holds the bytes actually streamed. A debit commits those bytes
-even when they take a counter past its limit, then stops the stream. A budget
-can therefore be exceeded by at most one batch (1 MiB plus one body chunk) per
-direction for each request streaming at that moment; once a counter is
-exhausted, the next request is refused before it starts. The stream's error,
-in both the request record and the client response, names the reason:
+On each request the gateway uses the newest version that has a Catalog Approval
+covering the Scratch Space's Node. A Catalog Approval limited to certain
+subjects or Agents does not count, because code in a shared Pod can claim
+another Run. It also refuses the request when the Run is revoked, the Scratch
+Space is not active, the Tenant or Node is deleted, or the service is no longer
+on the Scratch Space. While a request is open, the gateway rechecks every four
+seconds that the service is still on the Scratch Space and still approved, and
+cuts the stream if not. An Egress request record names the Run and has
+`via = pod`; Runner `shell` and `verify` operations and preparation commands
+get no External services.
 
-| Code                    | Status | Meaning                                                    |
-| ----------------------- | ------ | ---------------------------------------------------------- |
-| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                     |
-| `operation_expired`     | 403    | The operation or Live preview expired or no longer exists. |
-| `operation_inactive`    | 403    | The Run or operation is no longer active.                  |
-| `egress_forbidden`      | 403    | The Run's authority was revoked.                           |
-| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.               |
+A refusal is a `403` with a JSON body:
 
-A response whose headers were already sent ends with an incomplete body
-instead of a status. A temporary `EGRESS_UNAVAILABLE` in the middle of a download
-also stops the stream, but keeps its unbilled bytes and retries them in the
-background. The last debit of a response is different: the body has already been
-delivered, so the response ends normally and the gateway retries that debit, and
-writes the request record, in the background.
+```json
+{ "error": "external_service_not_available", "available_services": ["images"] }
+```
 
-A refusal is answered at once, and the gateway then discards what the client
-still sends, up to 8 MiB or 5 seconds, so that the client can read the answer.
-Discarded bytes are not charged. A client that sends more before it reads may
-see a reset instead of the refusal, and the cut is counted by
-`aidash_egress_linger_limit_total`. The time limit is counted when bytes were
-discarded and the declared request body remains incomplete. A client that sends
-nothing during linger is not counted.
-The reason reaches a request record only when one exists: a request refused
-before its record is created leaves only the count
-in `aidash_egress_refused_total`, and a connection refused for want of a slot
-only the count in `aidash_egress_connections_refused_total`.
+`error` is one of `external_service_not_available` (the service is not on the
+Scratch Space, or does not exist), `external_service_not_approved` (no Catalog
+Approval covers it on the Node), `external_service_approval_limited` (the only
+approvals are limited to certain subjects or Agents) or
+`external_service_method_forbidden` (the service does not allow the method).
+`available_services` lists the services usable now. A Run's starting
+instructions list the Scratch Space's services with their address, methods and
+description.
 
-A response with a `Content-Length` settles after its last byte is handed on. A
-final debit that reaches a limit is recorded but can no longer stop that
-response; the next request is refused.
-
-The gateway serves 128 connections at once. Beyond that it answers
-`503 egress_connection_limit` within 2 seconds, then discards what the client
-still sends like any other refusal; when too many refusals are in progress it
-drops the connection unanswered.
-
-Run inspection lists the request time, operation, service, method, path,
-SHA-256 query digest, status, byte counts and duration. Bodies, header values
-and query contents are never recorded. A partially consumed response is
-recorded as interrupted rather than silently becoming a successful request.
-A response counts as complete once all its bytes are handed to the server's
-HTTP layer, so a client that disconnects at the very end can still appear as a
-success.
-
-A record starts with status 0 and no error; its outcome is unsettled. The final
-debit and record are retried for about 60 seconds when storage is unavailable,
-so a record that stays at status 0 has
-an unknown outcome: the process stopped first or storage stayed unavailable. A
-debit that is still unavailable after those 60 seconds is given up: its bytes are
-not charged, and a record that can still be written shows the error
-`egress_debit_abandoned`, so that its byte counts are not mistaken for complete.
-A decision about that debit, such as `egress_limit_exceeded`, is recorded instead,
-and a body that did not reach its end stays `stream_interrupted`.
-
-A settled record also shows what the request cost at the gateway, in the Run's
-`egress_requests`. `admission_ms` is the admission call: the token, the
-authority's recheck, the budget locks and the record's first write. `settle_ms`
-runs from the end of the response until its final debit settled, including a
-first attempt that failed and the retries after it, or until the debit was given
-up. Bytes kept when a debit failed in the middle of a stream are charged later in
-the background and are not counted. `duration_ms` starts after admission and
-includes the final debit only for a response that ends its own stream and whose
-debit did not fail. A record that never settled has neither time, and a request
-refused before its record exists has no record.
-
-Failures that leave no record are visible to the operator of the Deployment.
-Unexpected admission failures and abandoned retries log an error, and upstream
-failures log a warning. These lines name the service, method and cause, never
-the token, path, query or header values. Sandboxed code sees only the code in
-the table above. The metrics listener (`AIDASH_METRICS_LISTEN`) exposes:
+The limits are the Scratch Space's egress allowance plus the service's own daily
+share (`limits`, which a Deployment's configured ceilings cap). There is no
+request count. HTTP bodies stream in both directions without content-type
+restrictions or a per-request body cap. Redirects return through the gateway
+and cannot change the admitted origin or escape the base path. Gateway failures
+produce `EGRESS_UNAVAILABLE`; the Pod has no direct fallback route.
 
 | Counter                                   | Labels             | Counts                                               |
 | ----------------------------------------- | ------------------ | ---------------------------------------------------- |
@@ -253,7 +201,7 @@ helper and the token never enters the Pod.
    the literal username `x-access-token`, a colon and the token. Cloning needs
    read access to the repository's contents; pushing needs write access.
 2. Register an `external_service`, for example with ID `github`, approve it
-   and bind it to the Agent:
+   and make it available to the Scratch Space:
 
    ```json
    {
@@ -268,14 +216,14 @@ helper and the token never enters the Pod.
    the gateway with `-c` on every command:
 
    ```sh
-   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ \
+   git -c url."http://services.aidash.internal/github/".insteadOf=https://github.com/ \
      clone https://github.com/<owner>/<repo>.git
-   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ fetch
+   git -c url."http://services.aidash.internal/github/".insteadOf=https://github.com/ fetch
    ```
 
-   `AIDASH_EGRESS_URL` carries an operation token that ends with the operation.
-   Never write it into the repository's remote URL or Git configuration: a later
-   operation gets a new token, and the stored one fails.
+   The address carries no credential, so it may also be kept in the
+   repository's Git configuration. The service must stay on the Scratch Space
+   and approved, or the request is refused.
 
 Archive downloads do not work. GitHub redirects them to the cross-origin
 `codeload` host, and the gateway refuses cross-origin redirects. Git's
@@ -292,7 +240,6 @@ an optional `egress` section:
 
 ```json
 {
-  "endpoint": "http://10.96.0.90:8950",
   "listen": "0.0.0.0:8950",
   "namespace": "aidash",
   "pod_selector": {
@@ -307,53 +254,37 @@ an optional `egress` section:
 }
 ```
 
-Reserve the Service IP in the cluster's Service CIDR. The Runner needs the same
-endpoint and gateway pod selectors; it grants only that TCP destination in
-the sandbox's NetworkPolicy. DNS, arbitrary TCP/UDP and inbound networking
-stay closed. The gateway's port must remain internal to the cluster.
+Reserve the Service IP in the cluster's Service CIDR. The Execution Pod proxy
+settings point at it (`execution.pods.proxy`), and the Pod's NetworkPolicy
+grants only that TCP destination. DNS, arbitrary TCP/UDP and inbound networking
+stay closed. The gateway's port must remain internal to the cluster. `limits`
+are the ceilings an External service's own `limits` may not exceed.
 
 For Helm, set `execution.egress.enabled=true` and
 `execution.egress.clusterIP=<reserved Service IP>`. The chart renders the
-internal Service, server ingress policy and shared server/Runner settings.
-The server and workers retain the same Runner credential used to sign
-operation tokens. The gateway needs no additional secret in Execution Pods.
-Without egress settings, sandbox networking remains deny-all.
+internal Service, the server ingress policy and the server and worker settings.
+The gateway needs no additional secret in Execution Pods. Without egress
+settings, sandbox networking remains deny-all.
 
 ## Package indexes
 
-The Runner image includes Node.js 22 LTS, npm/npx and uv/uvx. Built-in
-External services `core.npm` and `core.pypi` need their own Tenant Catalog
-Approvals and Agent bindings. The operation points npm's registry and uv's
-index at the gateway. npm's `replace-registry-host` stays `npmjs`, so lockfile
-links on registry.npmjs.org go through the gateway while the gateway's own
-rewritten links are used unchanged. Python downloads are disabled with
-`UV_PYTHON_DOWNLOADS=never`.
-
-Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
-package file addresses onto the gateway. An index exceeding this limit is refused
-with HTTP 422 and the message `package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.` in both the error body and HTTP reason phrase. npm files remain on
-`registry.npmjs.org`; PyPI files may also use `files.pythonhosted.org`.
-Integrity fields and URL hash fragments remain intact, and package files
-stream unchanged under the operation's cumulative budget. `python_install`
-and its wheel-selection API/UI have been removed; use uv through the gateway.
-
-File previews, Retained versions and message citations are described in
-[File previews and Retained versions](file-previews-and-retained-versions.md).
-Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).
+Agents install packages from the shell of their Execution Pod. npm, pip and uv
+reach their public registries through the Pod's HTTPS proxy, limited by the
+Scratch Space's allowed hosts and named by the Run's proxy credential (ADR 0136).
+There are no built-in package index External services and no index rewriting
+(#745, #729).
 
 ## Scratch Space proxy integration
 
 The server connects the scope-authenticated forward proxy to Scratch Space
-credentials and durable scope policy. The operation-token gateway described
-above also remains available. The Pod needs
+credentials and durable scope policy. The Pod needs
 `HTTPS_PROXY` and `HTTP_PROXY` set to the internal Egress gateway. The gateway
 accepts HTTP Basic proxy authentication with the scope credential as the password
 (for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;
 URL-encode the credential). Set `NO_PROXY` only for explicitly permitted local
-endpoints and the exact gateway host, for example
-`localhost,127.0.0.1,::1,<gateway-host>`. The gateway exemption lets callers
-reach its path-level External service route directly. Do not exempt metadata
-addresses or the cluster network. The Pod's network policy must enforce the
+endpoints, for example `localhost,127.0.0.1,::1`. Do not exempt the gateway
+host, metadata addresses or the cluster network: `services.aidash.internal` must
+go through the proxy. The Pod's network policy must enforce the
 same boundary regardless of these environment variables. The scope credential
 is not a Tenant Secret, and Tenant Secret values never enter the Pod.
 
@@ -400,8 +331,9 @@ waiting plain HTTP requests may hold at most a quarter of the slots (128); one
 beyond that is refused at once with `egress_tenant_tunnel_limit`. A connection
 that waited is checked against its scope once more before it is forwarded. Clients keep tunnels open between requests, so while a
 connection of a scope waits, that scope's tunnels that carried nothing for two
-seconds close as `egress_idle_reclaimed` and give their slots to the waiters;
-the client opens a new tunnel when it needs one. A credential resolved for a new
+seconds close as `egress_idle_reclaimed` and give their slots to the waiters
+(a tunnel whose bytes wait on a debit is not idle); the client opens a new
+tunnel when it needs one. A credential resolved for a new
 connection is reused for five seconds, so a burst of connections reads the
 store once; a revoked credential may still open connections for that long, and
 each open tunnel's own five-second recheck closes them.
@@ -423,15 +355,29 @@ deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
 allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
-checks close it as `egress_authority_unavailable`. A traffic debit that fails because the store is unavailable ends it
-the same way, and a refund that fails ends it as `egress_refund_failed`; neither
-counts as an upstream failure. A scope credential is a MAC over the Tenant and
+checks close it as `egress_authority_unavailable`. A slow store is not a
+refusal: a traffic debit the store does not answer stops the tunnel's bytes and
+is tried again, and it closes the tunnel as `egress_budget_wait_timeout` only
+after 30 seconds without an answer (#909). A refund runs after the bytes have
+moved, so one that fails or times out is counted in
+`aidash_egress_settle_failures_total` and logged, and the connection keeps the
+outcome its transfer had. Neither counts as an upstream failure. The times of
+these checks, debits and refunds are in
+`aidash_egress_host_connection_check_seconds`, `aidash_egress_debit_seconds`
+and `aidash_egress_refund_seconds`; debits the store did not answer are counted
+in `aidash_egress_debit_retries_total`. Where the store's time goes is in
+`aidash_egress_store_begin_seconds` (waiting for a pooled connection and
+opening the transaction; read it with the pool gauges below),
+`aidash_egress_budget_lock_seconds{operation}` (waiting on the Scratch Space's
+state lock, which its debits and refunds take in turn) and
+`aidash_db_pool_connections{pool,state}` with `aidash_db_pool_max_connections`,
+sampled every five seconds. A wait the gateway gives up on is recorded at the
+time it gave up. A scope credential is a MAC over the Tenant and
 Scratch Space under the server's key, verified in constant time, and is excluded
 from records and logs. It has one value per Scratch Space and stays valid until
 the space is deleted; deleting its Tenant or its Node closes it at once, before
 any purge, and a restore reopens it. An open tunnel closes at the next recheck. A
-Pod carries it in the user part of its proxy URL. Agent execution in Execution
-Pods follows in wave 2 of #697.
+Pod carries it in the user part of its proxy URL.
 
 Connection and event row retention remains a follow-up; operators must account
 for their storage until an automatic retention policy is implemented.
@@ -449,9 +395,11 @@ record cannot be written after retries, the gateway refuses the connection with
 `egress_audit_unavailable`. The final record is retried for about 60 seconds
 without holding the connection's concurrency slot, or once more if the process
 is stopping. A process crash or sustained audit-store failure can leave a record
-`unsettled`, with incomplete byte counts. Tunnel budget reservations and
-refunds each have a five-second deadline. An interrupted connection or timed-out
-refund may retain unused reserved budget.
+`unsettled`, with incomplete byte counts. A tunnel's debit against its Scratch
+Space egress allowance waits at most 30 seconds and its refund five. An
+interrupted connection, a refund that fails, or a debit tried again after its
+answer was lost may leave bytes counted against the day's allowance that never
+moved.
 
 Sandboxed code can repeat failures of a Host connection at will, so each kind of
 failure logs at most one line per 10 seconds, with the number since the last
@@ -463,11 +411,3 @@ the host, and under "allow all hosts" a Pod chooses it freely.
 failure, with `kind` one of `dns`, `connect`, `handshake`, `request`, `upgrade`
 or `transfer`. `transfer` counts only ends with no named code, and one failed
 connection can count under both `transfer` and `request`.
-
-The separate path-level External service route remains responsible
-for attaching Tenant Secrets; scope-based admission for that route is refused
-until #738. Its integration route is `/v2/services/<service>/<path>` with the scope
-credential in `Authorization: Bearer <scope-credential>`. The gateway removes
-that header before forwarding and attaches the External service's Tenant Secret
-separately. The legacy `/v1/<operation-token>/<service>/<path>` route continues
-to use operation admission until the scope authority is connected.

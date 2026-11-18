@@ -235,13 +235,5 @@ pub(super) fn selectors(
 			capability("core_operations", node, address),
 			unsafe_operation(),
 		),
-		(
-			"python",
-			"core_records",
-			capability("core_records", node, address),
-			Expr::col("kind")
-				.eq("python_session")
-				.and(Expr::col("state").is_in(["frozen", "running"])),
-		),
 	]
 }

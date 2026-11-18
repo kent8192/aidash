@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0138
+---
+
 # Third-party Research providers are offered by the Deployment and speak a host-defined protocol
 
 Decided on 2026-10-15 for #227. Research providers beyond Aidash's own are declared in the Deployment's settings by whoever runs it: a transport (HTTP or MCP), an endpoint, the Research operations they implement, their Research account terms and a Deployment secret holding the key. Nobody writes host code for one. The Deployment offers it to every Tenant as a Built-in definition, like its own Research providers (ADR 0034), and each Tenant decides through Catalog Approval whether to use it. Whoever runs the Deployment is its Research account holder and pays for it. Tenants never install a Research provider or bring a search key; whether they may is #260's question, and this record does not answer it.

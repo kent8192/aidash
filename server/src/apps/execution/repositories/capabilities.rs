@@ -156,20 +156,11 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn request_files(
-		&mut self,
-		run: Uuid,
-		package_files: Vec<MountedFile>,
-	) -> Result<Vec<MountedFile>> {
-		operations::request_files(
-			self.access,
-			run,
-			self.area,
-			package_files.into_iter().map(Into::into).collect(),
-		)
-		.await
-		.map(|files| files.into_iter().map(Into::into).collect())
-		.map_err(Into::into)
+	async fn request_files(&mut self, run: Uuid) -> Result<Vec<MountedFile>> {
+		operations::request_files(self.access, run, self.area)
+			.await
+			.map(|files| files.into_iter().map(Into::into).collect())
+			.map_err(Into::into)
 	}
 	async fn verified_health(&mut self, python: bool) -> Result<()> {
 		operations::verified_health(self.store, python)
@@ -184,11 +175,6 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			aidash_application::usage::Work::SandboxedTool,
 		)
 		.await
-	}
-	async fn release_python(&mut self, reason: &str) -> Result<()> {
-		crate::capabilities::python::release(self.store, self.access, self.area, reason)
-			.await
-			.map_err(Into::into)
 	}
 	fn operation_id(&self) -> Uuid {
 		Uuid::new_v4()
@@ -205,7 +191,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			key,
 			digest,
 			kind,
-			epoch: _,
+			epoch,
 			input: value,
 		} = operation;
 
@@ -268,7 +254,9 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 		.bind(&digest)
 		.bind(kind)
 		.bind("prepared")
-		.bind(self.area.epoch)
+		// A Shell writer has already moved the Area to this epoch; a Pod
+		// operation records one no Area epoch can equal (#745).
+		.bind(epoch)
 		.bind(self.area.generation)
 		.bind(self.area.revision)
 		.bind(self.access.snapshot.revision)
@@ -337,6 +325,7 @@ impl aidash_application::ports::capabilities::OperationControlScope for Control<
 			principal: operation.principal.clone(),
 			kind: operation.kind.clone(),
 			state: operation.state.clone(),
+			pod: aidash_domain::capabilities::operations::runs_in_pod(&operation.input),
 		};
 		self.operation = Some(operation);
 		Ok(state)
@@ -356,17 +345,6 @@ impl aidash_application::ports::capabilities::OperationControlScope for Control<
 		operations::set_area(self.access, self.area.id, "active", self.area.epoch)
 			.await
 			.map_err(Into::into)
-	}
-	async fn complete_python_without_writer(&mut self) -> Result<()> {
-		let operation = self.loaded()?.clone();
-		crate::capabilities::python::completed(
-			self.access,
-			self.area,
-			&operation,
-			&json!({"writer_frozen":false}),
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn persist(&mut self) -> Result<()> {
 		let operation = self.loaded()?.clone();

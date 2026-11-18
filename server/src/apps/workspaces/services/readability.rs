@@ -51,7 +51,7 @@ impl Reader {
 				b.binding.kind == BindingKind::Tool
 					&& b.binding.target.registry_deployment == node
 					&& b.binding.target.id == "aidash.attachment_copy"
-					&& b.binding.target.version == "1.0.0"
+					&& matches!(b.binding.target.version.as_str(), "1.0.0" | "1.0.1")
 			})
 		});
 		let model = agent

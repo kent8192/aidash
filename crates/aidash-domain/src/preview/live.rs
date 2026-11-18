@@ -205,7 +205,9 @@ pub struct LivePreview {
 	pub pod_host: Option<String>,
 	/// Whether the Runner proved the Pod is gone.
 	pub termination_confirmed: bool,
-	pub egress_expires_at: Option<DateTime<Utc>>,
+	/// Since when a Node on the Run's chain has not answered its Read Recheck.
+	/// While set, the preview withholds its responses (ADR 0129).
+	pub unconfirmed_since: Option<DateTime<Utc>>,
 }
 
 impl LivePreview {
@@ -240,7 +242,7 @@ impl LivePreview {
 			limits,
 			pod_host: None,
 			termination_confirmed: true,
-			egress_expires_at: None,
+			unconfirmed_since: None,
 		})
 	}
 

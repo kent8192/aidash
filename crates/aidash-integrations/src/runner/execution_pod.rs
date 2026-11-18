@@ -1,16 +1,69 @@
-use super::RunnerHttp;
-use aidash_application::ports::capabilities::execution_pod::{
-	BackgroundProcesses, ChangeLogChunk, CommandRequest, CommandResult, ExecutionPodError,
-	ExecutionPodRuntime, ExecutionPodSettings, PodReceipt, PythonSession, Result,
-};
+use super::{MAX_RUNNER_RESPONSE_BYTES, RunnerHttp};
+use aidash_application::ports::capabilities::execution_pod::*;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use std::time::Duration;
+
+/// How long a stop waits for the Runner to show the process ended.
+const STOP_CONFIRMATION: Duration = Duration::from_secs(15);
+const STOP_POLL: Duration = Duration::from_millis(300);
+
+fn pod_timeout(path: &str, body: &Value) -> Duration {
+	let seconds = match path {
+		"/v2/previews/start" => 75,
+		"/v2/mcp/start" => 15 * 60,
+		"/v2/mcp/call" => body
+			.get("timeout_seconds")
+			.and_then(Value::as_u64)
+			.unwrap_or(0)
+			.saturating_add(15),
+		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" => 60,
+		// Ensuring a Pod waits for its admission and startup.
+		path if path.starts_with("/v2/pods/") => 1900,
+		_ => 30,
+	};
+	Duration::from_secs(seconds)
+}
 
 impl RunnerHttp {
 	async fn pod_call<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
 		let body = serde_json::to_value(body).map_err(aidash_application::Error::from)?;
-		let (status, value) = self.raw_request("POST", path, Some(&body)).await?;
+		let url = reqwest::Url::parse(&self.endpoint)
+			.map_err(|_| aidash_application::Error::Invalid("invalid runner endpoint".into()))?;
+		if url.scheme() != "https"
+			&& !(url.scheme() == "http"
+				&& url.host_str().is_some_and(|host| {
+					matches!(host, "127.0.0.1" | "[::1]") || host.ends_with(".svc.cluster.local")
+				})) {
+			return Err(aidash_application::Error::Invalid(
+				"runner transport requires TLS, loopback or a cluster Service".into(),
+			)
+			.into());
+		}
+		let token = self
+			.credentials
+			.resolve(&self.credential_env)
+			.map_err(|_| {
+				aidash_application::Error::Conflict(
+					"RUNTIME_UNAVAILABLE: runner credential unavailable".into(),
+				)
+			})?;
+		let client = reqwest::Client::builder()
+			.no_proxy()
+			.timeout(pod_timeout(path, &body))
+			.redirect(reqwest::redirect::Policy::none())
+			.build()
+			.map_err(crate::http_error)?;
+		let response = client
+			.post(format!("{}{path}", self.endpoint.trim_end_matches('/')))
+			.bearer_auth(token)
+			.json(&body)
+			.send()
+			.await
+			.map_err(crate::http_error)?;
+		let status = response.status();
+		let value: Value = crate::response::json(response, MAX_RUNNER_RESPONSE_BYTES).await?;
 		if !status.is_success() {
 			let code = value
 				.get("code")
@@ -28,6 +81,32 @@ impl RunnerHttp {
 		serde_json::from_value(value)
 			.map_err(aidash_application::Error::from)
 			.map_err(Into::into)
+	}
+	/// Stop a Background process through `path` and wait until the Runner shows
+	/// it ended: a stop route answers `stopping` as soon as it signals the
+	/// process, and a caller that took that as the end would drop the process's
+	/// state (a preview's hold, a plugin's data) while it may still run.
+	async fn stop_confirmed(&self, path: &str, operation_id: &str) -> Result<()> {
+		let mut reply: CommandResult = self
+			.pod_call(path, &json!({"operation_id":operation_id}))
+			.await?;
+		let deadline = tokio::time::Instant::now() + STOP_CONFIRMATION;
+		loop {
+			if matches!(
+				reply.status.as_str(),
+				"completed" | "stopped" | "cancelled" | "timed_out"
+			) {
+				return Ok(());
+			}
+			if tokio::time::Instant::now() >= deadline {
+				return Err(ExecutionPodError::Remote {
+					code: ExecutionPodErrorCode::TerminationUnconfirmed,
+					message: format!("the process is still {}", reply.status),
+				});
+			}
+			tokio::time::sleep(STOP_POLL).await;
+			reply = self.result(operation_id).await?;
+		}
 	}
 	async fn pod_effect(&self, path: &str, body: &impl Serialize, field: &str) -> Result<()> {
 		let value: Value = self.pod_call(path, body).await?;
@@ -51,6 +130,18 @@ impl ExecutionPodRuntime for RunnerHttp {
 		self.pod_call("/v2/commands/result", &json!({"operation_id":operation_id}))
 			.await
 	}
+	async fn refuse_command(
+		&self,
+		operation_id: &str,
+		scratch_space_id: &str,
+		run_id: &str,
+	) -> Result<CommandRefusal> {
+		self.pod_call(
+			"/v2/commands/refuse",
+			&json!({"operation_id":operation_id,"scratch_space_id":scratch_space_id,"run_id":run_id}),
+		)
+		.await
+	}
 	async fn cancel_waiting(&self, scratch_space_id: &str, run_id: &str) -> Result<()> {
 		self.pod_effect(
 			"/v2/runs/cancel",
@@ -58,6 +149,10 @@ impl ExecutionPodRuntime for RunnerHttp {
 			"cancelled_waiting",
 		)
 		.await
+	}
+	async fn stop_command(&self, operation_id: &str) -> Result<CommandResult> {
+		self.pod_call("/v2/commands/stop", &json!({"operation_id":operation_id}))
+			.await
 	}
 	async fn backgrounds(&self, scratch_space_id: &str) -> Result<BackgroundProcesses> {
 		self.pod_call(
@@ -70,12 +165,63 @@ impl ExecutionPodRuntime for RunnerHttp {
 		self.pod_call("/v2/background/stop", &json!({"operation_id":operation_id}))
 			.await
 	}
-	async fn python_start(&self, scratch_space_id: &str, run_id: &str) -> Result<PythonSession> {
-		self.pod_call(
-			"/v2/python/start",
-			&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
-		)
-		.await
+	async fn python_start(&self, request: &PythonStartRequest) -> Result<PythonSession> {
+		self.pod_call("/v2/python/start", request).await
+	}
+	async fn stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<Vec<String>> {
+		#[derive(serde::Deserialize)]
+		struct Stopped {
+			stopped: Vec<String>,
+		}
+		let result: Stopped = self
+			.pod_call(
+				"/v2/runs/stop",
+				&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
+			)
+			.await?;
+		Ok(result.stopped)
+	}
+	async fn background_log(&self, request: &LogRequest) -> Result<LogChunk> {
+		self.pod_call("/v2/background/log", request).await
+	}
+	async fn file_read(&self, request: &FileReadRequest) -> Result<FileChunk> {
+		self.pod_call("/v2/files/read", request).await
+	}
+	async fn file_search(&self, request: &FileSearchRequest) -> Result<FileSearchResult> {
+		self.pod_call("/v2/files/search", request).await
+	}
+	async fn file_patch(&self, request: &FilePatchRequest) -> Result<FilePatchResult> {
+		self.pod_call("/v2/files/patch", request).await
+	}
+	async fn file_write(&self, request: &FileWriteRequest) -> Result<FileWriteResult> {
+		self.pod_call("/v2/files/write", request).await
+	}
+	async fn file_manifest(&self, request: &FileManifestRequest) -> Result<FileManifestResult> {
+		self.pod_call("/v2/files/manifest", request).await
+	}
+	async fn preview_start(&self, request: &PreviewStartRequest) -> Result<PreviewTarget> {
+		self.pod_call("/v2/previews/start", request).await
+	}
+	async fn mcp_start(&self, request: &McpStartRequest) -> Result<McpSession> {
+		self.pod_call("/v2/mcp/start", request).await
+	}
+	async fn mcp_call(&self, request: &McpCallRequest) -> Result<McpCallResult> {
+		self.pod_call("/v2/mcp/call", request).await
+	}
+	async fn preview_stop(&self, operation_id: &str) -> Result<()> {
+		self.stop_confirmed("/v2/previews/stop", operation_id).await
+	}
+	async fn mcp_stop(&self, operation_id: &str) -> Result<()> {
+		self.stop_confirmed("/v2/mcp/stop", operation_id).await
+	}
+	async fn mcp_stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<()> {
+		let _: Value = self
+			.pod_call(
+				"/v2/mcp/stop_run",
+				&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
+			)
+			.await?;
+		Ok(())
 	}
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult> {
 		self.pod_call("/v2/python/cell", request).await
@@ -127,5 +273,32 @@ impl ExecutionPodRuntime for RunnerHttp {
 			"deleted",
 		)
 		.await
+	}
+}
+
+#[cfg(test)]
+mod timeout_tests {
+	use super::*;
+
+	#[test]
+	fn each_pod_route_uses_its_required_wait_limit() {
+		for (path, body, seconds) in [
+			("/v2/previews/start", json!({}), 75),
+			("/v2/mcp/start", json!({}), 900),
+			("/v2/mcp/call", json!({"timeout_seconds": 42}), 57),
+			("/v2/mcp/call", json!({"timeout_seconds": 0}), 15),
+			("/v2/runs/stop", json!({}), 60),
+			("/v2/mcp/stop_run", json!({}), 60),
+			("/v2/python/start", json!({}), 60),
+			("/v2/commands/submit", json!({}), 30),
+			("/v2/commands/refuse", json!({}), 30),
+			("/v2/pods/ensure", json!({}), 1900),
+		] {
+			assert_eq!(
+				pod_timeout(path, &body),
+				Duration::from_secs(seconds),
+				"{path}"
+			);
+		}
 	}
 }

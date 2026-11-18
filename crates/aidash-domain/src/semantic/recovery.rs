@@ -42,7 +42,9 @@ impl Recovery {
 		let actions = match cause {
 			// A stale reuse retries automatically with a fresh retrieval, like an
 			// outage; once exhausted it pauses as `RetriesExhausted`.
-			Failure::Pending | Failure::Unavailable | Failure::Stale if retry_scheduled => {
+			Failure::Pending | Failure::Unavailable | Failure::IndexRepair | Failure::Stale
+				if retry_scheduled =>
+			{
 				vec![Wait]
 			}
 			// Retrying the same request cannot change the outcome: the Run's
@@ -55,10 +57,14 @@ impl Recovery {
 			}
 			Failure::Pending
 			| Failure::Unavailable
+			| Failure::IndexRepair
 			| Failure::Stale
 			| Failure::RetriesExhausted
 			| Failure::Authority
 			| Failure::Configuration
+			// Retrying succeeds once the Workspace switches to an embedding
+			// model that meets the level, or the level is lowered (#963).
+			| Failure::DataProtection
 			| Failure::Allowance
 			| Failure::ProviderContract => vec![RetryUnchangedBinding, CreateFollowUpTask],
 		};

@@ -106,8 +106,8 @@ pub async fn initialize_as(
 		.with_ansi(false)
 		.try_init();
 	let mut config = Config::from_settings(settings)?;
-	// A malformed Research provider declaration refuses to start (ADR 0055),
-	// before registry validation reads which providers are available.
+	// Page reading is configured before registry validation reads which
+	// providers are available.
 	crate::apps::execution::services::research::configure(
 		&settings.research_providers,
 		&crate::config::settings::profile(),
@@ -151,10 +151,9 @@ pub async fn initialize_as(
 		.with_egress(aidash_integrations::federation::Egress {
 			enabled: config.federation,
 			key: config.deployment_key.clone(),
-			keys: keys.map(|keys| keys as Arc<dyn aidash_application::federation::key::DeploymentKeys>),
+			keys: keys
+				.map(|keys| keys as Arc<dyn aidash_application::federation::key::DeploymentKeys>),
 		})
-		// An invalid Deployment retention period refuses to start (ADR 0045).
-		.with_research_retention(settings.research_retention.rules()?)
 		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
 		.with_schedules(settings.schedules.ceilings()?, settings.schedules.poll()?)
@@ -278,9 +277,6 @@ impl RuntimeTasks {
 		{
 			require_egress_broker(&federation.store)?;
 			let listener = tokio::net::TcpListener::bind(egress.listen).await?;
-			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
-				federation.store.clone(),
-			));
 			let scopes = Arc::new(
 				crate::apps::execution::repositories::scope_egress::DurableScopes::new(
 					federation.store.clone(),
@@ -313,11 +309,7 @@ impl RuntimeTasks {
 				"egress gateway",
 				runtime_task(async move {
 					aidash_integrations::egress::serve_with_scopes(
-						listener,
-						authority,
-						Some(scopes),
-						limits,
-						stopping,
+						listener, scopes, limits, stopping,
 					)
 					.await
 					.map_err(Into::into)
@@ -351,6 +343,10 @@ impl RuntimeTasks {
 			"metrics",
 			runtime_task(crate::apps::execution::services::metrics::run(
 				coordinator.clone(),
+				vec![
+					("main", federation.store.pool.clone()),
+					("control", federation.store.control_pool.clone()),
+				],
 			)),
 		);
 		if let Some(service) = event_streams.clone() {
@@ -573,14 +569,13 @@ impl RuntimeTasks {
 			)),
 		);
 		let retention = federation.store.clone();
-		let research_retention = federation.store.research_retention;
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		let serving = event_streams.is_some();
 		tasks.spawn_service(
 			"retention",
 			// Inference progress expires minutes after its outcome, so attempts
-			// orphaned on unscheduled Runs are closed first; hourly workbench,
-			// Research evidence and Tenant purges keep their cadence on the same loop.
+			// orphaned on unscheduled Runs are closed first; hourly workbench
+			// and Tenant purges keep their cadence on the same loop.
 			runtime_task(watched_loop::run(
 				"retention",
 				Duration::from_secs(60),
@@ -588,28 +583,6 @@ impl RuntimeTasks {
 					let retention = retention.clone();
 					async move {
 						if ticks.is_multiple_of(60) {
-							// Deployment Scope: every Tenant's snapshots, under each
-							// Tenant's own periods.
-							if let Err(error) =
-								crate::apps::execution::repositories::research::retention::sweep(
-									&retention,
-									&research_retention,
-								)
-								.await
-							{
-								tracing::warn!(%error, "research evidence retention sweep failed");
-							}
-							// Provider results under the Research account terms (ADR 0058).
-							if let Err(error) =
-								crate::apps::execution::services::research::sweep_account_terms(
-									&retention,
-									crate::apps::execution::services::research::providers()
-										.account_terms(),
-								)
-								.await
-							{
-								tracing::warn!(%error, "research account terms sweep failed");
-							}
 							// Deleted Tenants past their grace period, and the audit
 							// history that outlived an earlier purge (ADR 0061).
 							if let Err(error) =
@@ -991,7 +964,9 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 	) -> aidash_application::Result<()> {
 		use aidash_domain::tool::providers::{ToolTier, requires_runner};
 		if descriptor.provider.starts_with("research.") {
-			return crate::apps::execution::services::research::providers().available(descriptor);
+			return crate::apps::execution::services::research::providers()
+				.available(&descriptor.provider)
+				.map_err(Into::into);
 		}
 		if descriptor.tier != ToolTier::Sandboxed {
 			return Ok(());
@@ -1006,6 +981,11 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 			)));
 		}
 		Ok(())
+	}
+	fn legacy_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		crate::capabilities::tools::legacy_specifications()
 	}
 	fn specifications(
 		&self,
@@ -2140,26 +2120,6 @@ pub(crate) fn cleanup_repository(
 	crate::apps::execution::repositories::cleanup::Repository { store }
 }
 
-pub(crate) fn python_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-	run: Option<&'a crate::domain::Run>,
-) -> crate::apps::execution::repositories::python::Scope<'a> {
-	crate::apps::execution::repositories::python::Scope { store, access, run }
-}
-pub(crate) fn python_repository(
-	store: &Store,
-) -> crate::apps::execution::repositories::python::Repository<'_> {
-	crate::apps::execution::repositories::python::Repository { store }
-}
-pub(crate) fn package_scope<'a>(
-	store: &'a Store,
-	access: &'a mut crate::authorization::access::Access,
-	run: Option<&'a crate::domain::Run>,
-) -> crate::apps::execution::repositories::packages::Scope<'a> {
-	crate::apps::execution::repositories::packages::Scope { store, access, run }
-}
-
 pub(crate) fn file_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
@@ -2475,7 +2435,6 @@ pub(crate) fn workbench_sandbox_repository(
 ) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
 		store: runtime.store.clone(),
-		search_destination: workbench_search_destination,
 		node_id: runtime.config.deployment.to_string(),
 		tenant_actions:
 			crate::apps::registry::workbench::repositories::authority::TenantActions::new(
@@ -2484,20 +2443,6 @@ pub(crate) fn workbench_sandbox_repository(
 			),
 		actor,
 	}
-}
-
-fn workbench_search_destination(
-	provider: &str,
-	arguments: &serde_json::Value,
-) -> aidash_application::Result<Option<String>> {
-	let query = aidash_domain::research::search::SearchQuery::parse(arguments, None)?;
-	let provider = crate::apps::execution::services::research::providers()
-		.search(provider)
-		.map_err(aidash_application::Error::from)?;
-	Ok(provider
-		.disclosure(&query)
-		.ok()
-		.map(|outbound| outbound.destination))
 }
 
 /// Isolated test HTTP requests retain their original timeout, redirect and

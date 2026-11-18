@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 #[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct DeploymentSettings {
 	/// Minimum Data Protection Level for every Tenant on this Deployment.
-	#[setting(default = "aidash_domain::data_protection::Level::Standard", leaf)]
+	#[setting(default = "aidash_domain::data_protection::Level::LOWEST", leaf)]
 	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// Origins of models hosted by this Deployment, not merely network-permitted.
 	#[setting(default = "Vec::new()", leaf)]
@@ -78,10 +78,45 @@ pub struct DeploymentSettings {
 	/// Execution image references approved for each Tenant.
 	#[setting(default = "BTreeMap::new()", leaf)]
 	pub scratch_tenant_images: BTreeMap<String, Vec<String>>,
+	/// Optional outgoing mail for Catalog Approval Requests.
+	#[setting(optional, node)]
+	pub smtp: Option<SmtpSettings>,
 	/// `[deployment.key]`: where the Deployment Key lives. Without it this
 	/// Deployment cannot federate with other Deployments.
 	#[setting(optional, node)]
 	pub key: Option<DeploymentKeySettings>,
+}
+
+/// `[deployment.smtp]`: an optional outgoing mail server. Invalid or missing
+/// connection details are reported on delivery, never during startup.
+#[settings(fragment = true)]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SmtpSettings {
+	#[setting(default = "String::new()")]
+	pub host: String,
+	#[setting(default = "587")]
+	pub port: u16,
+	#[setting(default = "String::new()")]
+	pub from: String,
+	#[setting(default = "None")]
+	pub username: Option<String>,
+	#[setting(default = "None", secret)]
+	pub password: Option<String>,
+	#[setting(default = "true")]
+	pub starttls: bool,
+}
+
+impl fmt::Debug for SmtpSettings {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("SmtpSettings")
+			.field("host", &self.host)
+			.field("port", &self.port)
+			.field("from", &self.from)
+			.field("username", &self.username)
+			.field("password", &self.password.as_ref().map(|_| "[redacted]"))
+			.field("starttls", &self.starttls)
+			.finish()
+	}
 }
 
 /// `[deployment.key]`. Name exactly one of `file` and `kms`.

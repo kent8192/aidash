@@ -107,8 +107,8 @@ export function ProviderToolFields({
     <div className="grid gap-3">
       <Hint>
         {ja
-          ? "Provider tool は OpenRouter が実行します。Catalog Approval のみで利用でき、結果は Research の証拠にはなりません。この設定は Run の Binding に固定され、モデルは変更できません。"
-          : "OpenRouter executes this Provider tool with Catalog Approval as its only consent. Its results are not Research evidence. These parameters are pinned in the Run Binding and cannot be changed by the model."}
+          ? "Provider tool は OpenRouter が実行します。Catalog Approval のみで利用できます。この設定は Run の Binding に固定され、モデルは変更できません。"
+          : "OpenRouter executes this Provider tool with Catalog Approval as its only consent. These parameters are pinned in the Run Binding and cannot be changed by the model."}
       </Hint>
       <Field
         label={
@@ -405,7 +405,7 @@ function ActivityItem({ value, ja }: { value: unknown; ja: boolean }) {
   );
 }
 
-/** Read-only data: never convert provider URLs to Source citations. */
+/** Read-only data: never turn provider URLs into links to pages Aidash read. */
 export function ProviderToolActivity({
   context,
   journal,
@@ -439,8 +439,8 @@ export function ProviderToolActivity({
       </summary>
       <Hint>
         {ja
-          ? "OpenRouter が報告した活動です。Research の証拠や Source citation ではありません。"
-          : "Activity reported by OpenRouter. This is not Research evidence or a Source citation."}
+          ? "OpenRouter が報告した活動です。"
+          : "Activity reported by OpenRouter."}
       </Hint>
       <div className="grid gap-3">
         {activity.map((entry, index) => {

@@ -90,12 +90,13 @@ pub struct Store {
 	/// The MCP sessions of Runs with their Agent Plugins' remote servers, shared by every
 	/// clone of this Store and connecting under the same Keyless rule as `tool_clients`.
 	pub plugin_sessions: std::sync::Arc<aidash_integrations::plugin_sessions::McpPluginSessions>,
+	/// The stdio MCP sessions of Runs in their Execution Pods (ADR 0073), shared like
+	/// `plugin_sessions`.
+	pub stdio_sessions: std::sync::Arc<aidash_application::plugin_stdio::StdioSessions>,
 	/// The Deployment Key and the switch Federation requests to other
 	/// Deployments are signed and gated by, for callers that hold a Store and
 	/// no Federation runtime (ADR 0064).
 	pub egress: aidash_integrations::federation::Egress,
-	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
-	pub research_retention: aidash_domain::retention::RetentionRules,
 	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
@@ -528,11 +529,11 @@ impl Store {
 			semantic_client: provider_clients.direct.clone(),
 			provider_clients,
 			plugin_sessions: plugin_sessions(&keyless, &tool_clients),
+			stdio_sessions: Default::default(),
 			tool_clients,
 			keyless,
 			egress: Default::default(),
-			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
-			data_protection_floor: Default::default(),
+			data_protection_floor: aidash_domain::data_protection::Level::LOWEST,
 			test_limit_ceilings: Default::default(),
 			schedule_ceilings: Default::default(),
 			schedule_poll: std::time::Duration::from_secs(15),
@@ -583,13 +584,6 @@ impl Store {
 		floor: aidash_domain::data_protection::Level,
 	) -> Self {
 		self.data_protection_floor = floor;
-		self
-	}
-	pub fn with_research_retention(
-		mut self,
-		rules: aidash_domain::retention::RetentionRules,
-	) -> Self {
-		self.research_retention = rules;
 		self
 	}
 	pub fn with_preview_limits(mut self, limits: aidash_domain::preview::live::Limits) -> Self {
@@ -690,8 +684,8 @@ impl Store {
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
 			plugin_sessions: self.plugin_sessions.clone(),
+			stdio_sessions: self.stdio_sessions.clone(),
 			egress: self.egress.clone(),
-			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			schedule_ceilings: self.schedule_ceilings,
@@ -754,8 +748,8 @@ impl Store {
 			tool_clients: self.tool_clients.clone(),
 			keyless: self.keyless.clone(),
 			plugin_sessions: self.plugin_sessions.clone(),
+			stdio_sessions: self.stdio_sessions.clone(),
 			egress: self.egress.clone(),
-			research_retention: self.research_retention,
 			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			schedule_ceilings: self.schedule_ceilings,
@@ -3069,8 +3063,8 @@ impl Store {
 		tx.commit().await?;
 		Ok(true)
 	}
-	/// A channel message a local Run publishes, attributed to that Run so its
-	/// Source citations resolve. Only scoped authority tracks it as Run output.
+	/// A channel message a local Run publishes, attributed to that Run. Only
+	/// scoped authority tracks it as Run output.
 	pub(crate) async fn message_from_run(
 		&self,
 		scope: &TenancyScope,
@@ -3355,15 +3349,10 @@ impl Store {
 
 impl Store {
 	pub async fn run(&self, scope: &TenancyScope, id: Uuid) -> Result<Run> {
-		let mut run: Run = self
-			.pool
+		self.pool
 			.atomic(scope, async |tx| RunRecord::read(tx, id).await)
 			.await?
-			.try_into()?;
-		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		super::research::resolve_entries(tx.as_mut(), id, &mut run.context.history).await?;
-		tx.commit().await?;
-		Ok(run)
+			.try_into()
 	}
 	/// List validated executable records. Inspection uses inspect_runs and retains invalid rows.
 	pub async fn runs(&self, scope: &TenancyScope) -> Result<Vec<Run>> {
@@ -3523,15 +3512,7 @@ impl Store {
 		// adopted compaction ends its step and releases the lease so the next
 		// poll can continue the Run immediately.
 		let retain_lease = aidash_domain::run_state::persistence::retains_lease(kind);
-		let mut safe_context = run.context.clone();
-		super::research::protect_projection(tx.as_mut(), run.id, &mut safe_context).await?;
-		if kind == "context.compacted"
-			&& safe_context.execution_summary != run.context.execution_summary
-		{
-			return Err(Error::Conflict(
-				"Research changed during summary adoption; retry the projection".into(),
-			));
-		}
+		let safe_context = run.context.clone();
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &safe_context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if retain_lease { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if retain_lease { "lease_until" } else { "NULL" }))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
@@ -3602,6 +3583,7 @@ impl Store {
 				.await?;
 			}
 			self.close_plugin_sessions_soon(saved.id);
+			self.stop_python_soon(saved.id);
 		}
 		self.run_event(
 			tx,
@@ -3875,7 +3857,22 @@ impl Store {
 		tx.commit().await?;
 		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		self.close_plugin_sessions_soon(run.id);
+		self.stop_python_soon(run.id);
 		Ok(())
+	}
+
+	/// Stops an ended Run's Python session in its Execution Pod without making
+	/// the caller wait. A paused Run keeps its session for when it resumes.
+	fn stop_python_soon(&self, run: Uuid) {
+		let store = self.clone();
+		tokio::spawn(async move {
+			if let Err(error) =
+				crate::apps::execution::repositories::operations::pods::stop_python(&store, run)
+					.await
+			{
+				tracing::info!(%run, %error, "Python session not stopped at the Run's end");
+			}
+		});
 	}
 
 	/// Ends the Run's MCP sessions with its plugin servers without making the caller wait for
@@ -3883,8 +3880,10 @@ impl Store {
 	/// a session closed too early reopens on the next call.
 	fn close_plugin_sessions_soon(&self, run: Uuid) {
 		let sessions = self.plugin_sessions.clone();
+		let stdio = self.stdio_sessions.clone();
 		tokio::spawn(async move {
 			aidash_application::ports::tools::PluginSessions::close(sessions.as_ref(), run).await;
+			stdio.close(run).await;
 		});
 	}
 
@@ -4812,18 +4811,7 @@ impl Store {
 				"worker lease lost while recording tool result".into(),
 			));
 		}
-		// A research result whose Provider result account terms expired
-		// meanwhile is stored as its tombstone (ADR 0058).
-		let journal_query =
-			result["contract"] == aidash_domain::context::research::JOURNAL_QUERY_CONTRACT;
-		let expired = crate::apps::execution::models::research::ResearchAttempt::expired_result(
-			tx.as_mut(),
-			run.id,
-			key,
-			result,
-		)
-		.await?;
-		let result = expired.as_ref().unwrap_or(result);
+		let journal_query = result["contract"] == "aidash.journal.query/1";
 		if InvocationRecord::complete(tx.as_mut(), run.id, key, result).await? {
 			event_records::append_run(
 				tx.as_mut(),
@@ -4844,7 +4832,6 @@ impl Store {
 			.await?;
 		}
 		tx.commit().await?;
-		// The caller carries on with what was stored, never the expired copy.
 		if journal_query && let Err(error) = super::journal_query::acknowledge(self, run).await {
 			tracing::warn!(%error, run = %run.id, "Journal Query receipt remains pending");
 		}

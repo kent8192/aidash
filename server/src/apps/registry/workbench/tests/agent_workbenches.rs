@@ -59,7 +59,8 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		(
 			"fixture-model",
 			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+			// The default tools, including the Schedule tools (#557), outgrow 32,768.
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"fixture-tool",
@@ -76,7 +77,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			.await
 			.unwrap();
 	}
-	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
+	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update","workbench.test_limits.update"],"resources":{"kinds":["*"]}},{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
 	common::tenant_root(&f, "acme").await;
 	assert_eq!(
 		common::post(
@@ -90,6 +91,18 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		200
 	);
 	let token = &common::subject_credential(&f.store, "acme", "alice").await;
+	// The default test limits (20,000 input bytes, 16,384 total tokens) no
+	// longer hold an Agent with every default tool. This test is about the
+	// simulated tool, so it raises them to the Deployment's ceilings.
+	let limits_path = "/api/workbench/test-limits/acme";
+	let (status, read) = common::get(&app, token, limits_path).await;
+	assert_eq!(status, 200, "test limits: {read}");
+	let mut limits = read["limits"].clone();
+	for field in ["max_input_bytes", "max_total_tokens"] {
+		limits[field] = read["ceilings"][field].clone();
+	}
+	let (status, saved) = request(&app, token, "PUT", limits_path, limits).await;
+	assert_eq!(status, 200, "test limits: {saved}");
 	let mut entry = agent();
 	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	let (status, draft) =
@@ -221,8 +234,8 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		let policy = TenantDataProtection::build()
 			.tenant("acme")
 			.level("no_training")
-			.model_call_zdr(true)
-			.plan_connection_exempt(true)
+			.forbid_plan_connections(false)
+			.forbid_keyless_endpoints(true)
 			.updated_at(chrono::Utc::now())
 			.updated_by("fixture")
 			.finish();
@@ -252,7 +265,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		refused["error"]
 			.as_str()
 			.unwrap()
-			.contains("Tenant Keyless endpoints"),
+			.contains("forbids Keyless endpoints"),
 		"{refused}"
 	);
 	assert_eq!(tool_hits.load(Ordering::SeqCst), 0);
@@ -382,6 +395,16 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "register: {registration}");
 	assert_eq!(registration["entry"]["id"], agent_id);
 	assert_eq!(registration["behavioral_tested"], false);
+	assert!(
+		registration["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|result| {
+				result["carried"] == false
+					&& result["changed"] == json!(["no earlier carrying approval"])
+			})
+	);
 	let (status, versions) = common::get(&app, alice_token, &format!("{path}/versions")).await;
 	assert_eq!(status, 200, "versions: {versions}");
 	assert_eq!(versions[0]["entry"]["id"], agent_id);

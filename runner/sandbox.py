@@ -8,7 +8,6 @@ import resource
 import socket
 import sys
 sys.path.insert(0, "/opt/aidash")
-from egress import environment as egress_environment
 
 request_path = Path("/request/request.json")
 while not request_path.exists():
@@ -28,7 +27,6 @@ environment = {key: value for key, value in os.environ.items() if key in {
     "MPLCONFIGDIR", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
     "UV_PYTHON_DOWNLOADS", "UV_PYTHON"
 }}
-environment.update(egress_environment(request.get("egress")))
 if request["kind"] in ("python", "journal"):
     if request["kind"] == "journal":
         environment["AIDASH_JOURNAL"] = "1"

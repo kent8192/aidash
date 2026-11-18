@@ -3,10 +3,12 @@
 use crate::{
 	Error, Result,
 	ports::tools::{PluginServer, PluginSessions},
+	tenant_secrets::CallSecret,
 };
 use aidash_domain::{
 	agent_plugin::{
-		self, ConnectionCause, Listing, McpServer, PluginName, PluginTools, ServerName,
+		self, ConnectionCause, Listing, McpServer, PluginName, PluginTools, RemoteServer,
+		ServerName,
 	},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	tool::providers::reserved_aliases,
@@ -22,6 +24,10 @@ use uuid::Uuid;
 pub const SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const CONCURRENCY: usize = 4;
+/// A stdio server starts a process in the Run's Execution Pod before it lists, which can take
+/// far longer than a remote listing (ADR 0073).
+pub const STDIO_SERVER_TIMEOUT: Duration = Duration::from_secs(330);
+pub const STDIO_TOTAL_TIMEOUT: Duration = Duration::from_secs(600);
 /// The cause code of a server that did not answer in time.
 const TIMEOUT: &str = "timeout";
 
@@ -35,7 +41,7 @@ pub fn agent_bindings(snapshot: &BindingSnapshot) -> Result<AgentBindings> {
 	Ok(serde_json::from_value(agent.definition.config.clone())?)
 }
 
-/// What each remote server of an Agent's plugins answered when it was listed.
+/// What each server of an Agent's plugins answered when it was listed.
 pub type Listings = BTreeMap<(PluginName, ServerName), Listing>;
 
 /// Lists every remote server of the Agent's plugins and decides which tools the Run pins. A server
@@ -51,12 +57,52 @@ pub async fn pin_for_run(
 }
 
 /// The network half of [`pin_for_run`]: every remote server of the Agent's plugins, listed within
-/// the per-server and total deadlines. A server that did not answer in time reports so.
+/// the per-server and total deadlines, and, where `sessions` runs them, every stdio server within
+/// its own. A server that did not answer in time reports so.
 pub async fn list_servers(
 	sessions: &dyn PluginSessions,
 	run: Uuid,
 	agent: &AgentBindings,
 ) -> Listings {
+	let (mut listed, stdio) = tokio::join!(
+		list_remote(sessions, run, agent),
+		list_stdio(sessions, run, agent)
+	);
+	listed.extend(stdio);
+	listed
+}
+
+/// Stdio servers start one after another, since a Run's sessions share its Execution Pod.
+async fn list_stdio(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBindings) -> Listings {
+	let mut listed = BTreeMap::new();
+	let Some(stdio) = sessions.stdio() else {
+		return listed;
+	};
+	let deadline = Instant::now() + STDIO_TOTAL_TIMEOUT;
+	for plugin in &agent.agent_plugins {
+		for (name, server) in &plugin.servers {
+			let McpServer::Stdio(config) = server else {
+				continue;
+			};
+			let server = PluginServer {
+				plugin: plugin.name.clone(),
+				digest: plugin.digest.clone(),
+				server: name.clone(),
+			};
+			let limit = (Instant::now() + STDIO_SERVER_TIMEOUT).min(deadline);
+			let listing = match timeout_at(limit, stdio.list(run, &server, config)).await {
+				Ok(Ok(tools)) => Listing::Listed(tools),
+				Ok(Err(Error::Invalid(cause))) => Listing::Unavailable(cause),
+				Ok(Err(error)) => Listing::Unavailable(cause(&error)),
+				Err(_) => Listing::Unavailable(TIMEOUT.into()),
+			};
+			listed.insert(key(&server), listing);
+		}
+	}
+	listed
+}
+
+async fn list_remote(sessions: &dyn PluginSessions, run: Uuid, agent: &AgentBindings) -> Listings {
 	let servers: Vec<_> = agent
 		.agent_plugins
 		.iter()
@@ -83,14 +129,7 @@ pub async fn list_servers(
 	// compiler cannot prove this future `Send` inside a route handler that awaits it.
 	let mut answers = stream::iter(servers)
 		.map(|(server, config)| async move {
-			let listing =
-				match timeout(SERVER_TIMEOUT, sessions.list(run, &server, &config, None)).await {
-					Ok(Ok(tools)) => Listing::Listed(tools),
-					Ok(Err(error)) => connection_cause(&error, config.url.as_str())
-						.map(Listing::Connection)
-						.unwrap_or_else(|| Listing::Unavailable(cause(&error))),
-					Err(_) => Listing::Unavailable(TIMEOUT.into()),
-				};
+			let listing = list_one(sessions, run, &server, &config, None).await;
 			(key(&server), listing)
 		})
 		.buffer_unordered(CONCURRENCY);
@@ -105,6 +144,97 @@ pub async fn list_servers(
 			.or_insert_with(|| Listing::Unavailable(TIMEOUT.into()));
 	}
 	listed
+}
+
+/// One server's listing within [`SERVER_TIMEOUT`], with every failure reduced to a typed cause.
+/// The Run-start pin and the attach-time listing share it, so both report the same causes.
+async fn list_one(
+	sessions: &dyn PluginSessions,
+	run: Uuid,
+	server: &PluginServer,
+	config: &RemoteServer,
+	auth: Option<&CallSecret>,
+) -> Listing {
+	match timeout(SERVER_TIMEOUT, sessions.list(run, server, config, auth)).await {
+		Ok(Ok(tools)) => Listing::Listed(tools),
+		Ok(Err(error)) => connection_cause(&error, config.url.as_str())
+			.map(Listing::Connection)
+			.unwrap_or_else(|| Listing::Unavailable(cause(&error))),
+		Err(_) => Listing::Unavailable(TIMEOUT.into()),
+	}
+}
+
+/// What one remote server lists for the person attaching or editing its Agent Plugin, so they can
+/// declare Read-only tools (ADR 0073, amended 2026-11-16). `auth` is that person's OAuth
+/// Connection or personal secret; the caller resolves it and never passes a shared one. The listing uses its own session key and
+/// ends it before returning, so it never becomes a Run's session.
+pub async fn list_for_attach(
+	sessions: &dyn PluginSessions,
+	server: &PluginServer,
+	config: &RemoteServer,
+	auth: Option<&CallSecret>,
+) -> AttachListing {
+	let listing = Uuid::new_v4();
+	let listed = list_one(sessions, listing, server, config, auth).await;
+	sessions.close(listing).await;
+	AttachListing::from(listed)
+}
+
+/// One tool an attach-time listing returned: its name and the `inputSchema` digest a Read-only
+/// declaration records, computed exactly as the Run-start pin computes it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+pub struct AttachTool {
+	pub name: String,
+	pub schema_digest: String,
+}
+
+/// The answer of an attach-time listing. When it is `unavailable`, Read-only cannot be declared
+/// for the server; `reason` is a typed cause code, never a URL or a response body:
+/// `connection_required` or `connection_scope_insufficient` (no usable OAuth Connection),
+/// `secret_unavailable` (the person has no personal secret of the named secret's name; the
+/// shared Tenant Secret is never used here), `secret_rejected` (the server refused the person's
+/// secret), or a transport cause such as `unreachable`, `initialize_failed`, `invalid_response`,
+/// `forbidden` or `timeout`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AttachListing {
+	Listed { tools: Vec<AttachTool> },
+	Unavailable { reason: String },
+}
+
+impl From<Listing> for AttachListing {
+	fn from(listing: Listing) -> Self {
+		match listing {
+			Listing::Listed(tools) => Self::Listed {
+				tools: tools
+					.iter()
+					.map(|tool| AttachTool {
+						name: tool.name.clone(),
+						schema_digest: agent_plugin::schema_digest(&tool.input_schema),
+					})
+					.collect(),
+			},
+			Listing::Unavailable(reason) => Self::Unavailable { reason },
+			Listing::Connection(cause) => Self::Unavailable {
+				reason: cause.code().into(),
+			},
+		}
+	}
+}
+
+impl AttachListing {
+	/// The answer for a server whose credential could not be resolved: nothing was sent.
+	pub fn unavailable(error: &Error) -> Self {
+		Self::Unavailable {
+			reason: if let Error::Invalid(code) = error
+				&& code == aidash_domain::oauth_connections::CONNECTION_REQUIRED
+			{
+				code.clone()
+			} else {
+				cause(error)
+			},
+		}
+	}
 }
 
 /// The pure half of [`pin_for_run`]: decides the tools from what the servers listed. It reads
@@ -215,6 +345,21 @@ fn connection_cause(error: &Error, endpoint: &str) -> Option<ConnectionCause> {
 fn cause(error: &Error) -> String {
 	match error {
 		Error::Forbidden => "forbidden".into(),
+		// The server's named secret is missing, deleted, not for its host, or the definition
+		// requires the person's own and they have none: nothing was sent.
+		Error::Invalid(code)
+			if code == aidash_domain::tenant_secrets::UNAVAILABLE
+				|| crate::tenant_secrets::personal_error_value(error).is_some() =>
+		{
+			aidash_domain::tenant_secrets::UNAVAILABLE.into()
+		}
+		// The server refused the pasted secret: no connection would change that.
+		Error::Invalid(message)
+			if serde_json::from_str::<serde_json::Value>(message)
+				.is_ok_and(|value| value["error"] == aidash_domain::tenant_secrets::REJECTED) =>
+		{
+			aidash_domain::tenant_secrets::REJECTED.into()
+		}
 		Error::Invalid(_) => "invalid_response".into(),
 		Error::Port(source) => source
 			.downcast_ref::<crate::ports::tools::ListFailure>()

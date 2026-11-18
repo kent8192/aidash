@@ -165,9 +165,6 @@ pub(crate) mod sessions;
 
 pub(crate) mod cleanup;
 
-pub(crate) mod packages;
-pub(crate) mod python;
-
 pub(crate) mod files;
 
 pub(crate) mod configuration;
@@ -188,8 +185,6 @@ pub(crate) mod capability_projection;
 pub(crate) mod core_records;
 
 pub(crate) mod worker;
-
-pub(crate) mod research;
 
 pub(crate) mod egress;
 pub(crate) mod live_previews;

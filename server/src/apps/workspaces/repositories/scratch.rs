@@ -708,42 +708,36 @@ impl ScratchServices for NativeScratchServices<'_> {
 		settings: &ScratchSettings,
 	) -> aidash_application::Result<()> {
 		self.validate_runtime(access, node, settings).await?;
-		for id in &settings.external_services {
-			let (sql, values) = Query::select()
-				.column(Alias::new("version"))
-				.from(Alias::new("registry"))
-				.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
-				.and_where(Expr::col("id").eq(Expr::value(id.clone())))
-				.and_where(Expr::col("kind").eq(Expr::value("external_service")))
-				.build(PostgresQueryBuilder);
-			let rows = access
-				.tx
-				.fetch_all(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?;
-			let mut versions = Vec::new();
-			for row in rows {
-				let version: String = row
-					.get("version")
-					.map_err(reinhardt::core::exception::Error::from)
-					.map_err(crate::Error::from)?;
-				if let Ok(parsed) = semver::Version::parse(&version) {
-					versions.push((parsed, version));
+		// A service is added only when a Catalog Approval for this Node, not limited
+		// to certain subjects or Agents, covers it (#738). Services already on the
+		// Space are not passed here, so a later withdrawal never blocks a save.
+		let tenant = access.identity.tenant.clone();
+		let usable = crate::apps::execution::repositories::egress::usable_services(
+			&mut access.tx,
+			&tenant,
+			node.as_str(),
+			&settings.external_services,
+		)
+		.await
+		.map_err(aidash_application::Error::from)?;
+		for (id, result) in usable {
+			match result {
+				Ok(entry) => {
+					// Whoever adds it must still be able to read the definition. The
+					// approval was checked on the Space's Node above, so this asks
+					// policy alone rather than the caller's own Node.
+					let resource = crate::authorization::catalog::resource(access, &entry);
+					if !access
+						.decide(&resource, "registry.read")
+						.await
+						.map_err(aidash_application::Error::from)?
+					{
+						return Err(aidash_application::Error::Forbidden);
+					}
+					aidash_domain::egress::definition(&entry)?;
 				}
+				Err(reason) => return Err(refusal(&id, reason)),
 			}
-			let version = versions
-				.into_iter()
-				.max_by(|a, b| a.0.cmp(&b.0))
-				.map(|(_, version)| version)
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let reference = aidash_domain::registry::EntityRef {
-				id: id.clone(),
-				version,
-			};
-			let entry =
-				crate::authorization::catalog::entry(access, &reference, "registry.read").await?;
-			crate::marketplace::check_pinned(access, &entry).await?;
-			aidash_domain::egress::definition(&entry)?;
 		}
 		Ok(())
 	}
@@ -973,3 +967,116 @@ impl NativeScratchServices<'_> {
 
 #[cfg(test)]
 mod tests;
+
+/// The refusal for adding an External service that is not usable now.
+fn refusal(id: &str, reason: &str) -> aidash_application::Error {
+	use aidash_domain::egress::SERVICE_APPROVAL_LIMITED;
+	aidash_application::Error::Invalid(if reason == SERVICE_APPROVAL_LIMITED {
+		format!(
+			"External service {id} is approved only for certain users or Agents; a Scratch Space needs a Catalog Approval for everyone on this Node"
+		)
+	} else {
+		format!(
+			"External service {id} has no Catalog Approval for everyone on this Node, or it is not registered"
+		)
+	})
+}
+
+/// Whether an External service is registered for the Tenant at any version.
+async fn registered_service(access: &mut Access, id: &str) -> Result<bool> {
+	let (sql, values) = Query::select()
+		.column(Alias::new("version"))
+		.from(Alias::new("registry"))
+		.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
+		.and_where(Expr::col("id").eq(Expr::value(id.to_owned())))
+		.and_where(Expr::col("kind").eq(Expr::value("external_service")))
+		.build(PostgresQueryBuilder);
+	Ok(!access
+		.tx
+		.fetch_all(&sql, convert_values(values))
+		.await
+		.map_err(crate::Error::from)?
+		.is_empty())
+}
+
+/// Whether one External service on a Scratch Space is usable now, and the reason
+/// when it is not: `not_found`, `not_approved` or `approval_limited` (#738).
+pub(crate) struct ServiceState {
+	pub id: String,
+	pub usable: bool,
+	pub reason: Option<&'static str>,
+}
+
+/// The state of every External service on `space`, for its settings display.
+pub(crate) async fn service_states(
+	access: &mut Access,
+	space: &ScratchSpace,
+) -> Result<Vec<ServiceState>> {
+	let tenant = access.identity.tenant.clone();
+	let usable = crate::apps::execution::repositories::egress::usable_services(
+		&mut access.tx,
+		&tenant,
+		space.node.as_str(),
+		&space.settings.external_services,
+	)
+	.await?;
+	let mut states = Vec::new();
+	for (id, result) in usable {
+		let reason = match result {
+			Ok(_) => None,
+			Err(reason) if reason == aidash_domain::egress::SERVICE_APPROVAL_LIMITED => {
+				Some("approval_limited")
+			}
+			Err(_) if !registered_service(access, &id).await? => Some("not_found"),
+			Err(_) => Some("not_approved"),
+		};
+		states.push(ServiceState {
+			id,
+			usable: reason.is_none(),
+			reason,
+		});
+	}
+	Ok(states)
+}
+
+/// The External services of a Run's Scratch Space that are usable now, as its
+/// starting instructions list them. Empty when the Space is gone or not Active.
+pub(crate) async fn usable_lines(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+	space: Uuid,
+) -> Result<Vec<aidash_application::ports::execution::ExternalServiceLine>> {
+	let Some(space) = read(&mut **tx, tenant, space).await? else {
+		return Ok(Vec::new());
+	};
+	if space.state != aidash_domain::scratch::ScratchState::Active {
+		return Ok(Vec::new());
+	}
+	let usable = crate::apps::execution::repositories::egress::usable_services(
+		tx,
+		tenant,
+		space.node.as_str(),
+		&space.settings.external_services,
+	)
+	.await?;
+	let mut lines = Vec::new();
+	for (id, result) in usable {
+		let Ok(entry) = result else { continue };
+		let Ok(definition) = aidash_domain::egress::definition(&entry) else {
+			continue;
+		};
+		let description = entry
+			.description
+			.get("en")
+			.or_else(|| entry.description.values().next())
+			.cloned()
+			.unwrap_or_default();
+		lines.push(aidash_application::ports::execution::ExternalServiceLine {
+			url: format!("http://{}/{id}/", aidash_domain::egress::SERVICES_HOST),
+			id,
+			methods: definition.methods,
+			description,
+		});
+	}
+	Ok(lines)
+}

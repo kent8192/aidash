@@ -21,7 +21,7 @@ use crate::authorization::{
 };
 use crate::federation::Federation;
 use crate::{Error, Result};
-use aidash_application::capabilities::approvals::{CALL_UNAPPROVED, DISCLOSE, INVOKE};
+use aidash_application::capabilities::approvals::{CALL_UNAPPROVED, INVOKE};
 use aidash_domain::approval_rules::{
 	ApprovalKind, ApprovalMode, ApprovalRule, MODE_RESOURCE, RuleEffect, RuleTarget,
 };
@@ -234,32 +234,6 @@ fn judged(
 				"capability.approve",
 			)
 		}
-		ApprovalKind::WebSearch => {
-			// A search rule names its provider, while its ceiling is judged on
-			// the destination a Run chooses.
-			let destination = id;
-			(
-				resource(
-					bundle,
-					"research",
-					destination,
-					json!({"destination": destination, "action": DISCLOSE}),
-				),
-				"capability.approve",
-			)
-		}
-		ApprovalKind::PageReading => {
-			let host = exact.unwrap_or(id);
-			(
-				resource(
-					bundle,
-					"research",
-					host,
-					json!({"destination": host, "action": DISCLOSE}),
-				),
-				"capability.approve",
-			)
-		}
 		ApprovalKind::Generation => {
 			let policy = exact.unwrap_or(id);
 			// Settings are read before a Task exists: the owner is the root
@@ -286,7 +260,6 @@ fn named_targets(bundle: &PolicyBundle, kind: ApprovalKind) -> BTreeSet<String> 
 		ApprovalKind::ToolCall => "tool",
 		ApprovalKind::Sampling => "sampling",
 		ApprovalKind::Outbound => "outbound",
-		ApprovalKind::WebSearch | ApprovalKind::PageReading => "research",
 		ApprovalKind::Generation => "generation",
 	};
 	bundle
@@ -328,11 +301,6 @@ fn effective(
 	match &rule.target {
 		RuleTarget::Exact(_) => {
 			candidates.insert(REPRESENTATIVE.to_owned());
-			// A search rule names its provider, while the ceiling it needs is
-			// judged on a destination the policy may name by id.
-			if rule.kind == ApprovalKind::WebSearch {
-				candidates.extend(named_targets(bundle, rule.kind));
-			}
 		}
 		RuleTarget::Every => {
 			candidates.insert(REPRESENTATIVE.to_owned());

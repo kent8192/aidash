@@ -317,7 +317,7 @@ class PodProxyUrlTest(unittest.TestCase):
             self.assertEqual(str(refused.exception), 'invalid egress credential')
 
 
-    def test_a_pods_proxy_settings_carry_the_credential_the_server_sent(self):
+    def test_pod_environment_contains_no_proxy_credentials(self):
         from execution_pod import execution_manifests
         settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
                     'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False,
@@ -328,8 +328,7 @@ class PodProxyUrlTest(unittest.TestCase):
         _, pod = execution_manifests(settings, config)
         env = {item['name']: item.get('value') for item in pod['spec']['containers'][0]['env']}
         for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
-            self.assertEqual(env[name], 'http://aidash:aidash-scope-v1.a@10.0.0.8:8888')
-        self.assertEqual(env['NODE_USE_ENV_PROXY'], '1')
+            self.assertNotIn(name, env)
         for name in ('NO_PROXY', 'no_proxy'):
             self.assertEqual(env[name], 'localhost,127.0.0.1,::1,10.0.0.8')
 
@@ -1390,7 +1389,7 @@ class ReconnectedCommandRegressionTest(unittest.TestCase):
 class RestartResumeTest(unittest.TestCase):
     operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
 
-    def test_resume_result_reads_saved_output_and_forgets(self):
+    def test_resume_result_reads_and_retains_saved_background_output(self):
         import base64
         import json
         import tempfile
@@ -1424,7 +1423,7 @@ class RestartResumeTest(unittest.TestCase):
             self.assertEqual((result['status'], result['exit_code']), ('completed', 7))
             self.assertEqual(base64.b64decode(result['stdout']), b'hello')
             self.assertEqual(base64.b64decode(result['stderr']), b'err')
-            self.assertTrue(any('forget' in args for args in calls))
+            self.assertFalse(any('forget' in args for args in calls))
 
     def test_resume_keeps_available_output_if_other_stream_is_missing(self):
         import base64
@@ -2298,6 +2297,9 @@ class CommandJournalTest(unittest.TestCase):
             self.assertFalse(first['eof'])
             self.assertEqual(base64.b64decode(second['data']), b'defgh')
             self.assertTrue(second['eof'])
+            tail = log_chunk(path, None, 3)
+            self.assertEqual(base64.b64decode(tail['data']), b'fgh')
+            self.assertEqual((tail['next_offset'], tail['size'], tail['eof']), (8, 8, True))
 
 
 class AdmissionLifecycleRegressionTest(unittest.TestCase):
@@ -3119,6 +3121,13 @@ class PythonSessionTest(unittest.TestCase):
 
 
 class PythonSessionMappingTest(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        probe = patch.object(ExecutionPodController, '_check_python')
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def test_unknown_interrupted_session_is_not_restarted(self):
         import json
         import tempfile
@@ -4198,6 +4207,13 @@ class PythonInterpreterStopTest(unittest.TestCase):
     cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
     session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
 
+    def setUp(self):
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        probe = patch.object(ExecutionPodController, '_check_python')
+        probe.start()
+        self.addCleanup(probe.stop)
+
     def _run(self, *, session_result, stop_fails=False, result_after=0, during=None, after=None):
         import json
         import tempfile
@@ -4483,6 +4499,13 @@ class DockerForwardedOutputTest(unittest.TestCase):
 class PythonSessionRefusalTest(unittest.TestCase):
     """A session is refused only while the Pod it ran in still exists (#722 decision 9)."""
     operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def setUp(self):
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        probe = patch.object(ExecutionPodController, '_check_python')
+        probe.start()
+        self.addCleanup(probe.stop)
 
     def test_a_pod_that_no_longer_exists_does_not_block_a_new_session(self):
         import json

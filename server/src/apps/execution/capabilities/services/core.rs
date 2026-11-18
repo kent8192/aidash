@@ -23,8 +23,6 @@ pub(crate) mod network;
 pub mod objects;
 #[path = "operations.rs"]
 pub mod operations;
-#[path = "packages.rs"]
-pub(crate) mod packages;
 #[path = "patch.rs"]
 pub(crate) mod patch;
 #[path = "python.rs"]
@@ -63,7 +61,6 @@ impl Default for Profile {
 			egress: None,
 			admission: false,
 			outbound_origins: vec![],
-			package_origins: vec![],
 			storage: PathBuf::from("/var/lib/aidash/capabilities"),
 			blob_storage: Default::default(),
 			working_bytes: 1 << 30,
@@ -76,7 +73,6 @@ impl Default for Profile {
 			// Deployment may raise the maximum to a day (#1009, ADR 0141).
 			operation_seconds: 600,
 			maximum_seconds: 600,
-			install_seconds: 300,
 			idle_seconds: 1800,
 			recovery_seconds: 7 * 86400,
 			grant_seconds: 3600,
@@ -131,30 +127,8 @@ impl Runtime {
 					"invalid Egress proxy tunnel capacity".into(),
 				));
 			}
-			let endpoint = reqwest::Url::parse(&egress.endpoint)
-				.map_err(|_| Error::Invalid("invalid Egress endpoint".into()))?;
-			let internal = endpoint
-				.host_str()
-				.and_then(|host| {
-					host.trim_matches(['[', ']'])
-						.parse::<std::net::IpAddr>()
-						.ok()
-				})
-				.is_some_and(|ip| match ip {
-					std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
-					std::net::IpAddr::V6(ip) => ip.is_unique_local() || ip.is_loopback(),
-				});
-			if endpoint.scheme() != "http"
-				|| !internal || profile.runner.is_none()
-				|| !endpoint.username().is_empty()
-				|| endpoint.password().is_some()
-				|| endpoint.query().is_some()
-				|| endpoint.fragment().is_some()
-				|| endpoint.path() != "/"
-			{
-				return Err(Error::Invalid(
-					"Egress endpoint must be an internal HTTP IP origin".into(),
-				));
+			if profile.runner.is_none() {
+				return Err(Error::Invalid("Egress requires a Runner".into()));
 			}
 		}
 		if !(1..=3600).contains(&profile.mcp.human_wait_seconds)
@@ -174,7 +148,6 @@ impl Runtime {
 			|| profile.memory_bytes > i64::MAX as u64
 			|| !(16..=4096).contains(&profile.processes)
 			|| profile.operation_seconds == 0
-			|| profile.install_seconds == 0
 			|| !(1..=86400).contains(&profile.maximum_seconds)
 			|| !(1..=1800).contains(&profile.idle_seconds)
 			|| profile.recovery_seconds == 0
@@ -188,18 +161,13 @@ impl Runtime {
 			|| profile.output_bytes == 0
 			|| profile.output_bytes > 8 << 20
 			|| profile.operation_seconds > profile.maximum_seconds
-			|| profile.install_seconds > profile.maximum_seconds
 			|| profile.grant_seconds > 3600
 		{
 			return Err(Error::Invalid(
 				"invalid capability execution profile".into(),
 			));
 		}
-		for origin in profile
-			.outbound_origins
-			.iter()
-			.chain(&profile.package_origins)
-		{
+		for origin in profile.outbound_origins.iter() {
 			let url = reqwest::Url::parse(origin)
 				.map_err(|_| Error::Invalid("invalid outbound origin".into()))?;
 			if url.scheme() != "https"

@@ -286,7 +286,23 @@ pub async fn authorize(
 				})
 				.flatten()
 				.ok_or_else(|| refused(call, RefusalCheck::PluginTool, None))?;
-			current = ToolContract::agent_plugin(identity.clone(), pinned.read_only);
+			// A stdio server's tools need no Tool call approval (ADR 0073).
+			let stdio = configuration
+				.agent_plugins
+				.iter()
+				.find(|plugin| plugin.name == identity.plugin && plugin.digest == identity.digest)
+				.and_then(|plugin| plugin.servers.get(&identity.server))
+				.is_some_and(|server| {
+					matches!(server, aidash_domain::agent_plugin::McpServer::Stdio(_))
+				});
+			// The `mcp_stdio` approval and the shell's dispatch gates are checked by the
+			// session host at every call, outside this Run-lease Catalog scope, whose
+			// approvals hold only the Run's Binding closure.
+			current = if stdio {
+				ToolContract::agent_plugin_stdio(identity.clone())
+			} else {
+				ToolContract::agent_plugin(identity.clone(), pinned.read_only)
+			};
 			if current != *contract {
 				return Err(Error::Conflict(
 					"admitted plugin tool contract changed".into(),
@@ -478,7 +494,10 @@ pub async fn authorize(
 	// `tool.call_unapproved` still refuses it. The capability approval path
 	// checks this on the Run's home Node; doing it with the contract authority
 	// also covers a Run executing for another Node.
-	if contract.behavior.read_only_operation
+	// A stdio plugin tool needs no approval either (ADR 0073), so the same deny refuses it.
+	let unapproved_plugin_call = matches!(contract.identity, ToolIdentity::AgentPlugin(_))
+		&& !contract.behavior.tool_call_approval;
+	if (contract.behavior.read_only_operation || unapproved_plugin_call)
 		&& let Some((id, version)) = approval_reference(contract)
 	{
 		let resource = scope.resource(

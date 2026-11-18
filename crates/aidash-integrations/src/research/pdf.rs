@@ -5,17 +5,14 @@
 //! input and answers on standard output. Only page content streams and the
 //! fonts they use are read; annotations, forms, scripts and attachments are
 //! never interpreted.
-use aidash_application::ports::research::PageRenderer;
 use aidash_domain::research::{
 	Failure,
 	document::{
-		Completeness, Line, MAX_LINE_BYTES, MAX_LINES, MAX_PAGE_IMAGE_BYTES, MAX_PAGE_IMAGE_EDGE,
-		MAX_PAGES_WITHOUT_TEXT, MAX_SNAPSHOT_BYTES, RenderedPage,
+		Completeness, Line, MAX_LINE_BYTES, MAX_LINES, MAX_PAGES_WITHOUT_TEXT, MAX_SNAPSHOT_BYTES,
 	},
 };
 use async_trait::async_trait;
 use hayro::{
-	PixmapSettings, RenderCache, RenderSettings,
 	hayro_interpret::{
 		BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
 		InterpreterCache, InterpreterSettings, SoftMask, TransformExt, font::GlyphRun,
@@ -43,6 +40,9 @@ pub const MAX_PAGES: usize = 500;
 const _: () = assert!(MAX_PAGES <= MAX_PAGES_WITHOUT_TEXT);
 /// A page with fewer non-whitespace characters of text carries no text.
 pub const MIN_PAGE_CHARACTERS: usize = 16;
+/// A PDF with a page that carries no text, for tests of page reading.
+#[cfg(any(test, feature = "test-support"))]
+pub const ANNUAL_REPORT_PDF: &[u8] = include_bytes!("pdf/fixtures/annual-report.pdf");
 /// The hidden command of the `aidash` binary that runs one PDF job.
 pub const CHILD_COMMAND: &str = "__research-pdf";
 /// The longest reply of an extraction within the snapshot bounds: every
@@ -73,15 +73,14 @@ pub struct PdfText {
 #[serde(rename_all = "snake_case")]
 enum Reply {
 	Text(PdfText),
-	Page(RenderedPage),
 	Failure(Failure),
 }
 
-/// Extracts the text of a PDF and renders its pages.
+/// Extracts the text of a PDF. Pages without text are only listed: page
+/// reading returns no page images since #987.
 #[async_trait]
 pub trait PdfEngine: Send + Sync {
 	async fn extract(&self, pdf: Vec<u8>) -> Result<PdfText, Failure>;
-	async fn render(&self, pdf: Vec<u8>, page: u32) -> Result<RenderedPage, Failure>;
 }
 
 /// The production engine: one bounded child process per PDF.
@@ -99,8 +98,7 @@ impl ChildEngine {
 				cpu_seconds: 20,
 				memory_bytes: Some(1024 * 1024 * 1024),
 				deadline: Duration::from_secs(20),
-				// Room for the text reply or a base64 page image.
-				max_output: MAX_REPLY_BYTES.max(2 * MAX_PAGE_IMAGE_BYTES + 64 * 1024),
+				max_output: MAX_REPLY_BYTES,
 			},
 		}
 	}
@@ -133,27 +131,6 @@ impl PdfEngine for ChildEngine {
 			_ => Err(Failure::ExtractionFailed),
 		}
 	}
-	async fn render(&self, pdf: Vec<u8>, page: u32) -> Result<RenderedPage, Failure> {
-		let page = page.to_string();
-		match self
-			.job(
-				&[CHILD_COMMAND, "render", &page],
-				&pdf,
-				Failure::RenderFailed,
-			)
-			.await?
-		{
-			Reply::Page(image) => Ok(image),
-			_ => Err(Failure::RenderFailed),
-		}
-	}
-}
-
-#[async_trait]
-impl PageRenderer for ChildEngine {
-	async fn render(&self, pdf: Vec<u8>, page: u32) -> Result<RenderedPage, Failure> {
-		PdfEngine::render(self, pdf, page).await
-	}
 }
 
 /// Parses in this process. Only for tests, whose fixtures are trusted.
@@ -165,17 +142,6 @@ pub struct InProcessEngine;
 impl PdfEngine for InProcessEngine {
 	async fn extract(&self, pdf: Vec<u8>) -> Result<PdfText, Failure> {
 		extract(&pdf)
-	}
-	async fn render(&self, pdf: Vec<u8>, page: u32) -> Result<RenderedPage, Failure> {
-		render(&pdf, page)
-	}
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[async_trait]
-impl PageRenderer for InProcessEngine {
-	async fn render(&self, pdf: Vec<u8>, page: u32) -> Result<RenderedPage, Failure> {
-		render(&pdf, page)
 	}
 }
 
@@ -199,15 +165,6 @@ pub fn child_main(args: &[String]) -> Option<i32> {
 			Ok(text) => Reply::Text(text),
 			Err(failure) => Reply::Failure(failure),
 		},
-		Some("render") => {
-			let Some(page) = args.get(3).and_then(|page| page.parse().ok()) else {
-				return Some(2);
-			};
-			match render(&pdf, page) {
-				Ok(image) => Reply::Page(image),
-				Err(failure) => Reply::Failure(failure),
-			}
-		}
 		_ => return Some(2),
 	};
 	let Ok(encoded) = serde_json::to_vec(&reply) else {
@@ -275,56 +232,6 @@ pub fn extract(pdf: &[u8]) -> Result<PdfText, Failure> {
 		pages_without_text,
 		completeness,
 	})
-}
-
-/// Render page `page` (1-based) of `pdf` as a PNG within the page image
-/// bounds, at a lower scale when the image would be too large. Call it only
-/// inside the bounded child.
-pub fn render(pdf: &[u8], page: u32) -> Result<RenderedPage, Failure> {
-	let pdf = open(pdf)?;
-	let pages = pdf.pages();
-	let page = usize::try_from(page)
-		.ok()
-		.and_then(|page| page.checked_sub(1))
-		.and_then(|index| pages.get(index))
-		.ok_or(Failure::PageNotViewable)?;
-	let (width, height) = page.render_dimensions();
-	if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
-		return Err(Failure::RenderFailed);
-	}
-	let settings = InterpreterSettings {
-		render_annotations: false,
-		..InterpreterSettings::default()
-	};
-	let cache = RenderCache::new();
-	let mut scale = (MAX_PAGE_IMAGE_EDGE as f32 - 1.0) / width.max(height);
-	for _ in 0..4 {
-		let pixmap = hayro::render(
-			page,
-			&cache,
-			&settings,
-			&RenderSettings::default(),
-			&PixmapSettings {
-				x_scale: scale,
-				y_scale: scale,
-				..PixmapSettings::default()
-			},
-		);
-		let (pixels_wide, pixels_high) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
-		let png = pixmap.into_png().map_err(|_| Failure::RenderFailed)?;
-		let image = RenderedPage {
-			media_type: "image/png".into(),
-			bytes: png,
-			width: pixels_wide,
-			height: pixels_high,
-		};
-		if image.validate().is_ok() {
-			return Ok(image);
-		}
-		// Too many bytes: a smaller image of the same page.
-		scale *= 0.7;
-	}
-	Err(Failure::RenderFailed)
 }
 
 /// A page's lines as a snapshot keeps them, or `None` when that text has

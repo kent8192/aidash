@@ -8,7 +8,7 @@ import {
   toolLabel,
   toolStateText,
 } from "../src/capabilities/tool-approval-model.ts";
-import { approvalNotice } from "../src/research.ts";
+import { approvalNotice } from "../src/approval-notice.ts";
 
 const card = {
   kind: "tool_call",

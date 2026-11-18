@@ -20,3 +20,7 @@ Decided on 2026-10-15 for #227. Page reading extracts a PDF's text layer within 
 
 - The pure-Rust parser (`hayro`) caps neither decompression nor time, so the server never parses a PDF in its own process. It starts the `aidash` binary again as a child (`aidash __research-pdf extract|render <page>`) with an empty environment, 20 s of CPU time, a 1 GiB address space on Linux, a wall-clock deadline and a bounded reply. Decompression is bounded by that address space instead of per-stream counters.
 - `view` is installed with the other research operations; a binding cannot omit one tool per model. A call from a Run whose model definition does not list the `image` modality is refused with `image_input_required` before anything is rendered.
+
+## Amendment (2026-11-16, #987)
+
+- Research is no longer a category (ADR 0138), and `view` is removed. Page reading reports the numbers of the PDF pages without text instead of rendering them; no original PDF or page image is stored. Text extraction still runs in the bounded child process.

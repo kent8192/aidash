@@ -85,9 +85,12 @@ impl EgressScopes for MemoryScopes {
 		_: &str,
 		_: &str,
 		_: &str,
-	) -> Result<super::Admission> {
+	) -> Result<super::ExternalAdmission> {
 		// This test scope has no External services configured.
-		Err(Error::Forbidden)
+		Ok(super::ExternalAdmission::Refused(super::ServiceRefusal {
+			code: aidash_domain::egress::SERVICE_NOT_AVAILABLE,
+			available: Vec::new(),
+		}))
 	}
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()> {
 		self.check(&scope.id)?;
@@ -203,6 +206,7 @@ mod tests {
 	#[tokio::test]
 	async fn credential_and_budget_are_scoped() {
 		let settings = ScopeSettings {
+			run_id: None,
 			id: ScopeId {
 				tenant: "tenant".into(),
 				node: "node".into(),

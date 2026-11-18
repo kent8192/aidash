@@ -88,6 +88,10 @@ TENANT_ROUTES = {
         "body": {"url": "https://github.com/bruno/plugins"},
         "refusal": "Subject without registry.create cannot import an Agent Plugin",
     },
+    "POST /api/agent-plugins/tools": {
+        "body": {"digest": "sha256:" + "a" * 64, "server": "docs"},
+        "refusal": "Subject without registry.create cannot list an Agent Plugin server's tools",
+    },
     "POST /api/authorization/{tenant}/catalog": {
         "body": {"node": "{{tenant_node}}", **APPROVAL},
         "refusal": "Subject without catalog.approve cannot approve a version",
@@ -1254,7 +1258,7 @@ def render():
                     immutable=True)
             continue
         if route["source"] == "server/src/apps/identity/views/data_protection.rs":
-            body = json.dumps({"level": "standard", "model_call_zdr": True, "plan_connection_exempt": True}) if route["json"] else None
+            body = json.dumps({"level": "no_training", "forbid_plan_connections": False, "forbid_keyless_endpoints": False}) if route["json"] else None
             for label, headers in [
                 ("Deployment Administrator bearer is never a Tenant Administrator", DEPLOYMENT_ADMINISTRATOR),
                 ("Subject Credential bearer is never a Tenant Administrator", SUBJECT),
@@ -1509,7 +1513,6 @@ def render():
             "remote_execution_list",
             "federated_graph_peers",
             "run_working_area",
-            "research-providers",
             "core_outbound_history",
             "core_operation_history",
             "generation-usage",
@@ -1526,6 +1529,8 @@ def render():
             "authorization-catalog",
             "authorization-catalog-requests-mine",
             "authorization-catalog-requests-pending",
+            "authorization-catalog-requests-pending-count",
+            "catalog-mail-preference",
             "authorization-safety-stops",
             "workbench-inspect-version",
             "workbench-export-report",

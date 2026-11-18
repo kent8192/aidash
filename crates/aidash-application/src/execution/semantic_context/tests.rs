@@ -178,7 +178,12 @@ impl RunSemanticRepository for Repository {
 }
 #[async_trait]
 impl RunSemanticScope for Scope {
-	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<WorkspaceContext> {
+	async fn retrieve(
+		&mut self,
+		query: &str,
+		budget: usize,
+		_partial: bool,
+	) -> Result<WorkspaceContext> {
 		let pending = {
 			let mut state = self.0.lock().unwrap();
 			state.record("retrieve")?;

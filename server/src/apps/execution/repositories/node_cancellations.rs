@@ -47,14 +47,7 @@ pub(in crate::apps::execution) async fn record(
 			.expr(Expr::value(node.to_owned()))
 			.expr(Expr::value(kind))
 			.column(Alias::new("id"))
-			.expr(if kind == "python" {
-				SimpleExpr::FunctionCall(
-					Alias::new("to_jsonb").into_iden(),
-					vec![Expr::col("core_records").into()],
-				)
-			} else {
-				Expr::value(serde_json::Value::Null).into()
-			})
+			.expr(Expr::value(serde_json::Value::Null))
 			.expr(Expr::current_timestamp())
 			.from(Alias::new(table))
 			.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
@@ -442,7 +435,6 @@ async fn process(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 			Ok(delivered)
 		}
 		"operation" => stop_operation(f, job).await,
-		"python" => stop_python(f, job).await,
 		"task" => stop_task(f, job).await,
 		_ => Err(Error::Invalid("unknown Node cancellation job".into())),
 	}
@@ -890,7 +882,7 @@ pub(crate) async fn require_area_open(tx: &mut dyn TransactionExecutor, area: Uu
 		&Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("node_cancellation_jobs"))
-			.and_where(work("operation", "core_operations").or(work("python", "core_records")))
+			.and_where(work("operation", "core_operations"))
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -942,43 +934,4 @@ async fn stop_operation(f: &Federation, job: &NodeCancellationJob) -> Result<boo
 			state.2.as_deref(),
 		),
 	)
-}
-async fn stop_python(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
-	let scope = TenancyScope::tenant(&job.tenant)?;
-	let snapshot: crate::apps::execution::capabilities::serializers::records::Record =
-		serde_json::from_value(job.binding.0.clone())?;
-	let record: crate::apps::execution::capabilities::serializers::records::Record =
-		crate::database::native::query_as(
-			&Query::select()
-				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("core_records"))
-				.and_where(Expr::col("id").eq(Expr::value(job.work_id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(f.store.pool.in_scope(&scope))
-		.await?;
-	if record.data["session_id"] != snapshot.data["session_id"]
-		|| record.data["instance"] != snapshot.data["instance"]
-		|| record.data["operation_id"] != snapshot.data["operation_id"]
-	{
-		return Err(Error::Conflict("captured Python binding changed".into()));
-	}
-	if record.state == "reset" {
-		return Ok(true);
-	}
-	// The captured active cell may have completed while cancellation was
-	// admitted. Its unchanged binding still owns the same heap; a different
-	// cell/session was rejected above and can never be reset through this job.
-	if record.revision != snapshot.revision
-		&& !(snapshot.state == "running" && record.state == "frozen")
-	{
-		return Err(Error::Conflict("captured Python revision changed".into()));
-	}
-	aidash_application::capabilities::python::stop_captured(
-		&crate::bootstrap::python_repository(&f.store),
-		&super::capability_records::domain(record),
-		"owning_node_deleted",
-	)
-	.await
-	.map_err(Into::into)
 }

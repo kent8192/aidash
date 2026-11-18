@@ -10,6 +10,7 @@ mod reference;
 mod schemas;
 mod settings;
 mod skills;
+mod stdio_session;
 mod tools;
 mod tree;
 

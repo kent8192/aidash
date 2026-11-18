@@ -48,3 +48,7 @@ policy (#357), so an Assignable Group is no longer the only authority a Tenant A
 confer. It stays the only one an approver confers through a Catalog Approval: the subject joins
 `members`, or other Assignable Groups when the approver also holds `subject.group.update`. No
 Tenant policy confers authority that concerns the Deployment.
+
+## Amendment (2026-11-11, #873)
+
+"Inheriting the groups of the previous version" stays rejected when no approver chose it. When the approval of an earlier version chose Version Carry-over (ADR 0128), the carried version's subject joins that version's groups, because the approver decided it.

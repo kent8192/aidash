@@ -85,7 +85,6 @@ impl RunContextEvent {
 		run: Uuid,
 		offset: u64,
 	) -> crate::Result<Vec<aidash_domain::tool::provider_tools::Activity>> {
-		use super::research::{json_field, json_text};
 		use reinhardt::db::orm::{Model, QueryRow, execution::convert_values};
 		use reinhardt::query::{
 			Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -128,4 +127,24 @@ impl RunContextEvent {
 			})
 			.collect()
 	}
+}
+
+/// `json -> key`.
+pub(crate) fn json_field(json: reinhardt::query::Expr, key: &str) -> reinhardt::query::SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::JsonGetByIndex,
+		),
+		reinhardt::query::Expr::value(key),
+	)
+}
+
+/// `json ->> key`.
+pub(crate) fn json_text(json: reinhardt::query::Expr, key: &str) -> reinhardt::query::SimpleExpr {
+	json.binary(
+		reinhardt::query::types::BinOper::PgOperator(
+			reinhardt::query::types::PgBinOper::JsonGetAsText,
+		),
+		reinhardt::query::Expr::value(key),
+	)
 }

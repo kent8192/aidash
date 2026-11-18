@@ -132,23 +132,14 @@ async fn journal_read(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 	}
 	let target = journal_target(input)?;
 	let lines = ctx.operations.journal(target, range).await?;
-	let dependencies = aidash_domain::context::research::JournalDependencies::read_by(
-		&lines,
-		ctx.run.id,
-		target.unwrap_or(ctx.run.id),
-	);
 	let content = aidash_domain::context::journal_export::to_jsonl(&lines);
 	let total = content.chars().count();
 	let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
 	let text: String = content.chars().skip(start).take(maximum as usize).collect();
 	let end = start + text.chars().count();
-	let mut result = json!({"text":text,"offset":start,"total_chars":total,"next_offset":(end < total).then_some(end)});
-	if !dependencies.is_empty() {
-		result["contract"] = json!(aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT);
-		result["research_derived"] = json!(true);
-		result["dependencies"] = json!(dependencies);
-	}
-	Ok(result)
+	Ok(
+		json!({"text":text,"offset":start,"total_chars":total,"next_offset":(end < total).then_some(end)}),
+	)
 }
 
 async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
@@ -174,7 +165,6 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 		.operations
 		.journal(target, journal_range(input, false)?)
 		.await?;
-	let mut dependencies = aidash_domain::context::research::JournalDependencies::default();
 	let mut results = Vec::new();
 	let mut seen = 0usize;
 	let mut more = false;
@@ -190,12 +180,6 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 				more = true;
 				break;
 			}
-			let matched = aidash_domain::context::research::JournalDependencies::from_lines(
-				std::slice::from_ref(line),
-			);
-			dependencies.sources.extend(matched.sources);
-			dependencies.documents.extend(matched.documents);
-			dependencies.runs.extend(matched.runs);
 			let mut folded_bytes = 0;
 			let prefix = text
 				.chars()
@@ -213,15 +197,8 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 			results.push(json!({"seq":line.seq,"snippet":snippet}));
 		}
 	}
-	dependencies.add_source_run(ctx.run.id, target.unwrap_or(ctx.run.id));
 	let next = offset.saturating_add(results.len());
-	let mut result = json!({"results":results,"next_cursor":more.then(|| next.to_string())});
-	if !dependencies.is_empty() {
-		result["contract"] = json!(aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT);
-		result["research_derived"] = json!(true);
-		result["dependencies"] = json!(dependencies);
-	}
-	Ok(result)
+	Ok(json!({"results":results,"next_cursor":more.then(|| next.to_string())}))
 }
 pub fn plugin_specification(entry: &Entry, alias: &str) -> ToolSpec {
 	ToolSpec {
@@ -1029,7 +1006,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "attachment_copy",
 			contract: aidash_domain::tool::builtin_contract("attachment_copy")
 				.expect("declared builtin"),
-			description: "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
+			description: "Copy a visible Thread Attachment into the Working Area, or, where commands run in an Execution Pod, into the Scratch Space at path. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
 			schema: json!({"type":"object","required":["id","path","expected_revision","idempotency_key"],"properties":{"id":string,"path":string,"expected_revision":{"type":"integer"},"idempotency_key":string},"additionalProperties":false}),
 		},
 		Builtin {

@@ -59,6 +59,20 @@ test.beforeEach(async ({ page }) => {
           ],
         },
       });
+    } else if (path === "/api/tenants/acme/data-protection") {
+      // The model picker reads the level to mark models it refuses (#963).
+      const policy = {
+        level: "no_training",
+        forbid_plan_connections: false,
+        forbid_keyless_endpoints: false,
+      };
+      await route.fulfill({
+        json: {
+          policy,
+          effective: policy,
+          deployment_floor: "no_restriction",
+        },
+      });
     } else if (path === "/api/tenants/acme/plan-connections/chatgpt") {
       await route.fulfill({
         json: {
@@ -172,7 +186,9 @@ test("searches and selects a model without credential input", async ({
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("65536");
   await expect(dialog.getByLabel("最大出力トークン数")).toHaveValue("65536");
   await expect(dialog.getByText(/1 \/ 3$/)).toBeVisible();
-  await expect(dialog.getByText(/Zero Data Retention：常時有効/)).toBeVisible();
+  await expect(
+    dialog.getByText(/Tenant のデータ保護レベルで決まります/),
+  ).toBeVisible();
   const effort = dialog.getByLabel("Reasoning Effort");
   await expect(effort.locator("option")).toHaveText([
     "モデルの既定値",

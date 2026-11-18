@@ -158,15 +158,9 @@ export function AgentBindings({
   const origin = node;
   const available = entries.filter(
     (e) =>
-      [
-        "tool",
-        "bundle",
-        "skill",
-        "memory",
-        "source",
-        "external_service",
-        "decider",
-      ].includes(e.kind) &&
+      ["tool", "bundle", "skill", "memory", "source", "decider"].includes(
+        e.kind,
+      ) &&
       (e.kind !== "decider" || e.config?.hook === "context_selection"),
   );
   const labels = disambiguateLabels(

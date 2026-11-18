@@ -25,6 +25,8 @@ use uuid::Uuid;
 pub(crate) struct TenantRegistration<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) store: &'a crate::store::Store,
+	pub(crate) carry_results:
+		Vec<aidash_application::authorization::catalog::carry_over::CarryResult>,
 }
 
 impl TenantRegistration<'_> {
@@ -95,7 +97,23 @@ impl DefinitionLookup for TenantRegistration<'_> {
 #[async_trait]
 impl DefinitionWriter for TenantRegistration<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
-		SqlScope(&mut self.access.tx).insert_definition(entry).await
+		let inserted = SqlScope(&mut self.access.tx)
+			.insert_definition(entry)
+			.await?;
+		if inserted {
+			let results = crate::apps::identity::repositories::catalog_carry::carry_best_effort(
+				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+					tenant: &self.access.identity.tenant,
+					tx: &mut self.access.tx,
+					snapshot: &mut self.access.snapshot,
+					deployment: &self.store.deployment,
+				},
+				entry,
+			)
+			.await?;
+			self.carry_results.extend(results);
+		}
+		Ok(inserted)
 	}
 }
 
@@ -159,7 +177,7 @@ impl RegistrationScope for TenantRegistration<'_> {
 		self.access.require(&resource, "registry.create").await?;
 		// Naming a Tenant Secret needs `secret.use` on it, separate from
 		// `secret.manage` (ADR 0051).
-		if let Some(name) = aidash_domain::tenant_secrets::definition_secret(entry) {
+		for name in aidash_domain::tenant_secrets::definition_secret_names(entry) {
 			let secret = self
 				.access
 				.resource("secret", name.clone(), json!({"name": name}));

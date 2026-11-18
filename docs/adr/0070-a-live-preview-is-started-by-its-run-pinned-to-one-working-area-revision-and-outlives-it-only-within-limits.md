@@ -1,5 +1,6 @@
 # A Live preview is started by its Run, pinned to one Working Area revision, and outlives the Run only within limits
 
+Amended by ADR 0129 (2026-11-11): a Live preview whose Read Recheck cannot reach a Node withholds its responses in an Outage Wait instead of serving.
 Decided on 2026-10-19 while grilling Live previews. An operation's Execution Pod ends with the operation, within at most 600 seconds, but a Live preview's Web server must keep running while a person looks at it. Only a Sandboxed tool call in a Run starts a Live preview, so the tool's Catalog Approval (ADR 0034) and the Run's authority govern the code it runs; a person may stop one but not start one. The Live preview belongs to that Run and may outlive the Run's completion until it is idle for its idle limit or reaches its absolute limit, and it stops when the Run is cancelled, the Run's authority is revoked or the Tenant is deleted. A Run has at most one Live preview, and starting another replaces it. It mounts the Working Area revision current when it starts and never publishes what its server writes; a newer revision marks it stale, and a later model turn restarts it.
 
 ## Considered Options
@@ -22,10 +23,14 @@ Decided on 2026-10-19 while grilling Live previews. An operation's Execution Pod
 
 ## Amendment (2026-11-07, #758)
 
-A Live preview now does stop when its Run's authority is revoked. Until this change nothing checked it after the start. A loop runs the Read Recheck every 30 seconds for everyone on the Run's chain, including after the Run has finished, and stops it as `run_authority_revoked`. A Node that does not answer five checks in a row is meant to stop it as `node_unreachable` (ADR 0116), but until #751 lands a Node that does not answer counts as a refusal and stops it as `run_authority_revoked`.
+A Live preview now does stop when its Run's authority is revoked. Until this change nothing checked it after the start. A loop runs the Read Recheck every 30 seconds for everyone on the Run's chain, including after the Run has finished, and stops it as `run_authority_revoked`. A Node that does not answer is not a refusal (#751, ADR 0117). The preview withholds its responses in an Outage Wait while the check cannot be confirmed, serves again once it is, and stops as `node_unreachable` when the wait reaches its bound (ADR 0129).
 
 For a Remote Grant Run, the receiver rechecks the admission subject chain and any Egress session viewer without requiring a local Workspace owner. Only that Workspace step is skipped: the Run itself is still judged through its admission (its expiry, the Peer Mapping it came through, and the chain's `workspace.read`, `task.read`, `run.read` and `memory.read`), and then what it has read. When Egress is disabled, the admission credential and Tenant provide the recheck identity. When Egress is enabled, a missing session remains unconfirmed.
 
 ## Amendment (start racing a stop)
 
 If a stop wins while a Live preview start waits for the Runner, the stopped state and its original reason remain authoritative. The Runner is asked to stop the operation, and the revision hold remains until termination is confirmed.
+
+## Amendment (2026-11-14, #745)
+
+ADR 0136: each process an Agent starts in the Execution Pod carries a credential for its Run, a Host connection names that Run, and a Run whose read authority is revoked has its commands, Live previews, sessions and Background processes stopped and its traffic refused.
