@@ -175,8 +175,10 @@ impl DurableScopes {
 
 /// Opens a Tenant transaction for Scratch Space egress, recording how long that
 /// took: the wait for a pooled connection, `BEGIN` and the scope statement
-/// (#909). Every egress transaction opens here, admission and records as well
-/// as debits, so the histogram holds all of egress's waits on the pool.
+/// (#909). Every transaction of `DurableScopes` and `ScratchAuthority` opens
+/// here, admission and records as well as debits, so the histogram holds all
+/// of Scratch Space egress's waits on the pool. The operation route's egress
+/// store is not timed here.
 pub(super) async fn begin_timed(
 	pool: &crate::database::native::Pool,
 	tenant: &str,
