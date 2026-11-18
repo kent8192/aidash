@@ -1099,5 +1099,10 @@
   "instructionsTooLong": "Instructions can be at most 16,384 bytes and cannot contain NUL characters.",
   "instructionsConflict": "Someone else changed these instructions. Reload and try again.",
   "instructionsBytes": "bytes",
-  "generationNoLimit": "No limit"
+  "generationNoLimit": "No limit",
+  "generationFreeForm": "Free-form specialists",
+  "generationFreeFormHelp": "Let the requesting Agent write the specialist's instructions and pick its model, tools and Skills. The template supplies everything the Agent leaves out, and every pick must already be approved for this Node.",
+  "generationFreeFormEnable": "Allow free-form specialists",
+  "generationFreeFormAnyApproved": "Any model, tool or Skill approved for this Node",
+  "generationFreeFormComponents": "Allowed models, tools and Skills"
 }

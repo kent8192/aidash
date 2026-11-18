@@ -52,6 +52,44 @@ impl Limits {
 	}
 }
 
+/// A Generation policy's free-form mode (#1012, ADR 0143): the Agent writes the
+/// instructions and picks components within what a person set here, instead of
+/// copying the template unchanged. The template still supplies everything the
+/// draft does not name.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "GenerationFreeForm")]
+#[serde(deny_unknown_fields)]
+pub struct FreeForm {
+	/// Any tool, Skill or model already Catalog-approved for the Node may be
+	/// picked; the Catalog Approval checks still run on every pick.
+	#[serde(default)]
+	pub any_approved: bool,
+	/// Otherwise only these.
+	#[serde(default)]
+	pub components: Vec<EntityRef>,
+}
+
+impl FreeForm {
+	pub fn allows(&self, reference: &EntityRef) -> bool {
+		self.any_approved || self.components.contains(reference)
+	}
+}
+
+/// What an Agent writes for a free-form generated agent.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "GenerationDraft")]
+#[serde(deny_unknown_fields)]
+pub struct Draft {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub name: Option<String>,
+	pub instructions: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub model: Option<EntityRef>,
+	/// Tools and Skills, each bound under its own id.
+	#[serde(default)]
+	pub components: Vec<EntityRef>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "GenerationEmbedding")]
 #[serde(deny_unknown_fields)]
@@ -74,6 +112,8 @@ pub struct Spec {
 	pub approval_required: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub embedding: Option<Embedding>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub free_form: Option<FreeForm>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]

@@ -1099,5 +1099,10 @@
   "instructionsTooLong": "指示は16,384バイト以内で、NUL文字を含めることはできません。",
   "instructionsConflict": "ほかの人がこの指示を変更しました。再読み込みしてからやり直してください。",
   "instructionsBytes": "バイト",
-  "generationNoLimit": "上限なし"
+  "generationNoLimit": "上限なし",
+  "generationFreeForm": "自由作成の専門エージェント",
+  "generationFreeFormHelp": "依頼したエージェントが、専門エージェントの指示文を書き、モデル・ツール・Skill を選べるようにします。エージェントが指定しなかった部分はテンプレートの内容を使います。選べるのは、この Node で承認済みのものだけです。",
+  "generationFreeFormEnable": "自由作成を許可する",
+  "generationFreeFormAnyApproved": "この Node で承認済みのモデル・ツール・Skill をすべて許可する",
+  "generationFreeFormComponents": "許可するモデル・ツール・Skill"
 }

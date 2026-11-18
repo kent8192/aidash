@@ -464,6 +464,12 @@ function PolicyEditor({
     initial?.embedding ? key(initial.embedding.provider) : "",
   );
   const [error, setError] = useState("");
+  // Free-form mode (#1012, ADR 0143): the Agent writes the specialist within
+  // the components a person allows here.
+  const [freeForm, setFreeForm] = useState(Boolean(initial?.free_form));
+  const [anyApproved, setAnyApproved] = useState(
+    initial?.free_form?.any_approved ?? false,
+  );
   const embeddings = entries.filter((entry) => entry.kind === "embedding");
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
@@ -534,7 +540,6 @@ function PolicyEditor({
           instructions: text("instructions"),
           schema_version: 1,
           ...bindings,
-          max_steps: Number(text("max_steps")),
         },
       };
       void save(id, {
@@ -549,6 +554,16 @@ function PolicyEditor({
             }
           : undefined,
         template,
+        free_form: freeForm
+          ? {
+              any_approved: anyApproved,
+              components: anyApproved
+                ? []
+                : form
+                    .getAll("free_form_components")
+                    .map((value) => entityRef(String(value))),
+            }
+          : undefined,
         permissions: {
           roles: split(text("roles")),
           groups: split(text("groups")),
@@ -714,6 +729,49 @@ function PolicyEditor({
       </Section>
       <Section
         level={3}
+        title={t("generationFreeForm")}
+        description={t("generationFreeFormHelp")}
+      >
+        <Check
+          checked={freeForm}
+          onChange={(event) => setFreeForm(event.target.checked)}
+        >
+          {t("generationFreeFormEnable")}
+        </Check>
+        {freeForm && (
+          <>
+            <Check
+              checked={anyApproved}
+              onChange={(event) => setAnyApproved(event.target.checked)}
+            >
+              {t("generationFreeFormAnyApproved")}
+            </Check>
+            {!anyApproved && (
+              <Field label={t("generationFreeFormComponents")}>
+                <NativeSelect
+                  name="free_form_components"
+                  multiple
+                  size={6}
+                  className="h-auto min-h-24"
+                  defaultValue={(initial?.free_form?.components ?? []).map(key)}
+                >
+                  {entries
+                    .filter((entry) =>
+                      ["model", "tool", "skill"].includes(entry.kind),
+                    )
+                    .map((entry) => (
+                      <option key={key(entry)} value={key(entry)}>
+                        {entityLabel(entry)}
+                      </option>
+                    ))}
+                </NativeSelect>
+              </Field>
+            )}
+          </>
+        )}
+      </Section>
+      <Section
+        level={3}
         title={t("permissions")}
         description={t("generationPermissionsHelp")}
       >
@@ -841,17 +899,6 @@ function PolicyEditor({
               />
             </Field>
           ))}
-          <Field label={t("generationMaxSteps")}>
-            <Input
-              type="number"
-              name="max_steps"
-              required
-              min={1}
-              max={1000}
-              className="font-mono tabular"
-              defaultValue={config?.max_steps ?? 64}
-            />
-          </Field>
         </div>
       </Section>
       <section className="grid min-w-0 gap-3 border-t border-border pt-4">

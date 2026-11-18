@@ -75,6 +75,7 @@ fn compare_develop_builtin_declarations() {
 			"aidash.workspace_search",
 			"aidash.workspace_message",
 			"aidash.memory_mutate",
+			"aidash.task_assign",
 			"aidash.subnode_task"
 		]
 	);

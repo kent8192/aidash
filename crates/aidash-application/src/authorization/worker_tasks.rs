@@ -38,13 +38,14 @@ pub async fn assign(
 	task: Uuid,
 	policy: &str,
 	reason: &str,
+	draft: Option<&aidash_domain::generation::policy::Draft>,
 ) -> Result<Assignment> {
 	let members = subnode_members(scope, run).await?;
 	if scope.task_workspace(task).await? != Some(run.workspace_id) {
 		return Err(task_not_visible(task));
 	}
 	let assignment = scope
-		.assign(task, policy, reason, members.as_deref())
+		.assign(task, policy, reason, members.as_deref(), draft)
 		.await?;
 	scope.record_output(run, "task", task).await?;
 	if let Assignment::Generated { generation } = &assignment {

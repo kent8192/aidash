@@ -98,6 +98,20 @@ pub async fn assign_in_restricted(
 	validation: &DefinitionValidation,
 	members: Option<&[EntityRef]>,
 ) -> Result<Assignment> {
+	assign_in_drafted(scope, task_id, policy_id, reason, validation, members, None).await
+}
+
+/// [`assign_in_restricted`] with what an Agent wrote for a free-form generated
+/// agent (#1012, ADR 0143). A draft needs a policy in free-form mode.
+pub async fn assign_in_drafted(
+	scope: &mut dyn GenerationAssignmentScope,
+	task_id: Uuid,
+	policy_id: &str,
+	reason: &str,
+	validation: &DefinitionValidation,
+	members: Option<&[EntityRef]>,
+	draft: Option<&aidash_domain::generation::policy::Draft>,
+) -> Result<Assignment> {
 	aidash_domain::nonempty(reason, "generation reason")?;
 	if reason.len() > 4096 {
 		return Err(Error::Invalid(
@@ -210,9 +224,13 @@ pub async fn assign_in_restricted(
 			return Ok(Assignment::Existing { delegation });
 		}
 	}
-	// A Subnode generates an agent when none of its members fits, as any other
-	// Task does (#1012, ADR 0143).
-	create_in(scope, &task, policy, reason, None, validation).await
+	// A Subnode generates only once the generated agent is checked against the
+	// Subnode's allowance and joins it as a member; until then its Tasks go to
+	// existing members only, so the allowance cannot be escaped.
+	if members.is_some() {
+		return Err(Error::Refused("no Subnode member matches this task".into()));
+	}
+	create_in_drafted(scope, &task, policy, reason, None, validation, draft).await
 }
 /// What the person the chain starts at decided in advance about a generation
 /// request that needs an approver (ADR 0076). Only a refusal is acted on: an
@@ -289,13 +307,96 @@ pub async fn create_in(
 	foreign: Option<&Intent>,
 	validation: &DefinitionValidation,
 ) -> Result<Assignment> {
+	create_in_drafted(scope, task, policy, reason, foreign, validation, None).await
+}
+
+/// The largest instructions a draft may carry, as for a Skill body.
+const MAX_DRAFT_INSTRUCTIONS_BYTES: usize = 65_536;
+
+/// The template with what the draft names: instructions, name, model and the
+/// tool and Skill bindings. Every pick must be one the policy's free-form mode
+/// allows; whether each is Catalog-approved is checked with the rest of the
+/// definition's closure.
+async fn drafted(
+	scope: &mut dyn GenerationCreationScope,
+	policy: &Policy,
+	draft: &aidash_domain::generation::policy::Draft,
+) -> Result<Entry> {
+	let free =
+		policy.spec.free_form.as_ref().ok_or_else(|| {
+			Error::Invalid("this generation policy does not accept a draft".into())
+		})?;
+	aidash_domain::nonempty(&draft.instructions, "draft instructions")?;
+	if draft.instructions.len() > MAX_DRAFT_INSTRUCTIONS_BYTES || draft.instructions.contains('\0')
+	{
+		return Err(Error::Invalid(
+			"draft instructions are at most 65536 bytes without NUL".into(),
+		));
+	}
+	let mut template = policy.spec.template.clone();
+	template.config["instructions"] = json!(draft.instructions);
+	if let Some(name) = draft
+		.name
+		.as_deref()
+		.map(str::trim)
+		.filter(|name| !name.is_empty())
+	{
+		template.name = [("en".to_owned(), name.to_owned())].into();
+	}
+	if let Some(model) = &draft.model {
+		if !free.allows(model) {
+			return Err(Error::Forbidden);
+		}
+		template.config["model"] = json!({"id": model.id, "version": model.version});
+	}
+	if !draft.components.is_empty() {
+		let mut bindings = vec![];
+		for component in &draft.components {
+			if !free.allows(component) {
+				return Err(Error::Forbidden);
+			}
+			let entry = scope.catalog_entry(component, "registry.read").await?;
+			if !matches!(entry.kind.as_str(), "tool" | "skill") {
+				return Err(Error::Invalid(format!(
+					"{}@{} is not a tool or Skill",
+					component.id, component.version
+				)));
+			}
+			bindings.push(json!({
+				"kind": entry.kind,
+				"target": {
+					"registry_deployment": scope.node_id(),
+					"id": component.id,
+					"version": component.version,
+				},
+				"narrow": {},
+			}));
+		}
+		template.config["bindings"] = json!(bindings);
+	}
+	Ok(template)
+}
+
+pub async fn create_in_drafted(
+	scope: &mut dyn GenerationCreationScope,
+	task: &Task,
+	policy: Policy,
+	reason: &str,
+	foreign: Option<&Intent>,
+	validation: &DefinitionValidation,
+	draft: Option<&aidash_domain::generation::policy::Draft>,
+) -> Result<Assignment> {
 	let search: Search = serde_json::from_value(task.requirements.clone())?;
 	if !policy.spec.enabled {
 		return Err(Error::Forbidden);
 	}
 	let _config = super::policy::validate(validation, &policy.spec, scope.bundle())?;
+	let template = match draft {
+		Some(draft) => drafted(scope, &policy, draft).await?,
+		None => policy.spec.template.clone(),
+	};
 
-	let snapshot = scope.bindings(&policy.spec.template).await?;
+	let snapshot = scope.bindings(&template).await?;
 	super::policy::validate_template_snapshot(&snapshot)?;
 	for (reference, action) in snapshot
 		.definitions
@@ -324,7 +425,7 @@ pub async fn create_in(
 	let active = scope.active(&policy.id).await?;
 	let allowances = policy.reservation(active, depth)?;
 	let id = scope.request_id();
-	let mut definition = policy.spec.template.clone();
+	let mut definition = template;
 	definition.id = format!("generated-{}", id.simple());
 	definition.binding_normalization = None;
 	if !definition.tags.iter().any(|t| t == "generated") {

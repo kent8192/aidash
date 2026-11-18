@@ -7,6 +7,7 @@ The generation service can complete a tenant-owned task for which no approved ag
 Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero to create) and `spec`. The specification contains:
 
 - `enabled`, `approval_required` and `template`, an ordinary Agent Registry entry.
+- `free_form` (optional): lets an Agent write the generated agent itself through `task_assign`'s `draft`: its instructions, an optional name, a model and tools or Skills. `any_approved` allows anything already Catalog-approved for the Node; otherwise only the listed `components`. The template supplies whatever the draft leaves out, and every pick still passes the Catalog Approval checks (#1012, ADR 0143).
 - `permissions`: existing role/group IDs and generated subject attributes.
 - `limits`: `token_budget` and `tokens_per_agent`, and optionally `max_agents`, `max_concurrent`, `max_depth` and `lifetime_seconds`. The optional limits have no upper bound and are absent unless a person sets them (#1012, ADR 0143); without `lifetime_seconds` a generated agent lasts as long as its Task. Neither an Approval Mode nor an allow rule approves a generated definition: with `approval_required` a person always decides each request.
 - Optional `embedding`: an approved embedding `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids embedding calls under that generated authority.

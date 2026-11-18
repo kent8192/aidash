@@ -1009,6 +1009,7 @@ impl Home {
 		task: Uuid,
 		policy: &str,
 		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<crate::generation::Assignment> {
 		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
 		authority
@@ -1018,6 +1019,7 @@ impl Home {
 				task,
 				policy,
 				reason,
+				draft,
 			)
 			.await
 	}

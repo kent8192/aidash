@@ -232,8 +232,14 @@ impl ToolOperations for Operations {
 			.await
 			.map_err(Into::into)
 	}
-	async fn assign(&self, id: Uuid, policy: &str, reason: &str) -> Result<Value> {
-		Ok(json!(self.0.home.assign(id, policy, reason).await?))
+	async fn assign(
+		&self,
+		id: Uuid,
+		policy: &str,
+		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value> {
+		Ok(json!(self.0.home.assign(id, policy, reason, draft).await?))
 	}
 	async fn delegate_with_key(
 		&self,

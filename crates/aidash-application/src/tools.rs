@@ -654,7 +654,13 @@ impl Builtin {
 						.assign(
 							id,
 							required(&input, "policy_id")?,
-							required(&input, "reason")?
+							required(&input, "reason")?,
+							input
+								.get("draft")
+								.map(|draft| serde_json::from_value(draft.clone()))
+								.transpose()
+								.map_err(|e| Error::Invalid(e.to_string()))?
+								.as_ref(),
 						)
 						.await?
 				))
@@ -974,8 +980,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_assign",
 			contract: aidash_domain::tool::builtin_contract("task_assign")
 				.expect("declared builtin"),
-			description: "Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.",
-			schema: json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":string,"policy_id":string,"reason":string},"additionalProperties":false}),
+			description: "Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. With `draft`, write the specialist yourself: its instructions, an optional name, model and tools or Skills, within what a free-form policy allows. Generation may wait for human approval. Requires a tenant-scoped execution identity.",
+			schema: json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":string,"policy_id":string,"reason":string,"draft":{"type":"object","required":["instructions"],"properties":{"name":string,"instructions":string,"model":entity_ref,"components":{"type":"array","items":entity_ref}},"additionalProperties":false}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_delegate",

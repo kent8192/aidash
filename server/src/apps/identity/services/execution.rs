@@ -1652,6 +1652,7 @@ impl WorkerAuthority {
 		task: Uuid,
 		policy: &str,
 		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<crate::generation::Assignment> {
 		let mut lease = self.access.write().await;
 		// Read potential references under the outer lease before opening the mutation transaction.
@@ -1663,6 +1664,7 @@ impl WorkerAuthority {
 			task,
 			policy,
 			reason,
+			draft,
 		)
 		.await
 		.map_err(Into::into);

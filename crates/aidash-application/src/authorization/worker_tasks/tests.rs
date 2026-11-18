@@ -218,6 +218,7 @@ impl WorkerTaskScope for Scope {
 		policy: &str,
 		reason: &str,
 		_: Option<&[EntityRef]>,
+		_: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Assignment> {
 		assert_eq!(task, self.task.id);
 		assert_eq!(policy, "policy");
@@ -323,7 +324,7 @@ async fn assignment_records_every_output_before_returning_it(
 		};
 	}
 	let expected = serde_json::to_value(&scope.assignment).unwrap();
-	let output = assign(&mut scope, &run, id(4), "policy", "reason")
+	let output = assign(&mut scope, &run, id(4), "policy", "reason", None)
 		.await
 		.unwrap();
 	assert_eq!(serde_json::to_value(output).unwrap(), expected);
@@ -361,7 +362,7 @@ async fn worker_effects_cannot_target_tasks_outside_the_source_workspace(
 		)
 	} else {
 		matches!(
-			assign(&mut scope, &run, id(4), "policy", "reason").await,
+			assign(&mut scope, &run, id(4), "policy", "reason", None).await,
 			Err(Error::Refused(message)) if message.contains("not found or is not visible")
 		)
 	};
@@ -384,7 +385,7 @@ async fn assignment_faults_do_not_disclose_a_partial_assignment(
 		generation: Box::new(generated()),
 	};
 	scope.fail = Some(fail);
-	let Error::Port(error) = assign(&mut scope, &run, id(4), "policy", "reason")
+	let Error::Port(error) = assign(&mut scope, &run, id(4), "policy", "reason", None)
 		.await
 		.err()
 		.unwrap()

@@ -118,7 +118,13 @@ impl ToolOperations for Operations {
 			.push((key.to_owned(), serde_json::to_value(input)?));
 		Ok(self.task.clone())
 	}
-	async fn assign(&self, _id: Uuid, _policy: &str, _reason: &str) -> Result<Value> {
+	async fn assign(
+		&self,
+		_id: Uuid,
+		_policy: &str,
+		_reason: &str,
+		_draft: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value> {
 		panic!("unexpected tool effect: assign")
 	}
 	async fn delegate_with_key(

@@ -91,6 +91,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		policy: &str,
 		reason: &str,
 		members: Option<&[EntityRef]>,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Assignment> {
 		crate::generation::assign_in_restricted(
 			self.federation,
@@ -98,6 +99,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			task,
 			policy,
 			reason,
+			draft,
 			members,
 		)
 		.await

@@ -1200,7 +1200,7 @@ async fn a_request_without_a_person_of_the_tenant_is_never_covered(
 
 #[rstest]
 #[tokio::test]
-async fn subnode_assignment_reuses_members_and_generates_when_none_fits(
+async fn subnode_assignment_reuses_only_members_and_never_generates(
 	validation: DefinitionValidation,
 ) {
 	let mut scope = Scope::new();
@@ -1226,21 +1226,103 @@ async fn subnode_assignment_reuses_members_and_generates_when_none_fits(
 	assert_eq!(delegation.agent_id, "member");
 	assert_eq!(scope.effects, ["delegate"]);
 
-	// When no member fits, a Subnode generates an agent like any other Task
-	// (#1012, ADR 0143).
+	// Until a generated agent can be checked against the Subnode's allowance
+	// and join it, a Subnode does not generate one.
 	let mut no_match = Scope::new();
 	no_match.ordinary("outsider", true, SubjectKind::Agent);
-	let job = generated(
+	assert!(matches!(
 		assign_in_restricted(
 			&mut no_match,
 			Uuid::from_u128(2),
 			"policy",
 			"work",
 			&validation,
-			Some(&members),
+			Some(&members)
+		)
+		.await,
+		Err(Error::Refused(_))
+	));
+	assert!(no_match.effects.is_empty());
+}
+
+fn draft(components: Vec<EntityRef>) -> aidash_domain::generation::policy::Draft {
+	aidash_domain::generation::policy::Draft {
+		name: Some("SNS copywriter".into()),
+		instructions: "Write short, friendly posts.".into(),
+		model: None,
+		components,
+	}
+}
+
+/// A free-form policy lets the Agent write the generated agent's instructions
+/// and name (#1012, ADR 0143); a policy without that mode refuses a draft.
+#[rstest]
+#[tokio::test]
+async fn a_free_form_policy_takes_the_agents_draft_and_others_refuse_it(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	let refused = assign_in_drafted(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+		None,
+		Some(&draft(vec![])),
+	)
+	.await;
+	assert!(
+		matches!(refused, Err(Error::Invalid(ref message)) if message.contains("does not accept a draft")),
+		"{refused:?}"
+	);
+
+	let mut scope = Scope::new();
+	scope.policy.spec.free_form = Some(aidash_domain::generation::policy::FreeForm::default());
+	let job = generated(
+		assign_in_drafted(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+			None,
+			Some(&draft(vec![])),
 		)
 		.await
 		.unwrap(),
 	);
-	assert_eq!(job.status, "PENDING_APPROVAL");
+	assert_eq!(
+		job.definition["config"]["instructions"],
+		json!("Write short, friendly posts.")
+	);
+	assert_eq!(job.definition["name"]["en"], json!("SNS copywriter"));
+}
+
+/// A draft may pick only what the free-form mode allows.
+#[rstest]
+#[tokio::test]
+async fn a_draft_cannot_pick_a_component_the_policy_does_not_allow(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	scope.policy.spec.free_form = Some(aidash_domain::generation::policy::FreeForm::default());
+	let outside = EntityRef {
+		id: "shell".into(),
+		version: "1.0.0".into(),
+	};
+	assert!(matches!(
+		assign_in_drafted(
+			&mut scope,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+			None,
+			Some(&draft(vec![outside])),
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert!(!scope.effects.contains(&"insert".to_owned()));
 }

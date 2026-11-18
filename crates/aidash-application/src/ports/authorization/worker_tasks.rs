@@ -25,6 +25,7 @@ pub trait WorkerTaskScope: Send {
 		policy: &str,
 		reason: &str,
 		members: Option<&[EntityRef]>,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Assignment>;
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, id: Uuid) -> Result<()>;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;

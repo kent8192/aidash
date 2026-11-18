@@ -163,7 +163,7 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 		.filter(|entry| {
 			matches!(
 				entry.id.as_str(),
-				"aidash.memory_mutate" | "aidash.subnode_task"
+				"aidash.memory_mutate" | "aidash.subnode_task" | "aidash.task_assign"
 			)
 		})
 		.collect::<Vec<_>>();
@@ -175,6 +175,14 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 			}
 			"aidash.subnode_task" => {
 				json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":{"type":"string"},"title":{"type":"string"},"request":{"type":"string"}},"additionalProperties":false})
+			}
+			// Before free-form generation added `draft` (#1012).
+			"aidash.task_assign" => {
+				entry.description = std::collections::BTreeMap::from([(
+					"en".into(),
+					"Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.".into(),
+				)]);
+				json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":{"type":"string"},"policy_id":{"type":"string"},"reason":{"type":"string"}},"additionalProperties":false})
 			}
 			_ => unreachable!(),
 		};
@@ -351,6 +359,7 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.task_assign"
 		) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(

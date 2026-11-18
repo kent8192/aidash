@@ -14066,6 +14066,27 @@
             "required": ["provider", "calls_per_agent", "call_budget"],
             "type": "object"
           },
+          "GenerationFreeForm": {
+            "additionalProperties": false,
+            "description": "A Generation policy's free-form mode (#1012, ADR 0143): the Agent writes the\ninstructions and picks components within what a person set here, instead of\ncopying the template unchanged. The template still supplies everything the\ndraft does not name.",
+            "properties": {
+              "any_approved": {
+                "default": false,
+                "description": "Any tool, Skill or model already Catalog-approved for the Node may be\npicked; the Catalog Approval checks still run on every pick.",
+                "type": "boolean"
+              },
+              "components": {
+                "default": [],
+                "description": "Otherwise only these.",
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["any_approved", "components"],
+            "type": "object"
+          },
           "GenerationLimits": {
             "additionalProperties": false,
             "properties": {
@@ -14231,6 +14252,16 @@
               },
               "enabled": {
                 "type": "boolean"
+              },
+              "free_form": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerationFreeForm"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "limits": {
                 "$ref": "#/components/schemas/GenerationLimits"
@@ -14692,6 +14723,27 @@
             "required": ["provider", "calls_per_agent", "call_budget"],
             "type": "object"
           },
+          "GenerationFreeForm": {
+            "additionalProperties": false,
+            "description": "A Generation policy's free-form mode (#1012, ADR 0143): the Agent writes the\ninstructions and picks components within what a person set here, instead of\ncopying the template unchanged. The template still supplies everything the\ndraft does not name.",
+            "properties": {
+              "any_approved": {
+                "default": false,
+                "description": "Any tool, Skill or model already Catalog-approved for the Node may be\npicked; the Catalog Approval checks still run on every pick.",
+                "type": "boolean"
+              },
+              "components": {
+                "default": [],
+                "description": "Otherwise only these.",
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["any_approved", "components"],
+            "type": "object"
+          },
           "GenerationLimits": {
             "additionalProperties": false,
             "properties": {
@@ -14857,6 +14909,16 @@
               },
               "enabled": {
                 "type": "boolean"
+              },
+              "free_form": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerationFreeForm"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "limits": {
                 "$ref": "#/components/schemas/GenerationLimits"
@@ -16975,6 +17037,27 @@
             "required": ["provider", "calls_per_agent", "call_budget"],
             "type": "object"
           },
+          "GenerationFreeForm": {
+            "additionalProperties": false,
+            "description": "A Generation policy's free-form mode (#1012, ADR 0143): the Agent writes the\ninstructions and picks components within what a person set here, instead of\ncopying the template unchanged. The template still supplies everything the\ndraft does not name.",
+            "properties": {
+              "any_approved": {
+                "default": false,
+                "description": "Any tool, Skill or model already Catalog-approved for the Node may be\npicked; the Catalog Approval checks still run on every pick.",
+                "type": "boolean"
+              },
+              "components": {
+                "default": [],
+                "description": "Otherwise only these.",
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["any_approved", "components"],
+            "type": "object"
+          },
           "GenerationLimits": {
             "additionalProperties": false,
             "properties": {
@@ -17101,6 +17184,16 @@
               },
               "enabled": {
                 "type": "boolean"
+              },
+              "free_form": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerationFreeForm"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "limits": {
                 "$ref": "#/components/schemas/GenerationLimits"

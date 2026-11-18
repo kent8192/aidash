@@ -190,7 +190,13 @@ pub trait ToolOperations: Send + Sync {
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>>;
 	async fn discover(&self, search: &Search) -> Result<Value>;
 	async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task>;
-	async fn assign(&self, id: Uuid, policy: &str, reason: &str) -> Result<Value>;
+	async fn assign(
+		&self,
+		id: Uuid,
+		policy: &str,
+		reason: &str,
+		draft: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value>;
 	async fn delegate_with_key(
 		&self,
 		key: &str,

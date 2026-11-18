@@ -59,7 +59,13 @@ impl ToolOperations for Operations {
 	async fn create_task(&self, _: &str, _: &NewTask) -> Result<Task> {
 		panic!("unexpected tool effect: create_task")
 	}
-	async fn assign(&self, _: Uuid, _: &str, _: &str) -> Result<Value> {
+	async fn assign(
+		&self,
+		_: Uuid,
+		_: &str,
+		_: &str,
+		_: Option<&aidash_domain::generation::policy::Draft>,
+	) -> Result<Value> {
 		panic!("unexpected tool effect: assign")
 	}
 	async fn delegate_with_key(&self, _: &str, _: Uuid, _: &str, _: &EntityRef) -> Result<Value> {
