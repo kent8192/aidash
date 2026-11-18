@@ -1549,7 +1549,9 @@ impl<'a> Executor<'a> {
 		// Read before the retry state is cleared: this attempt may degrade an
 		// unavailable workspace slot when it is the last one (ADR 0059).
 		let degrade_on_outage = run.recovery.degrades_on_outage();
-		run.recovery.retry = None;
+		// An Outage Wait keeps the retry count its outage spent; waking it
+		// restores that count below.
+		let waited_retry = run.recovery.retry.take();
 		// The count survives lease-retaining checkpoints of this step; the save
 		// that ends the step resets it (see `Run::worker_snapshot`).
 		let lease_recoveries = run.recovery.lease_recoveries;
@@ -4057,13 +4059,15 @@ connection: None,
 						resume.into_state()
 					}
 					WaitingState::Outage { resume, .. } => {
-						// Preserve the exhausted short-retry count across the wake-up.
-						if run.recovery.semantic_reason.is_some() {
-							run.recovery.retry = Some(aidash_domain::RetryState {
-								count: aidash_domain::semantic::OUTAGE_RETRIES,
-								at: chrono::Utc::now(),
-							});
-						}
+						// The short retries stay spent across the wake-up, so the
+						// next failure waits again instead of retrying for another
+						// minute (ADR 0129). The wait records a count only for an
+						// outage counted by `recovery.retry` (semantic context, a
+						// service); a Decider or Node outage keeps its own.
+						run.recovery.retry = waited_retry.map(|retry| aidash_domain::RetryState {
+							at: chrono::Utc::now(),
+							..retry
+						});
 						resume.into_state()
 					}
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {

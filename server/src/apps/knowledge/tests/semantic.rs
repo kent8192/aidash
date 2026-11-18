@@ -574,7 +574,10 @@ async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_pr
 			advance_retry(&fixture, run.id).await;
 		} else {
 			assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
-			assert_eq!(reason, "retries_exhausted", "{run:?}");
+			// The Run retries by itself while it waits, so management offers
+			// only `wait`; `retries_exhausted` comes at the bound (ADR 0129).
+			assert_eq!(reason, "unavailable", "{run:?}");
+			assert!(run.recovery.retry.is_some(), "{run:?}");
 			assert!(
 				matches!(&run.state, RunState::Waiting(wait)
 					if matches!(wait.as_ref(), WaitingState::Outage { service, .. } if service == "Semantic context")),

@@ -2288,6 +2288,45 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 	);
 	assert!(!calls.contains(&"provider.infer"));
 }
+/// An Outage Wait wakes with the short retries its outage spent still spent, so
+/// a failure of the woken step waits again instead of retrying for another
+/// minute. A Decider or Node outage keeps its own count, and its wait no
+/// generic one (ADR 0129).
+#[rstest]
+#[case::service(Some(aidash_domain::semantic::OUTAGE_RETRIES))]
+#[case::decider_or_node(None)]
+#[tokio::test]
+async fn an_outage_wake_keeps_the_short_retries_its_wait_spent(
+	mut fixture: Fixture,
+	#[case] spent: Option<u32>,
+) {
+	let wake_at = chrono::Utc::now();
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Outage {
+		service: "Native memory".into(),
+		started_at: wake_at - chrono::Duration::minutes(5),
+		wake_at,
+		cadence: aidash_domain::run_state::OutageCadence::Service,
+		resume: ResumeState::Ready(ReadyState::default()),
+	}));
+	fixture.run.recovery.retry =
+		spent.map(|count| aidash_domain::RetryState { count, at: wake_at });
+	Executor::new(&fixture.backend)
+		.advance(
+			&mut fixture.run,
+			fixture.backend.0.token,
+			&mut fixture.backend.clone(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Ready);
+	let writes = fixture.backend.0.writes.lock().unwrap();
+	let (event, saved) = writes.last().unwrap();
+	assert_eq!(event, "run.outage_resumed");
+	assert_eq!(
+		saved.recovery.retry.as_ref().map(|retry| retry.count),
+		spent
+	);
+}
 #[rstest]
 #[case(TaskStatus::Completed, RunPhase::Completed)]
 #[case(TaskStatus::Failed, RunPhase::Failed)]

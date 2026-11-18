@@ -32,25 +32,60 @@ fn track_outage(run: &mut Run, service: &str, now: DateTime<Utc>) -> DateTime<Ut
 		.started_at
 }
 
+/// Wait out `service` until its next check (ADR 0129). Returns `false` once the
+/// outage has reached its bound; the caller then pauses the Run.
+///
+/// `spent` is the generic retry count to keep while waiting: the short retries
+/// of an outage counted by `recovery.retry` (semantic context, a service). The
+/// wake-up restores it, so the next failure waits again at once instead of
+/// retrying for another minute. A Decider or Node outage keeps its own count.
+///
+/// A check at worker entry can fail while the Run still waits, as a wait wakes
+/// and before its step runs. The Run then keeps what it waits for: an Outage
+/// Wait moves its next check and names the service failing now, and any other
+/// wait keeps its state while its wake-up is held until that check.
 async fn wait_outage(
 	store: &dyn ExecutionRecoveryStore,
 	run: &mut Run,
 	token: Uuid,
 	service: &str,
 	cadence: OutageCadence,
+	spent: Option<u32>,
 	now: DateTime<Utc>,
 ) -> Result<bool> {
 	let started_at = track_outage(run, service, now);
 	let Some(wake_at) = cadence.next_wake(started_at, now) else {
 		return Ok(false);
 	};
-	run.suspend(|resume| WaitingState::Outage {
-		service: service.into(),
-		started_at,
-		wake_at,
-		resume,
-		cadence,
-	})?;
+	let retry = |count| RetryState { count, at: wake_at };
+	if let RunState::Waiting(wait) = &mut run.state {
+		if let WaitingState::Outage {
+			service: waiting_for,
+			started_at: since,
+			wake_at: next,
+			cadence: every,
+			..
+		} = wait.as_mut()
+		{
+			*waiting_for = service.into();
+			*since = started_at;
+			*next = wake_at;
+			*every = cadence;
+			run.recovery.retry = spent.map(retry);
+		} else {
+			// Activation wakes a wait no earlier than its retry (`activation::due`).
+			run.recovery.retry = Some(retry(spent.unwrap_or_default()));
+		}
+	} else {
+		run.suspend(|resume| WaitingState::Outage {
+			service: service.into(),
+			started_at,
+			wake_at,
+			resume,
+			cadence,
+		})?;
+		run.recovery.retry = spent.map(retry);
+	}
 	store.save(run, token, "run.outage_waiting").await?;
 	Ok(true)
 }
@@ -145,17 +180,23 @@ pub async fn recover(
 			current.error = Some(reason.to_string());
 			store.save(&current, token, "run.semantic_retrying").await?;
 		} else if reason == SemanticFailure::Unavailable {
-			current.recovery.semantic_reason = Some(SemanticFailure::RetriesExhausted);
+			// The Run still retries by itself, so it stays `Unavailable` with a
+			// scheduled retry and management offers only `wait`: nobody is told
+			// to act before the bound (ADR 0129). The bound pauses it as
+			// `RetriesExhausted`.
+			current.recovery.semantic_reason = Some(reason);
 			if !wait_outage(
 				store,
 				&mut current,
 				token,
 				SEMANTIC_CONTEXT,
 				OutageCadence::Service,
+				Some(OUTAGE_RETRIES),
 				now,
 			)
 			.await?
 			{
+				current.recovery.semantic_reason = Some(SemanticFailure::RetriesExhausted);
 				store
 					.pause_semantic(&current, token, SemanticFailure::RetriesExhausted)
 					.await?;
@@ -192,6 +233,7 @@ pub async fn recover(
 				token,
 				DECIDER,
 				OutageCadence::Service,
+				None,
 				now,
 			)
 			.await?
@@ -222,6 +264,7 @@ pub async fn recover(
 			token,
 			&service,
 			OutageCadence::Service,
+			None,
 			now,
 		)
 		.await?
@@ -276,6 +319,7 @@ pub async fn recover(
 			token,
 			service,
 			OutageCadence::Service,
+			Some(OUTAGE_RETRIES),
 			now,
 		)
 		.await?
@@ -300,6 +344,7 @@ pub async fn recover(
 			token,
 			PLAN_ALLOWANCE,
 			OutageCadence::PlanAllowance,
+			None,
 			now,
 		)
 		.await?
