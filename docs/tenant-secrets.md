@@ -400,8 +400,9 @@ waiting plain HTTP requests may hold at most a quarter of the slots (128); one
 beyond that is refused at once with `egress_tenant_tunnel_limit`. A connection
 that waited is checked against its scope once more before it is forwarded. Clients keep tunnels open between requests, so while a
 connection of a scope waits, that scope's tunnels that carried nothing for two
-seconds close as `egress_idle_reclaimed` and give their slots to the waiters;
-the client opens a new tunnel when it needs one. A credential resolved for a new
+seconds close as `egress_idle_reclaimed` and give their slots to the waiters
+(a tunnel whose bytes wait on a debit is not idle); the client opens a new
+tunnel when it needs one. A credential resolved for a new
 connection is reused for five seconds, so a burst of connections reads the
 store once; a revoked credential may still open connections for that long, and
 each open tunnel's own five-second recheck closes them.

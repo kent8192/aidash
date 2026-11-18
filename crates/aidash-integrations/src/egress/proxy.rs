@@ -7,7 +7,7 @@ use std::{
 	io,
 	sync::{
 		Arc,
-		atomic::{AtomicU64, Ordering},
+		atomic::{AtomicU64, AtomicUsize, Ordering},
 	},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -34,6 +34,21 @@ struct Elapsed(metrics::Histogram, tokio::time::Instant);
 impl Drop for Elapsed {
 	fn drop(&mut self) {
 		self.0.record(self.1.elapsed().as_secs_f64());
+	}
+}
+/// Counts a debit in flight for as long as it lives. A tunnel whose bytes wait
+/// on the store, through the debit's retries and pauses, is busy rather than
+/// quiet, so it does not make way for a waiting connection (#909 decision 2).
+struct Charging<'a>(&'a AtomicUsize);
+impl<'a> Charging<'a> {
+	fn start(count: &'a AtomicUsize) -> Self {
+		count.fetch_add(1, Ordering::Relaxed);
+		Self(count)
+	}
+}
+impl Drop for Charging<'_> {
+	fn drop(&mut self) {
+		self.0.fetch_sub(1, Ordering::Relaxed);
 	}
 }
 /// A Pod can repeat these failures at will, by reaching a host that always fails
@@ -894,6 +909,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 	mut write: W,
 	batch: &mut Batch,
 	activity: tokio::sync::watch::Sender<()>,
+	charging: &AtomicUsize,
 	mut cancel: tokio::sync::watch::Receiver<bool>,
 	count: Arc<AtomicU64>,
 ) -> io::Result<()> {
@@ -913,12 +929,15 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 			};
 		}
 		activity.send_replace(());
-		tokio::select! {
-			result = tokio::time::timeout(DEBIT_WAIT, batch.charge(n)) => result.map_err(|_| match batch.unanswered.take() {
-				Some(cause) => io::Error::other(format!("{BUDGET_WAIT_TIMEOUT}: {cause}")),
-				None => io::Error::other(BUDGET_WAIT_TIMEOUT),
-			})??,
-			_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
+		{
+			let _charging = Charging::start(charging);
+			tokio::select! {
+				result = tokio::time::timeout(DEBIT_WAIT, batch.charge(n)) => result.map_err(|_| match batch.unanswered.take() {
+					Some(cause) => io::Error::other(format!("{BUDGET_WAIT_TIMEOUT}: {cause}")),
+					None => io::Error::other(BUDGET_WAIT_TIMEOUT),
+				})??,
+				_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
+			}
 		}
 		let mut written = 0;
 		while written < n {
@@ -1017,6 +1036,7 @@ where
 		failure.clone(),
 	);
 	let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
+	let charging = AtomicUsize::new(0);
 	let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 	let result = {
 		let transfer = async {
@@ -1026,6 +1046,7 @@ where
 					upstream_write,
 					&mut sent_batch,
 					activity_tx.clone(),
+					&charging,
 					cancel_rx.clone(),
 					sent.clone(),
 				)
@@ -1044,6 +1065,7 @@ where
 					client_write,
 					&mut received_batch,
 					activity_tx.clone(),
+					&charging,
 					cancel_rx.clone(),
 					received.clone(),
 				)
@@ -1128,7 +1150,13 @@ where
 					idle.as_mut().reset(quiet_since + settings.tunnel_limits.idle_timeout);
 				},
 				_ = reclaim_check.tick(), if reclaim.is_some() => {
-					if let Some(reclaim) = &reclaim
+					// A debit in flight is not quiet, and quiet starts again once
+					// it ends. Gating on the count alone is not enough: `select!`
+					// may run this tick after a debit lands but before its write
+					// reports activity, with `quiet_since` from before the debit.
+					if charging.load(Ordering::Relaxed) != 0 {
+						quiet_since = tokio::time::Instant::now();
+					} else if let Some(reclaim) = &reclaim
 						&& quiet_since.elapsed() >= RECLAIM_IDLE
 						&& reclaim.manager.has_waiters(&reclaim.scope)
 					{
@@ -4687,6 +4715,7 @@ mod tests {
 	async fn hello_through(
 		settings: ScopeSettings,
 		scopes: FaultyScopes,
+		reports: super::TunnelReports,
 	) -> ([u8; 5], std::io::Result<()>) {
 		let (mut client, gateway_client) = tokio::io::duplex(64);
 		let (gateway_server, mut server) = tokio::io::duplex(64);
@@ -4698,7 +4727,7 @@ mod tests {
 			settings,
 			CREDENTIAL.into(),
 			HOST.into(),
-			super::TunnelReports::default(),
+			reports,
 			receiver,
 		));
 		client.write_all(b"hello").await.unwrap();
@@ -4719,7 +4748,7 @@ mod tests {
 		let settings = settings_allowing_any_host();
 		let mut scopes = FaultyScopes::new(&settings);
 		scopes.debit_delay = std::time::Duration::from_secs(12);
-		let (received, result) = hello_through(settings, scopes).await;
+		let (received, result) = hello_through(settings, scopes, Default::default()).await;
 		assert_eq!(&received, b"hello");
 		assert!(
 			!result
@@ -4738,7 +4767,7 @@ mod tests {
 		let settings = settings_allowing_any_host();
 		let scopes = FaultyScopes::new(&settings);
 		scopes.debit_failures.store(4, Ordering::SeqCst);
-		let (received, result) = hello_through(settings, scopes).await;
+		let (received, result) = hello_through(settings, scopes, Default::default()).await;
 		assert_eq!(&received, b"hello");
 		assert!(
 			!result
@@ -4747,6 +4776,93 @@ mod tests {
 			"{result:?}"
 		);
 		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
+	}
+
+	/// Sends `hello` through the only tunnel its Scratch Space may hold while
+	/// another connection of that Space waits for the slot, so the tunnel makes
+	/// way once it has been quiet for [`super::RECLAIM_IDLE`]. Returns what the
+	/// upstream read and how the tunnel ended.
+	async fn hello_while_its_space_waits(
+		configure: impl FnOnce(&mut FaultyScopes),
+	) -> ([u8; 5], std::io::Result<()>) {
+		let mut settings = settings_allowing_any_host();
+		settings.tunnel_limits.concurrent = 1;
+		let mut scopes = FaultyScopes::new(&settings);
+		configure(&mut scopes);
+		let (_stop, stopping) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			stopping,
+			super::super::ProxyLimits::default(),
+		));
+		let held = manager.try_acquire(&settings).unwrap();
+		let waiter = {
+			let manager = manager.clone();
+			let settings = settings.clone();
+			tokio::spawn(async move { manager.acquire(&settings, super::DEBIT_WAIT).await.is_ok() })
+		};
+		tokio::task::yield_now().await;
+		assert!(manager.has_waiters(&settings.id));
+		let reports = super::TunnelReports {
+			reclaim: Some(super::Reclaim {
+				manager: manager.clone(),
+				scope: settings.id.clone(),
+			}),
+			..Default::default()
+		};
+		let (received, result) = hello_through(settings.clone(), scopes, reports).await;
+		// The connection waited the whole time, so the tunnel could have made way.
+		assert!(manager.has_waiters(&settings.id));
+		drop(held);
+		assert!(waiter.await.unwrap(), "the waiter gets the slot");
+		(received, result)
+	}
+
+	/// A debit the store is slow to answer keeps its tunnel busy: the tunnel
+	/// does not make way for a waiting connection of its Space, and the bytes
+	/// move once the store answers (#909 decision 2).
+	#[tokio::test(start_paused = true)]
+	async fn a_slow_debit_is_not_an_idle_tunnel_to_reclaim() {
+		let observed = super::super::tests::Observed::start();
+		let (received, result) = hello_while_its_space_waits(|scopes| {
+			// A multiple of the reclaim check, so the debit ends on one of its
+			// ticks.
+			scopes.debit_delay = std::time::Duration::from_secs(6);
+		})
+		.await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(
+			observed.count("aidash_egress_host_connection_reclaimed_total"),
+			0
+		);
+	}
+
+	/// The pauses between debits the store did not answer are part of the
+	/// debit, not quiet on the tunnel (#909 decision 2).
+	#[tokio::test(start_paused = true)]
+	async fn a_debit_retried_after_pauses_is_not_an_idle_tunnel_to_reclaim() {
+		let observed = super::super::tests::Observed::start();
+		let (received, result) = hello_while_its_space_waits(|scopes| {
+			scopes.debit_failures.store(4, Ordering::SeqCst);
+		})
+		.await;
+		assert_eq!(&received, b"hello");
+		assert!(
+			!result
+				.as_ref()
+				.is_err_and(|error| error.to_string().contains("egress_")),
+			"{result:?}"
+		);
+		assert_eq!(observed.count("aidash_egress_debit_retries_total"), 4);
+		assert_eq!(
+			observed.count("aidash_egress_host_connection_reclaimed_total"),
+			0
+		);
 	}
 
 	/// A tunnel that crosses UTC midnight refunds the day before it, and that
