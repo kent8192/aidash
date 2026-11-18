@@ -846,6 +846,11 @@ impl Batch {
 	}
 	/// Debits until the store decides. A store that does not answer is tried
 	/// again; the caller bounds the whole wait with [`DEBIT_WAIT`].
+	///
+	/// A debit carries no key, so one whose commit landed but whose answer was
+	/// lost is debited again: the same `amount`, at most one batch, counts
+	/// twice and stays counted for the day. That errs toward the allowance,
+	/// never past it; keying each reservation would need a store change.
 	async fn debit(
 		&mut self,
 		amount: u64,

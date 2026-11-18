@@ -465,9 +465,11 @@ record cannot be written after retries, the gateway refuses the connection with
 `egress_audit_unavailable`. The final record is retried for about 60 seconds
 without holding the connection's concurrency slot, or once more if the process
 is stopping. A process crash or sustained audit-store failure can leave a record
-`unsettled`, with incomplete byte counts. A tunnel's budget reservation
-waits at most 30 seconds and its refund five. An interrupted connection or a
-refund that fails may retain unused reserved budget.
+`unsettled`, with incomplete byte counts. A tunnel's debit against its Scratch
+Space egress allowance waits at most 30 seconds and its refund five. An
+interrupted connection, a refund that fails, or a debit tried again after its
+answer was lost may leave bytes counted against the day's allowance that never
+moved.
 
 Sandboxed code can repeat failures of a Host connection at will, so each kind of
 failure logs at most one line per 10 seconds, with the number since the last
