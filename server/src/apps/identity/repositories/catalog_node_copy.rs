@@ -18,7 +18,7 @@ use reinhardt::db::{
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 struct CopyRow {
 	id: String,
@@ -33,6 +33,56 @@ struct CopyRow {
 	agent: Option<Subject>,
 }
 
+/// Deployment-scoped rows of the Tenant's live Nodes. A deleted Node keeps its
+/// rows until it is purged, but no Deployment-scoped change reaches it, so
+/// they can be stale.
+async fn live_deployment_rows(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> Result<Vec<AuthorizationCatalog>> {
+	let live: BTreeSet<String> = super::nodes::list_live(tx, tenant)
+		.await?
+		.into_iter()
+		.map(|node| node.name.as_str().to_owned())
+		.collect();
+	Ok(AuthorizationCatalog::objects()
+		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+		.filter(AuthorizationCatalog::field_scope().eq("deployment".to_owned()))
+		.order_by(&["entry_id", "entry_version", "node"])
+		.all_with_executor(tx)
+		.await
+		.map_err(FrameworkError::from)?
+		.into_iter()
+		.filter(|row| live.contains(&row.node))
+		.collect())
+}
+
+/// What a Deployment-scoped row grants, with the Node's own Agent subjects
+/// named relative to it so rows of different Nodes compare.
+fn consent(
+	row: &AuthorizationCatalog,
+	deployment: &DeploymentId,
+) -> Result<(bool, bool, Option<CatalogRestriction>)> {
+	let prefix = format!("{}/agents/", deployment.node(NodeName::parse(&row.node)?));
+	let mut restriction: Option<CatalogRestriction> = row
+		.restriction
+		.clone()
+		.map(|value| serde_json::from_value(value.0))
+		.transpose()?;
+	if let Some(restriction) = &mut restriction {
+		restriction.subjects = restriction
+			.subjects
+			.iter()
+			.map(|subject| {
+				subject
+					.strip_prefix(&prefix)
+					.map_or_else(|| subject.clone(), |rest| format!("./agents/{rest}"))
+			})
+			.collect();
+	}
+	Ok((row.enabled, row.carry_over, restriction))
+}
+
 /// The caller holds the exclusive policy and Node inventory locks.
 pub(crate) async fn copy(
 	tx: &mut dyn TransactionExecutor,
@@ -41,14 +91,9 @@ pub(crate) async fn copy(
 	target: &NodeName,
 	snapshot: &mut Snapshot,
 ) -> Result<()> {
-	let rows = AuthorizationCatalog::objects()
-		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
-		.filter(AuthorizationCatalog::field_scope().eq("deployment".to_owned()))
-		.filter(AuthorizationCatalog::field_enabled().eq(true))
-		.order_by(&["entry_id", "entry_version", "node"])
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?;
+	// Withdrawn rows take part, so a version withdrawn on one live Node is
+	// never copied from another that still holds it.
+	let rows = live_deployment_rows(tx, tenant).await?;
 	// `None` marks a version whose Nodes disagree. Creating a Node never fails
 	// on that: the new Node gets no approval for it and asks again.
 	let mut copies = BTreeMap::<(String, String), Option<CopyRow>>::new();
@@ -148,7 +193,7 @@ pub(crate) async fn copy(
 		}
 	}
 	let mut policy_changed = false;
-	for row in copies.values().flatten() {
+	for row in copies.values().flatten().filter(|row| row.enabled) {
 		if let Some(subject) = &row.agent {
 			let name = aidash_domain::qualified_agent(
 				&deployment.node(target.clone()),
@@ -228,6 +273,155 @@ pub(crate) async fn copy(
 			None,
 		)
 		.await?;
+	}
+	Ok(())
+}
+
+/// Whether `row` grants what every other live Node's row of its version
+/// grants. A version no other live Node holds Deployment-wide agrees.
+fn agrees_with_peers(
+	row: &AuthorizationCatalog,
+	others: &[AuthorizationCatalog],
+	deployment: &DeploymentId,
+) -> Result<bool> {
+	let granted = consent(row, deployment)?;
+	for peer in others
+		.iter()
+		.filter(|peer| peer.entry_key == row.entry_key && peer.entry_version == row.entry_version)
+	{
+		if consent(peer, deployment)? != granted {
+			return Ok(false);
+		}
+	}
+	Ok(true)
+}
+
+/// Narrow an update to `row`'s approval at `revision`.
+fn at_revision(
+	query: &mut reinhardt::query::UpdateStatement,
+	row: &AuthorizationCatalog,
+	revision: i64,
+) {
+	query
+		.and_where(Expr::col(Alias::new("tenant")).eq(row.tenant.clone()))
+		.and_where(Expr::col(Alias::new("node")).eq(row.node.clone()))
+		.and_where(Expr::col(Alias::new("entry_id")).eq(row.entry_key.clone()))
+		.and_where(Expr::col(Alias::new("entry_version")).eq(row.entry_version.clone()))
+		.and_where(Expr::col(Alias::new("revision")).eq(revision));
+}
+
+/// A restored Node missed every Deployment-scoped change made while it was
+/// deleted. Each of its Deployment-scoped rows that no longer grants what the
+/// other live Nodes' rows of that version grant leaves the Deployment scope,
+/// withdrawn if it was enabled, so restoring a Node never brings back an
+/// approval withdrawn, narrowed or stopped from carrying on every Node (#873).
+/// A version no other live Node holds Deployment-wide is left as it is.
+/// The caller holds the exclusive policy and Node inventory locks.
+pub(crate) async fn reconcile_restored(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	deployment: &DeploymentId,
+	restored: &NodeName,
+) -> Result<()> {
+	let (own, others): (Vec<_>, Vec<_>) = live_deployment_rows(tx, tenant)
+		.await?
+		.into_iter()
+		.partition(|row| row.node == restored.as_str());
+	for row in own {
+		if agrees_with_peers(&row, &others, deployment)? {
+			continue;
+		}
+		tracing::warn!(
+			tenant,
+			node = %restored,
+			entry = %row.entry_key,
+			version = %row.entry_version,
+			"restored Node's Deployment approval differs from the live Nodes; kept to this Node"
+		);
+		let revision = if row.enabled {
+			row.revision + 1
+		} else {
+			row.revision
+		};
+		let mut update = Query::update();
+		update
+			.table(Alias::new("authorization_catalog"))
+			.value(Alias::new("enabled"), false)
+			.value(Alias::new("revision"), revision)
+			.value(Alias::new("scope"), "node");
+		at_revision(&mut update, &row, row.revision);
+		let (sql, params) = update.build(PostgresQueryBuilder);
+		if tx
+			.execute(&sql, convert_values(params))
+			.await?
+			.rows_affected
+			!= 1
+		{
+			return Err(Error::Conflict("catalog revision changed".into()));
+		}
+		if row.enabled {
+			// The withdrawal is a revision of its own, like any other.
+			let mut current = Query::select();
+			current
+				.columns(
+					[
+						"tenant",
+						"node",
+						"entry_id",
+						"entry_version",
+						"revision",
+						"enabled",
+						"restriction",
+					]
+					.map(Alias::new),
+				)
+				.expr(Expr::value("node-restore"))
+				.columns(
+					[
+						"carry_over",
+						"scope",
+						"carried_from_version",
+						"carried_from_approver",
+					]
+					.map(Alias::new),
+				)
+				.from(Alias::new("authorization_catalog"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(row.tenant.clone()))
+				.and_where(Expr::col(Alias::new("node")).eq(row.node.clone()))
+				.and_where(Expr::col(Alias::new("entry_id")).eq(row.entry_key.clone()))
+				.and_where(Expr::col(Alias::new("entry_version")).eq(row.entry_version.clone()))
+				.and_where(Expr::col(Alias::new("revision")).eq(revision));
+			let (sql, params) = Query::insert()
+				.into_table(Alias::new("authorization_catalog_history"))
+				.columns(
+					[
+						"tenant",
+						"node",
+						"entry_id",
+						"entry_version",
+						"revision",
+						"enabled",
+						"restriction",
+						"actor",
+						"carry_over",
+						"scope",
+						"carried_from_version",
+						"carried_from_approver",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(current.to_owned())
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(params)).await?;
+		} else {
+			let mut update = Query::update();
+			update
+				.table(Alias::new("authorization_catalog_history"))
+				.value(Alias::new("scope"), "node");
+			at_revision(&mut update, &row, row.revision);
+			let (sql, params) = update.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(params)).await?;
+		}
 	}
 	Ok(())
 }

@@ -469,6 +469,15 @@ async fn change_in(
 			)
 			.map_err(|domain::NodeLimitReached| Error::Conflict("node_limit_reached".into()))?;
 			node_deletions::restore(tx, &row, actor).await?;
+			// The caller holds the policy exclusively, as Node creation does.
+			let restored = domain::NodeName::parse(name)?;
+			crate::apps::identity::repositories::catalog_node_copy::reconcile_restored(
+				tx,
+				tenant,
+				&f.config.deployment,
+				&restored,
+			)
+			.await?;
 			None
 		}
 		Change::Purge => {
