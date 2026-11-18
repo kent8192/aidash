@@ -306,3 +306,249 @@ fn source_is_the_highest_lower_carrying_enabled_semver() {
 	assert_eq!(source_version("2.0.1+second", &build).unwrap(), None);
 	assert!(source_version("invalid", &candidates).is_err());
 }
+
+fn agent_binding(
+	kind: &str,
+	id: &str,
+	version: &str,
+	extra: serde_json::Value,
+) -> serde_json::Value {
+	let mut binding = json!({"kind":kind,"target":{"registry_deployment":"aidash://local","id":id,"version":version}});
+	for (key, value) in extra.as_object().unwrap() {
+		binding[key] = value.clone();
+	}
+	binding
+}
+
+fn agent_with(bindings: serde_json::Value) -> Entry {
+	entry(
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","bindings":bindings}),
+	)
+}
+
+fn restricted(old: serde_json::Value, new: serde_json::Value) -> Vec<String> {
+	compare(&agent_with(json!([old])), &agent_with(json!([new]))).unwrap()
+}
+
+#[test]
+fn widened_binding_hosts_scope_and_limits_require_approval_and_narrowing_carries() {
+	let fetch = |version: &str, narrow: serde_json::Value| {
+		agent_binding("tool", "fetch", version, json!({ "narrow": narrow }))
+	};
+	let base = json!({"allowed_hosts":["docs.a.com"],"scope":{"recipient":["alice"]},"limits":{"max_bytes":10}});
+	for wider in [
+		json!({"scope":{"recipient":["alice"]},"limits":{"max_bytes":10}}),
+		json!({"allowed_hosts":["docs.a.com","b.example"],"scope":{"recipient":["alice"]},"limits":{"max_bytes":10}}),
+		json!({"allowed_hosts":["docs.a.com"],"limits":{"max_bytes":10}}),
+		json!({"allowed_hosts":["docs.a.com"],"scope":{"recipient":["alice","bob"]},"limits":{"max_bytes":10}}),
+		json!({"allowed_hosts":["docs.a.com"],"scope":{"recipient":["alice"]}}),
+		json!({"allowed_hosts":["docs.a.com"],"scope":{"recipient":["alice"]},"limits":{"max_bytes":20}}),
+		json!({"allowed_hosts":["docs.a.com"],"scope":{"recipient":["alice"]},"limits":{"max_bytes":10},"provider_tool":{"max_tool_calls":3,"parameters":{}}}),
+	] {
+		assert!(
+			restricted(fetch("1.0.0", base.clone()), fetch("1.1.0", wider.clone()))
+				.contains(&"binding restrictions".to_owned()),
+			"{wider}"
+		);
+	}
+	for narrower in [
+		base.clone(),
+		json!({"allowed_hosts":["docs.a.com"],"scope":{"recipient":["alice"],"path":["notes"]},"limits":{"max_bytes":5}}),
+	] {
+		assert!(
+			restricted(
+				fetch("1.0.0", base.clone()),
+				fetch("2.0.0", narrower.clone())
+			)
+			.is_empty(),
+			"{narrower}"
+		);
+	}
+	assert!(restricted(fetch("1.0.0", json!({})), fetch("1.0.0", base)).is_empty());
+}
+
+#[test]
+fn dropping_an_explicit_restriction_on_a_default_builtin_requires_approval() {
+	let file_read = agent_binding(
+		"tool",
+		"aidash.file_read",
+		"1.0.0",
+		json!({"narrow":{"scope":{"path":["notes"]}}}),
+	);
+	let old = agent_with(json!([file_read]));
+	let new = agent_with(json!([]));
+	assert_eq!(
+		compare(&old, &new).unwrap(),
+		vec!["binding restrictions".to_owned()]
+	);
+	assert!(compare(&new, &old).unwrap().is_empty());
+}
+
+#[test]
+fn bundle_members_may_narrow_but_not_widen() {
+	let kit = |members: serde_json::Value| {
+		agent_binding("bundle", "kit", "1.0.0", json!({ "members": members }))
+	};
+	for wider in [json!([]), json!(["read", "write"]), json!(["write"])] {
+		assert!(
+			restricted(kit(json!(["read"])), kit(wider.clone()))
+				.contains(&"binding restrictions".to_owned()),
+			"{wider}"
+		);
+	}
+	assert!(restricted(kit(json!(["read", "write"])), kit(json!(["read"]))).is_empty());
+	assert!(restricted(kit(json!([])), kit(json!(["read"]))).is_empty());
+}
+
+#[test]
+fn decider_binding_restrictions_may_tighten_but_not_loosen() {
+	let probability = |value: f64| {
+		serde_json::to_value(crate::decision::Probability::new(value).unwrap()).unwrap()
+	};
+	let decider = |decision: Option<serde_json::Value>| {
+		let narrow = decision.map_or_else(|| json!({}), |decision| json!({ "decision": decision }));
+		agent_binding("decider", "guard", "1.0.0", json!({ "narrow": narrow }))
+	};
+	let strict = json!({"threshold":probability(0.3),"preserve_recent":8,"forbid_apply":true,"max_calls_per_run":5});
+	for looser in [
+		None,
+		Some(
+			json!({"threshold":probability(0.4),"preserve_recent":8,"forbid_apply":true,"max_calls_per_run":5}),
+		),
+		Some(
+			json!({"threshold":probability(0.3),"preserve_recent":6,"forbid_apply":true,"max_calls_per_run":5}),
+		),
+		Some(
+			json!({"threshold":probability(0.3),"preserve_recent":8,"forbid_apply":false,"max_calls_per_run":5}),
+		),
+		Some(
+			json!({"threshold":probability(0.3),"preserve_recent":8,"forbid_apply":true,"max_calls_per_run":null}),
+		),
+	] {
+		assert!(
+			restricted(decider(Some(strict.clone())), decider(looser.clone()))
+				.contains(&"binding restrictions".to_owned()),
+			"{looser:?}"
+		);
+	}
+	let stricter = json!({"threshold":probability(0.2),"preserve_recent":10,"forbid_apply":true,"max_calls_per_run":2});
+	assert!(restricted(decider(Some(strict)), decider(Some(stricter))).is_empty());
+}
+
+#[test]
+fn personal_secret_ownership_cannot_widen_to_any() {
+	for transport in [
+		json!({"transport":"http","endpoint":"https://example.com/a","replay":"unsafe","secret":"gh","secret_owner":"personal"}),
+		json!({"transport":"mcp","endpoint":"https://example.com/a","tool_name":"search","replay":"unsafe","idempotency_argument":null,"secret":"gh","secret_owner":"personal"}),
+	] {
+		let personal = entry("tool", transport);
+		let mut any = personal.clone();
+		any.config.as_object_mut().unwrap().remove("secret_owner");
+		assert_eq!(
+			compare(&personal, &any).unwrap(),
+			vec!["secret owner".to_owned()]
+		);
+		assert!(compare(&any, &personal).unwrap().is_empty());
+	}
+}
+
+#[test]
+fn a_changed_operation_that_stays_read_only_requires_approval() {
+	let http = entry(
+		"tool",
+		json!({"transport":"http","endpoint":"https://example.com/lookup","replay":"read_only"}),
+	);
+	let mut changed = http.clone();
+	changed.config["endpoint"] = json!("https://example.com/delete");
+	assert_eq!(
+		compare(&http, &changed).unwrap(),
+		vec!["read-only operation".to_owned()]
+	);
+	let mcp = entry(
+		"tool",
+		json!({"transport":"mcp","endpoint":"https://example.com/mcp","tool_name":"search","replay":"read_only","idempotency_argument":null}),
+	);
+	for (field, value) in [
+		("tool_name", json!("delete")),
+		("endpoint", json!("https://example.com/other")),
+	] {
+		let mut changed = mcp.clone();
+		changed.config[field] = value;
+		assert_eq!(
+			compare(&mcp, &changed).unwrap(),
+			vec!["read-only operation".to_owned()],
+			"{field}"
+		);
+	}
+	// Without a Read-only declaration, a path or operation change still carries.
+	let mut unsafe_mcp = mcp.clone();
+	unsafe_mcp.config["replay"] = json!("unsafe");
+	let mut renamed = unsafe_mcp.clone();
+	renamed.config["tool_name"] = json!("delete");
+	assert!(compare(&unsafe_mcp, &renamed).unwrap().is_empty());
+}
+
+#[test]
+fn a_decider_reaching_jev_or_another_credential_requires_approval() {
+	use crate::decision::{
+		AnswerType, DeciderConfig, DeciderRoute, Hook, Mode, policy::StateRetention,
+	};
+	let mut decisions = DeciderRoute::jev("openai/gpt-oss");
+	decisions.provider_contract = crate::decision::DECISIONS.into();
+	decisions.hosts = vec!["cloudflare".into()];
+	let config = DeciderConfig {
+		hook: Hook::Approval,
+		answer_type: AnswerType::Noul,
+		description: "x".into(),
+		provider_credential: "openrouter".into(),
+		routes: vec![decisions],
+		builder: "x".into(),
+		option_source: "x".into(),
+		rule: "x".into(),
+		mode: Mode::Enforce,
+		max_calls_per_run: 20,
+		state_retention: StateRetention::default(),
+	};
+	let old = entry("decider", serde_json::to_value(&config).unwrap());
+	let mut jev = config.clone();
+	jev.routes.push(DeciderRoute::jev("typesafe/jev-1.13"));
+	assert_eq!(
+		compare(&old, &entry("decider", serde_json::to_value(&jev).unwrap())).unwrap(),
+		vec!["route hosts".to_owned()]
+	);
+	let mut credential = config.clone();
+	credential.provider_credential = "other".into();
+	assert_eq!(
+		compare(
+			&old,
+			&entry("decider", serde_json::to_value(&credential).unwrap())
+		)
+		.unwrap(),
+		vec!["provider credential".to_owned()]
+	);
+}
+
+#[test]
+fn a_tool_descriptor_restriction_or_operation_change_requires_approval() {
+	let descriptor = entry(
+		"tool",
+		json!({"registry_deployment":"aidash://local","provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","narrow":{"allowed_hosts":["docs.a.com"]},"transport":{"transport":"http","endpoint":"https://example.com/rpc","replay":"unsafe"}}),
+	);
+	let mut wider = descriptor.clone();
+	wider.config["narrow"] = json!({});
+	assert_eq!(
+		compare(&descriptor, &wider).unwrap(),
+		vec!["restrictions".to_owned()]
+	);
+	let mut operation = descriptor.clone();
+	operation.config["operation"] = json!("other");
+	assert_eq!(
+		compare(&descriptor, &operation).unwrap(),
+		vec!["tool operation".to_owned()]
+	);
+	let mut alias = descriptor.clone();
+	alias.config["default_alias"] = json!("renamed");
+	alias.config["narrow"] = json!({"allowed_hosts":["docs.a.com"],"limits":{"max":1}});
+	assert!(compare(&descriptor, &alias).unwrap().is_empty());
+}

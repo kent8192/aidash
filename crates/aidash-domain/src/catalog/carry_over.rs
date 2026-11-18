@@ -5,9 +5,9 @@ use crate::{
 	model::ModelConfig,
 	registry::{
 		AgentConfig, Entry,
-		bindings::{AgentBindings, QualifiedRef, definition_references},
+		bindings::{AgentBindings, Narrowing, QualifiedRef, definition_references},
 	},
-	tool::{ToolConfig, providers::ToolDescriptor},
+	tool::{SecretOwner, ToolConfig, providers::ToolDescriptor},
 };
 use std::collections::BTreeSet;
 
@@ -23,11 +23,54 @@ fn host_changed(old: &str, new: &str) -> bool {
 	}
 }
 
-fn tool(entry: &Entry) -> Result<Option<ToolConfig>> {
+/// A tool's transport and, for a provider descriptor, the descriptor itself.
+fn tool(entry: &Entry) -> Result<(Option<ToolConfig>, Option<ToolDescriptor>)> {
 	if let Some(config) = crate::tool::legacy_config(&entry.config)? {
-		return Ok(Some(config));
+		return Ok((Some(config), None));
 	}
-	Ok(serde_json::from_value::<ToolDescriptor>(entry.config.clone())?.transport)
+	let descriptor = serde_json::from_value::<ToolDescriptor>(entry.config.clone())?;
+	Ok((descriptor.transport.clone(), Some(descriptor)))
+}
+
+/// Whether `new` lets a Binding or descriptor do anything `old` did not.
+/// Removing or loosening a restriction widens it; tightening does not
+/// (decision 3 of #873). Provider tool parameters choose an engine or model
+/// rather than only bounding use, so any change to them counts.
+fn narrowing_widened(old: &Narrowing, new: &Narrowing) -> bool {
+	old.provider_tool != new.provider_tool
+		|| !new.intersect(old).is_ok_and(|effective| effective == *new)
+}
+
+/// An empty member list binds the whole bundle.
+fn members_widened(old: &[String], new: &[String]) -> bool {
+	!old.is_empty() && (new.is_empty() || new.iter().any(|member| !old.contains(member)))
+}
+
+/// Where a Decider sends state. A System One Route names no host because it
+/// reaches Jev only through TypeSafe, which is a destination of its own.
+fn decider_destinations(config: &DeciderConfig) -> BTreeSet<(&str, &str)> {
+	config
+		.routes
+		.iter()
+		.flat_map(|route| {
+			let contract = route.provider_contract.as_str();
+			if route.hosts.is_empty() {
+				vec![(contract, "")]
+			} else {
+				route
+					.hosts
+					.iter()
+					.map(|host| (contract, host.as_str()))
+					.collect()
+			}
+		})
+		.collect()
+}
+
+/// A tool that only a person's own secret could authenticate now accepts a
+/// shared Tenant Secret.
+fn secret_owner_widened(old: SecretOwner, new: SecretOwner) -> bool {
+	old == SecretOwner::Personal && new == SecretOwner::Any
 }
 
 /// Compare two versions of one definition. An empty result permits carry-over;
@@ -59,13 +102,17 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 		"decider" => {
 			let a: DeciderConfig = serde_json::from_value(old.config.clone())?;
 			let b: DeciderConfig = serde_json::from_value(new.config.clone())?;
-			let hosts: BTreeSet<_> = a.routes.iter().flat_map(|r| &r.hosts).collect();
+			let destinations = decider_destinations(&a);
 			add(
-				b.routes
+				decider_destinations(&b)
 					.iter()
-					.flat_map(|r| &r.hosts)
-					.any(|h| !hosts.contains(h)),
+					.any(|destination| !destinations.contains(destination)),
 				"route hosts",
+			);
+			// Like a model's, the credential decides whose account the state goes through.
+			add(
+				a.provider_credential != b.provider_credential,
+				"provider credential",
 			);
 			add(
 				b.state_retention.enabled
@@ -75,48 +122,75 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 			);
 		}
 		"tool" => {
-			let a = tool(old)?;
-			let b = tool(new)?;
+			let (a, ad) = tool(old)?;
+			let (b, bd) = tool(new)?;
+			if let (Some(ad), Some(bd)) = (&ad, &bd) {
+				add(
+					ad.provider != bd.provider
+						|| ad.operation != bd.operation
+						|| ad.tier != bd.tier,
+					"tool operation",
+				);
+				add(narrowing_widened(&ad.narrow, &bd.narrow), "restrictions");
+				let lifecycle = |descriptor: &ToolDescriptor| {
+					descriptor.lifecycle.as_ref().map(|lifecycle| {
+						[&lifecycle.poll, &lifecycle.cancel]
+							.map(|r| (r.registry_deployment.clone(), r.id.clone()))
+					})
+				};
+				add(lifecycle(ad) != lifecycle(bd), "dependency");
+			} else if ad.is_some() != bd.is_some() {
+				add(true, "tool configuration");
+			}
+			// A Read-only declaration exempts each call from approval, so it
+			// covers one exact operation. Keeping the declaration while the
+			// operation changes declares another operation Read-only (decision 3).
 			match (&a, &b) {
 				(
 					Some(ToolConfig::Http {
 						endpoint: ae,
 						secret: as_,
 						replay: ar,
-						..
+						secret_owner: ao,
 					}),
 					Some(ToolConfig::Http {
 						endpoint: be,
 						secret: bs,
 						replay: br,
-						..
+						secret_owner: bo,
 					}),
 				) => {
 					add(host_changed(ae, be), "endpoint host");
 					add(as_ != bs, "secret");
+					add(secret_owner_widened(*ao, *bo), "secret owner");
 					add(
-						ar != "read_only" && br == "read_only",
+						br == "read_only" && (ar != "read_only" || ae != be),
 						"read-only operation",
 					);
 				}
 				(
 					Some(ToolConfig::Mcp {
 						endpoint: ae,
+						tool_name: at,
 						secret: as_,
 						scopes: ac,
 						replay: ar,
+						secret_owner: ao,
 						..
 					}),
 					Some(ToolConfig::Mcp {
 						endpoint: be,
+						tool_name: bt,
 						secret: bs,
 						scopes: bc,
 						replay: br,
+						secret_owner: bo,
 						..
 					}),
 				) => {
 					add(host_changed(ae, be), "endpoint host");
 					add(as_ != bs, "secret");
+					add(secret_owner_widened(*ao, *bo), "secret owner");
 					// Without declared scopes a Connection may request any scope, so
 					// dropping the declaration widens it like adding a scope does.
 					add(
@@ -127,7 +201,7 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 						"scopes",
 					);
 					add(
-						ar != "read_only" && br == "read_only",
+						br == "read_only" && (ar != "read_only" || ae != be || at != bt),
 						"read-only operation",
 					);
 				}
@@ -157,6 +231,32 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 			add(
 				refs(new)?.iter().any(|r| !previous.contains(r)),
 				"dependency",
+			);
+			// Each Binding the Agent keeps, default ones included, must stay at
+			// least as narrow: a dropped host, scope, limit or Decider
+			// restriction, or a wider bundle member list, is new consent. A
+			// Binding with no earlier counterpart is a dependency, reported above.
+			let earlier = old.normalized_bindings(node)?;
+			add(
+				new.normalized_bindings(node)?.iter().any(|current| {
+					let current = &current.binding;
+					let mut counterparts = earlier
+						.iter()
+						.map(|item| &item.binding)
+						.filter(|item| {
+							item.kind == current.kind
+								&& item.target.registry_deployment
+									== current.target.registry_deployment
+								&& item.target.id == current.target.id
+						})
+						.peekable();
+					counterparts.peek().is_some()
+						&& !counterparts.any(|item| {
+							!narrowing_widened(&item.narrow, &current.narrow)
+								&& !members_widened(&item.members, &current.members)
+						})
+				}),
+				"binding restrictions",
 			);
 			let ac = AgentConfig::from_definition(a.clone());
 			let bc = AgentConfig::from_definition(b.clone());
