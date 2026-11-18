@@ -1,6 +1,7 @@
 //! What the 30 second Read Recheck asks of its adapters (ADR 0116).
 use crate::Result;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// Something that keeps running between a Run's worker boundaries.
@@ -27,6 +28,12 @@ pub trait ReadRecheckRepository: Send + Sync {
 	async fn check(&self, target: Target) -> Result<Outcome>;
 	/// Withdraw the command or stop the Live preview as an authority revocation.
 	async fn stop_refused(&self, target: Target) -> Result<()>;
+	/// Hold back a Live preview's responses while its reads cannot be confirmed.
+	/// Returns since when they have been held back, or `None` once the preview
+	/// no longer serves (ADR 0129).
+	async fn withhold(&self, preview: Uuid) -> Result<Option<DateTime<Utc>>>;
+	/// Let a withheld Live preview serve again once a check is confirmed.
+	async fn serve_again(&self, preview: Uuid) -> Result<()>;
 	/// Stop a Live preview whose reads could not be confirmed for too long.
 	async fn stop_unconfirmed(&self, preview: Uuid) -> Result<()>;
 }

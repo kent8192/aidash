@@ -826,17 +826,19 @@ async fn incomplete_authorized_candidates_stop_before_provider_effects(
 }
 /// Missing points and a backend outage are retried by a Run; a permanent
 /// adapter failure, which reaches the use case as an untyped `Port`, is not.
+/// Missing points need repair, so they are typed apart from an outage and
+/// pause instead of waiting (ADR 0059).
 #[rstest]
-#[case::missing(|| Ok(false), true)]
-#[case::provider_error(|| Err(Error::External("provider failed".into())), true)]
+#[case::missing(|| Ok(false), Some(Failure::IndexRepair))]
+#[case::provider_error(|| Err(Error::External("provider failed".into())), Some(Failure::Unavailable))]
 #[case::permanent_database(
 	|| Err(Error::Port(Box::new(std::io::Error::other("undefined table")))),
-	false
+	None
 )]
 #[tokio::test]
 async fn physical_point_check_precedes_embedding_allowance(
 	#[case] presence: fn() -> Result<bool>,
-	#[case] transient: bool,
+	#[case] expected: Option<Failure>,
 ) {
 	// Arrange
 	let (calls, mut scope, mut vector) = fixture();
@@ -853,9 +855,9 @@ async fn physical_point_check_precedes_embedding_allowance(
 	.await
 	.unwrap_err();
 	// Assert
-	if transient {
+	if let Some(expected) = expected {
 		assert!(
-			matches!(error, Error::RemoteSemantic(Failure::Unavailable)),
+			matches!(error, Error::RemoteSemantic(failure) if failure == expected),
 			"{error:?}"
 		);
 	} else {
@@ -880,6 +882,7 @@ async fn a_database_outage_does_not_degrade_optional_workspace_context() {
 		"query",
 		1024,
 		&controls(true, true),
+		true,
 	)
 	.await;
 	assert!(
@@ -1307,6 +1310,7 @@ async fn automatic_context_reports_only_recoverable_outages_as_a_cause(
 		"query",
 		1024,
 		&controls(true, true),
+		true,
 	)
 	.await;
 	match (result, expected) {

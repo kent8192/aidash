@@ -1,5 +1,6 @@
 # Plan Connections belong to one subject, not to a Tenant
 
+Amended by ADR 0129 (2026-11-11): an exhausted plan allowance puts the Run in an Outage Wait that retries once an hour instead of failing it.
 Decided on 2026-10-09. A Plan Connection from Sign in with ChatGPT belongs to one subject in one Tenant. Only Runs whose delegation chain starts at that subject may draw on it. This is a deliberate exception to ADR 0001, which binds Provider Credentials per Tenant. A ChatGPT plan allowance is personal, and OpenAI's terms forbid sharing it. A Tenant-level binding would let every member spend one person's plan.
 
 ## Considered Options

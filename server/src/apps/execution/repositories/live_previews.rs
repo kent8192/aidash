@@ -50,6 +50,7 @@ pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
 		expires_at: row.expires_at,
 		pod_host: row.pod_host,
 		termination_confirmed: row.termination_confirmed,
+		unconfirmed_since: row.unconfirmed_since,
 	})
 }
 
@@ -70,6 +71,7 @@ pub(crate) fn to_row(preview: &LivePreview) -> Row {
 		.expires_at(preview.expires_at)
 		.pod_host(preview.pod_host.clone())
 		.termination_confirmed(preview.termination_confirmed)
+		.unconfirmed_since(preview.unconfirmed_since)
 		.updated_at(Utc::now())
 		.finish()
 }
@@ -561,6 +563,53 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 		access.recheck_run_reads(preview.run_id).await.map(|_| ())
 	};
 	access.finish(result).await.map(|()| true)
+}
+
+/// Withhold a serving Live preview's responses while its Read Recheck cannot
+/// be confirmed, or serve again once it is (ADR 0129). Returns since when it
+/// has been withheld, which survives a restart of the recheck loop.
+pub(crate) async fn set_unconfirmed(
+	store: &Store,
+	id: Uuid,
+	unconfirmed: bool,
+) -> NativeResult<Option<DateTime<Utc>>> {
+	// Only the Tenant is taken from this unlocked read: it never changes.
+	let Some(preview) = load_for_maintenance(store, id).await? else {
+		return Ok(None);
+	};
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(&preview.tenant)?)
+		.await?;
+	// Decide on the locked row and write it in the same transaction, as the
+	// gateway does, so a stop or a gateway update committed after the read
+	// above is never written back over.
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop();
+	let Some(mut preview) = row.map(domain).transpose()? else {
+		tx.commit().await?;
+		return Ok(None);
+	};
+	if !matches!(preview.state, State::Running | State::Stale) {
+		tx.commit().await?;
+		return Ok(None);
+	}
+	if preview.unconfirmed_since.is_some() != unconfirmed {
+		preview.unconfirmed_since = unconfirmed.then(Utc::now);
+		Row::objects()
+			.save_with_executor(&mut *tx, &to_row(&preview))
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+	}
+	tx.commit().await?;
+	Ok(preview.unconfirmed_since)
 }
 
 /// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the

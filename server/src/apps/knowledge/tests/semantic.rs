@@ -157,8 +157,10 @@ mod controlled_context_composition {
 				continue;
 			}
 			let mut source = json!({"adapter":adapter});
-			if degrade && adapter == "workspace_retrieval" {
-				source["on_unavailable"] = json!("degrade");
+			// `degrade` is the default since ADR 0129; `false` asks for the
+			// Outage Wait explicitly.
+			if adapter == "workspace_retrieval" {
+				source["on_unavailable"] = json!(if degrade { "degrade" } else { "pause" });
 			}
 			let mut entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
 			if on_demand_memory && adapter == "semantic_memory" {
@@ -480,16 +482,26 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 	let retry = run.recovery.retry.as_ref().expect("a scheduled retry");
 	assert_eq!(retry.count, 1, "{unavailable:?}");
 	assert!(retry.at > chrono::Utc::now(), "{unavailable:?}");
+	// Missing vector points are retried the same way but typed apart: the
+	// index needs repair, so they pause after the retries instead of waiting
+	// (ADR 0059, ADR 0129).
+	let (reason, message) = if matches!(unavailable, Unavailable::VectorBackend) {
+		(
+			"index_repair",
+			"The semantic index is missing vector points and needs repair",
+		)
+	} else {
+		(
+			"unavailable",
+			"The semantic backend is temporarily unavailable",
+		)
+	};
 	assert_eq!(
 		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
-		"unavailable",
+		reason,
 		"{unavailable:?}"
 	);
-	assert_eq!(
-		run.error.as_deref(),
-		Some("The semantic backend is temporarily unavailable"),
-		"{unavailable:?}"
-	);
+	assert_eq!(run.error.as_deref(), Some(message), "{unavailable:?}");
 	assert!(
 		!matches!(
 			&run.state,
@@ -517,20 +529,21 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-/// Issue #233: after the bounded retry a local Run under an embedding outage
-/// pauses with the typed `retries_exhausted`, keeps its Task, and continues to
-/// inference once the provider recovers and the Run is manually resumed.
+/// Issue #233, ADR 0129: after the bounded retry a local Run whose Workspace
+/// source waits (`on_unavailable: pause`) enters an Outage Wait instead of a
+/// pause, keeps its Task, and goes on to inference by itself once the provider
+/// answers (or the index completes) and the wait wakes. No person resumes it.
 #[rstest::rstest]
 #[case::provider_outage(false)]
 #[case::pending_index(true)]
 #[tokio::test]
-async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_provider_recovers(
+async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_provider_recovers(
 	#[case] pending_entry: bool,
 	#[future(awt)]
 	#[with(false, true)]
 	controlled_context: ControlledContext,
 ) {
-	use aidash_server::domain::{RunControlAction, TaskStatus};
+	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
 	let fixture = controlled_context;
 	if pending_entry {
 		add_pending_workspace_entry(&fixture).await;
@@ -560,8 +573,16 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 			// production path saved a delay and kept its failure counter.
 			advance_retry(&fixture, run.id).await;
 		} else {
-			assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
-			assert_eq!(reason, "retries_exhausted", "{run:?}");
+			assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+			// The Run retries by itself while it waits, so management offers
+			// only `wait`; `retries_exhausted` comes at the bound (ADR 0129).
+			assert_eq!(reason, "unavailable", "{run:?}");
+			assert!(run.recovery.retry.is_some(), "{run:?}");
+			assert!(
+				matches!(&run.state, RunState::Waiting(wait)
+					if matches!(wait.as_ref(), WaitingState::Outage { service, .. } if service == "Semantic context")),
+				"{run:?}"
+			);
 			assert_ne!(
 				fixture
 					.f
@@ -581,16 +602,14 @@ async fn local_semantic_outage_pauses_after_bounded_retry_and_resumes_when_the_p
 			.await
 			.unwrap();
 	}
-	let resumed = fixture
-		.f
-		.store
-		.control(&TEST_FIXTURE, run_id.unwrap(), RunControlAction::Resume)
-		.await
-		.unwrap();
-	assert_eq!(resumed.control.as_str(), "ACTIVE");
-	assert!(fixture.worker.worker_once().await.unwrap());
+	// The wait wakes at its next check; nobody resumes the Run.
+	advance_outage_wake(&fixture, run_id.unwrap()).await;
+	run_to_inference(&fixture, 1).await;
+	let run = fixture.f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+	assert!(run.recovery.outage.is_none(), "{run:?}");
 	let contexts = fixture.captured.lock().unwrap().clone();
-	assert_eq!(contexts.len(), 1, "the resumed step reaches inference");
+	assert_eq!(contexts.len(), 1, "the woken step reaches inference");
 	assert!(
 		contexts[0]["current"]["semantic_memory"]["workspace"]["matches"]
 			.as_array()
@@ -638,6 +657,27 @@ async fn advance_retry(fixture: &ControlledContext, run: Uuid) {
 				Expr::cust(
 					"JSONB_SET(pending, '{recovery,retry,at}', TO_JSONB(CLOCK_TIMESTAMP()))",
 				),
+			)
+			.and_where(SimpleExpr::CustomWithExpr(
+				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),
+				vec![Expr::value(run).into()],
+			))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.execute(fixture.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+}
+
+/// Make an Outage Wait's next check due now, leaving what it tracks as the
+/// production path persisted it.
+async fn advance_outage_wake(fixture: &ControlledContext, run: Uuid) {
+	sqlx::query(
+		&reinhardt::query::Query::update()
+			.table(reinhardt::query::Alias::new("runs"))
+			.value_expr(
+				reinhardt::query::Alias::new("pending"),
+				Expr::cust("JSONB_SET(pending, '{data,wake_at}', TO_JSONB(CLOCK_TIMESTAMP()))"),
 			)
 			.and_where(SimpleExpr::CustomWithExpr(
 				"(id=? AND SET_CONFIG('aidash.input_ledger_worker','true',true)='true')".to_owned(),

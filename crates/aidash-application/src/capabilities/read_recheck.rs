@@ -9,14 +9,10 @@ use std::{
 	collections::{BTreeMap, BTreeSet},
 	time::{Duration, Instant},
 };
-use uuid::Uuid;
 
 /// How often each target is checked. The first check after a target appears, or
 /// after a restart, runs at once.
 pub const PERIOD: Duration = Duration::from_secs(30);
-/// A Live preview can serve for up to 24 hours, so it does not outlast this many
-/// unanswered checks in a row. A command ends at its own limit instead.
-pub const UNCONFIRMED_LIMIT: u32 = 5;
 /// How long a refused target waits before its stop is tried again after the first
 /// failure. Each failure in a row doubles the wait, up to one period.
 pub const RETRY_FROM: Duration = Duration::from_secs(5);
@@ -28,7 +24,6 @@ pub struct Schedule {
 	/// Refused targets whose stop failed: when to try again, and how many failures
 	/// in a row. A retry carries forward the original refusal.
 	failed: BTreeMap<Target, (Instant, u32)>,
-	unconfirmed: BTreeMap<Uuid, u32>,
 }
 
 impl Schedule {
@@ -50,8 +45,6 @@ impl Schedule {
 	fn forget_ended(&mut self, targets: &[Target]) {
 		let live: BTreeSet<Target> = targets.iter().copied().collect();
 		self.checked.retain(|target, _| live.contains(target));
-		self.unconfirmed
-			.retain(|preview, _| live.contains(&Target::LivePreview(*preview)));
 	}
 }
 
@@ -107,8 +100,9 @@ async fn check(
 ) -> Result<()> {
 	match repository.check(target).await? {
 		Outcome::Allowed => {
+			// A confirmed check lets a withheld preview serve again.
 			if let Target::LivePreview(preview) = target {
-				schedule.unconfirmed.remove(&preview);
+				repository.serve_again(preview).await?;
 			}
 			Ok(())
 		}
@@ -124,16 +118,18 @@ async fn check(
 				tracing::warn!(?target, "running command continues with unconfirmed reads");
 				Ok(())
 			}
+			// The preview withholds its responses in an Outage Wait, and stops
+			// as `node_unreachable` once that wait reaches its bound (ADR 0129).
+			// Its own absolute limit may stop it first.
 			Target::LivePreview(preview) => {
-				let misses = schedule.unconfirmed.entry(preview).or_default();
-				*misses += 1;
-				tracing::warn!(?target, misses = *misses, "live preview reads unconfirmed");
-				if *misses < UNCONFIRMED_LIMIT {
+				let Some(since) = repository.withhold(preview).await? else {
+					return Ok(());
+				};
+				tracing::warn!(?target, %since, "live preview withheld: reads unconfirmed");
+				if chrono::Utc::now() - since < aidash_domain::run_state::OUTAGE_BOUND {
 					return Ok(());
 				}
-				repository.stop_unconfirmed(preview).await?;
-				schedule.unconfirmed.remove(&preview);
-				Ok(())
+				repository.stop_unconfirmed(preview).await
 			}
 		},
 	}

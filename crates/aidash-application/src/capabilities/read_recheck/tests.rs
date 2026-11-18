@@ -4,6 +4,7 @@ use crate::Error;
 use async_trait::async_trait;
 use rstest::rstest;
 use std::sync::Mutex;
+use uuid::Uuid;
 
 #[derive(Default)]
 struct Repository {
@@ -13,6 +14,8 @@ struct Repository {
 	refused: Mutex<Vec<Target>>,
 	stop_attempts: Mutex<Vec<Target>>,
 	unconfirmed: Mutex<Vec<Uuid>>,
+	/// Since when each preview has been withheld, as the adapter persists it.
+	withheld: Mutex<BTreeMap<Uuid, chrono::DateTime<chrono::Utc>>>,
 	stop_fails: bool,
 	check_fails: bool,
 }
@@ -54,6 +57,20 @@ impl ReadRecheckRepository for Repository {
 			return Err(Error::External("runner unavailable".into()));
 		}
 		self.refused.lock().unwrap().push(target);
+		Ok(())
+	}
+	async fn withhold(&self, preview: Uuid) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+		Ok(Some(
+			*self
+				.withheld
+				.lock()
+				.unwrap()
+				.entry(preview)
+				.or_insert_with(chrono::Utc::now),
+		))
+	}
+	async fn serve_again(&self, preview: Uuid) -> Result<()> {
+		self.withheld.lock().unwrap().remove(&preview);
 		Ok(())
 	}
 	async fn stop_unconfirmed(&self, preview: Uuid) -> Result<()> {
@@ -195,7 +212,7 @@ async fn an_unanswered_check_leaves_a_command_running() {
 }
 
 #[tokio::test]
-async fn a_live_preview_stops_after_five_unanswered_checks_in_a_row() {
+async fn an_unanswered_check_withholds_a_live_preview_without_stopping_it() {
 	// Arrange
 	let target = preview();
 	let Target::LivePreview(id) = target else {
@@ -205,17 +222,16 @@ async fn a_live_preview_stops_after_five_unanswered_checks_in_a_row() {
 	let mut schedule = Schedule::default();
 	let start = Instant::now();
 
-	// Act and Assert: four misses keep it serving, and the fifth stops it.
-	for round in 0..4 {
+	// Act: far more misses than the old five-miss rule allowed (#906).
+	for round in 0..20 {
 		pass(&repository, &mut schedule, start + PERIOD * round)
 			.await
 			.unwrap();
 	}
+
+	// Assert
+	assert!(repository.withheld.lock().unwrap().contains_key(&id));
 	assert!(repository.unconfirmed.lock().unwrap().is_empty());
-	pass(&repository, &mut schedule, start + PERIOD * 4)
-		.await
-		.unwrap();
-	assert_eq!(*repository.unconfirmed.lock().unwrap(), vec![id]);
 	assert!(
 		repository.refused.lock().unwrap().is_empty(),
 		"an unanswered check is not a revocation"
@@ -223,39 +239,53 @@ async fn a_live_preview_stops_after_five_unanswered_checks_in_a_row() {
 }
 
 #[tokio::test]
-async fn an_answer_resets_the_unanswered_count() {
+async fn a_live_preview_withheld_for_the_outage_bound_stops_as_unconfirmed() {
+	// Arrange: withheld since just past the bound (ADR 0129).
+	let target = preview();
+	let Target::LivePreview(id) = target else {
+		unreachable!()
+	};
+	let repository = Repository::with(target, Outcome::Unconfirmed);
+	repository.withheld.lock().unwrap().insert(
+		id,
+		chrono::Utc::now() - aidash_domain::run_state::OUTAGE_BOUND - chrono::Duration::seconds(1),
+	);
+
+	// Act
+	pass(&repository, &mut Schedule::default(), Instant::now())
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(*repository.unconfirmed.lock().unwrap(), vec![id]);
+	assert!(repository.refused.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_confirmed_check_lets_a_withheld_preview_serve_again() {
 	// Arrange
 	let target = preview();
+	let Target::LivePreview(id) = target else {
+		unreachable!()
+	};
 	let repository = Repository::with(target, Outcome::Unconfirmed);
 	let mut schedule = Schedule::default();
 	let start = Instant::now();
-	for round in 0..4 {
-		pass(&repository, &mut schedule, start + PERIOD * round)
-			.await
-			.unwrap();
-	}
+	pass(&repository, &mut schedule, start).await.unwrap();
+	assert!(repository.withheld.lock().unwrap().contains_key(&id));
 
-	// Act: one answer, then four more misses.
+	// Act
 	repository
 		.outcomes
 		.lock()
 		.unwrap()
 		.insert(target, Outcome::Allowed);
-	pass(&repository, &mut schedule, start + PERIOD * 4)
+	pass(&repository, &mut schedule, start + PERIOD)
 		.await
 		.unwrap();
-	repository
-		.outcomes
-		.lock()
-		.unwrap()
-		.insert(target, Outcome::Unconfirmed);
-	for round in 5..9 {
-		pass(&repository, &mut schedule, start + PERIOD * round)
-			.await
-			.unwrap();
-	}
 
 	// Assert
+	assert!(repository.withheld.lock().unwrap().is_empty());
 	assert!(repository.unconfirmed.lock().unwrap().is_empty());
 }
 
@@ -299,7 +329,6 @@ async fn an_ended_target_is_forgotten() {
 
 	// Assert
 	assert!(schedule.checked.is_empty());
-	assert!(schedule.unconfirmed.is_empty());
 }
 
 #[tokio::test]

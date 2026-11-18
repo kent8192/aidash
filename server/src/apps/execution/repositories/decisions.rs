@@ -76,6 +76,26 @@ fn status_label(status: AttemptStatus) -> Result<String> {
 	label(&status)
 }
 
+/// Whether a Decision Attempt counts against the Run's Decider call limit.
+/// `retry` is the Run's Decider outage retry count when the attempt was
+/// reserved. Once it is above zero, an attempt that got no answer belongs to an
+/// outage and spends none of the limit (ADR 0129); an answered one, or one
+/// still in flight (no status yet), counts.
+fn counted_attempt() -> Result<SimpleExpr> {
+	let unanswered = [
+		AttemptStatus::Failed,
+		AttemptStatus::Uncertain,
+		AttemptStatus::NotDispatched,
+	]
+	.into_iter()
+	.map(|status| status_label(status).map(Expr::value))
+	.collect::<Result<Vec<_>>>()?;
+	Ok(Expr::col("retry")
+		.lte(Expr::value(0))
+		.or(Expr::col("status").is_null())
+		.or(Expr::col("status").is_not_in(unanswered)))
+}
+
 /// A reservation that never finished may have reached the provider.
 fn recovered_status(label: &str) -> Result<AttemptStatus> {
 	if label == PENDING {
@@ -450,6 +470,7 @@ impl<'a> RunDecisionJournal<'a> {
 					"(decider = CAST(? AS jsonb))".to_owned(),
 					vec![Expr::value(decider.to_string()).into()],
 				))
+				.and_where(counted_attempt()?)
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut *tx)
@@ -843,3 +864,6 @@ impl DecisionJournal for RunDecisionJournal<'_> {
 		Ok(self.commit_approval_evidence(evidence).await?)
 	}
 }
+
+#[cfg(test)]
+mod tests;

@@ -29,18 +29,33 @@ impl Run {
 				| "run.semantic_retrying"
 				| "run.decider_retrying"
 				| "run.node_retrying"
+				| "run.outage_waiting"
+				| "run.outage_resumed"
 				| "run.failure_pending"
 		);
 		if !retrying {
 			recovery.retry = None;
 		}
 		// Only a scheduled Decider retry carries its count to the next lease.
-		if event != "run.decider_retrying" {
+		if !matches!(
+			event,
+			"run.decider_retrying" | "run.outage_waiting" | "run.outage_resumed"
+		) {
 			recovery.decider_retry = 0;
 		}
 		// Likewise a scheduled Node retry (#751).
-		if event != "run.node_retrying" {
+		if !matches!(
+			event,
+			"run.node_retrying" | "run.outage_waiting" | "run.outage_resumed"
+		) {
 			recovery.node_retry = 0;
+		}
+		if !retrying && !retains_lease(event) {
+			if recovery.outage.is_some() {
+				recovery.semantic_reason = None;
+				recovery.context_reason = None;
+			}
+			recovery.outage = None;
 		}
 		// A checkpoint inside the step keeps its Lease Recovery count, so a step
 		// that crashes after a checkpoint still reaches the bound (#604). Only a

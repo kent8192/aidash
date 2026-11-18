@@ -1549,7 +1549,9 @@ impl<'a> Executor<'a> {
 		// Read before the retry state is cleared: this attempt may degrade an
 		// unavailable workspace slot when it is the last one (ADR 0059).
 		let degrade_on_outage = run.recovery.degrades_on_outage();
-		run.recovery.retry = None;
+		// An Outage Wait keeps the retry count its outage spent; waking it
+		// restores that count below.
+		let waited_retry = run.recovery.retry.take();
 		// The count survives lease-retaining checkpoints of this step; the save
 		// that ends the step resets it (see `Run::worker_snapshot`).
 		let lease_recoveries = run.recovery.lease_recoveries;
@@ -3914,6 +3916,7 @@ connection: None,
 			.await?,
 			RunState::Waiting(waiting) => {
 				let mut waiting = *waiting;
+				let outage_resume = matches!(waiting, WaitingState::Outage { .. });
 				// A newer input ends a Completion Review without an answer: the
 				// candidate under review is stale.
 				let superseded = match waiting.request_id() {
@@ -4067,6 +4070,18 @@ connection: None,
 						}
 						resume.into_state()
 					}
+					WaitingState::Outage { resume, .. } => {
+						// The short retries stay spent across the wake-up, so the
+						// next failure waits again instead of retrying for another
+						// minute (ADR 0129). The wait records a count only for an
+						// outage counted by `recovery.retry` (semantic context, a
+						// service); a Decider or Node outage keeps its own.
+						run.recovery.retry = waited_retry.map(|retry| aidash_domain::RetryState {
+							at: chrono::Utc::now(),
+							..retry
+						});
+						resume.into_state()
+					}
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
 					}
@@ -4113,7 +4128,7 @@ connection: None,
 						));
 					}
 				};
-				store.save_run(run, token, "run.resumed").await?;
+				store.save_run(run, token, if outage_resume { "run.outage_resumed" } else { "run.resumed" }).await?;
 			}
 			RunState::Completed(_) | RunState::Failed(_) | RunState::Cancelled(_) => {
 				return Err(Error::Conflict("run is not executable".into()));
