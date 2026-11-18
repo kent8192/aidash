@@ -242,14 +242,13 @@ impl RegistryManagement {
 			for resolved in snapshot.definitions {
 				let kind = match resolved.definition.kind.as_str() {
 					"tool" => Kind::Tool,
-					"external_service" => Kind::ExternalService,
 					_ => continue,
 				};
 				let resource = catalog::resource(&access, &resolved.definition);
 				if !access.decide(&resource, "registry.read").await? {
 					return Err(Error::Forbidden);
 				}
-				// A bound tool or External service that names no shared Tenant Secret
+				// A bound tool that names no shared Tenant Secret
 				// (none, or a personal-only one) has no readiness fact.
 				let Some((tenant_secret_name, endpoint)) =
 					aidash_domain::tenant_secrets::definition_shared_target(&resolved.definition)

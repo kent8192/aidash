@@ -2632,13 +2632,14 @@ async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() 
 	}
 }
 
-/// Binding resolution alone, without Catalog Approvals: a `core.npm` Binding
-/// resolves while its definition row exists, and a missing row is a plain
-/// NotFound. Run start also needs each bound definition's Catalog Approval,
-/// which `identity/0082` deletes, so `registry/0070` removes the Bindings
-/// themselves; the `run_control` test checks Run start on the migrated rows.
+/// An Agent version pinned before #745 may bind the removed `core.npm`
+/// package index, and one pinned before #738 any External service. Run start
+/// resolves such a version without the Binding (#738): the definition is not
+/// even loaded, so the Run starts whether or not it still exists.
+/// `registry/0070` also removes `core.npm` and `core.pypi` Bindings from
+/// registered versions; the `run_control` test checks Run start on those rows.
 #[tokio::test]
-async fn binding_resolution_of_a_removed_package_index_needs_only_its_definition_row() {
+async fn binding_resolution_skips_a_removed_package_index() {
 	let mut catalog = Catalog::new();
 	catalog.insert(entry(
 		"core.npm",
@@ -2658,15 +2659,17 @@ async fn binding_resolution_of_a_removed_package_index_needs_only_its_definition
 		});
 	let resolved = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
-		resolved
+		!resolved
 			.bindings
 			.iter()
 			.any(|binding| binding.identity.id == "core.npm")
 	);
-	// Without the definition row, resolution refuses with a plain NotFound.
 	let mut without = Catalog::new();
-	assert!(matches!(
-		snapshot(&mut without, &config, false).await,
-		Err(Error::NotFound(id)) if id == "core.npm"
-	));
+	let resolved = snapshot(&mut without, &config, false).await.unwrap();
+	assert!(
+		!resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.definition.kind == "external_service")
+	);
 }

@@ -21,13 +21,11 @@ pub enum Root {
 	SemanticOperation,
 	RemoteUsage,
 	Thread,
-	Operation,
 	Observation,
 	Message,
 	RetentionHold,
 	Preview,
 	LivePreview,
-	EgressSession,
 	Subnode,
 	ScratchSpace,
 	Record,
@@ -202,9 +200,9 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"memory_unit_origins" | "memory_unit_run_origins" => Link("unit_id", Unit),
 		"memory_model_attempts" => Link("operation_id", MemoryOperation),
 		"remote_run_message_fences" => Link("task_id", Task),
-		// A Live preview's Egress request has no core operation (develop #405).
-		"egress_requests" => Either("operation_id", Operation, "session_id", EgressSession),
-		"egress_budgets" => Link("operation_id", Operation),
+		// Every Egress request names its Run; the operation it once named is
+		// historical (#738).
+		"egress_requests" => Link("run_id", Run),
 		"core_manifest_revisions" => Link("area_id", Area),
 		// Each reference is a revision of an Area or a receipt of a record.
 		"core_blob_references" => Either("area_id", Area, "record_id", Record),
@@ -214,7 +212,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"core_previews" => Either("area_id", Area, "live_preview_id", LivePreview),
 		"core_preview_tickets" | "core_preview_sessions" => Link("preview_id", Preview),
 		"core_live_previews" => Either("run_id", Run, "area_id", Area),
-		"egress_sessions" => Either("run_id", Run, "live_preview_id", LivePreview),
 		"events" => Event,
 		"atomic_authority_attempts"
 		| "atomic_coordinators"

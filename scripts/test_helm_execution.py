@@ -355,7 +355,7 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(len(names[0]), 8)
         self.assertEqual(names[0] & names[1], set())
 
-    def test_egress_is_an_internal_service_shared_by_the_application_and_runner(self):
+    def test_egress_is_an_internal_service_served_by_the_application(self):
         execution = {'sandboxImage': 'sandbox' + DIGEST,
                      'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
                      'guard': {'enabled': True, 'image': 'control' + DIGEST},
@@ -367,19 +367,20 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(service['ports'], [{'name': 'egress', 'port': 8950, 'targetPort': 8950}])
         profiles = [json.loads(self.mounted(objects, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
                     for role in ('server', 'worker')]
-        runner = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])['egress']
-        self.assertEqual(profiles, [runner, runner])
-        self.assertEqual(runner['endpoint'], 'http://10.96.0.90:8950')
-        self.assertEqual(runner['pod_selector'], service['selector'])
-        self.assertEqual(runner['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
-        self.assertEqual((runner.get('proxy_global_tunnels'), runner.get('proxy_tenant_tunnels')), (1024, 256))
+        # Only the application serves the gateway; the Runner no longer reads it.
+        runner_profile = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])
+        self.assertNotIn('egress', runner_profile)
+        egress = profiles[0]
+        self.assertEqual(profiles, [egress, egress])
+        self.assertNotIn('endpoint', egress)
+        self.assertEqual(egress['pod_selector'], service['selector'])
+        self.assertEqual(egress['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
+        self.assertEqual((egress.get('proxy_global_tunnels'), egress.get('proxy_tenant_tunnels')), (1024, 256))
         custom_egress = dict(execution['egress'], proxyGlobalTunnels=240, proxyTenantTunnels=48)
         custom = render(self.aidash, dict(values, execution=dict(execution, egress=custom_egress)), 'app', namespace='tenant-app')
         for role in ('server', 'worker'):
             settings = json.loads(self.mounted(custom, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
             self.assertEqual((settings['proxy_global_tunnels'], settings['proxy_tenant_tunnels']), (240, 48))
-        custom_runner = json.loads(select(custom, 'ConfigMap', '-execution-profile')['data']['profile.json'])['egress']
-        self.assertEqual((custom_runner['proxy_global_tunnels'], custom_runner['proxy_tenant_tunnels']), (240, 48))
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(values, execution=dict(execution, egress=dict(custom_egress, proxyTenantTunnels=240))), 'app', namespace='tenant-app')
         with self.assertRaises(subprocess.CalledProcessError):

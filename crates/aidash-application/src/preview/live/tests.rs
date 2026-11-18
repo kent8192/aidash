@@ -130,9 +130,6 @@ impl Scope for Fake {
 	async fn area_revision(&mut self, _area: Uuid) -> Result<Option<i64>> {
 		Ok(Some(self.area_revision))
 	}
-	async fn mint_egress(&mut self, _preview: &mut LivePreview) -> Result<()> {
-		Ok(())
-	}
 }
 
 fn request(command: &str, port: u16) -> Start {

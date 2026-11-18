@@ -10,6 +10,14 @@ use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
 use std::{marker::PhantomData, sync::Arc};
 
+/// A pool's connection counts at one moment, for metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolUsage {
+	pub open: u32,
+	pub idle: usize,
+	pub max: u32,
+}
+
 /// A Reinhardt connection owns persistence; the SQLx driver is confined to pool
 /// configuration and infrastructure fixtures, never repository execution.
 #[derive(Clone)]
@@ -79,6 +87,15 @@ impl Pool {
 	}
 	pub fn driver(&self) -> &sqlx::PgPool {
 		&self.driver
+	}
+	/// How many connections the pool holds, how many of them are idle, and the
+	/// most it may hold. It reaches no database.
+	pub fn usage(&self) -> PoolUsage {
+		PoolUsage {
+			open: self.driver.size(),
+			idle: self.driver.num_idle(),
+			max: self.driver.options().get_max_connections(),
+		}
 	}
 	/// A second SQLx pool on the same database for test fixtures that seed or
 	/// inspect rows of every Tenant directly. See

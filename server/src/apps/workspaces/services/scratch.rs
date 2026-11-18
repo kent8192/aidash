@@ -1,4 +1,5 @@
 //! Transactional, Tenant-authorized Scratch Space operations.
+use super::super::repositories::scratch::service_states;
 use super::super::{
 	repositories::scratch::{NativeScratchServices, ScratchAdapter},
 	serializers::scratch::{ScratchCreate, ScratchSettingsUpdate, ScratchView},
@@ -71,15 +72,17 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					last_used_at: now,
 				};
 				app::create(&mut scope, &space).await?;
-				serde_json::to_value(ScratchView::new(space, now))?
+				let states = service_states(scope.access, &space).await?;
+				serde_json::to_value(ScratchView::new(space, now, states))?
 			}
-			Operation::List(node) => serde_json::to_value(
-				app::list(&mut scope, &node, now)
-					.await?
-					.into_iter()
-					.map(|space| ScratchView::new(space, now))
-					.collect::<Vec<_>>(),
-			)?,
+			Operation::List(node) => {
+				let mut views = Vec::new();
+				for space in app::list(&mut scope, &node, now).await? {
+					let states = service_states(scope.access, &space).await?;
+					views.push(ScratchView::new(space, now, states));
+				}
+				serde_json::to_value(views)?
+			}
 			Operation::Limits(node) => {
 				let person = scope.person().to_owned();
 				scope.require_node_use(&node, &person).await?;
@@ -87,7 +90,9 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 				json!({"ceilings": ceilings, "tenant_hosts": tenant_hosts})
 			}
 			Operation::Read(id) => {
-				serde_json::to_value(ScratchView::new(app::read(&mut scope, id, now).await?, now))?
+				let space = app::read(&mut scope, id, now).await?;
+				let states = service_states(scope.access, &space).await?;
+				serde_json::to_value(ScratchView::new(space, now, states))?
 			}
 			Operation::Settings(id, value) => {
 				app::update_settings(&mut scope, id, now, value.revision, value.settings).await?;

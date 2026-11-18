@@ -205,7 +205,6 @@ pub struct LivePreview {
 	pub pod_host: Option<String>,
 	/// Whether the Runner proved the Pod is gone.
 	pub termination_confirmed: bool,
-	pub egress_expires_at: Option<DateTime<Utc>>,
 }
 
 impl LivePreview {
@@ -240,7 +239,6 @@ impl LivePreview {
 			limits,
 			pod_host: None,
 			termination_confirmed: true,
-			egress_expires_at: None,
 		})
 	}
 

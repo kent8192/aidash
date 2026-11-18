@@ -230,7 +230,6 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 			"research",
 			json!([
 				binding(&node, "tool", "crm"),
-				binding(&node, "external_service", "images"),
 				binding(&node, "tool", "sync")
 			]),
 		),
@@ -266,16 +265,13 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 	set_policy(&f, bundle(true)).await;
 	let managing = token(&f).await;
 	let facts = read_facts(&f, &managing, "research").await;
-	assert_eq!(facts.len(), 3);
+	// An Agent no longer binds an External service (#738), so the registered
+	// service yields no Agent fact.
+	assert_eq!(facts.len(), 2);
+	assert!(facts.iter().all(|fact| fact.item != "images@1.0.0"));
 	assert_eq!(fact(&facts, "crm@1.0.0").status, Status::Ready);
 	assert_eq!(fact(&facts, "crm@1.0.0").kind, Kind::Tool);
 	assert_eq!(fact(&facts, "crm@1.0.0").repair, Repair::None);
-	assert_eq!(
-		fact(&facts, "images@1.0.0").status,
-		Status::SecretHostsMismatch
-	);
-	assert_eq!(fact(&facts, "images@1.0.0").kind, Kind::ExternalService);
-	assert_eq!(fact(&facts, "images@1.0.0").repair, Repair::ManageSecret);
 	assert_eq!(fact(&facts, "sync@1.0.0").status, Status::SecretMissing);
 	assert_eq!(fact(&facts, "sync@1.0.0").repair, Repair::ManageSecret);
 	assert_eq!(
@@ -286,16 +282,12 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 	endpoint_fixtures::replace_policy(&f.runtime.store, "alpha", bundle(false)).await;
 	let asking = token(&f).await;
 	let facts = read_facts(&f, &asking, "research").await;
-	assert_eq!(
-		fact(&facts, "images@1.0.0").repair,
-		Repair::AskAdministrator
-	);
 	assert_eq!(fact(&facts, "sync@1.0.0").repair, Repair::AskAdministrator);
 
 	f.runtime.store.tenant_secrets = None;
 	f.context.set_singleton(f.runtime.clone());
 	let facts = read_facts(&f, &asking, "research").await;
-	for item in ["crm@1.0.0", "images@1.0.0", "sync@1.0.0"] {
+	for item in ["crm@1.0.0", "sync@1.0.0"] {
 		assert_eq!(
 			fact(&facts, item).status,
 			Status::SecretsUnavailableOnDeployment
@@ -316,7 +308,7 @@ async fn agent_readiness_reports_every_status_and_repair(#[future] endpoint: End
 	}));
 	f.context.set_singleton(f.runtime.clone());
 	let facts = read_facts(&f, &asking, "research").await;
-	for item in ["crm@1.0.0", "images@1.0.0", "sync@1.0.0"] {
+	for item in ["crm@1.0.0", "sync@1.0.0"] {
 		assert_eq!(fact(&facts, item).status, Status::BrokerNotConfigured);
 		assert_eq!(fact(&facts, item).repair, Repair::DeploymentAdministrator);
 	}

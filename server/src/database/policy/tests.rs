@@ -29,12 +29,15 @@ async fn every_policy_migration_runs_the_rendered_template() {
 	assert!(policies > 0);
 }
 
-/// Tables the compaction rebuild (#850) dropped after their policy migration ran.
+/// Tables dropped after their policy migration ran: by the compaction rebuild
+/// (#850), and with the operation-token External service route (#738).
 const RETIRED: &[&str] = &[
 	"decision_states",
 	"decision_outcomes",
 	"generation_compaction_usage",
 	"generation_summary_usage",
+	"egress_budgets",
+	"egress_sessions",
 ];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
@@ -58,6 +61,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"identity.0082_remove_package_index_approvals forward",
 	"registry.0054_remove_agent_cluster forward",
 	"registry.0070_remove_package_index_draft_bindings forward",
+	"registry.0072_remove_agent_external_service_draft_bindings forward",
 	"workspaces.0021_conversation_scratch_space forward",
 	"workspaces.0024_workspace_scratch_space forward",
 ];

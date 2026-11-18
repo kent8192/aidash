@@ -1,39 +1,8 @@
-//! Durable operation budgets and metadata-only gateway request records.
+//! Metadata-only gateway request records and Scratch Space egress state.
 use chrono::{DateTime, Utc};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-#[model(app_label = "execution", table_name = "egress_budgets")]
-#[derive(Serialize, Deserialize)]
-pub struct Budget {
-	#[field(primary_key = true)]
-	pub id: Uuid,
-	#[field(field_type = "text")]
-	pub tenant: String,
-	#[field]
-	pub operation_id: Uuid,
-	/// Empty for the operation total; otherwise the bound External service ID.
-	#[field(field_type = "text")]
-	pub service: String,
-	#[field]
-	pub expires_at: DateTime<Utc>,
-	/// The Runner's actual command deadline, pinned at its first request.
-	#[field(null = true)]
-	pub deadline_at: Option<DateTime<Utc>>,
-	#[field]
-	pub sent_bytes: i64,
-	#[field]
-	pub received_bytes: i64,
-	#[field]
-	pub requests: i32,
-	#[field]
-	pub max_sent_bytes: i64,
-	#[field]
-	pub max_received_bytes: i64,
-	#[field]
-	pub max_requests: i32,
-}
 
 #[model(app_label = "execution", table_name = "egress_requests")]
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
@@ -45,12 +14,6 @@ pub struct RequestRecord {
 	pub tenant: String,
 	#[field]
 	pub run_id: Uuid,
-	/// `None` for a request made with a Live preview's session token.
-	#[field(null = true)]
-	pub operation_id: Option<Uuid>,
-	/// Set only for a request made with a Live preview's session token.
-	#[field(null = true)]
-	pub session_id: Option<Uuid>,
 	#[field(field_type = "text")]
 	pub service: String,
 	#[field(field_type = "text")]
@@ -76,7 +39,8 @@ pub struct RequestRecord {
 	/// the outcome is settled.
 	#[field(null = true)]
 	pub settle_ms: Option<i64>,
-	/// `operation`, `pod` or `page`: which path admitted the request.
+	/// `operation`, `pod` or `page`: which path admitted the request. New
+	/// records are `pod`; the others remain on records from the removed routes.
 	#[field(field_type = "text")]
 	pub via: String,
 	#[field(field_type = "text", null = true)]

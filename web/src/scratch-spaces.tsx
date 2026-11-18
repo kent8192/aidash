@@ -151,6 +151,24 @@ function Edit({
         />
       </Field>
       <Hint>{t("scratchServicesShared")}</Hint>
+      {(space.external_service_status ?? [])
+        .filter((service) => !service.usable)
+        .map((service) => (
+          <Notice key={service.id}>
+            {t("scratchServiceUnusable")
+              .replace("{id}", service.id)
+              .replace(
+                "{reason}",
+                t(
+                  service.reason === "approval_limited"
+                    ? "scratchServiceApprovalLimited"
+                    : service.reason === "not_found"
+                      ? "scratchServiceNotFound"
+                      : "scratchServiceNotApproved",
+                ),
+              )}
+          </Notice>
+        ))}
       <Field label={t("scratchCpu")}>
         <Input
           type="number"
