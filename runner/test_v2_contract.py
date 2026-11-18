@@ -537,6 +537,55 @@ def test_run_stop_route_is_scoped_and_idempotent(tmp_path):
         thread.join()
 
 
+def test_mcp_run_stop_route_stops_only_the_runs_stdio_sessions(tmp_path):
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    from types import SimpleNamespace
+    from control import Handler
+    session, other_run, left, ended = (f'00000000-0000-4000-8000-00000000000{n}' for n in range(1, 5))
+    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
+    for operation, run, kind, status in ((session, 'r', 'mcp_session', 'running'),
+                                         (other_run, 'other', 'mcp_session', 'running'),
+                                         (left, 'r', 'left', 'running'),
+                                         (ended, 'r', 'mcp_session', 'stopped')):
+        controller._command_path(operation).write_text(json.dumps({
+            'operation_id': operation, 'scratch_space_id': 's', 'run_id': run, 'kind': kind,
+            'status': status, 'background': True}))
+    stopped = []
+    def stop_command(op):
+        stopped.append(op)
+        # The watcher records the end a moment after the stop request.
+        threading.Timer(.2, lambda: controller._update_command(op, status='stopped')).start()
+        return {'operation_id': op, 'status': 'stopping'}
+    controller._stop_command = stop_command
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server.runner = SimpleNamespace(token='x' * 32, execution_pods=controller)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    def stop(run):
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_port)
+        connection.request('POST', '/v2/mcp/stop_run', json.dumps({'scratch_space_id': 's', 'run_id': run}),
+                           {'Authorization': 'Bearer ' + 'x' * 32})
+        response = connection.getresponse()
+        result = json.loads(response.read())
+        assert response.status == 200, result
+        connection.close()
+        return result
+    try:
+        assert stop('r') == {'stopped': [session]}
+        assert stopped == [session]
+        assert controller._read_command(session)['status'] == 'stopped'
+        # A Background process the Run left and another Run's session keep running.
+        assert controller._read_command(left)['status'] == 'running'
+        assert controller._read_command(other_run)['status'] == 'running'
+        assert stop('r') == {'stopped': []}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def test_python_start_http_route_passes_credential_without_persisting_it(tmp_path):
     import http.client
     import threading

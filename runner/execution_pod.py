@@ -2340,6 +2340,57 @@ print(json.dumps(r))'''
             raise ExecutionPodError('mcp_unavailable', 'MCP session does not exist')
         return self.stop_background(operation_id)
 
+    def stop_mcp_run(self, scratch_space_id, run_id):
+        """Stop every stdio MCP session of a Run, as `stop_python` does for its Python session.
+
+        The server stops the sessions it knows by id; this also reaches one whose start it lost
+        track of (a dropped or timed-out start). Other Background processes of the Run keep
+        running. Returns once each session has ended or its Pod is gone."""
+        import json
+        import time
+        from control import scratch_resource_name
+        scratch_resource_name(scratch_space_id)
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
+            raise ValueError('invalid run_id')
+        signaled, gone = set(), set()
+        deadline = time.monotonic() + 30
+        while True:
+            active, failures = [], []
+            for path in self._space_journal_paths(scratch_space_id):
+                try:
+                    record = json.loads(path.read_bytes())
+                except FileNotFoundError:
+                    continue
+                operation = record['operation_id']
+                if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
+                        or record.get('kind') != 'mcp_session' or operation in gone
+                        or record.get('status') not in ('queued', 'running')):
+                    continue
+                active.append(operation)
+                if operation in signaled:
+                    continue
+                try:
+                    response = self.stop_background(operation)
+                    signaled.add(operation)
+                    if isinstance(response, dict) and response.get('status') not in ('queued', 'running', 'stopping'):
+                        gone.add(operation)
+                except ExecutionPodError as error:
+                    # The Pod that ran it is gone, and the process with it.
+                    if error.code == 'pod_interrupted':
+                        gone.add(operation)
+                        signaled.add(operation)
+                    else:
+                        failures.append(error.message)
+                except Exception as error:
+                    failures.append(str(error) or type(error).__name__)
+            if failures:
+                raise ExecutionPodError('stop_failed', '; '.join(failures))
+            if all(operation in gone for operation in active):
+                return {'stopped': sorted(signaled)}
+            if time.monotonic() >= deadline:
+                raise ExecutionPodError('stop_failed', 'MCP sessions did not confirm termination')
+            time.sleep(.1)
+
     def start_preview(self, request):
         import base64
         import ipaddress

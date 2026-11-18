@@ -18,7 +18,7 @@ fn pod_timeout(path: &str, body: &Value) -> Duration {
 			.and_then(Value::as_u64)
 			.unwrap_or(0)
 			.saturating_add(15),
-		"/v2/runs/stop" | "/v2/python/start" => 60,
+		"/v2/runs/stop" | "/v2/mcp/stop_run" | "/v2/python/start" => 60,
 		// Ensuring a Pod waits for its admission and startup.
 		path if path.starts_with("/v2/pods/") => 1900,
 		_ => 30,
@@ -214,6 +214,15 @@ impl ExecutionPodRuntime for RunnerHttp {
 	async fn mcp_stop(&self, operation_id: &str) -> Result<()> {
 		self.stop_confirmed("/v2/mcp/stop", operation_id).await
 	}
+	async fn mcp_stop_run(&self, scratch_space_id: &str, run_id: &str) -> Result<()> {
+		let _: Value = self
+			.pod_call(
+				"/v2/mcp/stop_run",
+				&json!({"scratch_space_id":scratch_space_id,"run_id":run_id}),
+			)
+			.await?;
+		Ok(())
+	}
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult> {
 		self.pod_call("/v2/python/cell", request).await
 	}
@@ -279,6 +288,7 @@ mod timeout_tests {
 			("/v2/mcp/call", json!({"timeout_seconds": 42}), 57),
 			("/v2/mcp/call", json!({"timeout_seconds": 0}), 15),
 			("/v2/runs/stop", json!({}), 60),
+			("/v2/mcp/stop_run", json!({}), 60),
 			("/v2/python/start", json!({}), 60),
 			("/v2/commands/submit", json!({}), 30),
 			("/v2/commands/refuse", json!({}), 30),

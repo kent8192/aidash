@@ -1,10 +1,10 @@
 use super::*;
 use crate::ports::capabilities::execution_pod::{
-	BackgroundProcesses, ChangeLogChunk, CommandResult, EgressCredential, ExecutionPodRuntime,
-	ExecutionPodSettings, FileChunk, FileManifestResult, FilePatchRequest, FilePatchResult,
-	FileSearchRequest, FileSearchResult, FileWriteResult, LogChunk, LogRequest, ManifestFile,
-	McpCallResult, McpSession, PodReceipt, PreviewStartRequest, PreviewTarget, PythonSession,
-	PythonStartRequest, Result as PodResult,
+	BackgroundProcesses, ChangeLogChunk, CommandRefusal, CommandResult, EgressCredential,
+	ExecutionPodRuntime, ExecutionPodSettings, FileChunk, FileManifestResult, FilePatchRequest,
+	FilePatchResult, FileSearchRequest, FileSearchResult, FileWriteResult, LogChunk, LogRequest,
+	ManifestFile, McpCallResult, McpSession, PodReceipt, PreviewStartRequest, PreviewTarget,
+	PythonSession, PythonStartRequest, Result as PodResult,
 };
 use aidash_domain::agent_plugin::{Command, Cwd, Executable};
 use std::collections::VecDeque;
@@ -25,6 +25,14 @@ struct Pod {
 	/// The listed tools, as the server would send them.
 	tools: Mutex<Value>,
 	stopped: Mutex<Vec<String>>,
+	/// How the next MCP start ends: `None` answers, `Some(None)` never answers, and
+	/// `Some(Some(error))` fails after the Runner may have started the process.
+	start_outcome: Mutex<Option<Option<ExecutionPodError>>>,
+	/// Answers to refusals, in order; none left answers with a transport error.
+	refusals: Mutex<VecDeque<CommandRefusal>>,
+	refused: Mutex<Vec<String>>,
+	/// Runs whose MCP sessions the Runner was asked to stop.
+	run_stops: Mutex<Vec<String>>,
 }
 
 impl Pod {
@@ -162,12 +170,33 @@ impl ExecutionPodRuntime for Pod {
 	async fn preview_stop(&self, _: &str) -> PodResult<()> {
 		unimplemented!()
 	}
+	async fn refuse_command(
+		&self,
+		operation_id: &str,
+		scratch_space_id: &str,
+		run_id: &str,
+	) -> PodResult<CommandRefusal> {
+		self.call("refuse");
+		assert_eq!(scratch_space_id, "space");
+		assert_eq!(run_id, run().to_string());
+		self.refused.lock().unwrap().push(operation_id.into());
+		self.refusals
+			.lock()
+			.unwrap()
+			.pop_front()
+			.ok_or_else(|| ExecutionPodError::Transport(Error::External("runner offline".into())))
+	}
 	async fn mcp_start(&self, request: &McpStartRequest) -> PodResult<McpSession> {
 		self.call("mcp_start");
 		self.starts.lock().unwrap().push(request.clone());
-		Ok(McpSession {
-			operation_id: request.operation_id.clone(),
-		})
+		let outcome = self.start_outcome.lock().unwrap().take();
+		match outcome {
+			None => Ok(McpSession {
+				operation_id: request.operation_id.clone(),
+			}),
+			Some(None) => std::future::pending().await,
+			Some(Some(error)) => Err(error),
+		}
 	}
 	async fn mcp_call(&self, request: &McpCallRequest) -> PodResult<McpCallResult> {
 		let message = request.message.clone();
@@ -194,7 +223,14 @@ impl ExecutionPodRuntime for Pod {
 		})
 	}
 	async fn mcp_stop(&self, operation_id: &str) -> PodResult<()> {
+		self.call("mcp_stop");
 		self.stopped.lock().unwrap().push(operation_id.into());
+		Ok(())
+	}
+	async fn mcp_stop_run(&self, scratch_space_id: &str, run_id: &str) -> PodResult<()> {
+		self.call("mcp_stop_run");
+		assert_eq!(scratch_space_id, "space");
+		self.run_stops.lock().unwrap().push(run_id.into());
 		Ok(())
 	}
 	async fn python_cell(&self, _: &CommandRequest) -> PodResult<CommandResult> {
@@ -829,4 +865,143 @@ async fn a_server_whose_session_never_passed_the_gate_saves_nothing() {
 	assert_eq!(*host.saves.lock().unwrap(), 0);
 	assert!(host.not_saved.lock().unwrap().is_empty());
 	assert!(pod.calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_start_dropped_at_its_time_limit_is_fenced_and_stopped_before_the_data_is_saved() {
+	// Arrange: the Runner never answers the start, and the caller's time limit drops it.
+	let (pod, host, sessions, bound) = setup();
+	*pod.start_outcome.lock().unwrap() = Some(None);
+	pod.refusals.lock().unwrap().push_back(CommandRefusal {
+		refused: false,
+		status: Some("running".into()),
+	});
+	let dropped = tokio::time::timeout(
+		Duration::from_millis(50),
+		bound.list(run(), &server(), &node()),
+	)
+	.await;
+	assert!(dropped.is_err());
+	let operation_id = pod.starts.lock().unwrap()[0].operation_id.clone();
+
+	// Act
+	sessions.close(run()).await;
+
+	// Assert: the process the start may have launched is stopped by id and by Run before the
+	// plugin data is read for saving or removed.
+	assert_eq!(*pod.refused.lock().unwrap(), [operation_id.clone()]);
+	assert_eq!(*pod.stopped.lock().unwrap(), [operation_id]);
+	assert_eq!(*pod.run_stops.lock().unwrap(), [run().to_string()]);
+	let calls = pod.calls();
+	let position = |name: &str| calls.iter().position(|call| call == name).unwrap();
+	assert!(position("mcp_stop_run") < position("manifest"), "{calls:?}");
+	assert!(position("mcp_stop") < position("manifest"), "{calls:?}");
+	assert_eq!(*host.saves.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_start_whose_answer_was_lost_blocks_the_next_start_until_it_is_accounted_for() {
+	// Arrange: the start fails after the Runner may have launched the process, and the
+	// Runner cannot be asked about it yet.
+	let (pod, host, sessions, bound) = setup();
+	*pod.start_outcome.lock().unwrap() = Some(Some(ExecutionPodError::Transport(Error::External(
+		"connection reset".into(),
+	))));
+
+	// Act
+	let lost = bound.list(run(), &server(), &node()).await;
+	let blocked = bound.list(run(), &server(), &node()).await;
+	sessions.close(run()).await;
+
+	// Assert: no second process starts next to the first, and the Run's data stays in place.
+	assert!(
+		matches!(&lost, Err(Error::Invalid(cause)) if cause == START_FAILED),
+		"{lost:?}"
+	);
+	assert!(
+		matches!(&blocked, Err(Error::Invalid(cause)) if cause == START_FAILED),
+		"{blocked:?}"
+	);
+	assert_eq!(pod.starts.lock().unwrap().len(), 1);
+	assert_eq!(*host.saves.lock().unwrap(), 0);
+	assert!(
+		!pod.commands
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|command| command.starts_with("rm -rf -- ") && !command.contains("mkdir"))
+	);
+
+	// Act: the Runner answers again; the id it never accepted is refused for good.
+	pod.refusals.lock().unwrap().push_back(CommandRefusal {
+		refused: true,
+		status: None,
+	});
+	let tools = bound.list(run(), &server(), &node()).await.unwrap();
+
+	// Assert
+	assert_eq!(tools.len(), 1);
+	assert_eq!(pod.starts.lock().unwrap().len(), 2);
+	let first = pod.starts.lock().unwrap()[0].operation_id.clone();
+	assert_eq!(pod.refused.lock().unwrap().last(), Some(&first));
+}
+
+#[tokio::test]
+async fn a_call_waiting_while_the_run_closes_starts_a_fresh_session_after_the_close() {
+	// Arrange
+	let (pod, host, sessions, bound) = setup();
+	bound.list(run(), &server(), &node()).await.unwrap();
+	let state = sessions.runs.lock().unwrap()[&run()].clone();
+	let held = state.lock().await;
+
+	// Act: a close and a call both wait for the Run's lock; the close was first.
+	let closing = tokio::spawn({
+		let sessions = sessions.clone();
+		async move { sessions.close(run()).await }
+	});
+	for _ in 0..16 {
+		tokio::task::yield_now().await;
+	}
+	let calling = tokio::spawn({
+		let bound = sessions.bind(run(), host.clone());
+		async move {
+			bound
+				.call(
+					run(),
+					&server(),
+					&node(),
+					"search",
+					&digest(),
+					json!({}),
+					"k1",
+				)
+				.await
+		}
+	});
+	for _ in 0..16 {
+		tokio::task::yield_now().await;
+	}
+	drop(held);
+	closing.await.unwrap();
+	calling.await.unwrap().unwrap();
+
+	// Assert: the call did not run on the closed state; it started a new session, and only
+	// after the close removed the Run's plugin trees, which the new session writes afresh.
+	assert_eq!(pod.starts.lock().unwrap().len(), 2);
+	assert_eq!(pod.stopped.lock().unwrap().len(), 1);
+	let commands = pod.commands.lock().unwrap().clone();
+	let removed = commands
+		.iter()
+		.position(|command| {
+			*command == format!("rm -rf -- '{}'", stdio_session::run_plugins(run()))
+		})
+		.unwrap();
+	let rewritten = commands
+		.iter()
+		.rposition(|command| command.contains("mkdir"))
+		.unwrap();
+	assert!(removed < rewritten, "{commands:?}");
+	let fresh = sessions.runs.lock().unwrap()[&run()].clone();
+	assert!(!Arc::ptr_eq(&fresh, &state));
+	drop(bound);
 }

@@ -7,8 +7,9 @@ use crate::{
 	Error, Result,
 	ports::{
 		capabilities::execution_pod::{
-			CommandRequest, ExecutionPodError, ExecutionPodErrorCode, FileManifestRequest,
-			FileReadRequest, FileWriteRequest, McpCallRequest, McpStartRequest,
+			CommandRefusal, CommandRequest, ExecutionPodError, ExecutionPodErrorCode,
+			FileManifestRequest, FileReadRequest, FileWriteRequest, McpCallRequest,
+			McpStartRequest,
 		},
 		tools::{PluginServer, StdioPluginHost, StdioPluginSessions, StdioPod},
 	},
@@ -64,6 +65,15 @@ struct RunSessions {
 	/// Plugins whose saved data this Run restored, so their data is saved at close.
 	restored: BTreeSet<PluginName>,
 	sessions: BTreeMap<SessionKey, Session>,
+	/// Operation ids of MCP processes that may run in the Pod but are in no session: a start
+	/// whose answer was lost or whose caller gave up, or a session whose stop was not
+	/// confirmed. Each is recorded before its start is sent, so a dropped start keeps its id.
+	/// No new session starts, and no plugin data is saved or removed, until each is refused or
+	/// stopped.
+	pending: BTreeSet<String>,
+	/// Set by [`StdioSessions::close`] once it has finished with this state; a caller that
+	/// waited for the lock takes a fresh state instead.
+	closed: bool,
 }
 
 struct Session {
@@ -134,50 +144,145 @@ impl StdioSessions {
 					pod: None,
 					restored: BTreeSet::new(),
 					sessions: BTreeMap::new(),
+					pending: BTreeSet::new(),
+					closed: false,
 				}))
 			})
 			.clone()
 	}
 
+	/// The Run's sessions, locked. A state that a close finished with while this caller waited
+	/// is left for a fresh one.
+	async fn lock(
+		&self,
+		run: Uuid,
+		host: &Arc<dyn StdioPluginHost>,
+	) -> tokio::sync::OwnedMutexGuard<RunSessions> {
+		loop {
+			let state = self.run(run, host).lock_owned().await;
+			if !state.closed {
+				return state;
+			}
+		}
+	}
+
 	/// Stops every stdio session of the Run and saves the data of each plugin it restored. A
-	/// later use starts them again.
+	/// later use starts them again. While an MCP process of the Run may still run, its data is
+	/// neither saved nor removed and the state stays, so the next close or start tries again.
 	pub async fn close(&self, run: Uuid) {
-		let Some(state) = self.runs.lock().expect("stdio sessions lock").remove(&run) else {
+		let Some(entry) = self
+			.runs
+			.lock()
+			.expect("stdio sessions lock")
+			.get(&run)
+			.cloned()
+		else {
 			return;
 		};
-		let mut state = state.lock().await;
-		let Some(pod) = state.pod.clone() else {
+		// The Run stays in the map until this close has finished with the Pod, so a concurrent
+		// call waits for it instead of starting a session whose data this close then removes.
+		let mut state = entry.clone().lock_owned().await;
+		if state.closed {
 			return;
-		};
-		for (_, session) in std::mem::take(&mut state.sessions) {
-			if let Err(error) = pod.runtime.mcp_stop(&session.operation_id).await {
-				tracing::info!(%run, operation_id = session.operation_id, %error, "stdio session stop failed");
-			}
 		}
-		// Only plugins whose sessions passed the gate restored data; the host checks the gate
-		// again when it saves, so a Run that lost its lease or authority keeps the previous
-		// version.
-		for plugin in std::mem::take(&mut state.restored) {
-			if let Err(cause) = save_data(&state.host, &pod, run, &plugin).await {
-				tracing::warn!(%run, plugin = plugin.as_str(), cause, "plugin data not saved");
-				state.host.data_not_saved(&plugin, &cause).await;
-			}
-			// The next start restores the saved version, so the live area goes either way.
-			let live = stdio_session::plugin_data(run, &plugin);
-			if command(&pod, run, format!("rm -rf -- {}", quote(&live)))
-				.await
-				.is_err()
-			{
-				tracing::info!(%run, plugin = plugin.as_str(), "live plugin data not removed");
-			}
+		if let Some(pod) = state.pod.clone()
+			&& !close_sessions(&mut state, &pod, run).await
+		{
+			return;
 		}
-		// Each Run has its own plugin trees, so another Run's sessions never lose theirs.
-		let trees = stdio_session::run_plugins(run);
-		if command(&pod, run, format!("rm -rf -- {}", quote(&trees)))
+		state.closed = true;
+		let mut runs = self.runs.lock().expect("stdio sessions lock");
+		if runs
+			.get(&run)
+			.is_some_and(|current| Arc::ptr_eq(current, &entry))
+		{
+			runs.remove(&run);
+		}
+	}
+}
+
+/// Stops the Run's sessions and accounts for every MCP process it may have started, then saves
+/// and removes its plugin data. False when a process is still unaccounted for: nothing is saved
+/// or removed then.
+async fn close_sessions(state: &mut RunSessions, pod: &StdioPod, run: Uuid) -> bool {
+	for (_, session) in std::mem::take(&mut state.sessions) {
+		if !stop_session(pod, run, &session).await {
+			state.pending.insert(session.operation_id);
+		}
+	}
+	// The Runner's own records reach a process whose id this server never kept.
+	if let Err(error) = pod
+		.runtime
+		.mcp_stop_run(&pod.settings.scratch_space_id, &run.to_string())
+		.await
+	{
+		tracing::info!(%run, %error, "the Runner did not stop the Run's stdio sessions");
+	}
+	settle(state, pod, run).await;
+	if !state.pending.is_empty() {
+		tracing::warn!(%run, pending = state.pending.len(), "stdio MCP processes not accounted for; plugin data kept in place");
+		return false;
+	}
+	// Only plugins whose sessions passed the gate restored data; the host checks the gate
+	// again when it saves, so a Run that lost its lease or authority keeps the previous
+	// version.
+	for plugin in std::mem::take(&mut state.restored) {
+		if let Err(cause) = save_data(&state.host, pod, run, &plugin).await {
+			tracing::warn!(%run, plugin = plugin.as_str(), cause, "plugin data not saved");
+			state.host.data_not_saved(&plugin, &cause).await;
+		}
+		// The next start restores the saved version, so the live area goes either way.
+		let live = stdio_session::plugin_data(run, &plugin);
+		if command(pod, run, format!("rm -rf -- {}", quote(&live)))
 			.await
 			.is_err()
 		{
-			tracing::info!(%run, "plugin trees not removed");
+			tracing::info!(%run, plugin = plugin.as_str(), "live plugin data not removed");
+		}
+	}
+	// Each Run has its own plugin trees, so another Run's sessions never lose theirs.
+	let trees = stdio_session::run_plugins(run);
+	if command(pod, run, format!("rm -rf -- {}", quote(&trees)))
+		.await
+		.is_err()
+	{
+		tracing::info!(%run, "plugin trees not removed");
+	}
+	true
+}
+
+/// Accounts for each pending MCP process: an id the Runner never accepted is refused, so a
+/// delayed start of it can never run; an accepted one is stopped. Ids that stay pending are
+/// still unaccounted for.
+async fn settle(state: &mut RunSessions, pod: &StdioPod, run: Uuid) {
+	for operation_id in std::mem::take(&mut state.pending) {
+		if !account(pod, run, &operation_id).await {
+			state.pending.insert(operation_id);
+		}
+	}
+}
+
+async fn account(pod: &StdioPod, run: Uuid, operation_id: &str) -> bool {
+	match pod
+		.runtime
+		.refuse_command(
+			operation_id,
+			&pod.settings.scratch_space_id,
+			&run.to_string(),
+		)
+		.await
+	{
+		Ok(CommandRefusal { refused: true, .. }) => true,
+		Ok(_) => match pod.runtime.mcp_stop(operation_id).await {
+			Ok(()) => true,
+			Err(error) => {
+				tracing::info!(%run, operation_id, %error, "stdio MCP process stop failed");
+				false
+			}
+		},
+		Err(error) => {
+			tracing::info!(%run, operation_id, %error, "stdio MCP start not fenced");
+			false
 		}
 	}
 }
@@ -207,8 +312,7 @@ impl StdioPluginSessions for RunStdio {
 		config: &StdioServer,
 	) -> Result<Vec<ListedTool>> {
 		self.check(run)?;
-		let state = self.sessions.run(run, &self.host);
-		let mut state = state.lock().await;
+		let mut state = self.sessions.lock(run, &self.host).await;
 		state.host = self.host.clone();
 		let key = key(server);
 		if let Some(session) = state.sessions.get(&key) {
@@ -244,8 +348,7 @@ impl StdioPluginSessions for RunStdio {
 			)));
 		}
 		self.host.admit_call().await?;
-		let state = self.sessions.run(run, &self.host);
-		let mut state = state.lock().await;
+		let mut state = self.sessions.lock(run, &self.host).await;
 		state.host = self.host.clone();
 		let key = key(server);
 		if !state.sessions.contains_key(&key) {
@@ -280,8 +383,10 @@ impl StdioPluginSessions for RunStdio {
 			Err(ExecutionPodError::Remote { code, message }) if unsent(&code) => {
 				// The session is gone or busy, so the request never reached the server. A busy
 				// one still runs, so it is stopped before it is forgotten.
-				if let Some(session) = state.sessions.remove(&key) {
-					stop_session(&pod, run, &session).await;
+				if let Some(session) = state.sessions.remove(&key)
+					&& !stop_session(&pod, run, &session).await
+				{
+					state.pending.insert(session.operation_id);
 				}
 				Err(Error::ToolNotDelivered {
 					message: format!("{code}: {message}"),
@@ -295,8 +400,10 @@ impl StdioPluginSessions for RunStdio {
 			Err(error) => {
 				// The helper ends a session whose call failed; the request may have reached the
 				// server, so it is reconciled and never sent again. The stop makes sure it ended.
-				if let Some(session) = state.sessions.remove(&key) {
-					stop_session(&pod, run, &session).await;
+				if let Some(session) = state.sessions.remove(&key)
+					&& !stop_session(&pod, run, &session).await
+				{
+					state.pending.insert(session.operation_id);
 				}
 				tracing::warn!(%run, %error, "stdio MCP call outcome unknown");
 				Err(Error::External("MCP answer was lost after send".into()))
@@ -305,11 +412,15 @@ impl StdioPluginSessions for RunStdio {
 	}
 }
 
-/// Stops a session that is being dropped; a failure is logged, since the Run's close stops the
-/// rest and the Pod's end stops everything.
-async fn stop_session(pod: &StdioPod, run: Uuid, session: &Session) {
-	if let Err(error) = pod.runtime.mcp_stop(&session.operation_id).await {
-		tracing::info!(%run, operation_id = session.operation_id, %error, "stdio session stop failed");
+/// Stops a session that is being dropped. False when the stop was not confirmed: the caller
+/// keeps its id pending, so the Run's close or next start stops it.
+async fn stop_session(pod: &StdioPod, run: Uuid, session: &Session) -> bool {
+	match pod.runtime.mcp_stop(&session.operation_id).await {
+		Ok(()) => true,
+		Err(error) => {
+			tracing::info!(%run, operation_id = session.operation_id, %error, "stdio session stop failed");
+			false
+		}
 	}
 }
 
@@ -399,6 +510,12 @@ async fn start(
 		}
 	};
 	pod.runtime.ensure(&pod.settings).await?;
+	// A process from an earlier start may still use the plugin's tree and data; none starts
+	// next to it.
+	settle(state, &pod, run).await;
+	if !state.pending.is_empty() {
+		return Err(Setup::new(START_FAILED));
+	}
 	let restore = !state.restored.contains(&server.plugin);
 	let tree = state.host.plugin_files(&server.digest).await?;
 	// Without a saved version the live area stays as it is: a Run's area starts empty, and one
@@ -417,7 +534,11 @@ async fn start(
 		state.restored.insert(server.plugin.clone());
 	}
 	let operation_id = Uuid::new_v4().to_string();
-	pod.runtime
+	// Recorded before the start is sent: if its answer is lost, or this future is dropped at a
+	// time limit, the process may run anyway and must still be accounted for.
+	state.pending.insert(operation_id.clone());
+	let started = pod
+		.runtime
 		.mcp_start(&McpStartRequest {
 			operation_id: operation_id.clone(),
 			scratch_space_id: pod.settings.scratch_space_id.clone(),
@@ -430,20 +551,24 @@ async fn start(
 			plugin_data: stdio_session::in_pod(&launch.plugin_data),
 			proxy_credential: pod.credential.clone(),
 		})
-		.await?;
+		.await;
+	if let Err(error) = started {
+		if account(&pod, run, &operation_id).await {
+			state.pending.remove(&operation_id);
+		}
+		return Err(error.into());
+	}
 	let mut session = Session {
 		operation_id,
 		digests: BTreeMap::new(),
 		listed: Vec::new(),
 		next_id: 0,
 	};
-	match handshake(&pod, &mut session).await {
-		Ok(()) => Ok(session),
-		Err(error) => {
-			let _ = pod.runtime.mcp_stop(&session.operation_id).await;
-			Err(error)
-		}
+	let result = handshake(&pod, &mut session).await;
+	if result.is_ok() || stop_session(&pod, run, &session).await {
+		state.pending.remove(&session.operation_id);
 	}
+	result.map(|()| session)
 }
 
 async fn handshake(pod: &StdioPod, session: &mut Session) -> std::result::Result<(), Setup> {
