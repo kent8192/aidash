@@ -20,7 +20,7 @@ pub const MAX_BINDINGS: usize = 128;
 /// (0) and five historical ones (see `AgentBindings::normalize_mode`).
 const HISTORICAL_DEFAULT_SETS: u8 = 6;
 /// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
-pub const MAX_TOOL_PARALLELISM: u8 = 16;
+pub const MAX_TOOL_PARALLELISM: u8 = 64;
 fn sequential_tools() -> u8 {
 	1
 }
@@ -661,6 +661,8 @@ impl QualifiedRef {
 					| "workspace_message"
 					| "memory_mutate"
 					| "subnode_task"
+					// Gained `draft` for free-form generation (#1012).
+					| "task_assign"
 			) {
 				"1.1.0"
 			} else if operation == "workspace_observe" {

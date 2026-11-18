@@ -498,7 +498,6 @@ export function EntityForm({
                   model: ref(s("model")),
                   instructions: s("instructions"),
                   schema_version: 1,
-                  max_steps: 64,
                   ...(s("reference_embedding")
                     ? { reference_embedding: ref(s("reference_embedding")) }
                     : {}),

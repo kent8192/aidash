@@ -300,7 +300,7 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 	run.lease_owner = Some(Uuid::new_v4());
 	run.lease_until = Some(Utc::now() - Duration::seconds(1));
 	// One claim-time recovery plus three Isolated Steps that each charged one.
-	run.pending.0["recovery"]["lease_recoveries"] = json!(4);
+	run.pending.0["recovery"]["lease_recoveries"] = json!(6);
 	let mut db = database.lease.handle();
 	Run::objects()
 		.create_with_conn(&mut db, &run)
@@ -317,7 +317,7 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 	assert_eq!(
 		saved.error.as_deref(),
 		Some(
-			"This step was taken over from its worker 3 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
+			"This step was taken over from its worker 5 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
 		)
 	);
 	assert!(saved.lease_owner.is_none());
@@ -330,7 +330,7 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 		events
 			.iter()
 			.any(|event| event.data.0["run_id"] == run.id.to_string()
-				&& event.data.0["lease_recoveries"] == 3)
+				&& event.data.0["lease_recoveries"] == 5)
 	);
 }
 

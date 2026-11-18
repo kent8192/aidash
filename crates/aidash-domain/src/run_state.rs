@@ -310,6 +310,29 @@ pub enum WaitingState {
 	},
 }
 impl WaitingState {
+	/// Whether entering this wait ends the Agent's Stint (#1009, ADR 0141): the
+	/// Agent cannot move the Task forward itself, so it sleeps until a person,
+	/// an outside result, a child Task, a command or its own timer wakes it. A
+	/// wait for a failure to be delivered is the worker's own retry and keeps
+	/// the Stint open. The database records Stints from the same rule.
+	pub fn ends_stint(&self) -> bool {
+		!matches!(self, Self::FailureDelivery { .. })
+	}
+
+	/// The persisted name of this wait, which a Stint records as why it ended.
+	pub fn reason(&self) -> &'static str {
+		match self {
+			Self::Workspace { .. } => "workspace",
+			Self::Operation { .. } => "operation",
+			Self::Dependencies { .. } => "dependencies",
+			Self::Timer { .. } => "timer",
+			Self::Human { .. } => "human",
+			Self::Approval { .. } => "approval",
+			Self::Reconciliation { .. } => "reconciliation",
+			Self::FailureDelivery { .. } => "failure_delivery",
+		}
+	}
+
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
 			Self::Workspace { wake_at, .. }
@@ -426,8 +449,9 @@ impl RunState {
 		}
 	}
 }
-/// Maximum consecutive Lease Recoveries before a Crash Loop Failure (#604).
-pub const LEASE_RECOVERY_LIMIT: u32 = 3;
+/// Maximum consecutive Lease Recoveries before a Crash Loop Failure (#604),
+/// widened from 3 to 5 (#1009).
+pub const LEASE_RECOVERY_LIMIT: u32 = 5;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

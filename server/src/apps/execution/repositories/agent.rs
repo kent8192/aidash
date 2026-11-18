@@ -1362,7 +1362,9 @@ impl ExecutionEnvironment for Environment<'_> {
 			reference_files: config.reference_attachments.len(),
 			tools: config.tools,
 			skills: config.skills,
-			max_steps: config.max_steps,
+			// Runs have no step limit (#1009, ADR 0141); an Agent definition's
+			// `max_steps` is accepted for stored definitions and ignored.
+			max_steps: i32::MAX,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
 			context_policy: config.context_policy,

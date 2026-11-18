@@ -824,6 +824,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
 `registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
+`registry/0071_delete_subnode_tool` admits the `delete_subnode` builtin, the renamed `subnode_dissolve` (#1012), judged exactly as the operation it replaces; `subnode_dissolve` stays declared for pinned Agents. `registry/0072_tool_parallelism_64` lets an Agent declare a Tool Parallelism of up to 64 (#1009), judging 17 to 64 as 16 with the previous validator. Both keep the previous body under a backup name, and their rollbacks refuse with SQLSTATE `55000` while stored definitions use what they admit.
+
 `registry/0070_harness_contract_structured4` lets the Agent Bindings validator accept
 `structured@4` (#1010), judging it exactly as `structured@3`; registration checks its Native pairing. It
 copies the current body to `aidash_agent_before_structured4_0070`. Its rollback
@@ -956,6 +958,8 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 `identity/0077_provider_credential_origin` adds `provider_credentials.key_origin` (#892): `authorization`, `pasted` or `host_access`, saying how the pinned Key Material arrived. A Reinhardt `AddColumn` with the default `'authorization'` fills existing rows, which all came from Provider Authorization, and an `AlterColumn` then drops the default so every write names its origin.
 
 `identity/0080_schedule_member_policy` adds `schedule.create` (#557) to unchanged default member policies with a Reinhardt Query-generated data asset, as `identity/0067_scratch_member_policy` added `scratch.create`. It opens Deployment Scope, increments the revisions of the bundles it changes, and leaves custom member policies alone. Its reverse is a no-op for the same reason as 0067's. The 0067 builder pins the member policy as it stood then, so later grants do not change its asset; `migrationseeds` checks both.
+
+`execution/0135_stints` and `0136_stints_row_level_security` add `stints` (#1009, ADR 0141): one row per Agent's awake stretch on a Task, with the Agent version, Node, start, end and why it ended. A trigger on `runs` opens a Stint when the Run becomes ready or starts working and none is open, and ends it when the Run enters any wait but failure delivery (the reason is the wait's name) or reaches a terminal phase; a partial unique index keeps one open Stint per Run. `inference_attempts.stint_id` is filled by a trigger from the open Stint. Reinhardt has no trigger operation, so the functions and triggers are the documented raw-SQL exception. 0136 is the rendered Tenant-owned row-level policy asset. Stints go with their Run on Node purge.
 
 `execution/0133_subnode_caps_removed` and `0134_subnode_caps_removed_state` drop `subnode_limits.members_per_subnode`, `subnode_limits.subnodes_per_run` and their range check (#1012, ADR 0143): Subnodes nest and are no longer capped per Run or in members. Only `remote_runs_may_create`, the receiving Tenant's consent, remains. The reverse restores both columns with their former defaults (5 and 3) and the range check.
 

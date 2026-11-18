@@ -1073,8 +1073,8 @@ async fn backpressure_retains_unaccepted_rows_and_sends_at_most_eight(repository
 #[rstest]
 #[case::first(0, false)]
 #[case::waited_behind_isolation(1, false)]
-#[case::third(3, false)]
-#[case::fourth(4, true)]
+#[case::fifth(5, false)]
+#[case::sixth(6, true)]
 #[tokio::test]
 async fn consecutive_lease_recoveries_are_bounded(
 	repository: Repository,
@@ -1105,7 +1105,7 @@ async fn consecutive_lease_recoveries_are_bounded(
 	if fails {
 		assert!(claimed.is_none());
 		assert!(events.iter().any(|event| event == "repair_lease"));
-		assert!(events.iter().any(|event| event == "crash_loop:3:This step was taken over from its worker 3 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."));
+		assert!(events.iter().any(|event| event == "crash_loop:5:This step was taken over from its worker 5 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."));
 		assert!(!events.iter().any(|event| event == "lease"));
 	} else {
 		// Only the first recovery is charged at claim; an Isolated Step charges

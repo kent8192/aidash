@@ -1,0 +1,43 @@
+# Stints
+
+A **Stint** is one Agent's unbroken stretch of work on one Task, from waking
+until it goes to sleep ([ADR 0141](../adr/0141-a-stint-is-one-awake-stretch-and-everything-else-of-a-run-belongs-to-the-task.md),
+[#1009](https://github.com/kent8192/aidash/issues/1009)). One Task spans many
+Stints: an Agent that pushes a fix and waits an hour for CI sleeps in between,
+and the CI result starts its next Stint.
+
+## When a Stint begins and ends
+
+| The Run…                                                                                                                      | Stint                                       |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| is claimed, becomes ready, or starts thinking or calling a tool, with no Stint open                                           | opens                                       |
+| receives a person's input while working                                                                                       | stays open                                  |
+| is taken over by another worker after a crash (Lease Recovery)                                                                | stays open                                  |
+| waits for a person's answer, an approval, a reconciliation, child or dependency Tasks, a command it started, or its own timer | ends, with that wait's name as its reason   |
+| waits for a failure to be delivered                                                                                           | stays open: that is the worker's own retry  |
+| completes, fails or is cancelled                                                                                              | ends, with the terminal phase as its reason |
+
+The database records Stints from the Run's phase and wait: a trigger on `runs`
+opens and ends them for every writer, so no code path can skip one, and at most
+one Stint per Run is open. Each inference attempt records the Stint it ran in,
+so cost per awake stretch is visible.
+
+## What stays with the Task
+
+The Context Journal, the delegation chain and requester, the Completion Gate's
+progress, people's pause and cancel, budgets and grants that last until the next
+user input live with the Task's execution record and carry across Stints: a
+woken Agent continues where it slept.
+
+## Limits
+
+Runs have no step limit; an Agent definition's `max_steps` is accepted for
+stored definitions and ignored. Other limits on one Agent were widened with
+Stints:
+
+| Limit                                                    | Value                                                                                         |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Command Time Limit                                       | 10 minutes by default; a Deployment's capability profile may raise `maximum_seconds` to a day |
+| Consecutive Lease Recoveries before a Crash Loop Failure | 5                                                                                             |
+| Waits for an approval (`approval_seconds`)               | 7 days by default; a Deployment may set up to 30 days                                         |
+| An Agent definition's Tool Parallelism                   | up to 64                                                                                      |

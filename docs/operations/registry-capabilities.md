@@ -82,8 +82,7 @@ Cluster coordinators require all three coordination tools.
       "narrow": {}
     }
   ],
-  "remove_default": ["task_delegate"],
-  "max_steps": 64
+  "remove_default": ["task_delegate"]
 }
 ```
 
@@ -642,16 +641,16 @@ back with the `revision` they were read at; another write in between answers
 refused. Whoever runs the Deployment sets the ceilings in
 `[workbench_test_limits]`:
 
-| Setting                  | Default | Bounds                               |
-| ------------------------ | ------- | ------------------------------------ |
-| `max_input_bytes`        | 1000000 | Test input bytes                     |
-| `max_output_tokens`      | 8192    | Output tokens per model call         |
-| `max_total_tokens`       | 1000000 | Tokens across the test               |
-| `max_steps`              | 64      | Model steps                          |
-| `max_duration_secs`      | 900     | Seconds per test                     |
-| `max_concurrent`         | 32      | Tests running at once for one Tenant |
-| `payload_days`           | 365     | Days a test payload is kept          |
-| `incident_evidence_days` | 3650    | Days incident evidence is kept       |
+| Setting                  | Default | Bounds                                           |
+| ------------------------ | ------- | ------------------------------------------------ |
+| `max_input_bytes`        | 1000000 | Test input bytes                                 |
+| `max_output_tokens`      | 8192    | Output tokens per model call                     |
+| `max_total_tokens`       | 1000000 | Tokens across the test                           |
+| `max_steps`              | 64      | Model steps of a Workbench test (Runs have none) |
+| `max_duration_secs`      | 900     | Seconds per test                                 |
+| `max_concurrent`         | 32      | Tests running at once for one Tenant             |
+| `payload_days`           | 365     | Days a test payload is kept                      |
+| `incident_evidence_days` | 3650    | Days incident evidence is kept                   |
 
 The defaults are the largest values a Tenant may set at all, so a Deployment
 that sets nothing leaves its Tenants the full range. Lowering a ceiling also

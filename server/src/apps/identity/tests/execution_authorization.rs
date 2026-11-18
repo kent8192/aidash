@@ -9091,3 +9091,75 @@ async fn a_claim_pins_tenant_and_node_instructions(
 	assert_eq!(run.context.standing_instructions.as_ref(), Some(&pinned));
 	cleanup(f, &url, &schema).await;
 }
+
+/// A claim opens a Stint; entering a wait the Agent cannot move forward
+/// itself ends it with the wait's name; waking opens the next one; a failure
+/// delivery wait keeps the Stint open (#1009, ADR 0141).
+#[rstest::rstest]
+#[tokio::test]
+async fn stints_follow_waking_and_sleeping(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let driver = f.store.pool.fixture_driver();
+	let stints = async |run: Uuid| -> Vec<(bool, Option<String>)> {
+		sqlx::query_as::<_, (bool, Option<String>)>(&format!(
+			"SELECT ended_at IS NOT NULL, end_reason FROM stints WHERE run_id = '{run}' ORDER BY started_at, id"
+		))
+		.fetch_all(driver)
+		.await
+		.unwrap()
+	};
+	let set = async |phase: &str, reason: Option<&str>| {
+		let pending = match reason {
+			Some(reason) => {
+				format!("jsonb_set(pending, '{{data}}', jsonb_build_object('reason', '{reason}'))")
+			}
+			None => "pending".to_owned(),
+		};
+		sqlx::query(&format!(
+			"UPDATE runs SET phase = '{phase}', pending = {pending} WHERE id = '{}'",
+			run.id
+		))
+		.execute(driver)
+		.await
+		.unwrap();
+	};
+	assert_eq!(stints(run.id).await, [(false, None)]);
+	set("WAITING", Some("failure_delivery")).await;
+	assert_eq!(
+		stints(run.id).await,
+		[(false, None)],
+		"failure delivery keeps it"
+	);
+	set("WAITING", Some("human")).await;
+	assert_eq!(stints(run.id).await, [(true, Some("human".into()))]);
+	set("READY", None).await;
+	assert_eq!(
+		stints(run.id).await,
+		[(true, Some("human".into())), (false, None)]
+	);
+	set("COMPLETED", None).await;
+	assert_eq!(
+		stints(run.id).await,
+		[
+			(true, Some("human".into())),
+			(true, Some("completed".into()))
+		]
+	);
+	cleanup(f, &url, &schema).await;
+}

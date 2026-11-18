@@ -72,13 +72,16 @@ impl Default for Profile {
 			cpu: 2,
 			memory_bytes: 2 << 30,
 			processes: 128,
-			operation_seconds: 120,
+			// A command may run for 10 minutes unless the Run asks for less; a
+			// Deployment may raise the maximum to a day (#1009, ADR 0141).
+			operation_seconds: 600,
 			maximum_seconds: 600,
 			install_seconds: 300,
 			idle_seconds: 1800,
 			recovery_seconds: 7 * 86400,
 			grant_seconds: 3600,
-			approval_seconds: 86400,
+			// A Stint sleeps through a wait for a person, so it may last a week.
+			approval_seconds: 7 * 86400,
 			output_bytes: 8 << 20,
 			staging_seconds: 86400,
 			preview_port: None,
@@ -172,7 +175,7 @@ impl Runtime {
 			|| !(16..=4096).contains(&profile.processes)
 			|| profile.operation_seconds == 0
 			|| profile.install_seconds == 0
-			|| !(1..=600).contains(&profile.maximum_seconds)
+			|| !(1..=86400).contains(&profile.maximum_seconds)
 			|| !(1..=1800).contains(&profile.idle_seconds)
 			|| profile.recovery_seconds == 0
 			|| profile.recovery_seconds > 365 * 86400
@@ -180,7 +183,7 @@ impl Runtime {
 			// leave no grant an approver could give.
 			|| !(aidash_application::capabilities::approvals::MIN_RUN_GRANT_SECONDS as u64..=3600)
 				.contains(&profile.grant_seconds)
-			|| !(1..=86400).contains(&profile.approval_seconds)
+			|| !(1..=30 * 86400).contains(&profile.approval_seconds)
 			|| !(1..=86400).contains(&profile.staging_seconds)
 			|| profile.output_bytes == 0
 			|| profile.output_bytes > 8 << 20
