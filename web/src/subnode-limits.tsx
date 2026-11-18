@@ -8,7 +8,7 @@ import {
 import { Alert, Check, Hint, Loading } from "./components/patterns";
 import type { SubnodeLimitsInput } from "./subnodes-model";
 import { ApiError } from "./transport";
-import { Field, Panel, useI18n } from "./ui";
+import { Panel, useI18n } from "./ui";
 
 /** The Tenant's Subnode limits (#660), for subjects whose policy grants
  *  `subnode.limits.update`. A 403 from the server disables the form. */
