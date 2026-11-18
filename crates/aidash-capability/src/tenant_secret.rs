@@ -244,7 +244,9 @@ fn methods_valid(methods: &[String]) -> bool {
 }
 
 /// The same header-name rules as `ExternalService::validate`.
-fn header_valid(name: &str) -> bool {
+/// Whether the broker may attach a value in header `name`. The domain mirrors
+/// this rule in `aidash_domain::tenant_secrets::header_valid`.
+pub fn header_valid(name: &str) -> bool {
 	let name = name.to_ascii_lowercase();
 	!name.is_empty()
 		&& name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')

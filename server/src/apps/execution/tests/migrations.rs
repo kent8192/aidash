@@ -88,6 +88,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 		"registry",
 		"0072_remove_agent_external_service_draft_bindings",
 	),
+	("registry", "0073_agent_plugin_server_secrets"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -225,10 +226,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(
-		registry[0].name,
-		"0072_remove_agent_external_service_draft_bindings"
-	);
+	assert_eq!(registry[0].name, "0073_agent_plugin_server_secrets");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
 	assert_eq!(execution[0].name, "0139_remove_legacy_egress_tokens_state");
@@ -2175,6 +2173,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 				"registry",
 				"0072_remove_agent_external_service_draft_bindings",
 			),
+			("registry", "0073_agent_plugin_server_secrets"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -3427,6 +3426,158 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 	);
 	assert!(
 		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![stored]).await,
+		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn agent_plugin_server_secrets_migration_validates_the_secret_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	fixture.tenant_root("acme").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |settings: serde_json::Value| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"agent_plugin_settings":settings})
+	};
+	let digest = format!("sha256:{}", "ab01".repeat(16));
+	// Assert: `secret` mirrors ServerSecret and leaves every other key to the earlier body.
+	for valid in [
+		json!({"acme":{"docs":{"secret":{"name":"docs-token"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","header":"X-Api-Key"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","owner":"personal"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","form":"bearer"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","header":"Authorization","form":"raw"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","header":"Authorization","owner":"any"},
+			"tools":["search"],"read_only":[{"name":"search","schema_digest":digest}]},
+			"wiki":{"exposure":"eager"}}}),
+	] {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(valid.clone())]
+			)
+			.await,
+			"{valid}"
+		);
+	}
+	for invalid in [
+		json!({"acme":{"docs":{"secret":null}}}),
+		json!({"acme":{"docs":{"secret":"docs-token"}}}),
+		json!({"acme":{"docs":{"secret":{}}}}),
+		json!({"acme":{"docs":{"secret":{"name":7}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","header":null}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","owner":"shared"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","form":"basic"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","form":null}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token","scheme":"bearer"}}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token"},"tool":["search"]}}}),
+		json!({"acme":{"docs":{"secret":{"name":"docs-token"},"read_only":[{"name":"search"}]}}}),
+	] {
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(invalid.clone())]
+			)
+			.await,
+			"{invalid}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0073_agent_plugin_server_secrets")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let with_secret = agent(json!({"acme":{"docs":{"secret":{"name":"docs-token"}}}}));
+	// Act / Assert: without stored secrets the reverse restores the earlier contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![with_secret.clone()]
+		)
+		.await
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(json!({"acme":{"docs":{"tools":["search"]}}}))]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path stores a definition naming a server secret.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Plugin fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("secreted")
+				.version("1.0.0")
+				.kind(DefinitionKind::Agent)
+				.metadata(
+					json!({"id":"secreted","version":"1.0.0","kind":"agent",
+						"name":{"en":"Plugin agent"},"description":{"en":"Migration test"},
+						"config":with_secret.clone()})
+					.into(),
+				)
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored secret refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains(
+			"registry 0071 cannot be reversed: Agent definitions name Agent Plugin server secrets"
+		),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![with_secret]).await,
 		"the denied rollback must retain the upgraded contract"
 	);
 }

@@ -187,3 +187,68 @@ fn deployment_administrator_requires_explicit_identity(
 		message
 	);
 }
+
+/// Allows every action except `secret.use`, and records each evaluated action.
+struct NoSecretUse {
+	actions: Vec<String>,
+}
+#[async_trait]
+impl DefinitionLookup for NoSecretUse {
+	async fn definition(&mut self, _: &str, _: &str) -> Result<Entry> {
+		panic!("authority does not read definitions")
+	}
+}
+#[async_trait]
+impl DraftAuthority for NoSecretUse {
+	fn principal(&self) -> Principal {
+		Principal::Subject {
+			tenant: "tenant".into(),
+			subject: "owner".into(),
+		}
+	}
+	async fn lock_identity(&mut self) -> Result<()> {
+		Ok(())
+	}
+	async fn share(&mut self, _: Uuid, _: &str) -> Result<Option<(bool, String)>> {
+		Ok(None)
+	}
+	async fn evaluate(&mut self, _: &str, evaluation: &Evaluation) -> Result<Decision> {
+		self.actions.push(evaluation.action.clone());
+		Ok(Decision {
+			allowed: evaluation.action != "secret.use",
+			reason: "fixture".into(),
+			matched_policies: Vec::new(),
+			effective_roles: Default::default(),
+			revision: 1,
+		})
+	}
+	async fn bundle(&mut self, _: &str) -> Result<PolicyBundle> {
+		panic!("not a target check")
+	}
+}
+
+#[rstest]
+#[case::shared_may_be_used(json!({"name": "docs-token"}), true)]
+#[case::personal_only(json!({"name": "docs-token", "owner": "personal"}), false)]
+#[tokio::test]
+async fn registering_a_draft_needs_secret_use_on_a_shared_plugin_server_secret(
+	#[case] secret: serde_json::Value,
+	#[case] needs_use: bool,
+) {
+	let stored = crate::test_support::stored_plugin_with_servers(
+		"acme-tools",
+		json!({"docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp"}}),
+		&[],
+	);
+	let mut entry = crate::test_support::agent("agent");
+	entry.config["agent_plugins"] = json!([crate::test_support::plugin_reference(&stored)]);
+	entry.config["agent_plugin_settings"] = json!({"acme-tools": {"docs": {"secret": secret}}});
+	let mut scope = NoSecretUse {
+		actions: Vec::new(),
+	};
+
+	let result = authorize_creation(&mut scope, "tenant", &entry).await;
+
+	assert_eq!(matches!(result, Err(Error::Forbidden)), needs_use);
+	assert_eq!(scope.actions.iter().any(|a| a == "secret.use"), needs_use);
+}

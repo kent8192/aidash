@@ -6,7 +6,7 @@ use crate::{
 		stored_plugin, stored_plugin_with_servers,
 	},
 };
-use aidash_domain::agent_plugin::{Component, Outcome, Reason};
+use aidash_domain::agent_plugin::{Component, ConnectionCause, Outcome, Reason};
 use serde_json::json;
 use std::time::Duration;
 
@@ -131,6 +131,12 @@ async fn a_server_the_plugin_serves_over_stdio_is_not_listed() {
 #[case::initialize(Listed::Failed(ListFailure::InitializeFailed), "initialize_failed")]
 #[case::answer(Listed::Failed(ListFailure::InvalidResponse), "invalid_response")]
 #[case::invalid(Listed::Invalid, "invalid_response")]
+#[case::shared_secret_unavailable(Listed::SecretUnavailable(None), "secret_unavailable")]
+#[case::personal_secret_required(
+	Listed::SecretUnavailable(Some("docs-token")),
+	"secret_unavailable"
+)]
+#[case::secret_rejected(Listed::SecretRejected, "secret_rejected")]
 #[case::leaky(
 	Listed::Leaky("GET https://docs.example.com/mcp?token=hunter2 returned 500: <html>".into()),
 	"unreachable"
@@ -315,7 +321,6 @@ async fn an_agent_without_plugins_lists_nothing() {
 async fn pinning_retains_a_structured_authentication_finding_without_waiting(
 	#[case] scope: Option<&str>,
 ) {
-	use aidash_domain::agent_plugin::ConnectionCause;
 	let snapshot = plugin_snapshot(vec![stored_plugin("acme", &[])], serde_json::Value::Null);
 	let agent = agent_bindings(&snapshot).unwrap();
 	let aidash_domain::agent_plugin::McpServer::Remote(config) =
@@ -397,5 +402,92 @@ async fn consent_relists_only_the_missing_server_and_preserves_the_other_pins() 
 			.filter(|(_, server)| server.server.as_str() == "docs")
 			.count(),
 		2
+	);
+}
+
+fn attach_target() -> (PluginServer, RemoteServer) {
+	(
+		PluginServer {
+			plugin: serde_json::from_value(json!("acme")).unwrap(),
+			digest: format!("sha256:{}", "a".repeat(64)),
+			server: serde_json::from_value(json!("docs")).unwrap(),
+		},
+		serde_json::from_value(json!({"url": "https://docs.example.com/mcp"})).unwrap(),
+	)
+}
+
+#[tokio::test]
+async fn an_attach_time_listing_returns_names_and_the_digests_the_run_start_pin_checks() {
+	let sessions = FakeSessions::default();
+	let tool = listed_tool("search");
+	sessions.script("docs", Listed::Tools(vec![tool.clone()]));
+	let (server, config) = attach_target();
+
+	let listing = list_for_attach(&sessions, &server, &config, None).await;
+
+	assert_eq!(
+		listing,
+		AttachListing::Listed {
+			tools: vec![AttachTool {
+				name: "search".into(),
+				schema_digest: agent_plugin::schema_digest(&tool.input_schema),
+			}]
+		}
+	);
+	// The listing session is its own and ends before the answer.
+	let listings = sessions.listings();
+	assert_eq!(listings.len(), 1);
+	assert_eq!(sessions.closed(), [listings[0].0]);
+}
+
+#[rstest::rstest]
+#[case::not_connected(
+	Listed::Connection(ConnectionCause::ConnectionRequired {
+		resource: "https://docs.example.com/mcp".into(),
+	}),
+	"connection_required"
+)]
+#[case::refused(Listed::Forbidden, "forbidden")]
+#[case::failed(Listed::Failed(ListFailure::Unreachable), "unreachable")]
+#[case::secret(Listed::SecretUnavailable(Some("docs-token")), "secret_unavailable")]
+#[case::rejected(Listed::SecretRejected, "secret_rejected")]
+#[tokio::test]
+async fn an_attach_time_listing_that_fails_says_why_and_lists_nothing(
+	#[case] listed: Listed,
+	#[case] reason: &str,
+) {
+	let sessions = FakeSessions::default();
+	sessions.script("docs", listed);
+	let (server, config) = attach_target();
+
+	let listing = list_for_attach(&sessions, &server, &config, None).await;
+
+	assert_eq!(
+		listing,
+		AttachListing::Unavailable {
+			reason: reason.into()
+		}
+	);
+}
+
+#[rstest::rstest]
+#[case::not_connected(
+	Error::Invalid(aidash_domain::oauth_connections::CONNECTION_REQUIRED.into()),
+	"connection_required"
+)]
+#[case::shared_secret(
+	Error::Invalid(aidash_domain::tenant_secrets::UNAVAILABLE.into()),
+	"secret_unavailable"
+)]
+#[case::personal_secret(
+	crate::tenant_secrets::personal_required("docs-token"),
+	"secret_unavailable"
+)]
+fn an_unresolved_credential_is_a_typed_reason(#[case] error: Error, #[case] reason: &str) {
+	assert_eq!(
+		AttachListing::unavailable(&error),
+		AttachListing::Unavailable {
+			reason: reason.into()
+		}
 	);
 }

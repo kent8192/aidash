@@ -59,6 +59,8 @@ struct State {
 	persisted: BTreeMap<String, Policy>,
 	history: Vec<(String, i64, Value, String)>,
 	denied: BTreeSet<String>,
+	denied_secrets: BTreeSet<String>,
+	plugins: Vec<crate::ports::bindings::StoredAgentPlugin>,
 	failure: Option<&'static str>,
 	pause: Option<&'static str>,
 	commits: usize,
@@ -187,24 +189,32 @@ impl PolicySession for Scope {
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		Ok(crate::test_support::resolve(
+		let state = self.state.lock().unwrap();
+		Ok(crate::test_support::resolve_with_plugins(
 			"aidash://local",
 			entry,
 			false,
-			self.state
-				.lock()
-				.unwrap()
+			state
 				.approved
 				.values()
 				.filter(|value| value["kind"] == "source")
 				.filter_map(|v| serde_json::from_value(v.clone()).ok())
 				.collect(),
+			state.plugins.clone(),
 		))
 	}
 
 	async fn decide(&mut self, id: &str, action: &str) -> Result<bool> {
 		self.call(format!("decide:{id}:{action}"));
 		let allowed = !self.state.lock().unwrap().denied.contains(id);
+		if !allowed {
+			self.denial_count += 1;
+		}
+		Ok(allowed)
+	}
+	async fn may_use_secret(&mut self, name: &str) -> Result<bool> {
+		self.call(format!("secret.use:{name}"));
+		let allowed = !self.state.lock().unwrap().denied_secrets.contains(name);
 		if !allowed {
 			self.denial_count += 1;
 		}
@@ -731,4 +741,53 @@ async fn a_deployment_administrator_lists_and_sets_no_generation_policy(
 		Err(Error::Forbidden)
 	));
 	assert!(!repo.calls().iter().any(|call| call.starts_with("begin:")));
+}
+
+#[rstest]
+#[case::shared_and_denied(json!({"name": "docs-token"}), true, false)]
+#[case::shared_and_allowed(json!({"name": "docs-token"}), false, true)]
+#[case::personal_only_needs_none(json!({"name": "docs-token", "owner": "personal"}), true, true)]
+#[tokio::test]
+async fn a_template_naming_a_shared_plugin_server_secret_needs_secret_use(
+	mut spec: Spec,
+	validation: DefinitionValidation,
+	#[case] secret: Value,
+	#[case] denied: bool,
+	#[case] written: bool,
+) {
+	// Arrange: the template's plugin server names a Tenant Secret, as a registered Agent could.
+	let stored = crate::test_support::stored_plugin_with_servers(
+		"acme-tools",
+		json!({"docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp"}}),
+		&[],
+	);
+	spec.template.config["agent_plugins"] = json!([crate::test_support::plugin_reference(&stored)]);
+	spec.template.config["agent_plugin_settings"] =
+		json!({"acme-tools": {"docs": {"secret": secret.clone()}}});
+	let validation = validation.with_tenant_secrets(true);
+	let repo = Repository::new();
+	{
+		let mut state = repo.state.lock().unwrap();
+		state.plugins.push(stored);
+		if denied {
+			state.denied_secrets.insert("docs-token".into());
+		}
+	}
+
+	// Act
+	let result = set(&repo, "tenant", "policy", 0, &spec, &validation).await;
+
+	// Assert
+	let personal = secret["owner"] == "personal";
+	assert_eq!(result.is_ok(), written, "{result:?}");
+	if !written {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	}
+	assert_eq!(
+		repo.calls().contains(&"secret.use:docs-token".to_owned()),
+		!personal
+	);
+	let state = repo.state.lock().unwrap();
+	assert_eq!(state.persisted.contains_key("policy"), written);
+	assert_eq!(state.denial_audits, usize::from(!written));
 }

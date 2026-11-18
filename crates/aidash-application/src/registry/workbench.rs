@@ -116,18 +116,40 @@ pub async fn authorize_creation(
 		.evaluate(
 			tenant,
 			&Evaluation {
-				subject,
+				subject: subject.clone(),
 				action: "registry.create".into(),
 				resource,
 				environment: json!({}),
 			},
 		)
 		.await?;
-	if decision.allowed {
-		Ok(())
-	} else {
-		Err(Error::Forbidden)
+	if !decision.allowed {
+		return Err(Error::Forbidden);
 	}
+	// Naming a Tenant Secret needs `secret.use` on it, as registering does (ADR 0051); an
+	// Agent names one through the server secrets of its Agent Plugins.
+	for name in aidash_domain::tenant_secrets::definition_secret_names(entry) {
+		let decision = scope
+			.evaluate(
+				tenant,
+				&Evaluation {
+					subject: subject.clone(),
+					action: "secret.use".into(),
+					resource: Resource {
+						tenant: tenant.into(),
+						kind: "secret".into(),
+						id: name.clone(),
+						attributes: json!({"name": name}),
+					},
+					environment: json!({}),
+				},
+			)
+			.await?;
+		if !decision.allowed {
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(())
 }
 pub async fn target_enabled(
 	scope: &mut dyn DraftAuthority,

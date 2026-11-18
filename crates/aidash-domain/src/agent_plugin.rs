@@ -23,14 +23,20 @@ mod tools;
 pub use alias::model_alias;
 pub use expand::expand;
 pub use manifest::{Author, Manifest, PluginName};
-pub use mcp::{Command, Cwd, Executable, Header, McpServer, RemoteServer, ServerName, StdioServer};
+pub use mcp::{
+	Command, Cwd, Executable, Header, McpServer, RemoteServer, ServerName, StdioServer,
+	secret_header_valid,
+};
 pub use paths::tree_digest;
 pub use reference::{
 	AgentPluginRef, MAX_AGENT_PLUGINS, MAX_REFERENCE_SKILLS, MAX_SOURCE_BYTES, MarketplaceSource,
 	PinnedAgentPlugin,
 };
 pub(crate) use settings::validate as validate_settings;
-pub use settings::{MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, ServerSettings};
+pub use settings::{
+	MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, SECRET_HEADER, SecretForm,
+	ServerSecret, ServerSettings, server_secrets,
+};
 pub use skills::PluginSkill;
 pub use tools::{
 	ConnectionCause, ListedTool, Listing, MAX_DESCRIPTION_BYTES, MAX_RUN_TOOLS, MAX_SCHEMA_BYTES,

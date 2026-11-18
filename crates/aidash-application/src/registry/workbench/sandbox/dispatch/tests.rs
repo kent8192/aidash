@@ -374,6 +374,7 @@ impl RealDispatchScope for Scope<'_> {
 				host: "test.example".into(),
 			},
 			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
+			attach: aidash_capability::tenant_secret::Attach::Bearer,
 		})
 	}
 	async fn rollback(mut self: Box<Self>) -> Result<()> {

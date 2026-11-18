@@ -112,6 +112,18 @@ impl DefinitionValidation {
 		for plugin in &bindings.agent_plugins {
 			self.validate_agent_plugin(plugin)?;
 		}
+		for (_, server) in aidash_domain::agent_plugin::server_secrets(
+			&bindings.agent_plugins,
+			&bindings.agent_plugin_settings,
+		) {
+			if !self.tenant_secrets_enabled {
+				return Err(Error::Invalid(
+					"Tenant Secrets are not available on this Deployment".into(),
+				));
+			}
+			// The value never travels in plaintext.
+			aidash_domain::tenant_secrets::endpoint_host(server.url.as_str())?;
+		}
 		Ok(())
 	}
 	/// Enforce the Deployment's endpoint policy before an imported plugin is stored.

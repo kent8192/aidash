@@ -191,3 +191,32 @@ fn facts_keep_the_requested_order_and_kind() {
 	assert_eq!(facts[1].item, "search-key");
 	assert_eq!(facts[1].kind, Kind::Slot);
 }
+
+#[test]
+fn a_plugin_server_secret_is_judged_like_a_tool_secret() {
+	let server = |name: &str| Target {
+		item: "acme-tools/docs".into(),
+		kind: Kind::AgentPluginServer,
+		tenant_secret_name: Some(name.into()),
+		endpoint: Some("https://docs.example.com/mcp".into()),
+	};
+
+	let missing = one(Availability::Available, true, server("docs-token"), &[]);
+	let mismatch = one(
+		Availability::Available,
+		true,
+		server("docs-token"),
+		&[secret("docs-token", &["other.example.com"])],
+	);
+	let ready = one(
+		Availability::Available,
+		true,
+		server("docs-token"),
+		&[secret("docs-token", &["docs.example.com"])],
+	);
+
+	assert_eq!(missing.status, Status::SecretMissing);
+	assert_eq!(missing.kind, Kind::AgentPluginServer);
+	assert_eq!(mismatch.status, Status::SecretHostsMismatch);
+	assert_eq!(ready.status, Status::Ready);
+}
