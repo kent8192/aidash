@@ -86,6 +86,17 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 		)
 		.await;
 	assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"approval-test-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	// With every default tool, the request after the approved call outgrows
+	// the default test limits (20,000 input bytes, 16,384 total tokens). This
+	// test is about who may answer the approval, so it raises the limits to
+	// the Deployment's ceilings.
+	let limits_path = "/api/workbench/test-limits/acme";
+	let read = wb.call("GET", limits_path, Value::Null).await;
+	let mut limits = read["limits"].clone();
+	for field in ["max_input_bytes", "max_total_tokens"] {
+		limits[field] = read["ceilings"][field].clone();
+	}
+	wb.call("PUT", limits_path, limits).await;
 	// Neither the person's Don't ask mode nor a deny rule covers Workbench tests.
 	sqlx::query("INSERT INTO identity_approval_preferences (tenant, subject, default_mode, revision, updated_at) VALUES ('acme', 'alice', 'dont_ask', 1, now())").execute(wb.f.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO identity_approval_rules (tenant, id, subject, kind, target, effect, created_at) VALUES ('acme', $1, 'alice', 'tool_call', $2, 'deny', now())").bind(Uuid::new_v4()).bind(json!("every")).execute(wb.f.store.pool.fixture_driver()).await.unwrap();
