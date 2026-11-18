@@ -520,6 +520,22 @@ impl DefinitionValidation {
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 		private_context: &Value,
 	) -> Result<usize> {
+		self.bound_prompt_headroom_under(
+			snapshot,
+			private_context,
+			&aidash_domain::standing_instructions::StandingInstructions::default(),
+		)
+	}
+
+	/// [`Self::bound_prompt_headroom`] for a Run that pinned Tenant and Node
+	/// Instructions (#1010): they are part of its system text, so they are
+	/// measured with it.
+	pub fn bound_prompt_headroom_under(
+		&self,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		private_context: &Value,
+		standing: &aidash_domain::standing_instructions::StandingInstructions,
+	) -> Result<usize> {
 		snapshot.validate()?;
 		let config = AgentConfig::from_snapshot(snapshot)?;
 		let model = snapshot
@@ -548,6 +564,7 @@ impl DefinitionValidation {
 				budgets,
 				private_context,
 				version,
+				standing,
 			);
 		}
 		let mut fragments: Vec<(&str, String)> = vec![];
@@ -582,7 +599,7 @@ impl DefinitionValidation {
 		let instructions = aidash_domain::harness_contract::system_text(
 			contract,
 			version,
-			&aidash_domain::standing_instructions::StandingInstructions::default(),
+			standing,
 			&config.instructions,
 			&fragments,
 			"",
@@ -612,6 +629,7 @@ impl DefinitionValidation {
 		budgets: &DeferredBudgets,
 		private_context: &Value,
 		version: aidash_domain::projection::ProjectionVersion,
+		standing: &aidash_domain::standing_instructions::StandingInstructions,
 	) -> Result<usize> {
 		let node = self.node_specifications();
 		let specifications = crate::registry::bindings::execution::bound_specifications(
@@ -674,7 +692,7 @@ impl DefinitionValidation {
 		let instructions = aidash_domain::harness_contract::system_text(
 			config.harness_contract.unwrap_or_default(),
 			version,
-			&aidash_domain::standing_instructions::StandingInstructions::default(),
+			standing,
 			&config.instructions,
 			&fragments,
 			"",

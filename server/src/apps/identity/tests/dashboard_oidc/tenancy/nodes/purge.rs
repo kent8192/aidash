@@ -512,6 +512,23 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			"SELECT count(*) FROM authorization_revisions WHERE tenant='{tenant}'"
 		))
 		.await;
+	// Node Instructions go with their Node; the sibling's and the Tenant's stay (#1010).
+	for path in [
+		format!("/api/tenants/{tenant}/nodes/{target}/instructions"),
+		format!("/api/tenants/{tenant}/nodes/{sibling}/instructions"),
+		format!("/api/tenants/{tenant}/instructions"),
+	] {
+		let (status, saved) = d
+			.as_person(
+				&alice,
+				"PUT",
+				&path,
+				Some(&context),
+				serde_json::json!({"text":"Keep records.","expected_revision":0}),
+			)
+			.await;
+		assert_eq!(status, 200, "{path}: {saved}");
+	}
 	let deletion = request_purge(&d, &tenant, &target).await;
 	let shared_audit = Uuid::new_v4();
 	sqlx::query("INSERT INTO dashboard_administration_history (id,occurred_at,action,tenant,subject,node,actor_kind) VALUES ($1,clock_timestamp(),'fixture.shared',$2,$3,NULL,'deployment_administrator')").bind(shared_audit).bind(&tenant).bind(&target).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -629,6 +646,23 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		1
 	);
 	assert_eq!(d.count(&format!("SELECT count(*) FROM node_deletions WHERE id='{deletion}' AND purged_at IS NOT NULL AND purge_step IS NULL")).await,1);
+	for (node, expected) in [(&target, 0), (&sibling, 1)] {
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM node_instructions WHERE tenant='{tenant}' AND node='{node}'"
+			))
+			.await,
+			expected,
+			"{node}"
+		);
+	}
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM tenant_instructions WHERE tenant='{tenant}'"
+		))
+		.await,
+		1
+	);
 	assert_eq!(
 		d.count(&format!(
 			"SELECT count(*) FROM runs WHERE id='{target_run}'"

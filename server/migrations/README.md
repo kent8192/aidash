@@ -825,7 +825,7 @@ the single Knowledge head, and no schema or model state is overwritten.
 `registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
 `registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
 `registry/0070_harness_contract_structured4` lets the Agent Bindings validator accept
-`structured@4` (#1010), judging it by the `structured@3` rules (Native only). It
+`structured@4` (#1010), judging it exactly as `structured@3`; registration checks its Native pairing. It
 copies the current body to `aidash_agent_before_structured4_0070`. Its rollback
 refuses with SQLSTATE `55000` while definitions, packages or Run Binding
 snapshots declare `structured@4`, then restores the 0069 body.

@@ -3198,7 +3198,7 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 	};
 	let digest = format!("sha256:{}", "ab01".repeat(16));
 	// The current validator must accept both independently versioned contracts.
-	for version in ["legacy@1", "structured@3"] {
+	for version in ["legacy@1", "structured@3", "structured@4"] {
 		let mut combined = agent(json!({"acme":{"docs":{"tools":["search"]}}}));
 		combined["projection_version"] = json!("native");
 		combined["harness_contract"] = json!(version);

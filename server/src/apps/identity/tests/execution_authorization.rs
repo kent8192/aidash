@@ -9054,3 +9054,60 @@ async fn a_denied_schedule_tool_call_registers_nothing(
 	drop(t.server);
 	cleanup(f, &url, &schema).await;
 }
+
+/// A claim pins the Tenant and Node Instructions of the Node that executes the
+/// Run, and editing them afterwards leaves the claimed Run unchanged (#1010).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_claim_pins_tenant_and_node_instructions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let write = |table: &'static str, text: &'static str| {
+		let node = node.clone();
+		let driver = f.store.pool.fixture_driver();
+		async move {
+			let sql = if table == "tenant_instructions" {
+				format!(
+					"INSERT INTO tenant_instructions (tenant, text, revision, updated_at, updated_by) \
+					 VALUES ('acme', '{text}', 1, now(), 'test') \
+					 ON CONFLICT (tenant) DO UPDATE SET text = EXCLUDED.text"
+				)
+			} else {
+				format!(
+					"INSERT INTO node_instructions (tenant, node, text, revision, updated_at, updated_by) \
+					 VALUES ('acme', '{node}', '{text}', 1, now(), 'test') \
+					 ON CONFLICT (tenant, node) DO UPDATE SET text = EXCLUDED.text"
+				)
+			};
+			sqlx::query(&sql).execute(driver).await.unwrap();
+		}
+	};
+	write("tenant_instructions", "Reply in Japanese.").await;
+	write("node_instructions", "Open pull requests as drafts.").await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let pinned = aidash_domain::standing_instructions::StandingInstructions {
+		tenant: "Reply in Japanese.".into(),
+		node: "Open pull requests as drafts.".into(),
+	};
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(run.context.standing_instructions.as_ref(), Some(&pinned));
+	// Edits after the claim reach later Runs only.
+	write("tenant_instructions", "Reply in English.").await;
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert_eq!(run.context.standing_instructions.as_ref(), Some(&pinned));
+	cleanup(f, &url, &schema).await;
+}

@@ -1,7 +1,7 @@
 -- PostgreSQL function bodies cannot be expressed by typed Reinhardt DDL operations.
--- Admit the structured@4 Harness Contract (#1010). It has exactly the pairing
--- rules of structured@3 (Native Projection Version only), so the previous
--- validator judges it as structured@3; nothing else is relaxed.
+-- Admit the structured@4 Harness Contract (#1010). The previous validator
+-- judges it exactly as structured@3, so nothing else is relaxed; as for
+-- structured@3, registration checks the Native pairing, not this validator.
 DO $$
 DECLARE original text; copied text;
 BEGIN

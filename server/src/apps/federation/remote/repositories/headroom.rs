@@ -45,6 +45,19 @@ impl Definitions for Context<'_> {
 	fn validation(&self) -> DefinitionValidation {
 		crate::bootstrap::registry_validation_for(&self.0.store)
 	}
+	async fn standing_instructions(
+		&self,
+		run: &RunMetadata,
+	) -> Result<aidash_domain::standing_instructions::StandingInstructions> {
+		Ok(self
+			.0
+			.store
+			.run(&self.0.store.run_tenancy(run.id).await?, run.id)
+			.await?
+			.context
+			.standing_instructions
+			.unwrap_or_default())
+	}
 	async fn pinned_headroom(&self, run: Uuid) -> Result<usize> {
 		aidash_application::capabilities::skills::context_headroom_reserve(
 			&mut crate::bootstrap::skill_headroom(&self.0.store),

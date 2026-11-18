@@ -35,6 +35,7 @@ struct Scope {
 	document_error: bool,
 	pinned: usize,
 	deferred: bool,
+	standing: aidash_domain::standing_instructions::StandingInstructions,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -46,6 +47,7 @@ fn scope() -> Scope {
 		document_error: false,
 		pinned: usize::MAX,
 		deferred: false,
+		standing: Default::default(),
 	}
 }
 #[fixture]
@@ -74,6 +76,12 @@ fn run() -> RunMetadata {
 }
 #[async_trait]
 impl Definitions for Scope {
+	async fn standing_instructions(
+		&self,
+		_run: &RunMetadata,
+	) -> Result<aidash_domain::standing_instructions::StandingInstructions> {
+		Ok(self.standing.clone())
+	}
 	fn node(&self) -> &str {
 		"local"
 	}
@@ -220,4 +228,20 @@ async fn multiple_private_sources_share_one_flat_prompt_document_list(
 		*scope.trace.lock().unwrap(),
 		["snapshot", "documents", "documents", "contracts"]
 	);
+}
+
+/// Pinned Tenant and Node Instructions are part of the system text, so they
+/// shrink what is left for corrections by at least their size (#1010).
+#[rstest]
+#[tokio::test]
+async fn pinned_standing_instructions_shrink_the_headroom(mut scope: Scope, run: RunMetadata) {
+	scope.skills = false;
+	let without = request(&scope, &run).await.unwrap();
+	scope.standing = aidash_domain::standing_instructions::StandingInstructions {
+		tenant: "t".repeat(4_000),
+		node: "n".repeat(4_000),
+	};
+	let with = request(&scope, &run).await.unwrap();
+	assert!(without > 0);
+	assert!(without.saturating_sub(with) >= 8_000, "{without} -> {with}");
 }
