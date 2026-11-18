@@ -1,7 +1,9 @@
 // reinhardt-migration-source: 1
 // Research is no longer a category (#987, ADR 0138): Approval Rules lose the
 // `web_search` and `page_reading` kinds, and Catalog Approvals of the removed
-// Research definitions go. Deleting them is SQL; the check is typed.
+// Research definitions go. The deletes are Reinhardt Query output from
+// `identity::services::research_approval_cleanup`, checked by
+// `manage migrationseeds`; the check is typed.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0084_remove_research_approvals", "identity")

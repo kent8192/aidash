@@ -2,8 +2,11 @@
 // The Data Protection Level governs only OpenRouter calls (#962, #963, ADR 0137):
 // Standard becomes No Restriction, Safety Retention is added, model-call ZDR
 // goes, and Plan Connections and Keyless endpoints get Tenant switches.
-// Rewriting stored levels is data, not schema, so it is the only SQL here;
-// SET LOCAL opens the Deployment Scope the forced row-level policies require.
+// Rewriting stored policies is data, not schema: its assets are Reinhardt
+// Query output from `identity::services::data_protection_backfill`, checked by
+// `manage migrationseeds`, and open the Deployment Scope the forced row-level
+// policies require. A Tenant without a stored policy gets its former default
+// as a row first, so it keeps its level (#963 decision 5).
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0082_data_protection_switches", "identity")

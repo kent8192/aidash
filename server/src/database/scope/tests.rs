@@ -85,7 +85,7 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 			"migrations/execution/sql/forward/0089_remove_agent_cluster.sql",
 			"migrations/execution/sql/forward/0090_run_created_at.sql",
 			"migrations/execution/sql/forward/0113_content_object_references_legacy.sql",
-			"migrations/execution/sql/forward/0133_remove_research.sql",
+			"migrations/execution/sql/forward/0133_remove_research_records.sql",
 			"migrations/identity/sql/backward/0082_data_protection_switches.sql",
 			"migrations/identity/sql/forward/0067_scratch_member_policy.sql",
 			"migrations/identity/sql/forward/0080_schedule_member_policy.sql",

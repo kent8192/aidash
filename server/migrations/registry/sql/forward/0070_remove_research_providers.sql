@@ -27,6 +27,10 @@ END $$;
 
 -- Drafts keep no Binding to a removed definition. Registered Agent versions
 -- are immutable and keep theirs; the definition rows stay so they resolve.
+-- This rewrite stays handwritten DML: Reinhardt Query has no set-returning
+-- table function in FROM (`jsonb_array_elements(...) WITH ORDINALITY`) and no
+-- ordered aggregate (`jsonb_agg(... ORDER BY ...)`), which keeping the
+-- remaining Bindings in order needs.
 UPDATE agent_drafts
 SET entry = jsonb_set(entry, '{config,bindings}', (
     SELECT COALESCE(jsonb_agg(item.binding ORDER BY item.ordinal), '[]'::jsonb)
