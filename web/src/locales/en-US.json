@@ -840,6 +840,8 @@
   "agentPluginSecretHeader": "Header",
   "agentPluginReadOnly": "Read-only tools",
   "agentPluginReadOnlyHelp": "A Read-only tool runs without a Tool call approval. Aidash keeps only the tool name and its input schema digest, and every Run checks the digest again before it uses the tool.",
+  "agentPluginReadOnlyUnlisted": "Declared Read-only, but your listing no longer shows these tools. Uncheck one to remove its declaration.",
+  "agentPluginReadOnlyDeclared": "Declared Read-only. Uncheck one to remove its declaration, or list the tools to check them again.",
   "agentPluginListTools": "List tools",
   "agentPluginListError": "The server's tools could not be listed.",
   "agentPluginListEmpty": "The server lists no tools.",

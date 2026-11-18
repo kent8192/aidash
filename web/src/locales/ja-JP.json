@@ -840,6 +840,8 @@
   "agentPluginSecretHeader": "ヘッダー",
   "agentPluginReadOnly": "Read-only のツール",
   "agentPluginReadOnlyHelp": "Read-only のツールは Tool call の承認なしで実行されます。保存するのはツール名と入力スキーマのダイジェストだけで、各 Run は使う前にダイジェストを再確認します。",
+  "agentPluginReadOnlyUnlisted": "Read-only と宣言済みですが、あなたの一覧にはもうこれらのツールがありません。チェックを外すと宣言を削除します。",
+  "agentPluginReadOnlyDeclared": "Read-only と宣言済みです。チェックを外すと宣言を削除します。もう一度宣言するにはツールを一覧してください。",
   "agentPluginListTools": "ツールを一覧",
   "agentPluginListError": "サーバーのツールを一覧できませんでした。",
   "agentPluginListEmpty": "このサーバーにはツールがありません。",

@@ -16,6 +16,7 @@ import {
   serverSettings,
   skippedServers,
   toggleReadOnly,
+  unlistedReadOnly,
   withPlugin,
   withServerSettings,
   withoutPlugin,
@@ -404,4 +405,30 @@ test("Read-only follows the digest the listing returned", () => {
   assert.ok(!isDeclaredReadOnly(declared, changed));
   assert.deepEqual(toggleReadOnly(declared, changed, true).at(-1), changed);
   assert.deepEqual(toggleReadOnly(declared, search, false), [fetch]);
+});
+
+test("declared Read-only tools the listing does not show stay removable", () => {
+  const search = { name: "search", schema_digest: `sha256:${"a".repeat(64)}` };
+  const gone = { name: "gone", schema_digest: `sha256:${"c".repeat(64)}` };
+  const declared = [gone, search];
+  // Nothing listed yet, or the listing failed: every declaration is shown.
+  assert.deepEqual(unlistedReadOnly(declared, null), declared);
+  assert.deepEqual(
+    unlistedReadOnly(declared, {
+      outcome: "unavailable",
+      reason: "connection_required",
+    }),
+    declared,
+  );
+  // A listing shows its own tools; only names it no longer lists remain.
+  const changed = { ...search, schema_digest: `sha256:${"d".repeat(64)}` };
+  assert.deepEqual(
+    unlistedReadOnly(declared, { outcome: "listed", tools: [changed] }),
+    [gone],
+  );
+  assert.deepEqual(
+    unlistedReadOnly(declared, { outcome: "listed", tools: [] }),
+    declared,
+  );
+  assert.deepEqual(toggleReadOnly(declared, gone, false), [search]);
 });

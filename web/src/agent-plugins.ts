@@ -463,6 +463,20 @@ export function toggleReadOnly(
     : others;
 }
 
+/**
+ * Declared Read-only tools the latest listing does not show: every
+ * declaration while nothing is listed, otherwise those whose name the server
+ * no longer lists. The form shows them so they can still be removed.
+ */
+export function unlistedReadOnly(
+  declared: readonly ReadOnlyTool[],
+  listing: AttachListing | null,
+): ReadOnlyTool[] {
+  if (listing?.outcome !== "listed") return [...declared];
+  const listed = new Set(listing.tools.map((tool) => tool.name));
+  return declared.filter((tool) => !listed.has(tool.name));
+}
+
 /** Whether `tool` is declared Read-only against the schema the listing returned. */
 export function isDeclaredReadOnly(
   declared: readonly ReadOnlyTool[],

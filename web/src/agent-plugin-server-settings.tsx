@@ -6,6 +6,7 @@ import {
   readListing,
   serverSettings,
   toggleReadOnly,
+  unlistedReadOnly,
   withServerSettings,
   type AgentPluginRef,
   type AttachListing,
@@ -99,6 +100,7 @@ export function AgentPluginServerSettings({
   };
 
   const described = secret?.name ? describeSecret(secret) : null;
+  const unlisted = unlistedReadOnly(declared, listing);
   return (
     <div className="agent-plugin-server-settings grid min-w-0 gap-2 border-l-2 border-border pl-3">
       <span className="font-mono text-xs font-medium text-foreground [overflow-wrap:anywhere]">
@@ -189,13 +191,34 @@ export function AgentPluginServerSettings({
             ))}
           </fieldset>
         ))}
-      {!listing && declared.length > 0 && (
-        <Hint>
-          {t("agentPluginReadOnly")}:{" "}
-          <span className="font-mono">
-            {declared.map((tool) => tool.name).join(", ")}
-          </span>
-        </Hint>
+      {unlisted.length > 0 && (
+        <fieldset className="grid min-w-0 gap-1">
+          <legend className="text-xs font-semibold text-foreground">
+            {t("agentPluginReadOnly")}
+          </legend>
+          <Hint>
+            {t(
+              listing?.outcome === "listed"
+                ? "agentPluginReadOnlyUnlisted"
+                : "agentPluginReadOnlyDeclared",
+            )}
+          </Hint>
+          {unlisted.map((tool) => (
+            <Check
+              key={tool.name}
+              checked
+              onChange={(event) => {
+                if (event.target.checked) return;
+                update({
+                  ...settings,
+                  read_only: toggleReadOnly(declared, tool, false),
+                });
+              }}
+            >
+              <span className="font-mono">{tool.name}</span>
+            </Check>
+          ))}
+        </fieldset>
       )}
     </div>
   );
