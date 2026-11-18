@@ -315,6 +315,22 @@ function SuspendedRunsPrompt() {
   );
 }
 type Registration = { status: string; expires_at: string } | null;
+/** The Mapping an emailed approval link (`?tenant=`) names, when the saved
+ *  selection is in another Tenant and exactly one active Mapping is in it. */
+function linkedContext(
+  session: BrowserSession,
+  selected: string | null,
+): string | null {
+  const tenant = new URLSearchParams(window.location.search).get("tenant");
+  if (!tenant) return selected;
+  const active = session.mappings.filter(
+    (mapping) =>
+      mapping.tenant === tenant && mapping.credential_active !== false,
+  );
+  if (active.some((mapping) => mappingContext(mapping) === selected))
+    return selected;
+  return active.length === 1 ? mappingContext(active[0]) : selected;
+}
 function sessionContext(session: BrowserSession, selected: string | null) {
   // An inactive credential fails with 401 and ends the browser session, so
   // neither a saved selection nor the default may use it.
@@ -677,7 +693,10 @@ function Dashboard({
         const previousSession = sessionStorage.getItem("aidash-session-id");
         if (previousSession !== session.id) selectDashboardContext(null);
         sessionStorage.setItem("aidash-session-id", session.id);
-        const selected = sessionContext(session, dashboardContext());
+        const selected = sessionContext(
+          session,
+          linkedContext(session, dashboardContext()),
+        );
         selectDashboardContext(selected);
         setBrowserSession(session);
         setContext(selected);

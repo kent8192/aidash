@@ -561,15 +561,22 @@ export function Configuration({
   const linkTenant = link.get("tenant");
   const linkNode = link.get("node");
   const linkRequest = link.get("request");
+  // An emailed link selects its Node once; choosing another Node afterwards
+  // is the approver's own choice and is kept.
+  const linkedNodeApplied = useRef<string | null>(null);
   useEffect(() => {
+    const target = `${linkTenant}/${linkNode}/${linkRequest}`;
     if (
       linkTenant === nodeSelection.tenant &&
       linkNode &&
-      nodeSelection.nodes.some((node) => node.name === linkNode) &&
-      nodeSelection.selected?.name !== linkNode
-    )
-      nodeSelection.select(linkNode);
-  }, [linkTenant, linkNode, nodeSelection]);
+      linkedNodeApplied.current !== target &&
+      nodeSelection.nodes.some((node) => node.name === linkNode)
+    ) {
+      linkedNodeApplied.current = target;
+      if (nodeSelection.selected?.name !== linkNode)
+        nodeSelection.select(linkNode);
+    }
+  }, [linkTenant, linkNode, linkRequest, nodeSelection]);
   const deploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const restricted =
