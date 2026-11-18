@@ -2433,7 +2433,10 @@ print(json.dumps(r))'''
                                        helper_command('files', operation, uid),
                                        data=json.dumps(request, separators=(',', ':')).encode(), check=False, timeout=45)
             if result.returncode:
-                raise ExecutionPodError('pod_unavailable', 'File helper unavailable')
+                # The Pod is running, so the helper may have changed files before the exec
+                # failed: unlike `pod_unavailable`, this is no proof that nothing happened,
+                # and callers must not repeat a patch or write on it.
+                raise ExecutionPodError('file_helper_failed', 'File helper failed; the call may have taken effect')
             response = json.loads(result.stdout)
             if 'error' in response:
                 raise ExecutionPodError(response['error']['code'], response['error']['message'])

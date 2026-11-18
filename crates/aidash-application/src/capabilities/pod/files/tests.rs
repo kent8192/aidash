@@ -206,6 +206,26 @@ async fn a_patch_reaches_the_runner_with_the_run() {
 }
 
 #[tokio::test]
+async fn a_patch_whose_helper_failed_on_a_running_pod_is_never_repeated() {
+	// The helper may have applied the patch before its exec dropped; a repeat could apply a
+	// hunk that still matches a second time.
+	let runtime = Arc::new(Runtime::default());
+	*runtime.helper_failed.lock().unwrap() = true;
+	let context = context(runtime.clone());
+	let result = patch(
+		&context,
+		"run",
+		"*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch".into(),
+	)
+	.await;
+	assert!(
+		matches!(&result, Err(Error::Conflict(message)) if message.starts_with("FILE_HELPER_FAILED")),
+		"{result:?}"
+	);
+	assert_eq!(runtime.calls(), ["file_patch"]);
+}
+
+#[tokio::test]
 async fn a_patch_naming_a_path_outside_the_scratch_space_is_refused_before_the_runner() {
 	let runtime = Arc::new(Runtime::default());
 	let context = context(runtime.clone());

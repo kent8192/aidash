@@ -32,6 +32,8 @@ pub(crate) fn unavailable(error: &ExecutionPodError) -> bool {
 
 /// Make a Runner call; a stopped Pod is started once and the call repeated.
 /// A file call changes nothing when the Pod is unavailable, so repeating it is safe.
+/// A helper that failed on a running Pod (`file_helper_failed`) may have changed
+/// files, so that call is never repeated.
 macro_rules! in_pod {
 	($context:expr, $call:expr) => {
 		match $call.await {

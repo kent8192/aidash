@@ -431,6 +431,23 @@ def test_file_routes_write_search_patch_and_manifest(tmp_path):
         thread.join()
 
 
+def test_file_helper_failure_on_a_running_pod_is_not_reported_as_an_unavailable_pod(tmp_path):
+    from types import SimpleNamespace
+    from execution_pod import ExecutionPodError
+    controller = ExecutionPodController(SimpleNamespace(
+        root=tmp_path, kube=Mock(return_value=SimpleNamespace(returncode=1, stdout=b''))), {}, admitted=True)
+    controller._admitted_uid = Mock(return_value='uid')
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'}})
+    with pytest.raises(ExecutionPodError) as failure:
+        controller.file_operation('patch', {'scratch_space_id': 's', 'run_id': 'r', 'patch': 'p'})
+    # A dropped exec may follow an applied patch, so the server must not repeat it.
+    assert failure.value.code == 'file_helper_failed'
+    controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Pending'}})
+    with pytest.raises(ExecutionPodError) as failure:
+        controller.file_operation('patch', {'scratch_space_id': 's', 'run_id': 'r', 'patch': 'p'})
+    assert failure.value.code == 'pod_unavailable'
+
+
 def test_preview_and_mcp_http_routes(tmp_path):
     import http.client
     import threading
