@@ -377,6 +377,11 @@ async fn a_plaintext_network_endpoint_cannot_receive_tokens() {
 	Some("future_failure"),
 	Some(aidash_domain::semantic::Failure::ContextBudget)
 )]
+#[case::index_repair(
+	Some("index_repair"),
+	Some("unavailable"),
+	Some(aidash_domain::semantic::Failure::IndexRepair)
+)]
 #[case::ordinary(None, None, None)]
 #[tokio::test]
 async fn authority_transport_preserves_specific_and_compatible_semantic_causes(

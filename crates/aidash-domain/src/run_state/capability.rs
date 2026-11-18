@@ -43,6 +43,8 @@ pub enum PersistedCapability {
 	UnassignedAbandonment,
 	/// Early abandonments must survive waits and worker recovery (#818).
 	EarlyUnassignedAbandonment,
+	/// A Run can suspend while an external service is unavailable.
+	OutageWait,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
@@ -54,6 +56,7 @@ impl PersistedCapability {
 		Self::EventWait,
 		Self::UnassignedAbandonment,
 		Self::EarlyUnassignedAbandonment,
+		Self::OutageWait,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -70,6 +73,7 @@ impl PersistedCapability {
 			Self::EventWait => "event_wait",
 			Self::UnassignedAbandonment => "unassigned_abandonment",
 			Self::EarlyUnassignedAbandonment => "early_unassigned_abandonment",
+			Self::OutageWait => "outage_wait",
 		}
 	}
 }
@@ -113,9 +117,11 @@ impl RecoveryState {
 	fn required_capabilities(&self) -> impl IntoIterator<Item = PersistedCapability> {
 		// Degraded context (#234) is rejected by workers built before it. It is
 		// omitted while empty, so a Run that never degraded needs nothing.
-		(!self.degraded.is_empty())
-			.then_some(PersistedCapability::DegradedContext)
+		self.outage
+			.as_ref()
+			.map(|_| PersistedCapability::OutageWait)
 			.into_iter()
+			.chain((!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext))
 			.chain(
 				self.workspace_event_cursor
 					.map(|_| PersistedCapability::EventWait),
@@ -150,6 +156,10 @@ impl RunState {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
+				| WaitingState::Outage {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
 				| WaitingState::Workspace {
 					resume: ResumeState::ToolCall(s),
 					..
@@ -178,6 +188,7 @@ impl StateRequirements {
 			.into_iter()
 			.flat_map(ToolCallState::required_capabilities)
 			.chain(recovery.required_capabilities())
+			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { .. })).then_some(PersistedCapability::OutageWait))
 			.chain(matches!(state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { .. } | WaitingState::Workspace { .. })).then_some(PersistedCapability::EventWait))
 			.collect();
 		Self(needed.into_iter().map(|c| c.name().to_owned()).collect())

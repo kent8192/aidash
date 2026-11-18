@@ -42,7 +42,9 @@ impl Recovery {
 		let actions = match cause {
 			// A stale reuse retries automatically with a fresh retrieval, like an
 			// outage; once exhausted it pauses as `RetriesExhausted`.
-			Failure::Pending | Failure::Unavailable | Failure::Stale if retry_scheduled => {
+			Failure::Pending | Failure::Unavailable | Failure::IndexRepair | Failure::Stale
+				if retry_scheduled =>
+			{
 				vec![Wait]
 			}
 			// Retrying the same request cannot change the outcome: the Run's
@@ -55,6 +57,7 @@ impl Recovery {
 			}
 			Failure::Pending
 			| Failure::Unavailable
+			| Failure::IndexRepair
 			| Failure::Stale
 			| Failure::RetriesExhausted
 			| Failure::Authority

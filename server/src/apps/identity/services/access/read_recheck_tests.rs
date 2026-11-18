@@ -887,6 +887,66 @@ async fn remote_preview_recheck_without_admission_is_unconfirmed(
 
 #[rstest]
 #[tokio::test]
+async fn remote_preview_recheck_without_admission_is_withheld_then_stops_at_the_bound(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::{
+		capabilities::read_recheck::{self, PERIOD, Schedule},
+		ports::capabilities::read_recheck::{Outcome, ReadRecheckRepository, Target},
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture).await;
+	sqlx::query("DELETE FROM authorization_remote_admissions WHERE id = $1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	assert_eq!(
+		repository
+			.check(Target::LivePreview(preview))
+			.await
+			.unwrap(),
+		Outcome::Unconfirmed
+	);
+	// Unanswered checks withhold the preview's responses but keep it (ADR 0129).
+	let mut schedule = Schedule::default();
+	let now = std::time::Instant::now();
+	for count in 0..6 {
+		read_recheck::pass(&repository, &mut schedule, now + PERIOD * count)
+			.await
+			.unwrap();
+	}
+	let (state, unconfirmed): (String, Option<chrono::DateTime<chrono::Utc>>) =
+		sqlx::query_as("SELECT state, unconfirmed_since FROM core_live_previews WHERE id=$1")
+			.bind(preview)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+	assert_eq!(state, "running");
+	assert!(unconfirmed.is_some());
+	// Once the wait reaches its bound, the preview stops as `node_unreachable`.
+	sqlx::query(
+		"UPDATE core_live_previews SET unconfirmed_since = now() - interval '25 hours' WHERE id=$1",
+	)
+	.bind(preview)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	read_recheck::pass(&repository, &mut schedule, now + PERIOD * 7)
+		.await
+		.unwrap();
+	assert_eq!(
+		preview_stop(&fixture, preview).await,
+		("stopped".into(), Some("node_unreachable".into()))
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_preview_recheck_with_an_empty_chain_is_unconfirmed(
 	#[future] database: DatabaseFixture,
 ) {

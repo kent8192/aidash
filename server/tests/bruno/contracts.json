@@ -143,6 +143,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -153,15 +154,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           },
@@ -486,6 +487,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -496,15 +498,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           },
@@ -1633,6 +1635,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -1643,15 +1646,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -1823,6 +1826,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -1833,15 +1837,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -2048,6 +2052,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -2058,15 +2063,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -2280,6 +2285,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -2290,15 +2296,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -2940,6 +2946,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -3246,6 +3253,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -3256,15 +3264,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -31642,6 +31650,17 @@
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               }
             },
             "required": ["retry"],
@@ -31697,6 +31716,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -31943,8 +31963,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -32474,6 +32503,42 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
                 "properties": {
                   "cursor": {
@@ -32986,6 +33051,25 @@
               "memory_unit"
             ],
             "type": "string"
+          },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
           }
         },
         "schema": {
@@ -35811,6 +35895,17 @@
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               }
             },
             "required": ["retry"],
@@ -35856,6 +35951,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -35866,15 +35962,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           },
@@ -36531,8 +36627,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -37205,6 +37310,42 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
                 "properties": {
                   "cursor": {
@@ -37449,6 +37590,25 @@
             },
             "required": ["key", "digest", "content"],
             "type": "object"
+          },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
           }
         },
         "schema": {
@@ -37592,6 +37752,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -37602,15 +37763,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           },
@@ -50806,6 +50967,17 @@
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               }
             },
             "required": ["retry"],
@@ -50861,6 +51033,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -51095,8 +51268,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -51460,6 +51642,42 @@
           },
           "WaitingState": {
             "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
               {
                 "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
@@ -51932,6 +52150,25 @@
               "memory_unit"
             ],
             "type": "string"
+          },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
           }
         },
         "schema": {
@@ -56532,6 +56769,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -56542,15 +56780,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           },
@@ -56859,6 +57097,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -56869,15 +57108,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -57065,6 +57304,7 @@
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
               {
+                "type": "string",
                 "enum": [
                   "configuration",
                   "authority",
@@ -57075,15 +57315,15 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
-                ],
-                "type": "string"
+                ]
               },
               {
+                "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
+                "enum": ["stale"]
               }
             ]
           }
@@ -57997,6 +58237,17 @@
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "outage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OutageTracking"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Start of the current external-service outage, retained across wake-ups."
               }
             },
             "required": ["retry"],
@@ -58052,6 +58303,7 @@
                   "durable_memory_budget",
                   "allowance",
                   "unavailable",
+                  "index_repair",
                   "retries_exhausted",
                   "pending"
                 ],
@@ -58286,8 +58538,17 @@
           },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
-            "enum": ["embedding_provider", "vector_backend"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["embedding_provider", "vector_backend"],
+                "type": "string"
+              },
+              {
+                "description": "The index is still being built; only its READY part was read (ADR 0129).",
+                "enum": ["index_incomplete"],
+                "type": "string"
+              }
+            ]
           },
           "SentRound": {
             "additionalProperties": false,
@@ -58651,6 +58912,42 @@
           },
           "WaitingState": {
             "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A service is unavailable; the same step will be retried after waking.",
+                "properties": {
+                  "cadence": {
+                    "$ref": "#/components/schemas/OutageCadence"
+                  },
+                  "reason": {
+                    "enum": ["outage"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "service",
+                  "started_at",
+                  "wake_at",
+                  "cadence",
+                  "resume"
+                ],
+                "type": "object"
+              },
               {
                 "additionalProperties": false,
                 "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
@@ -59123,6 +59420,25 @@
               "memory_unit"
             ],
             "type": "string"
+          },
+          "OutageCadence": {
+            "description": "Retry interval for an external service or a plan allowance.",
+            "enum": ["service", "plan_allowance"],
+            "type": "string"
+          },
+          "OutageTracking": {
+            "additionalProperties": false,
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["service", "started_at"],
+            "type": "object"
           }
         },
         "schema": {

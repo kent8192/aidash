@@ -1,5 +1,6 @@
 # An authority reaches the other Nodes of its Deployment, and a read it cannot confirm is not a refusal
 
+Amended by ADR 0129 (2026-11-11): a Node that does not answer after a call had its effect puts the Run in an Outage Wait instead of a `run.node_unreachable` pause.
 Decided on 2026-11-06 for #751. An authority built from a `Store` had no way into this process's handlers, so asking another Node of the same Deployment always failed, and that failure read as "not visible". A Run that had only found an Agent on another Node of its Tenant hid its outputs from everyone, including a Tenant Administrator, and a Task it created could not be delegated. Tests with two Deployments missed this because they take the HTTP path, and the one test of two Nodes used a path that had been patched.
 
 A running server now binds its in-process handlers to its `Store`, and every authority reaches the other Nodes of its Deployment by default. Only these do not ask: an authority holding the Tenant's policy row exclusively, whose peer would wait on the caller's own lock, and a process with no server, such as the memory recovery command. A check they skip never blames a Node nobody asked.

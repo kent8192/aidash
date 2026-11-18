@@ -628,3 +628,25 @@ fn child_task_summary_has_a_bounded_round_trip_and_validates_its_fingerprint() {
 		assert!(serde_json::from_value::<crate::ChildTaskSummary>(value).is_err());
 	}
 }
+#[test]
+fn outage_wakes_at_cadence_and_never_after_its_bound() {
+	use super::OutageCadence;
+	use chrono::{Duration, TimeZone, Utc};
+	let start = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	assert_eq!(
+		OutageCadence::Service.next_wake(start, start),
+		Some(start + Duration::minutes(5))
+	);
+	assert_eq!(
+		OutageCadence::PlanAllowance.next_wake(start, start),
+		Some(start + Duration::hours(1))
+	);
+	assert_eq!(
+		OutageCadence::Service.next_wake(start, start + Duration::hours(24) - Duration::minutes(1)),
+		Some(start + Duration::hours(24))
+	);
+	assert_eq!(
+		OutageCadence::Service.next_wake(start, start + Duration::hours(24)),
+		None
+	);
+}

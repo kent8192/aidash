@@ -98,6 +98,7 @@ fn persistence_constraints_keep_the_legacy_server_error_envelope(#[case] kind: D
 #[rstest]
 #[case(crate::semantic::remote::Failure::Pending, 503, "pending")]
 #[case(crate::semantic::remote::Failure::Unavailable, 503, "unavailable")]
+#[case(crate::semantic::remote::Failure::IndexRepair, 503, "unavailable")]
 #[case(crate::semantic::remote::Failure::Authority, 409, "authority")]
 #[case(crate::semantic::remote::Failure::Stale, 409, "stale")]
 #[case(
@@ -120,8 +121,11 @@ fn semantic_failures_preserve_status_and_retry_headers(
 			.headers
 			.get("x-aidash-semantic-cause")
 			.map(|value| value.to_str().unwrap()),
-		(reason == crate::semantic::remote::Failure::DurableMemoryBudget)
-			.then_some("durable_memory_budget")
+		match reason {
+			crate::semantic::remote::Failure::DurableMemoryBudget => Some("durable_memory_budget"),
+			crate::semantic::remote::Failure::IndexRepair => Some("index_repair"),
+			_ => None,
+		}
 	);
 	assert_eq!(response.headers.contains_key("retry-after"), status == 503);
 	let body: Value = serde_json::from_slice(&response.body).unwrap();

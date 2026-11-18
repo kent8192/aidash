@@ -113,6 +113,8 @@ pub enum Error {
 	StaleInference,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
 	SemanticUnavailable,
+	#[error("native memory is closed until its last write is reconciled; it reopens by itself")]
+	MemoryClosed,
 	#[error("{0}")]
 	RemoteSemantic(crate::semantic::remote::Failure),
 	#[error("{0}")]
@@ -204,6 +206,7 @@ impl Error {
 			Self::TransactionPending
 			| Self::ConnectionStoreUnavailable
 			| Self::SemanticUnavailable
+			| Self::MemoryClosed
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::RemoteSemantic(reason) => (
 				if reason.transient() || matches!(reason, crate::semantic::remote::Failure::Pending)
@@ -371,9 +374,18 @@ impl Error {
 		{
 			if reason.compatible() != reason {
 				response.headers.insert("x-aidash-semantic-cause", value);
+				// Established peers read the compatible reason. An index that needs
+				// repair keeps the outage's `unavailable`; every older cause keeps
+				// the `context_budget` it has always been sent as.
 				response.headers.insert(
 					"x-aidash-semantic-reason",
-					HeaderValue::from_static("context_budget"),
+					HeaderValue::from_static(
+						if reason == crate::semantic::remote::Failure::IndexRepair {
+							"unavailable"
+						} else {
+							"context_budget"
+						},
+					),
 				);
 			} else {
 				response.headers.insert("x-aidash-semantic-reason", value);
@@ -558,6 +570,7 @@ impl From<aidash_application::Error> for Error {
 				Self::Invalid(error.to_string())
 			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
+			ApplicationError::MemoryClosed => Self::MemoryClosed,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			ApplicationError::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			ApplicationError::OAuthClientSecretsUnavailable => Self::OAuthClientSecretsUnavailable,
@@ -632,6 +645,7 @@ impl From<Error> for aidash_application::Error {
 				Self::MediaRouteUnavailable { model, candidates }
 			}
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
+			Error::MemoryClosed => Self::MemoryClosed,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,

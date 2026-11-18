@@ -575,13 +575,13 @@ export function EntityConfiguration({
                 <NativeSelect
                   name="context_on_unavailable"
                   value={
-                    settings.on_unavailable === "degrade" ? "degrade" : "pause"
+                    settings.on_unavailable === "pause" ? "pause" : "degrade"
                   }
                   onChange={(e) => {
                     const next = { ...settings };
-                    // Pause is the default and is never written.
-                    if (e.target.value === "degrade")
-                      next.on_unavailable = "degrade";
+                    // Degrade is the default and is never written.
+                    if (e.target.value === "pause")
+                      next.on_unavailable = "pause";
                     else delete next.on_unavailable;
                     setSourceValue(JSON.stringify(next));
                   }}

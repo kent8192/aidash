@@ -978,6 +978,11 @@ impl Gateway {
 					.map_err(reinhardt::core::exception::Error::from)?;
 				return Err(NativeError::Conflict("PREVIEW_EXPIRED".into()));
 			}
+			// A Node on the Run's chain did not answer its Read Recheck: hold
+			// the responses back until a check is confirmed (ADR 0129).
+			if live.unconfirmed_since.is_some() {
+				return Err(NativeError::Conflict("PREVIEW_UNAVAILABLE".into()));
+			}
 			// The cookie is not authority: the same Working Area read decides.
 			if let Err(error) = sessions::load(&mut access, live.area_id).await {
 				live.stopping(StopReason::RunAuthorityRevoked);

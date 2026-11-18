@@ -622,7 +622,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 					memory::list(&store, &administrator(&store).await, read)
 				)
 				.await,
-				Ok(Err(aidash_server::Error::SemanticUnavailable))
+				Ok(Err(aidash_server::Error::MemoryClosed))
 			) {
 				break;
 			}
@@ -1089,7 +1089,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 	let epoch = recovery::prepare_restore(&store, directory).await.unwrap();
 	assert!(matches!(
 		memory::operate(&store, &administrator(&store).await, query()).await,
-		Err(aidash_server::Error::SemanticUnavailable)
+		Err(aidash_server::Error::MemoryClosed)
 	));
 	let mut reopened = Store::from_pool(
 		store.pool.fixture_driver().clone(),
@@ -1105,7 +1105,7 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 
 	assert!(matches!(
 		memory::operate(&reopened, &administrator(&reopened).await, query()).await,
-		Err(aidash_server::Error::SemanticUnavailable)
+		Err(aidash_server::Error::MemoryClosed)
 	));
 	let report = recovery::restore(&reopened, directory, &archive)
 		.await
@@ -2070,9 +2070,9 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	drop(server);
 }
 
-/// Missing vector points and an unreachable embedding provider are outages a
-/// Run retries (#233), so native recall types them `Unavailable` instead of the
-/// non-retried `SemanticUnavailable`. Replaying the failed embedding before its
+/// Missing vector points and an unreachable embedding provider are failures a
+/// Run retries (#233), so native recall types them (`IndexRepair` and
+/// `Unavailable`) instead of the non-retried `SemanticUnavailable`. Replaying the failed embedding before its
 /// attempt's deadline waits as `Pending` rather than failing the Run.
 #[rstest]
 #[case::missing_points(true)]
@@ -2167,13 +2167,13 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	// Act
 	let result = memory::operate(&store, &administrator(&store).await, recall.clone()).await;
 	// Assert
+	let expected = if missing_points {
+		aidash_domain::semantic::Failure::IndexRepair
+	} else {
+		aidash_domain::semantic::Failure::Unavailable
+	};
 	assert!(
-		matches!(
-			result,
-			Err(aidash_server::Error::RemoteSemantic(
-				aidash_domain::semantic::Failure::Unavailable
-			))
-		),
+		matches!(result, Err(aidash_server::Error::RemoteSemantic(failure)) if failure == expected),
 		"{result:?}"
 	);
 	if !missing_points {

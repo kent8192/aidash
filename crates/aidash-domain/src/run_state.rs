@@ -264,6 +264,14 @@ pub enum ApprovalRef {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WaitingState {
+	/// A service is unavailable; the same step will be retried after waking.
+	Outage {
+		service: String,
+		started_at: DateTime<Utc>,
+		wake_at: DateTime<Utc>,
+		cadence: OutageCadence,
+		resume: ResumeState,
+	},
 	/// A Run waits for relevant workspace changes, input, or a ceiling.
 	Workspace {
 		wake_at: DateTime<Utc>,
@@ -312,7 +320,8 @@ pub enum WaitingState {
 impl WaitingState {
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
-			Self::Workspace { wake_at, .. }
+			Self::Outage { wake_at, .. }
+			| Self::Workspace { wake_at, .. }
 			| Self::Operation { wake_at, .. }
 			| Self::Dependencies { wake_at, .. }
 			| Self::Timer { wake_at, .. }
@@ -335,6 +344,32 @@ impl WaitingState {
 			| Self::Reconciliation { request_id, .. } => Some(*request_id),
 			_ => None,
 		}
+	}
+}
+/// How long an Outage Wait lasts before it becomes a pause only a person can
+/// lift (ADR 0129).
+pub const OUTAGE_BOUND: chrono::Duration = chrono::Duration::hours(24);
+
+/// Retry interval for an external service or a plan allowance.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutageCadence {
+	Service,
+	PlanAllowance,
+}
+
+impl OutageCadence {
+	/// The deadline is fixed from the first failed attempt, including lease retries.
+	pub fn next_wake(self, started_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+		let deadline = started_at + OUTAGE_BOUND;
+		if now >= deadline {
+			return None;
+		}
+		let interval = match self {
+			Self::Service => chrono::Duration::minutes(5),
+			Self::PlanAllowance => chrono::Duration::hours(1),
+		};
+		Some((now + interval).min(deadline))
 	}
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -416,6 +451,10 @@ impl RunState {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
+				| WaitingState::Outage {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
 				| WaitingState::Human {
 					resume: ResumeState::ToolCall(s),
 					..
@@ -432,6 +471,9 @@ pub const LEASE_RECOVERY_LIMIT: u32 = 3;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	/// Start of the current external-service outage, retained across wake-ups.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub outage: Option<OutageTracking>,
 	/// Last workspace event delivered to this Run.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub workspace_event_cursor: Option<i64>,
@@ -496,6 +538,12 @@ pub struct RecoveryState {
 		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
 	)]
 	pub degraded: crate::semantic::degraded::DegradedContext,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutageTracking {
+	pub service: String,
+	pub started_at: DateTime<Utc>,
 }
 /// The call an Authority Pause stopped, recorded only when it certainly did not run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -734,6 +782,10 @@ impl Run {
 					..
 				}
 				| WaitingState::Timer {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
+				| WaitingState::Outage {
 					resume: ResumeState::ToolCall(s),
 					..
 				} => s.included_input_seq,

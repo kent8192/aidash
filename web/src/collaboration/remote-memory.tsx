@@ -209,6 +209,10 @@ export const semanticReasons: Record<RemoteSemanticFailure, [string, string]> =
       "Home or its semantic backend is temporarily unavailable.",
       "Home または記憶バックエンドに一時的に接続できません。",
     ],
+    index_repair: [
+      "The semantic index is missing vector points. Repair the index; waiting will not fix it.",
+      "記憶インデックスにベクトルが欠けています。待っても直らないため、インデックスを修復してください。",
+    ],
     retries_exhausted: [
       "Automatic retries are exhausted. An authorized manual retry starts a new bounded cycle.",
       "自動再試行が上限に達しました。権限を確認した手動再試行で新しい試行周期を開始できます。",
