@@ -54,8 +54,9 @@ pub async fn create(
 		));
 		return Err(Error::Forbidden);
 	}
-	subnodes::check_can_create(scope.workspace_is_subnode(run.workspace_id).await?)
-		.map_err(refused)?;
+	// Subnodes nest, and neither their number nor their members are capped
+	// (#1012, ADR 0143); only the receiving Tenant's consent to Subnodes that
+	// remote work creates remains.
 	if let Some(existing) = scope.replay(run, key, input).await? {
 		return Ok(existing);
 	}
@@ -63,10 +64,6 @@ pub async fn create(
 	limits
 		.check_remote(scope.remote_grant_started_run(run.id).await?)
 		.map_err(refused)?;
-	limits
-		.check_create(scope.active_count(run.id).await?)
-		.map_err(refused)?;
-	limits.check_members(input.members.len()).map_err(refused)?;
 	if !input.members.contains(&input.leader) {
 		return Err(refused(subnodes::Refusal::LeaderNotMember));
 	}
@@ -144,11 +141,6 @@ pub async fn add_member(
 			agent.id.clone(),
 		)));
 	}
-	scope
-		.limits(&subnode.tenant)
-		.await?
-		.check_members(subnode.members.len() + 1)
-		.map_err(refused)?;
 	let creator_authority = scope.creator_authority(&subnode).await?;
 	subnodes::allowance_within(&creator_authority, &subnode.allowance).map_err(refused)?;
 	let required = scope.approved_member_authority(&subnode, agent).await?;
@@ -187,13 +179,24 @@ pub async fn task(
 		.await
 }
 
+/// Deletes a Subnode (`delete_subnode`). The creating Agent may do so from any
+/// Run it works for the same person, not only the creating Run (#1012): the
+/// Subnode outlives that Run. Its records stay readable.
 pub async fn dissolve(
 	scope: &mut dyn crate::ports::subnodes::ManageScope,
 	run: &RunMetadata,
 	id: subnodes::SubnodeId,
 ) -> Result<()> {
 	let subnode = active(scope, id).await?;
-	creator(&subnode, run)?;
+	if creator(&subnode, run).is_err() {
+		let same_agent = subnode.creator_agent.id == run.agent_id
+			&& subnode.creator_agent.version == run.agent_version;
+		let root = scope.root_subject(run.id).await?;
+		let creator_root = scope.root_subject(subnode.creator_run_id).await?;
+		if !same_agent || root.is_none() || root != creator_root {
+			return Err(Error::Forbidden);
+		}
+	}
 	scope
 		.dissolve(&subnode, subnodes::EndReason::Dissolved)
 		.await

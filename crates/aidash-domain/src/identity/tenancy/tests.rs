@@ -502,7 +502,7 @@ fn invitations_last_at_most_seven_days(
 }
 
 #[test]
-fn subnode_create_requires_a_named_agent_grant() {
+fn members_and_their_agents_create_subnodes_without_a_named_grant() {
 	use crate::identity::tenant_administration::{SUBNODE_CREATE, add_agent_subject};
 	let mut bundle = initial_policy("tenant", true).unwrap();
 	add_agent_subject(
@@ -512,17 +512,11 @@ fn subnode_create_requires_a_named_agent_grant() {
 		&[MEMBERS.to_owned()].into(),
 	)
 	.unwrap();
-	assert!(!allows(&bundle, "worker", SUBNODE_CREATE));
-	let mut grant = bundle.policies[0].clone();
-	grant.id = "grant-subnode".into();
-	grant.subjects = SubjectSelector {
-		ids: ["worker".to_owned()].into(),
-		..Default::default()
-	};
-	grant.actions = [SUBNODE_CREATE.to_owned()].into();
-	bundle.policies.push(grant);
+	// #1012, ADR 0143: an ordinary member action, which the administrators'
+	// wildcard also covers.
 	assert!(allows(&bundle, "worker", SUBNODE_CREATE));
-	assert!(!allows(&bundle, OWNER, SUBNODE_CREATE));
+	assert!(allows(&bundle, OWNER, SUBNODE_CREATE));
+	assert!(!crate::policy::EXPLICIT_ACTIONS.contains(&SUBNODE_CREATE));
 }
 
 #[test]

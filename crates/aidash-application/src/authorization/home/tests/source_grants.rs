@@ -479,14 +479,15 @@ async fn subnode_tasks_cannot_prepare_a_remote_grant() {
 }
 #[rstest]
 #[tokio::test]
-async fn full_delegation_chain_is_rejected_before_receiver_inspection() {
+async fn a_long_delegation_chain_is_not_refused_for_its_length() {
 	let mut repository = SourceRepository::new();
 	repository.task.status = TaskStatus::Open;
-	repository.subjects = (0..32).map(|n| format!("subject-{n}")).collect();
-	assert!(
-		matches!(use_case::prepare(&repository,task().id,input()).await,Err(Error::Invalid(ref text)) if text=="execution delegation depth exceeds 32")
-	);
-	assert!(!repository.repository.calls().contains(&"source_rpc".into()));
+	repository.subjects = (0..64).map(|n| format!("subject-{n}")).collect();
+	// #1012, ADR 0143: chains are not capped; any refusal comes from authority.
+	assert!(!matches!(
+		use_case::prepare(&repository, task().id, input()).await,
+		Err(Error::Invalid(ref text)) if text.contains("depth")
+	));
 }
 #[rstest]
 #[tokio::test]

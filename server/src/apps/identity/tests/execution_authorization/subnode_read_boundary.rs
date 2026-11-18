@@ -665,7 +665,7 @@ async fn creator_delegates_after_its_subnode_ended(
 	let (subnode, ..) = rig.subnode_with_task().await;
 	rig.call(
 		rig.creator_run,
-		"subnode_dissolve",
+		"delete_subnode",
 		json!({"subnode_id":subnode}),
 		"dissolve",
 	)

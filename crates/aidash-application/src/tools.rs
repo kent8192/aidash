@@ -514,6 +514,7 @@ impl Builtin {
 			"subnode_task"
 			| "subnode_add_member"
 			| "subnode_remove_member"
+			| "delete_subnode"
 			| "subnode_dissolve"
 			| "subnode_message" => {
 				use crate::subnodes::Command;
@@ -559,7 +560,8 @@ impl Builtin {
 						id: id()?,
 						agent: parse_agent()?,
 					},
-					"subnode_dissolve" => Command::Dissolve { id: id()? },
+					// `subnode_dissolve` is the former name, kept for pinned Agents.
+					"delete_subnode" | "subnode_dissolve" => Command::Dissolve { id: id()? },
 					"subnode_message" => Command::Message {
 						content: required(&input, "content")?.into(),
 					},
@@ -918,6 +920,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Remove a member without unfinished work from a Subnode.",
 			schema: json!({"type":"object","required":["subnode_id","agent"],"properties":{"subnode_id":string,"agent":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "delete_subnode",
+			contract: aidash_domain::tool::builtin_contract("delete_subnode")
+				.expect("declared builtin"),
+			description: "Delete a Subnode your Agent created for the same person, cancelling its active Runs; its records stay readable.",
+			schema: json!({"type":"object","required":["subnode_id"],"properties":{"subnode_id":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "subnode_dissolve",

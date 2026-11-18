@@ -1087,12 +1087,9 @@
   "subnodeAllowedSecrets": "Allowed secrets",
   "subnodeEndedReason": "Ended because",
   "subnodeLimits": "Subnode limits",
-  "subnodeLimitsHelp": "How large the Subnodes that agents create during a Run may be.",
-  "subnodeMembersPerSubnode": "Members per Subnode (1-20)",
-  "subnodeSubnodesPerRun": "Subnodes per Run (1-10)",
+  "subnodeLimitsHelp": "Subnodes agents create may nest and are not limited in number or members. Choose whether work sent from another Node may create them here.",
   "subnodeRemoteMayCreate": "Runs started from other Nodes may create Subnodes",
   "subnodeLimitsSave": "Save limits",
-  "subnodeLimitsInvalid": "Members per Subnode must be a whole number from 1 to 20, and Subnodes per Run a whole number from 1 to 10.",
   "subnodeLimitsForbidden": "You may not change the Subnode limits.",
   "unconfirmedItems": "{count} items are not shown because {node} could not be reached to confirm them. They are checked again once it answers.",
   "tenantInstructions": "Tenant Instructions",
@@ -1101,5 +1098,6 @@
   "nodeInstructionsHelp": "Standing directions every Agent working in this Node follows, after the Tenant Instructions. Agents can never change them.",
   "instructionsTooLong": "Instructions can be at most 16,384 bytes and cannot contain NUL characters.",
   "instructionsConflict": "Someone else changed these instructions. Reload and try again.",
-  "instructionsBytes": "bytes"
+  "instructionsBytes": "bytes",
+  "generationNoLimit": "No limit"
 }

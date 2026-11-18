@@ -47,6 +47,8 @@ pub const SUBNODE_TOOLS: &[&str] = &[
 	"subnode_task",
 	"subnode_add_member",
 	"subnode_remove_member",
+	"delete_subnode",
+	// The former name of `delete_subnode`, kept so pinned Agents resolve it.
 	"subnode_dissolve",
 	"subnode_message",
 ];

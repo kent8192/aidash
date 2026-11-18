@@ -114,6 +114,8 @@ pub const MEMBER_ACTIONS: &[&str] = &[
 	"semantic.read",
 	"semantic.search",
 	"semantic.use",
+	// Agents create Subnodes as freely as other work (#1012, ADR 0143).
+	crate::identity::tenant_administration::SUBNODE_CREATE,
 	"semantic.write",
 	"skill.import",
 	"skill.use",

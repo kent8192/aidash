@@ -23,12 +23,33 @@ pub struct Permissions {
 #[schemars(rename = "GenerationLimits")]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
-	pub max_agents: i64,
-	pub max_concurrent: i64,
-	pub max_depth: i32,
+	/// How many agents the policy may generate in all; absent means no cap
+	/// (#1012, ADR 0143).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_agents: Option<i64>,
+	/// How many may be active at once; absent means no cap.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_concurrent: Option<i64>,
+	/// How deeply generated agents may generate in turn; absent means no cap.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub max_depth: Option<i32>,
 	pub token_budget: i64,
 	pub tokens_per_agent: i64,
-	pub lifetime_seconds: i64,
+	/// How long a generated agent lasts; absent means as long as its Task, with
+	/// no maximum.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub lifetime_seconds: Option<i64>,
+}
+
+/// The lifetime recorded for a generated agent whose policy names none: one
+/// hundred years, so it lasts as long as its Task.
+pub const UNBOUNDED_LIFETIME_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
+
+impl Limits {
+	/// The lifetime to record for a generated agent.
+	pub fn lifetime(&self) -> i64 {
+		self.lifetime_seconds.unwrap_or(UNBOUNDED_LIFETIME_SECONDS)
+	}
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -87,22 +108,18 @@ pub struct Allowances {
 	pub embedding_calls: i64,
 }
 impl Policy {
-	pub fn reservation(
-		&self,
-		active: i64,
-		depth: i32,
-		subject_count: usize,
-	) -> crate::Result<Allowances> {
+	pub fn reservation(&self, active: i64, depth: i32) -> crate::Result<Allowances> {
 		let limits = &self.spec.limits;
 		let embedding_calls = self.spec.embedding_limits().map_or(0, |(calls, _)| calls);
 		if self.spec.embedding_limits().is_some_and(|(calls, budget)| {
 			self.allocated_embedding_calls
 				.checked_add(calls)
 				.is_none_or(|n| n > budget)
-		}) || self.generated_count >= limits.max_agents
-			|| active >= limits.max_concurrent
-			|| depth > limits.max_depth
-			|| subject_count >= 32
+		}) || limits
+			.max_agents
+			.is_some_and(|max| self.generated_count >= max)
+			|| limits.max_concurrent.is_some_and(|max| active >= max)
+			|| limits.max_depth.is_some_and(|max| depth > max)
 			|| self
 				.allocated_tokens
 				.checked_add(limits.tokens_per_agent)

@@ -14070,20 +14070,24 @@
             "additionalProperties": false,
             "properties": {
               "lifetime_seconds": {
+                "description": "How long a generated agent lasts; absent means as long as its Task, with\nno maximum.",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_agents": {
+                "description": "How many agents the policy may generate in all; absent means no cap\n(#1012, ADR 0143).",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_concurrent": {
+                "description": "How many may be active at once; absent means no cap.",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_depth": {
+                "description": "How deeply generated agents may generate in turn; absent means no cap.",
                 "format": "int32",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "token_budget": {
                 "format": "int64",
@@ -14094,14 +14098,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "max_agents",
-              "max_concurrent",
-              "max_depth",
-              "token_budget",
-              "tokens_per_agent",
-              "lifetime_seconds"
-            ],
+            "required": ["token_budget", "tokens_per_agent"],
             "type": "object"
           },
           "GenerationPermissions": {
@@ -14699,20 +14696,24 @@
             "additionalProperties": false,
             "properties": {
               "lifetime_seconds": {
+                "description": "How long a generated agent lasts; absent means as long as its Task, with\nno maximum.",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_agents": {
+                "description": "How many agents the policy may generate in all; absent means no cap\n(#1012, ADR 0143).",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_concurrent": {
+                "description": "How many may be active at once; absent means no cap.",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_depth": {
+                "description": "How deeply generated agents may generate in turn; absent means no cap.",
                 "format": "int32",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "token_budget": {
                 "format": "int64",
@@ -14723,14 +14724,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "max_agents",
-              "max_concurrent",
-              "max_depth",
-              "token_budget",
-              "tokens_per_agent",
-              "lifetime_seconds"
-            ],
+            "required": ["token_budget", "tokens_per_agent"],
             "type": "object"
           },
           "GenerationPermissions": {
@@ -16985,20 +16979,24 @@
             "additionalProperties": false,
             "properties": {
               "lifetime_seconds": {
+                "description": "How long a generated agent lasts; absent means as long as its Task, with\nno maximum.",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_agents": {
+                "description": "How many agents the policy may generate in all; absent means no cap\n(#1012, ADR 0143).",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_concurrent": {
+                "description": "How many may be active at once; absent means no cap.",
                 "format": "int64",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "max_depth": {
+                "description": "How deeply generated agents may generate in turn; absent means no cap.",
                 "format": "int32",
-                "type": "integer"
+                "type": ["integer", "null"]
               },
               "token_budget": {
                 "format": "int64",
@@ -17009,14 +17007,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "max_agents",
-              "max_concurrent",
-              "max_depth",
-              "token_budget",
-              "tokens_per_agent",
-              "lifetime_seconds"
-            ],
+            "required": ["token_budget", "tokens_per_agent"],
             "type": "object"
           },
           "GenerationPermissions": {
@@ -56099,29 +56090,13 @@
         "definitions": {
           "SubnodeLimits": {
             "additionalProperties": false,
-            "description": "Tenant settings; callers must validate settings before storing or using them.",
+            "description": "Tenant settings for Subnodes. There is no cap on how many Subnodes a Run\ncreates, how many members one has or how deeply they nest (#1012, ADR\n0143); what remains is the receiving Tenant's consent to Subnodes created\nby work another Node sent it.",
             "properties": {
-              "members_per_subnode": {
-                "format": "uint32",
-                "maximum": 20,
-                "minimum": 1,
-                "type": "integer"
-              },
               "remote_runs_may_create": {
                 "type": "boolean"
-              },
-              "subnodes_per_run": {
-                "format": "uint32",
-                "maximum": 10,
-                "minimum": 1,
-                "type": "integer"
               }
             },
-            "required": [
-              "members_per_subnode",
-              "subnodes_per_run",
-              "remote_runs_may_create"
-            ],
+            "required": ["remote_runs_may_create"],
             "type": "object"
           }
         },
@@ -56144,29 +56119,13 @@
         "definitions": {
           "SubnodeLimits": {
             "additionalProperties": false,
-            "description": "Tenant settings; callers must validate settings before storing or using them.",
+            "description": "Tenant settings for Subnodes. There is no cap on how many Subnodes a Run\ncreates, how many members one has or how deeply they nest (#1012, ADR\n0143); what remains is the receiving Tenant's consent to Subnodes created\nby work another Node sent it.",
             "properties": {
-              "members_per_subnode": {
-                "format": "uint32",
-                "maximum": 20,
-                "minimum": 1,
-                "type": "integer"
-              },
               "remote_runs_may_create": {
                 "type": "boolean"
-              },
-              "subnodes_per_run": {
-                "format": "uint32",
-                "maximum": 10,
-                "minimum": 1,
-                "type": "integer"
               }
             },
-            "required": [
-              "members_per_subnode",
-              "subnodes_per_run",
-              "remote_runs_may_create"
-            ],
+            "required": ["remote_runs_may_create"],
             "type": "object"
           }
         },

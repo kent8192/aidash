@@ -871,7 +871,7 @@ async fn foreign_creation_inherits_depth_caps_expiry_and_omits_local_events(
 	use aidash_domain::generation::remote::Ancestor;
 	let mut scope = Scope::new();
 	scope.depth = Some(1);
-	scope.policy.spec.limits.max_depth = 4;
+	scope.policy.spec.limits.max_depth = Some(4);
 	// Nobody's mode or rules cover a request that arrived through Federation.
 	empowered(&mut scope);
 	advising(&mut scope, ApprovalMode::Bypass, vec![]);
@@ -980,7 +980,6 @@ async fn approval_free_policy_is_queued_and_generated_tag_is_not_duplicated(
 #[case("count")]
 #[case("concurrency")]
 #[case("depth")]
-#[case("chain")]
 #[case("tokens")]
 #[case("tokens_overflow")]
 #[case("embedding")]
@@ -1000,10 +999,6 @@ async fn each_quota_limit_is_independent_and_prevents_insert(
 		"count" => scope.policy.generated_count = 4,
 		"concurrency" => scope.active = 2,
 		"depth" => scope.depth = Some(2),
-		"chain" => {
-			scope.inherited = true;
-			scope.chain.resize(32, "ancestor".into());
-		}
 		"tokens" => scope.policy.allocated_tokens = 600001,
 		"tokens_overflow" => scope.policy.allocated_tokens = i64::MAX,
 		"embedding" | "embedding_overflow" => {
@@ -1069,15 +1064,16 @@ fn policy_rule(effect: RuleEffect) -> ApprovalRule {
 		effect,
 	}
 }
+/// Neither an allow rule nor Bypass approves a generated definition: its
+/// Catalog Approval is a person's decision (#1012, ADR 0143).
 #[rstest]
-#[case::allow_rule(ApprovalMode::Manual, vec![policy_rule(RuleEffect::Allow)], format!("approved in advance through Approval Rule {}", Uuid::from_u128(21)))]
-#[case::bypass(ApprovalMode::Bypass, vec![], "approved in advance through the Bypass Approval Mode".to_owned())]
+#[case::allow_rule(ApprovalMode::Manual, vec![policy_rule(RuleEffect::Allow)])]
+#[case::bypass(ApprovalMode::Bypass, vec![])]
 #[tokio::test]
-async fn a_rule_or_mode_within_the_ceiling_queues_the_request_and_names_itself(
+async fn a_rule_or_mode_never_approves_a_generated_definition(
 	validation: DefinitionValidation,
 	#[case] mode: ApprovalMode,
 	#[case] rules: Vec<ApprovalRule>,
-	#[case] reason: String,
 ) {
 	let mut scope = Scope::new();
 	empowered(&mut scope);
@@ -1095,15 +1091,9 @@ async fn a_rule_or_mode_within_the_ceiling_queues_the_request_and_names_itself(
 		.unwrap(),
 	);
 
-	assert_eq!(job.status, "QUEUED");
-	assert_eq!(
-		scope.state.lock().unwrap().reasons,
-		["work".to_owned(), reason]
-	);
-	assert_eq!(
-		&scope.effects[3..],
-		["history:PENDING_APPROVAL", "history:QUEUED", "event"]
-	);
+	assert_eq!(job.status, "PENDING_APPROVAL");
+	assert_eq!(scope.state.lock().unwrap().reasons, ["work".to_owned()]);
+	assert_eq!(&scope.effects[3..], ["history:PENDING_APPROVAL", "event"]);
 }
 #[rstest]
 #[case::no_catalog_approval("registry:catalog.approve")]
@@ -1210,7 +1200,7 @@ async fn a_request_without_a_person_of_the_tenant_is_never_covered(
 
 #[rstest]
 #[tokio::test]
-async fn subnode_assignment_reuses_only_members_and_never_generates(
+async fn subnode_assignment_reuses_members_and_generates_when_none_fits(
 	validation: DefinitionValidation,
 ) {
 	let mut scope = Scope::new();
@@ -1236,19 +1226,21 @@ async fn subnode_assignment_reuses_only_members_and_never_generates(
 	assert_eq!(delegation.agent_id, "member");
 	assert_eq!(scope.effects, ["delegate"]);
 
+	// When no member fits, a Subnode generates an agent like any other Task
+	// (#1012, ADR 0143).
 	let mut no_match = Scope::new();
 	no_match.ordinary("outsider", true, SubjectKind::Agent);
-	assert!(matches!(
+	let job = generated(
 		assign_in_restricted(
 			&mut no_match,
 			Uuid::from_u128(2),
 			"policy",
 			"work",
 			&validation,
-			Some(&members)
+			Some(&members),
 		)
-		.await,
-		Err(Error::Refused(_))
-	));
-	assert!(no_match.effects.is_empty());
+		.await
+		.unwrap(),
+	);
+	assert_eq!(job.status, "PENDING_APPROVAL");
 }

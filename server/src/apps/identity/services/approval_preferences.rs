@@ -319,6 +319,11 @@ fn effective(
 	if rule.effect != RuleEffect::Allow {
 		return true;
 	}
+	// An allow rule never approves a generated definition: its Catalog
+	// Approval is a person's decision, not an advance one (#1012, ADR 0143).
+	if rule.kind == ApprovalKind::Generation {
+		return false;
+	}
 	let mut candidates = BTreeSet::new();
 	match &rule.target {
 		RuleTarget::Exact(_) => {

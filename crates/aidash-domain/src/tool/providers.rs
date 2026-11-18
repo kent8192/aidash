@@ -65,6 +65,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		| "subnode_task"
 		| "subnode_add_member"
 		| "subnode_remove_member"
+		| "delete_subnode"
 		| "subnode_dissolve"
 		| "subnode_message" => "core.subnodes@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",

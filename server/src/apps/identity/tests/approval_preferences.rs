@@ -834,7 +834,7 @@ async fn an_every_allow_rule_is_effective_on_the_real_targets_the_policy_names(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_template(
+async fn a_generation_allow_rule_never_takes_effect(
 	#[future(awt)]
 	#[from(approval_application)]
 	application: common::ApplicationFixture,
@@ -894,7 +894,9 @@ async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_templat
 	assert_eq!(created.status(), 201, "{body}");
 	assert_eq!(body["effective"], false, "{body}");
 
-	// Granting catalog approval on that definition makes the rule effective.
+	// Even with catalog approval on that definition, an allow rule never
+	// approves a generated definition: a person makes that Catalog Approval
+	// (#1012, ADR 0143).
 	amend(&fixture.f, |bundle| {
 		bundle["policies"].as_array_mut().unwrap().push(policy(
 			"member-catalog",
@@ -916,7 +918,7 @@ async fn a_generation_allow_rule_needs_catalog_approval_of_the_generated_templat
 		)
 		.await,
 	);
-	assert_eq!(listed["rules"][0]["effective"], true, "{listed}");
+	assert_eq!(listed["rules"][0]["effective"], false, "{listed}");
 	fixture.cleanup().await;
 }
 

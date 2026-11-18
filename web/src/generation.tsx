@@ -246,7 +246,7 @@ export function GenerationPage({ data }: { data: State }) {
                       <MetricRow compact columns={4} className="border-b-0">
                         <Metric
                           label={t("generationCount")}
-                          value={`${policy.generated_count} / ${policy.spec.limits.max_agents}`}
+                          value={`${policy.generated_count} / ${policy.spec.limits.max_agents ?? t("generationNoLimit")}`}
                         />
                         <Metric
                           label={t("generationAllocated")}
@@ -471,14 +471,20 @@ function PolicyEditor({
   const minTokens = window
     ? window + Math.min(4096, Math.max(256, Math.floor(window / 8)))
     : 1;
-  const limits = initial?.limits ?? {
-    max_agents: 20,
-    max_concurrent: 4,
-    max_depth: 3,
+  // Count, concurrency, depth and lifetime are optional and uncapped (#1012).
+  const limits: {
+    max_agents?: number | null;
+    max_concurrent?: number | null;
+    max_depth?: number | null;
+    token_budget: number;
+    tokens_per_agent: number;
+    lifetime_seconds?: number | null;
+  } = initial?.limits ?? {
     token_budget: 1000000,
     tokens_per_agent: 200000,
-    lifetime_seconds: 3600,
   };
+  const optional = (value: string) =>
+    value.trim() === "" ? undefined : Number(value);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
@@ -549,12 +555,12 @@ function PolicyEditor({
           attributes: attributes as Record<string, unknown>,
         },
         limits: {
-          max_agents: Number(text("max_agents")),
-          max_concurrent: Number(text("max_concurrent")),
-          max_depth: Number(text("max_depth")),
+          max_agents: optional(text("max_agents")),
+          max_concurrent: optional(text("max_concurrent")),
+          max_depth: optional(text("max_depth")),
           token_budget: Number(text("token_budget")),
           tokens_per_agent: Number(text("tokens_per_agent")),
-          lifetime_seconds: Number(text("lifetime_seconds")),
+          lifetime_seconds: optional(text("lifetime_seconds")),
         },
       });
     } catch {
@@ -801,29 +807,37 @@ function PolicyEditor({
         <div className="grid gap-3 sm:grid-cols-2">
           {(
             [
-              ["max_agents", "generationMaxAgents", 1, 512],
-              ["max_concurrent", "generationMaxConcurrent", 1, 512],
-              ["max_depth", "generationMaxDepth", 1, 31],
-              ["token_budget", "generationTokenBudget", 1, 1000000000000],
+              ["max_agents", "generationMaxAgents", 1, undefined, false],
+              [
+                "max_concurrent",
+                "generationMaxConcurrent",
+                1,
+                undefined,
+                false,
+              ],
+              ["max_depth", "generationMaxDepth", 1, undefined, false],
+              ["token_budget", "generationTokenBudget", 1, 1000000000000, true],
               [
                 "tokens_per_agent",
                 "generationTokensPerAgent",
                 minTokens,
                 1000000000000,
+                true,
               ],
-              ["lifetime_seconds", "generationLifetime", 1, 2592000],
+              ["lifetime_seconds", "generationLifetime", 1, undefined, false],
             ] as const
-          ).map(([name, label, min, max]) => (
+          ).map(([name, label, min, max, required]) => (
             <Field key={name} label={t(label)}>
               <Input
                 type="number"
-                required
+                required={required}
                 name={name}
                 min={min}
                 max={max}
                 step={1}
+                placeholder={required ? undefined : t("generationNoLimit")}
                 className="font-mono tabular"
-                defaultValue={limits[name]}
+                defaultValue={limits[name] ?? ""}
               />
             </Field>
           ))}
@@ -919,8 +933,14 @@ function RequestDetail({
           t("generationGroups"),
           pinned.data.permissions.groups?.join(", ") || "-",
         ],
-        [t("generationMaxConcurrent"), pinned.data.limits.max_concurrent],
-        [t("generationMaxDepth"), pinned.data.limits.max_depth],
+        [
+          t("generationMaxConcurrent"),
+          pinned.data.limits.max_concurrent ?? t("generationNoLimit"),
+        ],
+        [
+          t("generationMaxDepth"),
+          pinned.data.limits.max_depth ?? t("generationNoLimit"),
+        ],
         [
           t("generationEmbedder"),
           pinned.data.embedding

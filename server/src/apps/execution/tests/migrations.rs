@@ -83,6 +83,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0068_reject_new_compaction_deciders"),
 	("registry", "0069_schedule_tools"),
 	("registry", "0070_harness_contract_structured4"),
+	("registry", "0071_delete_subnode_tool"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -136,6 +137,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0130_scope_refusals"),
 	("execution", "0131_scope_refusals_state"),
 	("execution", "0132_generation_scheduled"),
+	("execution", "0133_subnode_caps_removed"),
+	("execution", "0134_subnode_caps_removed_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -164,6 +167,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0130_scope_refusals"),
 	("execution", "0131_scope_refusals_state"),
 	("execution", "0132_generation_scheduled"),
+	("execution", "0133_subnode_caps_removed"),
+	("execution", "0134_subnode_caps_removed_state"),
 ];
 
 async fn history_size() -> usize {
@@ -206,10 +211,10 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0070_harness_contract_structured4");
+	assert_eq!(registry[0].name, "0071_delete_subnode_tool");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0132_generation_scheduled");
+	assert_eq!(execution[0].name, "0134_subnode_caps_removed_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0055_attachment_images");
@@ -224,7 +229,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		116
+		117
 	);
 	let tables = migrations
 		.iter()
@@ -490,14 +495,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0133_policy_probe")
+		.get_migration("execution", "0135_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0132_generation_scheduled".to_owned()
+			"0134_subnode_caps_removed_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -559,6 +564,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0130_scope_refusals"),
 			("execution", "0131_scope_refusals_state"),
 			("execution", "0132_generation_scheduled"),
+			("execution", "0133_subnode_caps_removed"),
+			("execution", "0134_subnode_caps_removed_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -1027,7 +1034,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		116
+		117
 	);
 }
 
@@ -2142,6 +2149,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0069_schedule_tools"),
 			// Depends on 0069.
 			("registry", "0070_harness_contract_structured4"),
+			("registry", "0071_delete_subnode_tool"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5640,7 +5648,7 @@ async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_revers
 		"subnode_task",
 		"subnode_add_member",
 		"subnode_remove_member",
-		"subnode_dissolve",
+		"delete_subnode",
 		"subnode_message",
 	];
 	for operation in operations {

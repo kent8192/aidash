@@ -1271,8 +1271,7 @@ def render():
             # Only a browser Mapping context can be a Tenant Administrator.
             uri = path.replace("{subject}", "alice")
             body = (
-                json.dumps({"members_per_subnode": 5, "subnodes_per_run": 3,
-                            "remote_runs_may_create": False})
+                json.dumps({"remote_runs_may_create": False})
                 if method == "PUT" and path.endswith("/subnode-limits")
                 else
                 # One day, within any Deployment maximum, so only the caller is refused.

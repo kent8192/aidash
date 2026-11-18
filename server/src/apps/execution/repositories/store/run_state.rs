@@ -302,19 +302,14 @@ impl Store {
 		)
 		.await?;
 		// Failure delivery can itself be the terminal transition.
-		if state.phase().is_terminal() {
-			let reason = match state.phase() {
-				aidash_domain::RunPhase::Completed => "creator_completed",
-				aidash_domain::RunPhase::Failed => "creator_failed",
-				aidash_domain::RunPhase::Cancelled => "creator_cancelled",
-				_ => unreachable!("terminal Run phase"),
-			};
+		// Only a cancellation ends what the creator built (#1012).
+		if state.phase() == aidash_domain::RunPhase::Cancelled {
 			self.subnode_control_in(
 				&mut tx,
 				m.id,
 				aidash_domain::RunControlAction::Cancel,
 				aidash_domain::ControlSource::System,
-				Some(reason),
+				Some("creator_cancelled"),
 			)
 			.await?;
 		}

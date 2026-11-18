@@ -578,12 +578,11 @@ async fn cross_tenant_listing_preserves_discovery_order_but_never_acquires_autho
 }
 #[rstest]
 #[case("max_agents", 0)]
-#[case("max_agents", 513)]
 #[case("max_concurrent", 6)]
-#[case("max_depth", 32)]
+#[case("max_depth", 0)]
 #[case("token_budget", 1000000000001_i64)]
 #[case("tokens_per_agent", 1000001)]
-#[case("lifetime_seconds", 2592001)]
+#[case("lifetime_seconds", 0)]
 fn bounded_generation_limits_reject_each_excess(
 	mut spec: Spec,
 	validation: DefinitionValidation,
@@ -731,4 +730,43 @@ async fn a_deployment_administrator_lists_and_sets_no_generation_policy(
 		Err(Error::Forbidden)
 	));
 	assert!(!repo.calls().iter().any(|call| call.starts_with("begin:")));
+}
+
+/// Count, depth and lifetime have no upper bound (#1012, ADR 0143), and a
+/// policy may leave each of them out.
+#[rstest]
+#[case("max_agents", Some(100_000))]
+#[case("max_depth", Some(1_000))]
+#[case("lifetime_seconds", Some(31_536_000))]
+#[case("max_agents", None)]
+#[case("max_concurrent", None)]
+#[case("max_depth", None)]
+#[case("lifetime_seconds", None)]
+fn generation_limits_have_no_upper_bound(
+	spec: Spec,
+	validation: DefinitionValidation,
+	#[case] field: &str,
+	#[case] value: Option<i64>,
+) {
+	let mut value_spec = json!(spec);
+	match value {
+		Some(value) => value_spec["limits"][field] = json!(value),
+		None => {
+			value_spec["limits"].as_object_mut().unwrap().remove(field);
+		}
+	}
+	if field == "max_agents" && value.is_none() {
+		// A concurrency cap without a total cap stays valid.
+		value_spec["limits"]["max_concurrent"] = json!(2);
+	}
+	let spec: Spec = serde_json::from_value(value_spec).unwrap();
+	assert!(
+		validate(
+			&validation,
+			&spec,
+			&serde_json::from_value(bundle()).unwrap()
+		)
+		.is_ok(),
+		"{field}: {value:?}"
+	);
 }

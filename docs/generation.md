@@ -8,7 +8,7 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 
 - `enabled`, `approval_required` and `template`, an ordinary Agent Registry entry.
 - `permissions`: existing role/group IDs and generated subject attributes.
-- `limits`: `max_agents`, `max_concurrent`, `max_depth`, `token_budget`, `tokens_per_agent` and `lifetime_seconds`.
+- `limits`: `token_budget` and `tokens_per_agent`, and optionally `max_agents`, `max_concurrent`, `max_depth` and `lifetime_seconds`. The optional limits have no upper bound and are absent unless a person sets them (#1012, ADR 0143); without `lifetime_seconds` a generated agent lasts as long as its Task. Neither an Approval Mode nor an allow rule approves a generated definition: with `approval_required` a person always decides each request.
 - Optional `embedding`: an approved embedding `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids embedding calls under that generated authority.
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.

@@ -387,16 +387,16 @@ async fn missing_authority_cannot_allocate_work(#[case] kind: &str) {
 	assert!(s.grants.is_empty());
 	assert!(s.claim_args.is_none());
 }
+/// Delegation chains are not capped (#1012, ADR 0143): a chain longer than
+/// the former 32-link limit is admitted like any other.
 #[tokio::test]
-async fn delegation_depth_fails_before_catalog_execution_or_claim() {
+async fn a_long_delegation_chain_is_admitted() {
 	let mut s = Scope::new();
-	s.subjects = vec!["root".into(); 32];
-	let e = admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
+	s.subjects = vec!["root".into(); 64];
+	admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
 		.await
-		.unwrap_err();
-	assert!(matches!(e,Error::Invalid(ref m) if m=="execution delegation depth exceeds 32"));
-	assert!(!s.calls.contains(&"entry".into()));
-	assert!(s.claim_args.is_none());
+		.unwrap();
+	assert!(s.claim_args.is_some());
 }
 #[tokio::test]
 async fn persisted_agent_configuration_errors_keep_the_json_error_kind() {

@@ -3589,20 +3589,18 @@ impl Store {
 			)?;
 		}
 		if saved.phase().is_terminal() {
-			let reason = match saved.phase() {
-				RunPhase::Completed => "creator_completed",
-				RunPhase::Failed => "creator_failed",
-				RunPhase::Cancelled => "creator_cancelled",
-				_ => unreachable!("terminal Run phase"),
-			};
-			self.subnode_control_in(
-				tx,
-				saved.id,
-				RunControlAction::Cancel,
-				ControlSource::System,
-				Some(reason),
-			)
-			.await?;
+			// A Subnode outlives its creator's completion or failure; only a
+			// cancellation still reaches what the creator built (#1012).
+			if saved.phase() == RunPhase::Cancelled {
+				self.subnode_control_in(
+					tx,
+					saved.id,
+					RunControlAction::Cancel,
+					ControlSource::System,
+					Some("creator_cancelled"),
+				)
+				.await?;
+			}
 			self.close_plugin_sessions_soon(saved.id);
 		}
 		self.run_event(
@@ -3856,18 +3854,17 @@ impl Store {
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;
-		self.subnode_control_in(
-			&mut tx,
-			run.id,
-			RunControlAction::Cancel,
-			ControlSource::System,
-			Some(if phase == "COMPLETED" {
-				"creator_completed"
-			} else {
-				"creator_cancelled"
-			}),
-		)
-		.await?;
+		// A completed creator leaves its Subnodes in place (#1012).
+		if phase != "COMPLETED" {
+			self.subnode_control_in(
+				&mut tx,
+				run.id,
+				RunControlAction::Cancel,
+				ControlSource::System,
+				Some("creator_cancelled"),
+			)
+			.await?;
+		}
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
 			self.deployment.as_str(),

@@ -173,17 +173,6 @@ impl CreateScope for Creation<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_is_subnode(&mut self, workspace: Uuid) -> Result<bool> {
-		let tenant = self.access.identity.tenant.clone();
-		Ok(!SubnodeRecord::objects()
-			.filter(SubnodeRecord::field_tenant().eq(tenant))
-			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
-			.all_with_executor(self.access.tx.native_mut())
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(crate::Error::from)?
-			.is_empty())
-	}
 	async fn remote_grant_started_run(&mut self, _: Uuid) -> Result<bool> {
 		Ok(self.remote)
 	}
@@ -233,12 +222,6 @@ impl CreateScope for Creation<'_> {
 	async fn limits(&mut self) -> Result<aidash_domain::subnodes::SubnodeLimits> {
 		let tenant = self.access.identity.tenant.clone();
 		SubnodeLimitRecord::get(self.access.tx.native_mut(), &tenant)
-			.await
-			.map_err(Into::into)
-	}
-	async fn active_count(&mut self, run: Uuid) -> Result<usize> {
-		let tenant = self.access.identity.tenant.clone();
-		SubnodeRecord::active_count(self.access.tx.native_mut(), &tenant, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -340,6 +323,25 @@ pub(crate) struct Management<'a> {
 }
 #[async_trait]
 impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
+	async fn root_subject(&mut self, run: Uuid) -> Result<Option<String>> {
+		let tenant = self.access.identity.tenant.clone();
+		let (sql, values) = Query::select()
+			.column(Alias::new("root_subject"))
+			.from(Alias::new("authorization_execution"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.build(PostgresQueryBuilder);
+		let row = self
+			.access
+			.tx
+			.native_mut()
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		Ok(row.and_then(|row| {
+			reinhardt::db::orm::QueryRow::from_backend_row(row).get("root_subject")
+		}))
+	}
 	async fn lock(&mut self, id: SubnodeId) -> Result<Option<Subnode>> {
 		let tenant = self.access.identity.tenant.clone();
 		let record = SubnodeRecord::objects()
@@ -390,11 +392,6 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		let record: SubnodeRecord =
 			serde_json::from_value(reinhardt::db::orm::QueryRow::from_backend_row(row).data)?;
 		Ok(Some(record.domain(self.access.tx.native_mut()).await?))
-	}
-	async fn limits(&mut self, tenant: &str) -> Result<aidash_domain::subnodes::SubnodeLimits> {
-		SubnodeLimitRecord::get(self.access.tx.native_mut(), tenant)
-			.await
-			.map_err(Into::into)
 	}
 	async fn creator_authority(&mut self, _: &Subnode) -> Result<Allowance> {
 		Ok(self.creator_authority.clone())

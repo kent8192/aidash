@@ -1087,12 +1087,9 @@
   "subnodeAllowedSecrets": "許可されたシークレット",
   "subnodeEndedReason": "終了の理由",
   "subnodeLimits": "Subnodeの上限",
-  "subnodeLimitsHelp": "エージェントが実行中に作るSubnodeの大きさと数の上限です。",
-  "subnodeMembersPerSubnode": "Subnodeあたりのメンバー数 (1-20)",
-  "subnodeSubnodesPerRun": "実行あたりのSubnode数 (1-10)",
+  "subnodeLimitsHelp": "エージェントが作るSubnodeは入れ子にでき、数やメンバー数の上限はありません。ほかのNodeから届いた仕事がここでSubnodeを作れるかを選びます。",
   "subnodeRemoteMayCreate": "他のNodeから始まった実行にSubnodeの作成を許可する",
   "subnodeLimitsSave": "上限を保存",
-  "subnodeLimitsInvalid": "Subnodeあたりのメンバー数は1から20、実行あたりのSubnode数は1から10の整数で入力してください。",
   "subnodeLimitsForbidden": "Subnodeの上限を変更する権限がありません。",
   "unconfirmedItems": "{node} に確認できなかったため、{count} 件を表示していません。{node} が応答したら確認し直します。",
   "tenantInstructions": "会社の指示",
@@ -1101,5 +1098,6 @@
   "nodeInstructionsHelp": "このNodeで働くすべてのエージェントが、会社の指示の次に従う常設の指示です。エージェントが書き換えることはできません。",
   "instructionsTooLong": "指示は16,384バイト以内で、NUL文字を含めることはできません。",
   "instructionsConflict": "ほかの人がこの指示を変更しました。再読み込みしてからやり直してください。",
-  "instructionsBytes": "バイト"
+  "instructionsBytes": "バイト",
+  "generationNoLimit": "上限なし"
 }

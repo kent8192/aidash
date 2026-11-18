@@ -216,14 +216,14 @@ fn matches_name(values: &BTreeSet<String>, name: &str) -> bool {
 }
 
 /// Actions an allow grants only by naming them. Each lets a Run act without a
-/// person's approval or creates a Subnode, so a wildcard grant, such as a Tenant
-/// Administrator's, does not confer them implicitly (ADR 0075, ADR 0076, ADR 0110). A wildcard deny
-/// still covers them.
+/// person's approval, so a wildcard grant, such as a Tenant Administrator's,
+/// does not confer them implicitly (ADR 0075, ADR 0076). A wildcard deny still
+/// covers them. Creating a Subnode is an ordinary member action (#1012, ADR
+/// 0143).
 pub const EXPLICIT_ACTIONS: &[&str] = &[
 	"tool.call_unapproved",
 	"sampling.request_unapproved",
 	crate::approval_rules::MODE_BYPASS,
-	crate::identity::tenant_administration::SUBNODE_CREATE,
 ];
 
 fn matches_action(values: &BTreeSet<String>, action: &str, effect: &Effect) -> bool {
@@ -277,8 +277,9 @@ impl PolicyBundle {
 			let mut chain = BTreeSet::new();
 			let mut current = Some(name.as_str());
 			while let Some(id) = current {
-				if chain.len() >= MAX_DEPTH || !chain.insert(id) {
-					return Err(Error::Invalid("delegation cycle or excessive depth".into()));
+				// Chains are not capped (#1012, ADR 0143); only a cycle is refused.
+				if !chain.insert(id) {
+					return Err(Error::Invalid("delegation cycle".into()));
 				}
 				let entry = self
 					.subjects

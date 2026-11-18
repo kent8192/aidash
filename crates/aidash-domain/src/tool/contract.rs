@@ -493,6 +493,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		| "subnode_task"
 		| "subnode_add_member"
 		| "subnode_remove_member"
+		| "delete_subnode"
 		| "subnode_dissolve" => {
 			contract.remote_exposure = true;
 		}

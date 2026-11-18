@@ -106,11 +106,6 @@ pub async fn agent_inspection<R: GrantRepository>(
 		if task.status != TaskStatus::Open {
 			return Err(Error::Conflict("task is already assigned".into()));
 		}
-		if scope.source_subjects().len() >= 32 {
-			return Err(Error::Invalid(
-				"execution delegation depth exceeds 32".into(),
-			));
-		}
 		let executor =
 			aidash_domain::agent_subject(&input.node_id, &input.agent.id, &input.agent.version);
 		if scope
@@ -163,7 +158,6 @@ pub async fn prepare<R: GrantRepository>(
   let task=scope.task_read(task_id).await?;
   scope.require_non_subnode_workspace(task.workspace_id).await?;
   if task.status!=TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
-  if scope.source_subjects().len()>=32 {return Err(Error::Invalid("execution delegation depth exceeds 32".into()));}
   let executor=aidash_domain::agent_subject(&input.node_id,&input.agent.id,&input.agent.version);
   if scope.source_bundle().subjects.get(&executor).is_some_and(|subject|subject.kind!=SubjectKind::Agent) {let resource=scope.source_resource("node",&input.node_id,json!({"remote_node":input.node_id}));scope.record_refusal(&resource,"invalid_executor_subject").await?;return Err(Error::RemoteExecutionRefused(aidash_domain::federation::execution::Refusal::InvalidExecutor));}
   let workspace=scope.workspace(task.workspace_id).await?;

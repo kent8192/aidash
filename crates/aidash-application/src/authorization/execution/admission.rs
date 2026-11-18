@@ -33,11 +33,6 @@ pub async fn admit(
 	let node = scope.workspace_node(task.workspace_id).await?;
 	let subject = qualified_agent(&node, &agent.id, &agent.version);
 	super::require_agent(scope.bundle(), &subject)?;
-	if scope.subjects().len() >= 32 {
-		return Err(Error::Invalid(
-			"execution delegation depth exceeds 32".into(),
-		));
-	}
 	let mut subjects = scope.subjects().to_vec();
 	subjects.push(subject.clone());
 	scope.set_subjects(subjects);

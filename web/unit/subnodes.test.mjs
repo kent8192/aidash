@@ -1,50 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  subnodeActive,
-  subnodeLimitsProblems,
-  subnodeTitle,
-} from "../src/subnodes-model.ts";
-
-const limits = {
-  members_per_subnode: 5,
-  subnodes_per_run: 3,
-  remote_runs_may_create: false,
-};
-
-test("the default limits are accepted", () => {
-  assert.deepEqual(subnodeLimitsProblems(limits), []);
-});
-
-test("the range ends are accepted and the values past them are not", () => {
-  assert.deepEqual(
-    subnodeLimitsProblems({
-      ...limits,
-      members_per_subnode: 20,
-      subnodes_per_run: 10,
-    }),
-    [],
-  );
-  assert.deepEqual(
-    subnodeLimitsProblems({
-      ...limits,
-      members_per_subnode: 21,
-      subnodes_per_run: 0,
-    }),
-    ["members_per_subnode", "subnodes_per_run"],
-  );
-});
-
-test("empty and fractional values are refused", () => {
-  assert.deepEqual(
-    subnodeLimitsProblems({ ...limits, members_per_subnode: Number("") + NaN }),
-    ["members_per_subnode"],
-  );
-  assert.deepEqual(
-    subnodeLimitsProblems({ ...limits, subnodes_per_run: 2.5 }),
-    ["subnodes_per_run"],
-  );
-});
+import { subnodeActive, subnodeTitle } from "../src/subnodes-model.ts";
 
 test("an untitled Subnode is named by the head of its id", () => {
   assert.equal(

@@ -137,9 +137,6 @@ impl CreateScope for Scope {
 			attributes: json!({}),
 		})
 	}
-	async fn workspace_is_subnode(&mut self, _: Uuid) -> Result<bool> {
-		Ok(self.nested)
-	}
 	async fn remote_grant_started_run(&mut self, _: Uuid) -> Result<bool> {
 		Ok(self.remote)
 	}
@@ -148,9 +145,6 @@ impl CreateScope for Scope {
 	}
 	async fn limits(&mut self) -> Result<SubnodeLimits> {
 		Ok(self.limits)
-	}
-	async fn active_count(&mut self, _: Uuid) -> Result<usize> {
-		Ok(self.active)
 	}
 	async fn creator_authority(&mut self, _: &RunMetadata) -> Result<Allowance> {
 		Ok(Allowance::default())
@@ -193,19 +187,15 @@ impl CreateScope for Scope {
 	}
 }
 
+/// Creating a Subnode is an ordinary member action (#1012, ADR 0143): an
+/// approved agent in the members group needs no named grant.
 #[tokio::test]
-async fn creator_agent_needs_an_explicit_grant_but_the_root_does_not() {
+async fn a_member_agent_creates_a_subnode_without_a_named_grant() {
 	let mut scope = scope();
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Forbidden)
-	));
-	assert_eq!(scope.inserted, 0);
-	scope.grant();
 	let created = create(&mut scope, &run(), "key", &input()).await.unwrap();
 	assert_eq!(created.creator_run_id, run().id);
 	assert_eq!(scope.inserted, 1);
-	assert_eq!(scope.decisions.len(), 2);
+	assert_eq!(scope.decisions.len(), 1);
 	assert!(
 		scope
 			.decisions
@@ -215,28 +205,18 @@ async fn creator_agent_needs_an_explicit_grant_but_the_root_does_not() {
 }
 
 #[tokio::test]
-async fn creation_refuses_nested_remote_over_limit_and_uncovered_members_but_admits_the_creator_agent()
- {
+async fn creation_refuses_unconsented_remote_and_uncovered_members_but_admits_the_creator_agent() {
+	// Nesting and the number of Subnodes are not limited (#1012, ADR 0143).
 	let mut scope = scope();
 	scope.grant();
 	scope.nested = true;
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Refused(_))
-	));
-	scope.nested = false;
+	scope.active = 1_000;
 	scope.remote = true;
 	assert!(matches!(
 		create(&mut scope, &run(), "key", &input()).await,
 		Err(Error::Refused(_))
 	));
 	scope.remote = false;
-	scope.active = 3;
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Refused(_))
-	));
-	scope.active = 0;
 	scope.member_required.tools.insert("private@1".into());
 	assert!(
 		matches!(create(&mut scope, &run(), "key", &input()).await, Err(Error::Refused(message)) if message.contains("private@1"))
@@ -318,9 +298,6 @@ impl Management {
 impl crate::ports::subnodes::ManageScope for Management {
 	async fn lock(&mut self, id: SubnodeId) -> Result<Option<Subnode>> {
 		Ok((id == self.subnode.id).then(|| self.subnode.clone()))
-	}
-	async fn limits(&mut self, _: &str) -> Result<SubnodeLimits> {
-		Ok(SubnodeLimits::default())
 	}
 	async fn creator_authority(&mut self, subnode: &Subnode) -> Result<Allowance> {
 		Ok(subnode.allowance.clone())

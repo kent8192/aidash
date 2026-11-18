@@ -22,9 +22,11 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// How many local task hops a Federation provenance walk follows. A chain
-/// that continues past it counts as federated.
-const MAX_ORIGIN_DEPTH: u32 = 64;
+/// How many local task hops a Federation provenance walk may follow. Chains
+/// are no longer capped (#1012, ADR 0143), so this is only the SQL bound of a
+/// walk that ends at the first Task without an origin: an origin always names
+/// an earlier Task, so the walk cannot loop.
+const MAX_ORIGIN_DEPTH: u32 = i32::MAX as u32;
 
 #[derive(Clone)]
 pub(crate) struct Grant {

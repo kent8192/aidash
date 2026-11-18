@@ -100,15 +100,8 @@ impl MutationScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn complete_run(&mut self, id: Uuid) -> Result<()> {
+		// The creator's completion leaves its Subnodes in place (#1012).
 		Run::complete(self.0, id).await?;
-		aidash_application::subnodes::control_for_creator(
-			&mut crate::apps::execution::repositories::subnodes::NativeCascade { tx: self.0 },
-			id,
-			aidash_domain::RunControlAction::Cancel,
-			aidash_domain::ControlSource::System,
-			Some(aidash_domain::subnodes::EndReason::CreatorCompleted),
-		)
-		.await?;
 		// Completion is validated as Home-local, so the Home node records markers.
 		let run = inference::target(&mut *self.0, id).await?;
 		let closed = inference::close_pending(

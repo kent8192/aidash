@@ -122,9 +122,6 @@ pub async fn assign_in_restricted(
 	// The exclusive policy lock serializes quota reservations and task retries.
 	let policy = scope.policy(policy_id).await?;
 	if let Some(existing) = scope.existing(task_id).await? {
-		if members.is_some() {
-			return Err(Error::Refused("Subnodes cannot generate agents".into()));
-		}
 		if existing.tenant != scope.tenant()
 			|| existing.root_subject != scope.subject()
 			|| existing.policy_id != policy_id
@@ -213,15 +210,14 @@ pub async fn assign_in_restricted(
 			return Ok(Assignment::Existing { delegation });
 		}
 	}
-	if members.is_some() {
-		return Err(Error::Refused("no Subnode member matches this task".into()));
-	}
+	// A Subnode generates an agent when none of its members fits, as any other
+	// Task does (#1012, ADR 0143).
 	create_in(scope, &task, policy, reason, None, validation).await
 }
 /// What the person the chain starts at decided in advance about a generation
-/// request that needs an approver (ADR 0076). They may give what they could
-/// approve themselves: `generation.approve` on the request and
-/// `catalog.approve` on the generated definition.
+/// request that needs an approver (ADR 0076). Only a refusal is acted on: an
+/// advance approval never stands in for the person's Catalog Approval of the
+/// generated definition (ADR 0143).
 async fn advise(
 	scope: &mut dyn GenerationCreationScope,
 	task: &Task,
@@ -326,7 +322,7 @@ pub async fn create_in(
 		intent.lineage.iter().map(|a| a.depth).max().unwrap_or(0)
 	})) + 1;
 	let active = scope.active(&policy.id).await?;
-	let allowances = policy.reservation(active, depth, scope.subjects().len())?;
+	let allowances = policy.reservation(active, depth)?;
 	let id = scope.request_id();
 	let mut definition = policy.spec.template.clone();
 	definition.id = format!("generated-{}", id.simple());
@@ -347,20 +343,24 @@ pub async fn create_in(
 	} else {
 		Resolution::Ask
 	};
-	let given = match resolution {
+	// A person's own deny rule still refuses, but neither an Approval Mode
+	// (Bypass included) nor an allow rule approves a generated definition: its
+	// Catalog Approval is a Tenant approval that a person makes, never the
+	// chain (#1012, ADR 0143). Only the policy's no-approval mark, set by a
+	// person holding `generation.manage`, skips it.
+	let given: Option<_> = match resolution {
 		Resolution::Refuse(by) => return Err(refusal(by)),
-		Resolution::Approve(by) => Some(by),
-		Resolution::Ask | Resolution::Judge | Resolution::Proceed => None,
+		Resolution::Approve(_) | Resolution::Ask | Resolution::Judge | Resolution::Proceed => None,
 	};
 	let status = if !policy.spec.approval_required || given.is_some() {
 		"QUEUED"
 	} else {
 		"PENDING_APPROVAL"
 	};
-	let lifetime_seconds = foreign.map_or(policy.spec.limits.lifetime_seconds, |intent| {
+	let lifetime_seconds = foreign.map_or(policy.spec.limits.lifetime(), |intent| {
 		(intent.expires_at - scope.now())
 			.num_seconds()
-			.min(policy.spec.limits.lifetime_seconds)
+			.min(policy.spec.limits.lifetime())
 	}) as f64;
 	let generated = scope
 		.insert(&Creation {

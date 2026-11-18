@@ -7310,7 +7310,7 @@ impl SubnodeRig {
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
-					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_dissolve","version":"1.0.0"},"alias":"subnode_dissolve","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.delete_subnode","version":"1.0.0"},"alias":"delete_subnode","narrow":{}}),
 				]);
 			} else {
 				entry["config"]["bindings"] = json!([]);
@@ -8003,45 +8003,35 @@ async fn subnode_refuses_member_with_broader_outbound_binding(
 	cleanup(f, &url, &schema).await;
 }
 
-/// An agent that only has the default policy cannot create a Subnode, because
-/// `subnode.create` is an explicit action that no default group confers.
+/// An agent with only the default policy creates a Subnode: `subnode.create`
+/// is an ordinary member action (#1012, ADR 0143).
 #[rstest::rstest]
 #[tokio::test]
-async fn subnode_creation_is_refused_without_an_explicit_grant(
+async fn a_default_member_agent_creates_a_subnode(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], false).await;
-	rig.script(
-		rig.creator_run,
-		"subnode_create",
-		json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}}),
-		"ungranted-create",
-	)
-	.await;
-	// A policy denial is not a model-correctable result: the Run pauses.
-	assert!(
-		rig.result_of(rig.creator_run, "ungranted-create")
-			.await
-			.is_none(),
-		"a denied call must not record a tool result"
-	);
-	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
-	assert_eq!(run.control, aidash_domain::RunControl::Paused);
-	assert_eq!(
-		run.error.as_deref(),
-		Some("subnode_create: subnode.create was denied")
-	);
-	assert_eq!(subnode_rows(&f).await, 0, "no Subnode may be created");
+	let created = rig
+		.inject(
+			"subnode_create",
+			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}}),
+			"default-create",
+		)
+		.await;
+	assert!(created["subnode_id"].is_string(), "creation: {created}");
+	assert_eq!(subnode_rows(&f).await, 1);
 	cleanup(f, &url, &schema).await;
 }
 
-/// The Tenant limits bound member count and the active Subnodes of one Run.
+/// Subnodes are not capped per Run or in members (#1012, ADR 0143): one Run
+/// creates several, each with several members. Only the receiving Tenant's
+/// consent to remote creation remains in its settings.
 #[rstest::rstest]
 #[tokio::test]
-async fn subnode_limits_bound_members_and_active_subnodes_per_run(
+async fn a_run_creates_several_subnodes_with_several_members(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -8062,42 +8052,32 @@ async fn subnode_limits_bound_members_and_active_subnodes_per_run(
 			json!({"members_per_subnode":1,"subnodes_per_run":1,"remote_runs_may_create":false}),
 		)
 		.await;
-	assert_eq!(status, 200, "limits: {body}");
+	assert_eq!(
+		status, 422,
+		"the removed caps are refused as unknown fields: {body}"
+	);
 	let allowance = json!({"tools":SUBNODE_TOOLS,"secrets":[]});
-	let too_many = rig
-		.inject(
-			"subnode_create",
-			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0","subnode-second@1.0.0"],"allowance":allowance}),
-			"too-many-members",
-		)
-		.await;
-	assert_eq!(
-		too_many["error"],
-		json!("Subnode member limit reached"),
-		"member limit: {too_many}"
-	);
-	assert_eq!(subnode_rows(&f).await, 0);
-	let created = rig
-		.inject(
-			"subnode_create",
-			json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":allowance}),
-			"first-subnode",
-		)
-		.await;
-	assert!(created["subnode_id"].is_string(), "creation: {created}");
-	let second = rig
-		.inject(
-			"subnode_create",
-			json!({"leader":"subnode-second@1.0.0","members":["subnode-second@1.0.0"],"allowance":allowance}),
-			"second-subnode",
-		)
-		.await;
-	assert_eq!(
-		second["error"],
-		json!("active Subnode limit reached"),
-		"active limit: {second}"
-	);
-	assert_eq!(subnode_rows(&f).await, 1, "only the first Subnode exists");
+	for (index, leader) in [
+		"subnode-leader@1.0.0",
+		"subnode-second@1.0.0",
+		"subnode-leader@1.0.0",
+	]
+	.into_iter()
+	.enumerate()
+	{
+		let created = rig
+			.inject(
+				"subnode_create",
+				json!({"leader":leader,"members":["subnode-leader@1.0.0","subnode-second@1.0.0"],"allowance":allowance}),
+				&format!("subnode-{index}"),
+			)
+			.await;
+		assert!(
+			created["subnode_id"].is_string(),
+			"creation {index}: {created}"
+		);
+	}
+	assert_eq!(subnode_rows(&f).await, 3);
 	cleanup(f, &url, &schema).await;
 }
 

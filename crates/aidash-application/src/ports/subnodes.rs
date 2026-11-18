@@ -9,15 +9,14 @@ use aidash_domain::{
 use async_trait::async_trait;
 use uuid::Uuid;
 
-/// The implementation holds the creator, policy, limits and membership locks
-/// until the resulting Workspace and Subnode are committed together. Counts
-/// and idempotency must be serialized across concurrent calls by the same Run.
+/// The implementation holds the creator, policy and membership locks until the
+/// resulting Workspace and Subnode are committed together. Idempotency must be
+/// serialized across concurrent calls by the same Run.
 #[async_trait]
 pub trait CreateScope: AuthorizationLease {
 	/// The receiving Node address, independent of the Run's remote Home.
 	fn execution_node(&self) -> &str;
 	async fn node_resource(&mut self, run: &RunMetadata) -> Result<Resource>;
-	async fn workspace_is_subnode(&mut self, workspace: Uuid) -> Result<bool>;
 	async fn remote_grant_started_run(&mut self, run: Uuid) -> Result<bool>;
 	/// Return an earlier receipt, or conflict if the key names different input.
 	async fn replay(
@@ -27,7 +26,6 @@ pub trait CreateScope: AuthorizationLease {
 		input: &Create,
 	) -> Result<Option<Subnode>>;
 	async fn limits(&mut self) -> Result<SubnodeLimits>;
-	async fn active_count(&mut self, creator_run: Uuid) -> Result<usize>;
 	/// The creator's bound tools and Secrets that the current lease may use.
 	async fn creator_authority(&mut self, run: &RunMetadata) -> Result<Allowance>;
 	/// Checks Node Catalog Approval and returns the member's complete Binding closure.
@@ -41,7 +39,10 @@ pub trait CreateScope: AuthorizationLease {
 #[async_trait]
 pub trait ManageScope: Send {
 	async fn lock(&mut self, id: aidash_domain::subnodes::SubnodeId) -> Result<Option<Subnode>>;
-	async fn limits(&mut self, tenant: &str) -> Result<SubnodeLimits>;
+	/// The person at the root of a Run's delegation chain, when it is known.
+	async fn root_subject(&mut self, _run: Uuid) -> Result<Option<String>> {
+		Ok(None)
+	}
 	/// Current creator authority; it may have narrowed since creation.
 	async fn creator_authority(&mut self, subnode: &Subnode) -> Result<Allowance>;
 	/// Checks Node Catalog Approval and the complete candidate Binding closure.
