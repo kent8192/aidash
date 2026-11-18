@@ -59,8 +59,11 @@ export function AgentPluginServerSettings({
     if (next.header === "" || next.header === SECRET_HEADER) delete next.header;
     if (next.owner !== "personal") delete next.owner;
     update({ ...settings, secret: next.name ? next : undefined });
+    // A listing made with the previous secret no longer applies, and its
+    // answer is ignored, so it must not leave the form busy.
     request.current += 1;
     setListing(null);
+    setBusy(false);
   };
 
   const list = async () => {
