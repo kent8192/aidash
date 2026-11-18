@@ -21,7 +21,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 /// The only actions a test approval can name.
-const ACTIONS: [&str; 3] = ["tool.call_unapproved", "network.get", "research.disclose"];
+const ACTIONS: [&str; 2] = ["tool.call_unapproved", "network.get"];
 /// How often a waiting test reads its starter's answer.
 const POLL: Duration = Duration::from_millis(500);
 
