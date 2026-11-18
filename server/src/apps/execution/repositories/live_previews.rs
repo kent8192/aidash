@@ -817,24 +817,41 @@ pub(crate) async fn set_unconfirmed(
 	id: Uuid,
 	unconfirmed: bool,
 ) -> NativeResult<Option<DateTime<Utc>>> {
-	let Some(mut preview) = load_for_maintenance(store, id).await? else {
+	// Only the Tenant is taken from this unlocked read: it never changes.
+	let Some(preview) = load_for_maintenance(store, id).await? else {
 		return Ok(None);
 	};
-	if !matches!(preview.state, State::Running | State::Stale)
-		|| preview.unconfirmed_since.is_some() == unconfirmed
-	{
-		return Ok(preview.unconfirmed_since);
-	}
-	preview.unconfirmed_since = unconfirmed.then(Utc::now);
 	let mut tx = store
 		.pool
 		.begin(&TenancyScope::tenant(&preview.tenant)?)
 		.await?;
-	Row::objects()
-		.save_with_executor(&mut *tx, &to_row(&preview))
+	// Decide on the locked row and write it in the same transaction, as the
+	// gateway does, so a stop or a gateway update committed after the read
+	// above is never written back over.
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(&mut *tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)
-		.map_err(NativeError::from)?;
+		.map_err(NativeError::from)?
+		.pop();
+	let Some(mut preview) = row.map(domain).transpose()? else {
+		tx.commit().await?;
+		return Ok(None);
+	};
+	if !matches!(preview.state, State::Running | State::Stale) {
+		tx.commit().await?;
+		return Ok(None);
+	}
+	if preview.unconfirmed_since.is_some() != unconfirmed {
+		preview.unconfirmed_since = unconfirmed.then(Utc::now);
+		Row::objects()
+			.save_with_executor(&mut *tx, &to_row(&preview))
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+	}
 	tx.commit().await?;
 	Ok(preview.unconfirmed_since)
 }
