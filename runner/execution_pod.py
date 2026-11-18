@@ -1483,7 +1483,6 @@ print(json.dumps(r))'''
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
                       'status', 'background', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
                       'error_code', 'message', 'session_replaced', 'output_fetched_at', 'left_running') if key in record}
-            result['ended'] = process_ended(record)
             if record['status'] == 'running' and operation_id in self.live_output:
                 result.update(self.live_output[operation_id])
             if record.get('kind') == 'python_cell' and record['status'] == 'completed' and record.get('exit_code') == 0:
@@ -2860,16 +2859,6 @@ print(json.dumps(r))'''
             return {'stopped': True}
         session = json.loads(path.read_bytes())
         return self.stop_background(session['operation_id'])
-
-
-def process_ended(record):
-    """Whether the process a command record names has certainly ended: it finished, never
-    started, or was interrupted with no stop still owed (its Pod went away or the stop was
-    confirmed). An interruption in Docker mode, or one whose stop is still owed, proves nothing."""
-    status = record.get('status')
-    if status in ('completed', 'timed_out', 'stopped', 'cancelled', 'refused'):
-        return True
-    return status == 'interrupted' and not record.get('stop_pending') and not record.get('docker_enabled')
 
 
 def execution_timeout(request):

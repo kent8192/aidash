@@ -431,26 +431,6 @@ def test_file_routes_write_search_patch_and_manifest(tmp_path):
         thread.join()
 
 
-def test_a_result_says_whether_its_process_has_certainly_ended(tmp_path):
-    from types import SimpleNamespace
-    from execution_pod import process_ended
-    assert process_ended({'status': 'completed'})
-    assert process_ended({'status': 'cancelled'})
-    # The Pod went away, or the stop was confirmed.
-    assert process_ended({'status': 'interrupted'})
-    assert process_ended({'status': 'interrupted', 'stop_pending': False})
-    assert not process_ended({'status': 'running'})
-    assert not process_ended({'status': 'queued'})
-    assert not process_ended({'status': 'interrupted', 'stop_pending': True})
-    assert not process_ended({'status': 'interrupted', 'docker_enabled': True})
-    controller = ExecutionPodController(SimpleNamespace(root=tmp_path), {}, admitted=True)
-    left = '00000000-0000-4000-8000-000000000001.left'
-    controller._command_path(left).write_text(json.dumps({
-        'operation_id': left, 'scratch_space_id': 's', 'run_id': 'r', 'status': 'stopped',
-        'background': True, 'kind': 'left'}))
-    assert controller.command_result(left, retry_stop=False)['ended'] is True
-
-
 def test_file_helper_failure_on_a_running_pod_is_not_reported_as_an_unavailable_pod(tmp_path):
     from types import SimpleNamespace
     from execution_pod import ExecutionPodError

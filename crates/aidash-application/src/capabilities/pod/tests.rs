@@ -383,7 +383,6 @@ pub(crate) fn reply(status: &str) -> CommandResult {
 		python_result: None,
 		left_running: None,
 		session_replaced: None,
-		ended: None,
 	}
 }
 

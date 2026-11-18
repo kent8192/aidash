@@ -9,9 +9,6 @@ use crate::{
 use aidash_application::{
 	Result,
 	ports::capabilities::{
-		execution_pod::{
-			CommandResult, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime as _,
-		},
 		read_recheck::{Outcome, ReadRecheckRepository, Target},
 		reconciliation::OperationReconciliationRepository as _,
 	},
@@ -59,10 +56,10 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 	.await
 }
 
-/// Ended Pod commands that left Background processes not yet seen to end, of Runs the
-/// Read Recheck has not refused, newest first within each Run.
-fn background_candidates() -> String {
-	// Correlated with the outer row: only this Run's refusal ends its targets.
+/// The Background-target query: one ended Pod command per Run that left Background processes
+/// running, for Runs the Read Recheck has not refused.
+fn background_runs_query() -> String {
+	// Correlated with the outer row: only this Run's refusal ends its target.
 	let revoked = Query::select()
 		.expr(Expr::value(1_i32))
 		.from_as(Alias::new("egress_run_revocations"), Alias::new("r"))
@@ -72,117 +69,28 @@ fn background_candidates() -> String {
 		)
 		.to_owned();
 	Query::select()
+		.distinct_on([Alias::new("run_id")])
 		.column(Alias::new("id"))
-		.column(Alias::new("run_id"))
-		.column(Alias::new("state"))
-		.column(Alias::new("result"))
 		.from(Alias::new("core_operations"))
 		.and_where(Expr::col(Alias::new("state")).is_not_in(["prepared", "submitted", "running"]))
 		.and_where(Expr::cust("input->>'runtime' = 'pod'"))
 		.and_where(Expr::cust("result->>'left_running' IS NOT NULL"))
-		.and_where(Expr::cust("result->>'left_ended' IS NULL"))
 		.and_where(Expr::exists(revoked).not())
 		.order_by(Alias::new("run_id"), Order::Asc)
 		.order_by(Alias::new("updated_at"), Order::Desc)
 		.to_string(PostgresQueryBuilder)
 }
 
-/// Whether the Runner shows that the Background processes a command left have ended. Only
-/// positive evidence counts: an unreachable Runner, or a process whose stop is still owed,
-/// keeps its Run a target.
-fn left_ended(answer: &std::result::Result<CommandResult, ExecutionPodError>) -> bool {
-	match answer {
-		Ok(result) => result.ended == Some(true),
-		// The Runner prunes a record only once it has settled.
-		Err(ExecutionPodError::Remote {
-			code: ExecutionPodErrorCode::CommandNotFound,
-			..
-		}) => true,
-		Err(_) => false,
-	}
-}
-
-/// Per Run, the newest candidate whose left processes may still run is its target. Candidates
-/// come as (command, Run, left process id), newest first within each Run; `ended` asks the
-/// Runner, and is not asked again once a Run has its target. Returns the targets and the
-/// commands shown ended.
-async fn decide_background<F, Fut>(
-	candidates: Vec<(Uuid, Uuid, Option<String>)>,
-	mut ended: F,
-) -> (Vec<Uuid>, Vec<Uuid>)
-where
-	F: FnMut(String) -> Fut,
-	Fut: std::future::Future<Output = bool>,
-{
-	let mut decided = std::collections::BTreeSet::new();
-	let (mut targets, mut finished) = (Vec::new(), Vec::new());
-	for (id, run, left) in candidates {
-		if decided.contains(&run) {
-			continue;
-		}
-		let shown_ended = match left {
-			Some(left) => ended(left).await,
-			None => false,
-		};
-		if shown_ended {
-			finished.push(id);
-		} else {
-			decided.insert(run);
-			targets.push(id);
-		}
-	}
-	(targets, finished)
-}
-
-/// One ended Pod command per Run whose left Background processes may still run, for Runs not
-/// yet refused. Background processes outlive their command and the Run, and use its
-/// credential, so their Run's reads are rechecked like a running command's (ADR 0136). A
-/// refusal marks the Run, which ends its targets; a command whose left processes the Runner
-/// shows ended is marked `left_ended` and is never a target again, so the targets do not grow
-/// with every command that once left a process.
+/// One ended Pod command per Run that left Background processes running, for
+/// Runs not yet refused. Background processes outlive their command and the
+/// Run, and use its credential, so their Run's reads are rechecked like a
+/// running command's (ADR 0136). A refusal marks the Run, which ends the target.
 async fn background_runs(store: &Store) -> NativeResult<Vec<Uuid>> {
-	let scope = TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
-	let rows: Vec<(Uuid, Uuid, String, serde_json::Value)> =
-		crate::database::native::query_as(&background_candidates())
-			.fetch_all(store.pool.in_scope(&scope))
-			.await?;
-	if rows.is_empty() {
-		return Ok(Vec::new());
-	}
-	// Without a Runner nothing is shown to have ended, so every Run stays a target.
-	let runner = crate::bootstrap::operation_runner(store).ok();
-	let candidates = rows
-		.iter()
-		.map(|(id, run, _, result)| {
-			let left = result["left_running"].as_str().map(str::to_owned);
-			(*id, *run, left.filter(|_| runner.is_some()))
-		})
-		.collect();
-	let runner = runner.as_ref();
-	let (targets, finished) = decide_background(candidates, |left| async move {
-		match runner {
-			Some(runner) => left_ended(&runner.result(&left).await),
-			None => false,
-		}
-	})
-	.await;
-	for (id, _, state, result) in rows.into_iter().filter(|row| finished.contains(&row.0)) {
-		let mut result = result;
-		result["left_ended"] = serde_json::Value::Bool(true);
-		// Terminal rows keep their state; the state check only guards against a row
-		// that is somehow live again.
-		crate::database::native::query(
-			&Query::update()
-				.table(Alias::new("core_operations"))
-				.value(Alias::new("result"), result)
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-				.and_where(Expr::col(Alias::new("state")).eq(Expr::value(state)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(store.pool.in_scope(&scope))
-		.await?;
-	}
-	Ok(targets)
+	crate::database::native::query_scalar(&background_runs_query())
+		.scalar_all(store.pool.in_scope(&TenancyScope::Deployment(
+			DeploymentScopeReason::CapabilityMaintenance,
+		)))
+		.await
 }
 
 /// Persist the denial before contacting the Runner: traffic must remain refused
@@ -430,60 +338,12 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn a_refusal_ends_only_its_own_runs_background_targets() {
-		let sql = background_candidates();
+	fn a_refusal_ends_only_its_own_runs_background_target() {
+		let sql = background_runs_query();
 		assert!(
 			sql.contains(r#"NOT EXISTS (SELECT 1 FROM "egress_run_revocations" AS "r" WHERE "r"."run_id" = "core_operations"."run_id")"#),
 			"{sql}"
 		);
-		assert!(sql.contains("result->>'left_ended' IS NULL"), "{sql}");
-	}
-
-	fn result(ended: Option<bool>) -> CommandResult {
-		serde_json::from_value(serde_json::json!({
-			"operation_id": "op.left", "status": "stopped", "scratch_space_id": null, "run_id": null,
-			"background": true, "outcome": null, "exit_code": null, "stdout": null, "stderr": null,
-			"truncated": null, "error_code": null, "message": null, "python_result": null,
-			"left_running": null, "ended": ended,
-		}))
-		.unwrap()
-	}
-
-	#[test]
-	fn only_the_runners_evidence_ends_a_background_target() {
-		assert!(left_ended(&Ok(result(Some(true)))));
-		assert!(!left_ended(&Ok(result(Some(false)))));
-		assert!(!left_ended(&Ok(result(None))));
-		assert!(left_ended(&Err(ExecutionPodError::Remote {
-			code: ExecutionPodErrorCode::CommandNotFound,
-			message: "Command does not exist".into(),
-		})));
-		assert!(!left_ended(&Err(ExecutionPodError::Transport(
-			aidash_application::Error::External("runner offline".into())
-		))));
-	}
-
-	#[tokio::test]
-	async fn each_run_keeps_its_newest_command_whose_left_processes_may_run() {
-		let id = |n: u128| Uuid::from_u128(n);
-		let (a, b) = (id(100), id(200));
-		let candidates = vec![
-			(id(1), a, Some("1.left".to_owned())),
-			(id(2), a, Some("2.left".to_owned())),
-			(id(3), a, Some("3.left".to_owned())),
-			(id(4), b, Some("4.left".to_owned())),
-			(id(5), b, None),
-		];
-		let asked = std::sync::Mutex::new(Vec::new());
-		let (targets, finished) = decide_background(candidates, |left| {
-			asked.lock().unwrap().push(left.clone());
-			async move { matches!(left.as_str(), "1.left" | "4.left") }
-		})
-		.await;
-		// Run a: 1 ended, 2 is the target, 3 is not asked. Run b: 4 ended; 5 cannot be asked.
-		assert_eq!(targets, [id(2), id(5)]);
-		assert_eq!(finished, [id(1), id(4)]);
-		assert_eq!(*asked.lock().unwrap(), ["1.left", "2.left", "4.left"]);
 	}
 
 	#[test]

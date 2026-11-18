@@ -187,10 +187,6 @@ pub struct CommandResult {
 	/// was replaced), so earlier variables are gone.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub session_replaced: Option<bool>,
-	/// The Runner is certain the process has ended: it finished, never started, or was
-	/// interrupted with its Pod gone or its stop confirmed.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub ended: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundProcesses {
