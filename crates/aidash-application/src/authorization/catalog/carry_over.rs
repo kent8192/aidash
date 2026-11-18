@@ -48,10 +48,11 @@ pub trait CarryScope: Send {
 
 /// Carry from the highest eligible lower version independently on each Node.
 ///
-/// Every Node is decided before anything is written. A Deployment-scoped
-/// source that carries on only some of its Nodes gives those Nodes
-/// Node-scoped rows, so the Deployment-scoped rows of one version never
-/// differ between Nodes.
+/// Every Node is decided before anything is written. When the carry does not
+/// succeed on every live Node, including a Node with no carrying source, the
+/// rows it writes have the "this Node" scope (decision 18 of #873). Only a
+/// carry that reaches every Node is Deployment-scoped and copied to Nodes
+/// created later.
 pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<CarryResult>> {
 	let mut decided = Vec::new();
 	for node in scope.nodes().await? {
@@ -114,11 +115,7 @@ pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<Carr
 			},
 		));
 	}
-	let partial = decided.iter().any(|(source, result)| {
-		source
-			.as_ref()
-			.is_some_and(|source| source.scope == ApprovalScope::Deployment && !result.carried)
-	});
+	let partial = decided.iter().any(|(_, result)| !result.carried);
 	let mut results = Vec::new();
 	for (source, result) in decided {
 		if let Some(source) = source.filter(|_| result.carried) {

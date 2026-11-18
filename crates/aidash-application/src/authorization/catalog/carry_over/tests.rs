@@ -181,3 +181,28 @@ async fn a_carry_that_fails_on_one_node_writes_node_scoped_rows_elsewhere() {
 		.unwrap();
 	assert_eq!(fixture.scopes, [ApprovalScope::Deployment]);
 }
+
+#[tokio::test]
+async fn a_node_without_a_carrying_source_keeps_the_carry_to_this_node() {
+	let deployment = Source {
+		definition: model("1.0.0", "provider"),
+		enabled: true,
+		carry_over: true,
+		scope: ApprovalScope::Deployment,
+		approver: "alice".into(),
+	};
+	let stopped: NodeAddress = "aidash://local/calm-heron-p4t7w2zb".parse().unwrap();
+	let mut fixture = Fixture {
+		sources: vec![deployment],
+		approved: true,
+		// Carry-over was stopped there, so it has no source.
+		other_nodes: vec![(stopped, vec![])],
+		..Default::default()
+	};
+	let result = carry(&mut fixture, &model("1.1.0", "provider"))
+		.await
+		.unwrap();
+	assert!(result[0].carried);
+	assert!(!result[1].carried);
+	assert_eq!(fixture.scopes, [ApprovalScope::Node]);
+}
