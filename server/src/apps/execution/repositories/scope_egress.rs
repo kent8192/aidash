@@ -55,11 +55,7 @@ impl DurableScopes {
 		if self.initialized.lock().unwrap().contains(id) {
 			return Ok(());
 		}
-		let mut tx = self
-			.store
-			.pool
-			.begin(&TenancyScope::tenant(&id.tenant)?)
-			.await?;
+		let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new("egress_scope_state"))
 			.columns(["scope_id", "tenant", "node"].map(Alias::new))
@@ -179,7 +175,8 @@ impl DurableScopes {
 
 /// Opens a Tenant transaction for Scratch Space egress, recording how long that
 /// took: the wait for a pooled connection, `BEGIN` and the scope statement
-/// (#909).
+/// (#909). Every egress transaction opens here, admission and records as well
+/// as debits, so the histogram holds all of egress's waits on the pool.
 pub(super) async fn begin_timed(
 	pool: &crate::database::native::Pool,
 	tenant: &str,
@@ -380,11 +377,7 @@ impl EgressScopes for DurableScopes {
 		}
 		let limits = admission.definition.limits;
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&settings.id.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &settings.id.tenant).await?;
 			check_budget(&mut tx, &settings, limits.map(|l| (service, l))).await?;
 			tx.commit().await
 		}
@@ -402,11 +395,7 @@ impl EgressScopes for DurableScopes {
 	async fn admit_connection(&self, settings: &ScopeSettings) -> aidash_application::Result<()> {
 		let current = self.live(&settings.id).await?;
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&current.id.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &current.id.tenant).await?;
 			check_budget(&mut tx, &current, None).await?;
 			tx.commit().await
 		}
@@ -449,11 +438,7 @@ impl EgressScopes for DurableScopes {
 
 	async fn record(&self, record: ConnectionRecord) -> aidash_application::Result<()> {
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&record.scope.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &record.scope.tenant).await?;
 			let existing = ScopeConnection::objects()
 				.filter(ScopeConnection::field_id().eq(record.id))
 				.all_with_executor(&mut *tx)
@@ -514,11 +499,7 @@ impl EgressScopes for DurableScopes {
 		let mut failed = None;
 		for (tenant, tallies) in by_tenant {
 			let result: Result<()> = async {
-				let mut tx = self
-					.store
-					.pool
-					.begin(&TenancyScope::tenant(&tenant)?)
-					.await?;
+				let mut tx = begin_timed(&self.store.pool, &tenant).await?;
 				for tally in tallies {
 					let row = ScopeRefusal::build()
 						.id(Uuid::new_v4())
@@ -551,11 +532,7 @@ impl EgressScopes for DurableScopes {
 	) -> aidash_application::Result<()> {
 		tracing::warn!(tenant = %id.tenant, node = %id.node, scope = %id.scratch_space, hosts, "an Egress scope that may reach any host reached many hosts in a minute");
 		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&id.tenant)?)
-				.await?;
+			let mut tx = begin_timed(&self.store.pool, &id.tenant).await?;
 			let event = ScopeEvent::build()
 				.id(Uuid::new_v4())
 				.tenant(id.tenant.clone())
