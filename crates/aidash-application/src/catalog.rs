@@ -14,6 +14,7 @@ pub const RETRY_AFTER: Duration = Duration::seconds(30);
 
 struct Fetched {
 	models: Vec<CatalogModel>,
+	zero_data_retention: std::collections::BTreeMap<String, aidash_domain::catalog::ZdrRoutes>,
 	at: DateTime<Utc>,
 }
 
@@ -51,6 +52,7 @@ impl CatalogCache {
 			models: fetched.models.clone(),
 			stale,
 			fetched_at: fetched.at,
+			zero_data_retention: fetched.zero_data_retention.clone(),
 		};
 		if let Some(fetched) = &state.fetched
 			&& now - fetched.at < FRESH_FOR
@@ -66,10 +68,28 @@ impl CatalogCache {
 			Some(source.models().await)
 		};
 		match refreshed {
-			Some(Ok(models)) => {
+			Some(Ok(mut models)) => {
 				state.failed_at = None;
+				// Without the ZDR list the models are still listed, with no
+				// level judged for them.
+				let zero_data_retention =
+					source.zero_data_retention().await.unwrap_or_else(|error| {
+						tracing::warn!(%error, "OpenRouter ZDR list unavailable");
+						Default::default()
+					});
+				if !zero_data_retention.is_empty() {
+					for model in &mut models {
+						model.zero_data_retention = Some(
+							zero_data_retention
+								.get(&model.id)
+								.copied()
+								.unwrap_or(aidash_domain::catalog::ZdrRoutes::None),
+						);
+					}
+				}
 				let fetched = state.fetched.insert(Fetched {
 					models,
+					zero_data_retention,
 					at: clock(),
 				});
 				Ok(snapshot(fetched, false))

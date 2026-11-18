@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0138
+---
+
 # Research journals retain content-addressed references and purges remove the owned bytes
 
 Decided on 2026-10-23 for #331. This amends ADR 0046 and ADR 0058: a Run is never deleted, so an immutable Context Journal cannot own an unbounded-lifetime copy of Research provider content. A Context Journal entry and a serialized Context Projection now contain an immutable Research reference instead of that content.

@@ -352,94 +352,6 @@ async fn record_url_intents(
 	.await
 }
 
-/// The Research providers of this Deployment, whether each is set up, and
-/// which tool definitions of each operation have a Catalog Approval on the
-/// reader's selected Node. Only a Tenant's subjects read it.
-pub(crate) async fn research_providers(
-	f: Federation,
-	actor: Actor,
-	input: crate::apps::execution::serializers::runs::ResearchProvidersQuery,
-) -> Result<crate::apps::execution::serializers::runs::ResearchProviders> {
-	use crate::apps::execution::serializers::runs::DefinitionRef;
-	if !matches!(actor, Actor::Subject(_)) {
-		return Err(Error::Forbidden);
-	}
-	let mut access = access(&f, actor).await?.into_native()?;
-	let mut providers = crate::research::providers().availability();
-	let result = async {
-		let node = match input.node {
-			Some(node) => node,
-			None => access.catalog_node().await?,
-		};
-		access.use_node(node.clone()).await?;
-		let (tx, tenant) = access.tenant_transaction();
-		// Approved tool definitions of the Tenant that name a research
-		// provider, whatever their identifiers: installed copies have their own.
-		let (sql, values) = reinhardt::query::Query::select()
-			.column((Alias::new("r"), Alias::new("id")))
-			.column((Alias::new("r"), Alias::new("version")))
-			.expr_as(
-				Expr::cust("r.metadata->'config'->>'provider'"),
-				Alias::new("provider"),
-			)
-			.expr_as(
-				Expr::cust("r.metadata->'config'->>'operation'"),
-				Alias::new("operation"),
-			)
-			.from_as(Alias::new("authorization_catalog"), Alias::new("c"))
-			.join(
-				reinhardt::query::JoinType::InnerJoin,
-				reinhardt::query::TableRef::table_alias(Alias::new("registry"), Alias::new("r")),
-				Expr::cust(
-					"r.tenant = c.tenant AND r.id = c.entry_id AND r.version = c.entry_version",
-				),
-			)
-			.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::value(tenant)))
-			.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(Expr::value(true)))
-			.and_where(
-				Expr::col((Alias::new("c"), Alias::new("node"))).eq(Expr::value(node.as_str())),
-			)
-			.and_where(Expr::col((Alias::new("r"), Alias::new("kind"))).eq(Expr::value("tool")))
-			.and_where(Expr::cust(
-				"r.metadata->'config'->>'provider' LIKE 'research.%'",
-			))
-			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
-			.build(PostgresQueryBuilder);
-		let rows = tx
-			.fetch_all(&sql, reinhardt::db::orm::execution::convert_values(values))
-			.await?;
-		for row in rows {
-			let get = |column: &str| -> Result<String> {
-				row.get::<String>(column).map_err(|error| {
-					Error::Invalid(format!("research definition {column}: {error}"))
-				})
-			};
-			let (id, version, provider, operation) = (
-				get("id")?,
-				get("version")?,
-				get("provider")?,
-				get("operation")?,
-			);
-			if let Some(known) = providers
-				.providers
-				.iter_mut()
-				.find(|item| item.provider == provider)
-				.and_then(|item| {
-					item.operations
-						.iter_mut()
-						.find(|item| item.operation == operation)
-				}) {
-				known
-					.approved_definitions
-					.push(DefinitionRef { id, version });
-			}
-		}
-		Ok(providers)
-	}
-	.await;
-	access.finish(result).await
-}
-
 pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -> Result<Steered> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
@@ -800,7 +712,7 @@ pub(crate) async fn outbound_history(
 /// Approval records that end with their Run, so a pending one whose Run has
 /// ended is closed rather than left to be decided.
 fn ends_with_run(row: &super::records::Record) -> bool {
-	matches!(row.kind.as_str(), "disclosure" | "tool_call" | "sampling") && row.state == "pending"
+	matches!(row.kind.as_str(), "tool_call" | "sampling") && row.state == "pending"
 }
 /// The most cards one page of approvals holds.
 const APPROVAL_PAGE: usize = 50;
@@ -832,15 +744,11 @@ pub(crate) async fn approval_list(
 						&& person.attributes["capability_approver"] == true
 				});
 		let (kinds, state): (&[&str], _) = match query.state {
-			Some(ApprovalState::Pending) => (
-				&["outbound", "disclosure", "tool_call", "sampling"],
-				Some("pending"),
-			),
+			Some(ApprovalState::Pending) => {
+				(&["outbound", "tool_call", "sampling"], Some("pending"))
+			}
 			Some(ApprovalState::Active) => (&["grant"], Some("active")),
-			None => (
-				&["outbound", "grant", "disclosure", "tool_call", "sampling"],
-				None,
-			),
+			None => (&["outbound", "grant", "tool_call", "sampling"], None),
 		};
 		let mut cursor = query.cursor.unwrap_or(Uuid::nil());
 		let mut scanned = 0;
@@ -868,11 +776,11 @@ pub(crate) async fn approval_list(
 					);
 			}
 			if query.state == Some(ApprovalState::Pending) {
-				// A disclosure or tool call approval ends with its Run: an inbox never
+				// A tool call approval ends with its Run: an inbox never
 				// offers one whose Run has ended, since no decision on it could take
 				// effect.
 				select.and_where(Expr::cust(
-					"(kind NOT IN ('disclosure', 'tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM runs r \
+					"(kind NOT IN ('tool_call', 'sampling') OR NOT EXISTS (SELECT 1 FROM runs r \
 					 WHERE r.id::text = core_records.data->>'run_id' \
 					 AND (r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') OR r.control = 'CANCELLED')))",
 				));
@@ -883,7 +791,7 @@ pub(crate) async fn approval_list(
 					.await?;
 			let more = rows.len() > APPROVAL_PAGE;
 			rows.truncate(APPROVAL_PAGE);
-			// Every view, not only the inbox, shows a pending disclosure or tool call
+			// Every view, not only the inbox, shows a pending tool call
 			// approval whose Run has ended as closed, as a decision on it would close
 			// it, so no reader is offered it.
 			let waiting: Vec<Uuid> = rows
@@ -967,21 +875,19 @@ async fn approval_card(
 	} else {
 		&row.state
 	};
-	// A rule can name an outbound read, a Web disclosure or a tool call, and
+	// A rule can name an outbound read or a tool call, and
 	// only the person the Run's delegation chain starts at may make one. Only
 	// someone who may decide it can, which also skips a record whose Workspace
 	// is no longer live, as its Run's context no longer loads.
 	let allow_always = state == "pending"
 		&& reader.approver
-		&& matches!(
-			row.kind.as_str(),
-			"outbound" | "disclosure" | "tool_call" | "sampling"
-		) && data["subjects"][0] == json!(subject)
+		&& matches!(row.kind.as_str(), "outbound" | "tool_call" | "sampling")
+		&& data["subjects"][0] == json!(subject)
 		&& super::approvals::can_allow_always(&f.store, access, row).await?;
 	// The Thread offers a pending card inline only when the reader decides it
 	// as the requester at the root of the Run's delegation chain (#896).
 	let decide_inline = state == "pending"
-		&& matches!(row.kind.as_str(), "outbound" | "disclosure" | "tool_call")
+		&& matches!(row.kind.as_str(), "outbound" | "tool_call")
 		&& reader.approver
 		&& row.owner == subject
 		&& data["subjects"][0] == json!(subject);
@@ -998,7 +904,6 @@ async fn approval_card(
 		"action": data["action"].as_str().or_else(|| data["actions"][0].as_str()).unwrap_or("network.get"),
 		"expires_at": row.expires_at,
 		"grant_id": data["grant_id"],
-		"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
 		"viewer_is_approver": reader.approver,
 		"viewer_can_decide_inline": decide_inline,
 		"agent_id": data["agent_id"],
@@ -1010,9 +915,6 @@ async fn approval_card(
 		"call": if row.kind == "tool_call" { data["call"].clone() } else { Value::Null },
 		"sampling_target": data["sampling_target"],
 		"sampling": data["sampling"],
-		"provider": data["provider"],
-		"estimated_micro_usd": data["attribution"]["price_micro_usd"],
-		"query": data["query"],
 		// A Run grant names who gave it; an approval, who decided it.
 		"decided_by": if row.kind == "grant" { data["approver"].clone() } else { data["decided_by"].clone() },
 		"decided_at": data["decided_at"],

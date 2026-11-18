@@ -143,10 +143,7 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 			}
 			Err(error) => return Err(error),
 		};
-		let mut snapshot = snapshot_from_lines(lines, range);
-		// A copy of another Run's Research stays withdrawable by that Run.
-		snapshot.dependencies.add_source_run(reader_run, target_run);
-		Ok(snapshot)
+		Ok(snapshot_from_lines(lines, range))
 	}
 	async fn export(
 		&self,
@@ -279,10 +276,9 @@ pub(crate) async fn append(
 	run: Uuid,
 	context: &Context,
 ) -> Result<()> {
-	super::research::freeze_context(tx.as_mut(), run, context).await?;
 	let persisted = head(tx, run).await?;
 	if persisted > 0 {
-		use crate::apps::execution::models::research::{json_field, json_text};
+		use crate::apps::execution::models::context_journal::{json_field, json_text};
 		let legacy: Option<i64> = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("seq"))
@@ -293,7 +289,9 @@ pub(crate) async fn append(
 						Expr::from(json_field(Expr::col(Alias::new("event")), "result")),
 						"contract",
 					)
-					.eq(Expr::value(aidash_domain::research::RESULT_CONTRACT)),
+					// The former research contract; a journal written before #987
+					// held results inline under it.
+					.eq(Expr::value("aidash.research/1")),
 				)
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
@@ -429,7 +427,7 @@ impl Store {
 					"Context Journal event digest mismatch".into(),
 				));
 			}
-			if event["result"]["contract"] == aidash_domain::research::RESULT_CONTRACT {
+			if event["result"]["contract"] == "aidash.research/1" {
 				return Err(Error::Invalid(
 					"legacy inline Research journal requires a development database reset".into(),
 				));
@@ -440,9 +438,6 @@ impl Store {
 				serde_json::from_value(event)?,
 			));
 		}
-		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		super::research::resolve_entries(tx.as_mut(), run, &mut entries).await?;
-		tx.commit().await?;
 		Ok(entries)
 	}
 

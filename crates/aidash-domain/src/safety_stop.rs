@@ -4,12 +4,31 @@
 use crate::{
 	Error, Result,
 	entities::{RunControl, RunPhase},
-	research::revocation::bounded_reason,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+/// The longest reason a decision may carry.
+pub const MAX_REASON_CHARS: usize = 1_000;
+
+/// A trimmed reason of 1 to [`MAX_REASON_CHARS`] characters without control
+/// characters other than line breaks and tabs.
+pub fn bounded_reason(input: &str, subject: &str) -> Result<String> {
+	let reason = input.trim();
+	if reason.is_empty()
+		|| reason.chars().count() > MAX_REASON_CHARS
+		|| reason
+			.chars()
+			.any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+	{
+		return Err(Error::Invalid(format!(
+			"{subject} needs a reason of 1 to {MAX_REASON_CHARS} characters"
+		)));
+	}
+	Ok(reason.to_owned())
+}
 
 /// What a Safety Stop asks of the Run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

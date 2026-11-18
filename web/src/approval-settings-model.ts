@@ -29,8 +29,6 @@ export const approvalKinds: readonly ApprovalKind[] = [
   "tool_call",
   "sampling",
   "outbound",
-  "web_search",
-  "page_reading",
   "generation",
 ];
 
@@ -42,8 +40,6 @@ export const targetExamples: Record<ApprovalKind, string> = {
   sampling:
     'sampling:["agent-id","plugin-name","server-name","sha256:…","https://example.com"]',
   outbound: "https://example.com",
-  web_search: "research.brave@1",
-  page_reading: "example.com",
   generation: "reviewers",
 };
 

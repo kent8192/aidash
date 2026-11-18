@@ -75,6 +75,9 @@ pub enum UnsupportedReason {
 	Modality,
 	TooLarge,
 	Limit,
+	/// The embedding model cannot meet the Tenant's Data Protection Level;
+	/// the entry waits for an Embedding Switch instead of retrying (#963).
+	DataProtection,
 }
 impl UnsupportedReason {
 	pub fn as_str(self) -> &'static str {
@@ -82,6 +85,7 @@ impl UnsupportedReason {
 			Self::Modality => "modality",
 			Self::TooLarge => "too_large",
 			Self::Limit => "limit",
+			Self::DataProtection => "data_protection",
 		}
 	}
 }

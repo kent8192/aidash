@@ -60,8 +60,11 @@ pub enum TokenSubject {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataProtectionRequirement {
+	/// Strict zero data retention: Safety Retention endpoints never qualify.
 	#[default]
 	Zdr,
+	/// Zero data retention or Safety Retention endpoints.
+	SafetyRetention,
 	NoTraining,
 	None,
 }

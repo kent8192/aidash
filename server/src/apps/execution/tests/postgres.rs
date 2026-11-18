@@ -2559,9 +2559,6 @@ fn authenticated_runtime(
 #[path = "postgres/inference_usage.rs"]
 mod inference_usage;
 
-#[path = "postgres/research.rs"]
-mod research;
-
 #[rstest::fixture]
 fn outbox_store(#[from(common::runtime)] runtime: common::RuntimeFuture) -> StoreFuture {
 	let node = format!("aidash://outbox-{}", Uuid::new_v4().simple());

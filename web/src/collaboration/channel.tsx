@@ -120,8 +120,8 @@ const requestCopy = {
       "task.completed": "タスクを完了しました",
       "task.abandoned": "タスクを中止しました",
       "run.created": "実行を開始しました",
-      "run.data_protection_exemption":
-        "Plan Connection のデータ保護レベル免除を使用しました",
+      "run.plan_connection_used":
+        "ChatGPT サブスクリプション（Plan Connection）で内容を送りました",
       "run.cancelled": "実行を中止しました",
       "run.semantic_degraded": "Degraded contextで続行しました",
       "run.plugin_tools_pinned": "Agent Plugin のツールを確定しました",
@@ -155,8 +155,8 @@ const requestCopy = {
       "task.completed": "Task completed",
       "task.abandoned": "Task abandoned",
       "run.created": "Run started",
-      "run.data_protection_exemption":
-        "Used the Plan Connection Data Protection Level exemption",
+      "run.plan_connection_used":
+        "Sent content through a ChatGPT subscription (Plan Connection)",
       "run.cancelled": "Run cancelled",
       "run.semantic_degraded": "Continued with Degraded context",
       "run.plugin_tools_pinned": "Pinned Agent Plugin tools",
@@ -255,10 +255,7 @@ export function ArtifactList({
                 <div className="px-3 pb-3">
                   {artifact.run_id && typeof artifact.content === "string" ? (
                     <p className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                      <MessageText
-                        text={artifact.content}
-                        run={artifact.run_id}
-                      />
+                      <MessageText text={artifact.content} />
                     </p>
                   ) : (
                     <JsonView value={artifact.content} />

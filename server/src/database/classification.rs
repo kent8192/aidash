@@ -24,8 +24,7 @@ pub enum Classification {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Retained {
 	/// The Tenant's administration history, authorization decisions, policy
-	/// revisions, catalog history, and the Evidence Revocation and Retention
-	/// Rule history. It is kept for the Deployment's audit retention period
+	/// revisions and catalog history. It is kept for the Deployment's audit retention period
 	/// after the purge and then deleted. Nothing purged may be referenced from
 	/// it, so no purged row blocks it and it blocks no purge.
 	AuditHistory,
@@ -198,15 +197,6 @@ pub const TABLES: &[Table] = &[
 	table("execution", "inference_usage", TenantOwned),
 	table("execution", "invocations", TenantOwned),
 	// recorded ends of Research account holders' agreements (ADR 0058)
-	table("execution", "research_account_terminations", DeploymentWide),
-	table("execution", "research_attempts", TenantOwned),
-	table("execution", "research_journal_results", TenantOwned),
-	table("execution", "research_fragments", TenantOwned),
-	table("execution", "research_originals", TenantOwned),
-	table("execution", "research_page_images", TenantOwned),
-	audit("execution", "research_revocations"),
-	table("execution", "research_snapshots", TenantOwned),
-	table("execution", "research_sources", TenantOwned),
 	table("execution", "run_activations", TenantOwned),
 	table("execution", "run_context_events", TenantOwned),
 	table("execution", "run_inputs", TenantOwned),
@@ -344,8 +334,6 @@ pub const TABLES: &[Table] = &[
 	table("identity", "run_plan_connections", TenantOwned),
 	table("identity", "run_provider_credentials", TenantOwned),
 	table("identity", "tenant_invitations", TenantOwned),
-	audit("identity", "tenant_retention_rule_history"),
-	table("identity", "tenant_retention_rules", TenantOwned),
 	table("identity", "tenant_data_protection", TenantOwned),
 	// policy revisions outlive the purge for the audit retention period (ADR 0061)
 	audit("identity", "tenant_data_protection_history"),

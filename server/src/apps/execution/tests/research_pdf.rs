@@ -56,22 +56,6 @@ async fn the_child_extracts_lines_with_their_pages() {
 #[rstest]
 #[tokio::test]
 #[cfg(target_os = "linux")]
-async fn the_child_renders_a_page_without_text_within_the_image_bounds() {
-	let report = aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec();
-	let image = PdfEngine::render(&engine().await, report.clone(), 2)
-		.await
-		.unwrap();
-	assert!(image.validate().is_ok());
-	assert_eq!(image.media_type, "image/png");
-	assert_eq!(
-		PdfEngine::render(&engine().await, report, 9).await,
-		Err(Failure::PageNotViewable)
-	);
-}
-
-#[rstest]
-#[tokio::test]
-#[cfg(target_os = "linux")]
 async fn an_unreadable_document_fails_without_harming_the_parent() {
 	let outcome = engine()
 		.await
@@ -144,14 +128,5 @@ async fn ordinary_pdf_jobs_fail_closed_without_memory_containment() {
 	assert_eq!(
 		engine.extract(PERMITTED.to_vec()).await,
 		Err(Failure::ExtractionFailed)
-	);
-	assert_eq!(
-		PdfEngine::render(
-			&engine,
-			aidash_integrations::research::fixture::ANNUAL_REPORT_PDF.to_vec(),
-			2,
-		)
-		.await,
-		Err(Failure::RenderFailed)
 	);
 }

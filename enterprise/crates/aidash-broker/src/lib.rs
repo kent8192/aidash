@@ -131,6 +131,8 @@ impl crate::tenant_secret::SecretCallSink for CloudLogging {
 		tracing::info!(tenant = %a.tenant, secret = %a.secret, version = %a.version, host = %a.host, path_sha256 = %a.path_sha256, method = %a.method, status = a.status, bytes_in = a.bytes_in, bytes_out = a.bytes_out, jti = %a.jti, subject = %a.subject, duration_ms = a.duration_ms as u64, "secret_call");
 	}
 }
+/// OpenRouter's ZDR catalog per (API root, Tenant), with when it was read.
+type ZdrCatalogs = HashMap<(String, String), (Instant, Arc<Vec<Value>>)>;
 pub struct Broker {
 	config: Config,
 	keys: PublicKeys,
@@ -140,6 +142,8 @@ pub struct Broker {
 	cache: Arc<Mutex<HashMap<(String, String), Cached>>>,
 	buckets: Mutex<HashMap<uuid::Uuid, Bucket>>,
 	catalog: HashMap<String, String>,
+	/// OpenRouter's ZDR catalog per (API root, Tenant), read at most every 30 s.
+	zdr_catalogs: Mutex<ZdrCatalogs>,
 }
 impl Broker {
 	pub fn new(
@@ -184,6 +188,7 @@ impl Broker {
 			client,
 			cache: Arc::default(),
 			buckets: Mutex::default(),
+			zdr_catalogs: Mutex::default(),
 			catalog: HashMap::from([(
 				"openrouter".into(),
 				aidash_domain::provider_credentials::Provider::Openrouter
@@ -194,6 +199,60 @@ impl Broker {
 	}
 	pub fn router(self: Arc<Self>) -> Router {
 		Router::new().fallback(relay).with_state(self)
+	}
+	/// The `data` array of OpenRouter's `/endpoints/zdr`, read with the
+	/// Tenant's own key. `None` when it cannot be read; the call is refused.
+	async fn zdr_catalog(
+		&self,
+		root: &str,
+		tenant: &str,
+		key: &SecretString,
+		deadline: Instant,
+	) -> Option<Arc<Vec<Value>>> {
+		let cache_key = (root.to_owned(), tenant.to_owned());
+		if let Some((at, catalog)) = self
+			.zdr_catalogs
+			.lock()
+			.expect("ZDR catalog lock")
+			.get(&cache_key)
+			&& at.elapsed() < ZDR_CATALOG_TTL
+		{
+			return Some(catalog.clone());
+		}
+		let response = tokio::time::timeout_at(
+			deadline,
+			self.client
+				.get(format!("{root}/v1/endpoints/zdr"))
+				.bearer_auth(key.expose_secret())
+				.send(),
+		)
+		.await
+		.ok()?
+		.ok()?;
+		if !response.status().is_success() {
+			return None;
+		}
+		let mut body = Vec::new();
+		let mut stream = response.bytes_stream();
+		while let Ok(Some(chunk)) = tokio::time::timeout_at(deadline, stream.next()).await {
+			let chunk = chunk.ok()?;
+			if body.len().saturating_add(chunk.len()) > ZDR_CATALOG_LIMIT {
+				return None;
+			}
+			body.extend_from_slice(&chunk);
+		}
+		let mut value: Value = serde_json::from_slice(&body).ok()?;
+		let Value::Array(data) = value.get_mut("data")?.take() else {
+			return None;
+		};
+		let catalog = Arc::new(data);
+		let mut catalogs = self.zdr_catalogs.lock().expect("ZDR catalog lock");
+		catalogs.retain(|_, (at, _)| at.elapsed() < ZDR_CATALOG_TTL);
+		if catalogs.len() >= 128 {
+			catalogs.clear();
+		}
+		catalogs.insert(cache_key, (Instant::now(), catalog.clone()));
+		Some(catalog)
 	}
 	fn rate_limit(&self, credential: uuid::Uuid) -> bool {
 		take_token(
@@ -313,6 +372,23 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 	}
 	Ok((result.0, format!("v1/{path}"), result.1))
 }
+const ZDR_CATALOG_TTL: Duration = Duration::from_secs(30);
+const ZDR_CATALOG_LIMIT: usize = 8 * 1024 * 1024;
+/// A strict zero data retention body must pin `provider.only` to routes the
+/// current ZDR catalog does not mark as Safety Retention (#961, #963).
+fn strict_zdr_only(body: &[u8], claims: &Claims, catalog: &[Value]) -> Result<(), Failure> {
+	let value = policy::parse(body)?;
+	if aidash_domain::data_protection::only_meets(
+		value.pointer("/provider/only"),
+		catalog,
+		&claims.model,
+		Requirement::Zdr,
+	) {
+		Ok(())
+	} else {
+		Err(Failure::ClaimViolation)
+	}
+}
 /// The Decisions API's path under the API root.
 const DECISIONS_PATH: &str = "alpha/decisions";
 /// OpenRouter's Responses API under the API root.
@@ -320,6 +396,7 @@ const RESPONSES_PATH: &str = "v1/responses";
 fn signed_requirement(claims: &Claims) -> Requirement {
 	match claims.data_protection {
 		DataProtectionRequirement::Zdr => Requirement::Zdr,
+		DataProtectionRequirement::SafetyRetention => Requirement::SafetyRetention,
 		DataProtectionRequirement::NoTraining => Requirement::NoTraining,
 		DataProtectionRequirement::None => Requirement::None,
 	}
@@ -435,7 +512,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 		return Err(Failure::ClaimViolation);
 	}
 	if !match claims.data_protection {
-		DataProtectionRequirement::Zdr => {
+		DataProtectionRequirement::Zdr | DataProtectionRequirement::SafetyRetention => {
 			value.pointer("/provider/zdr") == Some(&Value::Bool(true))
 		}
 		DataProtectionRequirement::NoTraining => {
@@ -627,6 +704,24 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 	let Some(root) = base.trim_end_matches('/').strip_suffix("/v1") else {
 		return guard.failure(Failure::Tenant);
 	};
+	if claims.data_protection == DataProtectionRequirement::Zdr
+		&& matches!(
+			op,
+			Operation::Chat | Operation::Embeddings | Operation::Decision
+		) {
+		let Some(catalog) = broker
+			.zdr_catalog(root, &claims.tenant, &key, deadline)
+			.await
+		else {
+			return guard.error(
+				StatusCode::SERVICE_UNAVAILABLE,
+				"Zero Data Retention catalog unavailable",
+			);
+		};
+		if let Err(e) = strict_zdr_only(&body, &claims, &catalog) {
+			return guard.failure(e);
+		}
+	}
 	let call = broker
 		.client
 		.request(method, format!("{root}/{path}"))

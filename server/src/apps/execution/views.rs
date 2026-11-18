@@ -43,7 +43,6 @@
 // pub async fn admin_only() -> ViewResult<Response> { /* ... */ }
 
 pub mod management;
-pub mod research;
 
 pub mod frontend;
 pub mod lifecycle;

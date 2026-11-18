@@ -27,7 +27,7 @@ async fn every_table_is_classified_and_matches_its_policies(#[future] database: 
 /// The tables whose `tenant` stays nullable. A Deployment Administrator's
 /// decision on a request that addresses no Tenant keeps a row without one
 /// (#264, #265).
-const NULLABLE_TENANT: &[&str] = &["dashboard_administration_history", "research_revocations"];
+const NULLABLE_TENANT: &[&str] = &["dashboard_administration_history"];
 
 /// A foreign key as the catalog lists it.
 struct ForeignKey {

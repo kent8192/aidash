@@ -49,9 +49,6 @@ pub trait SelectedMediaScope: Send {
 		Ok(None)
 	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>>;
-	/// The media type and bytes of the Run's page-image Evidence fragment
-	/// `reference`; absent once its evidence is revoked (ADR 0053).
-	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>>;
 	/// Resolve a Thread Attachment under current message authority, or None if deleted.
 	async fn thread_attachment(
 		&mut self,

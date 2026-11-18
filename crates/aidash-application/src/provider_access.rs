@@ -6,7 +6,7 @@ use secrecy::SecretString;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Context {
 	/// Current policy evaluated immediately before this call; never an admitted snapshot.
 	pub data_protection: aidash_domain::data_protection::DataProtection,
@@ -20,6 +20,22 @@ pub struct Context {
 	pub provider_credential_id: Option<Uuid>,
 	/// Approved per-invocation model and bounds; populated by the inference adapter.
 	pub inference: Option<Inference>,
+}
+impl Default for Context {
+	/// A call made for no Tenant keeps sending `zdr: true`, as every call did
+	/// before the level could be lowered (#963); a Tenant's call reloads its
+	/// own policy before it is sent.
+	fn default() -> Self {
+		Self {
+			data_protection: aidash_domain::data_protection::DataProtection::TENANTLESS,
+			tenant: String::new(),
+			run: None,
+			observation: None,
+			maintenance: None,
+			provider_credential_id: None,
+			inference: None,
+		}
+	}
 }
 #[derive(Debug, Clone)]
 pub struct Inference {
@@ -167,7 +183,7 @@ impl KeylessAccess {
 	pub fn data_protection_destination(
 		&self,
 		endpoint: &str,
-	) -> Result<aidash_domain::data_protection::Destination<'static>> {
+	) -> Result<aidash_domain::data_protection::Destination> {
 		let origin = url::Url::parse(endpoint)
 			.map_err(|_| Error::Invalid("invalid model endpoint URL".into()))?
 			.origin()

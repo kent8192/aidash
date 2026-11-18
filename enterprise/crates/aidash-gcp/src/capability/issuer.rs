@@ -241,6 +241,7 @@ impl TokenIssuer for CapabilityIssuer {
 fn signed_requirement(requirement: Requirement) -> DataProtectionRequirement {
 	match requirement {
 		Requirement::Zdr => DataProtectionRequirement::Zdr,
+		Requirement::SafetyRetention => DataProtectionRequirement::SafetyRetention,
 		Requirement::NoTraining => DataProtectionRequirement::NoTraining,
 		Requirement::None => DataProtectionRequirement::None,
 	}

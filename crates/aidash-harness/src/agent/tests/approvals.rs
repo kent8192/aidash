@@ -382,6 +382,82 @@ async fn a_core_capability_bound_by_descriptor_resumes_the_call_after_its_approv
 	));
 }
 
+/// Page reading bound like any Registry tool (#987): the Run's snapshot pins
+/// the system definition, and the tool's contract carries that Binding's
+/// descriptor identity rather than the built-in one.
+fn bound_page_reader(fixture: &mut Fixture) -> Arc<Scripted> {
+	use aidash_domain::tool::providers::{
+		PAGE_READING_VERSION, page_reading_target, research_descriptor,
+	};
+	let identity = QualifiedRef {
+		registry_deployment: NODE.into(),
+		id: page_reading_target().id,
+		version: PAGE_READING_VERSION.into(),
+	};
+	let descriptor = research_descriptor(NODE, "research.page@1", "fetch").unwrap();
+	let specification = aidash_application::research::specification();
+	let alias = specification.name.clone();
+	let tool = Scripted::bound(&descriptor, identity.clone(), specification);
+	let mut snapshot = DeferredSnapshot::default();
+	snapshot.bind(
+		identity.clone(),
+		"tool",
+		"Read one public Web page as text.",
+		json!(descriptor),
+		Some(&alias),
+		BindingOrigin::Explicit,
+	);
+	snapshot
+		.agent
+		.push(json!({"kind": "tool", "target": identity, "exposure": "eager"}));
+	fixture.run.context.binding_snapshot = Some(Box::new(snapshot.snapshot()));
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert(alias, tool.clone());
+	state.scoped = true;
+	state.permit_tools = true;
+	tool
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_bound_page_read_asks_for_a_grant_limited_to_its_host_and_the_current_input(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	let tool = bound_page_reader(&mut fixture);
+	let alias = aidash_application::research::specification().name;
+	*tool.outputs.lock().unwrap() = [json!({"status":"ok"})].into();
+	approvals(&fixture, [ToolCallApproval::Approved { approval_id: None }]);
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			&alias,
+			json!({"url":"https://docs.example.com/guide"}),
+		)],
+	);
+
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: a Run grant given for this request covers only this host and
+	// ends at the Run's next user input.
+	assert_eq!(tool.keys(), [base_key(&fixture.run)]);
+	let requests = fixture.backend.0.tool_call_requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("one approval request");
+	};
+	assert_eq!(
+		request.tool,
+		ToolCallTarget::Registry(aidash_domain::tool::providers::page_reading_target())
+	);
+	assert_eq!(request.host.as_deref(), Some("docs.example.com"));
+	assert_eq!(
+		request.context_revision,
+		Some(fixture.run.observed_input_seq)
+	);
+}
+
 fn read_only_tool(fixture: &mut Fixture) -> Arc<Scripted> {
 	let tool = Scripted::tenant_read_only("crm");
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();

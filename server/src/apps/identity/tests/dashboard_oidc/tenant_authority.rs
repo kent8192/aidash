@@ -1135,10 +1135,9 @@ async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_nex
 	assert_eq!(status, 200, "{defaults}");
 	assert_eq!(
 		defaults["policy"],
-		json!({"level":"standard","model_call_zdr":true,"plan_connection_exempt":true})
+		json!({"level":"no_training","forbid_plan_connections":false,"forbid_keyless_endpoints":false})
 	);
-	let no_training =
-		json!({"level":"no_training","model_call_zdr":false,"plan_connection_exempt":false});
+	let no_training = json!({"level":"no_training","forbid_plan_connections":false,"forbid_keyless_endpoints":true});
 	let (status, denied) = team
 		.d
 		.as_person(
@@ -1187,15 +1186,17 @@ async fn data_protection_settings_are_tenant_admin_only_and_apply_before_the_nex
 			.await
 			.unwrap_err()
 			.to_string()
-			.contains("Tenant Keyless")
+			.contains("forbids Keyless endpoints")
 	);
+	// The former model-call switch is gone; an unknown field is refused like any
+	// unknown JSON field.
 	let (status, _) = send(
 		"PUT",
 		&path,
 		json!({"level":"zero_data_retention","model_call_zdr":false}),
 	)
 	.await;
-	assert_eq!(status, 400);
+	assert_eq!(status, 422);
 	let (status, _) = send("PUT", &path, defaults["policy"].clone()).await;
 	assert_eq!(status, 200);
 	access

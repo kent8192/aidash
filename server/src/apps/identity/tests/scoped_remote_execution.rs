@@ -7284,7 +7284,10 @@ fn model_script(
 fn model_router(model_script: ModelScript) -> Arc<Router> {
 	let model_app=reinhardt::test::stub::StubRouter::new()
 .route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request:reinhardt::Request| async {reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap()}))
-.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request:reinhardt::Request| async {reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})).unwrap()}))
+// The fixture route is strict zero data retention: a missing
+// `safety_retention` counts as Safety Retention, which a remote admission
+// that assumes the strictest policy refuses (#961).
+.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request:reinhardt::Request| async {reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified","safety_retention":false}]})).unwrap()}))
 .route("/v1/chat/completions", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
         let check=script.reservations.lock().await.clone();
         if let Some(check)=check {check.before_http().await;}

@@ -322,7 +322,7 @@ pub async fn safety_stops(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
-	Query(page): Query<crate::apps::execution::serializers::research::HistoryPage>,
+	Query(page): Query<crate::apps::execution::serializers::history::HistoryPage>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.safety_stops(actor, origin, tenant, page).await)
 }

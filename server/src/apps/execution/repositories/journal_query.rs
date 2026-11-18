@@ -232,6 +232,22 @@ impl JournalSessions for Scope<'_> {
 	}
 }
 
+/// Bytes of cell text a result may carry within the Deployment's output
+/// budget, at most 16 KiB. The Data envelope keeps 2 KiB for itself, and a
+/// JSON control character can take six bytes in it; a budget that leaves no
+/// text is refused rather than wrapped (#987 removed the dependency check
+/// that used to refuse it).
+fn text_limit(output_bytes: u64) -> Result<usize> {
+	let output_limit = usize::try_from(output_bytes)
+		.unwrap_or(usize::MAX)
+		.min(16 * 1024);
+	output_limit
+		.checked_sub(2048)
+		.map(|room| room / 6)
+		.filter(|limit| *limit > 0)
+		.ok_or_else(|| Error::Invalid("JOURNAL_OUTPUT_LIMIT".into()))
+}
+
 pub(crate) async fn execute(
 	store: &Store,
 	run: &aidash_domain::Run,
@@ -255,6 +271,7 @@ pub(crate) async fn execute(
 	if !profile.admission || code.is_empty() || code.len() > profile.limits.command_bytes {
 		return Err(Error::Invalid("JOURNAL_QUERY_UNAVAILABLE".into()));
 	}
+	let text_limit = text_limit(profile.output_bytes)?;
 	let runner_profile = profile.runner.as_ref().ok_or(Error::Forbidden)?;
 	let transport = crate::bootstrap::operation_runner(store)?;
 	let health = verified_health(
@@ -270,13 +287,6 @@ pub(crate) async fn execute(
 	if export.len() as u64 >= profile.working_bytes {
 		return Err(Error::Invalid("JOURNAL_EXPORT_LIMIT".into()));
 	}
-	let output_limit = (profile.output_bytes as usize).min(16 * 1024);
-	let dependency_bytes = serde_json::to_vec(&snapshot.dependencies)?.len();
-	if dependency_bytes.saturating_add(2048) >= output_limit {
-		return Err(Error::Invalid("JOURNAL_DEPENDENCIES_LIMIT".into()));
-	}
-	// A JSON control character can require six bytes in the Data envelope.
-	let text_limit = (output_limit - dependency_bytes - 2048) / 6;
 	let mut access =
 		crate::apps::identity::services::execution::access_for_run(store, &run.metadata(), true)
 			.await?
@@ -394,7 +404,7 @@ pub(crate) async fn execute(
 			.request("GET", &format!("/v1/operations/{operation}"), None)
 			.await?;
 	}
-	let mut output = match runner::output(&observed, text_limit) {
+	let output = match runner::output(&observed, text_limit) {
 		Ok(output) => output,
 		Err(error) => {
 			if matches!(
@@ -406,10 +416,6 @@ pub(crate) async fn execute(
 			return Err(error);
 		}
 	};
-	if !snapshot.dependencies.is_empty() {
-		output["research_derived"] = json!(true);
-	}
-	output["dependencies"] = json!(snapshot.dependencies);
 	// Recheck the Journal the cell actually read: the same target Run and
 	// authorized range as the snapshot above. A reader that lost the target
 	// meanwhile gets nothing built from it either.
@@ -696,6 +702,23 @@ mod tests {
 	impl RunnerTransport for Transport {
 		async fn request(&self, _: &str, _: &str, _: Option<&Value>) -> Result<Value> {
 			Ok(self.0.clone())
+		}
+	}
+
+	#[rstest::rstest]
+	#[case::smaller_than_the_envelope(1024, None)]
+	#[case::exactly_the_envelope(2048, None)]
+	#[case::no_room_for_a_character(2053, None)]
+	#[case::one_character(2054, Some(1))]
+	#[case::capped_at_16_kib(8 * 1024 * 1024, Some((16 * 1024 - 2048) / 6))]
+	fn the_output_budget_leaves_room_for_text_or_is_refused(
+		#[case] output_bytes: u64,
+		#[case] expected: Option<usize>,
+	) {
+		match (text_limit(output_bytes), expected) {
+			(Ok(limit), Some(expected)) => assert_eq!(limit, expected),
+			(Err(Error::Invalid(code)), None) => assert_eq!(code, "JOURNAL_OUTPUT_LIMIT"),
+			(other, _) => panic!("unexpected {other:?} for {output_bytes}"),
 		}
 	}
 

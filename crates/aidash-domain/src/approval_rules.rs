@@ -40,11 +40,6 @@ pub enum ApprovalKind {
 	Sampling,
 	/// An outbound read. The target is its origin.
 	Outbound,
-	/// A Web search disclosure. The target is the Research provider the
-	/// Run's Binding names, such as `research.brave@1`.
-	WebSearch,
-	/// A Page reading disclosure. The target is the page host.
-	PageReading,
 	/// A generated Agent request. The target is the Generation policy id.
 	Generation,
 }

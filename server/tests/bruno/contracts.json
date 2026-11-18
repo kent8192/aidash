@@ -9360,7 +9360,7 @@
                 "description": "For a Tool call approval, the exact call the approver is asked to allow."
               },
               "closed_reason": {
-                "description": "Why a `closed` approval or Run grant was closed, such as\n`evidence_revoked` or `run_ended`.",
+                "description": "Why a `closed` approval or Run grant was closed, such as `run_ended`.",
                 "type": ["string", "null"]
               },
               "decided_at": {
@@ -9369,15 +9369,6 @@
               },
               "decided_by": {
                 "type": ["string", "null"]
-              },
-              "disclosure": {
-                "description": "For a Web disclosure approval, the exact query or page address that\nwould leave the Node.",
-                "type": ["string", "null"]
-              },
-              "estimated_micro_usd": {
-                "description": "The price of this one request, recorded when approval was requested\nand charged to the Research account holder: an estimate, not an\ninvoice. Absent for a provider without a price. The account itself is\nkept with the approval for audit and never shown.",
-                "format": "int64",
-                "type": ["integer", "null"]
               },
               "expires_at": {
                 "format": "date-time",
@@ -9395,11 +9386,11 @@
                 "type": "string"
               },
               "kind": {
-                "description": "`outbound` (an outbound read), `disclosure` (a Web disclosure),\n`tool_call` (a call of a Tenant's tool) or `grant` (a Run grant).",
+                "description": "`outbound` (an outbound read), `tool_call` (a call of a Tenant's tool\nor of page reading), `sampling` or `grant` (a Run grant).",
                 "type": "string"
               },
               "operation": {
-                "description": "The research operation of a Web disclosure approval, or of the\napproval a Web disclosure Run grant came from; for a Tool call\napproval, the operation of the tool the call invokes.",
+                "description": "For a Tool call approval, the operation of the tool the call invokes.",
                 "type": ["string", "null"]
               },
               "plugin_tool": {
@@ -9412,12 +9403,6 @@
                   }
                 ],
                 "description": "For a Tool call approval of a tool a Run pinned from an Agent Plugin, or a Run grant\nfrom one, the plugin, server and tool, and the plugin copy that declared them. `tool` and\n`version` then hold the tool's path and the copy's digest."
-              },
-              "provider": {
-                "type": ["string", "null"]
-              },
-              "query": {
-                "description": "The validated search query in provider-independent form."
               },
               "refused_by": {
                 "description": "What refused the approval in advance, with no one asked: `{\"rule\": id}`\nfor one of the owner's Approval Rules, `{\"mode\": \"dont_ask\"}` for the\nDon't ask mode, and `{\"mode\": \"auto\", \"reason\": ...}` for the approval\nDecider, whose reason names a block category or `unavailable`. None when\na person decided it or it is still open."
@@ -9470,7 +9455,7 @@
                 "type": ["string", "null"]
               },
               "viewer_can_decide_inline": {
-                "description": "The card is a pending outbound, disclosure or tool call approval that\nthe reader decides as its requester and the person at the root of the\nRun's delegation chain, so the Thread may offer it inline.",
+                "description": "The card is a pending outbound or tool call approval that\nthe reader decides as its requester and the person at the root of the\nRun's delegation chain, so the Thread may offer it inline.",
                 "type": "boolean"
               },
               "viewer_is_approver": {
@@ -12318,7 +12303,7 @@
                 "type": "string"
               },
               "run_id": {
-                "description": "The Run that published this Artifact on this Node. Only the Run's own\npublication writes it; Artifacts that people or other Nodes deliver have\nnone. Source citations in its content resolve only against this Run.",
+                "description": "The Run that published this Artifact on this Node. Only the Run's own\npublication writes it; Artifacts that people or other Nodes deliver have\nnone.",
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -12406,7 +12391,7 @@
                 "type": ["string", "null"]
               },
               "run_id": {
-                "description": "The Run that published this message on this Node. Only the Run's own\npublication writes it; messages that people or other Nodes deliver have\nnone. Source citations in its content resolve only against this Run.",
+                "description": "The Run that published this message on this Node. Only the Run's own\npublication writes it; messages that people or other Nodes deliver have\nnone.",
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -13328,7 +13313,7 @@
                 "type": ["string", "null"]
               },
               "run_id": {
-                "description": "The Run that published this message on this Node. Only the Run's own\npublication writes it; messages that people or other Nodes deliver have\nnone. Source citations in its content resolve only against this Run.",
+                "description": "The Run that published this message on this Node. Only the Run's own\npublication writes it; messages that people or other Nodes deliver have\nnone.",
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -13526,7 +13511,7 @@
                 "type": ["string", "null"]
               },
               "run_id": {
-                "description": "The Run that published this message on this Node. Only the Run's own\npublication writes it; messages that people or other Nodes deliver have\nnone. Source citations in its content resolve only against this Run.",
+                "description": "The Run that published this message on this Node. Only the Run's own\npublication writes it; messages that people or other Nodes deliver have\nnone.",
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -30320,7 +30305,7 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "A capability approval record on this Node (tool call, outbound, Web disclosure).",
+                "description": "A capability approval record on this Node (tool call, outbound).",
                 "properties": {
                   "approval_id": {
                     "format": "uuid",
@@ -30392,7 +30377,7 @@
                 "type": "string"
               },
               "run_id": {
-                "description": "The Run that published this Artifact on this Node. Only the Run's own\npublication writes it; Artifacts that people or other Nodes deliver have\nnone. Source citations in its content resolve only against this Run.",
+                "description": "The Run that published this Artifact on this Node. Only the Run's own\npublication writes it; Artifacts that people or other Nodes deliver have\nnone.",
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -31243,13 +31228,10 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
-                "$ref": "#/components/schemas/PageImageSelection"
-              },
-              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
-            "description": "One input selected for a model request: a Working Area file, or the page\nimage of one of the Run's Evidence fragments (ADR 0053). A file selection\nkeeps its stored shape."
+            "description": "One input selected for a model request. A file selection keeps its stored\nshape."
           },
           "ModelResponse": {
             "additionalProperties": false,
@@ -31411,20 +31393,6 @@
               }
             },
             "required": ["binding", "origin"],
-            "type": "object"
-          },
-          "PageImageSelection": {
-            "additionalProperties": false,
-            "description": "The page image of an Evidence fragment, by the digest the model was given.",
-            "properties": {
-              "evidence_ref": {
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              }
-            },
-            "required": ["evidence_ref", "expected_digest"],
             "type": "object"
           },
           "Parameters": {
@@ -31726,6 +31694,27 @@
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
                 "enum": ["stale"],
                 "type": "string"
+              },
+              {
+                "enum": [
+                  "configuration",
+                  "authority",
+                  "invalidated",
+                  "provider_contract",
+                  "embedding_model_not_found",
+                  "context_budget",
+                  "durable_memory_budget",
+                  "allowance",
+                  "unavailable",
+                  "retries_exhausted",
+                  "pending"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"],
+                "type": "string"
               }
             ]
           },
@@ -31971,6 +31960,11 @@
               {
                 "description": "The index is still being built; only its READY part was read (ADR 0129).",
                 "enum": ["index_incomplete"],
+                "type": "string"
+              },
+              {
+                "description": "Not an outage: the embedding model cannot meet the Tenant's Data\nProtection Level, so waiting never helps. A slot that may degrade\ncontinues at once with this cause; any other slot stops the Run (#963).",
+                "enum": ["data_protection"],
                 "type": "string"
               }
             ]
@@ -33090,32 +33084,43 @@
       "200": {
         "definitions": {
           "Architecture": {
+            "type": "object",
+            "required": ["input_modalities", "output_modalities"],
             "properties": {
               "input_modalities": {
+                "type": "array",
                 "items": {
                   "type": "string"
-                },
-                "type": "array"
+                }
               },
               "output_modalities": {
+                "type": "array",
                 "items": {
                   "type": "string"
-                },
-                "type": "array"
+                }
               }
-            },
-            "required": ["input_modalities", "output_modalities"],
-            "type": "object"
+            }
           },
           "CatalogModel": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "context_length",
+              "top_provider",
+              "pricing",
+              "architecture",
+              "supported_parameters",
+              "reasoning"
+            ],
             "properties": {
               "architecture": {
                 "$ref": "#/components/schemas/Architecture"
               },
               "context_length": {
+                "type": "integer",
                 "format": "uint",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "id": {
                 "type": "string"
@@ -33137,11 +33142,11 @@
                 ]
               },
               "supported_parameters": {
-                "default": [],
+                "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "type": "array"
+                "default": []
               },
               "top_provider": {
                 "anyOf": [
@@ -33152,42 +33157,56 @@
                     "type": "null"
                   }
                 ]
+              },
+              "zero_data_retention": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ZdrRoutes"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What OpenRouter's ZDR catalog offers this model; absent when the\ncatalog could not be read. The picker uses it to say which Data\nProtection Levels the model can meet (#963)."
               }
-            },
-            "required": [
-              "id",
-              "name",
-              "context_length",
-              "top_provider",
-              "pricing",
-              "architecture",
-              "supported_parameters",
-              "reasoning"
-            ],
-            "type": "object"
+            }
           },
           "CatalogSnapshot": {
+            "type": "object",
             "description": "The eligible OpenRouter models as the server last fetched them (#362).",
+            "required": [
+              "models",
+              "stale",
+              "fetched_at",
+              "zero_data_retention"
+            ],
             "properties": {
               "fetched_at": {
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               "models": {
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/CatalogModel"
-                },
-                "type": "array"
+                }
               },
               "stale": {
-                "description": "The last refresh failed, so these are the models of an earlier one.",
-                "type": "boolean"
+                "type": "boolean",
+                "description": "The last refresh failed, so these are the models of an earlier one."
+              },
+              "zero_data_retention": {
+                "type": "object",
+                "description": "What OpenRouter's ZDR list offered every model it named, embedding\nmodels included; empty when the list could not be read (#963).",
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ZdrRoutes"
+                }
               }
-            },
-            "required": ["models", "stale", "fetched_at"],
-            "type": "object"
+            }
           },
           "Pricing": {
+            "type": "object",
+            "required": ["prompt", "completion"],
             "properties": {
               "completion": {
                 "type": "string"
@@ -33195,39 +33214,57 @@
               "prompt": {
                 "type": "string"
               }
-            },
-            "required": ["prompt", "completion"],
-            "type": "object"
+            }
           },
           "ReasoningOptions": {
+            "type": "object",
+            "required": ["supported_efforts", "default_effort", "mandatory"],
             "properties": {
               "default_effort": {
                 "type": ["string", "null"]
               },
               "mandatory": {
-                "default": false,
-                "type": "boolean"
+                "type": "boolean",
+                "default": false
               },
               "supported_efforts": {
+                "type": ["array", "null"],
                 "items": {
                   "type": "string"
-                },
-                "type": ["array", "null"]
+                }
               }
-            },
-            "required": ["supported_efforts", "default_effort", "mandatory"],
-            "type": "object"
+            }
           },
           "TopProvider": {
+            "type": "object",
+            "required": ["max_completion_tokens"],
             "properties": {
               "max_completion_tokens": {
+                "type": ["integer", "null"],
                 "format": "uint32",
-                "minimum": 0,
-                "type": ["integer", "null"]
+                "minimum": 0
               }
-            },
-            "required": ["max_completion_tokens"],
-            "type": "object"
+            }
+          },
+          "ZdrRoutes": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "At least one route meets strict zero data retention.",
+                "enum": ["strict"]
+              },
+              {
+                "type": "string",
+                "description": "Every route keeps content to prevent abuse: usable up to Safety\nRetention, never at Zero Data Retention.",
+                "enum": ["safety_retention_only"]
+              },
+              {
+                "type": "string",
+                "description": "No route at all: usable only at No Restriction and No Training.",
+                "enum": ["none"]
+              }
+            ],
+            "description": "The routes OpenRouter's ZDR catalog lists for one model."
           }
         },
         "schema": {
@@ -33382,47 +33419,26 @@
             "type": "object"
           },
           "ApprovalRef": {
-            "description": "Where the approval a Run waits for is decided.",
             "oneOf": [
               {
-                "additionalProperties": false,
-                "description": "A capability approval record on this Node (tool call, outbound, Web disclosure).",
+                "type": "object",
+                "description": "A capability approval record on this Node (tool call, outbound).",
+                "required": ["source", "approval_id"],
                 "properties": {
                   "approval_id": {
-                    "format": "uuid",
-                    "type": "string"
+                    "type": "string",
+                    "format": "uuid"
                   },
                   "source": {
-                    "enum": ["capability"],
-                    "type": "string"
+                    "type": "string",
+                    "enum": ["capability"]
                   }
                 },
-                "required": ["source", "approval_id"],
-                "type": "object"
+                "additionalProperties": false
               },
               {
-                "additionalProperties": false,
+                "type": "object",
                 "description": "A Run executing for another Node asks that Node through a human request.",
-                "properties": {
-                  "call": {
-                    "$ref": "#/components/schemas/ToolCall"
-                  },
-                  "expires_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  },
-                  "key": {
-                    "type": "string"
-                  },
-                  "request_id": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "source": {
-                    "enum": ["home"],
-                    "type": "string"
-                  }
-                },
                 "required": [
                   "source",
                   "request_id",
@@ -33430,9 +33446,30 @@
                   "call",
                   "expires_at"
                 ],
-                "type": "object"
+                "properties": {
+                  "call": {
+                    "$ref": "#/components/schemas/ToolCall"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "key": {
+                    "type": "string"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": ["home"]
+                  }
+                },
+                "additionalProperties": false
               }
-            ]
+            ],
+            "description": "Where the approval a Run waits for is decided."
           },
           "ArtifactRef": {
             "additionalProperties": false,
@@ -34174,7 +34211,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "The accepted response that opens a Model Turn, recorded only for Runs\non the Native Projection Version: its text and the IDs of its tool\ncalls in the model's order. Each executed call's `Tool` event follows\nand carries the call itself. Reasoning output is never recorded.",
+                "description": "The accepted response that opens a Model Turn, recorded only for Runs\non the Native Projection Version: its text and the IDs of its tool\ncalls in the model's order. Each executed call's `Tool` event follows\nand carries the call itself. The provider's reasoning is recorded as\nreceived when the route passes it back, and every later request of the\nRun resends it unchanged (#942); events recorded before have none.",
                 "properties": {
                   "calls": {
                     "items": {
@@ -34196,6 +34233,16 @@
                   },
                   "text": {
                     "type": "string"
+                  },
+                  "reasoning": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/Reasoning"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": ["kind", "epoch", "text", "calls"],
@@ -35280,45 +35327,13 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
-                "$ref": "#/components/schemas/PageImageSelection"
-              },
-              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
-            "description": "One input selected for a model request: a Working Area file, or the page\nimage of one of the Run's Evidence fragments (ADR 0053). A file selection\nkeeps its stored shape."
+            "description": "One input selected for a model request. A file selection keeps its stored\nshape."
           },
           "ModelResponse": {
-            "additionalProperties": false,
-            "properties": {
-              "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "provider_activity": {
-                "description": "Observable provider-owned activity, never Research evidence or citations.",
-                "items": {},
-                "type": "array"
-              },
-              "text": {
-                "type": "string"
-              },
-              "tool_calls": {
-                "items": {
-                  "$ref": "#/components/schemas/ToolCall"
-                },
-                "type": "array"
-              },
-              "usage_complete": {
-                "type": "boolean"
-              }
-            },
+            "type": "object",
             "required": [
               "text",
               "tool_calls",
@@ -35326,7 +35341,47 @@
               "output_tokens",
               "usage_complete"
             ],
-            "type": "object"
+            "properties": {
+              "input_tokens": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "output_tokens": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "provider_activity": {
+                "type": "array",
+                "items": {},
+                "description": "Observable provider-owned activity, never Research evidence or citations."
+              },
+              "text": {
+                "type": "string"
+              },
+              "tool_calls": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ToolCall"
+                }
+              },
+              "usage_complete": {
+                "type": "boolean"
+              },
+              "reasoning": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Reasoning"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The provider's reasoning, exactly as received (#942). Kept in the\npending state so a resumed step records it with its Model Turn; omitted\nwhen absent, so responses without reasoning keep their JSON shape."
+              }
+            },
+            "additionalProperties": false
           },
           "Narrowing": {
             "additionalProperties": false,
@@ -35421,20 +35476,6 @@
                 "type": "string"
               }
             ]
-          },
-          "PageImageSelection": {
-            "additionalProperties": false,
-            "description": "The page image of an Evidence fragment, by the digest the model was given.",
-            "properties": {
-              "evidence_ref": {
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              }
-            },
-            "required": ["evidence_ref", "expected_digest"],
-            "type": "object"
           },
           "Parameters": {
             "additionalProperties": false,
@@ -35906,6 +35947,12 @@
                   }
                 ],
                 "description": "Start of the current external-service outage, retained across wake-ups."
+              },
+              "account_suspension_epoch": {
+                "description": "The common Account suspension that paused this Run.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -35971,6 +36018,27 @@
                 "type": "string",
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
                 "enum": ["stale"]
+              },
+              {
+                "enum": [
+                  "configuration",
+                  "authority",
+                  "invalidated",
+                  "provider_contract",
+                  "embedding_model_not_found",
+                  "context_budget",
+                  "durable_memory_budget",
+                  "allowance",
+                  "unavailable",
+                  "retries_exhausted",
+                  "pending"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"],
+                "type": "string"
               }
             ]
           },
@@ -36635,6 +36703,11 @@
               {
                 "description": "The index is still being built; only its READY part was read (ADR 0129).",
                 "enum": ["index_incomplete"],
+                "type": "string"
+              },
+              {
+                "description": "Not an outage: the embedding model cannot meet the Tenant's Data\nProtection Level, so waiting never helps. A slot that may degrade\ncontinues at once with this cause; any other slot stops the Run (#963).",
+                "enum": ["data_protection"],
                 "type": "string"
               }
             ]
@@ -37609,6 +37682,66 @@
             },
             "required": ["service", "started_at"],
             "type": "object"
+          },
+          "ChatTextField": {
+            "description": "The Chat message key plain reasoning text arrived under.",
+            "enum": ["reasoning", "reasoning_content"],
+            "type": "string"
+          },
+          "Reasoning": {
+            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
+                "properties": {
+                  "details": {
+                    "items": {},
+                    "type": "array"
+                  },
+                  "format": {
+                    "enum": ["chat_details"],
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "details"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
+                "properties": {
+                  "field": {
+                    "$ref": "#/components/schemas/ChatTextField"
+                  },
+                  "format": {
+                    "enum": ["chat_text"],
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "field", "text"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Responses `reasoning` output items, sent back before the turn's output.",
+                "properties": {
+                  "format": {
+                    "enum": ["responses"],
+                    "type": "string"
+                  },
+                  "items": {
+                    "items": {},
+                    "type": "array"
+                  }
+                },
+                "required": ["format", "items"],
+                "type": "object"
+              }
+            ]
           }
         },
         "schema": {
@@ -38152,332 +38285,6 @@
     "query_parameters": ["after"],
     "source": "server/src/apps/execution/views/management.rs",
     "uuid_parameters": ["id"]
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "run-research",
-    "path": "/api/runs/{id}/research",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ResearchLimits": {
-            "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
-            "properties": {
-              "fetch_attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "page_views": {
-                "description": "Page images one Run may view.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "search_attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshot_bytes": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshots": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sources": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "search_attempts",
-              "fetch_attempts",
-              "sources",
-              "snapshots",
-              "snapshot_bytes",
-              "page_views"
-            ],
-            "type": "object"
-          },
-          "ResearchUsage": {
-            "description": "What one Run has used of its research limits.",
-            "properties": {
-              "fetch_attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "page_views": {
-                "description": "Page images the Run has viewed.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "search_attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshot_bytes": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshots": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sources": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "search_attempts",
-              "fetch_attempts",
-              "sources",
-              "snapshots",
-              "snapshot_bytes",
-              "page_views"
-            ],
-            "type": "object"
-          },
-          "RunResearch": {
-            "description": "A Run's research usage against its limits, for anyone who may read the Run.",
-            "properties": {
-              "can_read_revocation": {
-                "description": "Whether the reader may read the Run's revocation record.",
-                "type": "boolean"
-              },
-              "can_revoke": {
-                "description": "Whether the reader may revoke the Run's research evidence.",
-                "type": "boolean"
-              },
-              "estimated_micro_usd": {
-                "description": "Recorded prices of the Run's charged attempts: an estimate, not an\ninvoice.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "in_flight_attempts": {
-                "description": "Attempts sent and not yet settled.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "limits": {
-                "$ref": "#/components/schemas/ResearchLimits"
-              },
-              "revoked_at": {
-                "description": "When the Run's research evidence was revoked (ADR 0046). Who revoked it\nand why is in its revocation record, readable only by its audience.",
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "uncertain_attempts": {
-                "description": "Attempts the provider may have performed whose outcome is unknown.\nThey are never sent again automatically.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "url_intents": {
-                "description": "The pages people asked the Run to read, oldest first. Each only asked\nfor a Page reading; none approved a Web disclosure.",
-                "items": {
-                  "$ref": "#/components/schemas/RunUrlIntent"
-                },
-                "type": "array"
-              },
-              "usage": {
-                "$ref": "#/components/schemas/ResearchUsage"
-              }
-            },
-            "required": [
-              "limits",
-              "usage",
-              "estimated_micro_usd",
-              "uncertain_attempts",
-              "in_flight_attempts",
-              "url_intents",
-              "revoked_at",
-              "can_revoke",
-              "can_read_revocation"
-            ],
-            "type": "object"
-          },
-          "RunUrlIntent": {
-            "description": "The pages one input asked a Run to read.",
-            "properties": {
-              "input": {
-                "$ref": "#/components/schemas/UrlIntentInput",
-                "description": "`task` for the input that started or queued the Run, `run_message`\nfor a later message steering it."
-              },
-              "pages": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "requested_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "requested_by": {
-                "type": "string"
-              }
-            },
-            "required": ["input", "pages", "requested_by", "requested_at"],
-            "type": "object"
-          },
-          "UrlIntentInput": {
-            "enum": ["task", "run_message"],
-            "type": "string"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/RunResearch"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/management.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "research-providers",
-    "path": "/api/research/providers",
-    "query_parameters": ["node"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "DefinitionRef": {
-            "description": "A tool definition of the reader's Tenant, by identifier and version.",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": ["id", "version"],
-            "type": "object"
-          },
-          "ResearchLimits": {
-            "description": "Per-Run research limits; reaching one blocks dispatch and disclosure.",
-            "properties": {
-              "fetch_attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "page_views": {
-                "description": "Page images one Run may view.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "search_attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshot_bytes": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshots": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sources": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "search_attempts",
-              "fetch_attempts",
-              "sources",
-              "snapshots",
-              "snapshot_bytes",
-              "page_views"
-            ],
-            "type": "object"
-          },
-          "ResearchProvider": {
-            "description": "One Research provider this Deployment knows.",
-            "properties": {
-              "operations": {
-                "items": {
-                  "$ref": "#/components/schemas/ResearchProviderOperation"
-                },
-                "type": "array"
-              },
-              "provider": {
-                "type": "string"
-              },
-              "set_up": {
-                "description": "Whether whoever runs the Deployment has set the provider up, with\ncurrent account terms where it has any. It never says what is missing.",
-                "type": "boolean"
-              }
-            },
-            "required": ["provider", "set_up", "operations"],
-            "type": "object"
-          },
-          "ResearchProviderOperation": {
-            "description": "One research operation of a provider and the tool definitions through\nwhich the reader's Tenant may bind it here.",
-            "properties": {
-              "approved_definitions": {
-                "description": "The Tenant's tool definitions of this operation that have a Catalog\nApproval. A Run can use the operation only through one of them.",
-                "items": {
-                  "$ref": "#/components/schemas/DefinitionRef"
-                },
-                "type": "array"
-              },
-              "operation": {
-                "type": "string"
-              }
-            },
-            "required": ["operation", "approved_definitions"],
-            "type": "object"
-          },
-          "ResearchProviders": {
-            "description": "The Research providers of this Deployment and the per-Run limits every\nRun is held to.",
-            "properties": {
-              "limits": {
-                "$ref": "#/components/schemas/ResearchLimits"
-              },
-              "providers": {
-                "items": {
-                  "$ref": "#/components/schemas/ResearchProvider"
-                },
-                "type": "array"
-              }
-            },
-            "required": ["providers", "limits"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ResearchProviders"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/management.rs",
-    "uuid_parameters": []
   },
   {
     "json": false,
@@ -43603,811 +43410,6 @@
     "uuid_parameters": []
   },
   {
-    "json": false,
-    "method": "GET",
-    "name": "run-evidence",
-    "path": "/api/runs/{id}/evidence/{reference}",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "CitedEvidence": {
-            "description": "One Source citation as a reader opens it: the Evidence fragment the Run's\nAgent received and the Document snapshot it came from.",
-            "properties": {
-              "completeness": {
-                "$ref": "#/components/schemas/Completeness"
-              },
-              "context": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/EvidenceContext"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Snapshot lines around the passage that were not delivered to the Agent;\nabsent once the snapshot's text is no longer retained."
-              },
-              "document_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "evidence_ref": {
-                "description": "`ev_<uuid>`, as cited in the Run's text.",
-                "type": "string"
-              },
-              "expired": {
-                "description": "The Research account terms of the service that returned the page no\nlonger keep the passage (ADR 0058).",
-                "type": "boolean"
-              },
-              "fetched_at": {
-                "description": "When the snapshot was retrieved; the live page may have changed since.",
-                "format": "date-time",
-                "type": "string"
-              },
-              "image": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/EvidenceImage"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The page image delivered to the Agent, for a fragment that is a page\nimage rather than a passage (ADR 0053); then `text` is empty and the\nlines are zero."
-              },
-              "line_end": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "line_start": {
-                "description": "1-based, inclusive snapshot lines of the passage.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "media_type": {
-                "type": "string"
-              },
-              "pages": {
-                "items": {
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              "passage_digest": {
-                "description": "`sha256:` digest of the passage as delivered. It outlives the text,\nso the citation can still be verified.",
-                "type": "string"
-              },
-              "requested_url": {
-                "description": "The address the Run asked for.",
-                "type": "string"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "source_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "text": {
-                "description": "The passage exactly as delivered to the Agent; empty once `expired`.",
-                "type": "string"
-              },
-              "text_digest": {
-                "description": "`sha256:` digest of the snapshot text the fragment was taken from.",
-                "type": "string"
-              },
-              "title": {
-                "type": ["string", "null"]
-              },
-              "url": {
-                "description": "The address that answered, after any permitted redirect.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "evidence_ref",
-              "run_id",
-              "document_id",
-              "source_id",
-              "url",
-              "requested_url",
-              "title",
-              "media_type",
-              "fetched_at",
-              "completeness",
-              "text_digest",
-              "text",
-              "passage_digest",
-              "expired",
-              "line_start",
-              "line_end",
-              "pages",
-              "context",
-              "image"
-            ],
-            "type": "object"
-          },
-          "Completeness": {
-            "oneOf": [
-              {
-                "enum": ["complete"],
-                "type": "string"
-              },
-              {
-                "description": "The page had more text than a snapshot retains.",
-                "enum": ["text_limit"],
-                "type": "string"
-              }
-            ]
-          },
-          "EvidenceContext": {
-            "description": "Up to 20 whole lines and 4 KiB of snapshot text on each side of a passage.",
-            "properties": {
-              "after": {
-                "items": {
-                  "$ref": "#/components/schemas/Line"
-                },
-                "type": "array"
-              },
-              "before": {
-                "items": {
-                  "$ref": "#/components/schemas/Line"
-                },
-                "type": "array"
-              }
-            },
-            "required": ["before", "after"],
-            "type": "object"
-          },
-          "EvidenceImage": {
-            "description": "One page of a PDF rendered from the retained original, as the Agent saw it.",
-            "properties": {
-              "data": {
-                "description": "The image bytes, base64-encoded.",
-                "type": "string"
-              },
-              "digest": {
-                "description": "`sha256:` digest of the image bytes.",
-                "type": "string"
-              },
-              "height": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "media_type": {
-                "type": "string"
-              },
-              "page": {
-                "description": "The 1-based physical page.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "width": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "page",
-              "media_type",
-              "width",
-              "height",
-              "digest",
-              "data"
-            ],
-            "type": "object"
-          },
-          "Line": {
-            "properties": {
-              "page": {
-                "description": "1-based page of a paginated source such as a PDF.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "text": {
-                "type": "string"
-              }
-            },
-            "required": ["text"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/CitedEvidence"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/management.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "run-research-revocation",
-    "path": "/api/runs/{id}/research-revocation",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "RemovedCopies": {
-            "description": "What a revocation removed, counted and identified by digest only.",
-            "properties": {
-              "attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "fragments": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "invocations": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshot_digests": {
-                "description": "`sha256:` text digests of the revoked Document snapshots.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "snapshots": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sources": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "sources",
-              "snapshots",
-              "fragments",
-              "attempts",
-              "invocations",
-              "snapshot_digests"
-            ],
-            "type": "object"
-          },
-          "RevocationRecord": {
-            "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
-            "properties": {
-              "reason": {
-                "type": "string"
-              },
-              "removed": {
-                "$ref": "#/components/schemas/RemovedCopies"
-              },
-              "revoked_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "revoked_by": {
-                "description": "`subject:<tenant>/<subject>`. A record written before #484 may instead\nhold `deployment-administrator:<identity>` or `deployment-administrator`\nfor the deployment's API token; no Deployment Administrator revokes now.",
-                "type": "string"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "tenant": {
-                "description": "The Run's Tenant, when it has one.",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "run_id",
-              "tenant",
-              "revoked_by",
-              "reason",
-              "revoked_at",
-              "removed"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/RevocationRecord"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/research.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "run-research-revocation-read",
-    "path": "/api/runs/{id}/research-revocation",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "RemovedCopies": {
-            "description": "What a revocation removed, counted and identified by digest only.",
-            "properties": {
-              "attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "fragments": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "invocations": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshot_digests": {
-                "description": "`sha256:` text digests of the revoked Document snapshots.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "snapshots": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sources": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "sources",
-              "snapshots",
-              "fragments",
-              "attempts",
-              "invocations",
-              "snapshot_digests"
-            ],
-            "type": "object"
-          },
-          "RevocationRecord": {
-            "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
-            "properties": {
-              "reason": {
-                "type": "string"
-              },
-              "removed": {
-                "$ref": "#/components/schemas/RemovedCopies"
-              },
-              "revoked_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "revoked_by": {
-                "description": "`subject:<tenant>/<subject>`. A record written before #484 may instead\nhold `deployment-administrator:<identity>` or `deployment-administrator`\nfor the deployment's API token; no Deployment Administrator revokes now.",
-                "type": "string"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "tenant": {
-                "description": "The Run's Tenant, when it has one.",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "run_id",
-              "tenant",
-              "revoked_by",
-              "reason",
-              "revoked_at",
-              "removed"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/RevocationRecord"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/research.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "research-revocation-list",
-    "path": "/api/tenants/{tenant}/research-revocations",
-    "query_parameters": ["limit", "offset"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "RemovedCopies": {
-            "description": "What a revocation removed, counted and identified by digest only.",
-            "properties": {
-              "attempts": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "fragments": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "invocations": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "snapshot_digests": {
-                "description": "`sha256:` text digests of the revoked Document snapshots.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "snapshots": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sources": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "sources",
-              "snapshots",
-              "fragments",
-              "attempts",
-              "invocations",
-              "snapshot_digests"
-            ],
-            "type": "object"
-          },
-          "RevocationRecord": {
-            "description": "The audit record of one Evidence Revocation. It holds digests but no\nsource content.",
-            "properties": {
-              "reason": {
-                "type": "string"
-              },
-              "removed": {
-                "$ref": "#/components/schemas/RemovedCopies"
-              },
-              "revoked_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "revoked_by": {
-                "description": "`subject:<tenant>/<subject>`. A record written before #484 may instead\nhold `deployment-administrator:<identity>` or `deployment-administrator`\nfor the deployment's API token; no Deployment Administrator revokes now.",
-                "type": "string"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "tenant": {
-                "description": "The Run's Tenant, when it has one.",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "run_id",
-              "tenant",
-              "revoked_by",
-              "reason",
-              "revoked_at",
-              "removed"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "items": {
-            "$ref": "#/components/schemas/RevocationRecord"
-          },
-          "type": "array"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/research.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "tenant-retention",
-    "path": "/api/tenants/{tenant}/retention",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "RetentionRules": {
-            "additionalProperties": false,
-            "description": "The periods of every kind of content Aidash keeps only for a while.",
-            "properties": {
-              "document_snapshots": {
-                "$ref": "#/components/schemas/SnapshotPeriods"
-              }
-            },
-            "required": ["document_snapshots"],
-            "type": "object"
-          },
-          "SnapshotPeriods": {
-            "additionalProperties": false,
-            "description": "How long the contents of a Document snapshot are kept.",
-            "properties": {
-              "after_run_seconds": {
-                "description": "Kept this long after the snapshot's Run ends.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "max_age_seconds": {
-                "description": "Never kept longer than this after retrieval, even while the Run lasts.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": ["after_run_seconds", "max_age_seconds"],
-            "type": "object"
-          },
-          "TenantRetentionView": {
-            "description": "The Retention Rules that apply to one Tenant, with what the caller may do\nabout them, so a dashboard offers only that.",
-            "properties": {
-              "can_read_history": {
-                "description": "Whether the caller may read the history of the Tenant's periods.",
-                "type": "boolean"
-              },
-              "can_read_revocations": {
-                "description": "Whether the caller may read the Tenant's Evidence Revocation records.",
-                "type": "boolean"
-              },
-              "can_update": {
-                "description": "Whether the caller may change or clear the Tenant's periods.",
-                "type": "boolean"
-              },
-              "deployment": {
-                "$ref": "#/components/schemas/RetentionRules",
-                "description": "The Deployment's periods, also the longest the Tenant may keep."
-              },
-              "effective": {
-                "$ref": "#/components/schemas/RetentionRules",
-                "description": "What applies: the shorter of the two for every period."
-              },
-              "tenant": {
-                "type": "string"
-              },
-              "tenant_rules": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RetentionRules"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The Tenant's own shorter periods, if it stores any."
-              }
-            },
-            "required": [
-              "tenant",
-              "deployment",
-              "tenant_rules",
-              "effective",
-              "can_update",
-              "can_read_history",
-              "can_read_revocations"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/TenantRetentionView"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/research.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": true,
-    "method": "PUT",
-    "name": "tenant-retention-update",
-    "path": "/api/tenants/{tenant}/retention",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "RetentionRules": {
-            "additionalProperties": false,
-            "description": "The periods of every kind of content Aidash keeps only for a while.",
-            "properties": {
-              "document_snapshots": {
-                "$ref": "#/components/schemas/SnapshotPeriods"
-              }
-            },
-            "required": ["document_snapshots"],
-            "type": "object"
-          },
-          "SnapshotPeriods": {
-            "additionalProperties": false,
-            "description": "How long the contents of a Document snapshot are kept.",
-            "properties": {
-              "after_run_seconds": {
-                "description": "Kept this long after the snapshot's Run ends.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "max_age_seconds": {
-                "description": "Never kept longer than this after retrieval, even while the Run lasts.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": ["after_run_seconds", "max_age_seconds"],
-            "type": "object"
-          },
-          "TenantRetentionView": {
-            "description": "The Retention Rules that apply to one Tenant, with what the caller may do\nabout them, so a dashboard offers only that.",
-            "properties": {
-              "can_read_history": {
-                "description": "Whether the caller may read the history of the Tenant's periods.",
-                "type": "boolean"
-              },
-              "can_read_revocations": {
-                "description": "Whether the caller may read the Tenant's Evidence Revocation records.",
-                "type": "boolean"
-              },
-              "can_update": {
-                "description": "Whether the caller may change or clear the Tenant's periods.",
-                "type": "boolean"
-              },
-              "deployment": {
-                "$ref": "#/components/schemas/RetentionRules",
-                "description": "The Deployment's periods, also the longest the Tenant may keep."
-              },
-              "effective": {
-                "$ref": "#/components/schemas/RetentionRules",
-                "description": "What applies: the shorter of the two for every period."
-              },
-              "tenant": {
-                "type": "string"
-              },
-              "tenant_rules": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RetentionRules"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The Tenant's own shorter periods, if it stores any."
-              }
-            },
-            "required": [
-              "tenant",
-              "deployment",
-              "tenant_rules",
-              "effective",
-              "can_update",
-              "can_read_history",
-              "can_read_revocations"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/TenantRetentionView"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/research.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": false,
-    "method": "GET",
-    "name": "tenant-retention-history",
-    "path": "/api/tenants/{tenant}/retention-history",
-    "query_parameters": ["limit", "offset"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "RetentionChange": {
-            "description": "One change of a Tenant's periods, as kept in its history.",
-            "properties": {
-              "changed_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "changed_by": {
-                "description": "The recorded [`Decider`].",
-                "type": "string"
-              },
-              "rules": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RetentionRules"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The periods stored from then on; none when they were cleared and the\nDeployment's periods applied again."
-              }
-            },
-            "required": ["rules", "changed_at", "changed_by"],
-            "type": "object"
-          },
-          "RetentionRules": {
-            "additionalProperties": false,
-            "description": "The periods of every kind of content Aidash keeps only for a while.",
-            "properties": {
-              "document_snapshots": {
-                "$ref": "#/components/schemas/SnapshotPeriods"
-              }
-            },
-            "required": ["document_snapshots"],
-            "type": "object"
-          },
-          "SnapshotPeriods": {
-            "additionalProperties": false,
-            "description": "How long the contents of a Document snapshot are kept.",
-            "properties": {
-              "after_run_seconds": {
-                "description": "Kept this long after the snapshot's Run ends.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "max_age_seconds": {
-                "description": "Never kept longer than this after retrieval, even while the Run lasts.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": ["after_run_seconds", "max_age_seconds"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "items": {
-            "$ref": "#/components/schemas/RetentionChange"
-          },
-          "type": "array"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/views/research.rs",
-    "uuid_parameters": []
-  },
-  {
     "json": true,
     "method": "POST",
     "name": "registry-mcp-tool-hint",
@@ -44724,16 +43726,6 @@
                 "type": "string"
               },
               {
-                "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
-                "enum": ["web_search"],
-                "type": "string"
-              },
-              {
-                "description": "A Page reading disclosure. The target is the page host.",
-                "enum": ["page_reading"],
-                "type": "string"
-              },
-              {
                 "description": "A generated Agent request. The target is the Generation policy id.",
                 "enum": ["generation"],
                 "type": "string"
@@ -44847,16 +43839,6 @@
                 "type": "string"
               },
               {
-                "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
-                "enum": ["web_search"],
-                "type": "string"
-              },
-              {
-                "description": "A Page reading disclosure. The target is the page host.",
-                "enum": ["page_reading"],
-                "type": "string"
-              },
-              {
                 "description": "A generated Agent request. The target is the Generation policy id.",
                 "enum": ["generation"],
                 "type": "string"
@@ -44964,16 +43946,6 @@
               {
                 "description": "An outbound read. The target is its origin.",
                 "enum": ["outbound"],
-                "type": "string"
-              },
-              {
-                "description": "A Web search disclosure. The target is the Research provider the\nRun's Binding names, such as `research.brave@1`.",
-                "enum": ["web_search"],
-                "type": "string"
-              },
-              {
-                "description": "A Page reading disclosure. The target is the page host.",
-                "enum": ["page_reading"],
                 "type": "string"
               },
               {
@@ -46105,13 +45077,7 @@
             ]
           },
           "ObservedApprovalKind": {
-            "enum": [
-              "tool_call",
-              "outbound",
-              "web_search",
-              "page_reading",
-              "generation"
-            ],
+            "enum": ["tool_call", "outbound", "generation"],
             "type": "string"
           },
           "QualifiedRef": {
@@ -46340,13 +45306,7 @@
             "type": "object"
           },
           "ObservedApprovalKind": {
-            "enum": [
-              "tool_call",
-              "outbound",
-              "web_search",
-              "page_reading",
-              "generation"
-            ],
+            "enum": ["tool_call", "outbound", "generation"],
             "type": "string"
           },
           "QualifiedRef": {
@@ -50035,29 +48995,58 @@
       "200": {
         "definitions": {
           "DataProtection": {
-            "additionalProperties": false,
-            "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+            "type": "object",
+            "description": "The Tenant policy.",
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
             "properties": {
+              "forbid_keyless_endpoints": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "default": false
+              },
+              "forbid_plan_connections": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "default": false
+              },
               "level": {
                 "$ref": "#/components/schemas/Level"
-              },
-              "model_call_zdr": {
-                "default": true,
-                "type": "boolean"
-              },
-              "plan_connection_exempt": {
-                "default": true,
-                "type": "boolean"
               }
             },
-            "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-            "type": "object"
+            "additionalProperties": false
           },
           "Level": {
-            "enum": ["standard", "no_training", "zero_data_retention"],
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"]
+              }
+            ],
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter."
           },
           "TenantDataProtectionSettings": {
+            "type": "object",
+            "required": ["policy", "effective", "deployment_floor"],
             "properties": {
               "deployment_floor": {
                 "$ref": "#/components/schemas/Level"
@@ -50068,9 +49057,7 @@
               "policy": {
                 "$ref": "#/components/schemas/DataProtection"
               }
-            },
-            "required": ["policy", "effective", "deployment_floor"],
-            "type": "object"
+            }
           }
         },
         "schema": {
@@ -50091,29 +49078,58 @@
       "200": {
         "definitions": {
           "DataProtection": {
-            "additionalProperties": false,
-            "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+            "type": "object",
+            "description": "The Tenant policy.",
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
             "properties": {
+              "forbid_keyless_endpoints": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "default": false
+              },
+              "forbid_plan_connections": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "default": false
+              },
               "level": {
                 "$ref": "#/components/schemas/Level"
-              },
-              "model_call_zdr": {
-                "default": true,
-                "type": "boolean"
-              },
-              "plan_connection_exempt": {
-                "default": true,
-                "type": "boolean"
               }
             },
-            "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-            "type": "object"
+            "additionalProperties": false
           },
           "Level": {
-            "enum": ["standard", "no_training", "zero_data_retention"],
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"]
+              }
+            ],
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter."
           },
           "TenantDataProtectionSettings": {
+            "type": "object",
+            "required": ["policy", "effective", "deployment_floor"],
             "properties": {
               "deployment_floor": {
                 "$ref": "#/components/schemas/Level"
@@ -50124,9 +49140,7 @@
               "policy": {
                 "$ref": "#/components/schemas/DataProtection"
               }
-            },
-            "required": ["policy", "effective", "deployment_floor"],
-            "type": "object"
+            }
           }
         },
         "schema": {
@@ -50147,25 +49161,33 @@
       "200": {
         "definitions": {
           "DataProtection": {
-            "additionalProperties": false,
-            "description": "The Tenant policy. Missing settings preserve the existing OpenRouter ZDR default.",
+            "type": "object",
+            "description": "The Tenant policy.",
+            "required": [
+              "level",
+              "forbid_plan_connections",
+              "forbid_keyless_endpoints"
+            ],
             "properties": {
+              "forbid_keyless_endpoints": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content calls a Tenant Keyless endpoint.",
+                "default": false
+              },
+              "forbid_plan_connections": {
+                "type": "boolean",
+                "description": "No Run carrying this Tenant's content uses a Plan Connection.",
+                "default": false
+              },
               "level": {
                 "$ref": "#/components/schemas/Level"
-              },
-              "model_call_zdr": {
-                "default": true,
-                "type": "boolean"
-              },
-              "plan_connection_exempt": {
-                "default": true,
-                "type": "boolean"
               }
             },
-            "required": ["level", "model_call_zdr", "plan_connection_exempt"],
-            "type": "object"
+            "additionalProperties": false
           },
           "DataProtectionAffected": {
+            "type": "object",
+            "required": ["id", "version", "reason"],
             "properties": {
               "id": {
                 "type": "string"
@@ -50176,45 +49198,64 @@
               "version": {
                 "type": ["string", "null"]
               }
-            },
-            "required": ["id", "version", "reason"],
-            "type": "object"
+            }
           },
           "DataProtectionImpact": {
-            "properties": {
-              "agents": {
-                "items": {
-                  "$ref": "#/components/schemas/DataProtectionAffected"
-                },
-                "type": "array"
-              },
-              "catalog_approvals": {
-                "items": {
-                  "$ref": "#/components/schemas/DataProtectionAffected"
-                },
-                "type": "array"
-              },
-              "destinations": {
-                "items": {
-                  "$ref": "#/components/schemas/DataProtectionAffected"
-                },
-                "type": "array"
-              },
-              "effective": {
-                "$ref": "#/components/schemas/DataProtection"
-              }
-            },
+            "type": "object",
             "required": [
               "effective",
               "agents",
               "catalog_approvals",
               "destinations"
             ],
-            "type": "object"
+            "properties": {
+              "agents": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                }
+              },
+              "catalog_approvals": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                }
+              },
+              "destinations": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DataProtectionAffected"
+                }
+              },
+              "effective": {
+                "$ref": "#/components/schemas/DataProtection"
+              }
+            }
           },
           "Level": {
-            "enum": ["standard", "no_training", "zero_data_retention"],
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Asks OpenRouter for nothing.",
+                "enum": ["no_restriction"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that never train on the content.",
+                "enum": ["no_training"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that keep content at most to prevent abuse.",
+                "enum": ["safety_retention"]
+              },
+              {
+                "type": "string",
+                "description": "Only endpoints that do not keep content; Safety Retention never meets it.",
+                "enum": ["zero_data_retention"]
+              }
+            ],
+            "description": "The Data Protection Level. It governs only what Aidash asks of OpenRouter."
           }
         },
         "schema": {
@@ -50257,7 +49298,7 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "A capability approval record on this Node (tool call, outbound, Web disclosure).",
+                "description": "A capability approval record on this Node (tool call, outbound).",
                 "properties": {
                   "approval_id": {
                     "format": "uuid",
@@ -50697,13 +49738,10 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
-                "$ref": "#/components/schemas/PageImageSelection"
-              },
-              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
-            "description": "One input selected for a model request: a Working Area file, or the page\nimage of one of the Run's Evidence fragments (ADR 0053). A file selection\nkeeps its stored shape."
+            "description": "One input selected for a model request. A file selection keeps its stored\nshape."
           },
           "ModelResponse": {
             "additionalProperties": false,
@@ -50759,20 +49797,6 @@
           "NodeName": {
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
             "type": "string"
-          },
-          "PageImageSelection": {
-            "additionalProperties": false,
-            "description": "The page image of an Evidence fragment, by the digest the model was given.",
-            "properties": {
-              "evidence_ref": {
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              }
-            },
-            "required": ["evidence_ref", "expected_digest"],
-            "type": "object"
           },
           "PausedCall": {
             "additionalProperties": false,
@@ -51043,6 +50067,27 @@
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
                 "enum": ["stale"],
                 "type": "string"
+              },
+              {
+                "enum": [
+                  "configuration",
+                  "authority",
+                  "invalidated",
+                  "provider_contract",
+                  "embedding_model_not_found",
+                  "context_budget",
+                  "durable_memory_budget",
+                  "allowance",
+                  "unavailable",
+                  "retries_exhausted",
+                  "pending"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"],
+                "type": "string"
               }
             ]
           },
@@ -51276,6 +50321,11 @@
               {
                 "description": "The index is still being built; only its READY part was read (ADR 0129).",
                 "enum": ["index_incomplete"],
+                "type": "string"
+              },
+              {
+                "description": "Not an outage: the embedding model cannot meet the Tenant's Data\nProtection Level, so waiting never helps. A slot that may degrade\ncontinues at once with this cause; any other slot stops the Run (#963).",
+                "enum": ["data_protection"],
                 "type": "string"
               }
             ]
@@ -57527,7 +56577,7 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "A capability approval record on this Node (tool call, outbound, Web disclosure).",
+                "description": "A capability approval record on this Node (tool call, outbound).",
                 "properties": {
                   "approval_id": {
                     "format": "uuid",
@@ -57967,13 +57017,10 @@
                 "$ref": "#/components/schemas/WorkingImageSelection"
               },
               {
-                "$ref": "#/components/schemas/PageImageSelection"
-              },
-              {
                 "$ref": "#/components/schemas/ThreadAttachmentSelection"
               }
             ],
-            "description": "One input selected for a model request: a Working Area file, or the page\nimage of one of the Run's Evidence fragments (ADR 0053). A file selection\nkeeps its stored shape."
+            "description": "One input selected for a model request. A file selection keeps its stored\nshape."
           },
           "ModelResponse": {
             "additionalProperties": false,
@@ -58029,20 +57076,6 @@
           "NodeName": {
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
             "type": "string"
-          },
-          "PageImageSelection": {
-            "additionalProperties": false,
-            "description": "The page image of an Evidence fragment, by the digest the model was given.",
-            "properties": {
-              "evidence_ref": {
-                "type": "string"
-              },
-              "expected_digest": {
-                "type": "string"
-              }
-            },
-            "required": ["evidence_ref", "expected_digest"],
-            "type": "object"
           },
           "PausedCall": {
             "additionalProperties": false,
@@ -58313,6 +57346,27 @@
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
                 "enum": ["stale"],
                 "type": "string"
+              },
+              {
+                "enum": [
+                  "configuration",
+                  "authority",
+                  "invalidated",
+                  "provider_contract",
+                  "embedding_model_not_found",
+                  "context_budget",
+                  "durable_memory_budget",
+                  "allowance",
+                  "unavailable",
+                  "retries_exhausted",
+                  "pending"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"],
+                "type": "string"
               }
             ]
           },
@@ -58546,6 +57600,11 @@
               {
                 "description": "The index is still being built; only its READY part was read (ADR 0129).",
                 "enum": ["index_incomplete"],
+                "type": "string"
+              },
+              {
+                "description": "Not an outage: the embedding model cannot meet the Tenant's Data\nProtection Level, so waiting never helps. A slot that may degrade\ncontinues at once with this cause; any other slot stops the Run (#963).",
+                "enum": ["data_protection"],
                 "type": "string"
               }
             ]

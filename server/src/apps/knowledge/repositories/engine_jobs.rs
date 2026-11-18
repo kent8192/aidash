@@ -574,6 +574,11 @@ fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static s
 				| crate::semantic::remote::Failure::DurableMemoryBudget,
 			),
 		) => ("failed", Some("invalid_or_exhausted_work"), true),
+		// The embedding model cannot meet the Tenant's Data Protection Level:
+		// no retry helps until the model is switched or the level lowered (#963).
+		Err(Error::RemoteSemantic(crate::semantic::remote::Failure::DataProtection)) => {
+			("failed", Some("data_protection"), true)
+		}
 		// The database, not the engine, stopped this attempt (#728).
 		Err(error) if error.is_transient_database() => {
 			("pending", Some("database_unavailable"), false)

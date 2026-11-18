@@ -1180,6 +1180,27 @@ mod openrouter {
 		config: ModelConfig,
 		calls: Arc<AtomicUsize>,
 	) -> (Arc<dyn ModelProvider>, Server) {
+		openrouter_provider_at(app, config, calls, None).await
+	}
+
+	async fn openrouter_provider_at(
+		app: Router,
+		config: ModelConfig,
+		calls: Arc<AtomicUsize>,
+		level: Option<aidash_domain::data_protection::Level>,
+	) -> (Arc<dyn ModelProvider>, Server) {
+		// A call held to Safety Retention, the default for a call made for no
+		// Tenant, reads OpenRouter's ZDR list before it is sent (#963).
+		let app = app.fallback(|uri: axum::http::Uri| async move {
+			if uri.path() == "/v1/endpoints/zdr" {
+				Json(
+					json!({"data":[{"model_id":"vendor/model","tag":"vendor/route","safety_retention":false}]}),
+				)
+				.into_response()
+			} else {
+				axum::http::StatusCode::NOT_FOUND.into_response()
+			}
+		});
 		let (url, server) = serve(app).await;
 		let access = Arc::new(TenantAccess {
 			endpoint: format!("{url}/v1"),
@@ -1195,8 +1216,21 @@ mod openrouter {
 			config,
 			access,
 			Context {
-				tenant: "brave-otter-k3m9q2xa".into(),
+				// A test that sets its own level also gets its own Tenant, so
+				// no other test's cached ZDR list answers for it.
+				tenant: if level.is_some() {
+					format!("tenant-{}", uuid::Uuid::now_v7())
+				} else {
+					"brave-otter-k3m9q2xa".into()
+				},
 				run: Some(uuid::Uuid::now_v7()),
+				data_protection: level.map_or(
+					aidash_domain::data_protection::DataProtection::TENANTLESS,
+					|level| aidash_domain::data_protection::DataProtection {
+						level,
+						..Default::default()
+					},
+				),
 				..Context::default()
 			},
 			Some(
@@ -1274,7 +1308,9 @@ mod openrouter {
 				upstream_nanocredits: Some(100_000)
 			})
 		);
-		assert_eq!(calls.load(Ordering::SeqCst), 1);
+		// One access for the call, and one for the ZDR list unless another
+		// test of this Tenant already cached it for 30 s.
+		assert!((1..=2).contains(&calls.load(Ordering::SeqCst)));
 		let seen = seen.lock().unwrap();
 		assert_eq!(seen[0].0, "Bearer tenant-openrouter-key");
 		let body = &seen[0].1;
@@ -1284,7 +1320,7 @@ mod openrouter {
 		assert_eq!(body["reasoning"], json!({"effort":"high"}));
 		assert_eq!(
 			body["provider"],
-			json!({"zdr":true,"require_parameters":true})
+			json!({"zdr":true,"require_parameters":true,"only":["vendor/route"],"allow_fallbacks":true})
 		);
 		assert_eq!(body["instructions"], "Be precise.");
 		assert!(body.get("store").is_none());
@@ -1463,7 +1499,9 @@ mod openrouter {
 				.text,
 			"done"
 		);
-		assert_eq!(calls.load(Ordering::SeqCst), 2);
+		// Media discovery and the call each resolve access, and so does the
+		// ZDR list unless another test of this Tenant already cached it.
+		assert!((2..=3).contains(&calls.load(Ordering::SeqCst)));
 		{
 			let seen = seen.lock().unwrap();
 			assert_eq!(
@@ -1662,6 +1700,88 @@ mod openrouter {
 	}
 
 	#[tokio::test]
+	async fn a_pinned_safety_retention_route_is_refused_at_zero_data_retention() {
+		let responses = Arc::new(AtomicUsize::new(0));
+		let counter = responses.clone();
+		let app = Router::new()
+			.route(
+				"/v1/models/vendor/model/endpoints",
+				get(|| async {
+					Json(json!({"data":{"architecture":{"input_modalities":["text"]},"endpoints":[{"tag":"vendor/route","context_length":100000}]}}))
+				}),
+			)
+			.route(
+				"/v1/endpoints/zdr",
+				get(|| async {
+					Json(json!({"data":[{"model_id":"vendor/model","tag":"vendor/route","safety_retention":true}]}))
+				}),
+			)
+			.route(
+				"/v1/responses",
+				post(move || {
+					responses.fetch_add(1, Ordering::SeqCst);
+					async { Json(responses_body(json!([]))) }
+				}),
+			);
+		let mut config = config("http://unused", true);
+		let now = chrono::Utc::now();
+		config.provider_route = Some(ProviderRouteEvidence {
+			tag: "vendor/route".into(),
+			source: "administrator approval".into(),
+			verified_at: now - chrono::Duration::minutes(1),
+			expires_at: now + chrono::Duration::hours(1),
+		});
+		let (provider, _server) = openrouter_provider_at(
+			app,
+			config,
+			Arc::new(AtomicUsize::new(0)),
+			Some(aidash_domain::data_protection::Level::ZeroDataRetention),
+		)
+		.await;
+		let result = provider.infer(request(), &Recorder::default()).await;
+		assert!(
+			matches!(
+				&result,
+				Err(Error::ProviderRouteUnavailable { model, refusal })
+					if model == "vendor/model"
+						&& refusal.tag == "vendor/route"
+						&& refusal.reasons == vec![aidash_application::route_refusal::RouteReason::SafetyRetentionOnly]
+			),
+			"{result:?}"
+		);
+		assert_eq!(counter.load(Ordering::SeqCst), 0);
+	}
+
+	#[tokio::test]
+	async fn an_unavailable_zdr_list_refuses_a_safety_retention_call() {
+		let responses = Arc::new(AtomicUsize::new(0));
+		let counter = responses.clone();
+		let app = Router::new()
+			.route(
+				"/v1/endpoints/zdr",
+				get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+			)
+			.route(
+				"/v1/responses",
+				post(move || {
+					responses.fetch_add(1, Ordering::SeqCst);
+					async { Json(responses_body(json!([]))) }
+				}),
+			);
+		// A Tenant of its own, so no other test's cached list answers.
+		let (provider, _server) = openrouter_provider_at(
+			app,
+			config("http://unused", true),
+			Arc::new(AtomicUsize::new(0)),
+			Some(aidash_domain::data_protection::Level::SafetyRetention),
+		)
+		.await;
+		let result = provider.infer(request(), &Recorder::default()).await;
+		assert!(result.is_err(), "{result:?}");
+		assert_eq!(counter.load(Ordering::SeqCst), 0, "nothing is sent");
+	}
+
+	#[tokio::test]
 	async fn context_overflow_and_provider_rejections_are_mapped_like_chat() {
 		let app = Router::new().route(
 			"/v1/responses",
@@ -1714,7 +1834,7 @@ mod openrouter {
 			assert_eq!(
 				seen.lock().unwrap().as_slice(),
 				[
-					r#"{"max_tokens":512,"messages":[{"content":"Be precise.","role":"system"},{"content":"{\"task\":\"summarize\"}","role":"user"}],"model":"vendor/model","provider":{"require_parameters":true,"zdr":true},"reasoning":{"effort":"high"},"tools":[{"function":{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"}},"type":"function"}]}"#
+					r#"{"max_tokens":512,"messages":[{"content":"Be precise.","role":"system"},{"content":"{\"task\":\"summarize\"}","role":"user"}],"model":"vendor/model","provider":{"allow_fallbacks":true,"only":["vendor/route"],"require_parameters":true,"zdr":true},"reasoning":{"effort":"high"},"tools":[{"function":{"description":"Search the workspace","name":"search","parameters":{"properties":{"q":{"type":"string"}},"type":"object"}},"type":"function"}]}"#
 				]
 			);
 		}

@@ -172,42 +172,6 @@ fn a_rule_is_effective_where_the_owner_could_approve_in_advance() {
 }
 
 #[test]
-fn an_exact_search_rule_is_effective_on_a_real_destination_the_policy_names() {
-	// Arrange: members may approve only the destination `research.example`, and
-	// the rule names the provider rather than that destination.
-	let mut bundle = bundle();
-	bundle.policies.push(Policy {
-		id: "alice-research".into(),
-		effect: Effect::Allow,
-		subjects: SubjectSelector {
-			ids: ["alice".to_owned()].into(),
-			..Default::default()
-		},
-		actions: ["capability.approve".to_owned()].into(),
-		resources: ResourceSelector {
-			kinds: ["research".to_owned()].into(),
-			ids: ["research.example".to_owned()].into(),
-		},
-		// Runtime disclosure resources carry the destination attribute too.
-		condition: Some(Condition::Eq {
-			left: Operand::Resource {
-				path: "/destination".into(),
-			},
-			right: Operand::Literal {
-				value: json!("research.example"),
-			},
-		}),
-	});
-	let search = rule(
-		ApprovalKind::WebSearch,
-		RuleTarget::Exact("research.brave@1".into()),
-	);
-
-	// Act + Assert
-	assert!(effective(&bundle, "alice", &search, &[]));
-}
-
-#[test]
 fn a_generation_rule_sees_the_request_attributes_admission_checks() {
 	// Arrange: admission passes the generated policy, its root subject and a
 	// task id. The settings view has no task yet, but must still carry these

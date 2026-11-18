@@ -11,7 +11,6 @@ use uuid::Uuid;
 pub struct JournalSnapshot {
 	pub lines: Vec<JournalLine>,
 	pub generation: String,
-	pub dependencies: aidash_domain::context::research::JournalDependencies,
 }
 
 /// Build a snapshot from the complete set of lines the reader is authorized to inspect.
@@ -20,6 +19,8 @@ pub fn snapshot_from_lines(lines: Vec<JournalLine>, range: Option<(u64, u64)>) -
 		.iter()
 		.filter_map(|line| {
 			let result = line.result.as_ref()?;
+			// Placeholders of withdrawn research results, which only a Context
+			// Journal recorded before #987 may hold.
 			let unavailable = result["contract"] == "aidash.research.unavailable/1";
 			(ContextEvent::is_revoked_result(result)
 				|| ContextEvent::is_expired_result(result)
@@ -32,12 +33,7 @@ pub fn snapshot_from_lines(lines: Vec<JournalLine>, range: Option<(u64, u64)>) -
 		.into_iter()
 		.filter(|line| range.is_none_or(|(from, through)| (from..=through).contains(&line.seq)))
 		.collect::<Vec<_>>();
-	let dependencies = aidash_domain::context::research::JournalDependencies::from_lines(&lines);
-	JournalSnapshot {
-		lines,
-		generation,
-		dependencies,
-	}
+	JournalSnapshot { lines, generation }
 }
 
 #[async_trait]
@@ -62,9 +58,7 @@ pub trait JournalSource: Send + Sync {
 			return Err(Error::Invalid("invalid journal range".into()));
 		}
 		let lines = self.export(scope, reader_run, target_run, None).await?;
-		let mut snapshot = snapshot_from_lines(lines, range);
-		snapshot.dependencies.add_source_run(reader_run, target_run);
-		Ok(snapshot)
+		Ok(snapshot_from_lines(lines, range))
 	}
 }
 
@@ -133,17 +127,5 @@ mod tests {
 		.unwrap();
 		assert_ne!(expired.generation, revoked.generation);
 		assert_eq!(revoked.lines[0].seq, 2);
-		let document = Uuid::new_v4();
-		let source = Source(vec![line(
-			1,
-			json!({"contract":aidash_domain::research::RESULT_CONTRACT,
-			"operation":"fetch","data":{"document_id":document}}),
-		)]);
-		let bounded = source
-			.snapshot(scope, run, run, Some((2, 2)))
-			.await
-			.unwrap();
-		assert!(bounded.lines.is_empty());
-		assert!(bounded.dependencies.is_empty());
 	}
 }

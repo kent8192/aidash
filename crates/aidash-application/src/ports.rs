@@ -39,6 +39,13 @@ pub trait AuthorizationStore: Send + Sync {
 #[async_trait]
 pub trait ModelCatalog: Send + Sync {
 	async fn models(&self) -> Result<Vec<aidash_domain::catalog::CatalogModel>>;
+	/// What OpenRouter's ZDR list offers each model it names (#963). Empty
+	/// when the list is unknown.
+	async fn zero_data_retention(
+		&self,
+	) -> Result<std::collections::BTreeMap<String, aidash_domain::catalog::ZdrRoutes>> {
+		Ok(Default::default())
+	}
 }
 
 /// Receives sanitized Inference Progress while an adapter streams. `offer`
@@ -217,7 +224,6 @@ pub mod activation;
 pub mod bindings;
 pub mod decision;
 pub mod research;
-pub mod retention;
 
 pub mod accounts;
 pub mod context_source;

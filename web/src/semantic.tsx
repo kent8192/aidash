@@ -1,3 +1,4 @@
+import { EmbeddingModelFields } from "./embedding-model-fields";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -89,6 +90,7 @@ const semanticMessages: Record<string, string> = {
   modality: "semanticImageModality",
   too_large: "semanticImageTooLarge",
   limit: "semanticImageLimit",
+  data_protection: "semanticDataProtection",
 };
 
 export function SemanticPage({
@@ -564,6 +566,9 @@ function SemanticWorkspace({
       {configuring && (
         <Modal title={t("semanticConfigure")} close={closeDialogs}>
           <IndexForm
+            tenant={
+              data.access.kind === "subject" ? data.access.tenant : undefined
+            }
             previous={spec}
             busy={busy}
             submit={(draft) =>
@@ -664,7 +669,9 @@ function IndexForm({
   previous,
   busy,
   submit,
+  tenant,
 }: {
+  tenant?: string;
   previous?: SemanticIndexSpec;
   busy: boolean;
   submit: (spec: SemanticIndexSpec) => Promise<void>;
@@ -738,32 +745,30 @@ function IndexForm({
           }
         />
       </Field>
-      <Field label={t("semanticModel")}>
-        <Input
-          name="model"
-          required
-          defaultValue={
-            previous?.embedding.model ?? "google/gemini-embedding-2"
-          }
-        />
-      </Field>
-      <Field label={t("semanticModelVersion")}>
-        <Input
-          name="version"
-          required
-          defaultValue={previous?.embedding.model_version ?? "1.0.0"}
-        />
-      </Field>
-      <Field label={t("semanticDimensions")}>
-        <Input
-          name="dimensions"
-          type="number"
-          min={1}
-          max={8192}
-          required
-          defaultValue={previous?.embedding.dimensions ?? 3072}
-        />
-      </Field>
+      <EmbeddingModelFields
+        tenant={tenant}
+        modelLabel={t("semanticModel")}
+        modelName="model"
+        dimensionsName="dimensions"
+        dimensionsLabel={t("semanticDimensions")}
+        previous={
+          previous
+            ? {
+                model: previous.embedding.model,
+                dimensions: previous.embedding.dimensions,
+              }
+            : undefined
+        }
+        versionField={
+          <Field label={t("semanticModelVersion")}>
+            <Input
+              name="version"
+              required
+              defaultValue={previous?.embedding.model_version ?? "1.0.0"}
+            />
+          </Field>
+        }
+      />
       <Field label={locale === "ja-JP" ? "画像の最大件数" : "Maximum images"}>
         <Input
           name="max_images"

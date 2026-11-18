@@ -126,9 +126,6 @@ fn more_than_the_maximum_is_refused() {
 
 #[rstest]
 #[case::page_reading(research_descriptor(NODE, "research.page@1", "fetch").unwrap(), true)]
-#[case::fixture_page_reading(research_descriptor(NODE, "research.fixture@1", "fetch").unwrap(), true)]
-#[case::search_only(research_descriptor(NODE, "research.brave@1", "search").unwrap(), false)]
-#[case::find_only(research_descriptor(NODE, "research.page@1", "find").unwrap(), false)]
 #[case::another_tool(core_descriptor(NODE, "outbound_get").unwrap(), false)]
 fn only_a_bound_page_reading_operation_can_act_on_a_url_intent(
 	#[case] descriptor: ToolDescriptor,
@@ -148,8 +145,8 @@ fn only_a_bound_page_reading_operation_can_act_on_a_url_intent(
 fn a_page_reading_definition_the_run_is_not_bound_to_cannot_act_on_a_url_intent() {
 	// Arrange: a bundle's unselected fetch member is still in the closure.
 	let search = tool(
-		"aidash.research.brave.search",
-		research_descriptor(NODE, "research.brave@1", "search").unwrap(),
+		"aidash.outbound_get",
+		core_descriptor(NODE, "outbound_get").unwrap(),
 	);
 	let fetch = tool(
 		"aidash.research.page.fetch",
@@ -242,7 +239,7 @@ fn carried_pages_take_no_more_bytes_than_one_input_may() {
 		let prefix = format!("https://example.org/{input}/{index}/");
 		format!(
 			"{prefix}{}",
-			"a".repeat(crate::research::search::MAX_URL_BYTES - prefix.len())
+			"a".repeat(crate::research::address::MAX_URL_BYTES - prefix.len())
 		)
 	};
 	let carried = (0..4)

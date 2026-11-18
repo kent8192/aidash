@@ -556,6 +556,9 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::MediaRouteUnavailable { model, candidates } => {
 				Self::MediaRouteUnavailable { model, candidates }
 			}
+			error @ ApplicationError::DataProtectionRoute { .. } => {
+				Self::Invalid(error.to_string())
+			}
 			error @ ApplicationError::ProviderRouteUnavailable { .. } => {
 				Self::Invalid(error.to_string())
 			}

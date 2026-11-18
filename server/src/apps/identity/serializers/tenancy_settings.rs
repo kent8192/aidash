@@ -1,5 +1,5 @@
-//! The Deployment's Tenancy Rules. They live in server settings, like the
-//! Retention Rules: whoever runs the Deployment changes them and restarts. The
+//! The Deployment's Tenancy Rules. They live in server settings:
+//! whoever runs the Deployment changes them and restarts. The
 //! Deployment's Offering supplies each rule left out here.
 use aidash_domain::identity::tenancy::TenancyRules;
 use aidash_domain::offering::Offering;

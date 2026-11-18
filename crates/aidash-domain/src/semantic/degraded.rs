@@ -16,6 +16,10 @@ pub enum OutageCause {
 	VectorBackend,
 	/// The index is still being built; only its READY part was read (ADR 0129).
 	IndexIncomplete,
+	/// Not an outage: the embedding model cannot meet the Tenant's Data
+	/// Protection Level, so waiting never helps. A slot that may degrade
+	/// continues at once with this cause; any other slot stops the Run (#963).
+	DataProtection,
 }
 
 /// The marker that stands in the workspace slot of `semantic_memory`, in the

@@ -35,12 +35,10 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 /// Approval records of outbound reads.
 const OUTBOUND: &str = "outbound";
 /// The kind of every approval record a Run can hold.
-pub const KINDS: [&str; 4] = [OUTBOUND, DISCLOSURE, TOOL_CALL, SAMPLING];
+pub const KINDS: [&str; 3] = [OUTBOUND, TOOL_CALL, SAMPLING];
 pub const SAMPLING: &str = "sampling";
 pub const SAMPLE_UNAPPROVED: &str = "sampling.request_unapproved";
 pub mod sampling;
-/// Approval records of Web disclosures share the capability approval flow.
-pub const DISCLOSURE: &str = "disclosure";
 /// Approval records of Tenant tool calls share it too (ADR 0075).
 pub const TOOL_CALL: &str = "tool_call";
 /// What the model is told when it asks a question of a person who asked not
@@ -75,8 +73,6 @@ pub const CALL_UNAPPROVED: &str = "tool.call_unapproved";
 /// The operation of a Tenant's HTTP or MCP tool definition, until a definition
 /// version can declare several (#410).
 pub const INVOKE: &str = "invoke";
-/// The policy action a Web disclosure approval authorizes.
-pub const DISCLOSE: &str = "research.disclose";
 /// The shortest Run grant an approver may give, and so the least a
 /// Deployment's `grant_seconds` may be. The dashboard offers whole minutes;
 /// a few seconds of slack let a one-minute grant survive the trip to the
@@ -84,17 +80,14 @@ pub const DISCLOSE: &str = "research.disclose";
 pub const MIN_RUN_GRANT_SECONDS: i64 = 60;
 const GRANT_CLOCK_SLACK_SECONDS: i64 = 5;
 
-fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) -> Resource {
-	scope.resource(
-		"research",
-		destination,
-		json!({"destination":destination,"run_id":run,"action":DISCLOSE}),
-	)
-}
 /// The target string of an approval record and Run grant for one operation of
-/// a tool. It cannot collide with an outbound origin or a disclosure destination.
-pub fn tool_target(tool: &ToolCallTarget, operation: &str) -> String {
-	format!("tool:{}@{}#{operation}", tool.id(), tool.version())
+/// a tool. It cannot collide with an outbound origin. Page reading names the
+/// host it contacts, so a Run grant covers that one host (#987).
+pub fn tool_target(tool: &ToolCallTarget, operation: &str, host: Option<&str>) -> String {
+	match host {
+		Some(host) => format!("tool:{}@{}#{operation}/{host}", tool.id(), tool.version()),
+		None => format!("tool:{}@{}#{operation}", tool.id(), tool.version()),
+	}
 }
 /// The target of an Approval Rule for one operation of a tool. A rule names
 /// the tool, never one of its versions.
@@ -161,18 +154,6 @@ impl Advice {
 		};
 		data["decided_by"] = json!(person);
 		data["decided_at"] = json!(Utc::now());
-	}
-}
-
-/// The Approval Rule kind and target a Web disclosure is judged by.
-fn disclosure_rule(
-	operation: aidash_domain::research::Operation,
-	provider: &str,
-	destination: &str,
-) -> (ApprovalKind, String) {
-	match operation {
-		aidash_domain::research::Operation::Search => (ApprovalKind::WebSearch, provider.into()),
-		_ => (ApprovalKind::PageReading, destination.into()),
 	}
 }
 
@@ -361,8 +342,6 @@ fn target_of(
 			let tool = ToolCallTarget::from_record(&record.data)?;
 			let operation = record.data["operation"].as_str().unwrap_or_default();
 			(tool_resource(scope, &tool, operation, run), CALL_UNAPPROVED)
-		} else if record.kind == DISCLOSURE || grants(record, DISCLOSE) {
-			(disclosure_resource(scope, target, run), DISCLOSE)
 		} else {
 			(resource(scope, target, run), "network.get")
 		},
@@ -532,7 +511,7 @@ pub async fn prepare(
 		g.data["targets"]
 			.as_array()
 			.is_some_and(|a| a.contains(&json!(origin)))
-			// Outbound reads, Web disclosures and tool calls never share a grant.
+			// Outbound reads and tool calls never share a grant.
 			&& g.data["actions"]
 				.as_array()
 				.is_some_and(|a| a.contains(&json!("network.get")))
@@ -639,14 +618,6 @@ fn rule_of(record: &Record) -> Result<(ApprovalKind, String)> {
 			(ApprovalKind::Sampling, target.allow_target())
 		}
 		OUTBOUND => (ApprovalKind::Outbound, text(&data["targets"][0])?),
-		DISCLOSURE => {
-			let operation = serde_json::from_value(data["operation"].clone())?;
-			disclosure_rule(
-				operation,
-				&text(&data["provider"])?,
-				&text(&data["destination"])?,
-			)
-		}
 		_ => (
 			ApprovalKind::ToolCall,
 			tool_rule_target(&text(&data["tool"])?, &text(&data["operation"])?),
@@ -741,7 +712,7 @@ pub async fn decide(
 		return Err(Error::Conflict("APPROVAL_STALE_OR_EXPIRED".into()));
 	}
 	if run.control == RunControl::Cancelled || run.phase.is_terminal() {
-		// A disclosure or tool call approval ends with its Run. One its Run's
+		// A tool call approval ends with its Run. One its Run's
 		// end did not already close is closed now, with the reason, instead of
 		// failing forever.
 		if record.kind != OUTBOUND {
@@ -816,17 +787,19 @@ pub async fn decide(
 			}
 			let mut data = json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"operation":record.data["operation"]});
 			// What a grant covers beyond its destination depends on the approval.
-			// A tool grant outlives new user input, so it has no context revision.
+			// A tool grant outlives new user input unless the call named the
+			// context revision it was made at, as page reading does (#987).
 			if record.kind == SAMPLING {
 				data["sampling_target"] = record.data["sampling_target"].clone();
 			} else if record.kind == TOOL_CALL {
 				data["tool"] = record.data["tool"].clone();
 				data["version"] = record.data["version"].clone();
 				data["plugin_tool"] = record.data["plugin_tool"].clone();
+				if !record.data["context_revision"].is_null() {
+					data["context_revision"] = record.data["context_revision"].clone();
+				}
 			} else {
 				data["context_revision"] = record.data["context_revision"].clone();
-				data["provider"] = record.data["provider"].clone();
-				data["attribution"] = record.data["attribution"].clone();
 			}
 			let grant = scope
 				.insert(Creation {
@@ -947,26 +920,6 @@ pub async fn authorize(scope: &mut dyn ApprovalScope, record: &Record) -> Result
 	Ok(run)
 }
 
-/// One exact Web disclosure awaiting or holding approval.
-#[derive(Debug, Clone)]
-pub struct DisclosureRequest {
-	pub digest: String,
-	pub operation: aidash_domain::research::Operation,
-	pub provider: String,
-	pub destination: String,
-	pub content: String,
-	/// The Run's observed input sequence. Approvals and Run grants cover only
-	/// disclosures made before new user input.
-	pub context_revision: i64,
-	/// The Run's Working Area, so the approval appears in its Thread.
-	pub area: Option<Uuid>,
-	/// The Research account holder's account and price when approval is
-	/// requested; the approver sees the price, not the current terms.
-	pub attribution: Option<aidash_domain::research::account::CostAttribution>,
-	/// The validated search query in provider-independent form.
-	pub query: Option<Value>,
-}
-
 /// A cache key derived from a digest, in the namespace of one approval kind.
 fn derived_key(parts: Value) -> Uuid {
 	let bytes = aidash_domain::registry::rules::digest(&parts);
@@ -977,42 +930,7 @@ fn derived_key(parts: Value) -> Uuid {
 	}
 	uuid::Builder::from_random_bytes(id).into_uuid()
 }
-fn disclosure_key(digest: &str, generation: u32) -> Uuid {
-	derived_key(json!([DISCLOSURE, digest, generation]))
-}
-
-/// The newest recorded generation of one exact disclosure and its cache entry.
-/// Generations are recorded in order, and a new one is recorded only once every
-/// earlier one is consumed, so the newest alone decides admission. Exponential
-/// then binary search keeps the lookups logarithmic in the generations used.
-async fn newest_disclosure(
-	scope: &mut dyn ApprovalScope,
-	digest: &str,
-) -> Result<Option<(u32, Value)>> {
-	let Some(mut newest) = scope.cached(disclosure_key(digest, 0), digest).await? else {
-		return Ok(None);
-	};
-	// `low` is recorded; `high` is not, or is past the last representable one.
-	let (mut low, mut high) = (0u32, 1u32);
-	while let Some(entry) = scope.cached(disclosure_key(digest, high), digest).await? {
-		(low, newest) = (high, entry);
-		let Some(next) = high.checked_mul(2) else {
-			high = u32::MAX;
-			break;
-		};
-		high = next;
-	}
-	while high - low > 1 {
-		let middle = low + (high - low) / 2;
-		match scope.cached(disclosure_key(digest, middle), digest).await? {
-			Some(entry) => (low, newest) = (middle, entry),
-			None => high = middle,
-		}
-	}
-	Ok(Some((low, newest)))
-}
-
-/// Whether an approved disclosure or tool call of `run` still admits what it
+/// Whether an approved tool call of `run` still admits what it
 /// approved: the approval has not expired, current policy does not forbid it,
 /// and unless policy now permits it directly, its approver is still eligible
 /// and an "allow for this Run" decision's grant is still active. As
@@ -1055,168 +973,6 @@ async fn still_approved(scope: &mut dyn ApprovalScope, run: &Run, record: &Recor
 			.is_some_and(|targets| targets.contains(&json!(destination))))
 }
 
-/// Admit one exact Web disclosure of a Run. Policy may permit it directly or
-/// through a Run grant; otherwise an Eligible approver decides through the
-/// ordinary approval decision, and the Run waits on the returned approval.
-/// An approval is consumed by the one disclosure it allows; repeating the same
-/// disclosure later needs a new approval.
-pub async fn disclose(
-	scope: &mut dyn ApprovalScope,
-	run: &Run,
-	request: &DisclosureRequest,
-) -> Result<crate::ports::research::DisclosureState> {
-	use crate::ports::research::DisclosureState;
-	let limits = scope.limits()?;
-	if run.phase.is_terminal() || run.control == RunControl::Cancelled {
-		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
-	}
-	let target = disclosure_resource(scope, &request.destination, run.id);
-	match scope.require(&target, "capability.request").await {
-		Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
-		other => other?,
-	}
-	let generation = match newest_disclosure(scope, &request.digest).await? {
-		None => 0,
-		Some((generation, previous)) => {
-			let id = serde_json::from_value(previous["operation_id"].clone())?;
-			let record = scope.load(id, DISCLOSURE).await?;
-			let expired = record.expires_at.is_some_and(|t| t <= Utc::now());
-			match record.state.as_str() {
-				// Every otherwise-admissible repetition gets its own generation.
-				"consumed" => generation
-					.checked_add(1)
-					.ok_or_else(|| Error::Conflict("DISCLOSURE_GENERATIONS_EXHAUSTED".into()))?,
-				// Consumed only once the attempt is reserved; see consume_disclosure.
-				// An expired or no longer authorized approval admits nothing.
-				"approved" => {
-					return Ok(if still_approved(scope, run, &record).await? {
-						DisclosureState::Approved {
-							approval_id: record.id,
-						}
-					} else {
-						DisclosureState::Denied
-					});
-				}
-				"pending" if !expired => {
-					return Ok(DisclosureState::Pending {
-						approval_id: record.id,
-						expires_at: record.expires_at,
-					});
-				}
-				_ => return Ok(DisclosureState::Denied),
-			}
-		}
-	};
-	let direct = match ordinary(scope, &target, DISCLOSE) {
-		Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
-		other => other?,
-	};
-	let grant = scope.grants(run.id).await?.into_iter().find(|g| {
-		g.data["targets"]
-			.as_array()
-			.is_some_and(|a| a.contains(&json!(request.destination)))
-			&& g.data["actions"]
-				.as_array()
-				.is_some_and(|a| a.contains(&json!(DISCLOSE)))
-			// A grant covers what the approver was told it covers: a search
-			// grant only later searches through its provider, charged to the
-			// same Research account at the same price, a Page reading grant
-			// only page readings of its host, through any provider.
-			&& g.data["operation"] == json!(request.operation)
-			&& (request.operation != aidash_domain::research::Operation::Search
-				|| (g.data["provider"] == json!(request.provider)
-					&& g.data["attribution"] == json!(request.attribution)))
-			&& g.data["subjects"] == json!(scope.subjects())
-			// New user input needs a new decision, as for one-time approvals.
-			&& g.data["context_revision"] == json!(request.context_revision)
-			&& eligible(
-				scope,
-				g.data["approver"].as_str().unwrap_or_default(),
-				&g.owner,
-				&target,
-			)
-	});
-	// `approver` names who gave the approval, once someone has (ADR 0135).
-	let given = grant
-		.as_ref()
-		.and_then(|g| g.data["approver"].as_str().map(str::to_owned));
-	let approvable = given.is_some() || any_approver(scope, &target);
-	let advice = if direct || grant.is_some() {
-		Advice::Ask
-	} else {
-		let (kind, name) =
-			disclosure_rule(request.operation, &request.provider, &request.destination);
-		advise(scope, run, kind, &name, &target).await?
-	};
-	let state = approvals::requested_state(direct, grant.is_some(), approvable);
-	let state = advice.state("approved").unwrap_or(state);
-	let id = Uuid::new_v4();
-	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
-		"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,"attribution":request.attribution,"query":request.query,
-		"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":given,"grant_id":grant.map(|g|g.id),"ordinary":direct});
-	advice.record(&mut data);
-	let record = scope
-		.insert(Creation {
-			id,
-			area: request.area,
-			kind: DISCLOSURE,
-			// A direct or granted disclosure is consumed by this call.
-			state: if state == "approved" {
-				"consumed"
-			} else {
-				state
-			},
-			data,
-			expires: Some(Utc::now() + Duration::seconds(limits.approval_seconds as i64)),
-		})
-		.await?;
-	scope
-		.cache(
-			disclosure_key(&request.digest, generation),
-			&request.digest,
-			&json!({"operation_id":id}),
-		)
-		.await?;
-	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"action":DISCLOSE})).await?;
-	Ok(match state {
-		"approved" => DisclosureState::Permitted,
-		"pending" => DisclosureState::Pending {
-			approval_id: id,
-			expires_at: record.expires_at,
-		},
-		_ => DisclosureState::Denied,
-	})
-}
-
-/// Consume a one-time Web disclosure approval of `run`, owned by the current
-/// principal. `false` when it is no longer an unconsumed approval that is
-/// unexpired and still authorized; the disclosure must then not be sent.
-pub async fn consume_disclosure(
-	scope: &mut dyn ApprovalScope,
-	run: &Run,
-	id: Uuid,
-) -> Result<bool> {
-	let mut record = match scope.load(id, DISCLOSURE).await {
-		Err(Error::NotFound(_)) => return Ok(false),
-		other => other?,
-	};
-	if record.owner != scope.principal()
-		|| record.data["run_id"] != json!(run.id)
-		|| record.state != "approved"
-		|| !still_approved(scope, run, &record).await?
-	{
-		return Ok(false);
-	}
-	record.state = "consumed".into();
-	record.data["consumed_at"] = json!(Utc::now());
-	match scope.update(&mut record).await {
-		// The approval changed since it was loaded: another call consumed it,
-		// or an Evidence Revocation closed it. Either wins the race.
-		Err(Error::Conflict(_)) => Ok(false),
-		other => other.map(|()| true),
-	}
-}
-
 /// Admit one exact call of a Tenant's HTTP or MCP tool. Policy may permit it
 /// directly (`tool.call_unapproved`) or through a Run grant; otherwise a
 /// Eligible approver decides through the ordinary approval decision and the
@@ -1243,7 +999,7 @@ pub async fn tool_call(
 		let record = scope.load(id, TOOL_CALL).await?;
 		return recorded_tool_call(scope, run, record).await;
 	}
-	let destination = tool_target(&request.tool, &request.operation);
+	let destination = tool_target(&request.tool, &request.operation, request.host.as_deref());
 	let target = tool_resource(scope, &request.tool, &request.operation, run.id);
 	let direct = match ordinary(scope, &target, CALL_UNAPPROVED) {
 		Err(Error::Forbidden) => return Ok(ToolCallApproval::Refused(Refusal::Forbidden)),
@@ -1254,13 +1010,17 @@ pub async fn tool_call(
 	if request.read_only {
 		return Ok(ToolCallApproval::Approved { approval_id: None });
 	}
-	// Unlike a Web disclosure's, a tool grant outlives new user input: the tool's
-	// destination is fixed by the Tenant, not chosen from the conversation.
+	// A tool grant outlives new user input: the tool's destination is fixed by
+	// the Tenant, not chosen from the conversation. Page reading's host is
+	// chosen from it, so its grant ends at the next user input (#987).
 	let grant = scope.grants(run.id).await?.into_iter().find(|g| {
 		grants(g, CALL_UNAPPROVED)
 			&& g.data["targets"]
 				.as_array()
 				.is_some_and(|a| a.contains(&json!(destination)))
+			&& request
+				.context_revision
+				.is_none_or(|revision| g.data["context_revision"] == json!(revision))
 			&& g.data["subjects"] == json!(scope.subjects())
 			&& eligible(
 				scope,
@@ -1284,7 +1044,7 @@ pub async fn tool_call(
 	let state = advice.state("approved").unwrap_or(state);
 	let id = Uuid::new_v4();
 	let mut data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
-		"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,
+		"operation":request.operation,"call":request.call,"invocation_key":request.key,"targets":[destination],"action":CALL_UNAPPROVED,"context_revision":request.context_revision,
 		"digest":digest,"policy_revision":scope.policy_revision(),"approver":given,"grant_id":grant.map(|g|g.id),"ordinary":direct});
 	if let (Some(data), Some(target)) = (data.as_object_mut(), request.tool.record().as_object()) {
 		data.extend(target.clone());
@@ -1369,8 +1129,8 @@ async fn recorded_tool_call(
 	record.data["consumed_at"] = json!(Utc::now());
 	match scope.update(&mut record).await {
 		Ok(()) => Ok(settled_tool_call(&record)),
-		// The approval changed since it was loaded: an Evidence Revocation closed
-		// it or the approver revoked it. That wins the race.
+		// The approval changed since it was loaded: it was closed meanwhile
+		// or the approver revoked it. That wins the race.
 		Err(Error::Conflict(_)) => {
 			let current = scope.load(record.id, &record.kind).await?;
 			Ok(settled_tool_call(&current))

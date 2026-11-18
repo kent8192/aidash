@@ -1316,7 +1316,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			"beta",
 			&snapshot,
 			true,
-			Default::default(),
+			aidash_domain::data_protection::Level::LOWEST,
 			&Default::default()
 		)
 		.await
@@ -1340,7 +1340,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		"beta",
 		&snapshot,
 		true,
-		Default::default(),
+		aidash_domain::data_protection::Level::LOWEST,
 		&Default::default(),
 	)
 	.await
@@ -1452,7 +1452,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		"beta",
 		&snapshot,
 		true,
-		Default::default(),
+		aidash_domain::data_protection::Level::LOWEST,
 		&Default::default(),
 	)
 	.await
@@ -1570,7 +1570,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			"beta",
 			&snapshot,
 			true,
-			Default::default(),
+			aidash_domain::data_protection::Level::LOWEST,
 			&Default::default()
 		)
 		.await
@@ -1594,7 +1594,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			"beta",
 			&snapshot,
 			true,
-			Default::default(),
+			aidash_domain::data_protection::Level::LOWEST,
 			&Default::default()
 		)
 		.await
@@ -1609,7 +1609,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 			"beta",
 			&snapshot,
 			false,
-			Default::default(),
+			aidash_domain::data_protection::Level::LOWEST,
 			&Default::default()
 		)
 		.await

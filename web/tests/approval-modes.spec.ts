@@ -482,7 +482,7 @@ test("Approval Rules are listed, added with inline server errors, and deleted", 
         effective: false,
       }),
       rule("deny-all", {
-        kind: "page_reading",
+        kind: "generation",
         target: "every",
         effect: "deny",
       }),
@@ -498,7 +498,7 @@ test("Approval Rules are listed, added with inline server errors, and deleted", 
   await expect(row("https://example.com")).toContainText(
     "Disabled by your Tenant's policy",
   );
-  await expect(row("Every target")).toContainText("Page reading");
+  await expect(row("Every target")).toContainText("Generation");
   await expect(row("Every target")).toContainText("Deny");
 
   // The shape a kind expects is explained before it is entered.
@@ -532,7 +532,7 @@ test("Approval Rules are listed, added with inline server errors, and deleted", 
     target: { exact: "tool:wiki#read" },
   });
 
-  await page.getByLabel("Kind", { exact: true }).selectOption("web_search");
+  await page.getByLabel("Kind", { exact: true }).selectOption("sampling");
   await page.getByLabel("Effect", { exact: true }).selectOption("deny");
   await page
     .getByRole("checkbox", { name: /Every target of this kind/ })
@@ -540,10 +540,10 @@ test("Approval Rules are listed, added with inline server errors, and deleted", 
   await expect(page.getByLabel("Target", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Add rule" }).click();
   await expect(
-    row("Every target").filter({ hasText: "Web search" }),
+    row("Every target").filter({ hasText: "Sampling" }),
   ).toBeVisible();
   expect(calls.rules.at(-1)).toEqual({
-    kind: "web_search",
+    kind: "sampling",
     effect: "deny",
     target: "every",
   });

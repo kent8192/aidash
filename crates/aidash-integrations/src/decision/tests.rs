@@ -216,7 +216,27 @@ impl Drop for Server {
 		self.0.abort();
 	}
 }
+/// OpenRouter's ZDR list for every Decider model and host these tests use;
+/// a call held to Safety Retention or Zero Data Retention reads it (#961).
+fn zdr_catalog() -> Value {
+	json!({"data":[
+		{"model_id":"typesafe/jev-1.13","tag":"typesafe","safety_retention":false},
+		{"model_id":"typesafe/jev-1.13","tag":"kept","safety_retention":true},
+		{"model_id":"typesafe/jev-1.14","tag":"typesafe","safety_retention":false},
+		{"model_id":"cloudflare/clef","tag":"cloudflare","safety_retention":false},
+		{"model_id":"cloudflare/clef","tag":"deepinfra","safety_retention":false}
+	]})
+}
 async fn server(router: Router) -> (String, Server) {
+	let router = router
+		.route(
+			"/endpoints/zdr",
+			axum::routing::get(|| async { Json(zdr_catalog()) }),
+		)
+		.route(
+			"/api/v1/endpoints/zdr",
+			axum::routing::get(|| async { Json(zdr_catalog()) }),
+		);
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	// The catalog or broker base URL; dispatch appends `/systemone`.
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -932,4 +952,52 @@ async fn physical_dispatch_retains_verified_provider_facts_even_when_answers_are
 		}
 	}
 	assert_eq!(calls.load(Ordering::SeqCst), 7);
+}
+
+#[tokio::test]
+async fn strict_zero_data_retention_pins_a_system_one_body_to_strict_routes() {
+	let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+	let collected = bodies.clone();
+	let router = Router::new().route(
+		"/systemone",
+		post(move |bytes: axum::body::Bytes| {
+			let bodies = collected.clone();
+			async move {
+				let body: Value = serde_json::from_slice(&bytes).unwrap();
+				bodies.lock().unwrap().push(body);
+				Json(json!({"model":"typesafe/jev-1.13","answers":{"q0":{"noul":0.5}}}))
+			}
+		}),
+	);
+	let (endpoint, _server) = server(router).await;
+	let mut context = run_context();
+	context.data_protection = aidash_domain::data_protection::DataProtection {
+		level: aidash_domain::data_protection::Level::ZeroDataRetention,
+		..Default::default()
+	};
+	let client = RouteDecisionProvider::new(
+		config(),
+		"node-decision-adapter:23".into(),
+		AccessFixture::new(&endpoint),
+		context,
+		Arc::new(CapacityFixture(None)),
+		Duration::from_secs(5),
+	)
+	.unwrap();
+	let request = client
+		.plan(0, &json!({"goal":"authorized"}), &questions(1))
+		.unwrap()
+		.remove(0);
+	client
+		.prepare(0, &request, Uuid::now_v7())
+		.await
+		.unwrap()
+		.dispatch()
+		.await
+		.unwrap();
+	// `kept` is Safety Retention, so only the strict route is listed.
+	assert_eq!(
+		bodies.lock().unwrap()[0]["provider"],
+		json!({"zdr":true,"only":["typesafe"]})
+	);
 }

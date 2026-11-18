@@ -7,14 +7,38 @@ import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
 import type { CatalogModel } from "./generated/models";
 import { Field, useI18n } from "./ui";
+import { apiFetch } from "./transport";
+
+type Level =
+  | "no_restriction"
+  | "no_training"
+  | "safety_retention"
+  | "zero_data_retention";
+
+/** Whether a call held to `level` can use a model (#963), or why not. */
+export function zdrRefusal(
+  routes: CatalogModel["zero_data_retention"],
+  level: Level | undefined,
+): "safety_retention_only" | "no_zdr_route" | null {
+  if (!level || !routes) return null;
+  if (level === "zero_data_retention" && routes !== "strict")
+    return routes === "safety_retention_only"
+      ? "safety_retention_only"
+      : "no_zdr_route";
+  if (level === "safety_retention" && routes === "none") return "no_zdr_route";
+  return null;
+}
 
 /** The server's closed list of Token Encodings. */
 export const TOKEN_ENCODINGS = ["o200k_base", "gemma4"] as const;
 
 export function OpenRouterModelPicker({
   onNameChange,
+  tenant,
 }: {
   onNameChange?: (name: string) => void;
+  /** Only a Tenant Administrator can read the level; others see no refusals. */
+  tenant?: string;
 }) {
   const { t, locale } = useI18n();
   const listId = useId();
@@ -28,6 +52,16 @@ export function OpenRouterModelPicker({
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
+  const protection = useQuery({
+    queryKey: ["data-protection", tenant],
+    enabled: Boolean(tenant),
+    queryFn: () =>
+      apiFetch<{ effective: { level: Level } }>(
+        `/api/tenants/${encodeURIComponent(tenant ?? "")}/data-protection`,
+      ),
+    retry: false,
+  });
+  const level = protection.data?.effective.level;
   const models = catalog.data?.models ?? [];
   const selected = models.find((m) => m.id === selectedId);
   const effortLevels = (selected?.reasoning?.supported_efforts ?? []).filter(
@@ -51,6 +85,7 @@ export function OpenRouterModelPicker({
     );
   };
   const choose = (model: CatalogModel) => {
+    if (zdrRefusal(model.zero_data_retention, level)) return;
     setSelectedId(model.id);
     setSearch(`${model.name} · ${model.id}`);
     setOpen(false);
@@ -116,30 +151,43 @@ export function OpenRouterModelPicker({
             id={listId}
             aria-label={t("modelId")}
           >
-            {matches.map((model, index) => (
-              <button
-                type="button"
-                role="option"
-                id={`${listId}-${index}`}
-                key={model.id}
-                aria-selected={index === active}
-                tabIndex={-1}
-                ref={(element) => {
-                  if (index === active)
-                    element?.scrollIntoView({ block: "nearest" });
-                }}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => choose(model)}
-                className="grid min-w-0 cursor-pointer gap-0.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 hover:bg-accent aria-selected:bg-brand-soft"
-              >
-                <span className="truncate text-[13px] font-medium text-foreground">
-                  {model.name}
-                </span>
-                <span className="truncate font-mono text-[11px] text-muted-foreground">
-                  {model.id}
-                </span>
-              </button>
-            ))}
+            {matches.map((model, index) => {
+              const refusal = zdrRefusal(model.zero_data_retention, level);
+              return (
+                <button
+                  type="button"
+                  role="option"
+                  id={`${listId}-${index}`}
+                  key={model.id}
+                  aria-selected={index === active}
+                  aria-disabled={refusal !== null}
+                  tabIndex={-1}
+                  ref={(element) => {
+                    if (index === active)
+                      element?.scrollIntoView({ block: "nearest" });
+                  }}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => choose(model)}
+                  className="grid min-w-0 cursor-pointer gap-0.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 hover:bg-accent aria-selected:bg-brand-soft"
+                >
+                  <span className="truncate text-[13px] font-medium text-foreground">
+                    {model.name}
+                  </span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                    {model.id}
+                  </span>
+                  {refusal && (
+                    <span className="text-[11px] text-destructive">
+                      {t(
+                        refusal === "safety_retention_only"
+                          ? "modelSafetyRetentionOnly"
+                          : "modelNoZdrRoute",
+                      )}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
             {!catalog.isPending && !catalog.isError && matches.length === 0 && (
               <p
                 role="status"

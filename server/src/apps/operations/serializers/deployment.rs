@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 #[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct DeploymentSettings {
 	/// Minimum Data Protection Level for every Tenant on this Deployment.
-	#[setting(default = "aidash_domain::data_protection::Level::Standard", leaf)]
+	#[setting(default = "aidash_domain::data_protection::Level::LOWEST", leaf)]
 	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// Origins of models hosted by this Deployment, not merely network-permitted.
 	#[setting(default = "Vec::new()", leaf)]

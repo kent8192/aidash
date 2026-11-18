@@ -204,14 +204,6 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
         label: "Outbound request",
         help: "An origin, as https://host with no path.",
       },
-      web_search: {
-        label: "Web search",
-        help: "A Research provider and its version, as <provider>@<version>.",
-      },
-      page_reading: {
-        label: "Page reading",
-        help: "A page host in lowercase, without scheme, port or path.",
-      },
       generation: {
         label: "Generation",
         help: "A Generation policy id.",
@@ -238,7 +230,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     retry: "Retry",
     bypassTitle: "Use Bypass?",
     bypassBody: [
-      "Bypass approves, without asking you, every approval that your Tenant's policy lets you give for your own Runs. That includes tool calls, outbound requests, Web disclosures and generated requests.",
+      "Bypass approves, without asking you, every approval that your Tenant's policy lets you give for your own Runs. That includes tool calls, outbound requests and generated requests.",
       "Deny and ask rules still apply, and your Tenant's policy still bounds what Bypass can approve. Aidash records each approval under your name, naming Bypass.",
       "You can switch to another mode at any time, and a change applies to Runs that are already running.",
     ],
@@ -389,14 +381,6 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
         label: "外部接続",
         help: "パスを含まない https://host 形式の origin です。",
       },
-      web_search: {
-        label: "Web 検索",
-        help: "Research provider とそのバージョンを <provider>@<version> で指定します。",
-      },
-      page_reading: {
-        label: "ページ読み取り",
-        help: "スキーム・ポート・パスを含まない小文字のホスト名です。",
-      },
       generation: {
         label: "生成",
         help: "Generation policy の ID です。",
@@ -424,7 +408,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     retry: "再試行",
     bypassTitle: "Bypass を使いますか？",
     bypassBody: [
-      "Bypass は、自分の Run について Tenant のポリシーが認める承認を、あなたに確認せずにすべて与えます。ツール呼び出し、外部接続、Web 開示、生成リクエストが含まれます。",
+      "Bypass は、自分の Run について Tenant のポリシーが認める承認を、あなたに確認せずにすべて与えます。ツール呼び出し、外部接続、生成リクエストが含まれます。",
       "deny と ask のルールは引き続き適用され、Bypass が承認できる範囲も Tenant のポリシーが決めます。Aidash は与えた承認を、Bypass によるものとしてあなたの名前で記録します。",
       "モードはいつでも切り替えられ、変更は実行中の Run にも反映されます。",
     ],

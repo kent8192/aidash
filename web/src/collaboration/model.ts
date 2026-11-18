@@ -68,7 +68,6 @@ export type IntegratedView =
   | "progress"
   | "generation"
   | "authorization"
-  | "evidence"
   | "semantic";
 export type Destination =
   | "collaboration"
@@ -132,8 +131,7 @@ export function resolveLocation(pathname: string, search = ""): Location {
   const integration =
     (name === "collaboration" && ["files", "progress"].includes(params.view)) ||
     (name === "creator" && params.view === "generation") ||
-    (name === "trust" &&
-      (params.view === "authorization" || params.view === "evidence")) ||
+    (name === "trust" && params.view === "authorization") ||
     (name === "settings" &&
       params.view === "registry" &&
       params.focus === "semantic")

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ports::execution::media::MediaAttachment;
-use aidash_domain::media::{ModelMedia, PageImageSelection};
+use aidash_domain::media::ModelMedia;
 use aidash_domain::model::MediaRouteEvidence;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -597,7 +597,6 @@ struct FileScope {
 	denied: bool,
 	read_fault: Option<Uuid>,
 	subnode_area: Option<(Uuid, Uuid)>,
-	page_images: BTreeMap<String, (String, Vec<u8>)>,
 	thread_attachments: BTreeMap<Uuid, (String, String, Vec<u8>)>,
 }
 #[fixture]
@@ -622,7 +621,6 @@ fn file_scope() -> FileScope {
 		denied: false,
 		read_fault: None,
 		subnode_area: None,
-		page_images: BTreeMap::new(),
 		thread_attachments: BTreeMap::new(),
 	}
 }
@@ -759,10 +757,6 @@ impl SelectedMediaScope for FileScope {
 			.thread_attachments
 			.get(&selection.attachment_id)
 			.cloned())
-	}
-	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
-		self.calls.push(("page_image", Uuid::nil()));
-		Ok(self.page_images.get(reference).cloned())
 	}
 }
 
@@ -1039,42 +1033,6 @@ const PIXEL: [u8; 67] = [
 	0, 0, 58, 126, 155, 85, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 104, 0, 0, 0, 130, 0, 129,
 	119, 205, 114, 182, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
-
-#[rstest]
-#[tokio::test]
-async fn page_images_need_no_file_authority_and_must_keep_their_digest(mut file_scope: FileScope) {
-	// Arrange: file access would be denied; a page image is the Run's evidence.
-	file_scope.denied = true;
-	file_scope
-		.page_images
-		.insert("ev_page".into(), ("image/png".into(), PIXEL.to_vec()));
-	let page = |reference: &str, digest: String| {
-		ModelMedia::PageImage(PageImageSelection {
-			evidence_ref: reference.into(),
-			expected_digest: digest,
-		})
-	};
-	let digest = format!("sha256:{:x}", Sha256::digest(PIXEL));
-	// Act
-	let output = selected(&mut file_scope, &[page("ev_page", digest.clone())])
-		.await
-		.unwrap();
-	// Assert
-	assert_eq!(output.len(), 2);
-	assert_eq!(file_scope.calls, vec![("page_image", Uuid::nil())]);
-	assert!(matches!(
-		selected(&mut file_scope, &[page("ev_page", "sha256:00".into())]).await,
-		Err(Error::Conflict(ref message)) if message == "PAGE_IMAGE_CHANGED"
-	));
-	// A revoked page cannot stop the Run: the model is told it is gone.
-	let revoked = selected(&mut file_scope, &[page("ev_missing", digest)])
-		.await
-		.unwrap();
-	assert!(matches!(
-		revoked.as_slice(),
-		[ContentPart::Text(note)] if note == "Page image unavailable: ev_missing was revoked."
-	));
-}
 
 #[rstest]
 #[case::chat(false, 2)]
