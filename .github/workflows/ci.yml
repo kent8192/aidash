@@ -168,9 +168,11 @@ jobs:
     needs: scope
     if: needs.scope.outputs.mode == 'full'
     runs-on: ubuntu-latest
-    # The slowest of 400 successful shards took 47 min (2026-10-17). A hang that
-    # no test bound catches then fails here instead of at the 6 h limit (#320).
-    timeout-minutes: 120
+    # A hang that no test bound catches fails here instead of at the 6 h limit
+    # (#320). The slowest successful shard took 47 min on 2026-10-17, but green
+    # identity shards took 110–119 min on 2026-11-17, and slower runners were
+    # cancelled at 120 while their tests still passed (#1003).
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
