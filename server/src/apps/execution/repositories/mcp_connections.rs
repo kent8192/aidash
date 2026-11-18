@@ -291,7 +291,8 @@ impl Sessions {
 }
 
 /// How the Credential Broker, or a self-hosted transport, attaches a server's pasted secret:
-/// `Authorization` carries `Bearer <value>`, any other header the raw value.
+/// `Authorization` carries `Bearer <value>` unless the definition chose `form: raw`, which sends
+/// the raw value as an ordinary `Authorization` header; any other header carries the raw value.
 pub(crate) fn attach(
 	secret: &aidash_domain::agent_plugin::ServerSecret,
 ) -> aidash_capability::tenant_secret::Attach {

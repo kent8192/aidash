@@ -1,8 +1,9 @@
 -- PostgreSQL cannot express validation function bodies as typed migration operations. DDL only.
 -- A server's `secret` mirrors ServerSecret: an object with a string `name`, an
--- optional string `header` and an optional `owner` of `any` or `personal`.
--- Domain validation checks the name and header rules; the earlier body still
--- checks every other key once `secret` is removed.
+-- optional string `header`, an optional `form` of `bearer` or `raw` and an
+-- optional `owner` of `any` or `personal`. Domain validation checks the name
+-- and header rules and that only `Authorization` takes the Bearer form; the
+-- earlier body still checks every other key once `secret` is removed.
 DO $$ DECLARE original text; copied text; BEGIN
  IF to_regprocedure('public.aidash_agent_before_plugin_secrets_0071(jsonb)') IS NOT NULL THEN
   RAISE EXCEPTION 'Agent Plugin secret contract backup already exists';
@@ -24,9 +25,10 @@ BEGIN
     CONTINUE WHEN jsonb_typeof(server_choice) <> 'object' OR NOT server_choice ? 'secret';
     secret := server_choice->'secret';
     IF jsonb_typeof(secret) <> 'object'
-    OR secret - ARRAY['name','header','owner']::text[] <> '{}'::jsonb
+    OR secret - ARRAY['name','header','form','owner']::text[] <> '{}'::jsonb
     OR jsonb_typeof(secret->'name') IS DISTINCT FROM 'string'
     OR (secret ? 'header' AND jsonb_typeof(secret->'header') <> 'string')
+    OR (secret ? 'form' AND NOT secret->'form' IN ('"bearer"'::jsonb,'"raw"'::jsonb))
     OR (secret ? 'owner' AND NOT secret->'owner' IN ('"any"'::jsonb,'"personal"'::jsonb)) THEN RETURN false; END IF;
     settings := jsonb_set(settings, ARRAY[plugin_name, server_name], server_choice - 'secret');
    END LOOP;

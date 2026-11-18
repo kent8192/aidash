@@ -12,6 +12,7 @@ import {
   readImport,
   readListing,
   describeSecret,
+  editSecret,
   isDeclaredReadOnly,
   serverSettings,
   skippedServers,
@@ -368,6 +369,49 @@ test("a server secret shows its header, form and owner, never a value", () => {
     { name: "k", header: "authorization", form: "bearer", owner: "personal" },
   );
   assert.equal(describeSecret({ name: "k", header: "X-Api-Key" }).form, "raw");
+  assert.equal(describeSecret({ name: "k", form: "raw" }).form, "raw");
+  assert.equal(
+    describeSecret({ name: "k", header: "authorization", form: "bearer" }).form,
+    "bearer",
+  );
+});
+
+test("an edited secret keeps a raw form only in Authorization", () => {
+  // Authorization defaults to Bearer; raw is kept, Bearer is the default and left out.
+  assert.deepEqual(editSecret({ name: "k" }, { form: "raw" }), {
+    name: "k",
+    form: "raw",
+  });
+  assert.deepEqual(
+    editSecret({ name: "k", form: "raw" }, { form: undefined }),
+    {
+      name: "k",
+    },
+  );
+  assert.deepEqual(editSecret({ name: "k" }, { form: "bearer" }), {
+    name: "k",
+  });
+  // Any other header always carries the raw value, so no form is written.
+  assert.deepEqual(
+    editSecret({ name: "k", form: "raw" }, { header: "X-Api-Key" }),
+    { name: "k", header: "X-Api-Key" },
+  );
+  assert.deepEqual(
+    editSecret({ name: "k", header: "X-Api-Key" }, { form: "bearer" }),
+    { name: "k", header: "X-Api-Key" },
+  );
+  // Defaults are left out, and a secret without a name is removed.
+  assert.deepEqual(
+    editSecret(
+      { name: "k", header: "X-Api-Key" },
+      { header: "", owner: "any" },
+    ),
+    { name: "k" },
+  );
+  assert.deepEqual(
+    editSecret({ name: "k", owner: "personal" }, { name: "" }),
+    undefined,
+  );
 });
 
 test("a listing is read with names and digests only, or a typed reason", () => {

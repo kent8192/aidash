@@ -63,6 +63,7 @@ fn secret(name: &str, header: &str) -> ServerSecret {
 	ServerSecret {
 		name: name.to_owned(),
 		header: header.to_owned(),
+		form: None,
 		owner: SecretOwner::Any,
 	}
 }
@@ -121,7 +122,7 @@ fn settings_round_trip_through_the_definition_and_the_settings_view() {
 #[case::a_field_nobody_defined(json!({"extra": true}))]
 #[case::a_read_only_declaration_without_a_digest(json!({"read_only": [{"name": "search"}]}))]
 #[case::a_secret_without_a_name(json!({"secret": {"header": "Authorization"}}))]
-#[case::a_secret_with_a_form(json!({"secret": {"name": "token", "form": "bearer"}}))]
+#[case::a_secret_with_a_form_nobody_defined(json!({"secret": {"name": "token", "form": "basic"}}))]
 #[case::a_read_only_declaration_with_a_field_nobody_defined(
 	json!({"read_only": [{"name": "search", "schema_digest": "x", "extra": 1}]})
 )]
@@ -346,8 +347,49 @@ fn a_secret_defaults_to_authorization_and_any_owner() {
 #[case::authorization("Authorization", true)]
 #[case::authorization_in_any_case("aUTHORIZATION", true)]
 #[case::another_header("X-Api-Key", false)]
-fn only_authorization_carries_the_bearer_form(#[case] header: &str, #[case] bearer: bool) {
+fn without_a_form_only_authorization_carries_the_bearer_form(
+	#[case] header: &str,
+	#[case] bearer: bool,
+) {
 	assert_eq!(secret("token", header).bearer(), bearer);
+}
+
+/// ADR 0073 (2026-10-23): the definition chooses raw or Bearer form; Authorization defaults to
+/// Bearer and other headers to raw. Bearer goes only in Authorization, which the broker can send.
+#[rstest]
+#[case::bearer_authorization("Authorization", Some(SecretForm::Bearer), true, true)]
+#[case::raw_authorization("Authorization", Some(SecretForm::Raw), true, false)]
+#[case::raw_authorization_in_any_case("authorization", Some(SecretForm::Raw), true, false)]
+#[case::raw_api_key("X-Api-Key", Some(SecretForm::Raw), true, false)]
+#[case::bearer_api_key("X-Api-Key", Some(SecretForm::Bearer), false, false)]
+fn a_form_chooses_raw_anywhere_and_bearer_only_in_authorization(
+	#[case] header: &str,
+	#[case] form: Option<SecretForm>,
+	#[case] ok: bool,
+	#[case] bearer: bool,
+) {
+	let mut chosen = secret("docs-token", header);
+	chosen.form = form;
+	let settings = on(
+		REMOTE,
+		ServerSettings {
+			secret: Some(chosen.clone()),
+			..Default::default()
+		},
+	);
+
+	assert_eq!(accepted(settings, false), ok);
+	assert_eq!(chosen.bearer(), bearer);
+}
+
+#[test]
+fn a_chosen_form_is_written_out_and_read_back() {
+	let stored = json!({"name": "docs-token", "header": "Authorization", "form": "raw"});
+
+	let secret: ServerSecret = serde_json::from_value(stored.clone()).unwrap();
+
+	assert_eq!(secret.form, Some(SecretForm::Raw));
+	assert_eq!(serde_json::to_value(&secret).unwrap(), stored);
 }
 
 #[test]

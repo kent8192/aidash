@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   SECRET_HEADER,
   describeSecret,
+  editSecret,
   isDeclaredReadOnly,
   readListing,
   serverSettings,
@@ -56,10 +57,7 @@ export function AgentPluginServerSettings({
   const update = (next: typeof settings) =>
     change(withServerSettings(config, plugin.name, server, next));
   const setSecret = (patch: Partial<NonNullable<typeof secret>>) => {
-    const next = { name: "", ...secret, ...patch };
-    if (next.header === "" || next.header === SECRET_HEADER) delete next.header;
-    if (next.owner !== "personal") delete next.owner;
-    update({ ...settings, secret: next.name ? next : undefined });
+    update({ ...settings, secret: editSecret(secret, patch) });
     // A listing made with the previous secret no longer applies, and its
     // answer is ignored, so it must not leave the form busy.
     request.current += 1;
@@ -125,6 +123,16 @@ export function AgentPluginServerSettings({
           />
         </Field>
       </div>
+      {described?.header.toLowerCase() === SECRET_HEADER.toLowerCase() && (
+        <Check
+          checked={secret?.form === "raw"}
+          onChange={(event) =>
+            setSecret({ form: event.target.checked ? "raw" : undefined })
+          }
+        >
+          {t("agentPluginSecretRawAuthorization")}
+        </Check>
+      )}
       <Check
         checked={secret?.owner === "personal"}
         disabled={!secret?.name}

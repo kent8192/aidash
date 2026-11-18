@@ -453,8 +453,12 @@ server comes first. Without one, the server uses the pasted secret its
 
 `name` is a Tenant Secret name. The person's own secret of that name wins over
 the shared Tenant Secret; `owner: personal` refuses the shared one. `header`
-defaults to `Authorization`, which carries `Bearer <value>`; any other header
-carries the raw value. The secret replaces a header of the plugin with the same
+defaults to `Authorization`. `form` is `bearer` or `raw`; without it,
+`Authorization` carries `Bearer <value>` and any other header the raw value.
+`form: raw` sends the raw value in `Authorization` too, for a server that
+expects `Authorization: <key>`. `form: bearer` is refused on any other header,
+because the Credential Broker sends the Bearer form only in `Authorization`.
+The secret replaces a header of the plugin with the same
 name, compared without case. A header name is refused when either the plugin
 transport's list above or the Credential Broker's rule refuses it: the broker
 accepts only letters, digits and `-`, and refuses `cookie`, `expect`,

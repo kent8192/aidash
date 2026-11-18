@@ -33,8 +33,8 @@ pub use reference::{
 };
 pub(crate) use settings::validate as validate_settings;
 pub use settings::{
-	MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, SECRET_HEADER, ServerSecret,
-	ServerSettings, server_secrets,
+	MAX_SERVER_TOOLS, MAX_TOOL_NAME, PluginSettings, ReadOnlyTool, SECRET_HEADER, SecretForm,
+	ServerSecret, ServerSettings, server_secrets,
 };
 pub use skills::PluginSkill;
 pub use tools::{

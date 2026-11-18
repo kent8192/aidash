@@ -337,6 +337,12 @@ export const SECRET_HEADER = "Authorization";
 export type ServerSecret = {
   name: string;
   header?: string;
+  /**
+   * `raw` sends the value as it is in `Authorization` too. Without it,
+   * `Authorization` carries `Bearer <value>` and any other header the raw
+   * value; `bearer` is valid only in `Authorization`.
+   */
+  form?: "bearer" | "raw";
   owner?: "any" | "personal";
 };
 export type ReadOnlyTool = { name: string; schema_digest: string };
@@ -398,7 +404,7 @@ export function withServerSettings(
 export type SecretDescription = {
   name: string;
   header: string;
-  /** `Authorization` carries `Bearer <value>`; any other header the raw value. */
+  /** `Authorization` carries `Bearer <value>` unless the form is `raw`; any other header the raw value. */
   form: "bearer" | "raw";
   /** `personal`: only the Run's person's own secret. `either`: theirs wins, the shared one otherwise. */
   owner: "personal" | "either";
@@ -410,10 +416,35 @@ export function describeSecret(secret: ServerSecret): SecretDescription {
   return {
     name: secret.name,
     header,
-    form:
-      header.toLowerCase() === SECRET_HEADER.toLowerCase() ? "bearer" : "raw",
+    form: secretBearer(header, secret.form) ? "bearer" : "raw",
     owner: secret.owner === "personal" ? "personal" : "either",
   };
+}
+
+/** Whether a secret in `header` goes as `Bearer <value>`: only in `Authorization`, unless its form is `raw`. */
+function secretBearer(header: string, form: ServerSecret["form"]): boolean {
+  return header.toLowerCase() === SECRET_HEADER.toLowerCase() && form !== "raw";
+}
+
+/**
+ * A server secret after one edit in the Agent form, as `ServerSecret` stores
+ * it: the default header and owner are left out, and so is a form that only
+ * repeats what the header implies. Only `Authorization` keeps `raw`; any
+ * other header always carries the raw value.
+ */
+export function editSecret(
+  secret: ServerSecret | undefined,
+  patch: Partial<ServerSecret>,
+): ServerSecret | undefined {
+  const next: ServerSecret = { name: "", ...secret, ...patch };
+  if (next.header === "" || next.header === SECRET_HEADER) delete next.header;
+  if (
+    next.form !== "raw" ||
+    (next.header ?? SECRET_HEADER).toLowerCase() !== SECRET_HEADER.toLowerCase()
+  )
+    delete next.form;
+  if (next.owner !== "personal") delete next.owner;
+  return next.name ? next : undefined;
 }
 
 export type AttachTool = { name: string; schema_digest: string };

@@ -38,11 +38,22 @@ fn secret_header() -> String {
 	SECRET_HEADER.to_owned()
 }
 
+/// How a [`ServerSecret`] goes in its header (ADR 0073, 2026-10-23 and 2026-11-16 amendments).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretForm {
+	/// `Bearer <value>`. Only `Authorization` carries it: the Credential Broker sends this form
+	/// in no other header.
+	Bearer,
+	/// The value as it is, in any header.
+	Raw,
+}
+
 /// A Tenant Secret, shared or personal, that one remote server of an Agent Plugin authenticates
 /// with (ADR 0073, amended 2026-11-16). The Run's person's personal secret of this name wins over
 /// the shared one at dispatch; `owner: personal` refuses the shared one. `Authorization` carries
-/// `Bearer <value>` and any other header the raw value. It replaces a plugin header of the same
-/// name, compared without case.
+/// `Bearer <value>` unless `form` is `raw`, and any other header the raw value. It replaces a
+/// plugin header of the same name, compared without case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServerSecret {
@@ -50,14 +61,18 @@ pub struct ServerSecret {
 	pub name: String,
 	#[serde(default = "secret_header")]
 	pub header: String,
+	/// Without it, `Authorization` takes the Bearer form and any other header the raw one.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub form: Option<SecretForm>,
 	#[serde(default, skip_serializing_if = "SecretOwner::is_any")]
 	pub owner: SecretOwner,
 }
 
 impl ServerSecret {
-	/// Whether the value goes as `Bearer <value>`: only in `Authorization`.
+	/// Whether the value goes as `Bearer <value>`: only in `Authorization`, unless the form is
+	/// `raw`. A Bearer form on another header is refused by [`Self::validate`] and never sent.
 	pub fn bearer(&self) -> bool {
-		self.header.eq_ignore_ascii_case(SECRET_HEADER)
+		self.header.eq_ignore_ascii_case(SECRET_HEADER) && self.form != Some(SecretForm::Raw)
 	}
 
 	/// The plugin's literal headers without the one this secret replaces.
@@ -81,6 +96,10 @@ impl ServerSecret {
 		}
 		if !super::secret_header_valid(&self.header) {
 			return Err("the secret header is owned by the transport or refused by the broker");
+		}
+		if self.form == Some(SecretForm::Bearer) && !self.header.eq_ignore_ascii_case(SECRET_HEADER)
+		{
+			return Err("only the Authorization header carries the Bearer form");
 		}
 		Ok(())
 	}
