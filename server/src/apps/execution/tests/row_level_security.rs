@@ -2,7 +2,7 @@
 //! sees them.
 use super::native_database::{DatabaseFixture, admin_pool, database, owner_pool};
 use aidash_application::tenancy::{TEST_FIXTURE, TenancyScope};
-use aidash_server::apps::identity::models::TenantRetentionRule;
+use aidash_server::apps::identity::models::TenantDataProtection;
 use aidash_server::database::scope::{SCOPE_SETTING, TENANT_SETTING};
 use aidash_server::database::{native, policy, runtime};
 use chrono::Utc;
@@ -207,11 +207,12 @@ async fn work_without_a_usable_scope_cannot_reach_tenant_owned_rows(
 	probe.drop().await;
 }
 
-fn rule(tenant: &str) -> TenantRetentionRule {
-	TenantRetentionRule {
+fn rule(tenant: &str) -> TenantDataProtection {
+	TenantDataProtection {
 		tenant: tenant.to_owned(),
-		snapshot_after_run_seconds: 60,
-		snapshot_max_age_seconds: 120,
+		level: "no_training".to_owned(),
+		forbid_plan_connections: false,
+		forbid_keyless_endpoints: false,
 		updated_at: Utc::now(),
 		updated_by: "deployment_administrator".to_owned(),
 	}
@@ -219,7 +220,7 @@ fn rule(tenant: &str) -> TenantRetentionRule {
 
 async fn rules(pool: &native::Pool, scope: &TenancyScope) -> aidash_server::Result<Vec<String>> {
 	pool.atomic(scope, async |tx| {
-		Ok(TenantRetentionRule::objects()
+		Ok(TenantDataProtection::objects()
 			.all()
 			.all_with_executor(tx)
 			.await
@@ -243,7 +244,7 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 	}
 	for tenant in ["acme", "beta"] {
 		pool.atomic(&TEST_FIXTURE, async |tx| {
-			TenantRetentionRule::objects()
+			TenantDataProtection::objects()
 				.create_with_conn(tx, &rule(tenant))
 				.await?;
 			Ok(())
@@ -255,7 +256,7 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 	let seen = rules(&pool, &acme).await.unwrap();
 	let foreign = pool
 		.atomic(&acme, async |tx| {
-			TenantRetentionRule::objects()
+			TenantDataProtection::objects()
 				.create_with_conn(tx, &rule("gamma"))
 				.await?;
 			Ok(())

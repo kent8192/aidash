@@ -1,20 +1,16 @@
-//! Document snapshots and the Evidence fragments delivered from them. A
-//! snapshot is immutable: continuations and fragments are bound to its text
-//! digest, so a later retrieval of the same address never changes them.
-use super::Operation;
+//! The readable text a page reader extracts from one retrieval of a public
+//! Web page. Page reading keeps none of it: each call reads the page again
+//! and returns one part of its text (#987).
 use crate::{Error, Result};
-use base64::Engine;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
-/// Text retained per snapshot, in UTF-8 bytes.
+/// Text read per page, in UTF-8 bytes.
 pub const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
 pub const MAX_LINES: usize = 20_000;
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
-/// The largest original a snapshot retains (ADR 0053).
+/// The largest original a reader may pass along with a PDF.
 pub const MAX_ORIGINAL_BYTES: usize = 16 * 1024 * 1024;
 /// The largest page count a snapshot records, the range its page numbers are
 /// stored in.
@@ -23,13 +19,9 @@ pub const MAX_PAGES: u32 = i32::MAX as u32;
 /// no more pages than this, and the list, like the rest of a result, must fit
 /// within [`super::MAX_RESULT_BYTES`].
 pub const MAX_PAGES_WITHOUT_TEXT: usize = 500;
-/// Bytes of snapshot text one fetch delivers, unless the call asks for fewer.
-pub const DEFAULT_DELIVERY_BYTES: usize = 8 * 1024;
-pub const MAX_DELIVERY_BYTES: usize = 16 * 1024;
-pub const MAX_FIND_MATCHES: usize = 10;
-pub const MAX_FIND_QUERY_CHARS: usize = 200;
-/// Identifies the folding rule a `find` result was computed with.
-pub const CASE_FOLDING: &str = "aidash-fold/1 (lowercase; ß and ẞ as ss)";
+/// Bytes one part of page text takes in the JSON result one call returns,
+/// counting every escape.
+pub const MAX_PART_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Line {
@@ -128,7 +120,7 @@ impl ExtractedPage {
 			.title
 			.as_ref()
 			.is_some_and(|title| title.len() > 512 || title.chars().any(char::is_control))
-			|| super::search::candidate_host(&self.url).is_none()
+			|| super::address::candidate_host(&self.url).is_none()
 			|| !self.raw_digest.starts_with("sha256:")
 		{
 			return Err(Error::Invalid(
@@ -151,269 +143,3 @@ impl ExtractedPage {
 		usize::try_from(count).is_ok_and(|count| pages.len() == count)
 	}
 }
-
-/// The longest edge of a page image `view` delivers, in pixels (ADR 0053).
-pub const MAX_PAGE_IMAGE_EDGE: u32 = 1568;
-/// The largest page image `view` delivers.
-pub const MAX_PAGE_IMAGE_BYTES: usize = 1024 * 1024;
-
-/// One page rendered from a retained original, as a PNG image.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RenderedPage {
-	pub media_type: String,
-	#[serde(with = "rendered_bytes")]
-	pub bytes: Vec<u8>,
-	pub width: u32,
-	pub height: u32,
-}
-
-impl RenderedPage {
-	/// Renderer output is untrusted; the host enforces the image bounds.
-	pub fn validate(&self) -> Result<()> {
-		if self.media_type != "image/png"
-			|| !self.bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-			|| self.bytes.len() > MAX_PAGE_IMAGE_BYTES
-			|| self.width == 0
-			|| self.height == 0
-			|| self.width.max(self.height) > MAX_PAGE_IMAGE_EDGE
-		{
-			return Err(Error::Invalid("rendered page violates image bounds".into()));
-		}
-		Ok(())
-	}
-	/// `sha256:` digest of the image bytes.
-	pub fn digest(&self) -> String {
-		format!("sha256:{:x}", Sha256::digest(&self.bytes))
-	}
-}
-
-/// Rendered bytes cross the child boundary as base64.
-mod rendered_bytes {
-	use base64::Engine;
-	use serde::{Deserialize, Deserializer, Serializer};
-	pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-		serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
-	}
-	pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-		let encoded = String::deserialize(deserializer)?;
-		base64::engine::general_purpose::STANDARD
-			.decode(encoded)
-			.map_err(serde::de::Error::custom)
-	}
-}
-
-/// `sha256:` digest of a snapshot's lines; it identifies the snapshot revision.
-pub fn text_digest(lines: &[Line]) -> String {
-	let encoded = serde_json::to_vec(lines).expect("serializable lines");
-	format!("sha256:{:x}", Sha256::digest(encoded))
-}
-
-/// A position in a snapshot: line index and byte offset within that line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Position {
-	pub line: usize,
-	pub offset: usize,
-}
-
-/// One delivered passage, before it is retained as an Evidence fragment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Passage {
-	pub text: String,
-	/// 1-based, inclusive.
-	pub line_start: usize,
-	pub line_end: usize,
-	pub pages: Vec<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Delivery {
-	pub passage: Passage,
-	pub next: Option<Position>,
-}
-
-/// Deliver at most `max_bytes` of text from `from`. Lines are joined with a
-/// newline; a line is split only at a character boundary. A positive budget
-/// smaller than the next character still delivers that one character, so
-/// every valid budget makes progress. When the separator after a completed
-/// line does not fit, the continuation stays at the end of that line and the
-/// next delivery begins with the separator, so no newline is ever lost.
-pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Delivery> {
-	let Position {
-		mut line,
-		mut offset,
-	} = from;
-	if line >= lines.len()
-		|| offset > lines[line].text.len()
-		|| !lines[line].text.is_char_boundary(offset)
-	{
-		return Err(Error::Invalid("invalid continuation position".into()));
-	}
-	if max_bytes == 0 {
-		return Err(Error::Invalid("max_bytes must be positive".into()));
-	}
-	let mut text = String::new();
-	let mut pages = Vec::new();
-	// A continuation at the end of a non-final line resumes with its separator.
-	if offset == lines[line].text.len() && line + 1 < lines.len() {
-		text.push('\n');
-		line += 1;
-		offset = 0;
-	}
-	let line_start = line + 1;
-	let mut line_end = line_start;
-	while line < lines.len() && text.len() < max_bytes {
-		let value = &lines[line].text;
-		let room = max_bytes - text.len();
-		let mut end = (offset + room).min(value.len());
-		while !value.is_char_boundary(end) {
-			end -= 1;
-		}
-		if end == offset && offset < value.len() {
-			if !text.is_empty() {
-				break;
-			}
-			end = offset + value[offset..].chars().next().map_or(0, char::len_utf8);
-		}
-		text.push_str(&value[offset..end]);
-		line_end = line + 1;
-		if let Some(page) = lines[line].page
-			&& !pages.contains(&page)
-		{
-			pages.push(page);
-		}
-		offset = end;
-		if offset < value.len() {
-			break;
-		}
-		if line + 1 == lines.len() {
-			line += 1;
-			offset = 0;
-			break;
-		}
-		// The completed line's separator is delivered only with room for it.
-		if text.len() + 1 > max_bytes {
-			break;
-		}
-		text.push('\n');
-		line += 1;
-		offset = 0;
-	}
-	Ok(Delivery {
-		passage: Passage {
-			text,
-			line_start,
-			line_end,
-			pages,
-		},
-		next: (line < lines.len()).then_some(Position { line, offset }),
-	})
-}
-
-/// Case-insensitive comparison form. It lowercases and expands the sharp s so
-/// that `STRASSE` finds `Straße`; it does not normalize other compatibility forms.
-pub fn fold(text: &str) -> String {
-	text.chars().flat_map(char::to_lowercase).fold(
-		String::with_capacity(text.len()),
-		|mut folded, c| {
-			if c == 'ß' {
-				folded.push_str("ss");
-			} else {
-				folded.push(c);
-			}
-			folded
-		},
-	)
-}
-
-/// Indexes of lines from `start` containing `query`, and the line to resume
-/// from when more than `max` lines match.
-pub fn find(
-	lines: &[Line],
-	query: &str,
-	case_sensitive: bool,
-	start: usize,
-	max: usize,
-) -> (Vec<usize>, Option<usize>) {
-	let needle = if case_sensitive {
-		query.to_owned()
-	} else {
-		fold(query)
-	};
-	let mut matches = Vec::new();
-	for (index, line) in lines.iter().enumerate().skip(start) {
-		let found = if case_sensitive {
-			line.text.contains(&needle)
-		} else {
-			fold(&line.text).contains(&needle)
-		};
-		if !found {
-			continue;
-		}
-		if matches.len() == max {
-			return (matches, Some(index));
-		}
-		matches.push(index);
-	}
-	(matches, None)
-}
-
-/// A continuation token. It is bound to the Run's snapshot, its text digest,
-/// the operation and (for `find`) the exact query, so it cannot address another
-/// document or request. It grants nothing: the snapshot is checked again.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Cursor {
-	pub document: Uuid,
-	pub digest: String,
-	pub operation: Operation,
-	pub position: Position,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub binding: Option<String>,
-}
-
-impl Cursor {
-	pub fn encode(&self) -> String {
-		let json = serde_json::to_vec(self).expect("serializable cursor");
-		format!(
-			"c1.{}",
-			base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
-		)
-	}
-	pub fn decode(token: &str) -> Result<Self> {
-		let invalid = || Error::Invalid("invalid continuation".into());
-		let encoded = token.strip_prefix("c1.").ok_or_else(invalid)?;
-		if encoded.len() > 1024 {
-			return Err(invalid());
-		}
-		let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-			.decode(encoded)
-			.map_err(|_| invalid())?;
-		serde_json::from_slice(&bytes).map_err(|_| invalid())
-	}
-	/// Accept only a continuation issued for this exact snapshot and request.
-	pub fn check(
-		&self,
-		document: Uuid,
-		digest: &str,
-		operation: Operation,
-		binding: Option<&str>,
-	) -> Result<Position> {
-		if self.document != document
-			|| self.digest != digest
-			|| self.operation != operation
-			|| self.binding.as_deref() != binding
-		{
-			return Err(Error::Invalid("invalid continuation".into()));
-		}
-		Ok(self.position)
-	}
-}
-
-/// The binding of a `find` continuation to its exact query.
-pub fn find_binding(query: &str, case_sensitive: bool) -> String {
-	let encoded = serde_json::to_vec(&(query, case_sensitive)).expect("serializable query");
-	format!("sha256:{:x}", Sha256::digest(encoded))
-}
-
-#[cfg(test)]
-mod tests;

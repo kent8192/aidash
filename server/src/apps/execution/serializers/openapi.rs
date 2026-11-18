@@ -8,10 +8,6 @@ use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::management::{
 	ControlInput, DeclineCallInput, SuspendedRuns, SuspendedRunsResume,
 };
-use crate::apps::execution::serializers::research::{
-	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
-	TenantRetentionView,
-};
 use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::{
 	StateQuery, StateResponse, WorkspacePage, WorkspacePageQuery,
@@ -21,7 +17,6 @@ use crate::apps::workspaces::serializers::entities::Task;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::{Result, config::openapi::Contracts};
-use aidash_domain::retention::RetentionChange;
 use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
@@ -111,63 +106,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, PageQuery>(document, views::management::run_get)?;
 	contracts.path(document, views::management::run_get, &["Uuid"])?;
-	contracts.response::<_, CitedEvidence>(
-		document,
-		views::management::run_evidence,
-		200,
-		"application/json",
-	)?;
-	contracts.path(
-		document,
-		views::management::run_evidence,
-		&["Uuid", "String"],
-	)?;
-	contracts.response::<_, RevocationRecord>(
-		document,
-		views::research::revoke,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, RevocationInput>(document, views::research::revoke)?;
-	contracts.path(document, views::research::revoke, &["Uuid"])?;
-	contracts.response::<_, RevocationRecord>(
-		document,
-		views::research::revocation,
-		200,
-		"application/json",
-	)?;
-	contracts.path(document, views::research::revocation, &["Uuid"])?;
-	contracts.response::<_, Vec<RevocationRecord>>(
-		document,
-		views::research::revocations,
-		200,
-		"application/json",
-	)?;
-	contracts.query::<_, HistoryPage>(document, views::research::revocations)?;
-	contracts.path(document, views::research::revocations, &["String"])?;
-	contracts.response::<_, TenantRetentionView>(
-		document,
-		views::research::retention,
-		200,
-		"application/json",
-	)?;
-	contracts.path(document, views::research::retention, &["String"])?;
-	contracts.response::<_, TenantRetentionView>(
-		document,
-		views::research::retention_update,
-		200,
-		"application/json",
-	)?;
-	contracts.request::<_, RetentionInput>(document, views::research::retention_update)?;
-	contracts.path(document, views::research::retention_update, &["String"])?;
-	contracts.response::<_, Vec<RetentionChange>>(
-		document,
-		views::research::retention_history,
-		200,
-		"application/json",
-	)?;
-	contracts.query::<_, HistoryPage>(document, views::research::retention_history)?;
-	contracts.path(document, views::research::retention_history, &["String"])?;
 	contracts
 		.response::<_, crate::apps::identity::services::execution::management::RunManagement>(
 			document,
@@ -238,22 +176,5 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.query::<_, InferenceStreamQuery>(document, views::management::run_inference_stream)?;
 	contracts.path(document, views::management::run_inference_stream, &["Uuid"])?;
-	contracts.response::<_, crate::apps::execution::serializers::runs::RunResearch>(
-		document,
-		views::management::run_research,
-		200,
-		"application/json",
-	)?;
-	contracts.path(document, views::management::run_research, &["Uuid"])?;
-	contracts.response::<_, crate::apps::execution::serializers::runs::ResearchProviders>(
-		document,
-		views::management::research_providers,
-		200,
-		"application/json",
-	)?;
-	contracts.query::<_, crate::apps::execution::serializers::runs::ResearchProvidersQuery>(
-		document,
-		views::management::research_providers,
-	)?;
 	Ok(())
 }

@@ -433,9 +433,6 @@ pub async fn retained_storage_bytes_in(
 		("core_objects", "size", false),
 		("channel_attachments", "size_bytes", false),
 		("artifacts", "content", true),
-		("research_snapshots", "text_bytes", false),
-		("research_originals", "bytes", true),
-		("research_page_images", "bytes", true),
 	] {
 		let mut size = selectors::col(table, field);
 		if table == "artifacts" {

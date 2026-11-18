@@ -11,9 +11,9 @@ pub struct TenantDataProtection {
 	#[field(field_type = "text")]
 	pub level: String,
 	#[field]
-	pub model_call_zdr: bool,
+	pub forbid_plan_connections: bool,
 	#[field]
-	pub plan_connection_exempt: bool,
+	pub forbid_keyless_endpoints: bool,
 	#[field]
 	pub updated_at: DateTime<Utc>,
 	#[field(field_type = "text")]
@@ -30,9 +30,9 @@ pub struct TenantDataProtectionHistory {
 	#[field(field_type = "text")]
 	pub level: String,
 	#[field]
-	pub model_call_zdr: bool,
+	pub forbid_plan_connections: bool,
 	#[field]
-	pub plan_connection_exempt: bool,
+	pub forbid_keyless_endpoints: bool,
 	#[field]
 	pub changed_at: DateTime<Utc>,
 	#[field(field_type = "text")]

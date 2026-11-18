@@ -9,12 +9,7 @@ export type ObserverSetting = {
   decider: ObserverReference | null;
   node: string;
 };
-export type ObservationKind =
-  | "tool_call"
-  | "outbound"
-  | "web_search"
-  | "page_reading"
-  | "generation";
+export type ObservationKind = "tool_call" | "outbound" | "generation";
 export type ObservationVerdict = "allowed" | { blocked: string };
 export type ObservationProjection = {
   kind: ObservationKind;

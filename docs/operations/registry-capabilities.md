@@ -14,20 +14,18 @@ New Tool registrations require qualified Provider descriptors. Old transport-tag
 
 Every Tenant's Registry holds the built-in declarations at exact immutable versions (`aidash.<operation>@1.0.0`): the 17 legacy required/default operations, `capability_search`, `capability_describe`, `capability_load`, `capability_unload`, `skill_asset_read` and `task_assign`. Tenant creation writes them, and startup writes any that a Tenant lacks (ADR 0033). All are seeded whatever Exposure policies Agents use; an Agent's [Exposure policy](#deferred-capability-exposure) decides which of them it binds implicitly. Seeding verifies existing bytes and fails on a reserved-name conflict. These built-ins need no Catalog Approval and add no resource grants. Built-ins cannot be published, installed or mutated through Marketplace.
 
-## Sandboxed and research built-ins
+## Sandboxed built-ins and page reading
 
-The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and the research providers are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one whose `[research_providers]` settings do not declare a research provider offers no group for it. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
+The Sandboxed tools (shell, code, package installs, outbound requests, patches and file sharing) and page reading are built-in definitions too, but each Tenant approves them before use, because they act outside Aidash (ADR 0034). The Deployment offers a group only when it runs its provider: a Deployment without a runner offers no shell or Python group, and one without `page_reading = true` under `[research_providers]` offers no page reading group. Startup and Tenant creation write the offered groups into every Tenant's Registry, unapproved.
 
-| Group              | Bundle                           | Operations                                              |
-| ------------------ | -------------------------------- | ------------------------------------------------------- |
-| `shell`            | `aidash.bundle.shell`            | `shell`, `shell_poll`, `shell_cancel`                   |
-| `python`           | `aidash.bundle.python`           | `code_interpreter`, `python_poll`, `python_cancel`      |
-| `outbound_get`     | `aidash.bundle.outbound_get`     | `outbound_get`                                          |
-| `apply_patch`      | `aidash.bundle.apply_patch`      | `apply_patch`                                           |
-| `file_share`       | `aidash.bundle.file_share`       | `file_share`                                            |
-| `research_brave`   | `aidash.bundle.research_brave`   | `research.brave@1`: `search`                            |
-| `research_page`    | `aidash.bundle.research_page`    | `research.page@1`: `fetch`, `find`, `view`              |
-| `research_fixture` | `aidash.bundle.research_fixture` | `research.fixture@1`: `search`, `fetch`, `find`, `view` |
+| Group           | Bundle                        | Operations                                         |
+| --------------- | ----------------------------- | -------------------------------------------------- |
+| `shell`         | `aidash.bundle.shell`         | `shell`, `shell_poll`, `shell_cancel`              |
+| `python`        | `aidash.bundle.python`        | `code_interpreter`, `python_poll`, `python_cancel` |
+| `outbound_get`  | `aidash.bundle.outbound_get`  | `outbound_get`                                     |
+| `apply_patch`   | `aidash.bundle.apply_patch`   | `apply_patch`                                      |
+| `file_share`    | `aidash.bundle.file_share`    | `file_share`                                       |
+| `research_page` | `aidash.bundle.research_page` | `research.page@1`: `fetch`                         |
 
 `shell` and `code_interpreter` wait for completion by default without another
 model call. Their poll companions do the same: `wait_seconds` defaults to 300,
@@ -40,7 +38,7 @@ output; if the window has advanced past an older offset, the reply starts at the
 available window. When nothing has changed they omit `output` and set
 `output_unchanged`.
 
-Sandboxed operations have the `sandboxed` tier and research operations the `research` tier. Research entries are named `aidash.research.<provider>.<operation>@1.0.0` and use the default Model aliases `research_search`, `research_fetch`, `research_find` and `research_view` with the same schema for every provider, so a Tenant can replace one provider group with another without changing its Agents. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. See [Web research](../web-research.md) for the contract, evidence store, citation checks and disclosure approval.
+Sandboxed operations have the `sandboxed` tier and page reading the `research` tier, a name kept from the removed Research category (ADR 0138). Page reading is `aidash.research.page.fetch@2.0.0` with the default Model alias `research_fetch`. It takes `url` and an optional 1-based `part`, fetches the page again on every call and returns one bounded part of its text; each call waits for a Tool call approval, and a Run grant covers one host until the next input from a person. Descriptors with a `core.` or `research.` provider cannot be registered by Tenants. Brave search, the fixture provider and page reading's `find` and `view` are removed; their definitions stay so pinned Agent versions resolve, but they no longer bind.
 
 A Tenant subject with `catalog.approve` approves a group by approving its bundle and every member in one `POST /api/authorization/{tenant}/catalog/approvals` request; a bundle's approval is refused while a member is unapproved. `task_assign` only starts a generation inside Aidash, so it is an ordinary built-in.
 
@@ -773,8 +771,6 @@ A `memory` Binding may target the immutable Rust Hindsight provider. Its exact e
 
 A `memory` descriptor's configuration is the `ProviderConfig` in `crates/aidash-domain/src/memory.rs`: the engine and its policy only. It rejects unknown fields, so do not add operation, pinning, disclosure or binding controls to it. Those are separate Registry and admission controls: the memory operations are their own builtin Tool descriptors, the admitted Binding snapshot pins exact versions, authorization governs disclosure, and the Agent's Binding list selects the provider. Private memory bodies and credentials are not part of a descriptor: they stay in authorized provider storage, and catalog metadata never exposes them (see [Registry boundary](../architecture.md#registry-boundary)). The memory contracts that these providers serve are described in [architecture](../architecture.md#memory-contracts).
 
-The page and fixture research bundles publish page viewing in version `1.1.0`
-(#391). Existing `1.0.0` bundle declarations remain immutable and are left in
-place during seeding; approve and bind the new bundle version to add `view`.
-A viewed page is admitted against the Run's current model-media headroom before
-its fragment/image is recorded or its page-view quota is consumed.
+Page reading's definitions moved to `2.0.0` when it became an ordinary tool
+(#987). Earlier declarations remain immutable and are left in place during
+seeding; approve and bind `2.0.0` to read pages.

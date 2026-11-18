@@ -250,7 +250,7 @@ impl FailureTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApprovalRef {
-	/// A capability approval record on this Node (tool call, outbound, Web disclosure).
+	/// A capability approval record on this Node (tool call, outbound).
 	Capability { approval_id: Uuid },
 	/// A Run executing for another Node asks that Node through a human request.
 	Home {

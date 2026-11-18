@@ -421,11 +421,24 @@ pub(crate) fn decision_input(
 		expected["only"] = json!(hosts);
 		expected["allow_fallbacks"] = json!(true);
 	}
+	// A strict zero data retention System One body also lists the routes
+	// it may use; the broker checks them against the ZDR catalog.
+	let mut provider = provider.cloned();
+	if !decisions
+		&& requirement == aidash_domain::data_protection::Requirement::Zdr
+		&& let Some(Value::Object(fields)) = provider.as_mut()
+		&& fields
+			.get("only")
+			.and_then(Value::as_array)
+			.is_some_and(|only| !only.is_empty() && only.iter().all(Value::is_string))
+	{
+		fields.remove("only");
+	}
 	let routed = (if decisions {
 		!hosts.is_empty()
 	} else {
 		hosts.is_empty()
-	}) && provider == Some(&expected);
+	}) && provider.as_ref() == Some(&expected);
 	if fields
 		.keys()
 		.any(|key| !matches!(key.as_str(), "model" | "state" | "questions" | "provider"))

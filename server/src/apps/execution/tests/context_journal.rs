@@ -50,7 +50,6 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 fn project(run: &mut Run, head: u64, imported: u64) {
 	run.context.history = (1..=head)
 		.map(|seq| HistoryEntry {
-			research: None,
 			seq,
 			event: event(seq),
 		})
@@ -205,12 +204,10 @@ async fn saves_journal_original_events_with_their_origin(
 		range,
 		vec![
 			HistoryEntry {
-				research: None,
 				seq: 2,
 				event: event(2)
 			},
 			HistoryEntry {
-				research: None,
 				seq: 3,
 				event: event(3)
 			},
@@ -706,6 +703,32 @@ async fn provider_container_pin_survives_recovery_and_terminal_state(
 	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (run, worker) = leased(&f, &app, &token).await;
+	// Provider tools need Data Protection Level No Restriction, and a new
+	// Tenant starts at No Training (#961).
+	f.store
+		.pool
+		.atomic(&TenancyScope::tenant("acme").unwrap(), async |tx| {
+			use aidash_server::apps::identity::models::TenantDataProtection;
+			TenantDataProtection::objects()
+				.delete_with_executor(tx, "acme".to_owned())
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			let policy = TenantDataProtection::build()
+				.tenant("acme".to_owned())
+				.level("no_restriction".to_owned())
+				.forbid_plan_connections(false)
+				.forbid_keyless_endpoints(false)
+				.updated_at(chrono::Utc::now())
+				.updated_by("fixture".to_owned())
+				.finish();
+			TenantDataProtection::objects()
+				.insert_with_executor(tx, &policy)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			Ok(())
+		})
+		.await
+		.unwrap();
 	let context = Context {
 		tenant: "acme".into(),
 		run: Some(run.id),

@@ -916,7 +916,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
-	contracts.query::<_, crate::apps::execution::serializers::research::HistoryPage>(
+	contracts.query::<_, crate::apps::execution::serializers::history::HistoryPage>(
 		document,
 		views::policies::safety_stops,
 	)?;

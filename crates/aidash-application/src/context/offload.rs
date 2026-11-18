@@ -230,9 +230,6 @@ fn replace(context: &mut Context, index: usize, batch: &mut OffloadBatch) -> boo
 		return false;
 	}
 	*result = replacement;
-	// The Journal owns the original Research reference. A projection marker
-	// must not serialize as a newly content-addressed Research variant.
-	entry.research = None;
 	context.offloaded.get_or_insert_default();
 	batch.ranges.push(JournalRange {
 		from_seq: entry.seq,

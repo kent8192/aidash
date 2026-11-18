@@ -1489,7 +1489,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				"alpha",
 				&snapshot,
 				false,
-				Default::default(),
+				aidash_domain::data_protection::Level::LOWEST,
 				&Default::default(),
 			)
 			.await,
@@ -1542,33 +1542,36 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			.await
 			.unwrap();
 		let events = Event::objects()
-			.filter(Event::field_kind().eq("run.data_protection_exemption".to_owned()))
+			.filter(Event::field_kind().eq("run.plan_connection_used".to_owned()))
 			.all_with_executor(audit.as_mut())
 			.await
 			.unwrap();
 		assert_eq!(
 			events.len(),
 			1,
-			"repeated plan calls retain one Run/Thread exemption record"
+			"repeated plan calls retain one Run/Thread record"
 		);
 		assert_eq!(events[0].data.0["run_id"], json!(run));
-		assert_eq!(events[0].data.0["exemption"], "plan_connection");
 		audit.commit().await.unwrap();
 	}
-	// With the exemption off, Standard still permits Plan usage and records no
-	// exemption. Raising this same admitted Run to either strict level refuses it.
+	// No level governs Plan Connections; the Tenant switch alone forbids
+	// them, and every Run they carry is recorded (#962).
 	{
 		use aidash_server::apps::{
 			execution::models::Event, identity::models::TenantDataProtection,
 		};
 		use reinhardt::db::orm::Model;
-		let non_exempt_run = Uuid::new_v4();
-		admit_once(non_exempt_run, "alice", false).await.unwrap();
-		let non_exempt = Context {
-			run: Some(non_exempt_run),
+		let other_run = Uuid::new_v4();
+		admit_once(other_run, "alice", false).await.unwrap();
+		let other = Context {
+			run: Some(other_run),
 			..context.clone()
 		};
-		for level in ["standard", "no_training", "zero_data_retention"] {
+		for (level, forbid) in [
+			("no_restriction", false),
+			("zero_data_retention", false),
+			("no_training", true),
+		] {
 			f.store
 				.pool
 				.atomic(&TenancyScope::tenant("alpha").unwrap(), async |tx| {
@@ -1579,8 +1582,8 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 					let policy = TenantDataProtection::build()
 						.tenant("alpha".to_owned())
 						.level(level.to_owned())
-						.model_call_zdr(true)
-						.plan_connection_exempt(false)
+						.forbid_plan_connections(forbid)
+						.forbid_keyless_endpoints(false)
 						.updated_at(chrono::Utc::now())
 						.updated_by("fixture".to_owned())
 						.finish();
@@ -1592,27 +1595,37 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				})
 				.await
 				.unwrap();
-			let result = access.resolve(&non_exempt, endpoint, &source).await;
-			if level == "standard" {
-				assert_eq!(result.unwrap().bearer.expose_secret(), "plan-access-101");
+			let result = access.resolve(&other, endpoint, &source).await;
+			if forbid {
+				assert!(
+					result
+						.unwrap_err()
+						.to_string()
+						.contains("forbids ChatGPT subscriptions")
+				);
 			} else {
-				assert!(result.unwrap_err().to_string().contains("Plan Connections"));
+				assert_eq!(result.unwrap().bearer.expose_secret(), "plan-access-101");
 			}
 		}
 		f.store
 			.pool
 			.atomic(&TenancyScope::tenant("alpha").unwrap(), async |tx| {
 				let events = Event::objects()
-					.filter(Event::field_kind().eq("run.data_protection_exemption".to_owned()))
+					.filter(Event::field_kind().eq("run.plan_connection_used".to_owned()))
 					.all_with_executor(tx)
 					.await
 					.map_err(reinhardt::core::exception::Error::from)?;
+				let mut runs = events
+					.iter()
+					.map(|event| event.data.0["run_id"].clone())
+					.collect::<Vec<_>>();
+				runs.sort_by_key(ToString::to_string);
+				let mut expected = vec![json!(run), json!(other_run)];
+				expected.sort_by_key(ToString::to_string);
 				assert_eq!(
-					events.len(),
-					1,
-					"non-exempt Standard calls create no exemption record"
+					runs, expected,
+					"one record per Run a Plan Connection carried"
 				);
-				assert_eq!(events[0].data.0["run_id"], json!(run));
 				TenantDataProtection::objects()
 					.delete_with_executor(tx, "alpha".to_owned())
 					.await
@@ -1695,11 +1708,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 			})
 			.await
 			.unwrap();
-		let strict = aidash_domain::data_protection::DataProtection {
-			level: aidash_domain::data_protection::Level::ZeroDataRetention,
-			model_call_zdr: true,
-			plan_connection_exempt: false,
-		};
+		let strict = aidash_domain::data_protection::DataProtection::strictest();
 		assert_eq!(access.data_protection(&context).await.unwrap(), strict);
 		assert!(
 			access
@@ -1707,7 +1716,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				.await
 				.unwrap_err()
 				.to_string()
-				.contains("Plan Connections")
+				.contains("forbids ChatGPT subscriptions")
 		);
 		// A task materialized as a remote output has the same unknown source
 		// policy, independently of an incoming Run admission receipt.

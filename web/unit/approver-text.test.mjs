@@ -6,7 +6,7 @@ import {
 } from "../src/capabilities/approver-text.ts";
 
 test("a waiting approval names no approver and no count", () => {
-  const card = { kind: "disclosure", state: "pending", decided_by: null };
+  const card = { kind: "tool_call", state: "pending", decided_by: null };
   assert.equal(approverText(card, false), "Waiting for an eligible approver");
   assert.equal(approverText(card, true), "承認できる人の判断を待っています");
 });
@@ -52,7 +52,7 @@ test("a decision stays named after the approval moves on", () => {
 test("an approval nobody decided names nobody once it stops waiting", () => {
   assert.equal(
     approverText(
-      { kind: "disclosure", state: "expired", decided_by: null },
+      { kind: "tool_call", state: "expired", decided_by: null },
       false,
     ),
     null,

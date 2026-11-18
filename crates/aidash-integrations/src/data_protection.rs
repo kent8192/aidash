@@ -1,7 +1,8 @@
 //! Per-send policy evaluation and the short-lived OpenRouter ZDR catalog.
 use crate::{Error, Result};
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
-use aidash_domain::data_protection::Level;
+use aidash_application::route_refusal::RouteReason;
+use aidash_domain::data_protection::Requirement;
 use secrecy::ExposeSecret;
 use serde_json::Value;
 use std::{
@@ -27,9 +28,8 @@ pub async fn zdr_routes(
 	source: &Source,
 	model: &str,
 ) -> Result<Vec<String>> {
-	if context.data_protection.level != Level::ZeroDataRetention
-		|| !matches!(source, Source::Tenant { .. })
-	{
+	let requirement = context.data_protection.requirement();
+	if !requirement.checks_routes() || !matches!(source, Source::Tenant { .. }) {
 		return Ok(vec![]);
 	}
 	static CATALOGS: OnceLock<Mutex<Catalogs>> = OnceLock::new();
@@ -92,19 +92,34 @@ pub async fn zdr_routes(
 		cache.insert(key, (Instant::now(), body.clone()));
 		body
 	};
-	let routes: Vec<String> = catalog["data"]
-		.as_array()
-		.into_iter()
-		.flatten()
-		.filter(|entry| entry["model_id"] == model)
-		.filter_map(|entry| entry["tag"].as_str().map(str::to_owned))
-		.collect();
-	if routes.is_empty() {
-		return Err(Error::Invalid(format!(
-			"Zero Data Retention: no current ZDR route for {model}"
-		)));
-	}
-	Ok(routes)
+	aidash_domain::data_protection::admitted_routes(
+		catalog["data"]
+			.as_array()
+			.map(Vec::as_slice)
+			.unwrap_or_default(),
+		model,
+		requirement,
+	)
+	.map_err(|refusal| Error::DataProtectionRoute {
+		model: model.into(),
+		refusal,
+	})
+}
+
+/// Why a pinned route does not meet `requirement`, judged on the ZDR catalog.
+pub fn pinned_route_refusal(
+	catalog: &[Value],
+	model: &str,
+	tag: &str,
+	requirement: Requirement,
+) -> Option<RouteReason> {
+	use aidash_domain::data_protection::PinnedRefusal;
+	aidash_domain::data_protection::pinned_route_refusal(catalog, model, tag, requirement).map(
+		|refusal| match refusal {
+			PinnedRefusal::NotListed => RouteReason::NotZeroDataRetention,
+			PinnedRefusal::SafetyRetentionOnly => RouteReason::SafetyRetentionOnly,
+		},
+	)
 }
 
 #[cfg(test)]

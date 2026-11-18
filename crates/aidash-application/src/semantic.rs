@@ -243,6 +243,21 @@ async fn index(
 				)
 				.await?;
 		}
+		// No retry helps until the Workspace switches to an embedding model
+		// that meets the Data Protection Level (#963).
+		Err(Error::RemoteSemantic(aidash_domain::semantic::Failure::DataProtection)) => {
+			let reason = UnsupportedReason::DataProtection;
+			scope.unsupported(id, reason).await?;
+			scope
+				.history(
+					workspace,
+					id,
+					entry.revision,
+					"UNSUPPORTED",
+					"data_protection: the embedding model cannot meet the Data Protection Level; switch the embedding model",
+				)
+				.await?;
+		}
 		Err(_) => {
 			let (attempts, delay) = indexing::retry(entry.attempts);
 			scope.failed(id, attempts, delay).await?;

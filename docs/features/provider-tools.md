@@ -5,7 +5,7 @@ An Agent can bind the Deployment's standard Provider tools:
 `provider.openrouter.datetime` and `provider.openrouter.fusion`, version `1.0.0`.
 Each definition and its one-tool bundle require Catalog Approval. A Tenant cannot
 replace these definitions. The approval is the only consent; Provider tools do
-not use runtime Approval Rules or Web disclosure approvals.
+not use runtime Approval Rules or Tool call approvals.
 
 Only Run inference on OpenRouter with the Tenant's OpenRouter Provider Credential
 may send them. Plan Connections, Keyless calls, maintenance, Deciders and
@@ -69,7 +69,7 @@ Thread inspection shows them read-only from paged Context Journal entries, so co
 on the Inference Attempt's Usage Record alongside OpenRouter's exact total cost;
 the Run-linked Usage Records remain the cost ledger. No separate tool Request
 Estimate or duplicate cost charge is manufactured. URLs, snippets and Fusion
-results never create Research Sources, Evidence fragments or Source citations.
+results are recorded in the Context Journal like any other provider activity.
 
 Registry migration `0061_provider_tools` extends the installed Tool descriptor and
 Agent Binding validation functions while preserving the earlier contracts and

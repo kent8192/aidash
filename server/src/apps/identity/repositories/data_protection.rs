@@ -29,8 +29,8 @@ pub(crate) async fn stored(
 			let level: Level = serde_json::from_value(serde_json::Value::String(row.level))?;
 			let policy = DataProtection {
 				level,
-				model_call_zdr: row.model_call_zdr,
-				plan_connection_exempt: row.plan_connection_exempt,
+				forbid_plan_connections: row.forbid_plan_connections,
+				forbid_keyless_endpoints: row.forbid_keyless_endpoints,
 			};
 			policy.validate()?;
 			Ok(policy)
@@ -74,7 +74,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.is_some()
 			{
 				assume_remote_strictest = true;
-				tracing::warn!(run_id = %run, origin_kind = "remote_admission", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
+				tracing::warn!(run_id = %run, origin_kind = "remote_admission", assumed_level = "zero_data_retention", forbid_plan_connections = true, forbid_keyless_endpoints = true, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
 			}
 			let (sql, values) = Query::select()
 				.columns(["tenant", "task_id"].map(Alias::new))
@@ -110,7 +110,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.is_some()
 			{
 				assume_remote_strictest = true;
-				tracing::warn!(run_id = %run, origin_kind = "remote_task_output", assumed_level = "zero_data_retention", model_call_zdr = true, plan_connection_exempt = false, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
+				tracing::warn!(run_id = %run, origin_kind = "remote_task_output", assumed_level = "zero_data_retention", forbid_plan_connections = true, forbid_keyless_endpoints = true, "Current remote Tenant Data Protection policy unavailable; assuming the strictest policy");
 			}
 			let (sql, values) = Query::select()
 				.column(Alias::new("source_run_id"))
@@ -127,11 +127,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 				.transpose()?;
 		}
 		let mut policies = if assume_remote_strictest {
-			vec![DataProtection {
-				level: Level::ZeroDataRetention,
-				model_call_zdr: true,
-				plan_connection_exempt: false,
-			}]
+			vec![DataProtection::strictest()]
 		} else {
 			vec![]
 		};
@@ -181,8 +177,8 @@ pub(crate) async fn save(
 	let row = TenantDataProtection::build()
 		.tenant(tenant.to_owned())
 		.level(level.clone())
-		.model_call_zdr(policy.model_call_zdr)
-		.plan_connection_exempt(policy.plan_connection_exempt)
+		.forbid_plan_connections(policy.forbid_plan_connections)
+		.forbid_keyless_endpoints(policy.forbid_keyless_endpoints)
 		.updated_at(now)
 		.updated_by(by.to_owned())
 		.finish();
@@ -194,8 +190,8 @@ pub(crate) async fn save(
 		.id(uuid::Uuid::now_v7())
 		.tenant(tenant.to_owned())
 		.level(level)
-		.model_call_zdr(policy.model_call_zdr)
-		.plan_connection_exempt(policy.plan_connection_exempt)
+		.forbid_plan_connections(policy.forbid_plan_connections)
+		.forbid_keyless_endpoints(policy.forbid_keyless_endpoints)
 		.changed_at(now)
 		.changed_by(by.to_owned())
 		.finish();
@@ -211,6 +207,7 @@ pub(crate) async fn impact(
 	store: &Store,
 	tenant: &str,
 	policy: DataProtection,
+	zero_data_retention: &std::collections::BTreeMap<String, aidash_domain::catalog::ZdrRoutes>,
 ) -> Result<super::super::serializers::data_protection::Impact> {
 	use super::super::serializers::data_protection::{Affected, Impact};
 	use aidash_domain::data_protection::Destination;
@@ -223,8 +220,6 @@ pub(crate) async fn impact(
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.build(PostgresQueryBuilder);
 	let rows = tx.fetch_all(&sql, convert_values(values)).await?;
-	let research =
-		crate::apps::execution::services::research::providers().data_protection_denials(policy);
 	let mut blocked = std::collections::BTreeMap::new();
 	for row in rows {
 		let entry: aidash_domain::registry::Entry = serde_json::from_str(
@@ -242,17 +237,44 @@ pub(crate) async fn impact(
 		{
 			blocked.insert((entry.id.clone(), entry.version.clone()), error.to_string());
 		}
-		if entry.kind == "tool"
-			&& let Some(reason) = entry
-				.config
-				.get("provider")
-				.and_then(serde_json::Value::as_str)
-				.and_then(|provider| research.get(provider))
+		// An OpenRouter model or embedding model the ZDR list cannot serve at
+		// this level stops at its next call (#963).
+		let routes = |model: &str| {
+			(!zero_data_retention.is_empty()).then(|| {
+				zero_data_retention
+					.get(model)
+					.copied()
+					.unwrap_or(aidash_domain::catalog::ZdrRoutes::None)
+			})
+		};
+		let refusal = |model: &str| match routes(model) {
+			Some(routes) if !routes.meets(policy.level) => Some(
+				match routes {
+					aidash_domain::catalog::ZdrRoutes::SafetyRetentionOnly => {
+						aidash_domain::data_protection::CatalogRefusal::SafetyRetentionOnly
+					}
+					_ => aidash_domain::data_protection::CatalogRefusal::NoRoute,
+				}
+				.sentence(model),
+			),
+			_ => None,
+		};
+		if entry.kind == "embedding"
+			&& let Ok(config) = serde_json::from_value::<aidash_domain::semantic::EmbeddingConfig>(
+				entry.config.clone(),
+			) && config.provider == "openrouter"
+			&& let Some(reason) = refusal(&config.model)
 		{
-			blocked.insert((entry.id.clone(), entry.version.clone()), reason.clone());
+			blocked.insert((entry.id.clone(), entry.version.clone()), reason);
 		}
 		if entry.kind == "model" {
 			let config: aidash_domain::model::ModelConfig = serde_json::from_value(entry.config)?;
+			if config.plan_connection.is_none()
+				&& config.provider_credential.is_some()
+				&& let Some(reason) = refusal(&config.model_id)
+			{
+				blocked.insert((entry.id.clone(), entry.version.clone()), reason);
+			}
 			let destination = if config.plan_connection.is_some() {
 				Destination::PlanConnection
 			} else if config.provider_credential.is_some() {
@@ -322,13 +344,6 @@ pub(crate) async fn impact(
 			});
 		}
 	}
-	for (id, reason) in research {
-		impact.destinations.push(Affected {
-			id,
-			version: None,
-			reason,
-		});
-	}
 	let (sql, values) = Query::select()
 		.columns(
 			[
@@ -371,13 +386,10 @@ pub(crate) async fn impact(
 	Ok(impact)
 }
 
-/// Durable Run event is both the Thread disclosure and the audit record. One
+/// Durable Run event is both the Thread disclosure and the audit record of a
+/// Plan Connection carrying the Run's content (#962). One
 /// event per Run survives later policy changes; no request content is retained.
-pub(crate) async fn record_plan_exemption(
-	store: &Store,
-	context: &Context,
-	policy: DataProtection,
-) -> Result<()> {
+pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> Result<()> {
 	let Some(run) = context.run else {
 		return Err(Error::Forbidden);
 	};
@@ -415,7 +427,7 @@ pub(crate) async fn record_plan_exemption(
 	let (sql, values) = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("events"))
-		.and_where(Expr::col("kind").eq(Expr::value("run.data_protection_exemption")))
+		.and_where(Expr::col("kind").eq(Expr::value("run.plan_connection_used")))
 		.and_where(
 			Expr::col("data")
 				.binary(
@@ -435,12 +447,12 @@ pub(crate) async fn record_plan_exemption(
 			tx.as_mut(),
 			run,
 			local.then_some(workspace),
-			"run.data_protection_exemption",
-			serde_json::json!({"run_id":run,"task_id":task,"exemption":"plan_connection","policy":policy}),
+			"run.plan_connection_used",
+			serde_json::json!({"run_id":run,"task_id":task}),
 		)
 		.await?;
 	}
 	tx.commit().await?;
-	tracing::info!(%run, tenant = %context.tenant, level = ?policy.level, exemption = "plan_connection", "Data Protection exemption used");
+	tracing::info!(%run, tenant = %context.tenant, "Plan Connection carried Run content");
 	Ok(())
 }

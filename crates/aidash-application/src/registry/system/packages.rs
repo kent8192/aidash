@@ -1,4 +1,4 @@
-//! The Sandboxed and research groups a Deployment offers every Tenant as
+//! The Sandboxed and page reading groups a Deployment offers every Tenant as
 //! built-in definitions that each Tenant approves before use (ADR 0034). No
 //! executable payloads.
 use super::*;
@@ -30,14 +30,13 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	// Run's Execution Pod (ADR 0073).
 	("mcp_stdio", &["mcp_stdio"]),
 ];
-/// Research provider packages, one group per Node provider. Every group's
-/// operations share the research contract, so a Run binding the fixture group
-/// behaves exactly as one binding the Brave and page groups.
-pub const RESEARCH_GROUPS: &[(&str, &str)] = &[
-	("research_brave", "research.brave@1"),
-	("research_page", "research.page@1"),
-	("research_fixture", "research.fixture@1"),
-];
+/// Page reading, the one group left of the former research packages (#987).
+/// Its definitions moved to 2.0.0 when it became an ordinary tool; the earlier
+/// versions and the Brave and fixture groups stay as definitions only, so
+/// pinned Agent versions still resolve, and no longer bind.
+pub const RESEARCH_GROUPS: &[(&str, &str)] = &[("research_page", "research.page@1")];
+/// The version of page reading's definitions since #987.
+pub use aidash_domain::tool::providers::PAGE_READING_VERSION;
 #[derive(Clone)]
 pub struct PackageGroup {
 	pub name: String,
@@ -128,14 +127,12 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 				.iter()
 				.map(|operation| {
 					let descriptor = research_descriptor(node, provider, operation)?;
-					let research = aidash_domain::research::Operation::parse(operation)
-						.expect("declared research operation");
-					let spec = crate::research::specification(research);
+					let spec = crate::research::specification();
 					Ok(Entry {
 						binding_normalization: None,
 						installation: None,
 						id: format!("aidash.{stem}.{operation}"),
-						version: "1.0.0".into(),
+						version: PAGE_READING_VERSION.into(),
 						kind: "tool".into(),
 						name: BTreeMap::from([("en".into(), spec.name.clone())]),
 						description: BTreeMap::from([("en".into(), spec.description)]),
@@ -177,8 +174,8 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 		binding_normalization: None,
 		installation: None,
 		id: format!("aidash.bundle.{name}"),
-		version: if matches!(name, "research_page" | "research_fixture") {
-			"1.1.0"
+		version: if name == "research_page" {
+			PAGE_READING_VERSION
 		} else {
 			"1.0.0"
 		}

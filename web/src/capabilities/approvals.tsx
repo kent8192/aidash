@@ -3,7 +3,6 @@ import { panelClass } from "./display";
 import {
   Alert,
   Check,
-  Disclosure,
   Hint,
   Pre,
   inlineFormClass,
@@ -15,7 +14,6 @@ import { ApiError, apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import type { ApprovalCard as Approval } from "../generated/models";
-import { requestPrice, runGrantScope } from "../research";
 import { ApprovalObservation } from "../approval-observation";
 import { useViewerTenant, useViewerSubject } from "../approval-queries";
 import {
@@ -39,13 +37,6 @@ import {
 } from "./tool-approval-model";
 import { approverText, decisionErrorText } from "./approver-text";
 
-const DISCLOSE = "research.disclose";
-
-/** Whether a card is a Web disclosure approval or a Run grant made from one. */
-function disclosure(item: Approval) {
-  return item.kind === "disclosure" || item.action === DISCLOSE;
-}
-
 function title(item: Approval, ja: boolean) {
   if (item.kind === "sampling")
     return ja ? "Sampling の承認" : "Sampling approval";
@@ -56,21 +47,7 @@ function title(item: Approval, ja: boolean) {
   if (item.kind === "grant" && isToolCard(item))
     return ja ? "ツールの Run grant" : "Tool Run grant";
   if (item.kind === "grant")
-    return disclosure(item)
-      ? ja
-        ? "Web 開示の Run grant"
-        : "Web disclosure Run grant"
-      : ja
-        ? "接続先の Run grant"
-        : "Outbound Run grant";
-  if (item.kind === "disclosure")
-    return item.operation === "search"
-      ? ja
-        ? "Web 検索の開示承認"
-        : "Web search disclosure"
-      : ja
-        ? "ページ読み取りの開示承認"
-        : "Page reading disclosure";
+    return ja ? "接続先の Run grant" : "Outbound Run grant";
   return ja ? "外部接続の承認" : "Outbound request";
 }
 
@@ -84,84 +61,6 @@ function FactList({ rows }: { rows: readonly (readonly [string, string])[] }) {
         </div>
       ))}
     </dl>
-  );
-}
-
-const QUERY_FIELDS: [string, string, string][] = [
-  ["query", "Query", "検索語"],
-  ["language", "Language", "言語"],
-  ["country", "Country", "国"],
-  ["count", "Results", "件数"],
-  ["page", "Page", "ページ"],
-  ["freshness", "Freshness", "期間"],
-  ["include_domains", "Only domains", "対象ドメイン"],
-  ["exclude_domains", "Excluded domains", "除外ドメイン"],
-];
-
-/**
- * The search query as the host validated it, field by field. It is read from
- * the provider-independent form recorded with the approval, never from a
- * provider's request body.
- */
-function QuerySummary({ query, ja }: { query: unknown; ja: boolean }) {
-  if (!query || typeof query !== "object") return null;
-  const fields = query as Record<string, unknown>;
-  const rows = QUERY_FIELDS.flatMap(([key, en, jp]) => {
-    const value = fields[key];
-    if (value == null || (Array.isArray(value) && value.length === 0))
-      return [];
-    const text = Array.isArray(value)
-      ? value.join(", ")
-      : typeof value === "object"
-        ? Object.values(value as Record<string, unknown>).join(" – ")
-        : String(value);
-    return [[ja ? jp : en, text] as const];
-  });
-  return <FactList rows={rows} />;
-}
-
-/** What an approver needs to decide one Web disclosure without the Run. */
-function DisclosureFacts({ item, ja }: { item: Approval; ja: boolean }) {
-  const none = ja ? "なし" : "None";
-  const facts: [string, string][] = [
-    [ja ? "送信先" : "Destination", item.targets.join(", ")],
-    [ja ? "Provider" : "Provider", item.provider ?? none],
-    // The Research account holder pays; its account ID is kept for audit only.
-    [
-      ja ? "課金先" : "Charged to",
-      item.estimated_micro_usd == null
-        ? none
-        : ja
-          ? `この Deployment の ${item.provider ?? ""} アカウント`
-          : `This Deployment's ${item.provider ?? ""} account`,
-    ],
-    [
-      ja ? "推定費用（1回）" : "Estimated cost (this request)",
-      item.estimated_micro_usd == null
-        ? none
-        : requestPrice(item.estimated_micro_usd, ja),
-    ],
-    [
-      "Agent",
-      item.agent_id ? `${item.agent_id}@${item.agent_version ?? ""}` : none,
-    ],
-  ];
-  return (
-    <>
-      <FactList rows={facts} />
-      {item.kind === "disclosure" && (
-        <>
-          <QuerySummary query={item.query} ja={ja} />
-          {item.disclosure && (
-            <Disclosure
-              summary={ja ? "送信される内容（正確な値）" : "Exact content sent"}
-            >
-              <Pre>{item.disclosure}</Pre>
-            </Disclosure>
-          )}
-        </>
-      )}
-    </>
   );
 }
 
@@ -220,22 +119,14 @@ function stateText(item: Approval, ja: boolean, locale: string) {
   if (tool) return tool;
   switch (item.state) {
     case "closed":
-      return item.closed_reason === "evidence_revoked"
-        ? ja
-          ? "閉じられました。この Run の Research evidence が取り消されたためです。送信されません。"
-          : "Closed because this Run's research evidence was revoked. Nothing is sent."
-        : ja
-          ? "閉じられました。送信されません。"
-          : "Closed. Nothing is sent.";
+      return ja
+        ? "閉じられました。送信されません。"
+        : "Closed. Nothing is sent.";
     case "blocked":
       // Nobody may approve: the fix is the Tenant's policy, not a person.
-      return disclosure(item)
-        ? ja
-          ? `この Tenant には ${host} への Web 開示を承認できる人がいません。送信されません。`
-          : `Nobody in this Tenant may approve Web disclosures to ${host}. Nothing is sent.`
-        : ja
-          ? `この Tenant には ${host} への接続を承認できる人がいません。送信されません。`
-          : `Nobody in this Tenant may approve requests to ${host}. Nothing is sent.`;
+      return ja
+        ? `この Tenant には ${host} への接続を承認できる人がいません。送信されません。`
+        : `Nobody in this Tenant may approve requests to ${host}. Nothing is sent.`;
     case "denied":
       return ja
         ? `拒否されました（${item.decided_by ?? "?"}・${when(item.decided_at)}）。送信されません。`
@@ -267,7 +158,6 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   const [minutes, setMinutes] = useState(15);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const research = disclosure(item);
   const tool = isToolCard(item);
   // What an "allow for this Run" decision covers, when the card can grant one.
   const sampling =
@@ -276,11 +166,9 @@ export function ApprovalCardView({ item }: { item: Approval }) {
     ? ja
       ? "このAgent PluginのMCPサーバー（ユーザー入力後も有効）"
       : "This Agent Plugin server, including after new user input"
-    : research
-      ? runGrantScope(item, ja)
-      : tool
-        ? toolGrantScope(item, ja)
-        : null;
+    : tool
+      ? toolGrantScope(item, ja)
+      : null;
   const action = async (choice: string) => {
     setBusy(true);
     setError("");
@@ -337,8 +225,6 @@ export function ApprovalCardView({ item }: { item: Approval }) {
           </Hint>
           {item.sampling && <Pre>{JSON.stringify(item.sampling, null, 2)}</Pre>}
         </>
-      ) : research ? (
-        <DisclosureFacts item={item} ja={ja} />
       ) : tool ? (
         <ToolFacts item={item} ja={ja} />
       ) : (
@@ -445,18 +331,16 @@ export function ApprovalCardView({ item }: { item: Approval }) {
           {item.allow_always && <Hint>{words.alwaysAllowScope}</Hint>}
         </>
       )}
-      {/* A disclosure approval is decided, not revoked; its Run grant is. */}
-      {["active", "approved", "pending", "attempted"].includes(item.state) &&
-        item.kind !== "disclosure" && (
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy}
-            onClick={() => void action("revoke")}
-          >
-            {ja ? "許可を取り消す" : "Revoke"}
-          </Button>
-        )}
+      {["active", "approved", "pending", "attempted"].includes(item.state) && (
+        <Button
+          variant="outline"
+          type="button"
+          disabled={busy}
+          onClick={() => void action("revoke")}
+        >
+          {ja ? "許可を取り消す" : "Revoke"}
+        </Button>
+      )}
       {error && <Alert>{error}</Alert>}
     </article>
   );

@@ -53,17 +53,17 @@ fn offers_merge_until_the_pending_bound_then_drop() {
 }
 
 #[rstest]
-fn citing_runs_stream_tool_progress_but_never_unverified_answer_text() {
-	// Arrange: the answer would carry a fabricated citation.
+fn withheld_text_is_not_streamed_but_tool_progress_is() {
+	// Arrange: text that is not the Run's answer.
 	let buffer = ProgressBuffer::withholding_text(Instant::now(), true);
 	// Act
 	buffer.offer(InferenceProgress::Text {
-		text: "Claim [[cite:ev_00000000-0000-0000-0000-000000000000]]".into(),
+		text: "A sampling reply".into(),
 	});
 	buffer.offer(InferenceProgress::ToolCall {
 		index: 0,
 		id: Some("call-0".into()),
-		name: Some("research_find".into()),
+		name: Some("file_read".into()),
 		argument_bytes: 12,
 	});
 	// Assert

@@ -459,10 +459,18 @@ pub async fn search(
 ) -> Result<SearchResult> {
 	match search_or_outage(scope, vector, workspace, input, run, controls, false).await? {
 		Retrieval::Found(result) => Ok(result),
-		Retrieval::Incomplete(_) | Retrieval::Outage(_) => {
-			Err(Error::RemoteSemantic(Failure::Unavailable))
-		}
+		Retrieval::Incomplete(_) => Err(Error::RemoteSemantic(Failure::Unavailable)),
+		Retrieval::Outage(cause) => Err(unavailable(cause)),
 	}
+}
+
+fn unavailable(cause: OutageCause) -> Error {
+	Error::RemoteSemantic(match cause {
+		OutageCause::DataProtection => Failure::DataProtection,
+		OutageCause::EmbeddingProvider
+		| OutageCause::VectorBackend
+		| OutageCause::IndexIncomplete => Failure::Unavailable,
+	})
 }
 
 /// What a search found: everything it asked for, only the READY part of an
@@ -548,6 +556,9 @@ async fn search_or_outage(
 		Err(error) if outage(&error) => {
 			return Ok(Retrieval::Outage(OutageCause::EmbeddingProvider));
 		}
+		Err(Error::RemoteSemantic(Failure::DataProtection)) => {
+			return Ok(Retrieval::Outage(OutageCause::DataProtection));
+		}
 		embedding => embedding?,
 	};
 	let max_image_bytes = prepared.spec.max_image_bytes;
@@ -590,13 +601,14 @@ pub enum WorkspaceContext {
 	Unavailable(OutageCause),
 }
 impl WorkspaceContext {
-	/// The result, or the `Unavailable` error a Run retries and then pauses on.
+	/// The result, or the `Unavailable` error a Run retries and then pauses
+	/// on. A Data Protection refusal stops the Run instead, since waiting
+	/// never fixes it (#963).
 	pub fn required(self) -> Result<Option<SearchResult>> {
 		match self {
 			Self::Retrieved(result) => Ok(result),
-			Self::Partial(_) | Self::Unavailable(_) => {
-				Err(Error::RemoteSemantic(Failure::Unavailable))
-			}
+			Self::Partial(_) => Err(Error::RemoteSemantic(Failure::Unavailable)),
+			Self::Unavailable(cause) => Err(unavailable(cause)),
 		}
 	}
 }

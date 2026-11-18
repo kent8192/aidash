@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0138
+---
+
 # Evidence Revocation removes stored copies but not the Context Journal
 
 Decided on 2026-10-15 for #225. Evidence Revocation exists for requests to remove stored copies of source content, such as a rights holder's request, personal data, or the end of an agreement. It is irreversible and covers all of one Run's Research evidence. It replaces the contents of Document snapshots, the text of Evidence fragments, the recorded results of research attempts and Source titles with tombstones, keeping identities, retrieval times and digests. From then on the Run's research operations return `evidence_revoked`, pending Web disclosure approvals of the Run close, an attempt in flight records no evidence when it settles (it stays charged), and citations of the Run's evidence are unknown, so a later answer is corrected or withheld. Answers already published stay as they are and show their citations as unavailable.

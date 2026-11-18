@@ -3,8 +3,8 @@
 pub mod capabilities;
 
 pub mod cache_salt;
+pub mod history;
 pub mod research_providers;
-pub mod research_retention;
 
 pub mod preview;
 pub mod preview_limits;
@@ -23,7 +23,6 @@ pub mod runs;
 
 pub mod human_requests;
 pub mod invocations;
-pub mod research;
 pub mod run_inputs;
 
 pub(crate) mod openapi;

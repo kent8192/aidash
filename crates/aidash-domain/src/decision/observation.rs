@@ -15,19 +15,11 @@ pub const RULE: &str = "approval.observe/1";
 pub enum ApprovalKind {
 	ToolCall,
 	Outbound,
-	WebSearch,
-	PageReading,
 	Generation,
 }
 
 impl ApprovalKind {
-	pub const ALL: [Self; 5] = [
-		Self::ToolCall,
-		Self::Outbound,
-		Self::WebSearch,
-		Self::PageReading,
-		Self::Generation,
-	];
+	pub const ALL: [Self; 3] = [Self::ToolCall, Self::Outbound, Self::Generation];
 }
 
 /// A durable reference to one exact source revision. Missing revisions are not replaced.
@@ -209,16 +201,6 @@ pub enum PendingAction {
 		arguments: serde_json::Value,
 		definition: serde_json::Value,
 	},
-	WebSearch {
-		name: String,
-		arguments: serde_json::Value,
-		definition: serde_json::Value,
-	},
-	PageReading {
-		name: String,
-		arguments: serde_json::Value,
-		definition: serde_json::Value,
-	},
 	Generation {
 		request: PendingGeneration,
 	},
@@ -242,12 +224,6 @@ impl PendingAction {
 			}
 			| Self::Outbound {
 				name, definition, ..
-			}
-			| Self::WebSearch {
-				name, definition, ..
-			}
-			| Self::PageReading {
-				name, definition, ..
 			} => !name.trim().is_empty() && definition.is_object(),
 		};
 		if !valid {
@@ -261,8 +237,6 @@ impl PendingAction {
 		match self {
 			Self::ToolCall { .. } => ApprovalKind::ToolCall,
 			Self::Outbound { .. } => ApprovalKind::Outbound,
-			Self::WebSearch { .. } => ApprovalKind::WebSearch,
-			Self::PageReading { .. } => ApprovalKind::PageReading,
 			Self::Generation { .. } => ApprovalKind::Generation,
 		}
 	}

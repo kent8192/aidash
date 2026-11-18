@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 16] {
+fn assets() -> [(&'static str, String); 21] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -91,6 +91,26 @@ fn assets() -> [(&'static str, String); 16] {
 		(
 			"identity/sql/backward/0082_remove_package_index_approvals.sql",
 			crate::apps::identity::services::package_index_approvals::backward(),
+		),
+		(
+			"identity/sql/forward/0083_data_protection_switches.sql",
+			crate::apps::identity::services::data_protection_backfill::forward(),
+		),
+		(
+			"identity/sql/backward/0083_data_protection_switches.sql",
+			crate::apps::identity::services::data_protection_backfill::backward(),
+		),
+		(
+			"identity/sql/forward/0085_remove_research_approvals.sql",
+			crate::apps::identity::services::research_approval_cleanup::forward(),
+		),
+		(
+			"execution/sql/forward/0141_remove_research_records.sql",
+			crate::apps::execution::services::research_record_cleanup::forward(),
+		),
+		(
+			"execution/sql/backward/0141_remove_research_records.sql",
+			crate::apps::execution::services::research_record_cleanup::backward(),
 		),
 	]
 }
@@ -215,6 +235,26 @@ mod tests {
 		assert!(migration.database_only);
 		assert!(matches!(migration.operations.as_slice(),
 			[Operation::RunSQL { sql, reverse_sql: Some(reverse) }] if sql == &expected[12].1 && reverse == &expected[13].1));
+		// The data rewrites of #962, #963 and #987 run beside typed and
+		// handwritten DDL operations of the same migrations.
+		for (app, name, forward, backward) in [
+			("identity", "0083_data_protection_switches", 16, Some(17)),
+			("identity", "0085_remove_research_approvals", 18, None),
+			("execution", "0141_remove_research", 19, Some(20)),
+		] {
+			let migration = FilesystemSource::new(&root)
+				.get_migration(app, name)
+				.await
+				.unwrap();
+			assert!(
+				migration.operations.iter().any(|operation| matches!(operation,
+					Operation::RunSQL { sql, reverse_sql }
+					if sql == &expected[forward].1
+						&& backward.is_none_or(|backward| reverse_sql.as_deref() == Some(expected[backward].1.as_str()))
+				)),
+				"{app}/{name} runs its generated rewrite"
+			);
+		}
 		let migration = FilesystemSource::new(&root)
 			.get_migration("execution", "0090_run_created_at")
 			.await

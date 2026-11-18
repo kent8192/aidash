@@ -62,8 +62,7 @@ import {
   type MessageSubmission,
 } from "./conversation-model";
 import { Avatar } from "./avatar";
-import { CitedText } from "./citations";
-import { messageParts } from "./citations-model";
+import { messageParts } from "./message-text-model";
 import { Textarea } from "../components/ui/textarea";
 import { Kbd } from "../components/ui/kbd";
 import {
@@ -96,41 +95,27 @@ function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
   return Math.max(0, end - scroll.clientHeight);
 }
 
-/**
- * Only inline composer syntax is interpreted. React escapes all other content.
- * In text a Run published (`run`), Source citations become numbered chips,
- * also inside bold, italic and code spans.
- */
-export function MessageText({
-  text,
-  run,
-}: {
-  text: string;
-  run?: string | null;
-}) {
+/** Only inline composer syntax is interpreted. React escapes all other content. */
+export function MessageText({ text }: { text: string }) {
   return (
     <>
-      {messageParts(text, Boolean(run)).map((part, i) => {
+      {messageParts(text).map((part, i) => {
         switch (part.kind) {
           case "strong":
             return (
               <strong key={i} className="font-semibold">
-                <CitedText run={run} parts={part.parts} />
+                {part.text}
               </strong>
             );
           case "em":
-            return (
-              <em key={i}>
-                <CitedText run={run} parts={part.parts} />
-              </em>
-            );
+            return <em key={i}>{part.text}</em>;
           case "code":
             return (
               <code
                 key={i}
                 className="rounded-sm bg-raised px-1 py-px font-mono text-[12px]"
               >
-                <CitedText run={run} parts={part.parts} />
+                {part.text}
               </code>
             );
           case "mention":
@@ -140,7 +125,7 @@ export function MessageText({
               </span>
             );
           default:
-            return <CitedText key={i} run={run} parts={[part]} />;
+            return <Fragment key={i}>{part.text}</Fragment>;
         }
       })}
     </>
@@ -777,10 +762,7 @@ function ConversationFeed({
                         </time>
                       </header>
                       <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
-                        <MessageText
-                          text={message.content}
-                          run={message.run_id}
-                        />
+                        <MessageText text={message.content} />
                       </p>
                       {entry.citations && entry.citations.length > 0 && (
                         <MessageCitations

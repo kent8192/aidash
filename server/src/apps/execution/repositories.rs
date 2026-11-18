@@ -186,8 +186,6 @@ pub(crate) mod core_records;
 
 pub(crate) mod worker;
 
-pub(crate) mod research;
-
 pub(crate) mod egress;
 pub(crate) mod live_previews;
 pub(crate) mod previews;

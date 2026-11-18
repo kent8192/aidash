@@ -79,10 +79,12 @@ async fn a_fixture_permission_reaches_every_clone() {
 #[tokio::test]
 async fn keyless_data_protection_distinguishes_tenant_endpoints_from_deployment_origins() {
 	use aidash_domain::data_protection::{DataProtection, Level};
-	for level in [Level::NoTraining, Level::ZeroDataRetention] {
+	// The Tenant switch, not the level, forbids Keyless endpoints (#962).
+	for level in [Level::NoRestriction, Level::ZeroDataRetention] {
 		let context = Context {
 			data_protection: DataProtection {
 				level,
+				forbid_keyless_endpoints: true,
 				..Default::default()
 			},
 			..Default::default()
@@ -91,7 +93,7 @@ async fn keyless_data_protection_distinguishes_tenant_endpoints_from_deployment_
 			.resolve(&context, "https://model.example/v1", &Source::Keyless)
 			.await
 			.unwrap_err();
-		assert!(rejected.to_string().contains("Tenant Keyless endpoints"));
+		assert!(rejected.to_string().contains("forbids Keyless endpoints"));
 		let permitted = permitting(&["http://127.0.0.1:11434"]);
 		assert!(
 			permitted
@@ -99,7 +101,7 @@ async fn keyless_data_protection_distinguishes_tenant_endpoints_from_deployment_
 				.await
 				.unwrap_err()
 				.to_string()
-				.contains("Tenant Keyless endpoints")
+				.contains("forbids Keyless endpoints")
 		);
 		let deployment = permitted
 			.with_deployment_hosted(PermittedOrigins::parse(["http://127.0.0.1:11434"]).unwrap())

@@ -687,23 +687,6 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			Ok(Some((row.filename, row.media_type, row.content)))
 		}
 	}
-	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
-		use aidash_application::ports::research::EvidenceStore;
-		// A page image is the Run's own evidence; it needs no file access.
-		let Ok(reference) = reference.parse() else {
-			return Ok(None);
-		};
-		let scope = match &self.lease {
-			Some(access) => access.tenancy()?,
-			None => self.access.read().await.tenancy()?,
-		};
-		crate::apps::execution::repositories::research::Evidence {
-			store: self.store.clone(),
-			scope,
-		}
-		.page_image(self.run.id, &reference)
-		.await
-	}
 }
 
 #[cfg(test)]

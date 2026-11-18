@@ -302,6 +302,7 @@ impl RouteDispatch {
 				&self.route.model,
 			)
 			.await?;
+			let requirement = scope.data_protection.requirement();
 			if !routes.is_empty()
 				&& !self.route.hosts.is_empty()
 				&& self.route.hosts.iter().all(|host| {
@@ -313,20 +314,36 @@ impl RouteDispatch {
 					"Zero Data Retention: no Decider Route host is available".into(),
 				)));
 			}
+			// `only` admits every tag below a listed host, so strict zero data
+			// retention needs each signed host to be an admitted route itself.
+			if !requirement.admits_safety_retention()
+				&& !routes.is_empty()
+				&& let Some(host) = self.route.hosts.iter().find(|host| !routes.contains(host))
+			{
+				return Err(DispatchError::ProviderFailure(Error::Invalid(format!(
+					"Zero Data Retention: Decider Route host {host} is not strict zero data retention"
+				))));
+			}
 			let mut body: Value = serde_json::from_slice(&self.body).map_err(Error::from)?;
 			let provider = body["provider"]
 				.as_object_mut()
 				.expect("prepared provider object");
 			provider.remove("zdr");
 			provider.extend(
-				scope
-					.data_protection
-					.requirement()
+				requirement
 					.provider()
 					.as_object()
 					.expect("policy object")
 					.clone(),
 			);
+			// A System One body names no hosts; strict zero data retention pins
+			// it to the admitted routes so it never reaches Safety Retention.
+			if !requirement.admits_safety_retention()
+				&& self.route.hosts.is_empty()
+				&& !routes.is_empty()
+			{
+				provider.insert("only".into(), json!(routes));
+			}
 			let encoded = serde_json::to_vec(&body).map_err(Error::from)?;
 			if !self
 				.capacity

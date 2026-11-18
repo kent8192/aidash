@@ -48,4 +48,4 @@ Fetched candidates, selection proposals, final fitting and accepted inference de
 
 Aidash is undeployed. Recreate development data that contains the previous normalized Agent graph, incompatible Run snapshots or legacy inline research journals. Do not rewrite immutable versions or replay them through a compatibility bridge. Follow [ADR 0125](../adr/0125-compaction-offloads-to-the-context-journal-and-no-model-decides-what-is-kept.md) and the existing development setup for the current schema.
 
-Research journal retention uses the reference-based implementation from PR #481, delivered through PR #478. Exact fitted variants live in the purgeable Research store; journal and summary commitments keep references. Missing, expired or revoked payloads resolve to unavailable markers/tombstones. See [ADR 0083](../adr/0083-research-journals-retain-content-addressed-references-and-purges-remove-the-owned-bytes.md).
+Research journals and their retention were removed with the Research category (ADR 0138, #987).
