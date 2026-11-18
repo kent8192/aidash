@@ -3550,8 +3550,8 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 		.iter()
 		.find(|binding| binding.definition.config["operation"] == "task_delegate")
 		.unwrap();
-	// task_delegate has Reach never, so a remote Binding excludes it (ADR 0139); the Home
-	// still refuses the hop before any target authority below.
+	// task_delegate has Reach never, so a remote Binding excludes it (ADR 0139), and a call to
+	// it is refused as unavailable before any target authority below.
 	assert!(binding.excluded_reason.is_some());
 	let target = aidash_domain::nodes::NodeAddress::derived("aidash://third", "acme").to_string();
 	let mut policy = p.receiver_policy.clone();
@@ -3573,7 +3573,8 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 	let error = first_result(&history)["event"]["result"]["error"]
 		.as_str()
 		.unwrap_or_default();
-	assert!(error.contains("one hop"), "{history}");
+	// Not the deny-next-hop policy's refusal: the call never reached target authority.
+	assert_eq!(error, "unavailable tool task_delegate", "{history}");
 	p.close().await;
 }
 
