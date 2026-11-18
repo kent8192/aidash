@@ -261,7 +261,7 @@ impl ScopeAuthority for ScratchAuthority {
 		self.services
 			.admit(scope, service, method, path, query_digest)
 			.await
-			.map_err(Into::into)
+			.map_err(super::application_error)
 	}
 }
 

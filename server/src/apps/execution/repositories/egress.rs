@@ -292,8 +292,10 @@ impl ServiceSecrets {
 		}
 	}
 
-	/// Admits one request from `scope` to `service`. Nothing here reads or
-	/// locks the Run row (ADR 0112); a revoked Run is refused.
+	/// Admits one request from `scope` to `service` and writes its request
+	/// record. Nothing here reads or locks the Run row (ADR 0112); a revoked
+	/// Run is refused, and so is a scope whose daily allowance or the
+	/// service's daily share is spent (`egress_budget_exhausted`).
 	pub(crate) async fn admit(
 		&self,
 		scope: &ScopeSettings,
@@ -345,6 +347,22 @@ impl ServiceSecrets {
 		if destination == aidash_domain::keyless::Destination::Forbidden {
 			return Err(Error::Forbidden);
 		}
+		// An External service may only lower the Deployment's maximums (ADR
+		// 0054). Registration checked them then; a version registered before
+		// they were lowered is not used above them now.
+		if let Some(limits) = definition.limits {
+			limits.lower_than(deployment_ceilings(store))?;
+		}
+		// The Space's daily allowance and the service's own daily share are
+		// read in the transaction that writes the request record, before any
+		// secret is attached. A spent budget, or a failed read, rolls back:
+		// no request record is left unfinished and no broker route is minted.
+		super::scope_egress::check_budget(
+			&mut tx,
+			scope,
+			definition.limits.map(|limits| (service, limits)),
+		)
+		.await?;
 		let key = format!("{service}@{}", entry.version);
 		let (credential, route, secret) = self.material(&scope.id, &key, &definition).await?;
 		let id = Uuid::now_v7();
@@ -397,6 +415,18 @@ impl ServiceSecrets {
 			}),
 		})))
 	}
+}
+
+/// The Deployment's maximums for an External service's limits, the same ones
+/// registration validates against.
+fn deployment_ceilings(store: &Store) -> aidash_domain::egress::Limits {
+	store
+		.capabilities
+		.0
+		.egress
+		.as_ref()
+		.map(|egress| egress.limits)
+		.unwrap_or_default()
 }
 
 /// The host a request record names for a Tenant Secret, never its value. A

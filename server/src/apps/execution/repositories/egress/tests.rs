@@ -73,7 +73,7 @@ async fn register(
 		.unwrap();
 }
 
-async fn set_approval(
+pub(crate) async fn set_approval(
 	f: &crate::federation::Federation,
 	node: &aidash_domain::nodes::NodeName,
 	id: &str,

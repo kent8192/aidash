@@ -287,7 +287,10 @@ fn budget_available(row: &ScopeDaily, sent: u64, received: u64) -> Result<()> {
 	}
 	Ok(())
 }
-async fn check_budget(
+/// Refuses with `egress_budget_exhausted` once the scope's daily allowance, or
+/// `service`'s own daily share, is spent. External service admission runs it
+/// in the transaction that writes the request record.
+pub(super) async fn check_budget(
 	tx: &mut Transaction,
 	settings: &ScopeSettings,
 	service: Option<(&str, aidash_domain::egress::Limits)>,
@@ -352,18 +355,10 @@ impl EgressScopes for DurableScopes {
 		if admission.service != service {
 			return Err(aidash_application::Error::Forbidden);
 		}
+		// The authority refuses a spent daily allowance or service share before
+		// it writes the request record (#738), so no check here can leave that
+		// record unfinished.
 		let limits = admission.definition.limits;
-		let result: Result<()> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(&settings.id.tenant)?)
-				.await?;
-			check_budget(&mut tx, &settings, limits.map(|l| (service, l))).await?;
-			tx.commit().await
-		}
-		.await;
-		result.map_err(application_error)?;
 		admission.meter = Arc::new(ScopedMeter::new(
 			self.clone(),
 			settings,

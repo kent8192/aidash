@@ -199,7 +199,10 @@ pub trait ScopeAuthority: Send + Sync {
 	/// returned meter records request metadata and bytes, and its
 	/// `check_active` rechecks that the service is still on the Scratch Space
 	/// and still approved; scope budgets are charged by the durable adapter,
-	/// not by the authority's meter. A scope without a Run is refused.
+	/// not by the authority's meter. A scope without a Run is refused. So is a
+	/// scope whose daily allowance or the service's own daily share is spent
+	/// (`Refused("egress_budget_exhausted")`), before any secret is attached or
+	/// request record written, so that a refused request leaves no record.
 	async fn admit_external(
 		&self,
 		scope: &ScopeSettings,

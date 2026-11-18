@@ -371,17 +371,9 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	// What both sides acknowledged is not carried over to the next charge.
 	unreachable.charge(Direction::Received, 1).await.unwrap();
 	assert_eq!((total().await, audit.committed()), (9, 2));
-	for _ in 0..2 {
-		assert!(
-			durable
-				.admit_external("credential", "maps", "GET", "/", "digest")
-				.await
-				.err()
-				.unwrap()
-				.to_string()
-				.contains("egress_budget_exhausted")
-		);
-	}
+	// A spent service share refuses the next request in the authority, before
+	// it writes a request record: see
+	// `a_spent_budget_refuses_an_external_service_request_before_its_record`.
 	// No number of connections stops a scope (#845).
 	for _ in 0..3 {
 		durable.admit_connection(&scope).await.unwrap();
@@ -721,6 +713,141 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		durable.resolve(&other).await,
 		Err(aidash_application::Error::Unauthorized)
 	));
+}
+
+/// An External service request refused at admission, for a spent daily share
+/// or for limits above the Deployment's current maximums, is refused before
+/// its request record is written, so the Run lists no unfinished request (#738).
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn a_spent_budget_refuses_an_external_service_request_before_its_record(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_scope(&federation.store, "acme").await;
+	federation
+		.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(serde_json::json!({
+				"id": "maps", "version": "1.0.0", "kind": "external_service",
+				"name": {"en": "maps"}, "description": {"en": "Fixture service"},
+				"config": {
+					"base_url": "https://maps.example.test/", "methods": ["GET"],
+					"limits": {"sent_bytes": 5, "received_bytes": 5, "requests": 10},
+				},
+			}))
+			.unwrap(),
+		)
+		.await
+		.unwrap();
+	let node = tenant_roots::fixture_node_name("acme");
+	crate::egress_tests::set_approval(&federation, &node, "maps", "1.0.0", true).await;
+	let space = insert_space(
+		&federation,
+		"acme",
+		aidash_domain::scratch::ScratchSettings {
+			daily_sent_bytes: 100,
+			daily_received_bytes: 100,
+			external_services: ["maps".to_owned()].into(),
+			..Default::default()
+		},
+	)
+	.await;
+	let durable_for = |store: Store| {
+		let authority = Arc::new(ScratchAuthority::with_key(
+			store.clone(),
+			federation.config.scratch_policy.clone(),
+			KEY,
+		));
+		(authority.clone(), DurableScopes::new(store, authority))
+	};
+	let (authority, durable) = durable_for(federation.store.clone());
+	let run = Uuid::new_v4();
+	let credential = authority.credential("acme", space, run).unwrap();
+	let digest = "0".repeat(64);
+	let pool = federation.store.pool.fixture_driver();
+	// Every request record of the Run, and those never finished.
+	let records = async || {
+		sqlx::query_as::<_, (i64, i64)>(
+			"SELECT count(*), count(*) FILTER (WHERE status = 0) FROM egress_requests WHERE run_id = $1",
+		)
+		.bind(run)
+		.fetch_one(pool)
+		.await
+		.unwrap()
+	};
+
+	// The Deployment lowered its maximums below the service's limits after
+	// the version was registered: the version is not used above them.
+	let mut profile = (*federation.store.capabilities.0).clone();
+	profile.runner = Some(
+		serde_json::from_value(serde_json::json!({
+			"endpoint": "http://127.0.0.1:9", "token_env": "AIDASH_SCOPE_EGRESS_TEST_TOKEN",
+			"image": format!("fixture@sha256:{}", "b".repeat(64)),
+			"runtime_class": "fixture", "namespace": "fixture",
+		}))
+		.unwrap(),
+	);
+	profile.egress = Some(
+		serde_json::from_value(serde_json::json!({
+			"listen": "127.0.0.1:0",
+			"limits": {"sent_bytes": 4, "received_bytes": 4, "requests": 10},
+		}))
+		.unwrap(),
+	);
+	let mut lowered = federation.store.clone();
+	lowered.capabilities = crate::capabilities::Runtime::new(profile).unwrap();
+	let (_, lowered) = durable_for(lowered);
+	assert!(matches!(
+		lowered
+			.admit_external(&credential, "maps", "GET", "/", &digest)
+			.await,
+		Err(aidash_application::Error::Invalid(message))
+			if message.contains("Deployment ceilings")
+	));
+	assert_eq!(records().await, (0, 0));
+
+	// Within its share the request is admitted and recorded, and it spends
+	// the share.
+	let admission = admitted(
+		durable
+			.admit_external(&credential, "maps", "GET", "/", &digest)
+			.await
+			.unwrap(),
+	);
+	assert!(matches!(
+		admission.meter.charge(Direction::Received, 5).await,
+		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
+	));
+	admission
+		.meter
+		.finish(200, RequestTimes::default(), None)
+		.await
+		.unwrap();
+	assert_eq!(records().await, (1, 0));
+
+	// The gateway answers 429 to this refusal, and the retries are refused
+	// too. None of them leaves a record behind.
+	for _ in 0..2 {
+		assert!(matches!(
+			durable
+				.admit_external(&credential, "maps", "GET", "/", &digest)
+				.await,
+			Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
+		));
+	}
+	assert_eq!(
+		records().await,
+		(1, 0),
+		"a request refused at admission leaves no unfinished request record"
+	);
 }
 
 /// A deletion is recorded for the Tenant or the Node and leaves the Scratch
