@@ -165,23 +165,59 @@ pub fn bounded(value: &str, max: usize) -> (&str, bool) {
 	(&value[..end], true)
 }
 
-/// The text of a page split into parts of at most `max` bytes, at line breaks
-/// where a line fits and at character boundaries where it does not.
+/// Bytes `c` takes inside a JSON string: quotes, backslashes and the control
+/// characters with a short escape take two, other control characters six.
+fn escaped_char_len(c: char) -> usize {
+	match c {
+		'"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+		c if u32::from(c) < 0x20 => 6,
+		c => c.len_utf8(),
+	}
+}
+
+/// Bytes `text` takes inside a JSON string, as a recorded result encodes it.
+pub fn escaped_len(text: &str) -> usize {
+	text.chars().map(escaped_char_len).sum()
+}
+
+/// The longest prefix of `text` whose JSON encoding fits in `max` bytes, and
+/// at least one character, so that splitting always advances.
+fn escaped_prefix(text: &str, max: usize) -> &str {
+	let mut used = 0;
+	for (index, c) in text.char_indices() {
+		used += escaped_char_len(c);
+		if used > max {
+			let end = if index == 0 { c.len_utf8() } else { index };
+			return &text[..end];
+		}
+	}
+	text
+}
+
+/// The text of a page split into parts whose JSON encoding takes at most `max`
+/// bytes, at line breaks where a line fits and at character boundaries where
+/// it does not. Sizing by the encoded length keeps a part of quotes,
+/// backslashes or short lines within the result bound it is returned in.
 pub fn parts(text: &str, max: usize) -> Vec<String> {
 	let mut parts = Vec::new();
 	let mut current = String::new();
+	let mut current_len = 0;
 	for line in text.split_inclusive('\n') {
 		let mut line = line;
-		while current.len() + line.len() > max {
+		let mut line_len = escaped_len(line);
+		while current_len + line_len > max {
 			if !current.is_empty() {
 				parts.push(std::mem::take(&mut current));
+				current_len = 0;
 				continue;
 			}
-			let (head, _) = bounded(line, max);
+			let head = escaped_prefix(line, max);
 			parts.push(head.to_owned());
 			line = &line[head.len()..];
+			line_len -= escaped_len(head);
 		}
 		current.push_str(line);
+		current_len += line_len;
 	}
 	if !current.is_empty() || parts.is_empty() {
 		parts.push(current);

@@ -19,7 +19,8 @@ pub const MAX_PAGES: u32 = i32::MAX as u32;
 /// no more pages than this, and the list, like the rest of a result, must fit
 /// within [`super::MAX_RESULT_BYTES`].
 pub const MAX_PAGES_WITHOUT_TEXT: usize = 500;
-/// Bytes of page text one call returns as one part.
+/// Bytes one part of page text takes in the JSON result one call returns,
+/// counting every escape.
 pub const MAX_PART_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

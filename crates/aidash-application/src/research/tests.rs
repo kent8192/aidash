@@ -5,6 +5,8 @@ use async_trait::async_trait;
 struct Fixture {
 	lines: usize,
 	pages_without_text: Vec<u32>,
+	/// The text of every line; numbered filler when `None`.
+	line: Option<String>,
 }
 
 #[async_trait]
@@ -32,7 +34,10 @@ impl PageProvider for Fixture {
 			completeness: Completeness::Complete,
 			lines: (0..self.lines)
 				.map(|index| Line {
-					text: format!("{index:04} {}", "x".repeat(1000)),
+					text: self
+						.line
+						.clone()
+						.unwrap_or_else(|| format!("{index:04} {}", "x".repeat(1000))),
 					page: paginated.then_some(1),
 				})
 				.collect(),
@@ -48,6 +53,7 @@ async fn a_long_page_is_read_in_parts_and_a_missing_part_is_refused() {
 	let provider = Fixture {
 		lines: 40,
 		pages_without_text: vec![],
+		line: None,
 	};
 	let first = read(&provider, &json!({"url":"https://example.com/a"}))
 		.await
@@ -78,6 +84,7 @@ async fn pages_without_text_are_listed_and_bad_input_is_refused() {
 	let provider = Fixture {
 		lines: 1,
 		pages_without_text: vec![2, 3],
+		line: None,
 	};
 	let read_pdf = read(&provider, &json!({"url":"https://example.com/a.pdf"}))
 		.await
@@ -101,4 +108,38 @@ async fn pages_without_text_are_listed_and_bad_input_is_refused() {
 		Some("docs.example.com")
 	);
 	assert_eq!(page_host(&json!({"query":"x"})), None);
+}
+
+#[rstest::rstest]
+#[case::a_line_of_backslashes(1, "\\".repeat(16 * 1024 - 1))]
+#[case::lines_of_quotes(40, "\"".repeat(1000))]
+#[case::short_lines_with_tabs(4000, "\t".into())]
+#[tokio::test]
+async fn every_part_of_escaped_text_fits_the_result_bound(
+	#[case] lines: usize,
+	#[case] line: String,
+) {
+	// Arrange: text whose JSON encoding is about twice its length.
+	let provider = Fixture {
+		lines,
+		pages_without_text: vec![],
+		line: Some(line.clone()),
+	};
+	let url = format!("https://example.com/{}", "a".repeat(2000));
+
+	// Act
+	let first = read(&provider, &json!({"url":url})).await.unwrap();
+	let parts = first["data"]["parts"].as_u64().unwrap();
+	let mut text = String::new();
+	for part in 1..=parts {
+		let result = read(&provider, &json!({"url":url,"part":part}))
+			.await
+			.unwrap();
+
+		// Assert
+		assert_eq!(result["status"], "ok", "part {part}: {}", result["error"]);
+		assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_RESULT_BYTES);
+		text.push_str(result["data"]["text"].as_str().unwrap());
+	}
+	assert_eq!(text, format!("{line}\n").repeat(lines));
 }

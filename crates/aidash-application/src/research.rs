@@ -90,8 +90,9 @@ pub async fn read(provider: &dyn PageProvider, input: &Value) -> Result<Value> {
 		"text": selected,
 	});
 	let result = envelope(operation, "ok", data, false);
-	// A part and its metadata stay within the recorded result bound; the part
-	// bound leaves room for the metadata, so this only guards a long title.
+	// A part and its metadata stay within the recorded result bound. Parts are
+	// sized by their escaped length, and the part bound leaves room for the
+	// address and page numbers, so this only guards a long title.
 	if serde_json::to_vec(&result)?.len() > MAX_RESULT_BYTES {
 		return Ok(failure(operation, Failure::ResponseTooLarge));
 	}
