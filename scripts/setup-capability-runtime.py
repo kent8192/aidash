@@ -209,10 +209,10 @@ WantedBy=multi-user.target
     # Shared with the Rust capability runtime, whose Profile denies unknown fields:
     # Runner-only settings such as host_tasks stay out (the Runner defaults to 512).
     profile = {
-        "admission": True, "storage": str(directory / "objects"), "outbound_origins": [], "package_origins": [],
+        "admission": True, "storage": str(directory / "objects"), "outbound_origins": [],
         "working_bytes": 1073741824, "retained_bytes": 10737418240, "temporary_bytes": 268435456,
         "cpu": 2, "memory_bytes": 2147483648, "processes": 128,
-        "operation_seconds": 120, "maximum_seconds": 600, "install_seconds": 300,
+        "operation_seconds": 120, "maximum_seconds": 600,
         "idle_seconds": args.idle_seconds, "recovery_seconds": 604800, "grant_seconds": 3600,
         "approval_seconds": 86400, "output_bytes": 8388608, "staging_seconds": 86400,
         "runner": {
