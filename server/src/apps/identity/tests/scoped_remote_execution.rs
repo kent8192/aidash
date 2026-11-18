@@ -1680,13 +1680,8 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
 	let requests = p.requests.lock().await;
 	assert_eq!(requests.len(), 1, "{run:?}");
-	assert!(
-		requests[0]["tools"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.all(|tool| tool["function"]["name"] != "memory_mutate")
-	);
+	// Whether memory_mutate is offered is no longer this test's concern: it is a candidate a
+	// remote Run may be offered, and the Federation tool lists decide each call (ADR 0139).
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
@@ -3555,7 +3550,9 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 		.iter()
 		.find(|binding| binding.definition.config["operation"] == "task_delegate")
 		.unwrap();
-	assert!(binding.excluded_reason.is_none());
+	// task_delegate has Reach never, so a remote Binding excludes it (ADR 0139); the Home
+	// still refuses the hop before any target authority below.
+	assert!(binding.excluded_reason.is_some());
 	let target = aidash_domain::nodes::NodeAddress::derived("aidash://third", "acme").to_string();
 	let mut policy = p.receiver_policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-next-hop","effect":"deny","subjects":{"any":true},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target]}}));
