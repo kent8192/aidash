@@ -467,44 +467,17 @@ impl CatalogMutation for NativeMutation<'_> {
 		carry_over: bool,
 		scope: aidash_domain::identity::catalog::ApprovalScope,
 	) -> aidash_application::Result<()> {
-		use crate::apps::identity::models::AuthorizationCatalogHistory;
-		use reinhardt::db::orm::Model;
 		let scope = match scope {
 			aidash_domain::identity::catalog::ApprovalScope::Node => "node",
 			aidash_domain::identity::catalog::ApprovalScope::Deployment => "deployment",
 		};
-		// Approving again a version that was already in force, as a
-		// restriction edit does, keeps the lineage of a Carried Approval, like
-		// `history` keeps it for a withdrawal. An approval that was not in
-		// force before starts without one.
-		let in_force = AuthorizationCatalogHistory::objects()
-			.filter(AuthorizationCatalogHistory::field_tenant().eq(binding.tenant.clone()))
-			.filter(AuthorizationCatalogHistory::field_node().eq(binding.node.as_str().to_owned()))
-			.filter(AuthorizationCatalogHistory::field_entry_key().eq(binding.entry_id.clone()))
-			.filter(
-				AuthorizationCatalogHistory::field_entry_version()
-					.eq(binding.entry_version.clone()),
-			)
-			.filter(AuthorizationCatalogHistory::field_revision().eq(binding.revision - 1))
-			.filter(AuthorizationCatalogHistory::field_enabled().eq(true))
-			.all_with_executor(&mut **self.0)
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(crate::Error::from)?
-			.pop()
-			.is_some();
 		for table in ["authorization_catalog", "authorization_catalog_history"] {
-			let mut query = Query::update();
-			query
+			let sql = Query::update()
 				.table(Alias::new(table))
 				.value(Alias::new("carry_over"), carry_over)
-				.value(Alias::new("scope"), scope);
-			if !in_force {
-				query
-					.value(Alias::new("carried_from_version"), Option::<String>::None)
-					.value(Alias::new("carried_from_approver"), Option::<String>::None);
-			}
-			let sql = query
+				.value(Alias::new("scope"), scope)
+				.value(Alias::new("carried_from_version"), Option::<String>::None)
+				.value(Alias::new("carried_from_approver"), Option::<String>::None)
 				.and_where(Expr::col(Alias::new("tenant")).eq(binding.tenant.clone()))
 				.and_where(Expr::col(Alias::new("node")).eq(binding.node.as_str()))
 				.and_where(Expr::col(Alias::new("entry_id")).eq(binding.entry_id.clone()))
