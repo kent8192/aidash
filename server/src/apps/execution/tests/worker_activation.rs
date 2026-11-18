@@ -427,7 +427,12 @@ async fn separate_process_notifications_and_negative_control(
 	timings.sort_by(f64::total_cmp);
 	let p95 = timings[94];
 	let max = timings[99];
-	assert!(p95 <= 1000. && max <= 2000., "p95={p95} max={max}");
+	// Each sample times the admission request as well as the wake-up, so the
+	// bound tracks admission cost under coverage on a shared runner. p95 reached
+	// 1,011–1,249 ms on hosted runners on 2026-11-17 (#1004). The notification
+	// path is proven above (every first claim is a notification within 2 s and
+	// the recovery count does not move); this bound only catches a slowdown.
+	assert!(p95 <= 1500. && max <= 2000., "p95={p95} max={max}");
 	assert_eq!(
 		calls.load(Ordering::SeqCst),
 		107,
