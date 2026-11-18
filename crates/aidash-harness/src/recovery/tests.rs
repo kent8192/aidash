@@ -239,11 +239,10 @@ async fn exhausted_semantic_retries_enter_outage_wait(repository: Repository, no
 		let run = repository.run.lock().unwrap();
 		let recovery = &run.as_ref().unwrap().recovery;
 		assert_eq!(recovery.semantic_reason, Some(SemanticFailure::Unavailable));
+		// Only the wait's `wake_at` schedules the next check: the kept retry
+		// carries no later time that would hold the wake-up back.
 		let retry = recovery.retry.as_ref().unwrap();
-		assert_eq!(
-			(retry.count, retry.at),
-			(OUTAGE_RETRIES, now + chrono::Duration::minutes(5))
-		);
+		assert_eq!((retry.count, retry.at), (OUTAGE_RETRIES, now));
 		assert_eq!(
 			aidash_domain::semantic::recovery::Recovery::new(SemanticFailure::Unavailable, true)
 				.actions,

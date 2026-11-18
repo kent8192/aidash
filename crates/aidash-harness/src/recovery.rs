@@ -57,7 +57,10 @@ async fn wait_outage(
 	let Some(wake_at) = cadence.next_wake(started_at, now) else {
 		return Ok(false);
 	};
-	let retry = |count| RetryState { count, at: wake_at };
+	// In an Outage Wait the state's `wake_at` schedules the next check, so the
+	// kept count carries no later time of its own (`activation::due` takes the
+	// later of the two).
+	let spent = spent.map(|count| RetryState { count, at: now });
 	if let RunState::Waiting(wait) = &mut run.state {
 		if let WaitingState::Outage {
 			service: waiting_for,
@@ -71,10 +74,13 @@ async fn wait_outage(
 			*since = started_at;
 			*next = wake_at;
 			*every = cadence;
-			run.recovery.retry = spent.map(retry);
+			run.recovery.retry = spent;
 		} else {
 			// Activation wakes a wait no earlier than its retry (`activation::due`).
-			run.recovery.retry = Some(retry(spent.unwrap_or_default()));
+			run.recovery.retry = Some(RetryState {
+				count: spent.map_or(0, |retry| retry.count),
+				at: wake_at,
+			});
 		}
 	} else {
 		run.suspend(|resume| WaitingState::Outage {
@@ -84,7 +90,7 @@ async fn wait_outage(
 			resume,
 			cadence,
 		})?;
-		run.recovery.retry = spent.map(retry);
+		run.recovery.retry = spent;
 	}
 	store.save(run, token, "run.outage_waiting").await?;
 	Ok(true)
