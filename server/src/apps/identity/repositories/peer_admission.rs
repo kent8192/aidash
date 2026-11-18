@@ -692,8 +692,17 @@ impl PeerAdmissionScope for Owned {
 				aidash_application::usage::Work::Run,
 			)
 			.await?;
+			// The receiver executes the Run, so its own Tenant and Node
+			// Instructions apply, pinned with the admission (#1010).
+			let standing = super::standing_instructions::standing(
+				&mut **access.tx,
+				&access.identity.tenant,
+				self.receiver.as_str(),
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
+				standing_instructions: Some(standing).filter(|standing| !standing.is_empty()),
 				..Default::default()
 			};
 			crate::database::native::query(&format!(

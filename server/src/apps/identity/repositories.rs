@@ -184,6 +184,7 @@ pub mod node_recovery;
 pub(crate) mod data_protection;
 pub(crate) mod manual_keys;
 pub mod oauth_clients;
+pub(crate) mod standing_instructions;
 pub(crate) mod subnodes;
 
 pub mod connection_policy;

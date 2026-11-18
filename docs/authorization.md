@@ -91,6 +91,8 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"                                                                        |
 | `node.update`                   | `node`              | Change a Node's label or make it the default                                                                   |
 | `node.delete`                   | `node`              | Manage deleted Nodes, soft-delete and restore them under current authority                                     |
+| `node.administer`               | `node`              | Write the Node Instructions of that Node (#1010); Agents never hold it through a Subject Credential            |
+| `tenant.instructions.update`    | `tenant`            | Write the Tenant Instructions every Agent of the Tenant works under (#1010)                                    |
 | `node_registration.read`        | `node_registration` | List the Node Registrations of one of the Tenant's Nodes and their history                                     |
 | `node_registration.update`      | `node_registration` | Register a Node of another Tenant at one of the Tenant's Nodes, change that registration or disable it         |
 | `workbench.test_limits.update`  | `test_limits`       | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
@@ -126,6 +128,10 @@ Subjects created, memberships changed and policies replaced by a Tenant Administ
 Responses forbid caching. In the dashboard, a subject who selects that Mapping sees the permitted parts of **Access and accounts**: its own API tokens for every member, then the administration and policy panels its Tenant's policy permits. Restore and Deployment Administrator grants are not shown. Each listed Mapping carries `own_identity` (the caller's External Identity holds it, so it cannot be disabled) and `own_subject` (the caller acts as, or was ever mapped to, that subject in this Tenant, so its groups cannot be changed). The dashboard omits the Disable and group controls these flags rule out.
 
 Approvals, rejections, Mapping disables, group changes, policy replacements (`policy.update`), leaving, Tenant creation, deletion and restore, label changes and Invitation issue, revocation and redemption are appended to `dashboard_administration_history`. Each row records the action, the External Identity it concerns (if any), request, Mapping, Tenant, subject and Invitation, the actor kind (`deployment_administrator`, `tenant_administrator` or `identity`), the acting External Identity (absent for the Deployment Administrator bearer token) and the Mapping it acted through. Rows are never updated.
+
+### Tenant Instructions and Node Instructions
+
+`GET|PUT /api/tenants/{tenant}/instructions` and `GET|PUT /api/tenants/{tenant}/nodes/{node}/instructions` read and write the standing directions for every Agent of a Tenant and of one Node (#1010). Every member reads them in a browser session. Writing needs `tenant.instructions.update` or `node.administer` on that Node, and a browser session: a Subject Credential is refused even when its subject is a Tenant Administrator, so an Agent's chain never changes them. The body is `{"text": "...", "expected_revision": n}`; a stale revision answers 409, and a text over 16,384 bytes or containing NUL answers 400. A Run pins both texts of the Node that executes it when it is claimed or admitted from another Node, so editing them never changes a Run already under way. They reach the model between the Harness Contract and the Agent's own instructions; only the `structured@4` Harness Contract states how they rank.
 
 ### Tenancy Rules, Tenant creation and Invitations
 

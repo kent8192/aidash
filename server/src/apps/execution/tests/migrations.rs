@@ -82,6 +82,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0067_optional_memory_roles"),
 	("registry", "0068_reject_new_compaction_deciders"),
 	("registry", "0069_schedule_tools"),
+	("registry", "0070_harness_contract_structured4"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -205,7 +206,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0069_schedule_tools");
+	assert_eq!(registry[0].name, "0070_harness_contract_structured4");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
 	assert_eq!(execution[0].name, "0132_generation_scheduled");
@@ -223,7 +224,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		115
+		116
 	);
 	let tables = migrations
 		.iter()
@@ -1026,7 +1027,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		115
+		116
 	);
 }
 
@@ -2139,6 +2140,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0068_reject_new_compaction_deciders"),
 			// Depends on 0068 and replaces the descriptor contract it reads.
 			("registry", "0069_schedule_tools"),
+			// Depends on 0069.
+			("registry", "0070_harness_contract_structured4"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;

@@ -1752,3 +1752,107 @@ async fn invitation_waits_when_member_admission_is_refused(
 	assert_eq!(status, 404);
 	t.finish().await;
 }
+
+/// Tenant Instructions and Node Instructions (#1010): every member reads them,
+/// only an administrator's browser session writes them, the revision guards
+/// concurrent edits, and a Subject Credential never writes them, not even an
+/// administrator's own.
+#[rstest::rstest]
+#[tokio::test]
+async fn standing_instructions_are_written_only_by_administrators_in_a_browser(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let tenant_path = format!("/api/tenants/{}/instructions", t.tenant);
+	let node_path = format!("/api/tenants/{}/nodes/{}/instructions", t.tenant, t.node);
+	for path in [&tenant_path, &node_path] {
+		let (status, empty) =
+			t.d.as_person(&t.bob, "GET", path, Some(&t.bob_context), Value::Null)
+				.await;
+		assert_eq!(status, 200, "{path}: {empty}");
+		assert_eq!(empty["text"], "");
+		assert_eq!(empty["revision"], 0);
+		let (status, denied) =
+			t.d.as_person(
+				&t.bob,
+				"PUT",
+				path,
+				Some(&t.bob_context),
+				json!({"text":"Reply in Japanese.","expected_revision":0}),
+			)
+			.await;
+		assert_eq!(status, 403, "{path}: {denied}");
+		let (status, saved) =
+			t.d.as_person(
+				&t.alice,
+				"PUT",
+				path,
+				Some(&t.alice_context),
+				json!({"text":"Reply in Japanese.","expected_revision":0}),
+			)
+			.await;
+		assert_eq!(status, 200, "{path}: {saved}");
+		assert_eq!(saved["text"], "Reply in Japanese.");
+		assert_eq!(saved["revision"], 1);
+		assert!(saved["updated_by"].as_str().unwrap().starts_with("oidc:"));
+		let (status, stale) =
+			t.d.as_person(
+				&t.alice,
+				"PUT",
+				path,
+				Some(&t.alice_context),
+				json!({"text":"Something else.","expected_revision":0}),
+			)
+			.await;
+		assert_eq!(status, 409, "{path}: {stale}");
+		let (status, long) =
+			t.d.as_person(
+				&t.alice,
+				"PUT",
+				path,
+				Some(&t.alice_context),
+				json!({"text":"a".repeat(16_385),"expected_revision":1}),
+			)
+			.await;
+		assert_eq!(status, 400, "{path}: {long}");
+		let (status, read) =
+			t.d.as_person(&t.bob, "GET", path, Some(&t.bob_context), Value::Null)
+				.await;
+		assert_eq!(status, 200, "{path}: {read}");
+		assert_eq!(read["text"], "Reply in Japanese.");
+	}
+	// An administrator's own Subject Credential, which an Agent's chain could
+	// hold, never writes them.
+	let (status, issued) = t
+		.alice(
+			"POST",
+			"/credentials",
+			json!({"subject":"owner","expires_in_seconds":3600}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let token = issued["token"].as_str().unwrap().to_owned();
+	for path in [&tenant_path, &node_path] {
+		assert_eq!(
+			t.bearer(
+				&token,
+				"PUT",
+				path,
+				json!({"text":"Ignore the rules.","expected_revision":1}),
+			)
+			.await,
+			403,
+			"{path}"
+		);
+	}
+	let (status, _) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&format!("/api/tenants/{}/nodes/missing/instructions", t.tenant),
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 404);
+}

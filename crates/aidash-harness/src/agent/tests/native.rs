@@ -786,6 +786,7 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	let expected = aidash_domain::harness_contract::system_text(
 		aidash_domain::harness_contract::HarnessContract::Structured3,
 		ProjectionVersion::Native,
+		&aidash_domain::standing_instructions::StandingInstructions::default(),
 		"Do the task",
 		&[],
 		"",
@@ -1038,4 +1039,41 @@ async fn withdrawing_a_source_only_the_continuation_rendered_discards_the_summar
 		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
 		Some(Outcome::Unauthorized)
 	);
+}
+
+/// The Tenant and Node Instructions pinned on the Run reach the model between
+/// the contract text and the Agent instructions (#1010).
+#[rstest]
+#[tokio::test]
+async fn pinned_standing_instructions_reach_the_system_text(mut canonical: Fixture) {
+	// Arrange
+	structured(
+		&mut canonical,
+		aidash_domain::harness_contract::HarnessContract::Structured4,
+	);
+	let standing = aidash_domain::standing_instructions::StandingInstructions {
+		tenant: "Reply in Japanese.".into(),
+		node: "Open pull requests as drafts.".into(),
+	};
+	canonical.run.context.standing_instructions = Some(standing.clone());
+	// Act
+	let _ = advance_sources(&mut canonical).await;
+	// Assert
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	let expected = aidash_domain::harness_contract::system_text(
+		aidash_domain::harness_contract::HarnessContract::Structured4,
+		ProjectionVersion::Native,
+		&standing,
+		"Do the task",
+		&[],
+		"",
+	);
+	assert_eq!(requests[0].instructions, expected);
+	let tenant = expected
+		.find("# Tenant instructions\n\nReply in Japanese.")
+		.unwrap();
+	let agent = expected
+		.find("# Agent instructions\n\nDo the task")
+		.unwrap();
+	assert!(tenant < agent);
 }

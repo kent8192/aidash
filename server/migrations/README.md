@@ -824,6 +824,12 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
 `registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
+`registry/0070_harness_contract_structured4` lets the Agent Bindings validator accept
+`structured@4` (#1010), judging it by the `structured@3` rules (Native only). It
+copies the current body to `aidash_agent_before_structured4_0070`. Its rollback
+refuses with SQLSTATE `55000` while definitions, packages or Run Binding
+snapshots declare `structured@4`, then restores the 0069 body.
+
 `registry/0069_schedule_tools` admits the four `core.schedules@1` builtins (`schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete`, #557) in `aidash_descriptor_is_valid`, and lets an Agent's `remove_default` name them in `aidash_agent_bindings_is_valid`, since they are default tools. It copies both current bodies to `aidash_descriptor_is_valid_before_schedules_0069` and `aidash_agent_before_schedules_0069`; a Schedule descriptor is checked with the established builtin rules of `core.tasks@1`, and every other `remove_default` entry by the previous rules, so nothing else is relaxed. PostgreSQL function bodies have no typed Reinhardt operation, so it is a reversible SQL asset. Reversal refuses with SQLSTATE `55000` while a registry tool declares `core.schedules@1` or an Agent removes a Schedule tool, then restores both previous bodies. It follows the Tenant Registry migrations of #243 and is listed in `TENANT_REGISTRY_MIGRATIONS`.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
@@ -950,6 +956,8 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 `identity/0077_provider_credential_origin` adds `provider_credentials.key_origin` (#892): `authorization`, `pasted` or `host_access`, saying how the pinned Key Material arrived. A Reinhardt `AddColumn` with the default `'authorization'` fills existing rows, which all came from Provider Authorization, and an `AlterColumn` then drops the default so every write names its origin.
 
 `identity/0080_schedule_member_policy` adds `schedule.create` (#557) to unchanged default member policies with a Reinhardt Query-generated data asset, as `identity/0067_scratch_member_policy` added `scratch.create`. It opens Deployment Scope, increments the revisions of the bundles it changes, and leaves custom member policies alone. Its reverse is a no-op for the same reason as 0067's. The 0067 builder pins the member policy as it stood then, so later grants do not change its asset; `migrationseeds` checks both.
+
+`identity/0082_standing_instructions`, `0083_standing_instructions_row_level_security` and `0084_standing_instructions_state` add `tenant_instructions` (one per Tenant) and `node_instructions` (one per Node, foreign key to `nodes`) for #1010: the text, at most 16,384 bytes (PostgreSQL text cannot hold NUL; the application refuses it first), a positive revision for optimistic updates, and who changed it when. 0083 is the rendered Tenant-owned row-level policy asset; 0084 records the ORM state. Node Instructions go with their Node on purge.
 
 `identity/0081_scheduled_executions` adds `authorization_execution.scheduled` (#557, ADR 0134), false by default. The scheduler sets it on the Run a tick starts, and every admission by a Run that carries it marks the admitted Run too, whatever Task it delegates, so no Run descended from a Schedule registers or changes Schedules. One Reinhardt `AddColumn` carries both the table and the model state; nothing is backfilled, because nothing is deployed.
 

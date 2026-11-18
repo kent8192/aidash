@@ -290,6 +290,8 @@ fn definitions_without_cache_fields_keep_their_bytes() {
 #[rstest]
 #[case::legacy(Some("legacy"), "structured@3")]
 #[case::ordered(Some("ordered"), "structured@3")]
+#[case::legacy4(Some("legacy"), "structured@4")]
+#[case::ordered4(Some("ordered"), "structured@4")]
 #[tokio::test]
 async fn registration_rejects_structured_harness_contracts_without_native(
 	validation: DefinitionValidation,
@@ -359,15 +361,15 @@ async fn registration_rejects_removed_harness_contracts(
 }
 
 /// New Agent definitions that name neither version render Native with
-/// `structured@3` when their model declares Native (#532).
+/// `structured@4` when their model declares Native (#532, #1010).
 #[rstest]
 // model versions, agent projection, agent contract => stored projection, stored contract
-#[case::native_model_defaults(Some(json!(["legacy","ordered","native"])), None, None, Some("native"), Some("structured@3"))]
-#[case::native_only_model(Some(json!(["native"])), None, None, Some("native"), Some("structured@3"))]
+#[case::native_model_defaults(Some(json!(["legacy","ordered","native"])), None, None, Some("native"), Some("structured@4"))]
+#[case::native_only_model(Some(json!(["native"])), None, None, Some("native"), Some("structured@4"))]
 #[case::legacy_model_keeps_omitted(Some(json!(["legacy","ordered"])), None, None, None, None)]
 #[case::undeclared_model_keeps_omitted(None, None, None, None, None)]
 #[case::explicit_legacy_kept(Some(json!(["legacy","native"])), Some("legacy"), None, Some("legacy"), None)]
-#[case::explicit_native_gets_contract(Some(json!(["native"])), Some("native"), None, Some("native"), Some("structured@3"))]
+#[case::explicit_native_gets_contract(Some(json!(["native"])), Some("native"), None, Some("native"), Some("structured@4"))]
 #[case::explicit_contract_kept(Some(json!(["native"])), None, Some("structured@3"), Some("native"), Some("structured@3"))]
 #[case::explicit_legacy_contract_kept(Some(json!(["native"])), Some("native"), Some("legacy@1"), Some("native"), Some("legacy@1"))]
 #[tokio::test]
@@ -583,6 +585,6 @@ async fn registration_returns_the_defaulted_definition(validation: DefinitionVal
 		.unwrap();
 	// Assert
 	assert_eq!(returned.config["projection_version"], json!("native"));
-	assert_eq!(returned.config["harness_contract"], json!("structured@3"));
+	assert_eq!(returned.config["harness_contract"], json!("structured@4"));
 	assert_eq!(returned, scope.entries["agent@1.0.0"]);
 }

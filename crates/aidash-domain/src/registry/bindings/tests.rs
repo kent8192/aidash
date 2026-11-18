@@ -675,7 +675,7 @@ fn structured_harness_contracts_require_the_native_projection_version() {
 fn unknown_harness_contract_versions_are_rejected() {
 	let mut input = serde_json::to_value(agent()).unwrap();
 	// structured@1 and structured@2 were removed by #532; nothing accepts them.
-	for contract in ["structured@1", "structured@2", "structured@4"] {
+	for contract in ["structured@1", "structured@2", "structured@5"] {
 		input["harness_contract"] = json!(contract);
 		assert!(serde_json::from_value::<AgentBindings>(input.clone()).is_err());
 	}

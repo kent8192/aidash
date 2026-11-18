@@ -582,6 +582,7 @@ impl DefinitionValidation {
 		let instructions = aidash_domain::harness_contract::system_text(
 			contract,
 			version,
+			&aidash_domain::standing_instructions::StandingInstructions::default(),
 			&config.instructions,
 			&fragments,
 			"",
@@ -673,6 +674,7 @@ impl DefinitionValidation {
 		let instructions = aidash_domain::harness_contract::system_text(
 			config.harness_contract.unwrap_or_default(),
 			version,
+			&aidash_domain::standing_instructions::StandingInstructions::default(),
 			&config.instructions,
 			&fragments,
 			"",

@@ -121,3 +121,16 @@ fn schedule_administration_is_a_tenant_administrator_action() {
 	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&SCHEDULE_ADMINISTER));
 	assert!(crate::identity::tenancy::MEMBER_ACTIONS.contains(&crate::schedules::CREATE));
 }
+
+#[test]
+fn instructions_and_node_administration_are_administrator_actions() {
+	assert!(ACTIONS.contains(&TENANT_INSTRUCTIONS_UPDATE));
+	assert!(ACTIONS.contains(&NODE_ADMINISTER));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&TENANT_INSTRUCTIONS_UPDATE));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&NODE_ADMINISTER));
+	assert_eq!(resource_kind(TENANT_INSTRUCTIONS_UPDATE), "tenant");
+	assert_eq!(resource_kind(NODE_ADMINISTER), "node");
+	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&TENANT_INSTRUCTIONS_UPDATE));
+	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&NODE_ADMINISTER));
+	assert!(!crate::policy::EXPLICIT_ACTIONS.contains(&NODE_ADMINISTER));
+}

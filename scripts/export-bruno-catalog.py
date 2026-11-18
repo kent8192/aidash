@@ -33,6 +33,10 @@ ADDITIONS = {
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
     ("GET", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope", "memory_scope"),
     ("PUT", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope-update", "memory_scope"),
+    ("GET", "/api/tenants/{tenant}/instructions"): ("tenant-instructions", "standing_instructions"),
+    ("PUT", "/api/tenants/{tenant}/instructions"): ("tenant-instructions-update", "standing_instructions"),
+    ("GET", NODE_PATH + "/instructions"): ("node-instructions", "standing_instructions"),
+    ("PUT", NODE_PATH + "/instructions"): ("node-instructions-update", "standing_instructions"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.

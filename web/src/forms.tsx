@@ -530,7 +530,7 @@ export function EntityForm({
                             ...(s("cache_mode")
                               ? { cache_mode: s("cache_mode") }
                               : {}),
-                            // Native lets new Agents default to structured@3 (#532).
+                            // Native lets new Agents default to structured@4 (#532, #1010).
                             projection_versions: [
                               "legacy",
                               "ordered",

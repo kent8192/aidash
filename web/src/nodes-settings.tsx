@@ -4,6 +4,7 @@ import {
   KnownRegistrationKeyControls,
 } from "./receiving-key-controls";
 import { useState } from "react";
+import { StandingInstructionsSettings } from "./standing-instructions";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check as Tick } from "lucide-react";
 import { Button } from "./components/ui/button";
@@ -164,6 +165,14 @@ export function NodesPage({ data }: { data: State }) {
           canUpdate={can("node.update")}
           canDelete={can("node.delete")}
           offering={data.offering}
+        />
+      )}
+      {selected && (
+        <StandingInstructionsSettings
+          key={`instructions-${selected.name}`}
+          tenant={tenant}
+          node={selected.name}
+          canUpdate={can("node.administer")}
         />
       )}
       {selected && can("node_registration.read") && (

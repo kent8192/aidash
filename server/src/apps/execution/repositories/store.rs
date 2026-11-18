@@ -1422,6 +1422,7 @@ impl Store {
 		}
 		let claimed: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; aidash_server::database::query_as(&Query::update().table(Alias::new("tasks")).value_expr(Alias::new("status"), Expr::cust("'CLAIMED'")).value_expr(Alias::new("owner"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND status = 'OPEN' AND NOT EXISTS(SELECT 1 FROM delegations AS d WHERE d.task_id = tasks.id AND d.node_id || '/agents/' || d.agent_id || '@' || d.agent_version <> ?) AND NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(tasks.dependencies) AND d.status <> 'COMPLETED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
 		let node = Self::workspace_node_in(tx, claimed.workspace_id).await?;
+		let node_name = node.as_str().to_owned();
 		let address = self.deployment.node(node);
 		if owner == qualified_agent(&address, &agent.id, &agent.version) {
 			let snapshot = if let Some(snapshot) = admitted {
@@ -1453,8 +1454,15 @@ impl Store {
 				aidash_application::usage::Work::Run,
 			)
 			.await?;
+			// The Tenant and Node Instructions of the Node that executes are pinned
+			// with the claim, so later edits never change this Run (#1010).
+			let standing = crate::apps::identity::repositories::standing_instructions::standing(
+				&mut **tx, &tenant, &node_name,
+			)
+			.await?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
+				standing_instructions: Some(standing).filter(|standing| !standing.is_empty()),
 				..Default::default()
 			};
 			// Persist the local execution with the claim; no crash can strand a

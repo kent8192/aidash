@@ -130,6 +130,11 @@ pub struct Context {
 	/// a Run without Agent Plugins never sets it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub plugin_tools: Option<crate::agent_plugin::PluginTools>,
+	/// The Tenant and Node Instructions pinned when the Run was claimed
+	/// (#1010). `None` means none were pinned; editing them never changes a
+	/// Run already under way.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub standing_instructions: Option<crate::standing_instructions::StandingInstructions>,
 }
 
 /// Stored contexts written before the Context Journal carry bare history
@@ -185,6 +190,8 @@ struct StoredContext {
 	completion: crate::completion::CompletionProgress,
 	#[serde(default)]
 	plugin_tools: Option<crate::agent_plugin::PluginTools>,
+	#[serde(default)]
+	standing_instructions: Option<crate::standing_instructions::StandingInstructions>,
 }
 
 #[derive(Deserialize)]
@@ -283,6 +290,7 @@ impl<'de> Deserialize<'de> for Context {
 			exposure: stored.exposure,
 			completion: stored.completion,
 			plugin_tools: stored.plugin_tools,
+			standing_instructions: stored.standing_instructions,
 		})
 	}
 }
@@ -475,6 +483,9 @@ pub struct InspectionContext<'a> {
 	/// The plugin tools the Run pinned, with everything left out.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub plugin_tools: Option<&'a crate::agent_plugin::PluginTools>,
+	/// The Tenant and Node Instructions the Run pinned at claim (#1010).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub standing_instructions: Option<&'a crate::standing_instructions::StandingInstructions>,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -494,6 +505,7 @@ impl Context {
 			estimate: self.estimate.view(),
 			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
 			plugin_tools: self.plugin_tools.as_ref(),
+			standing_instructions: self.standing_instructions.as_ref(),
 		}
 	}
 }

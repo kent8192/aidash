@@ -1834,20 +1834,30 @@ impl<'a> Executor<'a> {
 					.iter()
 					.map(|(slot, text)| (*slot, text.as_str()))
 					.collect::<Vec<_>>();
+				let standing = run.context.standing_instructions.clone().unwrap_or_default();
 				let mut instructions = aidash_domain::harness_contract::system_text(
 					contract,
 					agent.projection_version,
+					&standing,
 					&agent.instructions,
 					&fragments,
 					&index,
+				);
+				let floor = aidash_domain::harness_contract::fragments_start(
+					contract,
+					agent.projection_version,
+					&standing,
+					&agent.instructions,
 				);
 				for (slot, text) in &instruction_fragments {
 					if text.is_empty() {
 						continue;
 					}
-					// Every fragment is appended verbatim, so its byte range in the
-					// composed text is its first occurrence.
-					if let Some(start) = instructions.find(text.as_str()) {
+					// Every fragment is appended verbatim after `floor`, so its byte
+					// range is its first occurrence from there; Tenant, Node or Agent
+					// instructions repeating a fragment's text come earlier (#1010).
+					if let Some(start) = instructions[floor..].find(text.as_str()) {
+						let start = floor + start;
 						source_instruction_slots
 							.insert((*slot).to_owned(), [start, start + text.len()]);
 					}

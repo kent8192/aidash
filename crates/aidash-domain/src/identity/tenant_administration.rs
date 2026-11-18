@@ -75,9 +75,15 @@ pub const CONNECTION_ADMINISTER: &str = "connection.administer";
 /// Seeing, stopping and deleting anyone's Schedules, naming a successor and
 /// setting the Tenant's Schedule limits (#557).
 pub const SCHEDULE_ADMINISTER: &str = crate::schedules::ADMINISTER;
+/// Writing the Tenant Instructions every Agent of the Tenant works under
+/// (#1010). Agents never hold it: only a person's browser session writes them.
+pub const TENANT_INSTRUCTIONS_UPDATE: &str = "tenant.instructions.update";
+/// Administering one Node (#1007, ADR 0140): writing its Node Instructions and
+/// seeing everything in it. Tenant Administrators hold it through `*`.
+pub const NODE_ADMINISTER: &str = "node.administer";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 30] = [
+pub const ACTIONS: [&str; 32] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -108,6 +114,8 @@ pub const ACTIONS: [&str; 30] = [
 	CONNECTION_SCOPES_UPDATE,
 	CONNECTION_ADMINISTER,
 	SCHEDULE_ADMINISTER,
+	TENANT_INSTRUCTIONS_UPDATE,
+	NODE_ADMINISTER,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
@@ -157,12 +165,11 @@ pub fn resource_kind(action: &str) -> &'static str {
 		DECISION_READ => "decision",
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
-		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE | SCRATCH_CREATE | SUBNODE_CREATE => {
-			"node"
-		}
+		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE | SCRATCH_CREATE | SUBNODE_CREATE
+		| NODE_ADMINISTER => "node",
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
-		SUBNODE_LIMITS_UPDATE | SCHEDULE_ADMINISTER => "tenant",
+		SUBNODE_LIMITS_UPDATE | SCHEDULE_ADMINISTER | TENANT_INSTRUCTIONS_UPDATE => "tenant",
 		TEST_PROFILE_UPDATE => "test_profile",
 		APPROVAL_READ => "subject",
 		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {

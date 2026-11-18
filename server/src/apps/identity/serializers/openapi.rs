@@ -119,6 +119,30 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::update, &["String"])?;
 	}
 	{
+		use super::standing_instructions::{Instructions, Update};
+		use views::standing_instructions as view;
+		contracts.response::<_, Instructions>(document, view::tenant, 200, "application/json")?;
+		contracts.path(document, view::tenant, &["String"])?;
+		contracts.request::<_, Update>(document, view::tenant_update)?;
+		contracts.response::<_, Instructions>(
+			document,
+			view::tenant_update,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::tenant_update, &["String"])?;
+		contracts.response::<_, Instructions>(document, view::node, 200, "application/json")?;
+		contracts.path(document, view::node, &["String", "String"])?;
+		contracts.request::<_, Update>(document, view::node_update)?;
+		contracts.response::<_, Instructions>(
+			document,
+			view::node_update,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::node_update, &["String", "String"])?;
+	}
+	{
 		use super::data_protection::{Impact, Settings};
 		use aidash_domain::data_protection::DataProtection;
 		use views::data_protection as view;

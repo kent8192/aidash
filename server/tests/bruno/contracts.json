@@ -4006,6 +4006,9 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
               "expires_at": {
                 "format": "date-time",
                 "type": "string"
@@ -4019,6 +4022,10 @@
               },
               "mapping_id": {
                 "description": "The Mapping a member issued this credential through for itself.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "parent_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -4041,7 +4048,9 @@
               "expires_at",
               "revoked_at",
               "issued_by",
-              "mapping_id"
+              "mapping_id",
+              "end_reason",
+              "parent_id"
             ],
             "type": "object"
           },
@@ -4082,6 +4091,9 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
               "expires_at": {
                 "format": "date-time",
                 "type": "string"
@@ -4095,6 +4107,10 @@
               },
               "mapping_id": {
                 "description": "The Mapping a member issued this credential through for itself.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "parent_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -4117,7 +4133,9 @@
               "expires_at",
               "revoked_at",
               "issued_by",
-              "mapping_id"
+              "mapping_id",
+              "end_reason",
+              "parent_id"
             ],
             "type": "object"
           }
@@ -4148,6 +4166,9 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
               "expires_at": {
                 "format": "date-time",
                 "type": "string"
@@ -4161,6 +4182,10 @@
               },
               "mapping_id": {
                 "description": "The Mapping a member issued this credential through for itself.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "parent_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -4191,6 +4216,8 @@
               "revoked_at",
               "issued_by",
               "mapping_id",
+              "end_reason",
+              "parent_id",
               "pending_transactions"
             ],
             "type": "object"
@@ -4208,6 +4235,9 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
               "expires_at": {
                 "format": "date-time",
                 "type": "string"
@@ -4221,6 +4251,10 @@
               },
               "mapping_id": {
                 "description": "The Mapping a member issued this credential through for itself.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "parent_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               },
@@ -4251,6 +4285,8 @@
               "revoked_at",
               "issued_by",
               "mapping_id",
+              "end_reason",
+              "parent_id",
               "pending_transactions"
             ],
             "type": "object"
@@ -12499,6 +12535,43 @@
             ],
             "type": "string"
           },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
           "Workspace": {
             "properties": {
               "created_at": {
@@ -12567,9 +12640,6 @@
                 },
                 "type": "array"
               },
-              "workspace": {
-                "$ref": "#/components/schemas/Workspace"
-              },
               "unconfirmed": {
                 "default": [],
                 "description": "Rows this read scanned and could not confirm because a Node did not\nanswer (#770). Peers on an older build omit it.",
@@ -12577,6 +12647,9 @@
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
                 "type": "array"
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/Workspace"
               }
             },
             "required": [
@@ -12588,43 +12661,6 @@
               "unconfirmed"
             ],
             "type": "object"
-          },
-          "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
-            "properties": {
-              "count": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/UnconfirmedKind"
-              },
-              "node": {
-                "description": "The silent Node, except in graph responses where this is the answering Node.",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node", "kind", "workspace_id", "count"],
-            "type": "object"
-          },
-          "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
-            "enum": [
-              "task",
-              "run",
-              "artifact",
-              "event",
-              "message",
-              "human_request",
-              "semantic_entry",
-              "memory_unit"
-            ],
-            "type": "string"
           }
         },
         "schema": {
@@ -25486,10 +25522,6 @@
               "truncated": {
                 "type": "boolean"
               },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              },
               "unconfirmed": {
                 "default": [],
                 "description": "Entries this search left out because a Node did not answer (#770).",
@@ -25497,6 +25529,10 @@
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
                 "type": "array"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
               }
             },
             "required": [
@@ -30477,6 +30513,11 @@
             ],
             "type": "object"
           },
+          "ChatTextField": {
+            "description": "The Chat message key plain reasoning text arrived under.",
+            "enum": ["reasoning", "reasoning_content"],
+            "type": "string"
+          },
           "Concurrency": {
             "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it.",
             "oneOf": [
@@ -31444,9 +31485,70 @@
             "additionalProperties": false,
             "type": "object"
           },
+          "Reasoning": {
+            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
+                "properties": {
+                  "details": {
+                    "items": {},
+                    "type": "array"
+                  },
+                  "format": {
+                    "enum": ["chat_details"],
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "details"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
+                "properties": {
+                  "field": {
+                    "$ref": "#/components/schemas/ChatTextField"
+                  },
+                  "format": {
+                    "enum": ["chat_text"],
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "field", "text"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Responses `reasoning` output items, sent back before the turn's output.",
+                "properties": {
+                  "format": {
+                    "enum": ["responses"],
+                    "type": "string"
+                  },
+                  "items": {
+                    "items": {},
+                    "type": "array"
+                  }
+                },
+                "required": ["format", "items"],
+                "type": "object"
+              }
+            ]
+          },
           "RecoveryState": {
             "additionalProperties": false,
             "properties": {
+              "account_suspension_epoch": {
+                "description": "The common Account suspension that paused this Run.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
               "connection_refusals": {
                 "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
                 "items": {
@@ -31560,23 +31662,17 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
-              "account_suspension_epoch": {
-                "description": "The common Account suspension that paused this Run.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
               "standing_declines": {
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -31876,6 +31972,160 @@
               }
             ]
           },
+          "RunSummary": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "agent_version": {
+                "type": "string"
+              },
+              "control": {
+                "$ref": "#/components/schemas/RunControl"
+              },
+              "control_revision": {
+                "default": 0,
+                "description": "Counts control decisions only; worker progress does not change it.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "control_source": {
+                "$ref": "#/components/schemas/ControlSource",
+                "description": "The kind of actor that last changed `control`."
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "home_node": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "lease_owner": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "lease_until": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "lease_wait": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LeaseWait"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ledger_worker_ready": {
+                "type": "boolean"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "observed_input_seq": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RunPhase"
+              },
+              "recovery": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RecoveryState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state_error": {
+                "type": ["string", "null"]
+              },
+              "state_version": {
+                "$ref": "#/components/schemas/StateVersion"
+              },
+              "step": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "tool_calls": {
+                "format": "uint",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state_version",
+              "id",
+              "task_id",
+              "workspace_id",
+              "node",
+              "home_node",
+              "agent_id",
+              "agent_version",
+              "phase",
+              "control",
+              "control_revision",
+              "control_source",
+              "step",
+              "revision",
+              "observed_input_seq",
+              "ledger_worker_ready",
+              "error",
+              "lease_owner",
+              "lease_until",
+              "updated_at",
+              "state",
+              "recovery",
+              "state_error",
+              "input_tokens",
+              "output_tokens",
+              "tool_calls"
+            ],
+            "type": "object"
+          },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
             "enum": ["embedding_provider", "vector_backend"],
@@ -31890,6 +32140,24 @@
               }
             },
             "required": ["key", "input"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           },
           "StateResponse": {
@@ -32405,6 +32673,43 @@
             "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
           "WaitingState": {
             "oneOf": [
               {
@@ -32652,275 +32957,6 @@
               "created_at"
             ],
             "type": "object"
-          },
-          "ChatTextField": {
-            "description": "The Chat message key plain reasoning text arrived under.",
-            "enum": ["reasoning", "reasoning_content"],
-            "type": "string"
-          },
-          "Reasoning": {
-            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
-                "properties": {
-                  "details": {
-                    "items": {},
-                    "type": "array"
-                  },
-                  "format": {
-                    "enum": ["chat_details"],
-                    "type": "string"
-                  }
-                },
-                "required": ["format", "details"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
-                "properties": {
-                  "field": {
-                    "$ref": "#/components/schemas/ChatTextField"
-                  },
-                  "format": {
-                    "enum": ["chat_text"],
-                    "type": "string"
-                  },
-                  "text": {
-                    "type": "string"
-                  }
-                },
-                "required": ["format", "field", "text"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "description": "Responses `reasoning` output items, sent back before the turn's output.",
-                "properties": {
-                  "format": {
-                    "enum": ["responses"],
-                    "type": "string"
-                  },
-                  "items": {
-                    "items": {},
-                    "type": "array"
-                  }
-                },
-                "required": ["format", "items"],
-                "type": "object"
-              }
-            ]
-          },
-          "RunSummary": {
-            "properties": {
-              "agent_id": {
-                "type": "string"
-              },
-              "agent_version": {
-                "type": "string"
-              },
-              "control": {
-                "$ref": "#/components/schemas/RunControl"
-              },
-              "control_revision": {
-                "default": 0,
-                "description": "Counts control decisions only; worker progress does not change it.",
-                "format": "int64",
-                "type": "integer"
-              },
-              "control_source": {
-                "$ref": "#/components/schemas/ControlSource",
-                "description": "The kind of actor that last changed `control`."
-              },
-              "error": {
-                "type": ["string", "null"]
-              },
-              "home_node": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "lease_owner": {
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "lease_until": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "lease_wait": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/LeaseWait"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "ledger_worker_ready": {
-                "type": "boolean"
-              },
-              "node": {
-                "$ref": "#/components/schemas/NodeName"
-              },
-              "observed_input_seq": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "phase": {
-                "$ref": "#/components/schemas/RunPhase"
-              },
-              "recovery": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RecoveryState"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "state": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RunState"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "state_error": {
-                "type": ["string", "null"]
-              },
-              "state_version": {
-                "$ref": "#/components/schemas/StateVersion"
-              },
-              "step": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "tool_calls": {
-                "format": "uint",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "updated_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "state_version",
-              "id",
-              "task_id",
-              "workspace_id",
-              "node",
-              "home_node",
-              "agent_id",
-              "agent_version",
-              "phase",
-              "control",
-              "control_revision",
-              "control_source",
-              "step",
-              "revision",
-              "observed_input_seq",
-              "ledger_worker_ready",
-              "error",
-              "lease_owner",
-              "lease_until",
-              "updated_at",
-              "state",
-              "recovery",
-              "state_error",
-              "input_tokens",
-              "output_tokens",
-              "tool_calls"
-            ],
-            "type": "object"
-          },
-          "StandingDecline": {
-            "additionalProperties": false,
-            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
-            "properties": {
-              "by": {
-                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["tool", "kind", "by"],
-            "type": "object"
-          },
-          "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
-            "properties": {
-              "count": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/UnconfirmedKind"
-              },
-              "node": {
-                "description": "The silent Node, except in graph responses where this is the answering Node.",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node", "kind", "workspace_id", "count"],
-            "type": "object"
-          },
-          "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
-            "enum": [
-              "task",
-              "run",
-              "artifact",
-              "event",
-              "message",
-              "human_request",
-              "semantic_entry",
-              "memory_unit"
-            ],
-            "type": "string"
           }
         },
         "schema": {
@@ -33409,7 +33445,41 @@
             "type": "string"
           },
           "BindingSnapshot": {
-            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/QualifiedRef"
+              },
+              "agent_plugins": {
+                "description": "The Skills of each Agent Plugin copy the Agent definition takes in, in its order.",
+                "items": {
+                  "$ref": "#/components/schemas/PinnedAgentPlugin"
+                },
+                "type": "array"
+              },
+              "bindings": {
+                "items": {
+                  "$ref": "#/components/schemas/ResolvedBinding"
+                },
+                "type": "array"
+              },
+              "definitions": {
+                "items": {
+                  "$ref": "#/components/schemas/ResolvedDefinition"
+                },
+                "type": "array"
+              },
+              "remote": {
+                "description": "Admission placement determines which implicit defaults must remain excluded.",
+                "type": "boolean"
+              },
+              "schema_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
             "required": [
               "schema_version",
               "agent",
@@ -33417,41 +33487,7 @@
               "bindings",
               "definitions"
             ],
-            "properties": {
-              "agent": {
-                "$ref": "#/components/schemas/QualifiedRef"
-              },
-              "agent_plugins": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/PinnedAgentPlugin"
-                },
-                "description": "The Skills of each Agent Plugin copy the Agent definition takes in, in its order."
-              },
-              "bindings": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedBinding"
-                }
-              },
-              "definitions": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ResolvedDefinition"
-                }
-              },
-              "remote": {
-                "type": "boolean",
-                "description": "Admission placement determines which implicit defaults must remain excluded."
-              },
-              "schema_version": {
-                "type": "integer",
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0
-              }
-            },
-            "additionalProperties": false
+            "type": "object"
           },
           "CallCheckpoint": {
             "additionalProperties": false,
@@ -33581,6 +33617,11 @@
           },
           "CapabilityKind": {
             "enum": ["tool", "skill"],
+            "type": "string"
+          },
+          "ChatTextField": {
+            "description": "The Chat message key plain reasoning text arrived under.",
+            "enum": ["reasoning", "reasoning_content"],
             "type": "string"
           },
           "CheckOutcome": {
@@ -34025,7 +34066,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "The accepted response that opens a Model Turn, recorded only for Runs\non the Native Projection Version: its text and the IDs of its tool\ncalls in the model's order. Each executed call's `Tool` event follows\nand carries the call itself. Reasoning output is never recorded.",
+                "description": "The accepted response that opens a Model Turn, recorded only for Runs\non the Native Projection Version: its text and the IDs of its tool\ncalls in the model's order. Each executed call's `Tool` event follows\nand carries the call itself. The provider's reasoning is recorded as\nreceived when the route passes it back, and every later request of the\nRun resends it unchanged (#942); events recorded before have none.",
                 "properties": {
                   "calls": {
                     "items": {
@@ -34044,6 +34085,16 @@
                   "provider_activity": {
                     "items": {},
                     "type": "array"
+                  },
+                  "reasoning": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/Reasoning"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "text": {
                     "type": "string"
@@ -34613,6 +34664,31 @@
               }
             ]
           },
+          "EvidenceItem": {
+            "additionalProperties": false,
+            "description": "One admitted piece of per-step evidence: an entry of a collection, or a\nwhole field, of one pinned key.",
+            "properties": {
+              "content": {},
+              "digest": {
+                "description": "Digest of the key, field and content. It identifies the item after\nits content was offloaded, so a later step never appends it again.",
+                "type": "string"
+              },
+              "field": {
+                "description": "The field of the key's object the item belongs to; absent when the key\nholds a list.",
+                "type": ["string", "null"]
+              },
+              "key": {
+                "description": "The pinned key, such as `workspace` or `run_messages`.",
+                "type": "string"
+              },
+              "listed": {
+                "description": "Whether the item is one entry of a list rather than a whole field.",
+                "type": "boolean"
+              }
+            },
+            "required": ["key", "digest", "content"],
+            "type": "object"
+          },
           "ExecutionSummary": {
             "additionalProperties": false,
             "properties": {
@@ -34921,6 +34997,17 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "standing_instructions": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StandingInstructions"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The Tenant and Node Instructions the Run pinned at claim (#1010)."
+              },
               "usage": {
                 "anyOf": [
                   {
@@ -35156,6 +35243,17 @@
                 "description": "Observable provider-owned activity, never Research evidence or citations.",
                 "items": {},
                 "type": "array"
+              },
+              "reasoning": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Reasoning"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The provider's reasoning, exactly as received (#942). Kept in the\npending state so a resumed step records it with its Model Turn; omitted\nwhen absent, so responses without reasoning keep their JSON shape."
               },
               "text": {
                 "type": "string"
@@ -35619,9 +35717,70 @@
               }
             ]
           },
+          "Reasoning": {
+            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
+                "properties": {
+                  "details": {
+                    "items": {},
+                    "type": "array"
+                  },
+                  "format": {
+                    "enum": ["chat_details"],
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "details"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
+                "properties": {
+                  "field": {
+                    "$ref": "#/components/schemas/ChatTextField"
+                  },
+                  "format": {
+                    "enum": ["chat_text"],
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "field", "text"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Responses `reasoning` output items, sent back before the turn's output.",
+                "properties": {
+                  "format": {
+                    "enum": ["responses"],
+                    "type": "string"
+                  },
+                  "items": {
+                    "items": {},
+                    "type": "array"
+                  }
+                },
+                "required": ["format", "items"],
+                "type": "object"
+              }
+            ]
+          },
           "RecoveryState": {
             "additionalProperties": false,
             "properties": {
+              "account_suspension_epoch": {
+                "description": "The common Account suspension that paused this Run.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
               "connection_refusals": {
                 "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
                 "items": {
@@ -35735,17 +35894,17 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
               "standing_declines": {
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -36530,6 +36689,37 @@
               }
             },
             "required": ["path", "content"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
+            "type": "object"
+          },
+          "StandingInstructions": {
+            "additionalProperties": false,
+            "description": "The Tenant and Node Instructions one Run works under.",
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "type": "object"
           },
           "StateVersion": {
@@ -37341,49 +37531,6 @@
               "expected_digest"
             ],
             "type": "object"
-          },
-          "StandingDecline": {
-            "additionalProperties": false,
-            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
-            "properties": {
-              "by": {
-                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["tool", "kind", "by"],
-            "type": "object"
-          },
-          "EvidenceItem": {
-            "additionalProperties": false,
-            "description": "One admitted piece of per-step evidence: an entry of a collection, or a\nwhole field, of one pinned key.",
-            "properties": {
-              "content": {},
-              "digest": {
-                "description": "Digest of the key, field and content. It identifies the item after\nits content was offloaded, so a later step never appends it again.",
-                "type": "string"
-              },
-              "field": {
-                "description": "The field of the key's object the item belongs to; absent when the key\nholds a list.",
-                "type": ["string", "null"]
-              },
-              "key": {
-                "description": "The pinned key, such as `workspace` or `run_messages`.",
-                "type": "string"
-              },
-              "listed": {
-                "description": "Whether the item is one entry of a list rather than a whole field.",
-                "type": "boolean"
-              }
-            },
-            "required": ["key", "digest", "content"],
-            "type": "object"
           }
         },
         "schema": {
@@ -37840,10 +37987,6 @@
             ],
             "type": "object"
           },
-          "NodeName": {
-            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
-            "type": "string"
-          },
           "EventPage": {
             "description": "One read of the events, with the rows it could not confirm because a Node\ndid not answer (#770). The cursor to continue from is in a header.",
             "properties": {
@@ -37862,6 +38005,10 @@
             },
             "required": ["events", "unconfirmed"],
             "type": "object"
+          },
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
           },
           "Unconfirmed": {
             "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
@@ -39733,6 +39880,26 @@
             "enum": ["entity", "semantic", "temporal", "causes", "caused_by"],
             "type": "string"
           },
+          "MemoryUnitList": {
+            "description": "The units a reader may see, and the units a Node's silence left out (#770).",
+            "properties": {
+              "unconfirmed": {
+                "description": "Units this read scanned and could not confirm because a Node did not\nanswer, for each Node. `[]` when none.",
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
+              },
+              "units": {
+                "items": {
+                  "$ref": "#/components/schemas/Unit"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["units", "unconfirmed"],
+            "type": "object"
+          },
           "MentalModel": {
             "additionalProperties": false,
             "properties": {
@@ -39760,6 +39927,43 @@
             },
             "required": ["start", "end"],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           },
           "Unit": {
             "additionalProperties": false,
@@ -39818,63 +40022,6 @@
                 "type": "string"
               }
             ]
-          },
-          "MemoryUnitList": {
-            "description": "The units a reader may see, and the units a Node's silence left out (#770).",
-            "properties": {
-              "unconfirmed": {
-                "description": "Units this read scanned and could not confirm because a Node did not\nanswer, for each Node. `[]` when none.",
-                "items": {
-                  "$ref": "#/components/schemas/Unconfirmed"
-                },
-                "type": "array"
-              },
-              "units": {
-                "items": {
-                  "$ref": "#/components/schemas/Unit"
-                },
-                "type": "array"
-              }
-            },
-            "required": ["units", "unconfirmed"],
-            "type": "object"
-          },
-          "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
-            "properties": {
-              "count": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/UnconfirmedKind"
-              },
-              "node": {
-                "description": "The silent Node, except in graph responses where this is the answering Node.",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node", "kind", "workspace_id", "count"],
-            "type": "object"
-          },
-          "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
-            "enum": [
-              "task",
-              "run",
-              "artifact",
-              "event",
-              "message",
-              "human_request",
-              "semantic_entry",
-              "memory_unit"
-            ],
-            "type": "string"
           }
         },
         "schema": {
@@ -40894,41 +41041,87 @@
       "200": {
         "definitions": {
           "KeyOrigin": {
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877).",
             "oneOf": [
               {
-                "type": "string",
                 "description": "Issued by the provider's own consent flow.",
-                "enum": ["authorization"]
+                "enum": ["authorization"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Typed or pasted by a person in the dashboard.",
-                "enum": ["pasted"]
+                "enum": ["pasted"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Stored through Host Access with the host-side command.",
-                "enum": ["host_access"]
+                "enum": ["host_access"],
+                "type": "string"
               }
-            ],
-            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+            ]
           },
           "Provider": {
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
             "oneOf": [
               {
-                "type": "string",
-                "enum": ["openrouter"]
+                "enum": ["openrouter"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"]
+                "enum": ["chatgpt"],
+                "type": "string"
               }
-            ],
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+            ]
           },
           "ProviderCredentialMetadata": {
-            "type": "object",
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
+              },
+              "key_settings_url": {
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
+                "type": ["string", "null"]
+              },
+              "last4": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/components/schemas/Provider"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "revoked_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "rotated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/State"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "required": [
               "id",
               "tenant",
@@ -40944,64 +41137,18 @@
               "revoked_at",
               "revision"
             ],
-            "properties": {
-              "base_url": {
-                "type": "string"
-              },
-              "created_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "fingerprint": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "key_origin": {
-                "$ref": "#/components/schemas/KeyOrigin"
-              },
-              "key_settings_url": {
-                "type": ["string", "null"],
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
-              },
-              "last4": {
-                "type": "string"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/Provider"
-              },
-              "revision": {
-                "type": "integer",
-                "format": "int64"
-              },
-              "revoked_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "rotated_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "state": {
-                "$ref": "#/components/schemas/State"
-              },
-              "tenant": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "State": {
-            "type": "string",
-            "enum": ["pending", "active", "revoked", "deleted"]
+            "enum": ["pending", "active", "revoked", "deleted"],
+            "type": "string"
           }
         },
         "schema": {
-          "type": "array",
           "items": {
             "$ref": "#/components/schemas/ProviderCredentialMetadata"
-          }
+          },
+          "type": "array"
         }
       }
     },
@@ -41018,41 +41165,87 @@
       "200": {
         "definitions": {
           "KeyOrigin": {
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877).",
             "oneOf": [
               {
-                "type": "string",
                 "description": "Issued by the provider's own consent flow.",
-                "enum": ["authorization"]
+                "enum": ["authorization"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Typed or pasted by a person in the dashboard.",
-                "enum": ["pasted"]
+                "enum": ["pasted"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Stored through Host Access with the host-side command.",
-                "enum": ["host_access"]
+                "enum": ["host_access"],
+                "type": "string"
               }
-            ],
-            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+            ]
           },
           "Provider": {
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
             "oneOf": [
               {
-                "type": "string",
-                "enum": ["openrouter"]
+                "enum": ["openrouter"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"]
+                "enum": ["chatgpt"],
+                "type": "string"
               }
-            ],
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+            ]
           },
           "ProviderCredentialMetadata": {
-            "type": "object",
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
+              },
+              "key_settings_url": {
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
+                "type": ["string", "null"]
+              },
+              "last4": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/components/schemas/Provider"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "revoked_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "rotated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/State"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "required": [
               "id",
               "tenant",
@@ -41068,57 +41261,11 @@
               "revoked_at",
               "revision"
             ],
-            "properties": {
-              "base_url": {
-                "type": "string"
-              },
-              "created_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "fingerprint": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "key_origin": {
-                "$ref": "#/components/schemas/KeyOrigin"
-              },
-              "key_settings_url": {
-                "type": ["string", "null"],
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
-              },
-              "last4": {
-                "type": "string"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/Provider"
-              },
-              "revision": {
-                "type": "integer",
-                "format": "int64"
-              },
-              "revoked_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "rotated_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "state": {
-                "$ref": "#/components/schemas/State"
-              },
-              "tenant": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "State": {
-            "type": "string",
-            "enum": ["pending", "active", "revoked", "deleted"]
+            "enum": ["pending", "active", "revoked", "deleted"],
+            "type": "string"
           }
         },
         "schema": {
@@ -41139,41 +41286,87 @@
       "200": {
         "definitions": {
           "KeyOrigin": {
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877).",
             "oneOf": [
               {
-                "type": "string",
                 "description": "Issued by the provider's own consent flow.",
-                "enum": ["authorization"]
+                "enum": ["authorization"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Typed or pasted by a person in the dashboard.",
-                "enum": ["pasted"]
+                "enum": ["pasted"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Stored through Host Access with the host-side command.",
-                "enum": ["host_access"]
+                "enum": ["host_access"],
+                "type": "string"
               }
-            ],
-            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+            ]
           },
           "Provider": {
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
             "oneOf": [
               {
-                "type": "string",
-                "enum": ["openrouter"]
+                "enum": ["openrouter"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"]
+                "enum": ["chatgpt"],
+                "type": "string"
               }
-            ],
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+            ]
           },
           "ProviderCredentialMetadata": {
-            "type": "object",
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
+              },
+              "key_settings_url": {
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
+                "type": ["string", "null"]
+              },
+              "last4": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/components/schemas/Provider"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "revoked_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "rotated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/State"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "required": [
               "id",
               "tenant",
@@ -41189,57 +41382,11 @@
               "revoked_at",
               "revision"
             ],
-            "properties": {
-              "base_url": {
-                "type": "string"
-              },
-              "created_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "fingerprint": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "key_origin": {
-                "$ref": "#/components/schemas/KeyOrigin"
-              },
-              "key_settings_url": {
-                "type": ["string", "null"],
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
-              },
-              "last4": {
-                "type": "string"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/Provider"
-              },
-              "revision": {
-                "type": "integer",
-                "format": "int64"
-              },
-              "revoked_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "rotated_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "state": {
-                "$ref": "#/components/schemas/State"
-              },
-              "tenant": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "State": {
-            "type": "string",
-            "enum": ["pending", "active", "revoked", "deleted"]
+            "enum": ["pending", "active", "revoked", "deleted"],
+            "type": "string"
           }
         },
         "schema": {
@@ -41260,41 +41407,87 @@
       "200": {
         "definitions": {
           "KeyOrigin": {
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877).",
             "oneOf": [
               {
-                "type": "string",
                 "description": "Issued by the provider's own consent flow.",
-                "enum": ["authorization"]
+                "enum": ["authorization"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Typed or pasted by a person in the dashboard.",
-                "enum": ["pasted"]
+                "enum": ["pasted"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Stored through Host Access with the host-side command.",
-                "enum": ["host_access"]
+                "enum": ["host_access"],
+                "type": "string"
               }
-            ],
-            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+            ]
           },
           "Provider": {
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
             "oneOf": [
               {
-                "type": "string",
-                "enum": ["openrouter"]
+                "enum": ["openrouter"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"]
+                "enum": ["chatgpt"],
+                "type": "string"
               }
-            ],
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+            ]
           },
           "ProviderCredentialMetadata": {
-            "type": "object",
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
+              },
+              "key_settings_url": {
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
+                "type": ["string", "null"]
+              },
+              "last4": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/components/schemas/Provider"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "revoked_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "rotated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/State"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "required": [
               "id",
               "tenant",
@@ -41310,57 +41503,11 @@
               "revoked_at",
               "revision"
             ],
-            "properties": {
-              "base_url": {
-                "type": "string"
-              },
-              "created_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "fingerprint": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "key_origin": {
-                "$ref": "#/components/schemas/KeyOrigin"
-              },
-              "key_settings_url": {
-                "type": ["string", "null"],
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
-              },
-              "last4": {
-                "type": "string"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/Provider"
-              },
-              "revision": {
-                "type": "integer",
-                "format": "int64"
-              },
-              "revoked_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "rotated_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "state": {
-                "$ref": "#/components/schemas/State"
-              },
-              "tenant": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "State": {
-            "type": "string",
-            "enum": ["pending", "active", "revoked", "deleted"]
+            "enum": ["pending", "active", "revoked", "deleted"],
+            "type": "string"
           }
         },
         "schema": {
@@ -50136,6 +50283,11 @@
             ],
             "type": "object"
           },
+          "ChatTextField": {
+            "description": "The Chat message key plain reasoning text arrived under.",
+            "enum": ["reasoning", "reasoning_content"],
+            "type": "string"
+          },
           "ConnectionCallState": {
             "additionalProperties": false,
             "properties": {
@@ -50598,9 +50750,70 @@
             "additionalProperties": false,
             "type": "object"
           },
+          "Reasoning": {
+            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
+                "properties": {
+                  "details": {
+                    "items": {},
+                    "type": "array"
+                  },
+                  "format": {
+                    "enum": ["chat_details"],
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "details"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
+                "properties": {
+                  "field": {
+                    "$ref": "#/components/schemas/ChatTextField"
+                  },
+                  "format": {
+                    "enum": ["chat_text"],
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "field", "text"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Responses `reasoning` output items, sent back before the turn's output.",
+                "properties": {
+                  "format": {
+                    "enum": ["responses"],
+                    "type": "string"
+                  },
+                  "items": {
+                    "items": {},
+                    "type": "array"
+                  }
+                },
+                "required": ["format", "items"],
+                "type": "object"
+              }
+            ]
+          },
           "RecoveryState": {
             "additionalProperties": false,
             "properties": {
+              "account_suspension_epoch": {
+                "description": "The common Account suspension that paused this Run.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
               "connection_refusals": {
                 "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
                 "items": {
@@ -50714,23 +50927,17 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
-              "account_suspension_epoch": {
-                "description": "The common Account suspension that paused this Run.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
               "standing_declines": {
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -51018,6 +51225,160 @@
               }
             ]
           },
+          "RunSummary": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "agent_version": {
+                "type": "string"
+              },
+              "control": {
+                "$ref": "#/components/schemas/RunControl"
+              },
+              "control_revision": {
+                "default": 0,
+                "description": "Counts control decisions only; worker progress does not change it.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "control_source": {
+                "$ref": "#/components/schemas/ControlSource",
+                "description": "The kind of actor that last changed `control`."
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "home_node": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "lease_owner": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "lease_until": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "lease_wait": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LeaseWait"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ledger_worker_ready": {
+                "type": "boolean"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "observed_input_seq": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RunPhase"
+              },
+              "recovery": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RecoveryState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state_error": {
+                "type": ["string", "null"]
+              },
+              "state_version": {
+                "$ref": "#/components/schemas/StateVersion"
+              },
+              "step": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "tool_calls": {
+                "format": "uint",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state_version",
+              "id",
+              "task_id",
+              "workspace_id",
+              "node",
+              "home_node",
+              "agent_id",
+              "agent_version",
+              "phase",
+              "control",
+              "control_revision",
+              "control_source",
+              "step",
+              "revision",
+              "observed_input_seq",
+              "ledger_worker_ready",
+              "error",
+              "lease_owner",
+              "lease_until",
+              "updated_at",
+              "state",
+              "recovery",
+              "state_error",
+              "input_tokens",
+              "output_tokens",
+              "tool_calls"
+            ],
+            "type": "object"
+          },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
             "enum": ["embedding_provider", "vector_backend"],
@@ -51032,6 +51393,24 @@
               }
             },
             "required": ["key", "input"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           },
           "StateVersion": {
@@ -51383,6 +51762,43 @@
             "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
           "WaitingState": {
             "oneOf": [
               {
@@ -51588,275 +52004,6 @@
               "expected_digest"
             ],
             "type": "object"
-          },
-          "ChatTextField": {
-            "description": "The Chat message key plain reasoning text arrived under.",
-            "enum": ["reasoning", "reasoning_content"],
-            "type": "string"
-          },
-          "Reasoning": {
-            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
-                "properties": {
-                  "details": {
-                    "items": {},
-                    "type": "array"
-                  },
-                  "format": {
-                    "enum": ["chat_details"],
-                    "type": "string"
-                  }
-                },
-                "required": ["format", "details"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
-                "properties": {
-                  "field": {
-                    "$ref": "#/components/schemas/ChatTextField"
-                  },
-                  "format": {
-                    "enum": ["chat_text"],
-                    "type": "string"
-                  },
-                  "text": {
-                    "type": "string"
-                  }
-                },
-                "required": ["format", "field", "text"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "description": "Responses `reasoning` output items, sent back before the turn's output.",
-                "properties": {
-                  "format": {
-                    "enum": ["responses"],
-                    "type": "string"
-                  },
-                  "items": {
-                    "items": {},
-                    "type": "array"
-                  }
-                },
-                "required": ["format", "items"],
-                "type": "object"
-              }
-            ]
-          },
-          "RunSummary": {
-            "properties": {
-              "agent_id": {
-                "type": "string"
-              },
-              "agent_version": {
-                "type": "string"
-              },
-              "control": {
-                "$ref": "#/components/schemas/RunControl"
-              },
-              "control_revision": {
-                "default": 0,
-                "description": "Counts control decisions only; worker progress does not change it.",
-                "format": "int64",
-                "type": "integer"
-              },
-              "control_source": {
-                "$ref": "#/components/schemas/ControlSource",
-                "description": "The kind of actor that last changed `control`."
-              },
-              "error": {
-                "type": ["string", "null"]
-              },
-              "home_node": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "lease_owner": {
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "lease_until": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "lease_wait": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/LeaseWait"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "ledger_worker_ready": {
-                "type": "boolean"
-              },
-              "node": {
-                "$ref": "#/components/schemas/NodeName"
-              },
-              "observed_input_seq": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "phase": {
-                "$ref": "#/components/schemas/RunPhase"
-              },
-              "recovery": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RecoveryState"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "state": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RunState"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "state_error": {
-                "type": ["string", "null"]
-              },
-              "state_version": {
-                "$ref": "#/components/schemas/StateVersion"
-              },
-              "step": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "tool_calls": {
-                "format": "uint",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "updated_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "state_version",
-              "id",
-              "task_id",
-              "workspace_id",
-              "node",
-              "home_node",
-              "agent_id",
-              "agent_version",
-              "phase",
-              "control",
-              "control_revision",
-              "control_source",
-              "step",
-              "revision",
-              "observed_input_seq",
-              "ledger_worker_ready",
-              "error",
-              "lease_owner",
-              "lease_until",
-              "updated_at",
-              "state",
-              "recovery",
-              "state_error",
-              "input_tokens",
-              "output_tokens",
-              "tool_calls"
-            ],
-            "type": "object"
-          },
-          "StandingDecline": {
-            "additionalProperties": false,
-            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
-            "properties": {
-              "by": {
-                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["tool", "kind", "by"],
-            "type": "object"
-          },
-          "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
-            "properties": {
-              "count": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/UnconfirmedKind"
-              },
-              "node": {
-                "description": "The silent Node, except in graph responses where this is the answering Node.",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node", "kind", "workspace_id", "count"],
-            "type": "object"
-          },
-          "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
-            "enum": [
-              "task",
-              "run",
-              "artifact",
-              "event",
-              "message",
-              "human_request",
-              "semantic_entry",
-              "memory_unit"
-            ],
-            "type": "string"
           }
         },
         "schema": {
@@ -57252,6 +57399,11 @@
             ],
             "type": "object"
           },
+          "ChatTextField": {
+            "description": "The Chat message key plain reasoning text arrived under.",
+            "enum": ["reasoning", "reasoning_content"],
+            "type": "string"
+          },
           "ConnectionCallState": {
             "additionalProperties": false,
             "properties": {
@@ -57714,9 +57866,70 @@
             "additionalProperties": false,
             "type": "object"
           },
+          "Reasoning": {
+            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
+                "properties": {
+                  "details": {
+                    "items": {},
+                    "type": "array"
+                  },
+                  "format": {
+                    "enum": ["chat_details"],
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "details"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
+                "properties": {
+                  "field": {
+                    "$ref": "#/components/schemas/ChatTextField"
+                  },
+                  "format": {
+                    "enum": ["chat_text"],
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": ["format", "field", "text"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Responses `reasoning` output items, sent back before the turn's output.",
+                "properties": {
+                  "format": {
+                    "enum": ["responses"],
+                    "type": "string"
+                  },
+                  "items": {
+                    "items": {},
+                    "type": "array"
+                  }
+                },
+                "required": ["format", "items"],
+                "type": "object"
+              }
+            ]
+          },
           "RecoveryState": {
             "additionalProperties": false,
             "properties": {
+              "account_suspension_epoch": {
+                "description": "The common Account suspension that paused this Run.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
               "connection_refusals": {
                 "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.",
                 "items": {
@@ -57830,23 +58043,17 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
-              "account_suspension_epoch": {
-                "description": "The common Account suspension that paused this Run.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
               "standing_declines": {
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
                   "$ref": "#/components/schemas/StandingDecline"
                 },
                 "type": "array"
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -58134,6 +58341,160 @@
               }
             ]
           },
+          "RunSummary": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "agent_version": {
+                "type": "string"
+              },
+              "control": {
+                "$ref": "#/components/schemas/RunControl"
+              },
+              "control_revision": {
+                "default": 0,
+                "description": "Counts control decisions only; worker progress does not change it.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "control_source": {
+                "$ref": "#/components/schemas/ControlSource",
+                "description": "The kind of actor that last changed `control`."
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "home_node": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "lease_owner": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "lease_until": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "lease_wait": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LeaseWait"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ledger_worker_ready": {
+                "type": "boolean"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName"
+              },
+              "observed_input_seq": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RunPhase"
+              },
+              "recovery": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RecoveryState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state_error": {
+                "type": ["string", "null"]
+              },
+              "state_version": {
+                "$ref": "#/components/schemas/StateVersion"
+              },
+              "step": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "tool_calls": {
+                "format": "uint",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state_version",
+              "id",
+              "task_id",
+              "workspace_id",
+              "node",
+              "home_node",
+              "agent_id",
+              "agent_version",
+              "phase",
+              "control",
+              "control_revision",
+              "control_source",
+              "step",
+              "revision",
+              "observed_input_seq",
+              "ledger_worker_ready",
+              "error",
+              "lease_owner",
+              "lease_until",
+              "updated_at",
+              "state",
+              "recovery",
+              "state_error",
+              "input_tokens",
+              "output_tokens",
+              "tool_calls"
+            ],
+            "type": "object"
+          },
           "SemanticOutageCause": {
             "description": "The outage that waiting can fix. Missing vector points are not one: the\nindex needs repair, so they pause the Run instead.",
             "enum": ["embedding_provider", "vector_backend"],
@@ -58148,6 +58509,24 @@
               }
             },
             "required": ["key", "input"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           },
           "StateVersion": {
@@ -58499,6 +58878,43 @@
             "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
           "WaitingState": {
             "oneOf": [
               {
@@ -58704,275 +59120,6 @@
               "expected_digest"
             ],
             "type": "object"
-          },
-          "ChatTextField": {
-            "description": "The Chat message key plain reasoning text arrived under.",
-            "enum": ["reasoning", "reasoning_content"],
-            "type": "string"
-          },
-          "Reasoning": {
-            "description": "The reasoning of one accepted response, in the shape its transport returned\nand accepts back. A Chat request sends only Chat reasoning and a Responses\nrequest only Responses items; a Run never switches transport (ADR 0103).",
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "description": "Chat Completions `reasoning_details` entries: reasoning text, summaries,\nencrypted reasoning and signatures such as Gemini's.",
-                "properties": {
-                  "details": {
-                    "items": {},
-                    "type": "array"
-                  },
-                  "format": {
-                    "enum": ["chat_details"],
-                    "type": "string"
-                  }
-                },
-                "required": ["format", "details"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "description": "Plain Chat reasoning text, kept only when a route returns no\n`reasoning_details`. `field` is the message key it arrived under,\n`reasoning` or `reasoning_content`, and the key it is sent back under.",
-                "properties": {
-                  "field": {
-                    "$ref": "#/components/schemas/ChatTextField"
-                  },
-                  "format": {
-                    "enum": ["chat_text"],
-                    "type": "string"
-                  },
-                  "text": {
-                    "type": "string"
-                  }
-                },
-                "required": ["format", "field", "text"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "description": "Responses `reasoning` output items, sent back before the turn's output.",
-                "properties": {
-                  "format": {
-                    "enum": ["responses"],
-                    "type": "string"
-                  },
-                  "items": {
-                    "items": {},
-                    "type": "array"
-                  }
-                },
-                "required": ["format", "items"],
-                "type": "object"
-              }
-            ]
-          },
-          "RunSummary": {
-            "properties": {
-              "agent_id": {
-                "type": "string"
-              },
-              "agent_version": {
-                "type": "string"
-              },
-              "control": {
-                "$ref": "#/components/schemas/RunControl"
-              },
-              "control_revision": {
-                "default": 0,
-                "description": "Counts control decisions only; worker progress does not change it.",
-                "format": "int64",
-                "type": "integer"
-              },
-              "control_source": {
-                "$ref": "#/components/schemas/ControlSource",
-                "description": "The kind of actor that last changed `control`."
-              },
-              "error": {
-                "type": ["string", "null"]
-              },
-              "home_node": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "input_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "lease_owner": {
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "lease_until": {
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "lease_wait": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/LeaseWait"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "ledger_worker_ready": {
-                "type": "boolean"
-              },
-              "node": {
-                "$ref": "#/components/schemas/NodeName"
-              },
-              "observed_input_seq": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "output_tokens": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "phase": {
-                "$ref": "#/components/schemas/RunPhase"
-              },
-              "recovery": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RecoveryState"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "state": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RunState"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "state_error": {
-                "type": ["string", "null"]
-              },
-              "state_version": {
-                "$ref": "#/components/schemas/StateVersion"
-              },
-              "step": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "tool_calls": {
-                "format": "uint",
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "updated_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "state_version",
-              "id",
-              "task_id",
-              "workspace_id",
-              "node",
-              "home_node",
-              "agent_id",
-              "agent_version",
-              "phase",
-              "control",
-              "control_revision",
-              "control_source",
-              "step",
-              "revision",
-              "observed_input_seq",
-              "ledger_worker_ready",
-              "error",
-              "lease_owner",
-              "lease_until",
-              "updated_at",
-              "state",
-              "recovery",
-              "state_error",
-              "input_tokens",
-              "output_tokens",
-              "tool_calls"
-            ],
-            "type": "object"
-          },
-          "StandingDecline": {
-            "additionalProperties": false,
-            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
-            "properties": {
-              "by": {
-                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["tool", "kind", "by"],
-            "type": "object"
-          },
-          "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
-            "properties": {
-              "count": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/UnconfirmedKind"
-              },
-              "node": {
-                "description": "The silent Node, except in graph responses where this is the answering Node.",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node", "kind", "workspace_id", "count"],
-            "type": "object"
-          },
-          "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
-            "enum": [
-              "task",
-              "run",
-              "artifact",
-              "event",
-              "message",
-              "human_request",
-              "semantic_entry",
-              "memory_unit"
-            ],
-            "type": "string"
           }
         },
         "schema": {
@@ -59124,41 +59271,87 @@
       "200": {
         "definitions": {
           "KeyOrigin": {
+            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877).",
             "oneOf": [
               {
-                "type": "string",
                 "description": "Issued by the provider's own consent flow.",
-                "enum": ["authorization"]
+                "enum": ["authorization"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Typed or pasted by a person in the dashboard.",
-                "enum": ["pasted"]
+                "enum": ["pasted"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "Stored through Host Access with the host-side command.",
-                "enum": ["host_access"]
+                "enum": ["host_access"],
+                "type": "string"
               }
-            ],
-            "description": "How the current Key Material of a Provider Credential reached Aidash. Only\na Self-hosted Deployment accepts a key that did not come from Provider\nAuthorization (ADR 0006, amended by #877)."
+            ]
           },
           "Provider": {
+            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration.",
             "oneOf": [
               {
-                "type": "string",
-                "enum": ["openrouter"]
+                "enum": ["openrouter"],
+                "type": "string"
               },
               {
-                "type": "string",
                 "description": "OpenAI's Responses API billed to a subject's ChatGPT plan (#159).",
-                "enum": ["chatgpt"]
+                "enum": ["chatgpt"],
+                "type": "string"
               }
-            ],
-            "description": "Catalog IDs are portable; Provider Credential and Plan Connection IDs never\nenter Registry configuration."
+            ]
           },
           "ProviderCredentialMetadata": {
-            "type": "object",
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "key_origin": {
+                "$ref": "#/components/schemas/KeyOrigin"
+              },
+              "key_settings_url": {
+                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there.",
+                "type": ["string", "null"]
+              },
+              "last4": {
+                "type": "string"
+              },
+              "provider": {
+                "$ref": "#/components/schemas/Provider"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "revoked_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "rotated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "state": {
+                "$ref": "#/components/schemas/State"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            },
             "required": [
               "id",
               "tenant",
@@ -59174,86 +59367,40 @@
               "revoked_at",
               "revision"
             ],
-            "properties": {
-              "base_url": {
-                "type": "string"
-              },
-              "created_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "fingerprint": {
-                "type": "string"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "key_origin": {
-                "$ref": "#/components/schemas/KeyOrigin"
-              },
-              "key_settings_url": {
-                "type": ["string", "null"],
-                "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
-              },
-              "last4": {
-                "type": "string"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/Provider"
-              },
-              "revision": {
-                "type": "integer",
-                "format": "int64"
-              },
-              "revoked_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "rotated_at": {
-                "type": ["string", "null"],
-                "format": "date-time"
-              },
-              "state": {
-                "$ref": "#/components/schemas/State"
-              },
-              "tenant": {
-                "type": "string"
-              }
-            }
+            "type": "object"
           },
           "State": {
-            "type": "string",
-            "enum": ["pending", "active", "revoked", "deleted"]
+            "enum": ["pending", "active", "revoked", "deleted"],
+            "type": "string"
           },
           "SuppliedProviderCredential": {
-            "type": "object",
             "description": "The stored Provider Credential and whether its provider's binding now names it.",
+            "properties": {
+              "bound": {
+                "description": "False when another active Provider Credential stays bound, or the\nbinding could not be updated, so Runs do not use the new key yet.",
+                "type": "boolean"
+              },
+              "previous_key_settings_url": {
+                "description": "After a rotation, the owner-only settings page of the key it replaced.\nRotation disables only Aidash's copy; a provider-issued key stays live\nuntil the user deletes it there, and this is the last place its link\nappears once the new digest is recorded.",
+                "type": ["string", "null"]
+              },
+              "provider_credential": {
+                "$ref": "#/components/schemas/ProviderCredentialMetadata"
+              },
+              "warnings": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
             "required": [
               "provider_credential",
               "warnings",
               "previous_key_settings_url",
               "bound"
             ],
-            "properties": {
-              "bound": {
-                "type": "boolean",
-                "description": "False when another active Provider Credential stays bound, or the\nbinding could not be updated, so Runs do not use the new key yet."
-              },
-              "previous_key_settings_url": {
-                "type": ["string", "null"],
-                "description": "After a rotation, the owner-only settings page of the key it replaced.\nRotation disables only Aidash's copy; a provider-issued key stays live\nuntil the user deletes it there, and this is the last place its link\nappears once the new digest is recorded."
-              },
-              "provider_credential": {
-                "$ref": "#/components/schemas/ProviderCredentialMetadata"
-              },
-              "warnings": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            }
+            "type": "object"
           }
         },
         "schema": {
@@ -59464,6 +59611,166 @@
       }
     },
     "source": "server/src/apps/execution/views/management.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-instructions",
+    "path": "/api/tenants/{tenant}/instructions",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "StandingInstructionsText": {
+            "additionalProperties": false,
+            "description": "One stored text; a Tenant or Node that never stored one reads as an empty\ntext at revision 0.",
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "updated_by": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["text", "revision", "updated_at", "updated_by"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/StandingInstructionsText"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/standing_instructions.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "node-instructions",
+    "path": "/api/tenants/{tenant}/nodes/{node}/instructions",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "StandingInstructionsText": {
+            "additionalProperties": false,
+            "description": "One stored text; a Tenant or Node that never stored one reads as an empty\ntext at revision 0.",
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "updated_by": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["text", "revision", "updated_at", "updated_by"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/StandingInstructionsText"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/standing_instructions.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "tenant-instructions-update",
+    "path": "/api/tenants/{tenant}/instructions",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "StandingInstructionsText": {
+            "additionalProperties": false,
+            "description": "One stored text; a Tenant or Node that never stored one reads as an empty\ntext at revision 0.",
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "updated_by": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["text", "revision", "updated_at", "updated_by"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/StandingInstructionsText"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/standing_instructions.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "node-instructions-update",
+    "path": "/api/tenants/{tenant}/nodes/{node}/instructions",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "StandingInstructionsText": {
+            "additionalProperties": false,
+            "description": "One stored text; a Tenant or Node that never stored one reads as an empty\ntext at revision 0.",
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "updated_by": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["text", "revision", "updated_at", "updated_by"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/StandingInstructionsText"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/standing_instructions.rs",
     "uuid_parameters": []
   }
 ]
