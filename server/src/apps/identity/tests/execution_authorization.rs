@@ -9310,7 +9310,11 @@ async fn stopping_and_withdrawing_carried_versions_reach_partial_carries_on_othe
 			.unwrap()["approval"]
 			.clone()
 	};
-	for (id, carry) in [("model", false), ("research", true)] {
+	// The sibling gets every dependency of the Agent through the copy.
+	for (id, carry) in [("model", false), ("http", false), ("research", true)] {
+		let revision = approval(&source, id, "1.0.0").await["revision"]
+			.as_i64()
+			.unwrap_or(1);
 		let (status, body) = request(
 			&app,
 			&alice,
@@ -9318,7 +9322,7 @@ async fn stopping_and_withdrawing_carried_versions_reach_partial_carries_on_othe
 			"/api/authorization/acme/catalog",
 			json!({
 				"node": source, "entry": {"id": id, "version": "1.0.0"}, "enabled": true,
-				"expected_revision": 1, "carry_over": carry, "scope": "deployment",
+				"expected_revision": revision, "carry_over": carry, "scope": "deployment",
 			}),
 		)
 		.await;
