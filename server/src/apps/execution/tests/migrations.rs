@@ -95,6 +95,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0077_tool_parallelism_64"),
 	("registry", "0078_duty_tools"),
 	("registry", "0079_workbench_input_bytes"),
+	("registry", "0080_node_tools"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -248,7 +249,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0079_workbench_input_bytes");
+	assert_eq!(registry[0].name, "0080_node_tools");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
 	assert_eq!(execution[0].name, "0147_unscheduled_generations");
@@ -2221,6 +2222,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0077_tool_parallelism_64"),
 			("registry", "0078_duty_tools"),
 			("registry", "0079_workbench_input_bytes"),
+			("registry", "0080_node_tools"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
