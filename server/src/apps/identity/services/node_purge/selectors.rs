@@ -52,6 +52,7 @@ impl Owners<'_> {
 			Subnode => ("subnodes", "id"),
 			ScratchSpace => ("scratch_spaces", "id"),
 			Record => ("core_records", "id"),
+			Duty => ("duties", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(

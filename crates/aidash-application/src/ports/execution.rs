@@ -225,6 +225,15 @@ pub trait ExecutionStore: Send + Sync {
 		Ok(Vec::new())
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
+	/// The Duty script this Run executes instead of asking a model (#1011,
+	/// ADR 0142). Only the Duty service records one, for a Task it started to
+	/// run its Router or Watcher, so every other Run has none.
+	async fn duty_script(
+		&self,
+		_run: &Run,
+	) -> Result<Option<aidash_domain::duties::scripts::Invocation>> {
+		Ok(None)
+	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
 	/// The commit fence before Task completion. Unless a newer input is
 	/// accepted, it also persists the Run's Completion Gate progress, so a Task

@@ -29,6 +29,7 @@ pub enum Root {
 	Subnode,
 	ScratchSpace,
 	Record,
+	Duty,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -125,6 +126,9 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "semantic_vectors"
 		| "memory_banks"
 		| "memory_participants" => Link("workspace_id", Workspace),
+		// A Duty's script versions and script runs are keyed on the Duty and
+		// go with it (#1011).
+		"duty_script_versions" | "duty_script_runs" => Link("duty_id", Duty),
 		"core_operations" => Link("area_id", Area),
 		"core_runs" | "egress_run_revocations" | "stints" => Link("run_id", Run),
 		"core_task_sessions"

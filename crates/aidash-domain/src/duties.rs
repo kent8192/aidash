@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 pub mod cron;
 pub mod events;
+pub mod scripts;
 
 /// Registering Duties, and changing, pausing and deleting your own. Judged
 /// on the Workspace the Duty belongs to. Members hold it by default.
@@ -185,6 +186,14 @@ pub struct Definition {
 	/// pauses it.
 	#[serde(default = "default_pause_after_failures")]
 	pub pause_after_failures: i32,
+	/// The script that decides what each event no Task booked does, instead of
+	/// starting one Task per event (#1011 D3).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub router: Option<scripts::Script>,
+	/// The script that polls an outside service on its own interval and
+	/// reports events.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub watcher: Option<scripts::Watcher>,
 }
 
 fn default_lateness() -> i64 {
@@ -231,6 +240,12 @@ impl Definition {
 				"a Duty's maximum lateness must be between one minute and seven days".into(),
 			));
 		}
+		if let Some(router) = &self.router {
+			router.validate()?;
+		}
+		if let Some(watcher) = &self.watcher {
+			watcher.validate()?;
+		}
 		match &self.trigger {
 			Some(trigger) => trigger.validate(now),
 			None => Ok(()),
@@ -275,6 +290,8 @@ pub struct Duty {
 	/// The next scheduled time, shown without its jitter. None once the
 	/// trigger never fires again.
 	pub next_scheduled_at: Option<DateTime<Utc>>,
+	/// When its Watcher runs next, if it has one.
+	pub watcher_next_at: Option<DateTime<Utc>>,
 	pub halt: Option<Halt>,
 	pub halted_at: Option<DateTime<Utc>>,
 	/// Why it stopped, in words, when the halt alone does not say it all.
@@ -325,7 +342,14 @@ impl Duty {
 			Some(trigger) => trigger.next_after(now, now)?,
 			None => None,
 		};
+		self.rewatch(now);
 		Ok(())
+	}
+
+	/// Runs its Watcher, if it has one, at the next scheduler pass: on
+	/// registration, on every resume and whenever the Watcher changes.
+	pub fn rewatch(&mut self, now: DateTime<Utc>) {
+		self.watcher_next_at = self.definition.watcher.as_ref().map(|_| now);
 	}
 
 	pub fn stop(&mut self, halt: Halt, now: DateTime<Utc>) {
@@ -381,6 +405,12 @@ pub struct Patch {
 	pub max_lateness_seconds: Option<i64>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub pause_after_failures: Option<i32>,
+	/// A new Router, or `{"kind": "none"}` to remove it (#1011 D3).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub router: Option<scripts::ScriptChoice>,
+	/// A new Watcher, or `{"kind": "none"}` to remove it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub watcher: Option<scripts::WatcherChoice>,
 }
 
 /// A new time trigger, or none: the Duty then wakes only by its other Duty
@@ -392,7 +422,7 @@ pub enum TriggerChoice {
 	Remove(NoTrigger),
 }
 
-/// `{"kind": "none"}`.
+/// `{"kind": "none"}`: removes a time trigger, a Router or a Watcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoTrigger {
@@ -456,6 +486,16 @@ impl Patch {
 		}
 		if let Some(lateness) = self.max_lateness_seconds {
 			next.max_lateness_seconds = lateness;
+		}
+		match &self.router {
+			Some(scripts::ScriptChoice::Set(script)) => next.router = Some(script.clone()),
+			Some(scripts::ScriptChoice::Remove(_)) => next.router = None,
+			None => {}
+		}
+		match &self.watcher {
+			Some(scripts::WatcherChoice::Set(watcher)) => next.watcher = Some(watcher.clone()),
+			Some(scripts::WatcherChoice::Remove(_)) => next.watcher = None,
+			None => {}
 		}
 		let retimed = next.trigger != definition.trigger;
 		(next, retimed)

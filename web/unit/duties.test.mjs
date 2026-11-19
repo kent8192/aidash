@@ -10,6 +10,7 @@ import {
   dutyActions,
   quietCompletion,
   dutyNoticeEntries,
+  eventLabel,
   tickLabel,
   triggerSummary,
 } from "../src/duties-model.ts";
@@ -250,4 +251,103 @@ test("a stop names the server's reason when it gave one", () => {
     "Stopped: its Agent version can no longer be started (Agent reporter@1.0.0 can no longer be started)",
   );
   assert.equal(haltText("paused", null, false), "Paused");
+});
+
+test("a Router and a Watcher reach the registration body and an edit removes them", () => {
+  const form = {
+    ...filled(),
+    routerOn: true,
+    routerLanguage: "shell",
+    routerSource: 'echo \'{"action":"drop"}\'',
+    watcherOn: true,
+    watcherLanguage: "python",
+    watcherSource: "print('[]')",
+    watcherEveryMinutes: "10",
+  };
+  const body = definitionOf(form);
+  assert.deepEqual(body.router, {
+    language: "shell",
+    source: 'echo \'{"action":"drop"}\'',
+  });
+  assert.deepEqual(body.watcher, {
+    script: { language: "python", source: "print('[]')" },
+    every_seconds: 600,
+  });
+  const cleared = patchOf({ ...form, routerOn: false, watcherOn: false });
+  assert.deepEqual(cleared.router, { kind: "none" });
+  assert.deepEqual(cleared.watcher, { kind: "none" });
+  assert.equal("router" in definitionOf(filled()), false);
+});
+
+test("a stored Watcher keeps its exact seconds and its scripts round-trip", () => {
+  const duty = {
+    title: "Watch CI",
+    mission: "Fix failing CI.",
+    procedure: "",
+    agent: { id: "reporter", version: "1.2.0" },
+    trigger: null,
+    approval_mode: null,
+    max_lateness_seconds: 3600,
+    pause_after_failures: 3,
+    router: { language: "python", source: "print('{}')" },
+    watcher: {
+      script: { language: "shell", source: "echo '[]'" },
+      every_seconds: 90,
+    },
+  };
+  const form = formOf(duty);
+  assert.equal(form.routerOn, true);
+  assert.equal(form.watcherSource, "echo '[]'");
+  assert.deepEqual(patchOf(form, duty).watcher, duty.watcher);
+  assert.deepEqual(patchOf(form, duty).router, duty.router);
+});
+
+test("the form refuses empty or oversized scripts and a Watcher interval past a year", () => {
+  const base = { ...filled(), routerOn: true, watcherOn: true };
+  assert.deepEqual(
+    formProblems({ ...base, routerSource: " ", watcherSource: "x" }),
+    ["router"],
+  );
+  assert.deepEqual(
+    formProblems({
+      ...base,
+      routerSource: "x".repeat(64 * 1024 + 1),
+      watcherSource: "x",
+      watcherEveryMinutes: "0",
+    }),
+    ["router", "watcher_interval"],
+  );
+});
+
+test("an event shows the Router's decision", () => {
+  const task = {
+    id: "e1",
+    received_at: "2026-11-19T00:00:00Z",
+    outcome: "started",
+    reason: null,
+    router: { action: "task", title: "Fix CI" },
+  };
+  assert.equal(
+    eventLabel(task, false),
+    'started a Task · Router: new Task "Fix CI"',
+  );
+  assert.equal(
+    eventLabel(
+      {
+        ...task,
+        outcome: "failed",
+        router: null,
+        reason: "Router: the Router printed nothing",
+      },
+      false,
+    ),
+    "failed (Router: the Router printed nothing)",
+  );
+  assert.equal(
+    eventLabel(
+      { ...task, outcome: "dropped", router: { action: "drop" } },
+      true,
+    ),
+    "破棄 · ルーター: 破棄",
+  );
 });

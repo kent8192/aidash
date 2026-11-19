@@ -87,18 +87,74 @@ Besides its time trigger, a Duty wakes on the triggers its Requester adds with
   status.
 
 An event is input, never a requester (ADR 0142). It goes to the Task that
-booked it, if one did; otherwise it starts a new Task in the Duty's Thread
-whose description is the mission followed by the event inside
-`<event trust="data">`, marked as data that never directs the Agent. While
-the Duty's previous Task is open, an event is skipped (`overlap`), the default
-a Router may later replace. `GET /api/duties/{id}/events` lists what each
-event did: `started`, `delivered`, `skipped` or `failed` with the reason.
+booked it, if one did; otherwise to the Duty's Router, if it has one (below).
+Without a Router it starts a new Task in the Duty's Thread whose description
+is the mission followed by the event inside `<event trust="data">`, marked as
+data that never directs the Agent, and while the Duty's previous Task is open
+an event is skipped (`overlap`). `GET /api/duties/{id}/events` lists what each
+event did: `started`, `delivered`, `skipped` or `failed` with the reason, and
+with a Router `routing`, `dropped` or `acted`.
 Events are data of the Duty's Thread and go with the Duty.
+
+## Router and Watcher scripts
+
+A Duty may carry two scripts, deterministic Python or shell that runs without
+a model, so cheap filtering never wakes one (#1011):
+
+```json
+{
+  "router": { "language": "python", "source": "import json, sys\n..." },
+  "watcher": {
+    "script": { "language": "shell", "source": "curl -s …" },
+    "every_seconds": 300
+  }
+}
+```
+
+A script's source is at most 64 KiB without NUL. The create body takes both;
+an edit replaces one or removes it with `{"kind":"none"}`. Every saved version
+is kept with its author and time and the Duty's page lists them. A script
+needs no approval of its own (ADR 0142): it runs only when `code_interpreter`
+(Python) or `shell` is approved in the Catalog for the Duty's Node and bound
+to the Duty's Agent; otherwise its Task fails with that reason and the event
+records it.
+
+A script runs as a Task of the Duty's Agent for its Requester, in the Duty's
+Thread and its Execution Pod, so Egress, External services, cancel and purge
+apply as for any Run, but no model is asked: the harness writes the script and
+its stdin into the Scratch Space and runs it through the bound tool, and the
+script's stdout is the Task's result. Script Tasks are not ticks: they never
+count as an overlap, toward `pause_after_failures` or for `duty_completed`
+triggers.
+
+- **Router.** Every event no Task booked goes to the Router instead of the
+  default, and is recorded as `routing` until it decides. It reads on stdin
+  `{"event": …, "trigger": {"id", "kind"}, "open_tasks": [{"task_id", "title"}]}`
+  and prints one JSON object:
+  - `{"action":"drop"}`: the event is `dropped`;
+  - `{"action":"act"}`: the script did the work itself, `acted`;
+  - `{"action":"task","title":"…","description":"…"}`: a model Task with that
+    title starts in the Duty's Thread, as an event's Task does; the Router's
+    title and description stay inside the event's data;
+  - `{"action":"deliver","task_id":"…","input":"…"}`: the event goes to that
+    open Task of the Duty as a booked event does, with the Router's `input`
+    beside its payload, and wakes its Run.
+
+  Anything else fails the event with a short reason. The event's `router`
+  field records the decision.
+
+- **Watcher.** Every `every_seconds` (one minute to one year), independent of
+  the time trigger, the Watcher runs; it is skipped while its previous run is
+  open. It prints a JSON array of event objects, each delivered as a webhook's
+  is, with trigger kind `watcher` (to the Router if there is one). A run keeps
+  32 events of at most 256 KiB each; the rest are dropped, with one `dropped`
+  event saying how many.
 
 A Run books the next event of a trigger of its root person's Duty by calling
 `workspace_wait` with `on_trigger`. It sleeps until the event comes, for up to
 30 days, and the event then wakes it: the wait's result carries the event as
-`{"kind":"duty_event", …, "payload": …}`, data like every tool result. A Run
+`{"kind":"duty_event", …, "payload": …}`, data like every tool result (and the
+Router's `input` when a Router delivered it). A Run
 that arrived through Federation books none.
 
 ## Ticks
@@ -112,7 +168,7 @@ scheduled time starts at most one Task.
 | Tick                                                       | Recorded as                                                                            |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | The Task started                                           | `started`, then `completed`, `failed` or `cancelled` with its Task                     |
-| The previous tick's Task is unfinished                     | `skipped (overlap)`, the default a Router may replace                                  |
+| The previous tick's Task is unfinished                     | `skipped (overlap)`; a Router decides only about events, not ticks                     |
 | Aidash was down past the maximum lateness                  | `skipped (late)`; earlier missed ticks fold into the latest one, which runs once, late |
 | The usage gate refused the Run                             | `skipped (limit: <code>)`                                                              |
 | Any other refusal, such as `COMPACTION_DECIDER_UNAPPROVED` | `failed` with the reason; never retried silently                                       |

@@ -2,7 +2,10 @@
 use aidash_application::duties::Detail;
 use aidash_domain::{
 	approval_rules::ApprovalMode,
-	duties::{Duty, Halt, Tick, Trigger},
+	duties::{
+		Duty, Halt, Tick, Trigger,
+		scripts::{Script, Version, Watcher},
+	},
 	registry::EntityRef,
 };
 use chrono::{DateTime, Utc};
@@ -34,6 +37,12 @@ pub(crate) struct DutyView {
 	pub max_lateness_seconds: i64,
 	/// Failed Tasks in a row after which it pauses itself; 0 never does.
 	pub pause_after_failures: i32,
+	/// The script that decides what each event no Task booked does (#1011).
+	pub router: Option<Script>,
+	/// The script that polls an outside service on its own interval.
+	pub watcher: Option<Watcher>,
+	/// When the Watcher runs next.
+	pub watcher_next_at: Option<DateTime<Utc>>,
 	/// `active`, `paused` or `stopped`.
 	pub status: String,
 	pub halt: Option<Halt>,
@@ -83,6 +92,9 @@ impl DutyView {
 			approval_mode: definition.approval_mode,
 			max_lateness_seconds: definition.max_lateness_seconds,
 			pause_after_failures: definition.pause_after_failures,
+			router: definition.router,
+			watcher: definition.watcher,
+			watcher_next_at: duty.watcher_next_at,
 			status,
 			halt: duty.halt,
 			halted_at: duty.halted_at,
@@ -109,16 +121,20 @@ pub(crate) struct DetailView {
 	pub ticks: Vec<Tick>,
 	/// A newer version of its Agent the Requester could move it to.
 	pub newer_agent_version: Option<String>,
+	/// Saved versions of its Router and Watcher with their authors, newest
+	/// first (#1011).
+	pub script_versions: Vec<Version>,
 	pub may_edit: bool,
 	pub may_administer: bool,
 }
 
 impl DetailView {
-	pub fn new(detail: Detail, viewer: &str) -> Self {
+	pub fn new(detail: Detail, viewer: &str, script_versions: Vec<Version>) -> Self {
 		Self {
 			duty: DutyView::new(detail.duty, viewer, detail.may_administer),
 			ticks: detail.ticks,
 			newer_agent_version: detail.newer_agent_version,
+			script_versions,
 			may_edit: detail.may_edit,
 			may_administer: detail.may_administer,
 		}

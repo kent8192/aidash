@@ -173,6 +173,8 @@ fn definition() -> Definition {
 		approval_mode: None,
 		max_lateness_seconds: 3600,
 		pause_after_failures: 3,
+		router: None,
+		watcher: None,
 	}
 }
 
@@ -489,4 +491,29 @@ async fn a_retried_agent_call_returns_the_duty_it_registered() {
 	assert_eq!(again.id, first.id);
 	assert_ne!(another.id, first.id);
 	assert_eq!(scope.duties.len(), 2);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_watcher_runs_at_the_next_pass_once_set_and_never_once_removed() {
+	// Arrange
+	let workspace = Uuid::new_v4();
+	let mut fake = alice_in(workspace);
+	let duty = register(&mut fake, workspace, definition(), Origin::Person)
+		.await
+		.unwrap();
+	assert_eq!(duty.watcher_next_at, None);
+	let watcher: aidash_domain::duties::Patch = serde_json::from_value(serde_json::json!({
+		"watcher": {"script": {"language": "shell", "source": "echo '[]'"}, "every_seconds": 300},
+	}))
+	.unwrap();
+	// Act
+	let watched = update(&mut fake, duty.id, watcher).await.unwrap();
+	let removal: aidash_domain::duties::Patch =
+		serde_json::from_value(serde_json::json!({"watcher": {"kind": "none"}})).unwrap();
+	let unwatched = update(&mut fake, duty.id, removal).await.unwrap();
+	// Assert: the time trigger did not move, the Watcher's own clock did.
+	assert_eq!(watched.watcher_next_at, Some(fake.now));
+	assert_eq!(watched.next_scheduled_at, duty.next_scheduled_at);
+	assert_eq!(unwatched.watcher_next_at, None);
 }

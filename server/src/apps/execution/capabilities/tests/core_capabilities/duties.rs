@@ -935,3 +935,300 @@ async fn a_booked_event_wakes_the_run_that_booked_it(#[future] capability_fixtur
 	assert_eq!(events[0]["task_id"], json!(run.task_id));
 	c.close().await;
 }
+
+/// The open script Task of a Duty's Router or Watcher, newest first, and what
+/// it reads on stdin (#1011 D3).
+async fn script_task(c: &CoreFixture, duty: Uuid, role: &str) -> (Uuid, String) {
+	sqlx::query_as(
+		"SELECT task_id, stdin FROM duty_script_runs WHERE duty_id = $1 AND role = $2 AND settled_at IS NULL ORDER BY created_at DESC LIMIT 1",
+	)
+	.bind(duty)
+	.bind(role)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// Ends a script Task as its Run would: completed, with the script's stdout as
+/// its result. No Execution Pod runs in these tests; the harness side is
+/// covered by `aidash-harness`'s duty_script tests.
+async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
+	let driver = c.f.store.pool.fixture_driver();
+	sqlx::query("INSERT INTO artifacts (id, tenant, workspace_id, task_id, kind, name, content, created_by, idempotency_key) SELECT $1, tenant, workspace_id, id, 'text', 'Script result', to_jsonb($2::text), 'test', $1::text FROM tasks WHERE id = $3")
+		.bind(Uuid::new_v4())
+		.bind(stdout)
+		.bind(task)
+		.execute(driver)
+		.await
+		.unwrap();
+	finish_task(c, task).await;
+}
+
+fn router_duty(title: &str) -> Value {
+	let mut body = definition(title, 3600);
+	let object = body.as_object_mut().unwrap();
+	object.remove("trigger");
+	object.insert(
+		"router".into(),
+		json!({"language": "python", "source": "import json, sys\nprint(json.dumps({'action': 'drop'}))\n"}),
+	);
+	body
+}
+
+/// A Router decides what each event does instead of the default: drop it,
+/// start a model Task titled by the Router with the event as data, or hand
+/// its input to an open Task of the Duty, which wakes; anything else fails
+/// the event with the reason (#1011 D3).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_router_drops_starts_or_delivers_each_event(#[future] capability_fixture: CoreFixture) {
+	// Arrange
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let duty = register(&c, workspace, router_duty("CI router")).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	assert_eq!(duty["router"]["language"], "python");
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let url = trigger["url"].as_str().unwrap().to_owned();
+	let secret = trigger["secret"].as_str().unwrap().to_owned();
+	let send = async |body: &[u8]| {
+		let (status, receipt) = send_event(&c, &url, Some(&secret), body).await;
+		assert_eq!(status, 200, "{receipt}");
+		assert_eq!(receipt["outcome"], "routing", "{receipt}");
+		receipt["event_id"].as_str().unwrap().to_owned()
+	};
+	let event = |events: &[Value], id: &str| {
+		events
+			.iter()
+			.find(|event| event["id"] == id)
+			.cloned()
+			.unwrap()
+	};
+
+	// Act / Assert: drop.
+	let dropped = send(br#"{"check_run":{"conclusion":"neutral"}}"#).await;
+	let (router, stdin) = script_task(&c, id, "router").await;
+	let stdin: Value = serde_json::from_str(&stdin).unwrap();
+	assert_eq!(stdin["event"]["check_run"]["conclusion"], "neutral");
+	assert_eq!(stdin["trigger"]["kind"], "webhook");
+	assert_eq!(stdin["open_tasks"], json!([]));
+	// A script Task is no tick: it is neither an overlap nor a Duty Task.
+	assert!(ticks(&c, id).await.is_empty());
+	finish_script(&c, router, r#"{"action":"drop"}"#).await;
+	let report = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(report.scripts_settled, 1, "{report:?}");
+	let events = events_of(&c, id).await;
+	assert_eq!(event(&events, &dropped)["outcome"], "dropped");
+	assert_eq!(event(&events, &dropped)["router"]["action"], "drop");
+
+	// Act / Assert: start a Task.
+	let started = send(br#"{"check_run":{"conclusion":"failure","run":42}}"#).await;
+	let (router, _) = script_task(&c, id, "router").await;
+	finish_script(
+		&c,
+		router,
+		r#"{"action":"task","title":"Fix CI run 42","description":"Run 42 failed on main"}"#,
+	)
+	.await;
+	pass(&c.f, Utc::now()).await.unwrap();
+	let events = events_of(&c, id).await;
+	let started = event(&events, &started);
+	assert_eq!(started["outcome"], "started", "{started}");
+	let task: Uuid = serde_json::from_value(started["task_id"].clone()).unwrap();
+	let (title, description): (String, String) =
+		sqlx::query_as("SELECT title, description FROM tasks WHERE id = $1")
+			.bind(task)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(title, "Fix CI run 42");
+	assert!(description.starts_with("Summarize what changed since the last tick."));
+	let (_, data) = description.split_once("<event trust=\"data\">").unwrap();
+	assert!(data.contains("Run 42 failed on main"), "{description}");
+	assert!(data.contains("\"run\": 42"), "{description}");
+	let ticks = ticks(&c, id).await;
+	assert_eq!(ticks.len(), 1, "{ticks:?}");
+	assert_eq!(ticks[0].1.as_deref(), Some("event: webhook (router)"));
+
+	// Act / Assert: deliver to the open Task, which the Router saw.
+	let delivered = send(br#"{"check_run":{"conclusion":"success","run":43}}"#).await;
+	let (router, stdin) = script_task(&c, id, "router").await;
+	let stdin: Value = serde_json::from_str(&stdin).unwrap();
+	assert_eq!(stdin["open_tasks"][0]["task_id"], json!(task));
+	assert_eq!(stdin["open_tasks"][0]["title"], "Fix CI run 42");
+	finish_script(
+		&c,
+		router,
+		&json!({"action": "deliver", "task_id": task, "input": "CI run 43 passed"}).to_string(),
+	)
+	.await;
+	pass(&c.f, Utc::now()).await.unwrap();
+	let events = events_of(&c, id).await;
+	let delivered = event(&events, &delivered);
+	assert_eq!(delivered["outcome"], "delivered", "{delivered}");
+	assert_eq!(delivered["task_id"], json!(task));
+	assert_eq!(delivered["router"]["input"], "CI run 43 passed");
+	let woken: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM run_activations a JOIN runs r ON r.id = a.run_id WHERE r.task_id = $1 AND a.reason = $2",
+	)
+	.bind(task)
+	.bind(format!("duty_event:{}", delivered["id"].as_str().unwrap()))
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(woken, 1);
+
+	// Act / Assert: anything else fails the event with the reason.
+	let refused = send(br#"{"check_run":{}}"#).await;
+	let (router, _) = script_task(&c, id, "router").await;
+	finish_script(&c, router, "merge everything").await;
+	pass(&c.f, Utc::now()).await.unwrap();
+	let events = events_of(&c, id).await;
+	let refused = event(&events, &refused);
+	assert_eq!(refused["outcome"], "failed");
+	assert!(
+		refused["reason"].as_str().unwrap().starts_with("Router: "),
+		"{refused}"
+	);
+	c.close().await;
+}
+
+/// A Watcher runs on its own interval without a time trigger, and the events
+/// it prints go the way a webhook's go: here, without a Router, the first
+/// starts a Task and the second finds it open (#1011 D3).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let mut body = definition("PR watcher", 3600);
+	let object = body.as_object_mut().unwrap();
+	object.remove("trigger");
+	object.insert(
+		"watcher".into(),
+		json!({"script": {"language": "shell", "source": "echo '[]'"}, "every_seconds": 300}),
+	);
+	let duty = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	assert!(duty["watcher_next_at"].is_string(), "{duty}");
+	// Act: the pass runs the Watcher once, then not again before its interval.
+	let first = pass(&c.f, Utc::now()).await.unwrap();
+	let again = pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(first.watchers_started.len(), 1, "{first:?}");
+	assert!(again.watchers_started.is_empty(), "{again:?}");
+	let (watcher, stdin) = script_task(&c, id, "watcher").await;
+	assert_eq!(watcher, first.watchers_started[0]);
+	assert_eq!(stdin, "");
+	finish_script(
+		&c,
+		watcher,
+		r#"[{"pr":7,"state":"open"},{"pr":8,"state":"open"}]"#,
+	)
+	.await;
+	let settled = pass(&c.f, Utc::now()).await.unwrap();
+	// Assert
+	assert_eq!(settled.scripts_settled, 1, "{settled:?}");
+	let events = events_of(&c, id).await;
+	assert_eq!(events.len(), 2, "{events:?}");
+	for event in &events {
+		assert_eq!(event["trigger_id"], json!(id));
+	}
+	let mut outcomes: Vec<&str> = events
+		.iter()
+		.map(|event| event["outcome"].as_str().unwrap())
+		.collect();
+	outcomes.sort();
+	assert_eq!(outcomes, ["skipped", "started"]);
+	let started = events
+		.iter()
+		.find(|event| event["outcome"] == "started")
+		.unwrap();
+	let task: Uuid = serde_json::from_value(started["task_id"].clone()).unwrap();
+	let description: String = sqlx::query_scalar("SELECT description FROM tasks WHERE id = $1")
+		.bind(task)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		description.contains("\"trigger\": \"watcher\""),
+		"{description}"
+	);
+	// The script version was kept with its author.
+	let (_, detail) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/duties/{id}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(detail["script_versions"][0]["role"], "watcher", "{detail}");
+	assert_eq!(detail["script_versions"][0]["every_seconds"], 300);
+	c.close().await;
+}
+
+/// A Watcher that prints more than a run may keeps 32 events and records what
+/// it dropped; a Watcher is no trigger the API adds (#1011 D3).
+/// (Without a Router, so the kept events start one Task between them.)
+#[rstest::rstest]
+#[tokio::test]
+async fn a_watcher_keeps_32_events_and_is_not_a_trigger(#[future] capability_fixture: CoreFixture) {
+	// Arrange
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let mut body = definition("Feed watcher", 3600);
+	let object = body.as_object_mut().unwrap();
+	object.remove("trigger");
+	object.insert(
+		"watcher".into(),
+		json!({"script": {"language": "python", "source": "print('[]')"}, "every_seconds": 60}),
+	);
+	let duty = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let response = c
+		.app
+		.api_http
+		.request(
+			"POST".parse().unwrap(),
+			&format!("/api/duties/{id}/triggers"),
+		)
+		.header("Authorization", format!("Bearer {}", c.token))
+		.json(&json!({"kind": "watcher"}))
+		.send()
+		.await
+		.unwrap();
+	assert_ne!(response.status_code(), 200);
+	let first = pass(&c.f, Utc::now()).await.unwrap();
+	let (watcher, _) = script_task(&c, id, "watcher").await;
+	assert_eq!(first.watchers_started, vec![watcher]);
+	let found: Vec<Value> = (0..40).map(|n| json!({"item": n})).collect();
+	// Act
+	finish_script(&c, watcher, &serde_json::to_string(&found).unwrap()).await;
+	pass(&c.f, Utc::now()).await.unwrap();
+	// Assert: 32 events were delivered: one started a Task, the rest found it
+	// open.
+	let events = events_of(&c, id).await;
+	let count = |outcome: &str| {
+		events
+			.iter()
+			.filter(|event| event["outcome"] == outcome)
+			.count()
+	};
+	assert_eq!((count("started"), count("skipped")), (1, 31), "{events:?}");
+	let dropped: Vec<&Value> = events
+		.iter()
+		.filter(|event| event["outcome"] == "dropped")
+		.collect();
+	assert_eq!(dropped.len(), 1);
+	assert!(
+		dropped[0]["reason"]
+			.as_str()
+			.unwrap()
+			.contains("8 past the 32-event limit"),
+		"{dropped:?}"
+	);
+	c.close().await;
+}

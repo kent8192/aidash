@@ -43,6 +43,10 @@ fn event_of(row: DutyEventRecord) -> Result<DutyEvent> {
 		outcome: EventOutcome::parse(&row.outcome)?,
 		reason: row.reason,
 		task_id: row.task_id,
+		router: row
+			.router
+			.map(|router| serde_json::from_value(router.0))
+			.transpose()?,
 	})
 }
 
@@ -55,6 +59,11 @@ pub(crate) async fn insert_trigger(
 	let source = match &trigger.kind {
 		TriggerKind::Webhook => None,
 		TriggerKind::DutyCompleted { source_duty_id } => Some(*source_duty_id),
+		TriggerKind::Watcher => {
+			return Err(Error::Invalid(
+				"a Watcher is part of its Duty, not a trigger row".into(),
+			));
+		}
 	};
 	let row = DutyTriggerRecord::build()
 		.id(trigger.id)
@@ -181,6 +190,13 @@ pub(crate) async fn insert_event(
 		.reason(event.reason.clone())
 		.task_id(event.task_id)
 		.run_id(run)
+		.router(
+			event
+				.router
+				.as_ref()
+				.map(|router| serde_json::to_value(router).map(reinhardt::db::orm::Json))
+				.transpose()?,
+		)
 		.finish();
 	DutyEventRecord::objects()
 		.insert_with_executor(tx, &row)
@@ -233,7 +249,87 @@ pub(crate) async fn event(
 	)
 	.scalar_optional(&mut *tx)
 	.await?;
-	Ok(Some((event_of(row)?, kind.unwrap_or_default())))
+	// A Watcher's events name their Duty as the trigger (#1011 D3).
+	let watcher = row.trigger_id == row.duty_id;
+	let kind = kind.unwrap_or_else(|| {
+		if watcher {
+			"watcher".into()
+		} else {
+			String::new()
+		}
+	});
+	Ok(Some((event_of(row)?, kind)))
+}
+
+/// One event of the Tenant and the kind of trigger that brought it, for its
+/// Router's decision. A Watcher's events name their Duty as the trigger; an
+/// event whose trigger was removed since reads as a webhook's.
+pub(crate) async fn find(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> Result<Option<(DutyEvent, TriggerKind)>> {
+	let Some(row) = DutyEventRecord::objects()
+		.filter(DutyEventRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyEventRecord::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(framework)?
+		.pop()
+	else {
+		return Ok(None);
+	};
+	let kind = if row.trigger_id == row.duty_id {
+		TriggerKind::Watcher
+	} else {
+		DutyTriggerRecord::objects()
+			.filter(DutyTriggerRecord::field_tenant().eq(tenant.to_owned()))
+			.filter(DutyTriggerRecord::field_id().eq(row.trigger_id))
+			.all_with_executor(&mut *tx)
+			.await
+			.map_err(framework)?
+			.pop()
+			.map(trigger_of)
+			.transpose()?
+			.map_or(TriggerKind::Webhook, |trigger| trigger.kind)
+	};
+	Ok(Some((event_of(row)?, kind)))
+}
+
+/// Records what became of an event its Router decided about (#1011 D3): the
+/// outcome and why, the decision, and the Task (and Run) it started or woke.
+pub(crate) async fn conclude(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+	(outcome, reason): (EventOutcome, Option<String>),
+	router: Option<&aidash_domain::duties::scripts::RouterAction>,
+	(task, run): (Option<Uuid>, Option<Uuid>),
+) -> Result<()> {
+	let Some(mut row) = DutyEventRecord::objects()
+		.filter(DutyEventRecord::field_tenant().eq(tenant.to_owned()))
+		.filter(DutyEventRecord::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(framework)?
+		.pop()
+	else {
+		return Ok(());
+	};
+	row.outcome = outcome.as_str().to_owned();
+	row.reason = reason;
+	row.task_id = task;
+	row.run_id = run;
+	row.router = router
+		.map(|router| serde_json::to_value(router).map(reinhardt::db::orm::Json))
+		.transpose()?;
+	DutyEventRecord::objects()
+		.save_with_executor(tx, &row)
+		.await
+		.map_err(framework)?;
+	Ok(())
 }
 
 /// Books the next event of `trigger` for the Task the Run works on.

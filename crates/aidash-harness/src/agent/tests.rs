@@ -299,6 +299,8 @@ struct State {
 	approval_evidence: Mutex<Vec<aidash_domain::decision::ApprovalEvidence>>,
 	/// The state of every question batch the approval Decider was asked.
 	judged_states: Mutex<Vec<Value>>,
+	/// The Duty script the Run executes instead of a model (#1011).
+	duty_script: Option<aidash_domain::duties::scripts::Invocation>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -442,6 +444,12 @@ fn unexpected(operation: &str) -> ! {
 
 #[async_trait]
 impl ExecutionStore for Backend {
+	async fn duty_script(
+		&self,
+		_: &Run,
+	) -> Result<Option<aidash_domain::duties::scripts::Invocation>> {
+		Ok(self.0.duty_script.clone())
+	}
 	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
 		Ok(u64::from(
 			self.0.owned_tasks_pending.load(Ordering::Acquire) || self.0.failed_children,
@@ -1980,6 +1988,7 @@ fn fixture() -> Fixture {
 		approval_decider: None,
 		approval_evidence: Mutex::new(vec![]),
 		judged_states: Mutex::new(vec![]),
+		duty_script: None,
 	}));
 	Fixture { backend, run }
 }
@@ -6951,6 +6960,8 @@ async fn catch_up_steps_carry_no_breakpoints() {
 }
 
 mod unassigned;
+
+mod duty_script;
 
 mod completion;
 

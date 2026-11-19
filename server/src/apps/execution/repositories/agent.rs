@@ -34,6 +34,20 @@ const WORKSPACE_EVENT_WINDOW: u64 = 32;
 
 #[async_trait]
 impl ExecutionStore for RunStore {
+	async fn duty_script(
+		&self,
+		run: &Run,
+	) -> Result<Option<aidash_domain::duties::scripts::Invocation>> {
+		let task = run.task_id;
+		Ok(self
+			.store
+			.pool
+			.scoped(&self.scope, async |tx| {
+				crate::apps::workspaces::repositories::duty_scripts::invocation(&mut **tx, task)
+					.await
+			})
+			.await?)
+	}
 	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64> {
 		use crate::apps::workspaces::models::child_flags::unstarted_open;
 		use reinhardt::db::orm::execution::convert_values;
@@ -114,18 +128,28 @@ impl ExecutionStore for RunStore {
 				)
 				.await?;
 				if let Some((event, kind)) = delivered {
+					let mut duty_event = serde_json::json!({
+						"kind": "duty_event",
+						"event_id": event.id,
+						"trigger_id": event.trigger_id,
+						"trigger": kind,
+						"received_at": event.received_at,
+						"payload": event.payload,
+					});
+					// What the Duty's Router handed this Task, data like the
+					// event itself (#1011 D3).
+					if let Some(aidash_domain::duties::scripts::RouterAction::Deliver {
+						input,
+						..
+					}) = &event.router
+					{
+						duty_event["input"] = serde_json::json!(input);
+					}
 					events.push(WorkspaceEvent {
 						generation,
 						task_id: Uuid::nil(),
 						status: "duty_event".into(),
-						duty_event: Some(serde_json::json!({
-							"kind": "duty_event",
-							"event_id": event.id,
-							"trigger_id": event.trigger_id,
-							"trigger": kind,
-							"received_at": event.received_at,
-							"payload": event.payload,
-						})),
+						duty_event: Some(duty_event),
 					});
 				}
 				continue;

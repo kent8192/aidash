@@ -153,6 +153,7 @@ pub async fn register(
 		thread_id: None,
 		anchor: now,
 		next_scheduled_at: None,
+		watcher_next_at: None,
 		halt: None,
 		halted_at: None,
 		halt_reason: None,
@@ -226,10 +227,16 @@ pub async fn update(scope: &mut dyn DutyScope, id: Uuid, patch: Patch) -> Result
 		.await?;
 	let (definition, retimed) = patch.apply(&duty.definition);
 	check_definition(scope, duty.workspace_id, &definition).await?;
+	let rewatched = definition.watcher != duty.definition.watcher;
 	duty.definition = definition;
 	let now = scope.now();
 	if retimed && duty.halt.is_none() {
 		duty.restart(now)?;
+	} else if rewatched && duty.halt.is_none() {
+		// A changed Watcher runs at the next pass, a removed one never again.
+		duty.rewatch(now);
+	} else if rewatched {
+		duty.watcher_next_at = None;
 	}
 	duty.updated_at = now;
 	scope.save(&duty).await?;
