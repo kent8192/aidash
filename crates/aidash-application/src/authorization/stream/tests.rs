@@ -20,6 +20,7 @@ struct Authority {
 	validated: Option<DateTime<Utc>>,
 	disabled: Option<DateTime<Utc>>,
 	owner: Option<String>,
+	duty: Option<Uuid>,
 	reads: AtomicUsize,
 	fail: bool,
 }
@@ -34,6 +35,7 @@ fn authority_store() -> Authority {
 		validated: Some(now()),
 		disabled: None,
 		owner: Some("saved-owner".into()),
+		duty: None,
 		reads: AtomicUsize::new(0),
 		fail: false,
 	};
@@ -68,6 +70,7 @@ impl StreamAuthorityStore for Authority {
 			revision: 31,
 			document: self.document.clone(),
 			owner_subject: self.owner.clone(),
+			duty_id: self.duty,
 			mapping_id: self.mapping.then_some(Uuid::from_u128(9)),
 			mapping_enabled: self.mapping_enabled,
 			issuer: self.issuer.clone(),
@@ -86,6 +89,26 @@ async fn idle_authority_uses_one_snapshot_and_the_saved_owner_environment(
 ) {
 	authority(&authority_store, thread).await.unwrap();
 	assert_eq!(authority_store.reads.load(Ordering::SeqCst), 1);
+}
+/// An idle stream on a Duty's Thread evaluates the same `duty_id` a read of
+/// that Thread does (#1008): a policy that admits only that Duty's Thread
+/// admits the stream, and refuses it for another Duty's.
+#[rstest]
+#[case::own_duty(Uuid::from_u128(7), true)]
+#[case::other_duty(Uuid::from_u128(8), false)]
+#[tokio::test]
+async fn idle_authority_on_a_duty_thread_evaluates_its_duty(
+	mut authority_store: Authority,
+	#[case] duty: Uuid,
+	#[case] allowed: bool,
+) {
+	authority_store.document = json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"duty","effect":"allow","subjects":{"any":true},"actions":["thread.read","thread.events"],"resources":{"kinds":["thread"]},"condition":{"op":"eq","left":{"source":"resource","path":"/duty_id"},"right":{"source":"literal","value":Uuid::from_u128(7)}}}]});
+	authority_store.duty = Some(duty);
+	let result = authority(&authority_store, Some(Uuid::from_u128(1))).await;
+	assert_eq!(result.is_ok(), allowed, "{result:?}");
+	if !allowed {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	}
 }
 #[rstest]
 #[tokio::test]

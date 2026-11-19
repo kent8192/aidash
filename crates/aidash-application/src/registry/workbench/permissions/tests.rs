@@ -205,7 +205,11 @@ impl PermissionScope for Scope<'_> {
 		})
 	}
 
-	async fn thread_owner(&mut self, thread: Uuid, tenant: &str) -> Result<Option<String>> {
+	async fn thread_owner(
+		&mut self,
+		thread: Uuid,
+		tenant: &str,
+	) -> Result<Option<crate::ports::authorization::threads::ThreadOwner>> {
 		assert_eq!(tenant, "tenant");
 		assert_eq!(thread, Uuid::from_u128(1));
 		self.0
@@ -214,7 +218,11 @@ impl PermissionScope for Scope<'_> {
 			.unwrap()
 			.calls
 			.push("thread_owner".into());
-		Ok(self.0.owner.clone())
+		Ok(self
+			.0
+			.owner
+			.clone()
+			.map(crate::ports::authorization::threads::ThreadOwner::person))
 	}
 
 	async fn commit(self: Box<Self>) -> Result<()> {

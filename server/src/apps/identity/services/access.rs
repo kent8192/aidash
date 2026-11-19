@@ -118,8 +118,13 @@ pub(crate) struct AccessTransaction {
 	live_nodes: std::collections::BTreeSet<(String, String)>,
 	live_nodes_epoch: u64,
 	// One walk reaches the same Thread once per read. Its owner is held by the
-	// share lock when `lock` was asked for, and neither fact changes for a live row.
-	thread_owners: std::collections::BTreeMap<(Uuid, bool), String>,
+	// share lock when `lock` was asked for, and neither fact changes for a live
+	// row. Its Duty is read in the same statement but is not locked: a Duty
+	// deleted while this transaction runs may still show here (#1008).
+	thread_owners: std::collections::BTreeMap<
+		(Uuid, bool),
+		aidash_application::ports::authorization::threads::ThreadOwner,
+	>,
 	thread_nodes: std::collections::BTreeMap<Uuid, String>,
 	threads_epoch: u64,
 }
@@ -182,7 +187,11 @@ impl AccessTransaction {
 		}
 	}
 
-	pub(crate) fn thread_owner(&mut self, id: Uuid, lock: bool) -> Option<String> {
+	pub(crate) fn thread_owner(
+		&mut self,
+		id: Uuid,
+		lock: bool,
+	) -> Option<aidash_application::ports::authorization::threads::ThreadOwner> {
 		self.current_threads();
 		self.thread_owners
 			.get(&(id, lock))
@@ -194,9 +203,14 @@ impl AccessTransaction {
 			.cloned()
 	}
 
-	pub(crate) fn remember_thread_owner(&mut self, id: Uuid, lock: bool, owner: &str) {
+	pub(crate) fn remember_thread_owner(
+		&mut self,
+		id: Uuid,
+		lock: bool,
+		owner: &aidash_application::ports::authorization::threads::ThreadOwner,
+	) {
 		self.current_threads();
-		self.thread_owners.insert((id, lock), owner.to_owned());
+		self.thread_owners.insert((id, lock), owner.clone());
 	}
 
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {

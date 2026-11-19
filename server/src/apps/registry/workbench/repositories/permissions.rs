@@ -119,7 +119,11 @@ impl PermissionScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn thread_owner(&mut self, thread: Uuid, tenant: &str) -> Result<Option<String>> {
+	async fn thread_owner(
+		&mut self,
+		thread: Uuid,
+		tenant: &str,
+	) -> Result<Option<aidash_application::ports::authorization::threads::ThreadOwner>> {
 		AuthorizationThread::owner_in(self.tx.as_mut(), thread, tenant, true)
 			.await
 			.map_err(Into::into)

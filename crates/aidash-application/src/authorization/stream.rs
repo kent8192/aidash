@@ -42,7 +42,10 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, thread: Option<Uuid>) -
 		return Err(Error::Forbidden);
 	}
 	if let Some(id) = thread {
-		let owner = current.owner_subject.ok_or(Error::Forbidden)?;
+		let owner = crate::ports::authorization::threads::ThreadOwner {
+			owner: current.owner_subject.ok_or(Error::Forbidden)?,
+			duty_id: current.duty_id,
+		};
 		for action in ["thread.read", "thread.events"] {
 			let input = Evaluation {
 				subject: scope.subject().into(),
@@ -51,7 +54,7 @@ pub async fn authority(scope: &dyn StreamAuthorityStore, thread: Option<Uuid>) -
 					tenant: scope.tenant().into(),
 					kind: "thread".into(),
 					id: id.to_string(),
-					attributes: json!({"owner":owner,"thread_id":id}),
+					attributes: super::threads::attributes(id, &owner),
 				},
 				environment: json!({"node_id":scope.node_id(),"transport":"api"}),
 			};

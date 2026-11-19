@@ -324,6 +324,8 @@ struct StateThread {
 struct StateOwner {
 	thread_id: Uuid,
 	owner_subject: String,
+	/// The Duty whose own Thread this is, selected in the same statement.
+	duty_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
 struct StateDocument {
@@ -920,8 +922,18 @@ impl Access {
 			.and_where(Expr::col("id").is_in(ids.iter().copied().map(Expr::value)))
 			.build(PostgresQueryBuilder);
 		let threads: Vec<StateThread> = self.fetch_rows(&sql, values).await?;
+		// The Duty rides in the owner statement, so `/api/state` keeps its
+		// statement count (#849) while its Threads carry `duty_id` (#1008).
 		let (sql, values) = Query::select()
 			.columns(["thread_id", "owner_subject"].map(Alias::new))
+			.expr_as(
+				crate::apps::workspaces::repositories::duties::own_duty(
+					Expr::col((Alias::new("authorization_threads"), Alias::new("thread_id")))
+						.into(),
+					Expr::col((Alias::new("authorization_threads"), Alias::new("tenant"))).into(),
+				),
+				Alias::new("duty_id"),
+			)
 			.from(Alias::new("authorization_threads"))
 			.and_where(
 				crate::apps::identity::repositories::nodes::live_thread_condition(
@@ -939,8 +951,14 @@ impl Access {
 			self.tx.thread_nodes.insert(thread.id, thread.node);
 		}
 		for owner in owners {
-			self.tx
-				.remember_thread_owner(owner.thread_id, true, &owner.owner_subject);
+			self.tx.remember_thread_owner(
+				owner.thread_id,
+				true,
+				&aidash_application::ports::authorization::threads::ThreadOwner {
+					owner: owner.owner_subject,
+					duty_id: owner.duty_id,
+				},
+			);
 		}
 		Ok(())
 	}

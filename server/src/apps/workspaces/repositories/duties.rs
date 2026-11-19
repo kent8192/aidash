@@ -175,6 +175,33 @@ pub(crate) async fn insert(
 	creating_task(tx, tenant, duty).await
 }
 
+/// The Duty whose own Thread `thread` is, as a scalar subquery (#1008, ADR
+/// 0140). Every owner lookup of a Thread selects it beside `owner_subject`,
+/// in the same statement, so the `thread` resource's `duty_id` costs no
+/// statement and agrees on reads, lists and `/api/state`.
+///
+/// Only a Duty that opened its Thread counts (`origin_thread_id` is set at
+/// registration). A Duty registered before #1008 kept the former Workspace it
+/// was registered in, which people and other Duties share, so that Thread
+/// names no Duty. A registration always opens a new Thread, so at most one
+/// row matches; the order and limit only keep the expression scalar.
+pub(crate) fn own_duty(
+	thread: reinhardt::query::SimpleExpr,
+	tenant: reinhardt::query::SimpleExpr,
+) -> reinhardt::query::SimpleExpr {
+	let duty = || Alias::new("own_duty");
+	let mut query = Query::select();
+	query
+		.column((duty(), Alias::new("id")))
+		.from_as(Alias::new("duties"), duty())
+		.and_where(Expr::col((duty(), Alias::new("thread_id"))).eq(thread))
+		.and_where(Expr::col((duty(), Alias::new("tenant"))).eq(tenant))
+		.and_where(Expr::col((duty(), Alias::new("origin_thread_id"))).is_not_null())
+		.order_by((duty(), Alias::new("id")), Order::Asc)
+		.limit(1);
+	reinhardt::query::SimpleExpr::SubQuery(None, Box::new(query.to_owned()))
+}
+
 /// Records, or clears, the Task whose Run set the Duty up (#1012; see
 /// threads 0047): a flow's stop pauses the Duties its Runs set up. A
 /// successor taking the Duty over clears the creating Run, and with it this.

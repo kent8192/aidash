@@ -55,6 +55,7 @@ impl StreamAuthorityStore for Authority<'_> {
 				revision: i64,
 				document: Value,
 				owner_subject: Option<String>,
+				duty_id: Option<Uuid>,
 				mapping_id: Option<Uuid>,
 				mapping_enabled: Option<bool>,
 				mapping_tenant: Option<String>,
@@ -66,6 +67,7 @@ impl StreamAuthorityStore for Authority<'_> {
 				revision,
 				document,
 				owner_subject,
+				duty_id,
 				mapping_id,
 				mapping_enabled,
 				mapping_tenant,
@@ -83,6 +85,14 @@ impl StreamAuthorityStore for Authority<'_> {
 					(Alias::new("b"), Alias::new("document")),
 					(Alias::new("w"), Alias::new("owner_subject")),
 				])
+				// The selected Thread's Duty, from the same statement (#1008).
+				.expr_as(
+					crate::apps::workspaces::repositories::duties::own_duty(
+						col("w", "thread_id").into(),
+						col("w", "tenant").into(),
+					),
+					Alias::new("duty_id"),
+				)
 				.expr_as(col("m", "id"), Alias::new("mapping_id"))
 				.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
 				.expr_as(col("m", "tenant"), Alias::new("mapping_tenant"))
@@ -188,6 +198,7 @@ impl StreamAuthorityStore for Authority<'_> {
 				revision: current.revision,
 				document: current.document,
 				owner_subject: current.owner_subject,
+				duty_id: current.duty_id,
 				mapping_id: current.mapping_id,
 				mapping_enabled: current.mapping_enabled,
 				issuer: current.issuer,

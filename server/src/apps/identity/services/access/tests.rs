@@ -957,9 +957,15 @@ async fn thread_owner_cache_respects_lock_strength_and_savepoint_rollback() {
 	let mut tx = AccessTransaction::new(probe.transaction(pool));
 	let locked = Uuid::new_v4();
 	let unlocked = Uuid::new_v4();
-	tx.remember_thread_owner(locked, true, "alice");
-	tx.remember_thread_owner(unlocked, false, "bob");
-	assert_eq!(tx.thread_owner(locked, false).as_deref(), Some("alice"));
+	use aidash_application::ports::authorization::threads::ThreadOwner;
+	// A Duty's own Thread keeps its Duty beside its owner in the cache (#1008).
+	let alice = ThreadOwner {
+		owner: "alice".into(),
+		duty_id: Some(Uuid::new_v4()),
+	};
+	tx.remember_thread_owner(locked, true, &alice);
+	tx.remember_thread_owner(unlocked, false, &ThreadOwner::person("bob"));
+	assert_eq!(tx.thread_owner(locked, false), Some(alice));
 	assert_eq!(tx.thread_owner(unlocked, true), None);
 	tx.rollback_to_savepoint("owner").await.unwrap();
 	assert_eq!(tx.thread_owner(locked, false), None);

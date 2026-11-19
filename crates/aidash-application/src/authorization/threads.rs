@@ -2,7 +2,7 @@
 use crate::{
 	Error, Result,
 	ports::authorization::threads::{
-		RunInteractionScope, ThreadAuthorityScope, ThreadResourceScope,
+		RunInteractionScope, ThreadAuthorityScope, ThreadOwner, ThreadResourceScope,
 	},
 };
 use aidash_domain::{
@@ -27,23 +27,41 @@ fn subnode_read_only(context: &serde_json::Value, id: &serde_json::Value) -> boo
 		.as_array()
 		.is_some_and(|threads| threads.contains(id))
 }
+/// The trusted attributes of the `thread` resource: `owner`, `thread_id` and,
+/// for a Duty's own Thread, `duty_id` (#1008, ADR 0140). Every place that
+/// evaluates the `thread` resource builds them here, so a policy condition on
+/// any of them answers the same on a read, in a list and for a Node
+/// administrator. `duty_id` is absent, not null, on other Threads, so a
+/// condition that `/duty_id` exists names exactly the Duty Threads.
+pub fn attributes(id: Uuid, owner: &ThreadOwner) -> serde_json::Value {
+	let mut attributes = json!({"owner":owner.owner,"thread_id":id});
+	if let Some(duty) = owner.duty_id {
+		attributes["duty_id"] = json!(duty);
+	}
+	attributes
+}
 pub async fn resource(scope: &mut dyn ThreadResourceScope, id: Uuid) -> Result<Resource> {
 	if scope.inherited() && !thread_reachable(scope.context(), id) && !scope.recheck_reaches(id) {
 		return Err(Error::Forbidden);
 	}
 	let lock = !scope.inherited();
 	let owner = scope.owner(id, lock).await?.ok_or(Error::Forbidden)?;
-	Ok(scope.resource(
-		"thread",
-		&id.to_string(),
-		json!({"owner":owner,"thread_id":id}),
-	))
+	let mut resource = scope.resource("thread", &id.to_string(), attributes(id, &owner));
+	// The lease context fills in attributes a resource lacks. A Run working in a
+	// Duty's Thread must not lend that Duty to another Thread it reads (a
+	// Subnode's), so a Thread without a Duty never carries one.
+	if owner.duty_id.is_none()
+		&& let Some(attributes) = resource.attributes.as_object_mut()
+	{
+		attributes.remove("duty_id");
+	}
+	Ok(resource)
 }
 pub async fn decision(
 	scope: &mut dyn ThreadAuthorityScope,
 	id: Uuid,
 	action: &str,
-	owner: Option<&str>,
+	owner: Option<&ThreadOwner>,
 ) -> Result<bool> {
 	let (tenant, subject) = {
 		let (tenant, subject) = scope.identity();
@@ -57,7 +75,7 @@ pub async fn decision(
 			kind: "thread".into(),
 			id: id.to_string(),
 			attributes: owner
-				.map(|owner| json!({"owner":owner,"thread_id":id}))
+				.map(|owner| attributes(id, owner))
 				.unwrap_or_else(|| json!({})),
 		},
 		environment: scope.environment().clone(),
@@ -96,7 +114,7 @@ pub async fn decision(
 }
 pub async fn allowed(scope: &mut dyn ThreadAuthorityScope, id: Uuid, action: &str) -> Result<bool> {
 	let owner = scope.locked_owner(id).await?;
-	decision(scope, id, action, owner.as_deref()).await
+	decision(scope, id, action, owner.as_ref()).await
 }
 pub async fn require(scope: &mut dyn ThreadAuthorityScope, id: Uuid, action: &str) -> Result<()> {
 	if allowed(scope, id, action).await? {
