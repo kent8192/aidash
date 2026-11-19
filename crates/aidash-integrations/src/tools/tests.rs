@@ -731,6 +731,7 @@ async fn an_http_tool_sends_its_tenant_secret_as_the_bearer_credential_and_nothi
 			host: "127.0.0.1".into(),
 		},
 		value: SecretString::from("tenant-secret-value".to_owned()),
+		attach: aidash_capability::tenant_secret::Attach::Bearer,
 	};
 	let with = tools
 		.invoke(&config, json!({}), "key", Some(&secret))
@@ -871,6 +872,7 @@ fn value_secret(value: &str) -> CallSecret {
 			host: "127.0.0.1".into(),
 		},
 		value: SecretString::from(value.to_owned()),
+		attach: aidash_capability::tenant_secret::Attach::Bearer,
 	}
 }
 

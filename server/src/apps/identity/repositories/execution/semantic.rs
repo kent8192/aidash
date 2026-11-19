@@ -83,6 +83,7 @@ impl RunSemanticScope for Scope<'_> {
 		&mut self,
 		query: &str,
 		budget: usize,
+		partial: bool,
 	) -> Result<aidash_application::semantic::retrieval::WorkspaceContext> {
 		crate::semantic::service::context_in(
 			self.store,
@@ -91,6 +92,7 @@ impl RunSemanticScope for Scope<'_> {
 			query,
 			budget,
 			self.agent,
+			partial,
 		)
 		.await
 		.map_err(Into::into)

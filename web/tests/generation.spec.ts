@@ -276,6 +276,10 @@ async function createGenerationScenario(
     await registryDialog
       .getByRole("button", { name: "エンティティを登録", exact: true })
       .click();
+    await expect(registryDialog).toContainText("no earlier carrying approval");
+    await registryDialog
+      .getByRole("button", { name: "閉じる", exact: true })
+      .click();
     await expect(registryDialog).toHaveCount(0);
     await page.unroute("**/api/registry");
     expect(embedder).not.toBe("");

@@ -27,7 +27,7 @@ pub enum NativeSource {
 	WorkspaceRetrieval {
 		/// What a local Run step does when this retrieval stays unavailable
 		/// after the bounded retry (ADR 0059). Required-Home Runs always pause.
-		#[serde(default, skip_serializing_if = "OnUnavailable::is_pause")]
+		#[serde(default, skip_serializing_if = "OnUnavailable::is_degrade")]
 		on_unavailable: OnUnavailable,
 	},
 	PrivateReferences {
@@ -44,18 +44,17 @@ pub enum NativeSource {
 	},
 }
 /// Whether a step may go without optional Workspace semantic context when its
-/// retrieval stays unavailable. `Pause` is the default: degrading is an
-/// explicit opt-in of the Agent's author.
+/// retrieval stays unavailable. Optional context degrades by default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnUnavailable {
-	#[default]
 	Pause,
+	#[default]
 	Degrade,
 }
 impl OnUnavailable {
-	pub fn is_pause(&self) -> bool {
-		*self == Self::Pause
+	pub fn is_degrade(&self) -> bool {
+		*self == Self::Degrade
 	}
 }
 
@@ -460,7 +459,7 @@ mod tests {
 		}
 	}
 	#[test]
-	fn only_workspace_retrieval_opts_into_degrading_and_pause_stays_implicit() {
+	fn workspace_retrieval_defaults_to_degrade_and_preserves_explicit_pause() {
 		let parse = |source| {
 			serde_json::from_value::<NativeContext>(json!({"schema_version":1,"source":source}))
 				.unwrap()
@@ -470,19 +469,19 @@ mod tests {
 		assert!(matches!(
 			default.source,
 			NativeSource::WorkspaceRetrieval {
-				on_unavailable: OnUnavailable::Pause
+				on_unavailable: OnUnavailable::Degrade
 			}
 		));
-		// The default is never written, so existing descriptors keep their digest.
+		// The default is omitted, while an explicit pause remains durable.
 		assert_eq!(
 			serde_json::to_value(&default).unwrap(),
 			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}})
 		);
-		let degrade = parse(json!({"adapter":"workspace_retrieval","on_unavailable":"degrade"}));
-		degrade.validate("source").unwrap();
+		let pause = parse(json!({"adapter":"workspace_retrieval","on_unavailable":"pause"}));
+		pause.validate("source").unwrap();
 		assert_eq!(
-			serde_json::to_value(&degrade).unwrap(),
-			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"degrade"}})
+			serde_json::to_value(&pause).unwrap(),
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"pause"}})
 		);
 	}
 	fn reference_source(paths: &[String]) -> NativeContext {

@@ -389,6 +389,9 @@ async fn a_deleted_tenant_refuses_everyone_until_its_administrator_restores_it(
 			.await
 			.unwrap();
 	assert!(tag.is_none());
+	// Startup reconciliation must leave a deleted Tenant's authority frozen
+	// and must not prevent a later restore.
+	d.federation.registry.seed_system().await.unwrap();
 	assert_eq!(deletion["deleted_by_kind"], "tenant_administrator");
 	let deleted_at: chrono::DateTime<chrono::Utc> =
 		serde_json::from_value(deletion["deleted_at"].clone()).unwrap();

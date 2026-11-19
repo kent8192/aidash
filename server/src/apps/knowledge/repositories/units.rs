@@ -386,12 +386,8 @@ pub(crate) fn sources_in_reader<'a>(
 								Error::Invalid("Journal range exceeds evidence limit".into())
 							})?;
 						let retained =
-							super::journal_proofs::load(lease, run_id, from_seq, through_seq).await?;
-						if let Some(references) = &retained
-							&& !crate::apps::execution::repositories::research::retained_references_current(lease.tx().as_mut(), run_id, references).await?
-						{
-							return Err(Error::Conflict("memory research evidence expired or was revoked".into()));
-						}
+							super::journal_proofs::load(lease, run_id, from_seq, through_seq)
+								.await?;
 						let rows = native::query(
 							&Query::select()
 								.columns(["seq", "event", "digest"].map(Alias::new))
@@ -416,7 +412,6 @@ pub(crate) fn sources_in_reader<'a>(
 							})?;
 							return Ok(());
 						}
-						let mut research = Vec::new();
 						for (offset, row) in rows.iter().enumerate() {
 							let seq: i64 = row.try_get("seq")?;
 							let event: serde_json::Value = row.try_get("event")?;
@@ -425,36 +420,6 @@ pub(crate) fn sources_in_reader<'a>(
 								|| aidash_domain::registry::rules::digest(&event) != digest
 							{
 								return Err(Error::Conflict("memory Journal range changed".into()));
-							}
-							if event
-								.get("result")
-								.and_then(aidash_domain::context::research::ResearchReference::parse)
-								.is_some()
-							{
-								let event = serde_json::from_value(event)?;
-								research
-									.push(aidash_domain::context::HistoryEntry::new(seq as u64, event));
-							}
-						}
-						if !research.is_empty() {
-							crate::apps::execution::repositories::research::resolve_entries(
-								lease.tx().as_mut(),
-								run_id,
-								&mut research,
-							)
-							.await?;
-							for entry in &research {
-								if let aidash_domain::context::ContextEvent::Tool { result, .. } =
-									&entry.event
-									&& (aidash_domain::context::ContextEvent::is_revoked_result(result)
-										|| aidash_domain::context::ContextEvent::is_expired_result(
-											result,
-										)) {
-									return Err(Error::Conflict(
-										"memory Journal research evidence expired or was revoked"
-											.into(),
-									));
-								}
 							}
 						}
 					}
@@ -484,12 +449,15 @@ pub(crate) fn sources_in_reader<'a>(
 						// revision that was read: older revisions are not kept. A stale
 						// Unit lost a purged source (purge dependencies), which is a
 						// withdrawal even for Built-in Memory.
-						if unit.stale || (!forgive && (unit.revision != revision || !unit.visible())) {
+						if unit.stale
+							|| (!forgive && (unit.revision != revision || !unit.visible()))
+						{
 							return Err(Error::Conflict(SUPPORT_CHANGED.into()));
 						}
 						authorize(lease, &bank, "memory.read").await?;
 						match unexpired(lease, &unit).await {
-							Err(Error::Conflict(message)) if forgive && message == UNIT_EXPIRED => {}
+							Err(Error::Conflict(message)) if forgive && message == UNIT_EXPIRED => {
+							}
 							result => {
 								result?;
 							}
@@ -507,10 +475,10 @@ pub(crate) fn sources_in_reader<'a>(
 						digest,
 					} => {
 						let mut disclosure = super::disclosure::Disclosure { lease };
-						let message = disclosure
-							.message(id, workspace)
-							.await?
-							.ok_or_else(|| Error::Conflict("memory message source removed".into()))?;
+						let message =
+							disclosure.message(id, workspace).await?.ok_or_else(|| {
+								Error::Conflict("memory message source removed".into())
+							})?;
 						if disclosure.scoped() && !disclosure.message_visible(&message).await? {
 							return Err(Error::Forbidden);
 						}
@@ -528,10 +496,10 @@ pub(crate) fn sources_in_reader<'a>(
 						digest,
 					} => {
 						let mut disclosure = super::disclosure::Disclosure { lease };
-						let artifact = disclosure
-							.artifact(id, workspace)
-							.await?
-							.ok_or_else(|| Error::Conflict("memory artifact source removed".into()))?;
+						let artifact =
+							disclosure.artifact(id, workspace).await?.ok_or_else(|| {
+								Error::Conflict("memory artifact source removed".into())
+							})?;
 						if disclosure.scoped() && !disclosure.artifact_visible(&artifact).await? {
 							return Err(Error::Forbidden);
 						}
@@ -639,7 +607,8 @@ pub(crate) fn sources_in_reader<'a>(
 									.map_or(true, |state| state != "COMPLETED")
 							}) {
 							return Err(Error::Conflict(
-								"memory Run evidence contains incomplete or uncertain effects".into(),
+								"memory Run evidence contains incomplete or uncertain effects"
+									.into(),
 							));
 						}
 						if let Some(access) = lease.access()
@@ -647,11 +616,13 @@ pub(crate) fn sources_in_reader<'a>(
 						{
 							return Err(Error::Forbidden);
 						}
-						if aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(
-							&run,
-						)?) != digest
+						if aidash_domain::semantic::indexing::content_digest(
+							&serde_json::to_string(&run)?,
+						) != digest
 						{
-							return Err(Error::Conflict("memory Run evidence digest changed".into()));
+							return Err(Error::Conflict(
+								"memory Run evidence digest changed".into(),
+							));
 						}
 					}
 				}

@@ -185,8 +185,6 @@ impl RuleInput {
 			}
 			ApprovalKind::ToolCall => tool(target),
 			ApprovalKind::Outbound => origin(target),
-			ApprovalKind::WebSearch => provider(target),
-			ApprovalKind::PageReading => host(target),
 			ApprovalKind::Generation => {
 				aidash_domain::policy::identifier(target).is_ok() && !target.contains('#')
 			}
@@ -219,21 +217,6 @@ fn tool(target: &str) -> bool {
 /// An origin as the outbound policy writes it: `https://host`, nothing more.
 fn origin(target: &str) -> bool {
 	aidash_domain::capabilities::outbound::permitted_origin(target, &[target.to_owned()]).is_ok()
-}
-
-/// `<provider id>@<version>`, such as `research.brave@1`.
-fn provider(target: &str) -> bool {
-	let name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
-	target
-		.split_once('@')
-		.is_some_and(|(id, version)| plain(id, name) && plain(version, name))
-}
-
-/// A lowercase host name, without scheme, port or path.
-fn host(target: &str) -> bool {
-	plain(target, |c| {
-		c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-')
-	})
 }
 
 /// A member's settings as a Tenant Administrator with `approval.read` sees them.
@@ -282,8 +265,6 @@ mod tests {
 	#[rstest]
 	#[case(ApprovalKind::ToolCall, "tool:crm#invoke")]
 	#[case(ApprovalKind::Outbound, "https://example.com")]
-	#[case(ApprovalKind::WebSearch, "research.brave@1")]
-	#[case(ApprovalKind::PageReading, "example.com")]
 	#[case(ApprovalKind::Generation, "reviewers")]
 	fn a_target_of_its_kinds_shape_is_valid(#[case] kind: ApprovalKind, #[case] target: &str) {
 		assert!(input(kind, target).validate().is_ok());
@@ -297,9 +278,6 @@ mod tests {
 	#[case(ApprovalKind::Outbound, "example.com")]
 	#[case(ApprovalKind::Outbound, "https://example.com/path")]
 	#[case(ApprovalKind::Outbound, "http://example.com")]
-	#[case(ApprovalKind::WebSearch, "research.brave")]
-	#[case(ApprovalKind::PageReading, "https://example.com")]
-	#[case(ApprovalKind::PageReading, "Example.com")]
 	#[case(ApprovalKind::Generation, "")]
 	#[case(ApprovalKind::Generation, "two words")]
 	fn a_target_of_another_shape_is_refused(#[case] kind: ApprovalKind, #[case] target: &str) {

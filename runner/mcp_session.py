@@ -2,6 +2,7 @@
 import json
 import os
 import select
+import signal
 import socket
 import subprocess
 import sys
@@ -39,6 +40,37 @@ def call(path, message, timeout):
     return response['message']
 
 
+def write_all(process, data, deadline):
+    """Write one message to the server's stdin before `deadline`."""
+    outbound = memoryview(data)
+    while outbound:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([], [process.stdin], [], remaining)[1]:
+            raise TimeoutError('MCP call timed out; session closed')
+        try:
+            written = os.write(process.stdin.fileno(), outbound[:65536])
+        except BlockingIOError:
+            continue
+        if not written:
+            raise EOFError('MCP process closed stdin')
+        outbound = outbound[written:]
+
+
+def answer_server_request(request):
+    """The answer to a request the server sent: `ping` succeeds, anything else is unsupported."""
+    if request.get('method') == 'ping':
+        return {'jsonrpc': '2.0', 'id': request['id'], 'result': {}}
+    return {'jsonrpc': '2.0', 'id': request['id'],
+            'error': {'code': -32601, 'message': 'Method not found'}}
+
+
+def is_response(message, request_id):
+    """Only a message without `method` that carries `result` or `error` answers a request;
+    a server request may reuse the pending request's id."""
+    return ('method' not in message and ('result' in message or 'error' in message)
+            and message.get('id') == request_id)
+
+
 def ping(path):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(2)
@@ -65,6 +97,9 @@ def serve(path, config):
         if key not in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY', 'PLUGIN_DATA'):
             environment[key] = value
     environment['PLUGIN_DATA'] = target
+    # A stop signals the bridge: end through `finally`, so the server process is stopped
+    # and the socket removed, instead of leaving the server behind.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     if install:
         subprocess.run(install, shell=True, check=True, env=environment, timeout=300)
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, env=environment, bufsize=0)
@@ -95,18 +130,7 @@ def serve(path, config):
                         if not isinstance(message, dict) or type(timeout) is not int or not 1 <= timeout <= 3600:
                             raise ValueError('invalid MCP call')
                         deadline = time.monotonic() + timeout
-                        outbound = memoryview(encode(message))
-                        while outbound:
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0 or not select.select([], [process.stdin], [], remaining)[1]:
-                                raise TimeoutError('MCP call timed out; session closed')
-                            try:
-                                written = os.write(process.stdin.fileno(), outbound[:65536])
-                            except BlockingIOError:
-                                continue
-                            if not written:
-                                raise EOFError('MCP process closed stdin')
-                            outbound = outbound[written:]
+                        write_all(process, encode(message), deadline)
                         if 'id' not in message:
                             connection.sendall(encode({'message': {}}))
                             continue
@@ -118,10 +142,14 @@ def serve(path, config):
                                 reply = json.loads(line)
                                 if not isinstance(reply, dict):
                                     raise ValueError('invalid MCP response')
-                                if 'id' not in message or reply.get('id') == message['id']:
+                                if is_response(reply, message['id']):
                                     encode(reply)
                                     connection.sendall(encode({'message': reply}, LIMIT + 4096))
                                     break
+                                # A server request waits for its answer, so it is answered now;
+                                # notifications and stray responses need none.
+                                if 'method' in reply and 'id' in reply:
+                                    write_all(process, encode(answer_server_request(reply)), deadline)
                                 continue
                             remaining = deadline - time.monotonic()
                             if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:

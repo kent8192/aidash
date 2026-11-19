@@ -254,6 +254,9 @@ pub enum CallSecret {
 	Value {
 		record: SecretRecord,
 		value: SecretString,
+		/// How the value travels, exactly as a broker would attach it from the
+		/// same [`SecretCall`]: `Authorization: Bearer <value>` or a raw header.
+		attach: Attach,
 	},
 	Brokered {
 		record: SecretRecord,
@@ -305,7 +308,8 @@ pub fn personal_required(name: &str) -> Error {
 		.to_string(),
 	)
 }
-pub(crate) fn personal_error_value(error: &Error) -> Option<serde_json::Value> {
+/// The tool result a missing personal secret answers with, as [`personal_required`] built it.
+pub fn personal_error_value(error: &Error) -> Option<serde_json::Value> {
 	let Error::Invalid(message) = error else {
 		return None;
 	};
@@ -971,6 +975,7 @@ impl Service {
 			id: record.id,
 			version: record.version.clone(),
 		};
+		let attach = call.attach.clone();
 		match self
 			.resolve_row(&row.tenant, row, Some(call.clone()))
 			.await?
@@ -988,7 +993,11 @@ impl Service {
 				}),
 				rest: forward_rest(endpoint)?,
 			}),
-			Resolved::Value(value) => Ok(CallSecret::Value { record, value }),
+			Resolved::Value(value) => Ok(CallSecret::Value {
+				record,
+				value,
+				attach,
+			}),
 		}
 	}
 

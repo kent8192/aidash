@@ -709,7 +709,7 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 	assert_eq!(status, 200, "{body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
 	let set = async |node: &aidash_domain::nodes::NodeName, enabled: bool, revision: i64| {
-		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":enabled,"expected_revision":revision}))
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":enabled,"expected_revision":revision,"scope":"node"}))
 		.await
 		.0
 	};

@@ -121,6 +121,8 @@ pub(crate) mod catalog;
 pub(crate) mod catalog_mutation;
 
 pub(crate) mod catalog_approvals;
+pub(crate) mod catalog_carry;
+pub(crate) mod catalog_node_copy;
 pub(crate) mod catalog_requests;
 pub(crate) mod catalog_review;
 pub(crate) mod catalog_withdrawal;
@@ -167,7 +169,6 @@ pub(crate) mod invitations;
 pub(crate) mod home_execution;
 
 pub(crate) mod desktop;
-pub(crate) mod retention;
 
 pub(crate) mod approval_decider;
 pub(crate) mod approval_preferences;

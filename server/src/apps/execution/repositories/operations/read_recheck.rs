@@ -20,6 +20,7 @@ use aidash_application::{
 use aidash_domain::preview::live::StopReason;
 use async_trait::async_trait;
 use reinhardt::db::orm::{Model, execution::convert_values};
+use chrono::{DateTime, Utc};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, IntoValue, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
@@ -69,34 +70,41 @@ async fn running_commands(store: &Store) -> NativeResult<Vec<Uuid>> {
 	.await
 }
 
+/// The Background-target query: one ended Pod command per Run that left Background processes
+/// running, for Runs the Read Recheck has not refused.
+fn background_runs_query() -> String {
+	// Correlated with the outer row: only this Run's refusal ends its target.
+	let revoked = Query::select()
+		.expr(Expr::value(1_i32))
+		.from_as(Alias::new("egress_run_revocations"), Alias::new("r"))
+		.and_where(
+			Expr::col((Alias::new("r"), Alias::new("run_id")))
+				.equals((Alias::new("core_operations"), Alias::new("run_id"))),
+		)
+		.to_owned();
+	Query::select()
+		.distinct_on([Alias::new("run_id")])
+		.column(Alias::new("id"))
+		.from(Alias::new("core_operations"))
+		.and_where(Expr::col(Alias::new("state")).is_not_in(["prepared", "submitted", "running"]))
+		.and_where(Expr::cust("input->>'runtime' = 'pod'"))
+		.and_where(Expr::cust("result->>'left_running' IS NOT NULL"))
+		.and_where(Expr::exists(revoked).not())
+		.order_by(Alias::new("run_id"), Order::Asc)
+		.order_by(Alias::new("updated_at"), Order::Desc)
+		.to_string(PostgresQueryBuilder)
+}
+
 /// One ended Pod command per Run that left Background processes running, for
 /// Runs not yet refused. Background processes outlive their command and the
 /// Run, and use its credential, so their Run's reads are rechecked like a
 /// running command's (ADR 0136). A refusal marks the Run, which ends the target.
 async fn background_runs(store: &Store) -> NativeResult<Vec<Uuid>> {
-	crate::database::native::query_scalar(
-		&Query::select()
-			.distinct_on([Alias::new("run_id")])
-			.column(Alias::new("id"))
-			.from(Alias::new("core_operations"))
-			.and_where(Expr::col(Alias::new("state")).is_not_in([
-				"prepared",
-				"submitted",
-				"running",
-			]))
-			.and_where(Expr::cust("input->>'runtime' = 'pod'"))
-			.and_where(Expr::cust("result->>'left_running' IS NOT NULL"))
-			.and_where(Expr::cust(
-				"NOT EXISTS (SELECT 1 FROM egress_run_revocations r WHERE r.run_id = core_operations.run_id)",
-			))
-			.order_by(Alias::new("run_id"), Order::Asc)
-			.order_by(Alias::new("updated_at"), Order::Desc)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_all(store.pool.in_scope(&TenancyScope::Deployment(
-		DeploymentScopeReason::CapabilityMaintenance,
-	)))
-	.await
+	crate::database::native::query_scalar(&background_runs_query())
+		.scalar_all(store.pool.in_scope(&TenancyScope::Deployment(
+			DeploymentScopeReason::CapabilityMaintenance,
+		)))
+		.await
 }
 
 /// Persist the denial before contacting the Runner: traffic must remain refused
@@ -255,6 +263,8 @@ impl ReadRecheckRepository for Repository<'_> {
 			Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
 				Ok(Outcome::Refused)
 			}
+			// A Node that does not answer refuses nothing (#906, ADR 0117).
+			Err(Error::NodeUnreachable { .. }) => Ok(Outcome::Unconfirmed),
 			Err(error) => Err(error.into()),
 		}
 	}
@@ -313,6 +323,17 @@ impl ReadRecheckRepository for Repository<'_> {
 			}
 		}
 	}
+	async fn withhold(&self, preview: Uuid) -> Result<Option<DateTime<Utc>>> {
+		live_previews::set_unconfirmed(self.store, preview, true)
+			.await
+			.map_err(Into::into)
+	}
+	async fn serve_again(&self, preview: Uuid) -> Result<()> {
+		live_previews::set_unconfirmed(self.store, preview, false)
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
+	}
 	async fn stop_unconfirmed(&self, preview: Uuid) -> Result<()> {
 		live_previews::stop_serving(self.store, preview, StopReason::NodeUnreachable)
 			.await
@@ -323,6 +344,15 @@ impl ReadRecheckRepository for Repository<'_> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_refusal_ends_only_its_own_runs_background_target() {
+		let sql = background_runs_query();
+		assert!(
+			sql.contains(r#"NOT EXISTS (SELECT 1 FROM "egress_run_revocations" AS "r" WHERE "r"."run_id" = "core_operations"."run_id")"#),
+			"{sql}"
+		);
+	}
 
 	#[test]
 	fn remote_run_space_identity_survives_revocation() {

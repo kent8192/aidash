@@ -266,7 +266,6 @@ impl OperationReconciliationScope for Scope<'_> {
 			&& let Some(input) = &mut body
 		{
 			input["usage_tenant"] = json!(self.access.identity.tenant);
-			super::super::egress::attach(self.store, &mut self.access, input).await?;
 		}
 		use aidash_application::ports::capabilities::runner::RunnerTransport as _;
 		crate::bootstrap::operation_runner(self.store)?

@@ -390,33 +390,6 @@ pub async fn selected(
 					bytes,
 				)
 			}
-			ModelMedia::PageImage(selection) => {
-				// A revoked page leaves the Run's durable selection behind;
-				// failing on it would stop the Run on every retry, so the
-				// model is told the page is gone instead.
-				let Some((media_type, bytes)) = scope.page_image(&selection.evidence_ref).await?
-				else {
-					parts.push(ContentPart::Text(format!(
-						"Page image unavailable: {} was revoked.",
-						selection.evidence_ref
-					)));
-					continue;
-				};
-				if format!("sha256:{:x}", Sha256::digest(&bytes)) != selection.expected_digest {
-					return Err(Error::Conflict("PAGE_IMAGE_CHANGED".into()));
-				}
-				total = total.saturating_add(bytes.len() as u64);
-				if total > 8 * 1024 * 1024 {
-					return Err(Error::Invalid(
-						"model media input exceeds byte limit".into(),
-					));
-				}
-				(
-					format!("Page image: {}", selection.evidence_ref),
-					media_type,
-					bytes,
-				)
-			}
 		};
 		parts.push(ContentPart::Text(label));
 		parts.push(ContentPart::from_media(&media_type, bytes)?);

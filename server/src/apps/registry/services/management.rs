@@ -1,7 +1,7 @@
 //! Management use cases.
 use crate::apps::identity::services::tenant_secret_readiness;
 use crate::apps::registry::serializers::agent_plugin_import::{
-	AgentPluginImportResult, PluginImportRequest,
+	AgentPluginImportResult, AttachListing, PluginImportRequest, PluginToolsRequest,
 };
 use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
 use crate::apps::registry::services::agent_plugin_import;
@@ -74,7 +74,7 @@ impl RegistryManagement {
 		actor: Actor,
 		headers: HeaderMap,
 		entry: Entry,
-	) -> Result<Entry> {
+	) -> Result<crate::apps::registry::serializers::contracts::RegistryCreateResult> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
@@ -90,11 +90,24 @@ impl RegistryManagement {
 			})
 			.transpose()?;
 		let mut access = Access::begin(&f.store, &identity).await?;
+		let has_source = crate::apps::identity::repositories::catalog_carry::has_source(
+			&mut access.tx,
+			&identity.tenant,
+			&entry,
+		)
+		.await?;
+		if has_source {
+			access.finish(Ok(())).await?;
+			// Carry rechecks the source while holding the exclusive lease.
+			access = Access::begin_change(&f.store, &identity, &["registry.create"]).await?;
+		}
+		let mut scope = TenantRegistration {
+			access: &mut access,
+			store: &f.store,
+			carry_results: Vec::new(),
+		};
 		let result = aidash_application::registry::register(
-			&mut TenantRegistration {
-				access: &mut access,
-				store: &f.store,
-			},
+			&mut scope,
 			&f.registry.validation(),
 			entry,
 			key,
@@ -102,6 +115,12 @@ impl RegistryManagement {
 			f.config.deployment.as_str(),
 		)
 		.await
+		.map(|entry| {
+			crate::apps::registry::serializers::contracts::RegistryCreateResult::new(
+				entry,
+				scope.carry_results,
+			)
+		})
 		.map_err(Into::into);
 		access.finish(result).await
 	}
@@ -190,8 +209,17 @@ impl RegistryManagement {
 		agent_plugin_import::import(&self.runtime, &source, actor, request).await
 	}
 
-	/// Readiness facts for the Tenant Secrets this Agent version's bound tools
-	/// and External services name (decision 5 of #310). A bound tool or
+	/// See [`crate::apps::registry::services::agent_plugin_import::list_tools`].
+	pub(crate) async fn agent_plugin_tools(
+		&self,
+		actor: Actor,
+		request: PluginToolsRequest,
+	) -> Result<AttachListing> {
+		agent_plugin_import::list_tools(&self.runtime, actor, request).await
+	}
+
+	/// Readiness facts for the Tenant Secrets this Agent version's bound tools,
+	/// External services and Agent Plugin servers name (decision 5 of #310). A bound tool or
 	/// External service that names no Tenant Secret needs none and has no fact.
 	/// A fact never carries a value, a Fingerprint or the last four characters.
 	pub(crate) async fn secret_readiness(
@@ -242,14 +270,13 @@ impl RegistryManagement {
 			for resolved in snapshot.definitions {
 				let kind = match resolved.definition.kind.as_str() {
 					"tool" => Kind::Tool,
-					"external_service" => Kind::ExternalService,
 					_ => continue,
 				};
 				let resource = catalog::resource(&access, &resolved.definition);
 				if !access.decide(&resource, "registry.read").await? {
 					return Err(Error::Forbidden);
 				}
-				// A bound tool or External service that names no shared Tenant Secret
+				// A bound tool that names no shared Tenant Secret
 				// (none, or a personal-only one) has no readiness fact.
 				let Some((tenant_secret_name, endpoint)) =
 					aidash_domain::tenant_secrets::definition_shared_target(&resolved.definition)
@@ -262,6 +289,36 @@ impl RegistryManagement {
 					tenant_secret_name: Some(tenant_secret_name),
 					endpoint: Some(endpoint),
 				});
+			}
+			// The remote servers of the Agent's own Agent Plugins whose secret may be the shared
+			// Tenant Secret; a personal-only one is checked against each person's row at dispatch.
+			if let Ok(bindings) = serde_json::from_value::<
+				aidash_domain::registry::bindings::AgentBindings,
+			>(agent.config.clone())
+			{
+				for plugin in &bindings.agent_plugins {
+					let Some(servers) = bindings.agent_plugin_settings.get(&plugin.name) else {
+						continue;
+					};
+					for (server, settings) in servers {
+						let (
+							Some(secret),
+							Some(aidash_domain::agent_plugin::McpServer::Remote(remote)),
+						) = (&settings.secret, plugin.servers.get(server))
+						else {
+							continue;
+						};
+						if secret.owner != aidash_domain::tool::SecretOwner::Any {
+							continue;
+						}
+						targets.push(Target {
+							item: format!("{}/{server}", plugin.name.as_str()),
+							kind: Kind::AgentPluginServer,
+							tenant_secret_name: Some(secret.name.clone()),
+							endpoint: Some(remote.url.as_str().to_owned()),
+						});
+					}
+				}
 			}
 			targets.sort_by(|left, right| left.item.cmp(&right.item));
 			let can_manage = tenant_secret_readiness::can_manage(&mut access).await?;

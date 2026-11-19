@@ -293,10 +293,8 @@ impl Executor<'_> {
 			}
 		}
 		if let Some(call) = pending.call {
-			run.context.push_invocation(
-				ContextEvent::tool(call, json!({"connected":connected})),
-				&pending.key,
-			);
+			run.context
+				.push(ContextEvent::tool(call, json!({"connected":connected})));
 		} else if !matches!(
 			waiting,
 			WaitingState::Human {

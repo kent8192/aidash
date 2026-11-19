@@ -5,11 +5,15 @@ import { Panel, useI18n } from "./ui";
 import { Alert, Hint, Loading } from "./components/patterns";
 import { Button } from "./components/ui/button";
 
-type Level = "standard" | "no_training" | "zero_data_retention";
+type Level =
+  | "no_restriction"
+  | "no_training"
+  | "safety_retention"
+  | "zero_data_retention";
 type Policy = {
   level: Level;
-  model_call_zdr: boolean;
-  plan_connection_exempt: boolean;
+  forbid_plan_connections: boolean;
+  forbid_keyless_endpoints: boolean;
 };
 type Settings = { policy: Policy; effective: Policy; deployment_floor: Level };
 type Affected = { id: string; version: string | null; reason: string };
@@ -19,7 +23,12 @@ type Impact = {
   catalog_approvals: Affected[];
   destinations: Affected[];
 };
-const levels: Level[] = ["standard", "no_training", "zero_data_retention"];
+const levels: Level[] = [
+  "no_restriction",
+  "no_training",
+  "safety_retention",
+  "zero_data_retention",
+];
 
 export function DataProtectionSettings({
   tenant,
@@ -85,29 +94,44 @@ function PolicyForm({
       await client.invalidateQueries({ queryKey: ["data-protection", tenant] });
     },
   });
+  const [confirmed, setConfirmed] = useState(false);
   const labels = {
-    standard: "Standard",
+    no_restriction: "No Restriction",
     no_training: "No Training",
+    safety_retention: "Safety Retention",
     zero_data_retention: "Zero Data Retention",
   };
   const restrictions: Record<Level, string> = ja
     ? {
-        standard:
-          "送信先の学習・保持に制限を設けません。モデル呼出しの ZDR は既定でオンです。",
+        no_restriction:
+          "OpenRouter に学習・保持の条件を求めません。Provider tools を使えるのはこのレベルだけです。",
         no_training:
-          "Tenant の Keyless エンドポイント、Provider tools、学習禁止が確認されていない Research サービスを使用できません。",
+          "学習に使わない送信先だけに送ります（data_collection: deny）。",
+        safety_retention:
+          "保持しない送信先か、不正利用の防止のためだけに保持する送信先（Safety Retention）に送ります。OpenRouter の ZDR 一覧を毎回確認します。",
         zero_data_retention:
-          "No Training の制限に加え、リクエストの無保持が確認されていない Research サービスを使用できません。OpenRouter の ZDR 対応経路を毎回確認します。",
+          "保持しない送信先だけに送ります。Safety Retention の送信先は除きます。OpenRouter の ZDR 一覧を毎回確認し、満たす経路がないモデルは呼び出しません。",
       }
     : {
-        standard:
-          "No restriction on destination training or retention. Model-call ZDR starts on.",
+        no_restriction:
+          "Asks OpenRouter for no training or retention terms. Provider tools are available only at this level.",
         no_training:
-          "Blocks Tenant Keyless endpoints, Provider tools and Research services without recorded no-training terms.",
+          "Sends only to endpoints that never train on content (data_collection: deny).",
+        safety_retention:
+          "Sends only to endpoints that keep nothing, or keep content only to prevent abuse (Safety Retention). Each call checks OpenRouter's current ZDR list.",
         zero_data_retention:
-          "Also blocks Research services without recorded no-retention terms. Each OpenRouter call checks current ZDR routes.",
+          "Sends only to endpoints that keep nothing; Safety Retention endpoints are excluded. Each call checks OpenRouter's current ZDR list, and a model with no such route is not called.",
       };
   const frozen = !canUpdate || save.isPending;
+  const affected = preview.data
+    ? preview.data.agents.length +
+      preview.data.catalog_approvals.length +
+      preview.data.destinations.length
+    : 0;
+  // Raising the level stops what cannot meet it; the person confirms first (#963).
+  const raising =
+    levels.indexOf(policy.level) > levels.indexOf(settings.policy.level);
+  const needsConfirmation = raising && affected > 0;
   return (
     <div className="space-y-4">
       <Hint>
@@ -117,7 +141,9 @@ function PolicyForm({
       </Hint>
       <fieldset disabled={frozen} className="space-y-3">
         <legend className="text-sm font-medium">
-          {ja ? "レベルと利用制限" : "Level and restrictions"}
+          {ja
+            ? "OpenRouter へのモデル呼び出しに求める条件"
+            : "What every OpenRouter model call asks for"}
         </legend>
         {levels.map((level) => (
           <label
@@ -136,14 +162,10 @@ function PolicyForm({
                 levels.indexOf(level) <
                 levels.indexOf(settings.deployment_floor)
               }
-              onChange={() =>
-                setPolicy({
-                  ...policy,
-                  level,
-                  model_call_zdr:
-                    level === "zero_data_retention" || policy.model_call_zdr,
-                })
-              }
+              onChange={() => {
+                setConfirmed(false);
+                setPolicy({ ...policy, level });
+              }}
             />
             <span>
               <strong>{labels[level]}</strong>
@@ -154,58 +176,63 @@ function PolicyForm({
           </label>
         ))}
       </fieldset>
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">
-          {ja ? "OpenRouter モデル呼出しの ZDR" : "OpenRouter model-call ZDR"}
-        </legend>
-        <label className="flex gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={policy.model_call_zdr}
-            disabled={frozen || policy.level === "zero_data_retention"}
-            onChange={(event) =>
-              setPolicy({ ...policy, model_call_zdr: event.target.checked })
-            }
-          />
-          {ja ? "ゼロデータ保持を要求する" : "Require zero data retention"}
-        </label>
-        <Hint>
-          {ja
-            ? "Standard でオフにするとデータポリシーを送りません。No Training でオフにすると data_collection: deny を要求します。この指定は非一時的な保持も除外します。Zero Data Retention ではオフにできません。"
-            : "When off, Standard sends no data policy; No Training requests data_collection: deny, which also excludes non-transient retention. Zero Data Retention requires this switch on."}
-        </Hint>
-      </fieldset>
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">
-          {ja ? "Plan Connection の免除" : "Plan Connection exemption"}
-        </legend>
-        <label className="flex gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={policy.plan_connection_exempt}
-            disabled={frozen}
-            onChange={(event) =>
-              setPolicy({
-                ...policy,
-                plan_connection_exempt: event.target.checked,
-              })
-            }
-          />
-          {ja
-            ? "No Training／Zero Data Retention でも Plan Connection を許可する"
-            : "Allow Plan Connections at No Training and Zero Data Retention"}
-        </label>
-        <Hint>
-          {ja
-            ? "ChatGPT サインインには API の ZDR 契約が適用されません。個人プランでは学習に使われる場合があります。免除は Run に記録され、委譲先を含む全 Tenant の許可が必要です。Standard では免除オフでも使用できます。免除オンでの呼出しは Run に記録されます。モデル呼出しの ZDR は適用されません。"
-            : "ChatGPT sign-in does not inherit API ZDR agreements; personal plans may train on content. Runs record the exemption, and every Tenant carrying content in a delegation must grant it. Standard permits use with this switch off. Exempt calls are recorded on the Run. Model-call ZDR does not apply."}
-        </Hint>
-      </fieldset>
       <Hint>
         {ja
-          ? "OpenRouter アカウントの入出力ログ等の設定は Tenant 自身で管理してください。Tenant の HTTP／MCP tools と Agent Plugin のリモート MCP はこのポリシーの対象外です。"
-          : "The Tenant manages its own OpenRouter account settings, including Input & Output Logging. Tenant HTTP/MCP tools and Agent Plugin remote MCP servers are outside this policy."}
+          ? "このレベルは OpenRouter 経由のモデル呼び出し（Run、Decider、圧縮、埋め込み）だけに適用されます。Tenant の HTTP／MCP ツール、Agent Plugin のリモート MCP、ページ読み取りは対象外です。OpenRouter は ZDR を含むすべての通信で児童性的虐待コンテンツ（CSAM）を検査し、該当した内容を審査と法的保全のために保持することがあります。どのレベルでもこの例外は避けられません。"
+          : "The level applies only to model calls through OpenRouter (Runs, Deciders, compaction, embeddings). Tenant HTTP/MCP tools, Agent Plugin remote MCP servers and page reading are outside it. OpenRouter screens all traffic, zero data retention included, for child sexual abuse material and may keep flagged content for review and legal preservation; no level avoids that exception."}
       </Hint>
+      {policy.level === "zero_data_retention" && (
+        <Hint>
+          {ja
+            ? "二重の安全策として、Tenant 自身の OpenRouter アカウントも「ZDR only」に設定することをおすすめします。"
+            : 'As a second safeguard, set the Tenant\'s own OpenRouter account to "ZDR only" as well.'}
+        </Hint>
+      )}
+      <fieldset disabled={frozen} className="space-y-2">
+        <legend className="text-sm font-medium">
+          {ja ? "OpenRouter 以外の送信先" : "Destinations outside OpenRouter"}
+        </legend>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={policy.forbid_plan_connections}
+            onChange={(event) => {
+              setConfirmed(false);
+              setPolicy({
+                ...policy,
+                forbid_plan_connections: event.target.checked,
+              });
+            }}
+          />
+          {ja
+            ? "ChatGPT サブスクリプション（Plan Connection）を禁止する"
+            : "Forbid ChatGPT subscriptions (Plan Connections)"}
+        </label>
+        <Hint>
+          {ja
+            ? "ChatGPT サインインには API の ZDR 契約が適用されません。個人プランでは、本人がオプトアウトしない限り内容が学習に使われる場合があります。Plan Connection が内容を運んだ Run には記録が残ります。"
+            : "ChatGPT sign-in carries no API ZDR agreement, and personal plans may train on content unless the person opts out. Runs record when a Plan Connection carried their content."}
+        </Hint>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={policy.forbid_keyless_endpoints}
+            onChange={(event) => {
+              setConfirmed(false);
+              setPolicy({
+                ...policy,
+                forbid_keyless_endpoints: event.target.checked,
+              });
+            }}
+          />
+          {ja ? "Keyless endpoint を禁止する" : "Forbid Keyless endpoints"}
+        </label>
+        <Hint>
+          {ja
+            ? "Aidash は Keyless endpoint の保持について何も約束しません。Deployment が自ら動かすモデルは、内容が Deployment の外に出ないため禁止されません。どちらのスイッチも、委任チェーンのどれか1つの Tenant がオンにしていれば適用され、オンにした直後の呼び出しから拒否されます。"
+            : "Aidash promises nothing about what a Keyless endpoint keeps. Deployment-hosted models are never forbidden, since nothing sent to them leaves the Deployment. Either switch applies when any Tenant in a delegation chain turns it on, and refuses the next call."}
+        </Hint>
+      </fieldset>
       <div aria-live="polite">
         <h4 className="text-sm font-medium">
           {ja
@@ -243,9 +270,26 @@ function PolicyForm({
           ))}
       </div>
       {save.isError && <Alert>{String(save.error)}</Alert>}
+      {needsConfirmation && (
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            disabled={frozen}
+            onChange={(event) => setConfirmed(event.target.checked)}
+          />
+          {ja
+            ? "上に挙げたものが次の呼び出しから使えなくなることを確認しました"
+            : "I understand that everything listed above stops working from its next call"}
+        </label>
+      )}
       {canUpdate && (
         <Button
-          disabled={save.isPending || !preview.isSuccess}
+          disabled={
+            save.isPending ||
+            !preview.isSuccess ||
+            (needsConfirmation && !confirmed)
+          }
           onClick={() => save.mutate()}
         >
           {ja ? "保存" : "Save"}

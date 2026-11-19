@@ -2637,11 +2637,13 @@ async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() 
 }
 
 /// An Agent version pinned before #745 may bind the removed `core.npm`
-/// package index. Its registered definition stays, so Run start resolves the
-/// Binding as before: it is inert, because the gateway no longer rewrites
-/// package indexes and the migration removed its Catalog Approvals.
+/// package index, and one pinned before #738 any External service. Run start
+/// resolves such a version without the Binding (#738): the definition is not
+/// even loaded, so the Run starts whether or not it still exists.
+/// `registry/0070` also removes `core.npm` and `core.pypi` Bindings from
+/// registered versions; the `run_control` test checks Run start on those rows.
 #[tokio::test]
-async fn a_pinned_agent_that_bound_a_removed_package_index_still_starts() {
+async fn binding_resolution_skips_a_removed_package_index() {
 	let mut catalog = Catalog::new();
 	catalog.insert(entry(
 		"core.npm",
@@ -2661,16 +2663,17 @@ async fn a_pinned_agent_that_bound_a_removed_package_index_still_starts() {
 		});
 	let resolved = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
-		resolved
+		!resolved
 			.bindings
 			.iter()
 			.any(|binding| binding.identity.id == "core.npm")
 	);
-	// Had the definition itself been deleted, Run start would refuse with a
-	// plain NotFound naming it, which is why the migration keeps definitions.
 	let mut without = Catalog::new();
-	assert!(matches!(
-		snapshot(&mut without, &config, false).await,
-		Err(Error::NotFound(id)) if id == "core.npm"
-	));
+	let resolved = snapshot(&mut without, &config, false).await.unwrap();
+	assert!(
+		!resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.definition.kind == "external_service")
+	);
 }

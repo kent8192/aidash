@@ -1301,6 +1301,7 @@ pub(super) async fn run_visible(
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)
 			.unwrap(),
 		config: aidash_server::config::Config {
+			smtp: None,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),

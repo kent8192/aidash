@@ -64,8 +64,8 @@ import {
   type Submit,
 } from "../forms";
 import { GenerationAssignForm } from "../generation";
-import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
+import { ApprovalReviewPanel } from "../approval-review";
 import { RunSubnodes } from "./subnodes";
 import { ArtifactList } from "./channel";
 import {
@@ -78,7 +78,6 @@ import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
 import { abandonable, resumableRun } from "./workspace-model";
-import { researchFailure } from "../research";
 import { isLocalRun } from "../node-selection";
 import {
   runMediaAccept,
@@ -95,6 +94,13 @@ export type Selection = {
   request?: HumanRequest;
   artifact?: Artifact;
   node?: string;
+  carryResults?: {
+    node: string;
+    source_version: string | null;
+    changed: string[];
+    unapproved_dependencies: { id: string; version: string }[];
+    carried: boolean;
+  }[];
 };
 export function OperationsDialog({
   selection,
@@ -121,6 +127,7 @@ export function OperationsDialog({
   const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const d = selection;
+  const [carryNode, setCarryNode] = useState<string>();
   const taskSnapshot = useQuery({
     queryKey: ["workspace", d.task?.workspace_id],
     queryFn: () => workspaceGet(d.task!.workspace_id),
@@ -201,6 +208,7 @@ export function OperationsDialog({
                   generate: "generationAssign",
                   entity: "register",
                   cluster: "register",
+                  registrationCarry: "register",
                 } as Record<string, string>
               )[d.kind] ?? d.kind,
             )
@@ -215,6 +223,41 @@ export function OperationsDialog({
           <Hint>{copy.deploymentAdministratorExecution}</Hint>
         ) : (
           <>
+            {d.kind === "registrationCarry" &&
+              d.entity &&
+              data.access.kind === "subject" &&
+              (carryNode ? (
+                <ApprovalReviewPanel
+                  tenant={data.access.tenant}
+                  node={carryNode}
+                  root={{ id: d.entity.id, version: d.entity.version }}
+                  onClose={() => setCarryNode(undefined)}
+                />
+              ) : (
+                <div className="grid gap-3">
+                  {d.carryResults
+                    ?.filter((result) => !result.carried)
+                    .map((result) => (
+                      <div key={result.node} className="grid gap-2">
+                        <span>
+                          {result.node}: {result.changed.join(", ")}
+                          {result.unapproved_dependencies
+                            .map(
+                              (dependency) =>
+                                ` ${dependency.id}@${dependency.version}`,
+                            )
+                            .join("")}
+                        </span>
+                        <Button
+                          type="button"
+                          onClick={() => setCarryNode(result.node)}
+                        >
+                          {t("approvalRequest")}
+                        </Button>
+                      </div>
+                    ))}
+                </div>
+              ))}
             {d.kind === "workspace" && (
               <>
                 <Hint>{copy.setupNotice}</Hint>
@@ -478,6 +521,27 @@ export function OperationsDialog({
  * Steps that went without optional Workspace semantic context (ADR 0059). Only a
  * Run local to its executing node degrades, which need not be the viewer's node.
  */
+function OutageWait({ run }: { run: Pick<Run, "state"> }) {
+  const { t } = useI18n();
+  const state = run.state;
+  if (state?.phase !== "WAITING" || state.data.reason !== "outage") return null;
+  const { service, started_at, wake_at } = state.data;
+  return (
+    <section className="grid min-w-0 gap-1.5" role="status">
+      <p className="text-xs font-medium text-foreground">
+        {t("runOutageWait")}: {service}
+      </p>
+      <Hint>{t("runOutageWaitHint")}</Hint>
+      <Facts
+        items={[
+          [t("runOutageWaitSince"), new Date(started_at).toLocaleString()],
+          [t("runOutageWaitNextTry"), new Date(wake_at).toLocaleString()],
+        ]}
+      />
+    </section>
+  );
+}
+
 function DegradedContext({ run }: { run: Pick<Run, "recovery"> }) {
   const { t } = useI18n();
   const degraded = run.recovery?.degraded;
@@ -494,7 +558,11 @@ function DegradedContext({ run }: { run: Pick<Run, "recovery"> }) {
           t(
             cause === "embedding_provider"
               ? "degradedCauseEmbedding"
-              : "degradedCauseVector",
+              : cause === "index_incomplete"
+                ? "degradedCauseIndexIncomplete"
+                : cause === "data_protection"
+                  ? "degradedCauseDataProtection"
+                  : "degradedCauseVector",
           ),
         ])}
       />
@@ -684,12 +752,12 @@ function RunPanel({
           {run.error}
         </p>
       )}
+      <OutageWait run={run} />
       <DegradedContext run={run} />
       {/* The server denies subjects the stream of a foreign-home run. */}
       {!managed && (
         <InferenceProgress run={id} node={node} active={!terminal} />
       )}
-      {!managed && <RunResearchEvidence run={id} />}
       {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}
@@ -911,11 +979,6 @@ function RunPanel({
             <h4 className="text-[11px] font-medium text-faint">
               {t("result")}
             </h4>
-            {researchFailure(call.result, locale === "ja-JP") && (
-              <Hint role="status">
-                {researchFailure(call.result, locale === "ja-JP")}
-              </Hint>
-            )}
             <JsonView value={call.result} />
           </Disclosure>
         ))}

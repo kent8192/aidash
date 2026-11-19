@@ -39,9 +39,6 @@ const HEADER_READ: Duration = Duration::from_secs(10);
 const REFUSAL_SLOTS: usize = 8;
 const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
 const RETRY_AFTER_SECONDS: &str = "5";
-/// A page reaches a Run's External services through its own origin at this
-/// path; the Preview gateway forwards it to the Egress gateway (ADR 0069).
-pub const EGRESS_PREFIX: &str = "/__aidash/egress/";
 /// The largest request or buffered response the Preview gateway forwards.
 const MAX_FORWARD_BYTES: usize = 64 * 1024 * 1024;
 
@@ -299,97 +296,6 @@ async fn live_http(
 		.unwrap()
 }
 
-/// Forward `<EGRESS_PREFIX><service>/<path>` to the Egress gateway with the
-/// Live preview's session token. No Tenant Secret is ever attached (ADR 0069).
-async fn egress_forward(
-	client: &reqwest::Client,
-	proxy: &Proxy,
-	request: Request<hyper::body::Incoming>,
-) -> Response<Body> {
-	let Some(origin) = proxy.egress_origin.as_deref() else {
-		return plain(
-			StatusCode::SERVICE_UNAVAILABLE,
-			"external services unavailable",
-		);
-	};
-	let Some(token) = proxy.egress_token.as_deref() else {
-		return plain(
-			StatusCode::SERVICE_UNAVAILABLE,
-			"external services unavailable",
-		);
-	};
-	let path = request.uri().path();
-	let Some(target) = path.strip_prefix(EGRESS_PREFIX) else {
-		return plain(StatusCode::NOT_FOUND, "preview unavailable");
-	};
-	let Some((service, rest)) = target.split_once('/') else {
-		return plain(StatusCode::NOT_FOUND, "preview unavailable");
-	};
-	if service.is_empty() || rest.is_empty() || service.contains('/') {
-		return plain(StatusCode::NOT_FOUND, "preview unavailable");
-	}
-	let query = request
-		.uri()
-		.query()
-		.map(|query| format!("?{query}"))
-		.unwrap_or_default();
-	let url = format!(
-		"{}/v1/{token}/{service}/{rest}{query}",
-		origin.trim_end_matches('/')
-	);
-	let method = match reqwest::Method::from_bytes(request.method().as_str().as_bytes()) {
-		Ok(method) => method,
-		Err(_) => return plain(StatusCode::METHOD_NOT_ALLOWED, "preview forbidden"),
-	};
-	let mut forwarded = client.request(method, url);
-	for (name, value) in request.headers() {
-		if forwarded_request_header(name.as_str())
-			&& let Ok(value) = value.to_str()
-		{
-			forwarded = forwarded.header(name.as_str(), value);
-		}
-	}
-	let collected = match request.into_body().collect().await {
-		Ok(collected) => collected.to_bytes(),
-		Err(_) => return plain(StatusCode::BAD_REQUEST, "preview forbidden"),
-	};
-	if collected.len() > MAX_FORWARD_BYTES {
-		return plain(StatusCode::PAYLOAD_TOO_LARGE, "preview request too large");
-	}
-	let upstream = match forwarded.body(collected).send().await {
-		Ok(upstream) => upstream,
-		Err(error) => {
-			tracing::warn!(%error, "Live preview Egress forwarding failed");
-			return plain(StatusCode::BAD_GATEWAY, "external service unavailable");
-		}
-	};
-	let Some(policy) = content_security_policy(&proxy.frame_ancestor).ok() else {
-		return plain(StatusCode::INTERNAL_SERVER_ERROR, "preview unavailable");
-	};
-	let status = upstream.status();
-	let headers = upstream.headers().clone();
-	let bytes = match upstream.bytes().await {
-		Ok(bytes) => bytes,
-		Err(_) => return plain(StatusCode::BAD_GATEWAY, "external service unavailable"),
-	};
-	if bytes.len() > MAX_FORWARD_BYTES {
-		return plain(StatusCode::PAYLOAD_TOO_LARGE, "external response too large");
-	}
-	let mut builder = Response::builder().status(status);
-	for (name, value) in headers.iter() {
-		if forwarded_response_header(name.as_str()) {
-			builder = builder.header(name.as_str(), value.as_bytes());
-		}
-	}
-	builder
-		.header("content-security-policy", policy)
-		.header("x-content-type-options", "nosniff")
-		.header("referrer-policy", "no-referrer")
-		.header(header::CACHE_CONTROL, "no-store")
-		.body(body(bytes))
-		.unwrap()
-}
-
 fn websocket_request(request: &Request<hyper::body::Incoming>) -> bool {
 	request
 		.headers()
@@ -544,9 +450,6 @@ async fn live(
 ) -> Response<Body> {
 	if websocket_request(&request) {
 		return live_websocket(authority, connection, host, cookie, &proxy, request).await;
-	}
-	if request.uri().path().starts_with(EGRESS_PREFIX) {
-		return egress_forward(client, &proxy, request).await;
 	}
 	live_http(client, &proxy, request).await
 }

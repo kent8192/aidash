@@ -1,17 +1,13 @@
-//! Web disclosure and tool call approvals share the capability approval records,
+//! Outbound read and tool call approvals share the capability approval records,
 //! decisions and grants, with their own resource kinds and actions.
 use super::*;
-use crate::ports::{
-	capabilities::approvals::{ApprovalScope, Creation, Limits},
-	research::DisclosureState,
-};
+use crate::ports::capabilities::approvals::{ApprovalScope, Creation, Limits};
 use aidash_domain::{
 	RunPhase,
 	approval_rules::{ApprovalMode, AutoBlocks, MODE_AUTO, MODE_BYPASS, MODE_RESOURCE},
 	capabilities::{approvals::ApprovalChoice, operations::MountedFile},
 	decision::BlockReason,
 	policy::{Evaluation, PolicyBundle},
-	research::Operation,
 	run_input::RunInput,
 };
 use async_trait::async_trait;
@@ -25,7 +21,7 @@ struct Fake {
 	cache: BTreeMap<Uuid, (String, Value)>,
 	run: Run,
 	/// Close the record the next update writes just before it does, as an
-	/// Evidence Revocation committing meanwhile would.
+	/// area cleanup committing meanwhile would.
 	close_before_update: bool,
 	/// Outbound reads are admitted, to `https://example.com`.
 	admission: bool,
@@ -175,7 +171,7 @@ impl ApprovalScope for Fake {
 		Ok(())
 	}
 	async fn read(&mut self, _: &MountedFile) -> Result<Vec<u8>> {
-		unreachable!("disclosures have no output files")
+		unreachable!("these approvals have no output files")
 	}
 	async fn approval_settings(&mut self, _: &Run) -> Result<Option<Settings>> {
 		Ok(self.settings.clone())
@@ -216,11 +212,11 @@ async fn decides_now(scope: &mut Fake, id: Uuid, who: &str) -> bool {
 	decides
 }
 
-/// Alice runs research; Bob is a capability approver.
+/// Alice runs tools; Bob is a capability approver.
 fn scope(extra: Value) -> Fake {
 	let mut policies = vec![
-		json!({"id":"request","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["research"]}}),
-		json!({"id":"approve","effect":"allow","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["research"]}}),
+		json!({"id":"request","effect":"allow","subjects":{"any":true},"actions":["capability.request"],"resources":{"kinds":["tool"]}}),
+		json!({"id":"approve","effect":"allow","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}),
 	];
 	if !extra.is_null() {
 		policies.push(extra);
@@ -271,334 +267,6 @@ fn scope(extra: Value) -> Fake {
 	}
 }
 
-fn request() -> DisclosureRequest {
-	DisclosureRequest {
-		digest: "sha256:exact".into(),
-		operation: Operation::Search,
-		provider: "research.brave@1".into(),
-		destination: "api.search.brave.com".into(),
-		content: "rust release".into(),
-		context_revision: 0,
-		area: None,
-		attribution: None,
-		query: None,
-	}
-}
-
-async fn decide_as_bob(scope: &mut Fake, id: Uuid, choice: ApprovalChoice) -> Result<Value> {
-	scope.principal = "bob".into();
-	let revision = scope.records[&id].revision;
-	let (targets, expires_at) = match choice {
-		ApprovalChoice::AllowRun => (
-			Some(vec!["api.search.brave.com".to_owned()]),
-			Some(Utc::now() + Duration::minutes(30)),
-		),
-		_ => (None, None),
-	};
-	let result = decide(
-		scope,
-		id,
-		ApprovalDecision {
-			idempotency_key: Uuid::new_v4(),
-			expected_revision: revision,
-			choice,
-			targets,
-			expires_at,
-		},
-	)
-	.await;
-	scope.principal = "alice".into();
-	result
-}
-
-#[tokio::test]
-async fn an_allow_once_approval_admits_exactly_one_disclosure() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("a designated approver must decide first");
-	};
-	let record = &scope.records[&approval_id];
-	assert_eq!(record.kind, DISCLOSURE);
-	assert_eq!(record.data["action"], DISCLOSE);
-	assert_eq!(record.data["content"], "rust release");
-	// A waiting approval names nobody; who may decide it is judged when asked.
-	assert!(record.data["approver"].is_null());
-	// Repeating the call while pending waits on the same approval.
-	assert!(matches!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Pending { approval_id: same, .. } if same == approval_id
-	));
-
-	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
-		.await
-		.unwrap();
-	assert_eq!(decided["state"], "approved");
-	// The approval stays usable until the attempt is reserved and consumes it.
-	assert_eq!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Approved { approval_id }
-	);
-	assert_eq!(scope.records[&approval_id].state, "approved");
-	assert!(
-		consume_disclosure(&mut scope, &run, approval_id)
-			.await
-			.unwrap()
-	);
-	assert!(
-		!consume_disclosure(&mut scope, &run, approval_id)
-			.await
-			.unwrap()
-	);
-	assert_eq!(scope.records[&approval_id].state, "consumed");
-	// The approval was consumed: the same disclosure needs a new approval.
-	assert!(matches!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Pending { approval_id: next, .. } if next != approval_id
-	));
-}
-
-#[tokio::test]
-async fn a_denied_disclosure_stays_denied() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	decide_as_bob(&mut scope, approval_id, ApprovalChoice::Deny)
-		.await
-		.unwrap();
-	assert_eq!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-}
-
-#[tokio::test]
-async fn the_record_keeps_the_thread_and_what_the_approver_saw_and_who_decided_when() {
-	// Arrange
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let area = Uuid::new_v4();
-	let request = DisclosureRequest {
-		area: Some(area),
-		attribution: Some(aidash_domain::research::account::CostAttribution {
-			account_id: "research-account".into(),
-			price_micro_usd: 5_000,
-		}),
-		query: Some(json!({"query":"rust release","language":"en"})),
-		..request()
-	};
-
-	// Act
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	let before = Utc::now();
-	decide_as_bob(&mut scope, approval_id, ApprovalChoice::Deny)
-		.await
-		.unwrap();
-
-	// Assert
-	let record = &scope.records[&approval_id];
-	assert_eq!(record.area_id, Some(area));
-	assert_eq!(
-		record.data["attribution"],
-		json!({"account_id":"research-account","price_micro_usd":5000})
-	);
-	assert_eq!(record.data["query"]["query"], "rust release");
-	assert_eq!(record.data["operation"], "search");
-	assert_eq!(record.data["provider"], "research.brave@1");
-	assert_eq!(record.state, "denied");
-	assert_eq!(record.data["decided_by"], "bob");
-	let decided_at: chrono::DateTime<Utc> =
-		serde_json::from_value(record.data["decided_at"].clone()).unwrap();
-	assert!(decided_at >= before);
-}
-
-/// An approved, not yet consumed disclosure whose admission is about to be
-/// revalidated.
-async fn approved(scope: &mut Fake, choice: ApprovalChoice) -> Uuid {
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	decide_as_bob(scope, approval_id, choice).await.unwrap();
-	assert_eq!(
-		disclose(scope, &run, &request()).await.unwrap(),
-		DisclosureState::Approved { approval_id }
-	);
-	approval_id
-}
-
-async fn admits_nothing(scope: &mut Fake, approval_id: Uuid) {
-	let run = scope.run.clone();
-	assert_eq!(
-		disclose(scope, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-	assert!(!consume_disclosure(scope, &run, approval_id).await.unwrap());
-	assert_eq!(scope.records[&approval_id].state, "approved");
-}
-
-#[tokio::test]
-async fn an_expired_approval_admits_nothing() {
-	let mut scope = scope(Value::Null);
-	let approval_id = approved(&mut scope, ApprovalChoice::AllowOnce).await;
-	// The worker resumes only after the approval expired.
-	scope.records.get_mut(&approval_id).unwrap().expires_at =
-		Some(Utc::now() - Duration::seconds(1));
-	admits_nothing(&mut scope, approval_id).await;
-}
-
-#[tokio::test]
-async fn an_approval_admits_nothing_once_policy_forbids_the_disclosure() {
-	let mut scope = scope(Value::Null);
-	let approval_id = approved(&mut scope, ApprovalChoice::AllowOnce).await;
-	scope.bundle.policies.push(
-		serde_json::from_value(json!({"id":"never","effect":"deny","subjects":{"any":true},"actions":["research.disclose"],"resources":{"kinds":["research"]}}))
-			.unwrap(),
-	);
-	admits_nothing(&mut scope, approval_id).await;
-}
-
-#[tokio::test]
-async fn an_approval_admits_nothing_once_its_approver_is_ineligible() {
-	let mut scope = scope(Value::Null);
-	let approval_id = approved(&mut scope, ApprovalChoice::AllowOnce).await;
-	scope
-		.bundle
-		.policies
-		.retain(|policy| policy.id != "approve");
-	admits_nothing(&mut scope, approval_id).await;
-}
-
-#[tokio::test]
-async fn an_allow_run_approval_admits_nothing_once_its_grant_is_revoked() {
-	let mut scope = scope(Value::Null);
-	let approval_id = approved(&mut scope, ApprovalChoice::AllowRun).await;
-	let grant: Uuid =
-		serde_json::from_value(scope.records[&approval_id].data["grant_id"].clone()).unwrap();
-	scope.records.get_mut(&grant).unwrap().state = "revoked".into();
-	admits_nothing(&mut scope, approval_id).await;
-}
-
-#[tokio::test]
-async fn policy_can_permit_or_forbid_a_disclosure_without_approval() {
-	let mut permitted = scope(
-		json!({"id":"disclose","effect":"allow","subjects":{"ids":["alice"]},"actions":["research.disclose"],"resources":{"kinds":["research"]}}),
-	);
-	let run = permitted.run.clone();
-	assert_eq!(
-		disclose(&mut permitted, &run, &request()).await.unwrap(),
-		DisclosureState::Permitted
-	);
-	assert!(
-		permitted
-			.records
-			.values()
-			.all(|record| record.state == "consumed" && record.data["ordinary"] == true)
-	);
-	let mut forbidden = scope(
-		json!({"id":"never","effect":"deny","subjects":{"any":true},"actions":["research.disclose"],"resources":{"kinds":["research"]}}),
-	);
-	assert_eq!(
-		disclose(&mut forbidden, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-	assert!(forbidden.records.is_empty());
-}
-
-#[tokio::test]
-async fn permitted_repetitions_of_one_disclosure_are_never_exhausted() {
-	let mut permitted = scope(
-		json!({"id":"disclose","effect":"allow","subjects":{"ids":["alice"]},"actions":["research.disclose"],"resources":{"kinds":["research"]}}),
-	);
-	let run = permitted.run.clone();
-	// More repetitions than any default Run attempt limit admits.
-	for _ in 0..100 {
-		assert_eq!(
-			disclose(&mut permitted, &run, &request()).await.unwrap(),
-			DisclosureState::Permitted
-		);
-	}
-	assert_eq!(permitted.records.len(), 100);
-	assert!(
-		permitted
-			.records
-			.values()
-			.all(|record| record.state == "consumed")
-	);
-}
-
-#[tokio::test]
-async fn without_request_permission_or_an_approver_nothing_is_disclosed() {
-	let mut unrequested: Fake = scope(Value::Null);
-	unrequested
-		.bundle
-		.policies
-		.retain(|policy| policy.id != "request");
-	let run = unrequested.run.clone();
-	assert_eq!(
-		disclose(&mut unrequested, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-	let mut unapproved = scope(Value::Null);
-	unapproved
-		.bundle
-		.policies
-		.retain(|policy| policy.id != "approve");
-	assert_eq!(
-		disclose(&mut unapproved, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-	assert!(
-		unapproved
-			.records
-			.values()
-			.all(|record| record.state == "blocked")
-	);
-}
-
-#[tokio::test]
-async fn an_allow_run_grant_covers_later_disclosures_to_the_same_destination() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
-		.await
-		.unwrap();
-	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
-	assert_eq!(scope.records[&grant].data["actions"], json!([DISCLOSE]));
-	assert_eq!(scope.records[&grant].owner, "alice");
-	let mut other = request();
-	other.digest = "sha256:another-query".into();
-	other.content = "another query".into();
-	assert_eq!(
-		disclose(&mut scope, &run, &other).await.unwrap(),
-		DisclosureState::Permitted
-	);
-	let mut elsewhere = other.clone();
-	elsewhere.digest = "sha256:elsewhere".into();
-	elsewhere.destination = "elsewhere.example.com".into();
-	assert!(matches!(
-		disclose(&mut scope, &run, &elsewhere).await.unwrap(),
-		DisclosureState::Pending { .. }
-	));
-}
-
 #[rstest::rstest]
 #[case::shorter_than_a_minute(Duration::seconds(30), false)]
 #[case::one_minute(Duration::minutes(1), true)]
@@ -609,13 +277,8 @@ async fn a_run_grant_lasts_between_one_minute_and_the_deployment_ceiling(
 	#[case] lasting: Duration,
 	#[case] accepted: bool,
 ) {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
+	let mut scope = tool_scope(Value::Null);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
 	scope.principal = "bob".into();
 	let revision = scope.records[&approval_id].revision;
 	let result = decide(
@@ -625,7 +288,7 @@ async fn a_run_grant_lasts_between_one_minute_and_the_deployment_ceiling(
 			idempotency_key: Uuid::new_v4(),
 			expected_revision: revision,
 			choice: ApprovalChoice::AllowRun,
-			targets: Some(vec!["api.search.brave.com".to_owned()]),
+			targets: Some(vec![TOOL_TARGET.to_owned()]),
 			expires_at: Some(Utc::now() + lasting),
 		},
 	)
@@ -638,159 +301,6 @@ async fn a_run_grant_lasts_between_one_minute_and_the_deployment_ceiling(
 		}
 		Err(error) => panic!("unexpected {error:?}"),
 	}
-}
-
-#[tokio::test]
-async fn a_disclosure_run_grant_is_visible_to_its_approver_as_a_research_resource() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
-		.await
-		.unwrap();
-	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
-	let record = scope.records[&grant].clone();
-	scope.principal = "bob".into();
-	// Bob may approve research resources only; an outbound target would hide it.
-	assert!(visible(&mut scope, &record).await.unwrap());
-}
-
-#[tokio::test]
-async fn a_run_grant_does_not_cover_disclosures_after_new_user_input() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
-		.await
-		.unwrap();
-	let mut later = request();
-	later.digest = "sha256:after-new-input".into();
-	later.content = "a query after new user input".into();
-	later.context_revision = 1;
-	assert!(matches!(
-		disclose(&mut scope, &run, &later).await.unwrap(),
-		DisclosureState::Pending { .. }
-	));
-}
-
-#[tokio::test]
-async fn a_run_grant_covers_only_the_operation_and_search_provider_it_was_given_for() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
-		.await
-		.unwrap();
-	// A page read on the search host is not a later search.
-	let mut read = request();
-	read.digest = "sha256:page-read".into();
-	read.operation = Operation::Fetch;
-	read.provider = "research.page@1".into();
-	read.content = "https://api.search.brave.com/".into();
-	// Nor is a search through another provider at the same host.
-	let mut other = request();
-	other.digest = "sha256:other-provider".into();
-	other.provider = "research.other@1".into();
-	// Nor a search charged otherwise than the approver was shown, such as
-	// after the Deployment restarted with another account or price.
-	let mut charged = request();
-	charged.digest = "sha256:other-charge".into();
-	charged.attribution = Some(aidash_domain::research::account::CostAttribution {
-		account_id: "another-account".into(),
-		price_micro_usd: 5_000,
-	});
-	for request in [read, other, charged] {
-		assert!(matches!(
-			disclose(&mut scope, &run, &request).await.unwrap(),
-			DisclosureState::Pending { .. }
-		));
-	}
-}
-
-#[tokio::test]
-async fn deciding_a_disclosure_whose_run_ended_closes_it() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	scope.run.control = RunControl::Cancelled;
-	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
-		.await
-		.unwrap();
-	assert_eq!(decided["state"], "closed");
-	let record = &scope.records[&approval_id];
-	assert_eq!(record.state, "closed");
-	assert_eq!(record.data["closed_reason"], "run_ended");
-}
-
-#[tokio::test]
-async fn only_the_requesting_run_can_consume_its_approval() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	assert!(
-		!consume_disclosure(&mut scope, &run, approval_id)
-			.await
-			.unwrap(),
-		"still pending"
-	);
-	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
-		.await
-		.unwrap();
-	let mut other = run.clone();
-	other.id = Uuid::from_u128(9);
-	assert!(
-		!consume_disclosure(&mut scope, &other, approval_id)
-			.await
-			.unwrap()
-	);
-	assert!(
-		consume_disclosure(&mut scope, &run, approval_id)
-			.await
-			.unwrap()
-	);
-}
-
-/// An approval an Evidence Revocation closes after the call loaded it is not
-/// consumed: the call lost the race and sends nothing.
-#[tokio::test]
-async fn an_approval_closed_while_it_is_consumed_is_not_consumed() {
-	let mut scope = scope(Value::Null);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
-		.await
-		.unwrap();
-	scope.close_before_update = true;
-	assert!(
-		!consume_disclosure(&mut scope, &run, approval_id)
-			.await
-			.unwrap()
-	);
-	assert_eq!(scope.records[&approval_id].state, "closed");
 }
 
 fn tool_scope(extra: Value) -> Fake {
@@ -817,6 +327,8 @@ fn tool_request(key: &str, arguments: Value) -> ToolCallRequest {
 		},
 		area: None,
 		read_only: false,
+		host: None,
+		context_revision: None,
 	}
 }
 
@@ -958,7 +470,7 @@ async fn without_an_eligible_approver_a_tool_call_is_blocked() {
 	scope
 		.bundle
 		.policies
-		.retain(|policy| policy.id != "approve-tools");
+		.retain(|policy| !matches!(policy.id.as_str(), "approve" | "approve-tools"));
 
 	assert_eq!(
 		ask(&mut scope, tool_request("run:0:0", json!({}))).await,
@@ -1039,7 +551,7 @@ async fn a_tool_call_approval_admits_nothing_once_its_approver_is_ineligible() {
 	scope
 		.bundle
 		.policies
-		.retain(|policy| policy.id != "approve-tools");
+		.retain(|policy| !matches!(policy.id.as_str(), "approve" | "approve-tools"));
 
 	assert_eq!(
 		ask(
@@ -1122,9 +634,74 @@ async fn a_run_grant_covers_later_calls_of_the_operation_across_new_user_input()
 	}
 }
 
+/// A page read: the built-in page reader, naming the host it contacts and the
+/// input it was made after (#987).
+fn page_request(key: &str, host: &str, context_revision: i64) -> ToolCallRequest {
+	ToolCallRequest {
+		tool: ToolCallTarget::Registry(aidash_domain::tool::providers::page_reading_target()),
+		host: Some(host.into()),
+		context_revision: Some(context_revision),
+		..tool_request(key, json!({"url":format!("https://{host}/")}))
+	}
+}
+
+#[tokio::test]
+async fn a_page_reading_run_grant_covers_one_host_until_the_next_user_input() {
+	// Arrange: Bob grants the Run reading pages of example.com.
+	let mut scope = tool_scope(Value::Null);
+	let run = scope.run.clone();
+	let ToolCallApproval::Pending { approval_id, .. } =
+		tool_call(&mut scope, &run, page_request("run:0:0", "example.com", 0))
+			.await
+			.unwrap()
+	else {
+		panic!("a page read waits for an approver");
+	};
+	let target = format!(
+		"tool:aidash.research.page.fetch@{}#invoke/example.com",
+		aidash_domain::tool::providers::PAGE_READING_VERSION
+	);
+	scope.principal = "bob".into();
+	let revision = scope.records[&approval_id].revision;
+	let decided = decide(
+		&mut scope,
+		approval_id,
+		ApprovalDecision {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: revision,
+			choice: ApprovalChoice::AllowRun,
+			targets: Some(vec![target.clone()]),
+			expires_at: Some(Utc::now() + Duration::minutes(30)),
+		},
+	)
+	.await
+	.unwrap();
+	scope.principal = "alice".into();
+	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+	assert_eq!(scope.records[&grant].data["targets"], json!([target]));
+	assert_eq!(scope.records[&grant].data["context_revision"], json!(0));
+
+	// Act
+	let same_host = tool_call(&mut scope, &run, page_request("run:0:1", "example.com", 0))
+		.await
+		.unwrap();
+	let other_host = tool_call(&mut scope, &run, page_request("run:0:2", "example.org", 0))
+		.await
+		.unwrap();
+	scope.run.observed_input_seq = 1;
+	let run = scope.run.clone();
+	let after_input = tool_call(&mut scope, &run, page_request("run:1:0", "example.com", 1))
+		.await
+		.unwrap();
+
+	// Assert: the grant reads the next part of the same page, nothing else.
+	assert!(matches!(same_host, ToolCallApproval::Approved { .. }));
+	assert!(matches!(other_host, ToolCallApproval::Pending { .. }));
+	assert!(matches!(after_input, ToolCallApproval::Pending { .. }));
+}
+
 #[rstest::rstest]
 #[case::outbound(&["network.get"])]
-#[case::disclosure(&[DISCLOSE])]
 #[tokio::test]
 async fn a_grant_of_another_kind_never_covers_a_tool_call(#[case] actions: &[&str]) {
 	let mut scope = tool_scope(Value::Null);
@@ -1409,14 +986,14 @@ fn allow_alice(scope: &mut Fake, actions: &[&str], kinds: &[&str]) {
 	);
 }
 
-/// Alice approves and advances her own tool, outbound and Research approvals
-/// and may use the Auto and Bypass modes.
+/// Alice approves and advances her own tool and outbound approvals and may
+/// use the Auto and Bypass modes.
 fn empowered() -> Fake {
 	let mut scope = tool_scope(Value::Null);
 	allow_alice(
 		&mut scope,
 		&["capability.approve", APPROVAL_ADVANCE],
-		&["tool", "outbound", "research"],
+		&["tool", "outbound"],
 	);
 	allow_alice(&mut scope, &[MODE_AUTO, MODE_BYPASS], &[MODE_RESOURCE]);
 	scope.bundle.policies.push(
@@ -1811,17 +1388,15 @@ async fn only_auto_marks_an_approval_for_the_decider(#[case] mode: ApprovalMode)
 }
 
 #[tokio::test]
-async fn an_outbound_read_and_a_disclosure_wait_for_the_decider_too() {
+async fn an_outbound_read_waits_for_the_decider_too() {
 	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
 	let run = scope.run.clone();
 
 	let view = prepare(&mut scope, &run, Uuid::new_v4(), outbound_input())
 		.await
 		.unwrap();
-	let disclosure = disclose(&mut scope, &run, &request()).await.unwrap();
 
 	assert_eq!(view["status"], "approval_required");
-	assert!(matches!(disclosure, DisclosureState::Pending { .. }));
 	let judged: Vec<_> = scope
 		.records
 		.values()
@@ -1833,7 +1408,7 @@ async fn an_outbound_read_and_a_disclosure_wait_for_the_decider_too() {
 			)
 		})
 		.collect();
-	assert_eq!(judged.len(), 2);
+	assert_eq!(judged.len(), 1);
 	assert!(
 		judged
 			.iter()
@@ -2576,145 +2151,6 @@ async fn always_allow_is_offered_only_to_the_person_the_chain_starts_at() {
 		.unwrap();
 }
 
-#[tokio::test]
-async fn always_allow_on_a_web_search_names_the_research_provider() {
-	let mut scope = advising(scope(Value::Null), ApprovalMode::Manual, vec![]);
-	allow_alice(
-		&mut scope,
-		&["capability.approve", APPROVAL_ADVANCE],
-		&["research"],
-	);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
-
-	decide_as(
-		&mut scope,
-		"alice",
-		approval_id,
-		ApprovalChoice::AllowAlways,
-	)
-	.await
-	.unwrap();
-
-	let [(_, rule)] = scope.created_rules.as_slice() else {
-		panic!("one rule is created");
-	};
-	assert_eq!(rule.kind, ApprovalKind::WebSearch);
-	assert_eq!(rule.target, RuleTarget::Exact("research.brave@1".into()));
-}
-
-fn disclosure_rule_for(kind: ApprovalKind, target: &str, effect: RuleEffect) -> ApprovalRule {
-	ApprovalRule {
-		id: Uuid::from_u128(11),
-		kind,
-		target: RuleTarget::Exact(target.into()),
-		effect,
-	}
-}
-
-#[rstest::rstest]
-#[case::web_search_provider(Operation::Search, ApprovalKind::WebSearch, "research.brave@1")]
-#[case::page_host(Operation::Fetch, ApprovalKind::PageReading, "api.search.brave.com")]
-#[tokio::test]
-async fn an_allow_rule_permits_a_disclosure_by_its_provider_or_host(
-	#[case] operation: Operation,
-	#[case] kind: ApprovalKind,
-	#[case] target: &str,
-) {
-	let mut scope = advising(
-		empowered(),
-		ApprovalMode::Manual,
-		vec![disclosure_rule_for(kind, target, RuleEffect::Allow)],
-	);
-	let run = scope.run.clone();
-	let disclosure = DisclosureRequest {
-		operation,
-		..request()
-	};
-
-	assert_eq!(
-		disclose(&mut scope, &run, &disclosure).await.unwrap(),
-		DisclosureState::Permitted
-	);
-
-	let record = scope.records.values().next().unwrap();
-	assert_eq!(record.kind, DISCLOSURE);
-	assert_eq!(record.state, "consumed");
-	assert_eq!(record.data["approver"], "alice");
-	assert_eq!(record.data["given_by"], json!({"rule":Uuid::from_u128(11)}));
-}
-
-#[rstest::rstest]
-#[case::another_provider(ApprovalKind::WebSearch, "research.other@1")]
-#[case::the_host_is_not_the_provider(ApprovalKind::PageReading, "api.search.brave.com")]
-#[tokio::test]
-async fn a_rule_for_another_target_or_kind_does_not_cover_a_search(
-	#[case] kind: ApprovalKind,
-	#[case] target: &str,
-) {
-	let mut scope = advising(
-		empowered(),
-		ApprovalMode::Manual,
-		vec![disclosure_rule_for(kind, target, RuleEffect::Allow)],
-	);
-	let run = scope.run.clone();
-
-	assert!(matches!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Pending { .. }
-	));
-}
-
-#[rstest::rstest]
-#[case::deny_rule(ApprovalMode::Manual, vec![disclosure_rule_for(ApprovalKind::WebSearch, "research.brave@1", RuleEffect::Deny)], json!({"rule":Uuid::from_u128(11)}))]
-#[case::dont_ask(ApprovalMode::DontAsk, vec![], json!({"mode":"dont_ask"}))]
-#[tokio::test]
-async fn a_refused_disclosure_stays_denied_and_names_who_refused(
-	#[case] mode: ApprovalMode,
-	#[case] rules: Vec<ApprovalRule>,
-	#[case] refused_by: Value,
-) {
-	let mut scope = advising(empowered(), mode, rules);
-	let run = scope.run.clone();
-
-	assert_eq!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-	assert_eq!(
-		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Denied
-	);
-
-	let [record] = scope.records.values().collect::<Vec<_>>()[..] else {
-		panic!("one record");
-	};
-	assert_eq!(record.state, "denied");
-	assert_eq!(record.data["refused_by"], refused_by);
-}
-
-#[tokio::test]
-async fn bypass_permits_each_disclosure_and_records_the_mode() {
-	let mut scope = advising(empowered(), ApprovalMode::Bypass, vec![]);
-	let run = scope.run.clone();
-
-	for _ in 0..2 {
-		assert_eq!(
-			disclose(&mut scope, &run, &request()).await.unwrap(),
-			DisclosureState::Permitted
-		);
-	}
-
-	assert_eq!(scope.records.len(), 2);
-	assert!(scope.records.values().all(|record| {
-		record.state == "consumed" && record.data["given_by"] == json!({"mode":"bypass"})
-	}));
-}
-
 fn outbound_input() -> aidash_domain::capabilities::approvals::Outbound {
 	aidash_domain::capabilities::approvals::Outbound {
 		idempotency_key: Uuid::new_v4(),
@@ -2880,16 +2316,11 @@ fn add_carol(scope: &mut Fake, kinds: &[&str]) {
 }
 
 #[tokio::test]
-async fn every_eligible_approver_is_offered_a_waiting_disclosure_and_the_first_decision_counts() {
-	// Arrange: Alice may not approve her own disclosure; Bob and Carol may.
-	let mut scope = scope(Value::Null);
-	add_carol(&mut scope, &["research"]);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
+async fn every_eligible_approver_is_offered_a_waiting_tool_call_and_the_first_decision_counts() {
+	// Arrange: Alice may not approve her own tool call; Bob and Carol may.
+	let mut scope = tool_scope(Value::Null);
+	add_carol(&mut scope, &["tool"]);
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
 
 	// Act
 	let bob = decides_now(&mut scope, approval_id, "bob").await;
@@ -2917,16 +2348,11 @@ async fn every_eligible_approver_is_offered_a_waiting_disclosure_and_the_first_d
 
 #[tokio::test]
 async fn a_requester_who_may_approve_decides_alone_and_the_approval_follows_their_eligibility() {
-	// Arrange: Alice may approve her own disclosures; Bob may too.
-	let mut scope = scope(
-		json!({"id":"alice-approves","effect":"allow","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["research"]}}),
+	// Arrange: Alice may approve her own tool calls; Bob may too.
+	let mut scope = tool_scope(
+		json!({"id":"alice-approves","effect":"allow","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}),
 	);
-	let run = scope.run.clone();
-	let DisclosureState::Pending { approval_id, .. } =
-		disclose(&mut scope, &run, &request()).await.unwrap()
-	else {
-		panic!("pending");
-	};
+	let approval_id = pending_call(&mut scope, "run:0:0").await;
 	assert!(decides_now(&mut scope, approval_id, "alice").await);
 	assert!(!decides_now(&mut scope, approval_id, "bob").await);
 	let bob_early = decide_as(&mut scope, "bob", approval_id, ApprovalChoice::AllowOnce).await;
@@ -3021,7 +2447,7 @@ async fn a_late_tool_call_decision_is_told_who_decided_and_how() {
 
 /// What happens to an allowed approval after its decision: an outbound read's
 /// worker completes it or leaves it uncertain, a call consumes it, a person
-/// revokes it, or an Evidence Revocation closes it.
+/// revokes it, or its area's cleanup closes it.
 #[rstest::rstest]
 #[case::attempted("attempted")]
 #[case::completed("completed")]

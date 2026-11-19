@@ -99,10 +99,6 @@ pub trait Scope: Send {
 	async fn unsettled(&mut self) -> Result<Vec<LivePreview>>;
 	/// The area revision behind each preview, so staleness is visible.
 	async fn area_revision(&mut self, area_id: Uuid) -> Result<Option<i64>>;
-	/// Mints the session-lifetime Egress token for the Run's bound External
-	/// services, recording its expiry on the preview. A Deployment without an
-	/// Egress gateway records nothing.
-	async fn mint_egress(&mut self, preview: &mut LivePreview) -> Result<()>;
 }
 
 /// The limits effective for `tenant`: the Deployment's ceilings, lowered by the
@@ -152,8 +148,6 @@ pub async fn start(scope: &mut dyn Scope, request: &Start) -> Result<LivePreview
 	scope
 		.retain_revision(area.id, area.revision, &holder)
 		.await?;
-	let mut preview = preview;
-	scope.mint_egress(&mut preview).await?;
 	if let Err(error) = scope.insert(&preview).await {
 		// The hold must not outlive a start that never recorded its row.
 		let _ = scope.release(&holder).await;

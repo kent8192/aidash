@@ -2137,7 +2137,7 @@ print(json.dumps(r))'''
         with self._space_lock(record['scratch_space_id']):
             return self._stop_command(operation_id)
 
-    def stop_run(self, scratch_space_id, run_id):
+    def stop_run(self, scratch_space_id, run_id, kinds=None):
         import json
         import time
         from control import scratch_resource_name
@@ -2157,7 +2157,8 @@ print(json.dumps(r))'''
                     operation = record['operation_id']
                     if (record.get('scratch_space_id') != scratch_space_id or record.get('run_id') != run_id
                             or operation in resolved or record.get('run_stop_confirmed') or
-                            record.get('status') not in ('queued', 'running', 'interrupted')):
+                            record.get('status') not in ('queued', 'running', 'interrupted')
+                            or (kinds is not None and record.get('kind') not in kinds)):
                         continue
                     active.append(operation)
                     if record.get('status') == 'interrupted' and not record.get('docker_enabled'):
@@ -2340,6 +2341,15 @@ print(json.dumps(r))'''
             raise ExecutionPodError('mcp_unavailable', 'MCP session does not exist')
         return self.stop_background(operation_id)
 
+    def stop_mcp_run(self, scratch_space_id, run_id):
+        """Stop every stdio MCP session of a Run, as `stop_python` does for its Python session.
+
+        The server stops the sessions it knows by id; this also reaches one whose start it lost
+        track of (a dropped or timed-out start). It is the Run stop limited to MCP sessions, so an
+        interrupted session counts as stopped only on the same evidence: its Pod was replaced, or
+        the Pod shows no process of it. Other Background processes of the Run keep running."""
+        return self.stop_run(scratch_space_id, run_id, kinds=('mcp_session',))
+
     def start_preview(self, request):
         import base64
         import ipaddress
@@ -2433,7 +2443,10 @@ print(json.dumps(r))'''
                                        helper_command('files', operation, uid),
                                        data=json.dumps(request, separators=(',', ':')).encode(), check=False, timeout=45)
             if result.returncode:
-                raise ExecutionPodError('pod_unavailable', 'File helper unavailable')
+                # The Pod is running, so the helper may have changed files before the exec
+                # failed: unlike `pod_unavailable`, this is no proof that nothing happened,
+                # and callers must not repeat a patch or write on it.
+                raise ExecutionPodError('file_helper_failed', 'File helper failed; the call may have taken effect')
             response = json.loads(result.stdout)
             if 'error' in response:
                 raise ExecutionPodError(response['error']['code'], response['error']['message'])

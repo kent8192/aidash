@@ -50,5 +50,10 @@ pub mod oauth_clients;
 
 pub mod oauth_connections;
 
+pub(crate) mod package_index_approvals;
+pub(crate) mod data_protection_backfill;
+pub(crate) mod research_approval_cleanup;
 pub(crate) mod schedule_policy_backfill;
 pub(crate) mod scratch_policy_backfill;
+
+pub(crate) mod catalog_mail;

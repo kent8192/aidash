@@ -451,7 +451,9 @@ pub(crate) async fn recheck(
 	observed: &Value,
 ) -> Result<()> {
 	let workspace = observed.get("workspace").unwrap_or(observed);
-	if !workspace.is_null() && workspace.get("status").is_none() {
+	// A partial result of an incomplete index carries real matches, so it is
+	// rechecked like a complete one; only the outage marker holds no reads.
+	if aidash_domain::semantic::degraded::holds_reads(workspace) {
 		aidash_application::semantic::retrieval::recheck(
 			&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
 			&serde_json::from_value(workspace.clone())?,

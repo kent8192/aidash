@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0138
+---
+
 # Provider results follow the Research account terms, apart from the Retention Rules
 
 Decided on 2026-10-17 for #289. The Research account terms of a paid or declared Research provider state how long the service's results may be stored (`retention_days`) and how soon after the agreement ends they must be deleted (`deletion_after_termination_days`). They govern Provider results: what that service returned for one research attempt, as Aidash stores it. For Web search that is the attempt's recorded result and the invocation's stored tool result (titles, snippets, ranks, page ages and the list of addresses) and the titles of the Source records created from them. For Page reading through a declared Research provider it is the Document snapshot's contents and the text of its Evidence fragments. Pages Aidash's own page reader fetched by address are not Provider results. The account terms are the service's conditions, a basis separate from Aidash's Retention Rules (ADR 0045). Where both apply, whichever ends first decides.

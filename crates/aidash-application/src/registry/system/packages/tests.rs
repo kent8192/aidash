@@ -48,7 +48,8 @@ fn validation(runner: bool) -> DefinitionValidation {
 	DefinitionValidation::new(Arc::new(Provider { runner }))
 }
 #[test]
-fn sandboxed_and_research_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
+fn sandboxed_and_page_reading_groups_have_only_provider_owned_declarations_and_complete_lifecycles()
+{
 	let validation = validation(true);
 	let groups = declarations(&validation, "aidash://node").unwrap();
 	assert_eq!(
@@ -92,62 +93,34 @@ fn a_deployment_without_a_runner_offers_no_runner_groups() {
 }
 
 #[test]
-fn research_groups_declare_interchangeable_provider_operations() {
-	use aidash_domain::tool::{Yield, providers::research_operation};
+fn page_reading_is_one_ordinary_tool_that_waits_for_tool_call_approval() {
 	let validation = validation(true);
 	let groups = declarations(&validation, "aidash://node").unwrap();
-	let research = groups
+	let page = groups
 		.iter()
 		.filter(|group| RESEARCH_GROUPS.iter().any(|(name, _)| *name == group.name))
 		.collect::<Vec<_>>();
-	assert_eq!(research.len(), 3);
-	let mut aliases = BTreeMap::<String, Vec<(String, serde_json::Value)>>::new();
-	for group in research {
-		group.verify_provider(&validation).unwrap();
-		let bundle: BundleConfig = serde_json::from_value(group.bundle.config.clone()).unwrap();
-		assert_eq!(bundle.members.len(), group.operations.len());
-		for entry in &group.operations {
-			let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
-			assert!(descriptor.transport.is_none() && descriptor.lifecycle.is_none());
-			let (operation, tier) =
-				research_operation(&descriptor.provider, &descriptor.operation).unwrap();
-			assert_eq!(descriptor.tier, tier);
-			let contract = descriptor
-				.declared_contract(QualifiedRef {
-					registry_deployment: "aidash://node".into(),
-					id: entry.id.clone(),
-					version: entry.version.clone(),
-				})
-				.unwrap();
-			assert_eq!(
-				contract.behavior.yields(Yield::Citations),
-				operation != aidash_domain::research::Operation::Search
-			);
-			aliases
-				.entry(descriptor.default_alias.clone())
-				.or_default()
-				.push((descriptor.provider.clone(), entry.schema.clone()));
-		}
-	}
-	// The fixture provider offers every alias with the same schema as the
-	// production providers, so it replaces them without an Agent change.
+	assert_eq!(page.len(), 1);
+	let group = page[0];
+	group.verify_provider(&validation).unwrap();
+	assert_eq!(group.bundle.version, PAGE_READING_VERSION);
+	assert_eq!(group.operations.len(), 1);
+	let entry = &group.operations[0];
+	assert_eq!(entry.version, PAGE_READING_VERSION);
+	let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
 	assert_eq!(
-		aliases.keys().cloned().collect::<Vec<_>>(),
-		[
-			"research_fetch",
-			"research_find",
-			"research_search",
-			"research_view"
-		]
+		(descriptor.provider.as_str(), descriptor.operation.as_str()),
+		("research.page@1", "fetch")
 	);
-	for providers in aliases.values() {
-		assert!(
-			providers
-				.iter()
-				.any(|(provider, _)| provider == "research.fixture@1")
-		);
-		assert!(providers.windows(2).all(|pair| pair[0].1 == pair[1].1));
-	}
+	let contract = descriptor
+		.declared_contract(QualifiedRef {
+			registry_deployment: "aidash://node".into(),
+			id: entry.id.clone(),
+			version: entry.version.clone(),
+		})
+		.unwrap();
+	assert!(contract.behavior.tool_call_approval);
+	assert_eq!(entry.schema["required"], json!(["url"]));
 }
 
 #[test]
@@ -168,8 +141,8 @@ fn owners_cannot_declare_research_node_providers() {
 		config: serde_json::to_value(
 			aidash_domain::tool::providers::research_descriptor(
 				"aidash://node",
-				"research.brave@1",
-				"search",
+				"research.page@1",
+				"fetch",
 			)
 			.unwrap(),
 		)

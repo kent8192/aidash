@@ -11,7 +11,6 @@ import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -435,17 +434,6 @@ class Runner(AllocationJournal):
                                            "matchExpressions": [{"key": "aidash-v2", "operator": "DoesNotExist"},
                                                                 {"key": "aidash-journal", "operator": "DoesNotExist"}]},
                            "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
-        settings = self.config.get('egress')
-        if settings:
-            endpoint = urlsplit(settings['endpoint'])
-            address = ipaddress.ip_address(endpoint.hostname)
-            if endpoint.scheme != 'http' or endpoint.username or endpoint.password or endpoint.path not in ('', '/') or endpoint.query or endpoint.fragment:
-                raise ValueError('Egress endpoint must be an internal HTTP IP origin')
-            destination = {'ipBlock': {'cidr': str(address) + ('/32' if address.version == 4 else '/128')}}
-            if settings.get('namespace') and settings.get('pod_selector'):
-                destination = {'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': settings['namespace']}},
-                               'podSelector': {'matchLabels': settings['pod_selector']}}
-            policy['spec']['egress'] = [{'to': [destination], 'ports': [{'protocol': 'TCP', 'port': endpoint.port or 80}]}]
         self.kube(["apply", "-f", "-"], json.dumps(policy).encode())
 
     def ensure_v2_network_policy(self):
@@ -544,7 +532,7 @@ class Runner(AllocationJournal):
         if not self.proven and not admission_probe:
             raise Rejected(503, "runner isolation is not proven; new work is refused")
         kind = request.get("kind")
-        optional = {"session_id", "egress", "usage_tenant"} | ({"runner_instance"} if kind == "journal" else set())
+        optional = {"session_id", "usage_tenant"} | ({"runner_instance"} if kind == "journal" else set())
         if set(request) - optional != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         if not admission_probe and (not isinstance(request.get("usage_tenant"), str) or not request["usage_tenant"] or len(request["usage_tenant"].encode()) > 255):
@@ -552,18 +540,6 @@ class Runner(AllocationJournal):
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
         if kind == "journal" and request.get("runner_instance") != self.instance:
             raise Rejected(409, "Journal Query runner instance changed")
-        if kind == "journal" and 'egress' in request:
-            raise Rejected(400, "Journal Query cannot use egress")
-        if 'egress' in request:
-            lease = request['egress']
-            settings = self.config.get('egress') or {}
-            # An operation's token ends with its command.
-            owner = operation
-            if (not isinstance(lease, dict) or set(lease) != {'url', 'token'}
-                    or lease['url'] != settings.get('endpoint')
-                    or not isinstance(lease['token'], str)
-                    or not re.fullmatch(re.escape(owner) + r'\.[A-Za-z0-9_-]{43}', lease['token'])):
-                raise Rejected(400, 'invalid Egress lease')
         # "verify" runs like "shell" but never exports /work: a Completion Gate
         # Check must not change the Working Area it verifies. Agent commands,
         # Python cells and Live previews run in Execution Pods through /v2 (#745);
@@ -1201,7 +1177,7 @@ class Runner(AllocationJournal):
                              running_at=record.get('running_at') or time.time())
         if not record.get('cancel_requested'):
             self.guard(record, "cell", operation_id=operation, code=record["request"]["code"],
-                       digest=record["digest"], seconds=record["request"]["seconds"], egress=record["request"].get("egress"))
+                       digest=record["digest"], seconds=record["request"]["seconds"])
         memory_live = True
         reply_lost = False
         while True:
@@ -1770,7 +1746,7 @@ class Handler(BaseHTTPRequestHandler):
                 '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
                 '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
                 '/v2/previews/start', '/v2/previews/stop',
-                '/v2/mcp/start', '/v2/mcp/call', '/v2/mcp/stop',
+                '/v2/mcp/start', '/v2/mcp/call', '/v2/mcp/stop', '/v2/mcp/stop_run',
                 '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):
             size = int(self.headers.get('Content-Length', '0'))
             if not 0 < size <= (6 if path == '/v2/mcp/call' else 2) * 1048576:
@@ -1816,6 +1792,8 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.call_mcp(request)
             if path == '/v2/mcp/stop':
                 return runner.execution_pods.stop_mcp(request['operation_id'])
+            if path == '/v2/mcp/stop_run':
+                return runner.execution_pods.stop_mcp_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/viewers/heartbeat':
                 return runner.execution_pods.viewer_heartbeat(request['scratch_space_id'], request['viewer_id'])
             if path == '/v2/python/start':

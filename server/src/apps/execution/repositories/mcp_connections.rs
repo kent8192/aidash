@@ -172,8 +172,9 @@ impl Sessions {
 		if self.home.local() {
 			return Ok(None);
 		}
-		// Plugin servers carry no named secret, so an endpoint that cannot be an OAuth
-		// resource has nothing personal to resolve on Home; it uses the local transport.
+		// Agent Plugins never run remotely (registry/bindings.rs), so Home resolves only an
+		// OAuth Connection here; an endpoint that cannot be an OAuth resource uses the local
+		// transport.
 		let Ok(resource) =
 			aidash_domain::oauth_connections::canonical_resource(config.url.as_str())
 		else {
@@ -207,44 +208,109 @@ impl Sessions {
 		aidash_application::tools::connection_outcome(value, list)
 	}
 
+	/// The secret the Agent definition names for this server, if any.
+	fn server_secret(
+		&self,
+		server: &PluginServer,
+	) -> Result<Option<aidash_domain::agent_plugin::ServerSecret>> {
+		let Some(snapshot) = &self.run.context.binding_snapshot else {
+			return Ok(None);
+		};
+		let agent = aidash_application::plugin_tools::agent_bindings(snapshot)?;
+		Ok(agent
+			.agent_plugin_settings
+			.get(&server.plugin)
+			.and_then(|servers| servers.get(&server.server))
+			.and_then(|settings| settings.secret.clone()))
+	}
+
+	/// The chain-root person's OAuth Connection when the server offers OAuth, otherwise the pasted
+	/// secret the Agent definition names (ADR 0100, ADR 0073 amended 2026-11-16), with the plugin
+	/// header that secret replaces removed from `config`. No secret named means no credential.
 	async fn auth(
 		&self,
 		run: Uuid,
+		server: &PluginServer,
 		config: &RemoteServer,
 		key: &str,
-	) -> Result<Option<CallSecret>> {
+	) -> Result<(Option<CallSecret>, RemoteServer)> {
 		if run != self.run.id {
 			return Err(Error::Forbidden);
 		}
+		let call = |attach| -> Result<SecretCall> {
+			Ok(SecretCall {
+				destination: aidash_application::tenant_secrets::endpoint_destination(
+					config.url.as_str(),
+				)?,
+				methods: vec!["POST".into(), "GET".into(), "DELETE".into()],
+				attach,
+				subject: aidash_capability::tenant_secret::SecretSubject::Run {
+					run: self.run.id.to_string(),
+					call: Uuid::new_v4(),
+				},
+				max_response_bytes: None,
+			})
+		};
 		// Endpoints such as `http://ollama.lan:11434/mcp` or one with a query stay usable
-		// without authentication; only an OAuth resource can hold a Connection.
-		let Ok(resource) =
+		// without a Connection; only an OAuth resource can hold one.
+		if let Ok(resource) =
 			aidash_domain::oauth_connections::canonical_resource(config.url.as_str())
-		else {
-			return Ok(None);
-		};
-		let call = SecretCall {
-			destination: aidash_application::tenant_secrets::endpoint_destination(
-				config.url.as_str(),
-			)?,
-			methods: vec!["POST".into(), "GET".into(), "DELETE".into()],
-			attach: aidash_capability::tenant_secret::Attach::Bearer,
-			subject: aidash_capability::tenant_secret::SecretSubject::Run {
-				run: self.run.id.to_string(),
-				call: Uuid::new_v4(),
-			},
-			max_response_bytes: None,
-		};
-		match connection(&self.store, &self.run, &self.scope, &resource, call, key).await {
-			Ok(auth) => Ok(Some(auth)),
-			Err(Error::Invalid(code))
-				if code == aidash_domain::oauth_connections::CONNECTION_REQUIRED =>
-			{
-				Ok(None)
+		{
+			let call = call(aidash_capability::tenant_secret::Attach::Bearer)?;
+			match connection(&self.store, &self.run, &self.scope, &resource, call, key).await {
+				Ok(auth) => return Ok((Some(auth), config.clone())),
+				Err(Error::Invalid(code))
+					if code == aidash_domain::oauth_connections::CONNECTION_REQUIRED => {}
+				Err(error) => return Err(error),
 			}
-			Err(error) => Err(error),
+		}
+		let Some(secret) = self.server_secret(server)? else {
+			return Ok((None, config.clone()));
+		};
+		let call = call(attach(&secret))?;
+		let auth = crate::apps::execution::repositories::tools::run_secret(
+			&self.store,
+			&self.run,
+			&self.scope,
+			&secret.name,
+			config.url.as_str(),
+			secret.owner,
+			call,
+		)
+		.await?;
+		// A call that carried a Tenant Secret records which one, its pinned version and its host.
+		if !key.is_empty()
+			&& let Some(record) = auth.record()
+		{
+			self.store
+				.invocation_secret(&self.scope, key, record)
+				.await?;
+		}
+		let mut config = config.clone();
+		config.headers = secret.replace_in(&config.headers);
+		Ok((Some(auth), config))
+	}
+}
+
+/// How the Credential Broker, or a self-hosted transport, attaches a server's pasted secret:
+/// `Authorization` carries `Bearer <value>` unless the definition chose `form: raw`, which sends
+/// the raw value as an ordinary `Authorization` header; any other header carries the raw value.
+pub(crate) fn attach(
+	secret: &aidash_domain::agent_plugin::ServerSecret,
+) -> aidash_capability::tenant_secret::Attach {
+	if secret.bearer() {
+		aidash_capability::tenant_secret::Attach::Bearer
+	} else {
+		aidash_capability::tenant_secret::Attach::Header {
+			name: secret.header.clone(),
 		}
 	}
+}
+
+/// A missing personal secret is a tool result the model reads, exactly as for a Registry tool;
+/// any other failure stays an error.
+fn secret_refusal(error: Error) -> Result<Value> {
+	aidash_application::tenant_secrets::personal_error_value(&error).ok_or(error)
 }
 #[async_trait]
 impl PluginSessions for Sessions {
@@ -273,10 +339,10 @@ impl PluginSessions for Sessions {
 			}
 			return Ok(serde_json::from_value(value)?);
 		}
-		let auth = self.auth(run, config, "").await?;
+		let (auth, config) = self.auth(run, server, config, "").await?;
 		self.store
 			.plugin_sessions
-			.list(run, server, config, auth.as_ref())
+			.list(run, server, &config, auth.as_ref())
 			.await
 	}
 	async fn call(
@@ -306,13 +372,16 @@ impl PluginSessions for Sessions {
 		{
 			return Ok(value);
 		}
-		let auth = self.auth(run, config, key).await?;
+		let (auth, config) = match self.auth(run, server, config, key).await {
+			Ok(auth) => auth,
+			Err(error) => return secret_refusal(error),
+		};
 		self.store
 			.plugin_sessions
 			.call(
 				run,
 				server,
-				config,
+				&config,
 				tool,
 				schema_digest,
 				replay_safe,
@@ -358,13 +427,16 @@ impl PluginSessions for Sessions {
 		{
 			return Ok(ToolRound::Complete(value));
 		}
-		let auth = self.auth(run, config, key).await?;
+		let (auth, config) = match self.auth(run, server, config, key).await {
+			Ok(auth) => auth,
+			Err(error) => return secret_refusal(error).map(ToolRound::Complete),
+		};
 		self.store
 			.plugin_sessions
 			.round(
 				run,
 				server,
-				config,
+				&config,
 				tool,
 				schema_digest,
 				replay_safe,

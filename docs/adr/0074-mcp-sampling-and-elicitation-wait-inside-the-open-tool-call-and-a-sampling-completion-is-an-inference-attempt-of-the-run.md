@@ -47,3 +47,9 @@ Primary references: [version compatibility](https://modelcontextprotocol.io/spec
 ## Amendment (Run end)
 
 An unanswered human request stored on the Run's Node closes when the Run is cancelled or reaches a terminal phase. The closure records `run_ended`, and a later answer is refused. A call that passed its entrance before the end cannot create a new pending question there after the end commits. A Home-owned remote request is held in a separate journal on its Home Node. When Home observes the matching remote Run has ended, it closes unanswered requests and records the end in that journal, so a later in-flight request cannot create a new pending question. Home also closes the journal in its transaction for a remote completion, failure or cancellation. A Node cannot atomically update a journal on another Node: until Home receives or observes the end, it can only act on the information it has.
+
+## Amendment (2026-11-16, #414 third grilling)
+
+stdio servers of Agent Plugins speak both the legacy era and MCP 2026-07-28, and support sampling and form elicitation exactly as remote servers do: the same Sampling approvals, Run grants and rules, cumulative waiting limits, one Inference Attempt per request and continuation ceiling.
+
+Since ADR 0073's amendment of 2026-11-14 removed the per-call freeze of writers, the modern-era wait no longer keeps the stdio server's process frozen. A modern-era human wait stops the stdio session and saves its Agent Plugin data; the answer starts the session again and sends the continuation, whose `requestState` carries the server's state. A legacy-era wait keeps the session and the worker lease, as before.

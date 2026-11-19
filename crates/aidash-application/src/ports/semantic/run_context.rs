@@ -11,7 +11,14 @@ pub trait RunSemanticJournal: Send {
 }
 #[async_trait]
 pub trait RunSemanticScope: Send {
-	async fn retrieve(&mut self, query: &str, budget: usize) -> Result<WorkspaceContext>;
+	/// `partial`: the step may go on with the READY part of an incomplete index
+	/// (ADR 0129). Otherwise an incomplete index stops before any embedding.
+	async fn retrieve(
+		&mut self,
+		query: &str,
+		budget: usize,
+		partial: bool,
+	) -> Result<WorkspaceContext>;
 	/// Authority and source locks remain held by this scope through journal commit.
 	async fn begin_dependencies(&mut self) -> Result<Box<dyn RunSemanticJournal + '_>>;
 }

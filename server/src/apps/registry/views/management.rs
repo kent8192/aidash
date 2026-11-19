@@ -91,6 +91,21 @@ pub async fn agent_plugin_import(
 	crate::http::json(service.agent_plugin_import(actor, request).await)
 }
 
+#[post(
+	"/api/agent-plugins/tools",
+	name = "agent-plugin-tools",
+	auth = "protected"
+)]
+pub async fn agent_plugin_tools(
+	#[inject] service: Depends<RegistryManagement>,
+	#[inject] actor: Actor,
+	Json(request): Json<
+		crate::apps::registry::serializers::agent_plugin_import::PluginToolsRequest,
+	>,
+) -> ViewResult<Response> {
+	crate::http::json(service.agent_plugin_tools(actor, request).await)
+}
+
 #[post("/api/skills/import", name = "skill-import", auth = "protected")]
 pub async fn skill_import(
 	#[inject] service: Depends<RegistryManagement>,

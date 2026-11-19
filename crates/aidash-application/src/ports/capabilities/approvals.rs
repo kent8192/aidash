@@ -114,6 +114,12 @@ pub struct ToolCallRequest {
 	/// The operation is a declared Read-only operation: it needs no approval,
 	/// and the Tenant's policy may still forbid the call outright.
 	pub read_only: bool,
+	/// The host the call contacts, when the conversation chose it, as for page
+	/// reading. A Run grant then covers that one host (#987).
+	pub host: Option<String>,
+	/// The Run's observed input sequence, when a Run grant must end at the
+	/// next user input, as for page reading.
+	pub context_revision: Option<i64>,
 }
 
 #[derive(Debug, Clone)]

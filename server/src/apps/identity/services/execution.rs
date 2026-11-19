@@ -360,15 +360,6 @@ impl StepAuthority {
 		self.0.sampling_approval(store, run, request).await
 	}
 
-	pub async fn consume_web_disclosure(
-		&self,
-		store: &Store,
-		run: &Run,
-		approval: Uuid,
-	) -> Result<bool> {
-		self.0.consume_web_disclosure(store, run, approval).await
-	}
-
 	/// A Live preview start that passed the tool's admission.
 	pub async fn live_preview_start(
 		&self,
@@ -1285,22 +1276,6 @@ impl WorkerAuthority {
 		.await;
 		access.finish(result).await
 	}
-	/// Resolve existing page and file selections before admitting another
-	/// Research page image, under the same worker authority lease.
-	pub(crate) async fn model_media(
-		&self,
-		store: &Store,
-		run: &Run,
-		selections: &[aidash_domain::media::ModelMedia],
-	) -> Result<Vec<crate::provider::ContentPart>> {
-		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, run, self.access.clone(), None),
-			selections,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
 	/// The scope of every transaction this authority's Run opens.
 	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
 		self.access.read().await.tenancy()
@@ -1612,67 +1587,7 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
-	/// Web disclosure approval under the worker's current authority lease. It
-	/// shares the capability approval records, decision API and Run waiting.
-	pub async fn web_disclosure(
-		&self,
-		store: &Store,
-		run: &Run,
-		request: &aidash_application::capabilities::approvals::DisclosureRequest,
-	) -> Result<aidash_application::ports::research::DisclosureState> {
-		let outer = self.access.write().await;
-		let mut access = Access::under_lease(&outer).await?;
-		if let Err(error) = crate::apps::execution::repositories::subnodes::require_writable(
-			access.tx.native_mut(),
-			run.workspace_id,
-		)
-		.await
-		{
-			return access.finish(Err(error)).await;
-		}
-		// Under the Run's research lock, so a revocation that commits after
-		// the caller's own check still closes, or prevents, this approval.
-		let result = match crate::apps::execution::repositories::research::revoked_under_lock(
-			access.tx.as_mut(),
-			run.id,
-		)
-		.await
-		{
-			Ok(true) => Ok(aidash_application::ports::research::DisclosureState::Revoked),
-			Ok(false) => {
-				async {
-					// A core Run's approval belongs to its Working Area, so its Thread
-					// lists it; other Runs have none.
-					let area = crate::apps::execution::repositories::sessions::run_area(
-						&mut access,
-						run.id,
-					)
-					.await?
-					.flatten()
-					.map(|area| area.id);
-					let request = aidash_application::capabilities::approvals::DisclosureRequest {
-						area,
-						..request.clone()
-					};
-					let mut scope =
-						crate::bootstrap::approval_scope(Some(store), &mut access, None);
-					scope.run = Some(Box::new(run.clone()));
-					aidash_application::capabilities::approvals::disclose(
-						&mut scope,
-						&run.metadata(),
-						&request,
-					)
-					.await
-					.map_err(Error::from)
-				}
-				.await
-			}
-			Err(error) => Err(error),
-		};
-		access.finish(result).await
-	}
-
-	/// Admit one exact call of a Tenant's HTTP or MCP tool, or open the Tool call
+	/// Admit one exact call of a Tenant's HTTP or MCP tool or of page reading, or open the Tool call
 	/// approval the Run waits for, under the worker's current authority lease. It
 	/// shares the capability approval records, decision API and Run waiting.
 	pub async fn tool_call_approval(
@@ -1907,36 +1822,6 @@ impl WorkerAuthority {
 				&run.metadata(),
 				approval,
 				settlement,
-			)
-			.await
-			.map_err(Error::from)
-		}
-		.await;
-		access.finish(result).await
-	}
-
-	/// Consume a one-time Web disclosure approval of `run` after its attempt
-	/// is reserved. Once the Subnode has ended nothing is consumed and the call
-	/// is refused; the caller settles the reserved attempt without a reason.
-	pub async fn consume_web_disclosure(
-		&self,
-		store: &Store,
-		run: &Run,
-		approval: Uuid,
-	) -> Result<bool> {
-		let outer = self.access.write().await;
-		let mut access = Access::under_lease(&outer).await?;
-		let result = async {
-			crate::apps::execution::repositories::subnodes::require_writable(
-				access.tx.native_mut(),
-				run.workspace_id,
-			)
-			.await?;
-			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
-			aidash_application::capabilities::approvals::consume_disclosure(
-				&mut scope,
-				&run.metadata(),
-				approval,
 			)
 			.await
 			.map_err(Error::from)
@@ -3215,7 +3100,7 @@ impl Guard {
 		self.authorize_inference_with(&mut access).await
 	}
 
-	/// Resolve an explicit one-inference file selection or page image under the
+	/// Resolve an explicit one-inference file selection under the
 	/// same execution authority as the provider request. Only immutable
 	/// references are durable.
 	pub async fn model_media(

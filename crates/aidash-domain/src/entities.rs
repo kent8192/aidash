@@ -306,7 +306,7 @@ pub struct Artifact {
 	pub created_at: DateTime<Utc>,
 	/// The Run that published this Artifact on this Node. Only the Run's own
 	/// publication writes it; Artifacts that people or other Nodes deliver have
-	/// none. Source citations in its content resolve only against this Run.
+	/// none.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub run_id: Option<Uuid>,
 }
@@ -500,7 +500,7 @@ pub struct Message {
 	pub created_at: DateTime<Utc>,
 	/// The Run that published this message on this Node. Only the Run's own
 	/// publication writes it; messages that people or other Nodes deliver have
-	/// none. Source citations in its content resolve only against this Run.
+	/// none.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub run_id: Option<Uuid>,
 }

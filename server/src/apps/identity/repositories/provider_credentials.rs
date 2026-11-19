@@ -501,12 +501,8 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		policy.permits(destination)?;
 		if let Source::Plan { provider } = source {
 			let (service, pin) = self.plan(context, endpoint, provider).await?;
-			if policy
-				.permits(aidash_domain::data_protection::Destination::PlanConnection)?
-				.plan_connection_exemption
-			{
-				super::data_protection::record_plan_exemption(&self.store, context, policy).await?;
-			}
+			// Runs record that a Plan Connection carried their content (#962).
+			super::data_protection::record_plan_connection(&self.store, context).await?;
 			return Ok(aidash_application::provider_access::Access {
 				endpoint: aidash_domain::provider_credentials::Provider::Chatgpt
 					.base_url()

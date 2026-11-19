@@ -120,8 +120,8 @@ pub struct Exchange {
 	pub max_age: i64,
 }
 
-/// A Live preview the gateway proxies to: its Pod and the Egress session token
-/// the page reaches External services with. Neither reaches the browser.
+/// A Live preview the gateway proxies to: its Pod, which never reaches the
+/// browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proxy {
 	pub preview_id: Uuid,
@@ -130,10 +130,6 @@ pub struct Proxy {
 	pub frame_ancestor: String,
 	/// `<pod address>:<declared port>`; only the gateway reaches it.
 	pub upstream: String,
-	/// The Egress gateway's internal origin and the session token for the Run's
-	/// bound External services; never carries a Tenant Secret (ADR 0069).
-	pub egress_origin: Option<String>,
-	pub egress_token: Option<String>,
 }
 
 /// The gateway's authority: exchange a ticket once, then recheck every request.

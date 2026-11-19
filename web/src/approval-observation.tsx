@@ -25,8 +25,6 @@ import {
 const kinds: Record<ObservationKind, [string, string]> = {
   tool_call: ["Tool call", "ツール呼び出し"],
   outbound: ["Outbound", "外部接続"],
-  web_search: ["Web search", "Web 検索"],
-  page_reading: ["Page reading", "ページ読み取り"],
   generation: ["Generation", "生成"],
 };
 const categories: Record<string, [string, string]> = {
@@ -330,8 +328,8 @@ export function ApprovalObserverPanel({
     >
       <Hint>
         {ja
-          ? "Auto の強制判断とは別の Tenant 設定です。既定では無効で、追加のプロバイダー呼び出しはありません。Manual・明示的な承認依頼を含む5種類を観測します。設定変更は今後の観測だけに適用されます。"
-          : "This Tenant setting is separate from Auto enforcement. Disabled by default, it makes no extra provider calls. It observes all five kinds, including Manual and explicit asks. Changes affect future observations only."}
+          ? "Auto の強制判断とは別の Tenant 設定です。既定では無効で、追加のプロバイダー呼び出しはありません。Manual・明示的な承認依頼を含むすべての種類を観測します。設定変更は今後の観測だけに適用されます。"
+          : "This Tenant setting is separate from Auto enforcement. Disabled by default, it makes no extra provider calls. It observes every kind, including Manual and explicit asks. Changes affect future observations only."}
       </Hint>
       {setting.isPending && <Loading />}
       {setting.isError && <Alert>{setting.error.message}</Alert>}

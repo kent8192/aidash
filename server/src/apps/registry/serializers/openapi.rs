@@ -1,11 +1,13 @@
 //! OpenAPI payload contracts for native endpoints.
 use super::super::views;
 use crate::apps::registry::serializers::agent_plugin_import::{
-	AgentPluginImportResult, PluginImportRequest,
+	AgentPluginImportResult, AttachListing, PluginImportRequest, PluginToolsRequest,
 };
 use crate::apps::registry::serializers::contracts::Entry as RegistryContractsEntry;
 use crate::apps::registry::serializers::contracts::Search;
-use crate::apps::registry::serializers::contracts::{McpToolHint, McpToolHintRequest};
+use crate::apps::registry::serializers::contracts::{
+	McpToolHint, McpToolHintRequest, RegistryCreateResult,
+};
 use crate::apps::registry::serializers::knowledge::PersonalAgent;
 use crate::apps::registry::serializers::skill_import::ImportRequest;
 use crate::apps::registry::serializers::skill_import::ImportResult;
@@ -56,7 +58,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::secret_readiness,
 		&["String", "String"],
 	)?;
-	contracts.response::<_, RegistryContractsEntry>(
+	contracts.response::<_, RegistryCreateResult>(
 		document,
 		views::management::registry_create,
 		200,
@@ -86,7 +88,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts
 		.request::<_, PluginImportRequest>(document, views::management::agent_plugin_import)?;
-	contracts.response::<_, RegistryContractsEntry>(
+	contracts.response::<_, AttachListing>(
+		document,
+		views::management::agent_plugin_tools,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, PluginToolsRequest>(document, views::management::agent_plugin_tools)?;
+	contracts.response::<_, RegistryCreateResult>(
 		document,
 		views::personal_agents::create,
 		200,

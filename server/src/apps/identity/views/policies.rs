@@ -3,8 +3,8 @@ use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::policy::Evaluation;
 use crate::apps::identity::serializers::policies::{
 	AuthorizationPage, AuthorizationUpdate, CatalogApprovals, CatalogImpactQuery, CatalogInput,
-	CatalogQuery, CatalogRequestDecline, CatalogRequestInput, CatalogRequestPage,
-	CatalogReviewQuery, CredentialInput, CredentialPage,
+	CatalogMailPreference, CatalogQuery, CatalogRequestDecline, CatalogRequestInput,
+	CatalogRequestPage, CatalogReviewQuery, CredentialInput, CredentialPage,
 };
 use crate::apps::identity::services::policies::PolicyAdministration;
 use crate::authorization::identity::Actor;
@@ -175,6 +175,50 @@ pub async fn catalog_requests_pending(
 	crate::http::json(service.pending_requests(actor, tenant, page).await)
 }
 
+#[get(
+	"/api/authorization/{tenant}/catalog/requests/pending/count",
+	name = "authorization-catalog-requests-pending-count",
+	auth = "protected"
+)]
+pub async fn catalog_requests_pending_count(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::json(service.pending_request_count(actor, tenant).await)
+}
+
+#[get(
+	"/api/tenants/{tenant}/approval-request-mail/mine",
+	name = "catalog-mail-preference",
+	auth = "protected"
+)]
+pub async fn catalog_mail_preference(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	crate::http::json(service.catalog_mail_preference(actor, tenant, None).await)
+}
+
+#[post(
+	"/api/tenants/{tenant}/approval-request-mail/mine",
+	name = "catalog-set-mail-preference",
+	auth = "protected"
+)]
+pub async fn set_catalog_mail_preference(
+	#[inject] service: Depends<PolicyAdministration>,
+	#[inject] actor: Actor,
+	Path(tenant): Path<String>,
+	Json(input): Json<CatalogMailPreference>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		service
+			.catalog_mail_preference(actor, tenant, Some(input))
+			.await,
+	)
+}
+
 #[post(
 	"/api/authorization/{tenant}/credentials",
 	name = "authorization-issue-credential",
@@ -322,7 +366,7 @@ pub async fn safety_stops(
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
 	Path(tenant): Path<String>,
-	Query(page): Query<crate::apps::execution::serializers::research::HistoryPage>,
+	Query(page): Query<crate::apps::execution::serializers::history::HistoryPage>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.safety_stops(actor, origin, tenant, page).await)
 }

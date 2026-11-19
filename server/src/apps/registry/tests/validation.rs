@@ -103,7 +103,9 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 			.unwrap(),
 		200,
 	);
-	let _: aidash_server::registry::Entry = serde_json::from_value(stored.clone()).unwrap();
+	let mut definition = stored.clone();
+	definition.as_object_mut().unwrap().remove("carry_results");
+	let _: aidash_server::registry::Entry = serde_json::from_value(definition.clone()).unwrap();
 	crate::endpoint::approve(&app, "endpoint", "endpoint-skill", "1.0.0").await;
 	assert_eq!(
 		assert_json(
@@ -113,7 +115,7 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 				.unwrap(),
 			200
 		),
-		stored
+		definition
 	);
 }
 

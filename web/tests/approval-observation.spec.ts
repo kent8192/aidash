@@ -128,13 +128,7 @@ async function observationAdmin(
         json: {
           range: { start: query.get("start"), end: query.get("end") },
           metrics: metrics(),
-          groups: [
-            "tool_call",
-            "outbound",
-            "web_search",
-            "page_reading",
-            "generation",
-          ].map((kind) => ({
+          groups: ["tool_call", "outbound", "generation"].map((kind) => ({
             group: {
               decider: { id: "approved-observer", version: "1.0.0" },
               configuration_digest: "sha256:configuration",
@@ -199,7 +193,7 @@ test("observer selection is an explicit approved Shadow version separate from Au
   expect(state.errors).toEqual([]);
 });
 
-test("aggregate report shows five kinds, 2x2, missingness and zero-denominator N/A", async ({
+test("aggregate report shows every kind, 2x2, missingness and zero-denominator N/A", async ({
   page,
 }) => {
   const state = await observationAdmin(page, ["approval.read"]);
@@ -207,13 +201,7 @@ test("aggregate report shows five kinds, 2x2, missingness and zero-denominator N
   await expect(report).toContainText("50% (2 / 4)");
   await expect(report).toContainText("N/A (0 / 0)");
   await expect(report.getByRole("table").first()).toContainText("Human deny");
-  for (const kind of [
-    "Tool call",
-    "Outbound",
-    "Web search",
-    "Page reading",
-    "Generation",
-  ])
+  for (const kind of ["Tool call", "Outbound", "Generation"])
     await expect(
       report.locator("summary").filter({ hasText: kind }),
     ).toHaveCount(1);
@@ -421,7 +409,7 @@ test("observer settings and report labels remain accessible in Japanese", async 
   const report = panel(page, "Tenant の Shadow 承認レポート");
   await expect(report.getByLabel("開始日（UTC・含む）")).toBeVisible();
   await expect(
-    report.locator("summary").filter({ hasText: "ページ読み取り" }),
+    report.locator("summary").filter({ hasText: "ツール呼び出し" }),
   ).toHaveCount(1);
   await expect(report.getByRole("table").first()).toContainText("人が拒否");
 });

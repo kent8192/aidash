@@ -230,7 +230,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 #[tokio::test]
 async fn approval_notifications_target_only_the_bound_run(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
-	#[values("outbound", "disclosure", "tool_call")] kind: &str,
+	#[values("outbound", "tool_call")] kind: &str,
 ) {
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();

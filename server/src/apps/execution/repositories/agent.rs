@@ -149,75 +149,10 @@ impl ExecutionStore for RunStore {
 		tx.commit().await?;
 		Ok(WorkspaceEvents { events, dropped })
 	}
-	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
-		let mut tx = self
-			.store
-			.pool
-			.begin(&self.scope)
-			.await?
-			.into_executor()
-			.await?;
-		super::research::resolve_entries(tx.as_mut(), run.id, &mut run.context.history).await?;
-		tx.commit().await.map_err(crate::Error::from)?;
-		Ok(())
-	}
-	async fn research_revoked(&self, run: &Run) -> Result<bool> {
-		use aidash_application::ports::research::EvidenceStore;
-		super::research::Evidence {
-			store: self.store.clone(),
-			scope: self.scope.clone(),
-		}
-		.revoked(run.id)
-		.await
-	}
-	async fn expired_research(
-		&self,
-		run: &Run,
-	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
-		let expired: crate::Result<_> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&self.scope)
-				.await?
-				.into_executor()
-				.await?;
-			let expired =
-				super::research::held_expiry(tx.as_mut(), run.id, &run.context.history).await?;
-			tx.commit().await?;
-			Ok(expired)
-		}
-		.await;
-		expired.map_err(Into::into)
-	}
-	async fn unknown_evidence(
-		&self,
-		run: &Run,
-		references: &[aidash_domain::research::citations::EvidenceRef],
-	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
-		use aidash_application::ports::research::EvidenceStore;
-		let delivered = super::research::Evidence {
-			store: self.store.clone(),
-			scope: self.scope.clone(),
-		}
-		.fragments(run.id, references)
-		.await?;
-		Ok(references
-			.iter()
-			.filter(|reference| {
-				!delivered
-					.iter()
-					.any(|fragment| fragment.reference == **reference)
-			})
-			.copied()
-			.collect())
-	}
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run =
 			Store::save_run(&self.store, &self.scope, run, token, "run.sources_observed").await?;
-		// The persisted projection contains immutable Research references. The
-		// same Thinking step continues constructing a request after this save.
-		self.resolve_research(run).await
+		Ok(())
 	}
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run = Store::save_run(
@@ -1226,6 +1161,29 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
+	async fn external_services(&self, _run: &Run) -> Result<Vec<ExternalServiceLine>> {
+		// The Scratch Space the worker resolved for this Run, the one whose
+		// Execution Pod its tools reach; a Remote Grant's Run has a derived
+		// one. Without local authority there is nothing to list.
+		let Some(authority) = &self.authority else {
+			return Ok(Vec::new());
+		};
+		let store = &self.federation.store;
+		let scope = &self.run_store.scope;
+		let Some(tenant) = scope.tenant_name().map(|name| name.as_str().to_owned()) else {
+			return Ok(Vec::new());
+		};
+		let mut tx = store.pool.begin(scope).await?;
+		let lines = crate::apps::workspaces::repositories::scratch::usable_lines(
+			&mut tx,
+			&tenant,
+			authority.guard.scratch_space_id,
+		)
+		.await;
+		// Only reads happened; the transaction ends without keeping anything.
+		tx.rollback().await?;
+		Ok(lines?)
+	}
 	async fn run_start_memory(&self, run: &Run, task: &Task) -> Result<Option<StartMemory>> {
 		let builtin = run
 			.context
@@ -2014,6 +1972,7 @@ impl Environment<'_> {
 				aidash_domain::context::source::MAX_SOURCE_BYTES,
 			)?
 			.text;
+			let degrade = degrade_on_outage && agent.workspace_degrades;
 			let semantic = crate::semantic::service::context_in(
 				&self.federation.store,
 				&mut lease,
@@ -2021,16 +1980,32 @@ impl Environment<'_> {
 				&query,
 				crate::semantic::services::memory_context::workspace_budget(budget)?,
 				&agent,
+				degrade,
 			)
 			.await;
-			let degrade = degrade_on_outage && agent.workspace_degrades;
 			let result = async {
 				let semantic = match semantic? {
 					// Optional workspace context may degrade; memory still follows
 					// and still fails closed (ADR 0059).
+					// A Data Protection refusal never clears by waiting, so an
+					// optional slot degrades at once instead of after retries (#963).
 					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
 						cause,
-					) if degrade => Some(aidash_domain::semantic::degraded::marker(cause)),
+					) if degrade
+						|| (cause
+							== aidash_domain::semantic::degraded::OutageCause::DataProtection
+							&& agent.workspace_degrades) =>
+					{
+						Some(aidash_domain::semantic::degraded::marker(cause))
+					}
+					// Only the READY part of an incomplete index (ADR 0129).
+					aidash_application::semantic::retrieval::WorkspaceContext::Partial(result)
+						if degrade =>
+					{
+						Some(aidash_domain::semantic::degraded::partial(
+							serde_json::to_value(result)?,
+						))
+					}
 					workspace => workspace
 						.required()?
 						.map(serde_json::to_value)

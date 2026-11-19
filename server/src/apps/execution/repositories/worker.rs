@@ -327,6 +327,9 @@ impl FailureScope for Failure {
 	}
 }
 
+/// The service a Run waits for while native memory is closed (ADR 0129).
+const MEMORY: &str = "Native memory";
+
 /// Keep backend codes and native failure identity out of the application use case.
 pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 	match error {
@@ -336,6 +339,7 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
 		NativeError::DeciderOutage => ExecutionFailure::DeciderOutage,
+		NativeError::MemoryClosed => ExecutionFailure::ServiceOutage(MEMORY.into()),
 		NativeError::NodeUnreachable { node, after_effect } => ExecutionFailure::NodeUnreachable {
 			node: node.clone(),
 			retry: !after_effect,
@@ -383,8 +387,12 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 			status: Some(*status),
 			message: error.to_string(),
 		},
-		// The owner must act (connect, reconnect or wait for their plan's
-		// limit); retrying the same Run would not help (ADR 0007).
+		// A reached usage limit lifts by itself, so the Run waits for it (ADR
+		// 0129). For every other plan failure the owner must act (connect or
+		// reconnect); retrying the same Run would not help (ADR 0007).
+		NativeError::Plan(aidash_domain::plan_connections::Failure::UsageLimit) => {
+			ExecutionFailure::PlanAllowance(error.to_string())
+		}
 		NativeError::Plan(_) => ExecutionFailure::Inference {
 			transport: false,
 			status: None,

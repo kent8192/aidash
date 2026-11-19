@@ -5,7 +5,8 @@ use crate::{
 	apps::registry::{
 		repositories::agent_plugins,
 		serializers::agent_plugin_import::{
-			AgentPluginImportResult, ImportedAgentPlugin, PluginImportRequest,
+			AgentPluginImportResult, AttachListing, ImportedAgentPlugin, PluginImportRequest,
+			PluginToolsRequest,
 		},
 	},
 	authorization::{access::Access, identity::Actor},
@@ -187,4 +188,131 @@ async fn require_library(runtime: &Federation, access: &mut Access, source: &str
 	} else {
 		Err(Error::Forbidden)
 	}
+}
+
+/// Lists one remote server of the Tenant's copy of an Agent Plugin for the person attaching or
+/// editing it, with that person's OAuth Connection or, when the server offers none, their own
+/// personal secret of the name the request gives (ADR 0100, ADR 0073 amended 2026-11-16). A shared
+/// Tenant Secret is never used here, whatever the request's `owner` says: a listing has no Run and
+/// no Catalog Approval, so it must not reveal what a shared secret reaches. The listing goes through the
+/// same public-address rule and transport as a Run's sessions. Nothing is stored: a Run checks
+/// every declared digest against its own listing at Run start.
+///
+/// Needs `registry.create` on an Agent, as importing does, and holds no database connection while
+/// it waits on the server.
+pub async fn list_tools(
+	runtime: &Federation,
+	actor: Actor,
+	request: PluginToolsRequest,
+) -> Result<AttachListing> {
+	use aidash_application::{
+		plugin_tools::list_for_attach, ports::tools::PluginServer, tenant_secrets::SecretCall,
+	};
+	use aidash_capability::tenant_secret::{Attach, SecretSubject};
+	let Actor::Subject(identity) = actor else {
+		return Err(Error::Forbidden);
+	};
+	if let Some(secret) = &request.secret {
+		secret.validate()?;
+	}
+	let mut access = Access::begin(&runtime.store, &identity).await?;
+	let result = async {
+		require_agent_create(&mut access).await?;
+		agent_plugins::get(&mut **access.tx, &request.digest).await
+	}
+	.await;
+	let stored = access
+		.finish(result)
+		.await?
+		.ok_or_else(|| Error::NotFound("Agent Plugin copy".into()))?;
+	let reference = AgentPluginRef::of(&stored.plugin, &stored.source);
+	let Some(aidash_domain::agent_plugin::McpServer::Remote(config)) =
+		reference.servers.get(&request.server)
+	else {
+		return Err(Error::Invalid(
+			"the Agent Plugin has no remote server of that name".into(),
+		));
+	};
+	let server = PluginServer {
+		plugin: reference.name.clone(),
+		digest: reference.digest.clone(),
+		server: request.server.clone(),
+	};
+	let store = &runtime.store;
+	let call = |attach| -> aidash_application::Result<SecretCall> {
+		Ok(SecretCall {
+			destination: aidash_application::tenant_secrets::endpoint_destination(
+				config.url.as_str(),
+			)?,
+			methods: vec!["POST".into(), "GET".into(), "DELETE".into()],
+			attach,
+			// A listing is no Run: like a Workbench test call it names the Tenant and one call.
+			subject: SecretSubject::Workbench {
+				tenant: identity.tenant.clone(),
+				call: uuid::Uuid::new_v4(),
+			},
+			max_response_bytes: None,
+		})
+	};
+	let owner = aidash_application::oauth_connections::Owner {
+		tenant: identity.tenant.clone(),
+		subject: identity.subject.clone(),
+	};
+	let mut connected = None;
+	if let Ok(resource) = aidash_domain::oauth_connections::canonical_resource(config.url.as_str())
+	{
+		match crate::apps::execution::repositories::mcp_connections::for_owner(
+			store,
+			&owner,
+			&resource,
+			call(Attach::Bearer)?,
+		)
+		.await
+		{
+			Ok(auth) => connected = Some(auth),
+			Err(aidash_application::Error::Invalid(code))
+				if code == aidash_domain::oauth_connections::CONNECTION_REQUIRED => {}
+			Err(error) => return Ok(AttachListing::unavailable(&error)),
+		}
+	}
+	let mut config = config.clone();
+	let auth = match (connected, &request.secret) {
+		(Some(auth), _) => Some(auth),
+		(None, Some(secret)) => {
+			let Some(service) = &store.tenant_secrets else {
+				return Ok(AttachListing::unavailable(
+					&aidash_application::Error::Invalid(
+						aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+					),
+				));
+			};
+			let attach = crate::apps::execution::repositories::mcp_connections::attach(secret);
+			match service
+				.call_secret_for(
+					&identity.tenant,
+					Some(identity.subject.as_str()),
+					&secret.name,
+					// Only the person's own secret, never the shared one.
+					aidash_domain::tool::SecretOwner::Personal,
+					config.url.as_str(),
+					call(attach)?,
+				)
+				.await
+			{
+				Ok(auth) => {
+					config.headers = secret.replace_in(&config.headers);
+					Some(auth)
+				}
+				Err(error) => return Ok(AttachListing::unavailable(&error)),
+			}
+		}
+		(None, None) => None,
+	};
+	Ok(list_for_attach(
+		store.plugin_sessions.as_ref(),
+		&server,
+		&config,
+		auth.as_ref(),
+	)
+	.await)
 }

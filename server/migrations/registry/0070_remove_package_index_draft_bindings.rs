@@ -1,8 +1,10 @@
 // reinhardt-migration-source: 1
 // The built-in package indexes core.npm and core.pypi are removed (#745,
-// #729): drafts keep no Binding to them. Reinhardt has no data operation for
-// rewriting a JSON array inside a column, so this one-time data change is SQL.
-// Registered Agent versions are immutable and keep theirs.
+// #729), and so are the Bindings pointing to them: in Agent drafts, in
+// registered Agent versions (their Bindings and the normalized copy saved at
+// registration, Marketplace copies included, as registry/0054 did) and in
+// registration requests. Reinhardt Query cannot express removing elements from
+// a JSON array inside a column, so this one-time data change is SQL.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0070_remove_package_index_draft_bindings", "registry")

@@ -10,7 +10,7 @@ use std::fmt;
 mod remote;
 mod stdio;
 
-pub use remote::{Header, RemoteServer};
+pub use remote::{Header, RemoteServer, secret_header_valid};
 pub use stdio::{Command, Cwd, Executable, StdioServer};
 
 #[cfg(test)]

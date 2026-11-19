@@ -184,9 +184,17 @@ const _: () = {
 	shared::<McpPluginSessions>();
 };
 
+/// A session is reused only with the credential it was opened with: the same OAuth Connection,
+/// or the same Tenant Secret at the same pinned version.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Credential {
+	Connection(Uuid),
+	Secret(Uuid, String),
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
-	connection: Option<Uuid>,
+	connection: Option<Credential>,
 	run: Uuid,
 	plugin: PluginName,
 	digest: String,
@@ -199,8 +207,11 @@ impl Key {
 			Some(
 				CallSecret::Connection { record, .. }
 				| CallSecret::BrokeredConnection { record, .. },
-			) => Some(record.id),
-			_ => None,
+			) => Some(Credential::Connection(record.id)),
+			Some(CallSecret::Value { record, .. } | CallSecret::Brokered { record, .. }) => {
+				Some(Credential::Secret(record.id, record.version.clone()))
+			}
+			None => None,
 		};
 		self
 	}
@@ -557,7 +568,7 @@ async fn open(
 	let inputs = Inputs::default();
 	inputs.progress.begin(previously_accepted);
 	let transport = StreamableHttpClientTransport::with_client(
-		BoundedClient::new(client.clone(), auth, inputs.progress.clone()),
+		BoundedClient::new(client.clone(), auth, inputs.progress.clone()).map_err(Fault::Early)?,
 		transport_config,
 	);
 	timeout(
@@ -728,9 +739,9 @@ impl PluginSessions for McpPluginSessions {
 			return self
 				.list_once(run, server, config, auth)
 				.await
-				.map_err(crate::tools::auth::finish);
+				.map_err(|error| crate::tools::auth::finish(error, auth));
 		}
-		result.map_err(crate::tools::auth::finish)
+		result.map_err(|error| crate::tools::auth::finish(error, auth))
 	}
 	async fn call(
 		&self,
@@ -820,7 +831,7 @@ impl PluginSessions for McpPluginSessions {
 		}
 		match result {
 			Err(error) => {
-				let error = crate::tools::auth::finish(error);
+				let error = crate::tools::auth::finish(error, auth);
 				crate::tools::auth::error_value(&error)
 					.map(ToolRound::Complete)
 					.ok_or(error)

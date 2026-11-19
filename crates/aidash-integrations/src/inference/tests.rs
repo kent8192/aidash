@@ -405,7 +405,7 @@ mod exact_routes {
 		}
 		let context = Context {
 			data_protection: aidash_domain::data_protection::DataProtection {
-				model_call_zdr: false,
+				level: aidash_domain::data_protection::Level::NoRestriction,
 				..Default::default()
 			},
 			..Default::default()
@@ -1671,7 +1671,6 @@ fn provider_tools_activity_survives_acceptance_and_model_authored_history() {
 		],
 		reasoning: None,
 	});
-	assert!(context.history.iter().all(|entry| entry.research.is_none()));
 	let restored = serde_json::from_value(serde_json::to_value(&context).unwrap()).unwrap();
 	let native = aidash_domain::projection::native::native_context(&restored, &json!({}));
 	let request = ModelRequest {
@@ -1807,6 +1806,11 @@ async fn provider_tools_transport_sends_only_pinned_entries_and_signs_the_same_c
 			Context {
 				tenant: "tenant".into(),
 				run: Some(uuid::Uuid::new_v4()),
+				// Provider tools run only at No Restriction (#962).
+				data_protection: aidash_domain::data_protection::DataProtection {
+					level: aidash_domain::data_protection::Level::NoRestriction,
+					..Default::default()
+				},
 				..Default::default()
 			},
 		)

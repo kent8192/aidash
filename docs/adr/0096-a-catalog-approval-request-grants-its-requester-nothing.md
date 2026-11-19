@@ -29,3 +29,7 @@ requester sees only what they are allowed to see.
 - Each requester has at most one open request per definition and Node, and requests do not expire.
 - Run-time approvals (ADR 0075/0076) remain separate: a request concerns only installation-time
   Catalog Approval.
+
+## Amendment (2026-11-11, #873)
+
+External notices are no longer deferred (ADR 0128). Every dashboard page shows the number of pending requests, and with SMTP configured each request mails everyone who may approve any part of it, unless they turned that mail off. Requests still do not expire.

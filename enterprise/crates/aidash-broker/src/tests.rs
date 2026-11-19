@@ -103,7 +103,12 @@ async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> 
 	}
 	Json(match path.as_str() {
 		"/api/v1/models/author/model/endpoints" => json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"vendor/route","context_length":131072}]}}),
-		"/api/v1/endpoints/zdr" => json!({"data":[{"model_id":"author/model","tag":"vendor/route"}]}),
+		"/api/v1/endpoints/zdr" => json!({"data":[
+			{"model_id":"author/model","tag":"vendor/route","safety_retention":false},
+			{"model_id":"author/model","tag":"other/kept","safety_retention":true},
+			{"model_id":"author/model","tag":"host","safety_retention":false},
+			{"model_id":"author/model","tag":"host/eu","safety_retention":true}
+		]}),
 		"/api/v1/embeddings" => json!({"model":"author/model","data":[{"index":0,"embedding":[1.0,0.0]}],"usage":{"prompt_tokens":4,"total_tokens":4}}),
 		// One answer per question: a large question map yields a provider-sized answer map.
 		"/api/v1/systemone" if value.pointer("/state/large_answer") == Some(&Value::Bool(true)) => json!({"model":"typesafe/jev-1.13-20260917","answers":{"keep":{"type":"noul","noul":0.9}},"padding":"x".repeat(REQUEST_LIMIT),"usage":{"input_tokens":12,"output_tokens":3,"cost":0.000002}}),
@@ -171,7 +176,9 @@ impl Fixture {
 			.as_secs();
 		Claims {
 			provider_tools: vec![],
-			data_protection: Default::default(),
+			// Strict zero data retention needs a catalog read per Tenant; the
+			// tests that are not about it sign Safety Retention instead.
+			data_protection: aidash_capability::DataProtectionRequirement::SafetyRetention,
 			iss: "worker".into(),
 			aud: "environment".into(),
 			iat: now,
@@ -1395,7 +1402,7 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 	let broker = Broker::new(cfg, keys, source.clone(), Arc::new(Logs::default())).unwrap();
 	let c = Claims {
 		provider_tools: vec![],
-		data_protection: Default::default(),
+		data_protection: aidash_capability::DataProtectionRequirement::SafetyRetention,
 		iss: "worker".into(),
 		aud: "environment".into(),
 		iat: 1,
@@ -1708,12 +1715,17 @@ async fn signed_data_protection_requirement_controls_all_model_bodies() {
 		("/api/v1/responses", true),
 	] {
 		for (requirement, provider, status) in [
-			// Standard default and Zero both sign ZDR. Explicit Standard opt-out
-			// signs None; No Training opt-out signs NoTraining.
+			// Safety Retention and strict ZDR both send `zdr: true`; strict
+			// ZDR is also pinned, which the next test covers.
 			(
-				Requirement::Zdr,
+				Requirement::SafetyRetention,
 				json!({"require_parameters":true,"zdr":true}),
 				200,
+			),
+			(
+				Requirement::SafetyRetention,
+				json!({"require_parameters":true,"data_collection":"deny"}),
+				403,
 			),
 			(
 				Requirement::Zdr,
@@ -1754,6 +1766,51 @@ async fn signed_data_protection_requirement_controls_all_model_bodies() {
 	}
 	assert_eq!(f.source.reads.load(Ordering::SeqCst), 1);
 	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 8);
+}
+
+#[tokio::test]
+async fn strict_zdr_bodies_must_pin_routes_the_current_catalog_admits() {
+	use aidash_capability::DataProtectionRequirement as Requirement;
+	let f = Fixture::new().await;
+	let mut claims = f.claims();
+	claims.data_protection = Requirement::Zdr;
+	for (only, status) in [
+		(Some(json!(["vendor/route"])), 200),
+		// `host` is strict but would admit `host/eu`, which is Safety Retention.
+		(Some(json!(["vendor/route", "host"])), 403),
+		// No pin lets `zdr: true` reach Safety Retention endpoints.
+		(None, 403),
+		(Some(json!([])), 403),
+		(Some(json!(["other/kept"])), 403),
+		(Some(json!(["host/eu"])), 403),
+		(Some(json!(["unlisted"])), 403),
+	] {
+		let mut body = chat();
+		if let Some(only) = only {
+			body["provider"]["only"] = only;
+		}
+		let response = f
+			.request(&claims, "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), status);
+		json_body(response).await;
+	}
+	let paths = f.provider.paths.lock().unwrap().clone();
+	assert_eq!(
+		paths
+			.iter()
+			.filter(|path| *path == "/api/v1/endpoints/zdr")
+			.count(),
+		1,
+		"one catalog read serves the Tenant for 30 s"
+	);
+	assert_eq!(
+		paths
+			.iter()
+			.filter(|path| *path == "/api/v1/chat/completions")
+			.count(),
+		1
+	);
 }
 
 fn responses() -> Value {

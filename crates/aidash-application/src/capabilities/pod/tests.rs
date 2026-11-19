@@ -24,6 +24,8 @@ pub(crate) struct Runtime {
 	pub(crate) files: Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
 	/// Answers the next file call with `pod_unavailable` this many times.
 	pub(crate) unavailable: Mutex<u32>,
+	/// Answers the next file call with `file_helper_failed`: the exec failed on a running Pod.
+	pub(crate) helper_failed: Mutex<bool>,
 	pub(crate) writes: Mutex<Vec<FileWriteRequest>>,
 	pub(crate) manifests: Mutex<Vec<FileManifestRequest>>,
 	pub(crate) search: Mutex<Option<FileSearchResult>>,
@@ -54,6 +56,12 @@ impl Runtime {
 		self.calls.lock().unwrap().clone()
 	}
 	fn available(&self) -> PodResult<()> {
+		if std::mem::take(&mut *self.helper_failed.lock().unwrap()) {
+			return Err(ExecutionPodError::Remote {
+				code: ExecutionPodErrorCode::from("file_helper_failed"),
+				message: "File helper failed; the call may have taken effect".into(),
+			});
+		}
 		let mut left = self.unavailable.lock().unwrap();
 		if *left > 0 {
 			*left -= 1;

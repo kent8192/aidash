@@ -36,7 +36,6 @@ fn bearer_schemes_preserve_case_sensitive_credentials(
 #[case::bindings("/api/tenants/t/provider-credential-bindings/b", false)]
 #[case::retention("/api/tenants/t/retention", false)]
 #[case::tasks_abandon("/api/tasks/x/abandon", false)]
-#[case::research_revocation("/api/runs/r/research-revocation", false)]
 #[case::workbench("/api/workbench/drafts", false)]
 #[case::registry("/api/registry", false)]
 #[case::transactions("/api/transactions", false)]

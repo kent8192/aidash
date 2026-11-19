@@ -179,7 +179,7 @@ fn reports_separate_effective_threshold_and_settings_revision_without_exposing_a
 		configuration_digest: digest(&serde_json::json!("config")),
 		definition_digest: digest(&serde_json::json!("definition")),
 		settings_revision: 1,
-		kind: ApprovalKind::WebSearch,
+		kind: ApprovalKind::Outbound,
 		operation_class: Some("read".into()),
 		effect_class: Some("external_read".into()),
 		route: Some(0),
@@ -236,7 +236,7 @@ fn reports_separate_effective_threshold_and_settings_revision_without_exposing_a
 }
 
 #[test]
-fn missing_and_disabled_observations_keep_the_actual_five_kind_population() {
+fn missing_and_disabled_observations_keep_the_actual_kind_population() {
 	let start = Utc::now();
 	let range = ReportRange {
 		start,
@@ -268,7 +268,11 @@ fn missing_and_disabled_observations_keep_the_actual_five_kind_population() {
 	available.kind = ApprovalKind::Generation;
 	rows.push(available);
 	let result = report(range, &rows).unwrap();
-	assert_eq!(result.metrics.total_approvals, 6);
+	// One row per kind, and one more available Generation observation.
+	assert_eq!(
+		result.metrics.total_approvals,
+		ApprovalKind::ALL.len() as u64 + 1
+	);
 	assert_eq!(
 		result.kinds.iter().map(|row| row.kind).collect::<Vec<_>>(),
 		ApprovalKind::ALL

@@ -3,6 +3,7 @@ use crate::{
 	agent_plugin::fixtures::reference_with_servers,
 	exposure::{BindingExposure, ExposurePolicy},
 	registry::{AgentConfig, bindings::AgentBindings},
+	tool::SecretOwner,
 };
 use rstest::rstest;
 
@@ -58,6 +59,15 @@ fn read_only(name: &str, schema_digest: String) -> ReadOnlyTool {
 	}
 }
 
+fn secret(name: &str, header: &str) -> ServerSecret {
+	ServerSecret {
+		name: name.to_owned(),
+		header: header.to_owned(),
+		form: None,
+		owner: SecretOwner::Any,
+	}
+}
+
 fn accepted(settings: PluginSettings, deferred: bool) -> bool {
 	agent(settings, deferred).validate().is_ok()
 }
@@ -86,6 +96,7 @@ fn settings_round_trip_through_the_definition_and_the_settings_view() {
 			tools: Some(["search".to_owned()].into()),
 			exposure: Some(BindingExposure::Eager),
 			read_only: vec![read_only("search", digest("a"))],
+			secret: Some(secret("docs-token", "X-Api-Key")),
 		},
 	);
 	let definition = agent(settings.clone(), true);
@@ -99,6 +110,7 @@ fn settings_round_trip_through_the_definition_and_the_settings_view() {
 			"tools": ["search"],
 			"exposure": "eager",
 			"read_only": [{"name": "search", "schema_digest": digest("a")}],
+			"secret": {"name": "docs-token", "header": "X-Api-Key"},
 		})
 	);
 	assert_eq!(config.agent_plugin_settings, settings);
@@ -109,6 +121,8 @@ fn settings_round_trip_through_the_definition_and_the_settings_view() {
 #[rstest]
 #[case::a_field_nobody_defined(json!({"extra": true}))]
 #[case::a_read_only_declaration_without_a_digest(json!({"read_only": [{"name": "search"}]}))]
+#[case::a_secret_without_a_name(json!({"secret": {"header": "Authorization"}}))]
+#[case::a_secret_with_a_form_nobody_defined(json!({"secret": {"name": "token", "form": "basic"}}))]
 #[case::a_read_only_declaration_with_a_field_nobody_defined(
 	json!({"read_only": [{"name": "search", "schema_digest": "x", "extra": 1}]})
 )]
@@ -124,6 +138,7 @@ fn settings_may_narrow_expose_and_declare_read_only_tools() {
 			tools: Some(names(3)),
 			exposure: Some(BindingExposure::Deferred),
 			read_only: vec![read_only("tool-1", digest("0"))],
+			secret: None,
 		},
 	);
 
@@ -311,4 +326,156 @@ fn exposure_needs_the_deferred_policy_like_a_binding_does(
 	);
 
 	assert_eq!(accepted(settings, deferred), ok);
+}
+
+#[test]
+fn a_secret_defaults_to_authorization_and_any_owner() {
+	let stored: ServerSettings =
+		serde_json::from_value(json!({"secret": {"name": "docs-token"}})).unwrap();
+
+	let secret = stored.secret.unwrap();
+	assert_eq!(secret.header, SECRET_HEADER);
+	assert_eq!(secret.owner, SecretOwner::Any);
+	assert!(secret.bearer());
+	assert_eq!(
+		serde_json::to_value(&secret).unwrap(),
+		json!({"name": "docs-token", "header": "Authorization"})
+	);
+}
+
+#[rstest]
+#[case::authorization("Authorization", true)]
+#[case::authorization_in_any_case("aUTHORIZATION", true)]
+#[case::another_header("X-Api-Key", false)]
+fn without_a_form_only_authorization_carries_the_bearer_form(
+	#[case] header: &str,
+	#[case] bearer: bool,
+) {
+	assert_eq!(secret("token", header).bearer(), bearer);
+}
+
+/// ADR 0073 (2026-10-23): the definition chooses raw or Bearer form; Authorization defaults to
+/// Bearer and other headers to raw. Bearer goes only in Authorization, which the broker can send.
+#[rstest]
+#[case::bearer_authorization("Authorization", Some(SecretForm::Bearer), true, true)]
+#[case::raw_authorization("Authorization", Some(SecretForm::Raw), true, false)]
+#[case::raw_authorization_in_any_case("authorization", Some(SecretForm::Raw), true, false)]
+#[case::raw_api_key("X-Api-Key", Some(SecretForm::Raw), true, false)]
+#[case::bearer_api_key("X-Api-Key", Some(SecretForm::Bearer), false, false)]
+fn a_form_chooses_raw_anywhere_and_bearer_only_in_authorization(
+	#[case] header: &str,
+	#[case] form: Option<SecretForm>,
+	#[case] ok: bool,
+	#[case] bearer: bool,
+) {
+	let mut chosen = secret("docs-token", header);
+	chosen.form = form;
+	let settings = on(
+		REMOTE,
+		ServerSettings {
+			secret: Some(chosen.clone()),
+			..Default::default()
+		},
+	);
+
+	assert_eq!(accepted(settings, false), ok);
+	assert_eq!(chosen.bearer(), bearer);
+}
+
+#[test]
+fn a_chosen_form_is_written_out_and_read_back() {
+	let stored = json!({"name": "docs-token", "header": "Authorization", "form": "raw"});
+
+	let secret: ServerSecret = serde_json::from_value(stored.clone()).unwrap();
+
+	assert_eq!(secret.form, Some(SecretForm::Raw));
+	assert_eq!(serde_json::to_value(&secret).unwrap(), stored);
+}
+
+#[test]
+fn a_personal_secret_is_written_out() {
+	let mut personal = secret("token", "Authorization");
+	personal.owner = SecretOwner::Personal;
+
+	assert_eq!(
+		serde_json::to_value(&personal).unwrap(),
+		json!({"name": "token", "header": "Authorization", "owner": "personal"})
+	);
+}
+
+#[rstest]
+#[case::remote(REMOTE, true)]
+#[case::stdio(STDIO, false)]
+fn only_a_remote_server_authenticates_with_a_secret(#[case] server: &str, #[case] ok: bool) {
+	let settings = on(
+		server,
+		ServerSettings {
+			secret: Some(secret("docs-token", "Authorization")),
+			..Default::default()
+		},
+	);
+
+	assert_eq!(accepted(settings, false), ok);
+}
+
+#[rstest]
+#[case::plain("docs-token", true)]
+#[case::uppercase("Docs-Token", false)]
+#[case::empty("", false)]
+#[case::too_long("t".repeat(65), false)]
+fn a_secret_name_follows_the_tenant_secret_rule(#[case] name: String, #[case] ok: bool) {
+	let settings = on(
+		REMOTE,
+		ServerSettings {
+			secret: Some(secret(&name, "Authorization")),
+			..Default::default()
+		},
+	);
+
+	assert_eq!(accepted(settings, false), ok);
+}
+
+#[rstest]
+#[case::authorization("Authorization", true)]
+#[case::api_key("X-Api-Key", true)]
+#[case::transport_owned_by_the_plugin_list("Mcp-Session-Id", false)]
+#[case::accept_owned_by_the_plugin_list("Accept", false)]
+#[case::content_type_owned_by_the_plugin_list("content-type", false)]
+#[case::refused_by_the_broker_cookie("Cookie", false)]
+#[case::refused_by_the_broker_expect("Expect", false)]
+#[case::refused_by_the_broker_prefix("X-Forwarded-For", false)]
+#[case::refused_by_the_broker_aidash_prefix("X-Aidash-Tenant", false)]
+#[case::refused_by_the_broker_sec_prefix("Sec-Fetch-Mode", false)]
+#[case::proxy_credentials("Proxy-Authorization", false)]
+#[case::underscore_the_broker_cannot_send("X_Api_Key", false)]
+#[case::empty("", false)]
+fn a_secret_header_is_refused_when_either_rule_refuses_it(#[case] header: &str, #[case] ok: bool) {
+	let settings = on(
+		REMOTE,
+		ServerSettings {
+			secret: Some(secret("docs-token", header)),
+			..Default::default()
+		},
+	);
+
+	assert_eq!(accepted(settings, false), ok);
+}
+
+#[test]
+fn a_secret_replaces_the_plugin_header_of_the_same_name_in_any_case() {
+	let headers = vec![
+		crate::agent_plugin::Header {
+			name: "x-api-key".into(),
+			value: "literal".into(),
+		},
+		crate::agent_plugin::Header {
+			name: "X-Trace".into(),
+			value: "on".into(),
+		},
+	];
+
+	let kept = secret("docs-token", "X-API-Key").replace_in(&headers);
+
+	assert_eq!(kept.len(), 1);
+	assert_eq!(kept[0].name, "X-Trace");
 }

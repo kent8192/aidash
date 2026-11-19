@@ -39,13 +39,27 @@ pub(crate) fn challenge(response: &reqwest::Response, endpoint: &str) -> Option<
 	)
 }
 
-/// Store outages are ordinary failures, never a waitable authentication refusal.
+/// Store outages and a refused pasted secret are ordinary failures, never a waitable
+/// authentication refusal.
 pub(crate) fn error_value(error: &Error) -> Option<Value> {
 	let Error::Invalid(message) = error else {
 		return None;
 	};
 	let value: Value = serde_json::from_str(message).ok()?;
-	(value["error"] == CONNECTION_UNAVAILABLE && value["resource"].is_string()).then_some(value)
+	((value["error"] == CONNECTION_UNAVAILABLE && value["resource"].is_string())
+		|| value["error"] == aidash_domain::tenant_secrets::REJECTED)
+		.then_some(value)
+}
+
+/// The failure of a call whose server refused the pasted secret it carried.
+fn secret_rejected() -> Error {
+	Error::Invalid(
+		json!({
+			"error": aidash_domain::tenant_secrets::REJECTED,
+			"hint": "The server refused the configured secret. Nothing was executed.",
+		})
+		.to_string(),
+	)
 }
 
 /// Private transport provenance: an actual server refused a bearer. It is
@@ -73,7 +87,18 @@ pub(crate) fn repeat(error: &Error) -> Option<Error> {
 		_ => None,
 	}
 }
-pub(crate) fn finish(error: Error) -> Error {
+/// The final form of a transport error. An authentication challenge to a call that carried a
+/// pasted secret (shared or personal, read directly or forwarded by the broker) becomes
+/// `secret_rejected`: there is no OAuth Connection to make or consent to give, so it must not
+/// read as `connection_required`.
+pub(crate) fn finish(error: Error, auth: Option<&CallSecret>) -> Error {
+	if matches!(
+		auth,
+		Some(CallSecret::Value { .. } | CallSecret::Brokered { .. })
+	) && is_connection(&error)
+	{
+		return secret_rejected();
+	}
 	if let Some(refused) = refused(&error) {
 		Error::Connection(refused.0.clone())
 	} else {

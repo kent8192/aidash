@@ -7,7 +7,7 @@
 use crate::{
 	Error as NativeError, Result as NativeResult,
 	apps::execution::capabilities::{
-		models::{CoreLivePreviews, CorePreviewLimits, EgressSession},
+		models::{CoreLivePreviews, CorePreviewLimits},
 		services::retention,
 	},
 	authorization::{access::Access, identity::SubjectIdentity},
@@ -50,7 +50,7 @@ pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
 		expires_at: row.expires_at,
 		pod_host: row.pod_host,
 		termination_confirmed: row.termination_confirmed,
-		egress_expires_at: row.egress_expires_at,
+		unconfirmed_since: row.unconfirmed_since,
 	})
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn to_row(preview: &LivePreview) -> Row {
 		.expires_at(preview.expires_at)
 		.pod_host(preview.pod_host.clone())
 		.termination_confirmed(preview.termination_confirmed)
-		.egress_expires_at(preview.egress_expires_at)
+		.unconfirmed_since(preview.unconfirmed_since)
 		.updated_at(Utc::now())
 		.finish()
 }
@@ -225,37 +225,6 @@ impl application::Scope for Scope<'_> {
 		.scalar_optional(&mut **self.access.tx)
 		.await?;
 		Ok(revision)
-	}
-	async fn mint_egress(&mut self, preview: &mut LivePreview) -> aidash_application::Result<()> {
-		let Some(settings) = self.store.capabilities.0.egress.as_ref() else {
-			return Ok(());
-		};
-		let expires_at = preview.expires_at;
-		EgressSession::objects()
-			.insert_with_executor(
-				&mut **self.access.tx,
-				&EgressSession::build()
-					.id(preview.id)
-					.tenant(self.access.identity.tenant.clone())
-					.run_id(preview.run_id)
-					.live_preview_id(preview.id)
-					.principal(self.access.identity.subject.clone())
-					.credential_id(self.access.identity.credential_id)
-					.expires_at(expires_at)
-					.sent_bytes(0)
-					.received_bytes(0)
-					.requests(0)
-					.max_sent_bytes(settings.limits.sent_bytes as i64)
-					.max_received_bytes(settings.limits.received_bytes as i64)
-					.max_requests(settings.limits.requests as i32)
-					.created_at(Utc::now())
-					.finish(),
-			)
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(NativeError::from)?;
-		preview.egress_expires_at = Some(expires_at);
-		Ok(())
 	}
 }
 
@@ -541,21 +510,13 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 			Some(grant.subject_chain),
 			false,
 		),
-		// A Remote Grant Run has an admission instead of a local grant. Its
-		// session, when present, also names the subject holding the preview.
+		// A Remote Grant Run has an admission instead of a local grant. It names
+		// the credential and the subject chain that hold the preview.
 		None => {
 			let mut tx = store
 				.pool
 				.begin(&TenancyScope::tenant(&preview.tenant)?)
 				.await?;
-			let session = EgressSession::objects()
-				.filter(EgressSession::field_id().eq(preview.id))
-				.filter(EgressSession::field_run_id().eq(preview.run_id))
-				.all_with_executor(&mut *tx)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(NativeError::from)?
-				.pop();
 			let admission = crate::apps::federation::peer::repositories::admissions::for_run(
 				&mut *tx,
 				preview.run_id,
@@ -565,30 +526,15 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 			let Some(admission) = admission else {
 				return Ok(false);
 			};
-			let mut subjects = admission.subject_chain;
+			let subjects = admission.subject_chain;
 			let Some(root) = subjects.first().cloned() else {
 				return Ok(false);
 			};
-			if session.is_none() && store.capabilities.0.egress.is_some() {
-				return Ok(false);
-			}
-			let identity = if let Some(session) = session {
-				if !subjects.contains(&session.principal) {
-					subjects.push(session.principal.clone());
-				}
-				SubjectIdentity {
-					http_session: None,
-					credential_id: session.credential_id,
-					tenant: session.tenant,
-					subject: session.principal,
-				}
-			} else {
-				SubjectIdentity {
-					http_session: None,
-					credential_id: admission.credential_id,
-					tenant: admission.tenant,
-					subject: root,
-				}
+			let identity = SubjectIdentity {
+				http_session: None,
+				credential_id: admission.credential_id,
+				tenant: admission.tenant,
+				subject: root,
 			};
 			(identity, Some(subjects), true)
 		}
@@ -645,6 +591,53 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 		}
 	};
 	access.finish(result).await.map(|()| true)
+}
+
+/// Withhold a serving Live preview's responses while its Read Recheck cannot
+/// be confirmed, or serve again once it is (ADR 0129). Returns since when it
+/// has been withheld, which survives a restart of the recheck loop.
+pub(crate) async fn set_unconfirmed(
+	store: &Store,
+	id: Uuid,
+	unconfirmed: bool,
+) -> NativeResult<Option<DateTime<Utc>>> {
+	// Only the Tenant is taken from this unlocked read: it never changes.
+	let Some(preview) = load_for_maintenance(store, id).await? else {
+		return Ok(None);
+	};
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(&preview.tenant)?)
+		.await?;
+	// Decide on the locked row and write it in the same transaction, as the
+	// gateway does, so a stop or a gateway update committed after the read
+	// above is never written back over.
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop();
+	let Some(mut preview) = row.map(domain).transpose()? else {
+		tx.commit().await?;
+		return Ok(None);
+	};
+	if !matches!(preview.state, State::Running | State::Stale) {
+		tx.commit().await?;
+		return Ok(None);
+	}
+	if preview.unconfirmed_since.is_some() != unconfirmed {
+		preview.unconfirmed_since = unconfirmed.then(Utc::now);
+		Row::objects()
+			.save_with_executor(&mut *tx, &to_row(&preview))
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+	}
+	tx.commit().await?;
+	Ok(preview.unconfirmed_since)
 }
 
 /// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the

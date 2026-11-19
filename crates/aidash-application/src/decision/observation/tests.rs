@@ -46,16 +46,6 @@ fn frame(kind: ApprovalKind) -> (ObservationFrame, ObservationInput) {
 			arguments: json!({"destination":"https://example.com"}),
 			definition: json!({"version":"1.0.0"}),
 		},
-		ApprovalKind::WebSearch => PendingAction::WebSearch {
-			name: "web_search".into(),
-			arguments: json!({"query":"documentation"}),
-			definition: json!({"version":"1.0.0"}),
-		},
-		ApprovalKind::PageReading => PendingAction::PageReading {
-			name: "page_read".into(),
-			arguments: json!({"url":"https://example.com"}),
-			definition: json!({"version":"1.0.0"}),
-		},
 		ApprovalKind::Generation => PendingAction::Generation {
 			request: PendingGeneration {
 				request,
@@ -334,12 +324,10 @@ impl PreparedDispatch for Transport<'_> {
 	}
 }
 #[tokio::test]
-async fn all_five_typed_actions_are_judged_without_approval_settlement_or_live_run() {
+async fn all_three_typed_actions_are_judged_without_approval_settlement_or_live_run() {
 	for kind in [
 		ApprovalKind::ToolCall,
 		ApprovalKind::Outbound,
-		ApprovalKind::WebSearch,
-		ApprovalKind::PageReading,
 		ApprovalKind::Generation,
 	] {
 		let rig = Rig::new();
@@ -483,7 +471,7 @@ async fn uncertain_attempt_cannot_be_dispatched_again_and_exhaustion_is_no_verdi
 #[tokio::test]
 async fn future_or_changed_inputs_cannot_trigger_retrospective_provider_calls() {
 	let rig = Rig::new();
-	let (frame, mut input) = frame(ApprovalKind::WebSearch);
+	let (frame, mut input) = frame(ApprovalKind::Outbound);
 	let lease = ObservationLease {
 		worker: Uuid::new_v4(),
 		revision: 1,

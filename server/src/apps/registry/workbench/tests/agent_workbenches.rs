@@ -257,8 +257,8 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		let policy = TenantDataProtection::build()
 			.tenant("acme")
 			.level("no_training")
-			.model_call_zdr(true)
-			.plan_connection_exempt(true)
+			.forbid_plan_connections(false)
+			.forbid_keyless_endpoints(true)
 			.updated_at(chrono::Utc::now())
 			.updated_by("fixture")
 			.finish();
@@ -288,7 +288,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		refused["error"]
 			.as_str()
 			.unwrap()
-			.contains("Tenant Keyless endpoints"),
+			.contains("forbids Keyless endpoints"),
 		"{refused}"
 	);
 	assert_eq!(tool_hits.load(Ordering::SeqCst), 0);
@@ -418,6 +418,16 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "register: {registration}");
 	assert_eq!(registration["entry"]["id"], agent_id);
 	assert_eq!(registration["behavioral_tested"], false);
+	assert!(
+		registration["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|result| {
+				result["carried"] == false
+					&& result["changed"] == json!(["no earlier carrying approval"])
+			})
+	);
 	let (status, versions) = common::get(&app, alice_token, &format!("{path}/versions")).await;
 	assert_eq!(status, 200, "versions: {versions}");
 	assert_eq!(versions[0]["entry"]["id"], agent_id);

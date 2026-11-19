@@ -71,12 +71,6 @@ pub(crate) async fn offloaded_range(
 			serde_json::from_value(event)?,
 		));
 	}
-	crate::apps::execution::repositories::research::resolve_entries(
-		lease.tx().as_mut(),
-		*run_id,
-		&mut entries,
-	)
-	.await?;
 	// Memory extraction never reads recorded provider reasoning (#942).
 	let values: Vec<_> = entries
 		.into_iter()

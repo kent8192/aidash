@@ -62,6 +62,17 @@ pub struct ExecutionAgent {
 	/// verification before the Run completes (#112).
 	pub completion: Option<aidash_domain::completion::CompletionPolicy>,
 }
+/// One External service a Run's Scratch Space can use now (#738), as its
+/// starting instructions describe it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalServiceLine {
+	pub id: String,
+	/// The address code in the Execution Pod calls, through its proxy.
+	pub url: String,
+	pub methods: Vec<String>,
+	/// The registry entry's English description; empty when it has none.
+	pub description: String,
+}
 pub struct InvocationOutcome {
 	pub status: String,
 	pub result: Option<Value>,
@@ -165,28 +176,10 @@ pub trait ExecutionStore: Send + Sync {
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.semantic_degraded").await
 	}
-	/// Resolve immutable Research references for this execution projection.
-	/// A store without Research references keeps the supplied context.
-	async fn resolve_research(&self, _run: &mut Run) -> Result<()> {
-		Ok(())
-	}
 	/// Persist a workspace's recovery before a later memory failure reloads the
 	/// Run. Keep the current lease and adopt the saved Run revision.
 	async fn recover_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.semantic_recovered").await
-	}
-	/// Whether the Run's Research evidence was revoked (ADR 0046). A store
-	/// without research evidence has nothing to revoke.
-	async fn research_revoked(&self, _run: &Run) -> Result<bool> {
-		Ok(false)
-	}
-	/// The Run's Provider results purged under the Research account terms
-	/// (ADR 0058). A store without research evidence has none.
-	async fn expired_research(
-		&self,
-		_run: &Run,
-	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
-		Ok(Default::default())
 	}
 	/// Persist a newly pinned Estimate Snapshot without ending the worker's
 	/// lease, before the step relies on it, so a resumed step reuses it.
@@ -226,15 +219,6 @@ pub trait ExecutionStore: Send + Sync {
 		_projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
 		Ok(Vec::new())
-	}
-	/// The cited Evidence fragments this Run's evidence store does not hold.
-	/// A store without research evidence fails closed: nothing is known.
-	async fn unknown_evidence(
-		&self,
-		_run: &Run,
-		references: &[aidash_domain::research::citations::EvidenceRef],
-	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
-		Ok(references.to_vec())
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
@@ -315,8 +299,7 @@ pub trait ExecutionStore: Send + Sync {
 		calls: &[BatchInvocation<'_>],
 	) -> Result<Vec<InvocationOutcome>>;
 	/// Records `output` and returns the result as stored, which the caller
-	/// carries on: an expired research result's tombstone when its account
-	/// terms ended meanwhile (ADR 0058).
+	/// carries on.
 	/// Atomically persists typed refusal state and removes only this attempt's STARTED row.
 	async fn connection_refused(&self, run: &Run, token: Uuid, key: &str) -> Result<()> {
 		let _ = (run, token, key);
@@ -709,6 +692,11 @@ pub trait ExecutionEnvironment: Send + Sync {
 	/// One bounded data recall at Run start; explicit memory providers opt out.
 	async fn run_start_memory(&self, _run: &Run, _task: &Task) -> Result<Option<StartMemory>> {
 		Ok(None)
+	}
+	/// The External services of the Run's Scratch Space that are usable now,
+	/// for its starting instructions. None when it has none.
+	async fn external_services(&self, _run: &Run) -> Result<Vec<ExternalServiceLine>> {
+		Ok(Vec::new())
 	}
 	/// Recheck and hydrate only the exact Units recalled at Run start.
 	async fn hydrate_start_memory(

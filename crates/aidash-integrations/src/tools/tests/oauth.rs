@@ -833,3 +833,71 @@ async fn a_broker_that_ended_the_grant_is_a_typed_refusal_before_any_request(
 		None,
 	);
 }
+
+fn pasted() -> CallSecret {
+	CallSecret::Value {
+		record: aidash_application::tenant_secrets::SecretRecord {
+			id: uuid::Uuid::now_v7(),
+			version: "1".into(),
+			host: "127.0.0.1".into(),
+		},
+		value: SecretString::from("wrong-secret".to_owned()),
+		attach: aidash_capability::tenant_secret::Attach::Bearer,
+	}
+}
+
+/// A Registry tool that carries a pasted secret the server refuses gets an ordinary
+/// `secret_rejected` tool result: no connection a person could make would change the answer.
+#[rstest::rstest]
+#[case::mcp_initialize("initialize", 401)]
+#[case::mcp_call("tools/call", 401)]
+#[case::mcp_scope("tools/call", 403)]
+#[tokio::test]
+async fn a_registry_mcp_tool_whose_pasted_secret_is_refused_answers_secret_rejected(
+	#[case] phase: &'static str,
+	#[case] status: u16,
+) {
+	let server = upstream(phase, status, true, false).await;
+	let endpoint = format!("{}/mcp", server.uri());
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+
+	let value = tools
+		.invoke(&config(endpoint), json!({}), "call-key", Some(&pasted()))
+		.await
+		.unwrap();
+
+	assert_eq!(value["error"], "secret_rejected", "{value}");
+}
+
+#[rstest::rstest]
+#[case::unauthorized(401)]
+#[case::scope(403)]
+#[tokio::test]
+async fn an_http_tool_whose_pasted_secret_is_refused_answers_secret_rejected(#[case] status: u16) {
+	let server = MockServer::start().await;
+	Mock::given(method("POST"))
+		.and(path("/tool"))
+		.respond_with(match status {
+			401 => ResponseTemplate::new(401).insert_header("www-authenticate", "Bearer"),
+			_ => ResponseTemplate::new(403).insert_header(
+				"www-authenticate",
+				"Bearer error=\"insufficient_scope\", scope=\"files.write\"",
+			),
+		})
+		.mount(&server)
+		.await;
+	let endpoint = format!("{}/tool", server.uri());
+	let tools = HttpTools::new(permitting([endpoint.as_str()]), ToolClients::new().unwrap());
+
+	let value = tools
+		.invoke(
+			&http_config(&endpoint),
+			json!({}),
+			"call-key",
+			Some(&pasted()),
+		)
+		.await
+		.unwrap();
+
+	assert_eq!(value["error"], "secret_rejected", "{value}");
+}

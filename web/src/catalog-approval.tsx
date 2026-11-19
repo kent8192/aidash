@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   authorizationCatalogImpact,
+  authorizationCatalogReview,
   authorizationSetCatalog,
   registryVersions,
 } from "./generated/aidash";
@@ -13,7 +14,12 @@ import { useBusyRetry } from "./policy-busy";
 import { keylessOrigin } from "./keyless";
 import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
-import { agentPlugins, type AgentPluginRef } from "./agent-plugins";
+import {
+  agentPlugins,
+  pluginSettings,
+  type AgentPluginRef,
+  type PluginSettings,
+} from "./agent-plugins";
 import { AgentPluginSummary } from "./agent-plugin-summary";
 import { Badge, useI18n, type StatusTone } from "./ui";
 import { Button } from "./components/ui/button";
@@ -38,6 +44,10 @@ import {
   type Restriction,
 } from "./catalog-approval-model";
 import { ApprovalReviewPanel } from "./approval-review";
+import {
+  CatalogCarryOptions,
+  type ApprovalScope,
+} from "./catalog-carry-options";
 import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
 
@@ -113,9 +123,12 @@ export function DeciderRecipients({
  *  and every part left out (ADR 0072, ADR 0073). */
 export function AgentPluginsDisclosure({
   plugins,
+  settings = {},
   admits,
 }: {
   plugins: AgentPluginRef[];
+  /** The version's `agent_plugin_settings`: how each remote server authenticates. */
+  settings?: PluginSettings;
   /** The viewer is about to approve this version. */
   admits: boolean;
 }) {
@@ -146,11 +159,32 @@ export function AgentPluginsDisclosure({
             key={plugin.digest}
             className="min-w-0 rounded-md border border-border bg-surface px-3 py-2.5"
           >
-            <AgentPluginSummary plugin={plugin} />
+            <AgentPluginSummary
+              plugin={plugin}
+              settings={settings[plugin.name]}
+            />
           </li>
         ))}
       </ul>
     </section>
+  );
+}
+
+type CarriedSource = {
+  carried_from_version?: string | null;
+  carried_from_approver?: string | null;
+};
+
+function CarriedApproval({ source }: { source?: CarriedSource | null }) {
+  const { locale } = useI18n();
+  if (!source?.carried_from_version) return null;
+  return (
+    <span className="text-xs text-muted-foreground">
+      {locale === "ja-JP"
+        ? `バージョン ${source.carried_from_version} から引き継ぎ`
+        : `Carried from version ${source.carried_from_version}`}
+      {source.carried_from_approver ? ` · ${source.carried_from_approver}` : ""}
+    </span>
   );
 }
 
@@ -174,12 +208,24 @@ export function CatalogApprovalSection({
   const { selected } = useNodes();
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [chosen, setChosen] = useState<string[]>();
+  const [carryOver, setCarryOver] = useState(
+    version.approval?.carry_over ?? true,
+  );
+  const [approvalScope, setApprovalScope] = useState<ApprovalScope>(
+    version.approval?.scope === "node" ? "node" : "deployment",
+  );
   const [restricting, setRestricting] = useState<boolean>();
   const [subjectNames, setSubjectNames] = useState<string>();
   const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
   const [reviewOpen, setReviewOpen] = useState(false);
   // `null`: the impact could not be read; withdrawal is still offered.
   const [impact, setImpact] = useState<WithdrawalImpact | null>();
+  const [withdrawCarried, setWithdrawCarried] = useState(false);
+  const [stopCarrying, setStopCarrying] = useState(false);
+  // A Deployment-wide approval is withdrawn on every Node unless the
+  // approver keeps the other Nodes (#873).
+  const [withdrawEverywhere, setWithdrawEverywhere] = useState(true);
+  const deploymentWide = version.approval?.scope === "deployment";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const busyRetry = useBusyRetry();
@@ -199,6 +245,23 @@ export function CatalogApprovalSection({
     can("catalog.approve") &&
     version.needs_approval &&
     !installed;
+  const nodeRevisions = useQuery({
+    queryKey: [
+      "catalog-review-revisions",
+      tenant,
+      selected?.name,
+      entry.id,
+      entry.version,
+    ],
+    queryFn: () =>
+      authorizationCatalogReview(tenant!, {
+        node: selected!.name,
+        entry: `${entry.id}@${entry.version}`,
+      }),
+    enabled: decides,
+    retry: false,
+    staleTime: 0,
+  });
   const newSubject = entry.kind === "agent" && !version.subject;
   const choosesGroups =
     newSubject && can("subject.group.update") && assignable.length > 0;
@@ -296,6 +359,26 @@ export function CatalogApprovalSection({
           accepted(version),
         ),
         node: selected!.name,
+        carry_over: carryOver,
+        scope: approvalScope,
+        ...(() => {
+          const items = nodeRevisions.data?.items;
+          const item = Array.isArray(items)
+            ? (items.find(
+                (candidate) =>
+                  candidate.reference.id === entry.id &&
+                  candidate.reference.version === entry.version,
+              ) as
+                | ((typeof items)[number] & {
+                    expected_node_revisions?: Record<string, number>;
+                  })
+                | undefined)
+            : undefined;
+          return item?.expected_node_revisions &&
+            Object.keys(item.expected_node_revisions).length > 0
+            ? { expected_node_revisions: item.expected_node_revisions }
+            : {};
+        })(),
       }),
     );
   // Withdrawal is never blocked: it shows what it stops, then waits for the
@@ -323,6 +406,11 @@ export function CatalogApprovalSection({
       await authorizationSetCatalog(path, {
         ...approvalRequest(version, false),
         node: selected!.name,
+        withdraw_carried: withdrawCarried,
+        stop_carrying: stopCarrying,
+        ...(deploymentWide
+          ? { scope: withdrawEverywhere ? "deployment" : "node" }
+          : {}),
       });
       setImpact(undefined);
     });
@@ -337,6 +425,7 @@ export function CatalogApprovalSection({
           {t("catalogApproval")}
         </h4>
         <ApprovalBadge version={version} />
+        <CarriedApproval source={version.approval as CarriedSource | null} />
         {currentRestriction != null && (
           <span className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             {t("catalogRestrictedTo")}: {restrictionLabel(currentRestriction)}
@@ -355,8 +444,8 @@ export function CatalogApprovalSection({
       {providerOwned && (
         <Hint>
           {locale === "ja-JP"
-            ? "この Provider tool は OpenRouter が実行します。この Catalog Approval が唯一の同意です。Agent の Binding で上限を固定します。結果は Research の証拠にはなりません。"
-            : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps. Results are not Research evidence."}
+            ? "この Provider tool は OpenRouter が実行します。この Catalog Approval が唯一の同意です。Agent の Binding で上限を固定します。"
+            : "OpenRouter executes this Provider tool. This Catalog Approval is its only consent. The Agent Binding pins spending caps."}
         </Hint>
       )}
       {decides && state !== "approved" && warning(version)}
@@ -378,6 +467,7 @@ export function CatalogApprovalSection({
       {plugins && (
         <AgentPluginsDisclosure
           plugins={plugins}
+          settings={pluginSettings(entry.config as Record<string, unknown>)}
           admits={decides && state !== "approved"}
         />
       )}
@@ -477,6 +567,15 @@ export function CatalogApprovalSection({
           )}
         </>
       )}
+      {decides && state !== "approved" && (
+        <CatalogCarryOptions
+          carry={carryOver}
+          setCarry={setCarryOver}
+          scope={approvalScope}
+          setScope={setApprovalScope}
+          disabled={busy}
+        />
+      )}
       {tenant !== null &&
         selected !== undefined &&
         version.needs_approval &&
@@ -494,7 +593,11 @@ export function CatalogApprovalSection({
             ) : decides ? (
               <Button
                 size="sm"
-                disabled={busy || !accepted(version)}
+                disabled={
+                  busy ||
+                  !accepted(version) ||
+                  (approvalScope === "deployment" && nodeRevisions.isPending)
+                }
                 onClick={() => void approve()}
               >
                 {t("catalogApprove")}
@@ -510,12 +613,39 @@ export function CatalogApprovalSection({
             </Button>
           </div>
         )}
+      {tenant !== null &&
+        selected !== undefined &&
+        can("catalog.approve") &&
+        version.approval?.enabled &&
+        version.approval.carry_over && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() =>
+              void decide(() =>
+                authorizationSetCatalog(path, {
+                  ...approvalRequest(version, true),
+                  node: selected.name,
+                  // A Deployment-wide approval stops carrying on every Node.
+                  scope: deploymentWide ? "deployment" : "node",
+                  carry_over: false,
+                  stop_carrying: true,
+                }),
+              )
+            }
+          >
+            {locale === "ja-JP" ? "引き継ぎを停止" : "Stop carrying"}
+          </Button>
+        )}
       {reviewOpen && tenant !== null && selected !== undefined && (
         <ApprovalReviewPanel
           tenant={tenant}
           node={selected.name}
           root={{ id: entry.id, version: entry.version }}
           rootGroups={sentGroups}
+          initialCarryOver={carryOver}
+          initialScope={approvalScope}
           rootRestriction={
             restrictionEdited ? requestedRestriction() : undefined
           }
@@ -548,6 +678,61 @@ export function CatalogApprovalSection({
               </>
             )}
             <span>{t("catalogWithdrawScope")}</span>
+            {deploymentWide ? (
+              <fieldset
+                className="grid gap-1"
+                aria-label={
+                  locale === "ja-JP" ? "取り下げるNode" : "Nodes to withdraw on"
+                }
+              >
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="catalog-withdraw-nodes"
+                    checked={withdrawEverywhere}
+                    disabled={busy}
+                    onChange={() => setWithdrawEverywhere(true)}
+                  />
+                  {locale === "ja-JP"
+                    ? "このDeploymentのすべてのNodeで取り下げる"
+                    : "Withdraw on every Node of this Deployment"}
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="catalog-withdraw-nodes"
+                    checked={!withdrawEverywhere}
+                    disabled={busy}
+                    onChange={() => setWithdrawEverywhere(false)}
+                  />
+                  {locale === "ja-JP"
+                    ? "このNodeだけで取り下げる"
+                    : "Withdraw on this Node only"}
+                </label>
+              </fieldset>
+            ) : null}
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={withdrawCarried}
+                disabled={busy}
+                onChange={(event) => setWithdrawCarried(event.target.checked)}
+              />
+              {locale === "ja-JP"
+                ? "この承認から引き継いだバージョンも撤回する"
+                : "Also withdraw versions carried from this approval"}
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={stopCarrying}
+                disabled={busy}
+                onChange={(event) => setStopCarrying(event.target.checked)}
+              />
+              {locale === "ja-JP"
+                ? "今後の引き継ぎを停止する"
+                : "Stop carrying to later versions"}
+            </label>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
@@ -598,6 +783,7 @@ export function CatalogApprovalSection({
                       {record.actor}
                     </span>
                   </span>
+                  <CarriedApproval source={record as CarriedSource} />
                   {record.restriction != null && (
                     <span className="col-span-2 min-w-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere] sm:col-span-1">
                       {t("catalogRestrictedTo")}:{" "}

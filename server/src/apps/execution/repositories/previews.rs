@@ -978,6 +978,11 @@ impl Gateway {
 					.map_err(reinhardt::core::exception::Error::from)?;
 				return Err(NativeError::Conflict("PREVIEW_EXPIRED".into()));
 			}
+			// A Node on the Run's chain did not answer its Read Recheck: hold
+			// the responses back until a check is confirmed (ADR 0129).
+			if live.unconfirmed_since.is_some() {
+				return Err(NativeError::Conflict("PREVIEW_UNAVAILABLE".into()));
+			}
 			// The cookie is not authority: the same Working Area read decides.
 			if let Err(error) = sessions::load(&mut access, live.area_id).await {
 				live.stopping(StopReason::RunAuthorityRevoked);
@@ -1002,26 +1007,12 @@ impl Gateway {
 			.pod_host
 			.clone()
 			.ok_or_else(|| NativeError::NotFound("preview unavailable".into()))?;
-		// The browser's page path gets a page token, never the Pod's session
-		// token: the Egress gateway admits it without a Tenant Secret.
-		let egress_token = match live.egress_expires_at {
-			Some(expires_at) => Some(super::egress::page_token(live.id, expires_at, &self.store)?),
-			None => None,
-		};
 		Ok(Some(application::Proxy {
 			preview_id: live.id,
 			tenant: live.tenant,
 			session: session_id,
 			frame_ancestor: origin,
 			upstream: format!("{pod_host}:{}", live.port),
-			egress_origin: self
-				.store
-				.capabilities
-				.0
-				.egress
-				.as_ref()
-				.map(|settings| settings.endpoint.clone()),
-			egress_token,
 		}))
 	}
 }

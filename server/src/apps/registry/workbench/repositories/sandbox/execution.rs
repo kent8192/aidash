@@ -18,9 +18,6 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 impl ExecutionRepository for Repository {
-	fn search_destination(&self, provider: &str, arguments: &Value) -> Result<Option<String>> {
-		(self.search_destination)(provider, arguments)
-	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		Ok(Box::new(Scope {
 			tx: self.store.pool.begin(&self.actor.tenancy()?).await?,

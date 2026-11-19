@@ -14,6 +14,12 @@ use serde_json::{Value, json};
 pub enum OutageCause {
 	EmbeddingProvider,
 	VectorBackend,
+	/// The index is still being built; only its READY part was read (ADR 0129).
+	IndexIncomplete,
+	/// Not an outage: the embedding model cannot meet the Tenant's Data
+	/// Protection Level, so waiting never helps. A slot that may degrade
+	/// continues at once with this cause; any other slot stops the Run (#963).
+	DataProtection,
 }
 
 /// The marker that stands in the workspace slot of `semantic_memory`, in the
@@ -22,12 +28,32 @@ pub fn marker(cause: OutageCause) -> Value {
 	json!({"status":"unavailable","cause":cause})
 }
 
-/// The cause when `slot` is the marker.
+/// The READY part of an incomplete index, marked as Degraded context: the
+/// search result with `status` and `cause` beside it (ADR 0129).
+pub fn partial(mut result: Value) -> Value {
+	if let Some(object) = result.as_object_mut() {
+		object.insert("status".into(), json!("incomplete"));
+		object.insert("cause".into(), json!(OutageCause::IndexIncomplete));
+	}
+	result
+}
+
+/// The cause when `slot` is the marker or a [`partial`] result.
 pub fn cause(slot: &Value) -> Option<OutageCause> {
-	if slot.get("status")?.as_str()? != "unavailable" {
+	if !matches!(slot.get("status")?.as_str()?, "unavailable" | "incomplete") {
 		return None;
 	}
 	serde_json::from_value(slot.get("cause")?.clone()).ok()
+}
+
+/// Whether a workspace slot holds reads a step must recheck before it adopts
+/// an answer built on them: a search result, complete or [`partial`]. An absent
+/// slot and the outage [`marker`] hold none.
+pub fn holds_reads(slot: &Value) -> bool {
+	match slot.get("status") {
+		None => !slot.is_null(),
+		Some(status) => status == "incomplete",
+	}
 }
 
 /// The cause of a degraded workspace slot in `semantic_memory`: the envelope's
@@ -108,6 +134,23 @@ mod tests {
 			json!({"matches":[]}),
 		] {
 			assert_eq!(degraded(&json!({"workspace":workspace})), None);
+		}
+	}
+
+	#[test]
+	fn a_partial_result_holds_reads_to_recheck_and_the_marker_holds_none() {
+		let result = json!({"workspace_id":"w","index_revision":1,"matches":[{"text":"x"}]});
+		assert!(holds_reads(&result));
+		// The READY part of an incomplete index carries real matches (ADR 0129).
+		assert!(holds_reads(&partial(result)));
+		for slot in [
+			json!(null),
+			marker(OutageCause::VectorBackend),
+			marker(OutageCause::IndexIncomplete),
+			json!({"status":"unavailable","cause":"missing_points"}),
+			json!({"status":"no_space"}),
+		] {
+			assert!(!holds_reads(&slot), "{slot}");
 		}
 	}
 

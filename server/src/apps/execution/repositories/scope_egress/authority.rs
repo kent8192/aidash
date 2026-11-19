@@ -1,7 +1,7 @@
 //! Per-process credentials bind a Tenant, Scratch Space and Run (ADR 0136).
 //! Preparation uses a distinct MAC domain. Run revocation and current Space
 //! authority are checked on every credential authentication.
-use aidash_application::egress::{Admission, ScopeAuthority, ScopeSettings};
+use aidash_application::egress::{ExternalAdmission, ScopeAuthority, ScopeSettings};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
 use aidash_domain::scratch::{HostAllowlist, ScratchState};
@@ -12,7 +12,7 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::apps::execution::repositories::egress::runner_key;
+use crate::apps::execution::repositories::egress::{ServiceSecrets, runner_key};
 use crate::apps::identity::repositories::{node_deletions, tenant_deletions};
 use crate::apps::workspaces::repositories::scratch;
 use crate::config::ScratchOperatorPolicy;
@@ -78,12 +78,14 @@ fn verify(key: &[u8], credential: &str) -> Option<(String, Uuid, Uuid, bool)> {
 pub struct ScratchAuthority {
 	store: Store,
 	policy: ScratchOperatorPolicy,
+	services: ServiceSecrets,
 	#[cfg(test)]
 	key: Option<SecretString>,
 }
 impl ScratchAuthority {
 	pub fn new(store: Store, policy: ScratchOperatorPolicy) -> Self {
 		Self {
+			services: ServiceSecrets::new(store.clone()),
 			store,
 			policy,
 			#[cfg(test)]
@@ -139,11 +141,7 @@ impl ScratchAuthority {
 		space: Uuid,
 	) -> aidash_application::Result<Option<ScopeSettings>> {
 		let found: crate::Result<_> = async {
-			let mut tx = self
-				.store
-				.pool
-				.begin(&TenancyScope::tenant(tenant)?)
-				.await?;
+			let mut tx = super::begin_timed(&self.store.pool, tenant).await?;
 			let found = scratch::read(&mut *tx, tenant, space).await?;
 			// Deleting a Tenant or a Node closes admission at once, although the
 			// Scratch Space stays Active until its data is purged.
@@ -261,18 +259,20 @@ impl ScopeAuthority for ScratchAuthority {
 			.ok_or(aidash_application::Error::Forbidden)
 	}
 
-	/// Refused until #738: admission that attaches a Tenant Secret needs its own
-	/// care, and External services keep working through the operation route.
+	/// External services made available to the Scratch Space, with their Tenant
+	/// Secrets attached (#738).
 	async fn admit_external(
 		&self,
-		_: &str,
-		_: &ScopeId,
-		_: &str,
-		_: &str,
-		_: &str,
-		_: &str,
-	) -> aidash_application::Result<Admission> {
-		Err(aidash_application::Error::Forbidden)
+		scope: &ScopeSettings,
+		service: &str,
+		method: &str,
+		path: &str,
+		query_digest: &str,
+	) -> aidash_application::Result<ExternalAdmission> {
+		self.services
+			.admit(scope, service, method, path, query_digest)
+			.await
+			.map_err(super::application_error)
 	}
 }
 

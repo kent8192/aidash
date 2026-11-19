@@ -242,21 +242,6 @@ struct State {
 	/// Serve an `anthropic/` model that declares explicit prompt caching.
 	explicit_cache_model: bool,
 	plan_connection: bool,
-	/// Evidence fragments the Run's evidence store holds.
-	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
-	/// Exact Research payload variants, indexed by their durable digest.
-	research_payloads: BTreeMap<String, Value>,
-	/// The Run's Research evidence was revoked.
-	research_revoked: bool,
-	/// Revoked only once this many revocation checks have answered.
-	research_revoked_after: Option<usize>,
-	research_checks: std::sync::atomic::AtomicUsize,
-	/// Provider results the Research account terms no longer keep.
-	expired_research: aidash_domain::research::expiry::ExpiredResults,
-	expired_research_after: Option<usize>,
-	/// A result the persistence boundary replaces when its account expires.
-	settled_research: Option<Value>,
-	expiry_checks: std::sync::atomic::AtomicUsize,
 	/// Completed artifacts, in completion order.
 	artifacts: Mutex<Vec<Value>>,
 	completion: Option<aidash_domain::completion::CompletionPolicy>,
@@ -476,22 +461,6 @@ impl ExecutionStore for Backend {
 			dropped: self.0.events_dropped.load(Ordering::Acquire),
 		})
 	}
-	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
-		for entry in &mut run.context.history {
-			if let ContextEvent::Tool { result, .. } = &mut entry.event
-				&& let Some(reference) =
-					aidash_domain::context::research::ResearchReference::parse(result)
-			{
-				*result = self
-					.0
-					.research_payloads
-					.get(&reference.digest)
-					.cloned()
-					.unwrap_or_else(|| reference.unavailable());
-			}
-		}
-		Ok(())
-	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.estimate_pinned").await?;
 		// Native persistence returns the saved projection, whose Research
@@ -601,45 +570,6 @@ impl ExecutionStore for Backend {
 			data,
 			created_at: chrono::Utc::now(),
 		})
-	}
-	async fn research_revoked(&self, _: &Run) -> Result<bool> {
-		self.record("store.research_revoked");
-		let checks = self
-			.0
-			.research_checks
-			.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-		Ok(self.0.research_revoked
-			|| self
-				.0
-				.research_revoked_after
-				.is_some_and(|after| checks >= after))
-	}
-	async fn expired_research(
-		&self,
-		_: &Run,
-	) -> Result<aidash_domain::research::expiry::ExpiredResults> {
-		self.record("store.expired_research");
-		let check = self.0.expiry_checks.fetch_add(1, Ordering::SeqCst);
-		if self
-			.0
-			.expired_research_after
-			.is_some_and(|after| check < after)
-		{
-			return Ok(Default::default());
-		}
-		Ok(self.0.expired_research.clone())
-	}
-	async fn unknown_evidence(
-		&self,
-		_: &Run,
-		references: &[aidash_domain::research::citations::EvidenceRef],
-	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
-		self.record("store.evidence");
-		Ok(references
-			.iter()
-			.filter(|reference| !self.0.known_evidence.contains(reference))
-			.copied()
-			.collect())
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		let _ = run;
@@ -784,7 +714,6 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		assert_eq!(token, self.0.token);
 		self.record("invocation.finish");
-		let output = self.0.settled_research.as_ref().unwrap_or(output);
 		self.0
 			.invocations
 			.lock()
@@ -2023,15 +1952,6 @@ fn fixture() -> Fixture {
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
 		plan_connection: false,
-		known_evidence: vec![],
-		research_payloads: BTreeMap::new(),
-		research_revoked: false,
-		research_revoked_after: None,
-		research_checks: Default::default(),
-		expired_research: Default::default(),
-		expired_research_after: None,
-		settled_research: None,
-		expiry_checks: Default::default(),
 		artifacts: Mutex::new(vec![]),
 		completion: None,
 		checks: None,
@@ -2287,6 +2207,45 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 		3
 	);
 	assert!(!calls.contains(&"provider.infer"));
+}
+/// An Outage Wait wakes with the short retries its outage spent still spent, so
+/// a failure of the woken step waits again instead of retrying for another
+/// minute. A Decider or Node outage keeps its own count, and its wait no
+/// generic one (ADR 0129).
+#[rstest]
+#[case::service(Some(aidash_domain::semantic::OUTAGE_RETRIES))]
+#[case::decider_or_node(None)]
+#[tokio::test]
+async fn an_outage_wake_keeps_the_short_retries_its_wait_spent(
+	mut fixture: Fixture,
+	#[case] spent: Option<u32>,
+) {
+	let wake_at = chrono::Utc::now();
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Outage {
+		service: "Native memory".into(),
+		started_at: wake_at - chrono::Duration::minutes(5),
+		wake_at,
+		cadence: aidash_domain::run_state::OutageCadence::Service,
+		resume: ResumeState::Ready(ReadyState::default()),
+	}));
+	fixture.run.recovery.retry =
+		spent.map(|count| aidash_domain::RetryState { count, at: wake_at });
+	Executor::new(&fixture.backend)
+		.advance(
+			&mut fixture.run,
+			fixture.backend.0.token,
+			&mut fixture.backend.clone(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Ready);
+	let writes = fixture.backend.0.writes.lock().unwrap();
+	let (event, saved) = writes.last().unwrap();
+	assert_eq!(event, "run.outage_resumed");
+	assert_eq!(
+		saved.recovery.retry.as_ref().map(|retry| retry.count),
+		spent
+	);
 }
 #[rstest]
 #[case(TaskStatus::Completed, RunPhase::Completed)]
@@ -2953,7 +2912,6 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 	};
 	// Jev keeps the leading text of an old result as a plain string.
 	let entries = [context::HistoryEntry {
-		research: None,
 		seq: 1,
 		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
 	}];
@@ -4021,7 +3979,6 @@ async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
 		unreachable!()
 	};
 	*result = aidash_application::context::offload::marker(entry.seq, result);
-	entry.research = None;
 	fixture.run.context.offloaded.get_or_insert_default();
 	fixture.run.context.offload_reads.summary_pending = true;
 	advance_sources(&mut fixture).await.unwrap();
@@ -4867,6 +4824,30 @@ impl Scripted {
 			keys: Mutex::new(vec![]),
 		})
 	}
+	/// A tool bound from `descriptor` as `identity`, with the contract the
+	/// Binding admits: its identity is the descriptor's, never a built-in one.
+	fn bound(
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+		identity: QualifiedRef,
+		specification: ToolSpec,
+	) -> Arc<Self> {
+		let contract = descriptor.declared_contract(identity).unwrap();
+		assert!(matches!(
+			contract.identity,
+			aidash_domain::tool::ToolIdentity::Descriptor(_)
+		));
+		Arc::new(Self {
+			mcp: false,
+			specification,
+			contract,
+			external_target: None,
+			outputs: Mutex::new(Default::default()),
+			connection_errors: Mutex::new(Default::default()),
+			invalid_errors: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+			keys: Mutex::new(vec![]),
+		})
+	}
 	/// A Tenant's HTTP tool, whose calls wait for a Tool call approval.
 	fn tenant(name: &str) -> Arc<Self> {
 		Arc::new(Self {
@@ -4927,23 +4908,6 @@ impl Scripted {
 	}
 	fn invocations(&self) -> usize {
 		*self.invocations.lock().unwrap()
-	}
-	fn research(operation: aidash_domain::research::Operation) -> Arc<Self> {
-		Arc::new(Self {
-			mcp: false,
-			specification: ToolSpec {
-				name: aidash_domain::tool::providers::research_alias(operation).into(),
-				description: "Research fixture".into(),
-				parameters: json!({"type":"object"}),
-			},
-			contract: aidash_domain::tool::providers::research_contract(operation),
-			external_target: None,
-			outputs: Mutex::new(Default::default()),
-			connection_errors: Mutex::new(Default::default()),
-			invalid_errors: Mutex::new(Default::default()),
-			invocations: Mutex::new(0),
-			keys: Mutex::new(vec![]),
-		})
 	}
 }
 #[async_trait]
@@ -6937,7 +6901,6 @@ async fn catch_up_steps_carry_no_breakpoints() {
 	);
 }
 
-mod research;
 mod unassigned;
 
 mod completion;
@@ -7417,4 +7380,43 @@ async fn delivered_aliased_journal_read_is_recorded_before_intake(mut fixture: F
 	assert!(context.offload_reads.protects(read.result_seq, 0));
 	let restored: Context = serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
 	assert_eq!(restored.offload_reads.ranges.len(), 1);
+}
+
+fn service_line(id: &str, methods: &[&str], description: &str) -> ExternalServiceLine {
+	ExternalServiceLine {
+		id: id.into(),
+		url: format!("http://services.aidash.internal/{id}/"),
+		methods: methods.iter().map(|method| (*method).to_owned()).collect(),
+		description: description.into(),
+	}
+}
+
+#[test]
+fn a_run_without_usable_external_services_hears_nothing_about_them() {
+	assert_eq!(external_services_section(&[]), None);
+}
+
+#[test]
+fn starting_instructions_list_each_usable_external_service() {
+	let section = external_services_section(&[
+		service_line("weather", &["GET"], "Forecasts by city"),
+		service_line("tickets", &["GET", "POST"], ""),
+	])
+	.unwrap();
+	assert!(section.contains("plain HTTP"), "{section}");
+	assert!(
+		section.contains("names the services usable now"),
+		"{section}"
+	);
+	assert!(
+		section.contains(
+			"- weather: http://services.aidash.internal/weather/ (methods GET): Forecasts by city"
+		),
+		"{section}"
+	);
+	assert!(
+		section
+			.contains("- tickets: http://services.aidash.internal/tickets/ (methods GET, POST)\n"),
+		"{section}"
+	);
 }

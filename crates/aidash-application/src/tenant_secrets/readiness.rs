@@ -58,6 +58,9 @@ pub enum Kind {
 	/// One Secret slot a Marketplace package declares, before the installer
 	/// chooses which of their Tenant Secrets fills it.
 	Slot,
+	/// One remote server of an Agent Plugin the Agent takes in, whose settings name a secret
+	/// that may be the shared Tenant Secret. `item` is `<plugin>/<server>`.
+	AgentPluginServer,
 }
 
 /// One item readiness fact. `item` names the bound tool or External service,
@@ -147,11 +150,13 @@ fn judge(
 		}
 		Availability::Available => match target.kind {
 			Kind::Slot => slot(target.endpoint.as_deref(), can_manage, secrets),
-			Kind::Tool | Kind::ExternalService => match target.tenant_secret_name.as_deref() {
-				// A tool that names no Tenant Secret needs none.
-				None => (Status::Ready, Repair::None),
-				Some(name) => named(name, target.endpoint.as_deref(), can_manage, secrets),
-			},
+			Kind::Tool | Kind::ExternalService | Kind::AgentPluginServer => {
+				match target.tenant_secret_name.as_deref() {
+					// A tool that names no Tenant Secret needs none.
+					None => (Status::Ready, Repair::None),
+					Some(name) => named(name, target.endpoint.as_deref(), can_manage, secrets),
+				}
+			}
 		},
 	}
 }

@@ -403,6 +403,14 @@ pub trait ExecutionPodRuntime: Send + Sync {
 	async fn mcp_start(&self, request: &McpStartRequest) -> Result<McpSession>;
 	async fn mcp_call(&self, request: &McpCallRequest) -> Result<McpCallResult>;
 	async fn mcp_stop(&self, operation_id: &str) -> Result<()>;
+	/// Stop every stdio MCP session the Runner holds for the Run in this Scratch Space,
+	/// including one whose start the caller lost track of. Other Background processes of
+	/// the Run keep running. Returns once each session ended.
+	async fn mcp_stop_run(&self, _scratch_space_id: &str, _run_id: &str) -> Result<()> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot stop a Run's MCP sessions".into(),
+		)))
+	}
 	async fn python_cell(&self, request: &CommandRequest) -> Result<CommandResult>;
 	async fn python_stop(&self, scratch_space_id: &str, run_id: &str) -> Result<()>;
 	async fn change_log(

@@ -1,5 +1,5 @@
-//! Research provenance retained independently of the Context Journal.
-use reinhardt::db::{associations::ForeignKeyField, orm::Json};
+//! Admitted Journal ranges retained independently of the Context Journal.
+use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -24,6 +24,4 @@ pub struct MemoryJournalProof {
 	pub from_seq: i64,
 	#[field]
 	pub through_seq: i64,
-	#[field]
-	pub research: Json<serde_json::Value>,
 }

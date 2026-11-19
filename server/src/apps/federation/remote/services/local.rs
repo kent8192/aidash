@@ -78,8 +78,12 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
 fn response(response: Response) -> Outcome {
 	Outcome {
 		status: response.status.as_u16(),
-		semantic_reason: header(&response.headers, "x-aidash-semantic-reason")
-			.and_then(|reason| serde_json::from_value(json!(reason)).ok()),
+		// As the HTTP client does: the specific cause first, then the reason
+		// established peers read.
+		semantic_reason: ["x-aidash-semantic-cause", "x-aidash-semantic-reason"]
+			.into_iter()
+			.filter_map(|name| header(&response.headers, name))
+			.find_map(|reason| serde_json::from_value(json!(reason)).ok()),
 		execution_refusal: header(&response.headers, "x-aidash-execution-refusal")
 			.and_then(|reason| serde_json::from_value(json!(reason)).ok()),
 		transaction_pending: header(&response.headers, "x-aidash-transaction-pending")

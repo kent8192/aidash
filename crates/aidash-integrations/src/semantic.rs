@@ -140,7 +140,13 @@ pub async fn embed_input(
 			&source,
 			&config.model,
 		)
-		.await?;
+		.await
+		.map_err(|error| match error {
+			Error::DataProtectionRoute { .. } => {
+				Error::RemoteSemantic(aidash_domain::semantic::Failure::DataProtection)
+			}
+			error => error,
+		})?;
 		body["provider"] = context.data_protection.requirement().provider();
 		if !routes.is_empty() {
 			body["provider"]["only"] = json!(routes);

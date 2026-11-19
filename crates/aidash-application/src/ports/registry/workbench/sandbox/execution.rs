@@ -32,10 +32,6 @@ pub trait ExecutionScope: RealDispatchScope {
 }
 #[async_trait]
 pub trait ExecutionRepository: RealDispatchRepository {
-	/// The configured search provider's actual disclosure destination.
-	fn search_destination(&self, _provider: &str, _arguments: &Value) -> Result<Option<String>> {
-		Ok(None)
-	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>>;
 	/// Read and commit one observation before inference or outcome classification.
 	async fn read_session(&self, id: Uuid) -> Result<TestSession>;

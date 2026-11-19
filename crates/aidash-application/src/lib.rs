@@ -22,7 +22,6 @@ pub mod provider_authorization;
 pub mod provider_credentials;
 pub mod recovery;
 pub mod research;
-pub mod retention;
 pub mod route_refusal;
 pub mod safety_stop;
 pub mod schedules;
@@ -123,6 +122,13 @@ pub enum Error {
 		model: String,
 		refusal: route_refusal::RouteRefusal,
 	},
+	/// OpenRouter's ZDR catalog offers the model no route that meets the
+	/// call's Data Protection Level. Waiting does not change that.
+	#[error("Data Protection: {}", .refusal.sentence(.model))]
+	DataProtectionRoute {
+		model: String,
+		refusal: aidash_domain::data_protection::CatalogRefusal,
+	},
 	#[error("verified model media route unavailable for {model}{}", route_refusal::CandidateRefusals(.candidates))]
 	MediaRouteUnavailable {
 		model: String,
@@ -137,6 +143,11 @@ pub enum Error {
 	InferenceStalled,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
 	SemanticUnavailable,
+	/// Native memory of this Home is closed while a write's outcome is unknown
+	/// (ADR 0083). It reopens by itself once reconciled, so a Run waits for it
+	/// (ADR 0129).
+	#[error("native memory is closed until its last write is reconciled; it reopens by itself")]
+	MemoryClosed,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	/// An authenticated authority identified the suspension epoch stopping a Run.
