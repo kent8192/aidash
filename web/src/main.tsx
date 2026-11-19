@@ -624,7 +624,7 @@ function Dashboard({
   // Stopped Schedules and the Tasks Schedules started, for the bell (#557).
   const dutyNotices = useQuery({
     queryKey: ["schedule-notices"],
-    queryFn: () => apiFetch<DutyNotices>("/api/schedules/notices"),
+    queryFn: () => apiFetch<DutyNotices>("/api/duties/notices"),
     refetchInterval: 15000,
     retry: false,
     enabled: connected && subjectTenant !== null,
