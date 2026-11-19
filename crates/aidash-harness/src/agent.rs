@@ -3596,7 +3596,21 @@ connection: None,
 					progress.deferred_selected_media = selections[..deferred_count].to_vec();
 					progress.selected_media = selections[deferred_count..].to_vec();
 				}
-                let output = if invocation.status != "COMPLETED" && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
+				// A call made again under its approval's own key that raises the same approval waits on
+				// an answer nothing on this Node gives: the Home's person's, for a Run executing for
+				// another Home (ADR 0139). Its invocation stays open, so the next wake asks again
+				// instead of replaying this wait for good. Only a replay-safe call may run again.
+				let reraised = invocation.status != "COMPLETED"
+					&& contract.replay_safe()
+					&& !contract.behavior.tenant_tool_call()
+					&& !resumed_operation
+					&& run.state.tool()?.approval.is_some_and(|approval| {
+						matches!(
+							FrameworkResult::decode(&contract, &output, &call.arguments),
+							Ok(FrameworkResult::Approval(id)) if id == approval
+						)
+					});
+                let output = if !reraised && invocation.status != "COMPLETED" && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
                 } else { output };
                 let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
