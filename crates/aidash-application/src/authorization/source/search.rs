@@ -51,7 +51,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let task = access.disclosure_task(description.task.id).await?;
 		let mut query = format!("{}\n{}", task.title, task.description);
 		for input in &operation.inputs {
-			let message = access.input_message(task.workspace_id, input.id).await?;
+			let message = access.input_message(task.thread_id, input.id).await?;
 			if content_digest(&message.content) != input.digest {
 				return Err(Error::RemoteSemantic(Failure::Invalidated));
 			}
@@ -79,7 +79,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		// is embedded by this Home as its Tenant's memory-retrieval maintenance
 		// (ADR 0006), so a missing or revoked Provider Credential Binding fails
 		// at the embedding call, after the same authority checks as before.
-		let spec = access.index_spec(task.workspace_id).await?;
+		let spec = access.index_spec(task.thread_id).await?;
 		let transport_truncated = query.len() > 32768;
 		let (query, query_truncated) = bounded_query(&operation.query, spec.max_input_bytes);
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);
@@ -97,12 +97,12 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 			max_tokens,
 		};
 		let prepared = access
-			.prepare_search(task.workspace_id, &input, &agent)
+			.prepare_search(task.thread_id, &input, &agent)
 			.await?;
 		let ordinary_digest = prepared.candidate_digest();
 		let candidate_digest =
 			if let Some(native) = access.native_stamp(&description.semantic).await? {
-				digest(&json!({"workspace":ordinary_digest,"memory":native}))
+				digest(&json!({"thread":ordinary_digest,"memory":native}))
 			} else {
 				ordinary_digest
 			};
@@ -187,7 +187,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				operation_digest: operation.digest()?,
 				home_node: repository.home_address().to_owned(),
 				tenant: description.source_tenant.clone(),
-				workspace_id: task.workspace_id,
+				thread_id: task.thread_id,
 				grant_id: operation.grant_id,
 				admission_id: operation.admission_id,
 				executor: input.agent.clone().ok_or(Error::Forbidden)?,

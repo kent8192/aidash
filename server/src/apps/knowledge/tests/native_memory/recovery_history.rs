@@ -7,11 +7,11 @@ async fn a_protected_home_never_silently_downgrades_to_local_only_memory(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -206,11 +206,11 @@ async fn uncertain_floor_publication_stays_closed_across_restart_and_preserves_t
 	#[case] boundary: &str,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -325,11 +325,11 @@ async fn an_unavailable_preflight_rejects_writes_without_closing_proven_reads(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -402,11 +402,11 @@ async fn a_failed_sql_commit_is_preserved_in_independent_history(
 ) {
 	use aidash_server::database::native;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -570,11 +570,11 @@ async fn lost_ledger_recovery_uses_current_bodies_and_never_revives_an_old_archi
 	let database = database.await;
 	let server = fixture.server;
 	let endpoint = format!("{}/v1", server.url);
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -718,11 +718,11 @@ async fn all_bank_archives_continue_after_a_failure_and_prune_without_the_ledger
 ) {
 	use aidash_server::database::native;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -845,11 +845,11 @@ async fn a_delayed_old_writer_cannot_publish_after_the_replacement_disk_barrier(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -923,11 +923,11 @@ async fn lost_ledger_reconciliation_fills_a_matching_missing_body_from_its_off_d
 	let database = database.await;
 	let server = fixture.server;
 	let endpoint = format!("{}/v1", server.url);
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1007,11 +1007,11 @@ async fn interrupted_protection_seeding_can_finish_without_reopening_an_unrelate
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1075,12 +1075,12 @@ async fn a_killed_archive_temporary_cannot_bypass_spool_bounds_or_block_policy_e
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	memory::operate(
@@ -1186,7 +1186,7 @@ async fn scheduled_backup_revalidates_subject_authority_with_the_actual_read_onl
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
@@ -1215,7 +1215,7 @@ async fn scheduled_backup_revalidates_subject_authority_with_the_actual_read_onl
 	let bank = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

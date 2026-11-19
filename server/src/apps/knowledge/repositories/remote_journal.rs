@@ -749,11 +749,11 @@ impl JournalScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		let store = self.store;
 		match &mut self.transaction {
-			Transaction::Owned(tx) => store.event(tx, Some(workspace), kind, data).await,
-			Transaction::Borrowed(tx) => store.event(tx, Some(workspace), kind, data).await,
+			Transaction::Owned(tx) => store.event(tx, Some(thread), kind, data).await,
+			Transaction::Borrowed(tx) => store.event(tx, Some(thread), kind, data).await,
 		}
 		.map(|_| ())
 		.map_err(Into::into)

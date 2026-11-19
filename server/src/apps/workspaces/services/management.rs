@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::apps::workspaces::serializers::management::AbandonInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
+use crate::apps::workspaces::serializers::management::ThreadInput;
 use crate::apps::workspaces::serializers::management::TitleInput;
-use crate::apps::workspaces::serializers::management::WorkspaceInput;
 
 use crate::apps::identity::services::http_auth::scoped;
 
@@ -36,13 +36,13 @@ impl CollaborationManagement {
 		};
 		scope.task_page(page.offset).await
 	}
-	/// Open a Workspace (#1008, ADR 0140): a person's request to an Agent or
+	/// Open a Thread (#1008, ADR 0140): a person's request to an Agent or
 	/// cluster opens it with its Root Task; without a target it opens empty.
-	pub(crate) async fn workspace_create(
+	pub(crate) async fn thread_create(
 		&self,
 		actor: Actor,
-		input: WorkspaceInput,
-	) -> Result<aidash_domain::workspaces::WorkspaceOpened> {
+		input: ThreadInput,
+	) -> Result<aidash_domain::threads::ThreadOpened> {
 		crate::http::validate(&input)?;
 		let f = self.runtime.clone();
 		match (&input.target, &input.target_kind) {
@@ -56,7 +56,7 @@ impl CollaborationManagement {
 				Ok(interaction::conversation(
 					&f,
 					&identity,
-					aidash_application::workspaces::ConversationRequest {
+					aidash_application::threads::ConversationRequest {
 						title: &input.title,
 						request,
 						target,
@@ -72,7 +72,7 @@ impl CollaborationManagement {
 				let Some(scope) = scoped(&f, actor) else {
 					return Err(Error::Forbidden);
 				};
-				let workspace = scope
+				let thread = scope
 					.create(
 						&input.title,
 						input.node.as_ref(),
@@ -82,11 +82,11 @@ impl CollaborationManagement {
 					.await?;
 				if let Some(request) = &input.request {
 					scope
-						.message_keyed(workspace.id, request, Some(Uuid::new_v4()))
+						.message_keyed(thread.id, request, Some(Uuid::new_v4()))
 						.await?;
 				}
-				Ok(aidash_domain::workspaces::WorkspaceOpened {
-					workspace,
+				Ok(aidash_domain::threads::ThreadOpened {
+					thread,
 					conversation: None,
 					task: None,
 					delegation: None,
@@ -97,19 +97,19 @@ impl CollaborationManagement {
 			)),
 		}
 	}
-	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
+	pub(crate) async fn thread_get(&self, actor: Actor, id: Uuid) -> Result<ThreadSnapshot> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
 		};
 		scope.snapshot(id).await
 	}
-	pub(crate) async fn workspace_update(
+	pub(crate) async fn thread_update(
 		&self,
 		actor: Actor,
 		id: Uuid,
 		input: TitleInput,
-	) -> Result<Workspace> {
+	) -> Result<Thread> {
 		let f = self.runtime.clone();
 		let Some(scope) = scoped(&f, actor) else {
 			return Err(Error::Forbidden);
@@ -143,7 +143,7 @@ impl CollaborationManagement {
 	) -> Result<SentResponse> {
 		if !input.attachment_ids.is_empty() {
 			return Err(Error::Invalid(
-				"workspace messages do not accept run attachments".into(),
+				"thread messages do not accept run attachments".into(),
 			));
 		}
 		let f = self.runtime.clone();

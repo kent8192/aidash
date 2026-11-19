@@ -47,12 +47,9 @@ pub trait SchedulingScope: Send {
 	async fn input_after(&mut self, run: Uuid, seq: i64) -> Result<bool>;
 	/// An operation has reached a terminal state or no longer exists for this Run.
 	async fn operation_finished(&mut self, run: Uuid, operation: Uuid) -> Result<bool>;
-	/// First undelivered workspace event's coalesced wake time.
-	async fn workspace_event_after(
-		&mut self,
-		run: Uuid,
-		cursor: i64,
-	) -> Result<Option<DateTime<Utc>>>;
+	/// First undelivered thread event's coalesced wake time.
+	async fn thread_event_after(&mut self, run: Uuid, cursor: i64)
+	-> Result<Option<DateTime<Utc>>>;
 	async fn approval(&mut self, id: Uuid) -> Result<Option<Approval>>;
 	async fn dependencies_ready(&mut self, task: Uuid) -> Result<bool>;
 	/// Compare revision, install the lease, advance revision and persist recovery state.

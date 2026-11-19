@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 /// The implementation holds the creator, policy and membership locks until the
-/// resulting Workspace and Subnode are committed together. Idempotency must be
+/// resulting Thread and Subnode are committed together. Idempotency must be
 /// serialized across concurrent calls by the same Run.
 #[async_trait]
 pub trait CreateScope: AuthorizationLease {
@@ -30,7 +30,7 @@ pub trait CreateScope: AuthorizationLease {
 	async fn creator_authority(&mut self, run: &RunMetadata) -> Result<Allowance>;
 	/// Checks Node Catalog Approval and returns the member's complete Binding closure.
 	async fn approved_member_authority(&mut self, agent: &EntityRef) -> Result<Allowance>;
-	/// Creates the Workspace and membership atomically, with a durable receipt for `key`.
+	/// Creates the Thread and membership atomically, with a durable receipt for `key`.
 	async fn insert(&mut self, run: &RunMetadata, key: &str, input: &Create) -> Result<Subnode>;
 }
 
@@ -63,7 +63,7 @@ pub trait ManageScope: Send {
 		caller: Uuid,
 	) -> Result<()>;
 	async fn remove_member(&mut self, subnode: &Subnode, agent: &EntityRef) -> Result<()>;
-	/// Inserts the task in the Subnode Workspace and admits its leader with the
+	/// Inserts the task in the Subnode Thread and admits its leader with the
 	/// creating Run's subject chain in the same transaction. Reuses `key`.
 	async fn task(
 		&mut self,
@@ -101,10 +101,10 @@ pub trait EndScope: Send {
 	async fn mark_ended(
 		&mut self,
 		id: aidash_domain::subnodes::SubnodeId,
-		workspace: Uuid,
+		thread: Uuid,
 		reason: aidash_domain::subnodes::EndReason,
 	) -> Result<()>;
-	async fn active_runs(&mut self, workspace: Uuid) -> Result<Vec<Uuid>>;
+	async fn active_runs(&mut self, thread: Uuid) -> Result<Vec<Uuid>>;
 	async fn control_run(
 		&mut self,
 		run: Uuid,

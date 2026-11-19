@@ -147,7 +147,7 @@ async fn task_run_list_returns_the_claimed_run_and_forbids_missing_tasks(
 
 #[rstest]
 #[tokio::test]
-async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
+async fn bounded_lists_enforce_current_thread_task_and_run_visibility(
 	#[future] execution: ExecutionFixture,
 ) {
 	let execution = Box::pin(execution).await;
@@ -227,7 +227,7 @@ async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
 		200,
 	);
 	assert_json(execution.subject.get(&task_path).await.unwrap(), 403);
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-workspace-read","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["*"]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-thread-read","effect":"deny","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["*"]}}));
 	assert_json(
 		execution
 			.app
@@ -241,7 +241,7 @@ async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
 			.unwrap(),
 		200,
 	);
-	// Each candidate's Workspace is checked in turn (#664 decision 1), so the
+	// Each candidate's Thread is checked in turn (#664 decision 1), so the
 	// 51 hidden requests still page by candidates and every page is empty.
 	let requests = assert_json(
 		execution.subject.get("/api/human-requests").await.unwrap(),
@@ -556,7 +556,7 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 	let events = app
 		.runtime
 		.store
-		.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
+		.events(&TEST_FIXTURE, 0, Some(run.thread_id), 500)
 		.await
 		.unwrap();
 	let actions: Vec<_> = events
@@ -682,7 +682,7 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 	let events = app
 		.runtime
 		.store
-		.events(&TEST_FIXTURE, 0, Some(run.workspace_id), 500)
+		.events(&TEST_FIXTURE, 0, Some(run.thread_id), 500)
 		.await
 		.unwrap();
 	assert_eq!(

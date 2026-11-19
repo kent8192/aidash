@@ -69,8 +69,8 @@ pub async fn create(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Resul
 	create_dedicated(scope, space).await
 }
 
-/// A space dedicated to one new Workspace is authorized by creating that
-/// Workspace, so it does not need `scratch.create`.
+/// A space dedicated to one new Thread is authorized by creating that
+/// Thread, so it does not need `scratch.create`.
 pub async fn create_dedicated(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Result<()> {
 	let person = scope.person().to_owned();
 	scope.require_node_use(&space.node, &person).await?;
@@ -245,9 +245,9 @@ pub async fn delete(
 	scope.clear_contents(id).await
 }
 
-/// Select the immutable Scratch Space for a new Workspace, creating one
-/// dedicated to that Workspace when no existing space was requested.
-pub async fn select_for_workspace(
+/// Select the immutable Scratch Space for a new Thread, creating one
+/// dedicated to that Thread when no existing space was requested.
+pub async fn select_for_thread(
 	scope: &mut dyn ScratchScope,
 	node: &NodeName,
 	name: &str,

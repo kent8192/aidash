@@ -63,14 +63,14 @@ async fn description_lease_mode(
 /// for each remote retrieval. Read after the live-grant checks above, and only
 /// when the grant carries Home semantic access.
 ///
-/// The digest covers every live entry of the Workspace, as it does for a local
+/// The digest covers every live entry of the Thread, as it does for a local
 /// Run, so it also moves when an entry the executor may not retrieve changes.
-/// The receiver learns only that the Workspace corpus changed, never content.
+/// The receiver learns only that the Thread corpus changed, never content.
 async fn corpus_digest(store: &Store, description: &Description) -> Result<Option<String>> {
 	if description.semantic.disabled() {
 		return Ok(None);
 	}
-	// Home reads its own Workspace, in the Tenant that issued the grant.
+	// Home reads its own Thread, in the Tenant that issued the grant.
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&description.source_tenant)?;
 	crate::semantic::services::memory_context::remote_corpus_digest(
 		store.pool.in_scope(&scope),
@@ -142,7 +142,7 @@ impl RemoteGrants {
 		.await
 		.map_err(Into::into)
 	}
-	/// The pinned Description, plus the Workspace's current corpus digest.
+	/// The pinned Description, plus the Thread's current corpus digest.
 	pub(crate) async fn describe(
 		&self,
 		admitted: Admitted,
@@ -168,14 +168,14 @@ impl RemoteGrants {
 		&self,
 		admitted: Admitted,
 		input: VerifyInput,
-	) -> Result<crate::domain::WorkspaceSnapshot> {
+	) -> Result<crate::domain::ThreadSnapshot> {
 		let f = self.runtime.clone();
 		let (mut access, description) =
 			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
 		let result = aidash_application::authorization::source::snapshot::read(
 			&mut crate::bootstrap::source_snapshot_scope(&mut access),
 			description.grant_id,
-			description.task.workspace_id,
+			description.task.thread_id,
 		)
 		.await
 		.map_err(Into::into);

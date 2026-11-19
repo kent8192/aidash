@@ -791,16 +791,16 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 	assert_eq!(status, 200, "{grant}");
 	assert_eq!(grant["revision"], 1);
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = federation
+	let thread = federation
 		.store
-		.create_workspace(&acme, "alice", "Browser management")
+		.create_thread(&acme, "alice", "Browser management")
 		.await
 		.unwrap();
 	let task = federation
 		.store
 		.create_task(
 			&acme,
-			workspace.id,
+			thread.id,
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
 				description: "Browser Deployment Administrator control".into(),
@@ -937,10 +937,10 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		"/api/transactions",
 		"/api/generation/acme/policies/research",
 		"/api/generation/acme/requests/00000000-0000-0000-0000-000000000001/control",
-		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/index",
-		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/search",
-		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
-		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
+		"/api/threads/00000000-0000-0000-0000-000000000001/semantic/index",
+		"/api/threads/00000000-0000-0000-0000-000000000001/semantic/search",
+		"/api/threads/00000000-0000-0000-0000-000000000001/semantic/entries",
+		"/api/threads/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
 		"/api/workbench/drafts",
 		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
 	] {
@@ -963,7 +963,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		call(
 			&app,
 			"DELETE",
-			"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002",
+			"/api/threads/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002",
 			true,
 			true,
 			Some("deployment_administrator"),
@@ -1818,10 +1818,10 @@ async fn google_session_provisions_private_access_without_registration(
 	assert_eq!(status, 200, "{still_pending}");
 	assert_eq!(still_pending["id"], pending["id"]);
 	assert_eq!(still_pending["status"], "pending");
-	let (status, own_workspace) = call(
+	let (status, own_thread) = call(
 		&fixture.app,
 		"POST",
-		"/api/workspaces",
+		"/api/threads",
 		true,
 		true,
 		Some(&context),
@@ -1829,12 +1829,12 @@ async fn google_session_provisions_private_access_without_registration(
 		json!({"title":"Personal work","request":"Use the private tenant"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{own_workspace}");
+	assert_eq!(status, 200, "{own_thread}");
 	assert_eq!(
 		call(
 			&fixture.app,
 			"GET",
-			&format!("/api/workspaces/{}", own_workspace["id"].as_str().unwrap()),
+			&format!("/api/threads/{}", own_thread["id"].as_str().unwrap()),
 			true,
 			false,
 			Some(&context),
@@ -1866,10 +1866,10 @@ async fn google_session_provisions_private_access_without_registration(
 		shared["tenant"].as_str().unwrap(),
 		shared["id"].as_str().unwrap()
 	);
-	let (status, shared_workspace) = call(
+	let (status, shared_thread) = call(
 		&fixture.app,
 		"POST",
-		"/api/workspaces",
+		"/api/threads",
 		true,
 		true,
 		Some(&shared_context),
@@ -1877,15 +1877,12 @@ async fn google_session_provisions_private_access_without_registration(
 		json!({"title":"Shared work","request":"Keep shared data separate"}),
 	)
 	.await;
-	assert_eq!(status, 200, "{shared_workspace}");
+	assert_eq!(status, 200, "{shared_thread}");
 	assert_eq!(
 		call(
 			&fixture.app,
 			"GET",
-			&format!(
-				"/api/workspaces/{}",
-				shared_workspace["id"].as_str().unwrap()
-			),
+			&format!("/api/threads/{}", shared_thread["id"].as_str().unwrap()),
 			true,
 			false,
 			Some(&context),

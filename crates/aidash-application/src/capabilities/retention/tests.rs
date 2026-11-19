@@ -25,7 +25,7 @@ fn area(manifest: Vec<MountedFile>) -> Area {
 		id: Uuid::from_u128(1),
 		tenant: "acme".into(),
 		home_node: "node".into(),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		agent_id: "research".into(),
 		owner: "alice".into(),
 		generation: 1,
@@ -87,8 +87,8 @@ impl RetentionScope for Fake {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Ok(self.resource("workspace", id, json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		Ok(self.resource("thread", id, json!({})))
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.required.push(format!("{}:{action}", resource.kind));
@@ -157,11 +157,7 @@ async fn retaining_a_plain_version_keeps_only_that_version(#[from(plain)] mut sc
 	assert_eq!(hold.files.len(), 1);
 	assert_eq!(hold.files[0].path, "report.md");
 	assert_eq!(scope.inserts, 1);
-	assert!(
-		scope
-			.required
-			.contains(&"workspace:workspace.read".to_string())
-	);
+	assert!(scope.required.contains(&"thread:thread.read".to_string()));
 	assert!(
 		scope
 			.required

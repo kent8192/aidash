@@ -251,7 +251,7 @@ pub mod tools;
 
 pub mod registry;
 
-pub mod workspaces;
+pub mod threads;
 
 pub mod marketplace;
 

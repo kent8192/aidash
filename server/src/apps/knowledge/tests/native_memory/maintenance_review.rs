@@ -10,11 +10,11 @@ async fn local_archive_maintenance_reuses_verified_history_during_an_object_outa
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

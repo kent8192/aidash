@@ -46,7 +46,7 @@ fn inspection(kind: &str) -> Inspection {
 	}
 }
 fn task() -> Task {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"title":"title","description":"intent","status":"OPEN","requirements":{},"owner":null,"created_by":"requester","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-04T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"thread_id":Uuid::from_u128(2),"title":"title","description":"intent","status":"OPEN","requirements":{},"owner":null,"created_by":"requester","dependencies":[],"parent_id":null,"revision":1,"created_at":"2026-10-04T00:00:00Z"})).unwrap()
 }
 impl Scope {
 	fn new() -> Self {
@@ -106,8 +106,8 @@ impl SourceAuthorityScope for Scope {
 		}
 		Ok(())
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Ok(self.source_resource("workspace", &id.to_string(), json!({"workspace_id":id})))
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		Ok(self.source_resource("thread", &id.to_string(), json!({"thread_id":id})))
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		Ok(self.source_resource("task", &task.id.to_string(), self.context.clone()))
@@ -154,7 +154,7 @@ async fn exact_receiver_dependencies_require_read_and_execution_authority(
 			.map(|(action, _, _)| action.as_str())
 			.collect::<Vec<_>>(),
 		vec![
-			"workspace.read",
+			"thread.read",
 			"task.read",
 			"task.delegate",
 			"task.execute",
@@ -173,11 +173,11 @@ async fn exact_receiver_dependencies_require_read_and_execution_authority(
 		json!("aidash://receiver")
 	);
 	assert_eq!(resource.attributes["digest"], json!("sha256:definition"));
-	assert_eq!(*context, json!({"workspace_id":task().workspace_id}));
+	assert_eq!(*context, json!({"thread_id":task().thread_id}));
 	assert!(scope.generation_checked);
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("task.read")]
 #[case("task.delegate")]
 #[case("task.execute")]

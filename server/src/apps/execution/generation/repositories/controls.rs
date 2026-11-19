@@ -241,11 +241,11 @@ impl GenerationLifecycleScope for Scope {
 	}
 	async fn event(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		data: Value,
 	) -> aidash_application::Result<()> {
-		self.lifecycle().event(workspace, kind, data).await
+		self.lifecycle().event(thread, kind, data).await
 	}
 	async fn replay(
 		&mut self,

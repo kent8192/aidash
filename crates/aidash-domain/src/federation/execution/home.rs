@@ -10,7 +10,7 @@ pub struct Grant {
 	pub id: Uuid,
 	pub task_id: Uuid,
 	pub task_revision: i64,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub node_id: String,
 	pub tenant: String,
 	pub credential_id: Uuid,
@@ -77,7 +77,7 @@ impl Grant {
 	pub fn matches_authority(&self, expected: &PreparationAuthority<'_>) -> bool {
 		self.task_id == expected.task_id
 			&& self.task_revision == expected.task.revision
-			&& self.workspace_id == expected.task.workspace_id
+			&& self.thread_id == expected.task.thread_id
 			&& self.node_id == expected.input.node_id
 			&& self.credential_id == expected.identity.credential_id
 			&& self.tenant == expected.identity.tenant
@@ -94,7 +94,7 @@ impl Grant {
 	) -> serde_json::Result<Option<crate::Task>> {
 		let expected = binding.map_or(self.task_revision, |bound| bound.task_revision);
 		if task.revision != expected
-			|| task.workspace_id != self.workspace_id
+			|| task.thread_id != self.thread_id
 			|| (binding.is_none() && task.status != crate::TaskStatus::Open)
 		{
 			return Ok(None);
@@ -104,7 +104,7 @@ impl Grant {
 			if bound.grant_id != self.id
 				|| bound.task_id != task.id
 				|| original.id != task.id
-				|| original.workspace_id != task.workspace_id
+				|| original.thread_id != task.thread_id
 				|| original.revision != self.task_revision
 			{
 				return Ok(None);

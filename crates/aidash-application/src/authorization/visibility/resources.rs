@@ -15,8 +15,8 @@ pub async fn task_resource(
 	scope: &mut dyn ResourceVisibilityScope,
 	task: &Task,
 ) -> Result<Resource> {
-	let workspace = scope.workspace(task.workspace_id).await?;
-	let mut a = workspace.attributes;
+	let thread = scope.thread(task.thread_id).await?;
+	let mut a = thread.attributes;
 	a["created_by"] = json!(task.created_by);
 	a["task_id"] = json!(task.id);
 	Ok(scope.resource("task", &task.id.to_string(), a))
@@ -25,8 +25,8 @@ pub async fn artifact_resource(
 	scope: &mut dyn ResourceVisibilityScope,
 	artifact: &Artifact,
 ) -> Result<Resource> {
-	let workspace = scope.workspace(artifact.workspace_id).await?;
-	let mut a = workspace.attributes;
+	let thread = scope.thread(artifact.thread_id).await?;
+	let mut a = thread.attributes;
 	a["created_by"] = json!(artifact.created_by);
 	a["task_id"] = json!(artifact.task_id);
 	a["kind"] = json!(artifact.kind);
@@ -36,8 +36,8 @@ pub async fn message_resource(
 	scope: &mut dyn ResourceVisibilityScope,
 	message: &Message,
 ) -> Result<Resource> {
-	let workspace = scope.workspace(message.workspace_id).await?;
-	let mut a = workspace.attributes;
+	let thread = scope.thread(message.thread_id).await?;
+	let mut a = thread.attributes;
 	a["created_by"] = json!(message.sender);
 	a["sender"] = json!(message.sender);
 	Ok(scope.resource("message", &message.id.to_string(), a))
@@ -46,8 +46,8 @@ pub async fn human_resource(
 	scope: &mut dyn ResourceVisibilityScope,
 	request: &HumanRequest,
 ) -> Result<Resource> {
-	let workspace = scope.workspace(request.workspace_id).await?;
-	let mut a = workspace.attributes;
+	let thread = scope.thread(request.thread_id).await?;
+	let mut a = thread.attributes;
 	a["kind"] = json!(request.kind);
 	a["run_id"] = json!(request.run_id);
 	Ok(scope.resource("human_request", &request.id.to_string(), a))
@@ -56,8 +56,8 @@ pub async fn conversation_resource(
 	scope: &mut dyn ResourceVisibilityScope,
 	conversation: &Conversation,
 ) -> Result<Resource> {
-	let workspace = scope.workspace(conversation.workspace_id).await?;
-	let mut a = workspace.attributes;
+	let thread = scope.thread(conversation.thread_id).await?;
+	let mut a = thread.attributes;
 	a["created_by"] = json!(conversation.created_by);
 	a["target"] = json!(conversation.target);
 	a["target_kind"] = json!(conversation.target_kind);
@@ -67,22 +67,22 @@ pub async fn task_visible(scope: &mut dyn ResourceVisibilityScope, task: &Task) 
 	let resource = task_resource(scope, task).await?;
 	Ok(scope.decide(&resource, "task.read").await?
 		&& scope
-			.output_visible(task.workspace_id, "task", task.id)
+			.output_visible(task.thread_id, "task", task.id)
 			.await?)
 }
 pub async fn task_summary_visible(
 	scope: &mut dyn ResourceVisibilityScope,
-	workspace: &Resource,
-	workspace_id: Uuid,
+	thread: &Resource,
+	thread_id: Uuid,
 	task_id: Uuid,
 	created_by: &str,
 ) -> Result<bool> {
-	let mut a = workspace.attributes.clone();
+	let mut a = thread.attributes.clone();
 	a["created_by"] = json!(created_by);
 	a["task_id"] = json!(task_id);
 	let resource = scope.resource("task", &task_id.to_string(), a);
 	Ok(scope.decide(&resource, "task.read").await?
-		&& scope.output_visible(workspace_id, "task", task_id).await?)
+		&& scope.output_visible(thread_id, "task", task_id).await?)
 }
 pub async fn artifact_visible(
 	scope: &mut dyn ResourceVisibilityScope,
@@ -101,14 +101,14 @@ pub async fn artifact_visible(
 		let held = scope.take_row_silence();
 		if held.is_some() {
 			let rest = scope
-				.output_visible(artifact.workspace_id, "artifact", artifact.id)
+				.output_visible(artifact.thread_id, "artifact", artifact.id)
 				.await?;
 			conclude_chain(scope, held, rest);
 		}
 		return Ok(false);
 	}
 	scope
-		.output_visible(artifact.workspace_id, "artifact", artifact.id)
+		.output_visible(artifact.thread_id, "artifact", artifact.id)
 		.await
 }
 pub async fn message_visible(
@@ -118,7 +118,7 @@ pub async fn message_visible(
 	let resource = message_resource(scope, message).await?;
 	Ok(scope.decide(&resource, "message.read").await?
 		&& scope
-			.output_visible(message.workspace_id, "message", message.id)
+			.output_visible(message.thread_id, "message", message.id)
 			.await?)
 }
 pub async fn human_visible(
@@ -135,11 +135,11 @@ pub async fn human_visible(
 }
 pub async fn human_reads(
 	scope: &mut dyn ResourceVisibilityScope,
-	workspace: Uuid,
+	thread: Uuid,
 	run: Uuid,
 ) -> Result<bool> {
 	// Only immutable request decisions are cached. Re-read membership on every call.
-	for request in scope.humans(workspace, run).await? {
+	for request in scope.humans(thread, run).await? {
 		if !human_visible(scope, &request).await? {
 			return Ok(false);
 		}
@@ -155,11 +155,11 @@ pub async fn task_read(scope: &mut dyn ResourceAccessScope, id: Uuid) -> Result<
 }
 pub async fn related_tasks(
 	scope: &mut dyn ResourceAccessScope,
-	workspace: Uuid,
+	thread: Uuid,
 	input: &NewTask,
 ) -> Result<()> {
 	for id in input.dependencies.iter().chain(input.parent_id.iter()) {
-		if task_read(scope, *id).await?.workspace_id != workspace {
+		if task_read(scope, *id).await?.thread_id != thread {
 			return Err(Error::Forbidden);
 		}
 	}
@@ -179,9 +179,9 @@ pub async fn artifact_creation_resource(
 pub async fn artifact_id_visible(
 	scope: &mut dyn ResourceEventScope,
 	id: Uuid,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 ) -> Result<bool> {
-	match scope.artifact(id, workspace).await? {
+	match scope.artifact(id, thread).await? {
 		Some(artifact) => artifact_visible(scope, &artifact).await,
 		None => Ok(false),
 	}
@@ -198,7 +198,7 @@ pub async fn event_visible(
 		else {
 			return Ok(Some(false));
 		};
-		let Some(task) = scope.event_task(task_id, event.workspace_id).await? else {
+		let Some(task) = scope.event_task(task_id, event.thread_id).await? else {
 			return Ok(Some(false));
 		};
 		let artifact = id(&event.data["artifact"]["id"]);
@@ -209,7 +209,7 @@ pub async fn event_visible(
 			if held.is_some()
 				&& let Some(artifact) = artifact
 			{
-				let rest = artifact_id_visible(scope, artifact, event.workspace_id).await?;
+				let rest = artifact_id_visible(scope, artifact, event.thread_id).await?;
 				conclude_chain(scope, held, rest);
 			} else {
 				conclude_chain(scope, held, true);
@@ -218,7 +218,7 @@ pub async fn event_visible(
 		}
 		if let Some(artifact) = artifact {
 			return Ok(Some(
-				artifact_id_visible(scope, artifact, event.workspace_id).await?,
+				artifact_id_visible(scope, artifact, event.thread_id).await?,
 			));
 		}
 		return Ok(Some(true));
@@ -228,19 +228,21 @@ pub async fn event_visible(
 			return Ok(Some(false));
 		};
 		return Ok(Some(
-			artifact_id_visible(scope, artifact, event.workspace_id).await?,
+			artifact_id_visible(scope, artifact, event.thread_id).await?,
 		));
 	}
+	// No reply thread is opened since #1008; an event recorded before then is
+	// visible exactly when its root message is.
 	if event.kind == "message.created" || event.kind == "message.thread_opened" {
 		if event.kind == "message.thread_opened" && id(&event.data["id"]).is_none() {
 			return Ok(Some(false));
 		}
 		let messages = if let Some(message) = id(&event.data["id"]) {
-			scope.messages_id(message, event.workspace_id).await?
+			scope.messages_id(message, event.thread_id).await?
 		} else {
 			scope
 				.messages_legacy(
-					event.workspace_id,
+					event.thread_id,
 					event.data["sender"].as_str(),
 					event.data["content"].as_str(),
 				)

@@ -20,23 +20,19 @@ use crate::apps::execution::serializers::management::{HumanListQuery, RunListQue
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
-#[get(
-	"/api/workspaces/{id}/runs",
-	name = "workspace-runs",
-	auth = "protected"
-)]
-pub async fn workspace_runs(
+#[get("/api/threads/{id}/runs", name = "thread-runs", auth = "protected")]
+pub async fn thread_runs(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Query(q): Query<crate::apps::execution::serializers::management::WorkspaceRunListQuery>,
+	Query(q): Query<crate::apps::execution::serializers::management::ThreadRunListQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.workspace_runs(actor, id, q).await)
+	crate::http::json(service.thread_runs(actor, id, q).await)
 }
 
 /// Reads one page of candidates. Filtered rows can leave a short page with a cursor.
 /// The opaque cursor currently contains the last scanned Run ID, restricted to
-/// a Task and Workspace the subject may read; individual Runs may be hidden.
+/// a Task and Thread the subject may read; individual Runs may be hidden.
 /// Run visibility retains its dependent checks, including all Human Requests.
 #[get("/api/tasks/{id}/runs", name = "task-runs", auth = "protected")]
 pub async fn task_runs(
@@ -50,7 +46,7 @@ pub async fn task_runs(
 
 /// Reads one page of Human Request candidates; filtered rows can leave a cursor on a short page.
 /// The opaque cursor currently contains the last scanned request ID, restricted
-/// to a Workspace the subject may read; individual requests may be hidden.
+/// to a Thread the subject may read; individual requests may be hidden.
 /// Each Run's visibility is checked once per request; its dependent checks can
 /// still read and decide all Human Requests of that Run.
 #[get("/api/human-requests", name = "human-requests", auth = "protected")]

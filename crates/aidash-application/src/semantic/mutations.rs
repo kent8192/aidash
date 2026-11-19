@@ -12,19 +12,19 @@ use uuid::Uuid;
 
 pub async fn configure(
 	repository: &dyn SemanticConfigurationRepository,
-	workspace: Uuid,
+	thread: Uuid,
 	revision: i64,
 	spec: IndexingSpec,
 ) -> Result<Index> {
 	mutations::validate_revision(revision, "invalid index revision")?;
 	let mut scope = repository.begin().await?;
 	// Authority comes first: a caller without it learns neither whether the
-	// Workspace exists nor which private embedding origins are allowed.
-	scope.authorize(workspace).await?;
+	// Thread exists nor which private embedding origins are allowed.
+	scope.authorize(thread).await?;
 	repository.validate(&spec)?;
-	scope.lock_workspace(workspace).await?;
-	let tenant = scope.tenant(workspace).await?;
-	let old = scope.index(workspace).await?;
+	scope.lock_thread(thread).await?;
+	let tenant = scope.tenant(thread).await?;
+	let old = scope.index(thread).await?;
 	let value = serde_json::to_value(&spec)?;
 	if old.as_ref().map_or(0, |old| old.revision) != revision {
 		if let Some(old) = old
@@ -36,29 +36,29 @@ pub async fn configure(
 		}
 		return Err(Error::Conflict("semantic index revision changed".into()));
 	}
-	let (count, largest_memory) = scope.counts(workspace).await?;
+	let (count, largest_memory) = scope.counts(thread).await?;
 	mutations::validate_configuration_counts(&spec, count, largest_memory)?;
 	let collection = format!("aidash_{}", Uuid::new_v4().simple());
 	let current = scope
-		.replace(workspace, &tenant, revision + 1, value, &collection)
+		.replace(thread, &tenant, revision + 1, value, &collection)
 		.await?;
-	scope.retire_collections(workspace).await?;
+	scope.retire_collections(thread).await?;
 	scope
-		.record_collection(workspace, &collection, serde_json::to_value(&spec.vector)?)
+		.record_collection(thread, &collection, serde_json::to_value(&spec.vector)?)
 		.await?;
-	for id in scope.active(workspace).await? {
+	for id in scope.active(thread).await? {
 		let entry = scope.reconfigure(id, current.revision).await?;
 		scope.schedule(&entry, &collection).await?;
 	}
-	scope.rebuild_images(workspace, spec.max_images).await?;
-	scope.history(workspace, current.revision).await?;
+	scope.rebuild_images(thread, spec.max_images).await?;
+	scope.history(thread, current.revision).await?;
 	scope.commit().await?;
 	Ok(current)
 }
 
-pub async fn get_index(scope: &mut dyn SemanticEntriesSession, workspace: Uuid) -> Result<Index> {
-	scope.workspace(workspace, "semantic.read").await?;
-	scope.index(workspace, false).await
+pub async fn get_index(scope: &mut dyn SemanticEntriesSession, thread: Uuid) -> Result<Index> {
+	scope.thread(thread, "semantic.read").await?;
+	scope.index(thread, false).await
 }
 
 /// Public writes reserve the managed memory namespace before acquiring source authority.
@@ -82,7 +82,7 @@ pub fn validate_public_put(input: &Put) -> Result<()> {
 	}
 	if aidash_domain::semantic::indexing::is_managed_image_key(&input.key) {
 		return Err(Error::Invalid(
-			"image entry keys are managed by the Workspace index".into(),
+			"image entry keys are managed by the Thread index".into(),
 		));
 	}
 	if input.key.starts_with("agent-memory:")
@@ -99,18 +99,18 @@ pub fn validate_public_put(input: &Put) -> Result<()> {
 /// Inherited worker scopes can write their managed memory key through this same use case.
 pub async fn put(
 	scope: &mut dyn SemanticEntriesSession,
-	workspace: Uuid,
+	thread: Uuid,
 	input: Put,
 ) -> Result<Entry> {
 	input.validate()?;
-	scope.workspace(workspace, "semantic.write").await?;
-	let index = scope.index(workspace, true).await?;
+	scope.thread(thread, "semantic.write").await?;
+	let index = scope.index(thread, true).await?;
 	let spec = index.configuration()?;
-	let old = scope.by_key(workspace, &input.key).await?;
+	let old = scope.by_key(thread, &input.key).await?;
 	let saved = scope.saved()?;
 	let mut entry = Entry {
 		id: old.as_ref().map_or_else(Uuid::new_v4, |old| old.id),
-		workspace_id: workspace,
+		thread_id: thread,
 		key: input.key,
 		source: serde_json::to_value(&input.source)?,
 		agent: input.agent,
@@ -155,7 +155,7 @@ pub async fn put(
 		if input.expected_revision != 0 {
 			return Err(Error::Conflict("semantic source does not exist".into()));
 		}
-		if scope.count(workspace).await? >= spec.max_sources as i64 {
+		if scope.count(thread).await? >= spec.max_sources as i64 {
 			return Err(Error::Conflict("semantic source limit reached".into()));
 		}
 	}
@@ -165,7 +165,7 @@ pub async fn put(
 		return Err(Error::Forbidden);
 	}
 	let text = scope
-		.source(workspace, &input.source)
+		.source(thread, &input.source)
 		.await?
 		.ok_or(Error::Forbidden)?;
 	validate_text(&text, spec.max_input_bytes)?;
@@ -173,7 +173,7 @@ pub async fn put(
 	scope.schedule(&entry, &index.collection).await?;
 	scope
 		.history(
-			workspace,
+			thread,
 			entry.id,
 			entry.revision,
 			"PENDING",
@@ -187,29 +187,29 @@ pub async fn put(
 /// did not answer (#770).
 pub async fn entries(
 	scope: &mut dyn SemanticEntriesSession,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Result<(Vec<Entry>, Vec<Unconfirmed>)> {
-	scope.workspace(workspace, "semantic.read").await?;
-	scope.index(workspace, false).await?;
+	scope.thread(thread, "semantic.read").await?;
+	scope.index(thread, false).await?;
 	let mut visible = vec![];
 	let mut unconfirmed = Tally::new();
-	for entry in scope.list(workspace).await? {
+	for entry in scope.list(thread).await? {
 		scope.begin_row();
 		if !scope.permits(&entry, "semantic.read").await? {
 			let silence = scope.take_row_silence();
-			unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
+			unconfirmed.settle(silence, Kind::SemanticEntry, thread, false);
 			continue;
 		}
 		let source: aidash_domain::semantic::Source = serde_json::from_value(entry.source.clone())?;
 		let source_visible = if source.is_image() {
-			scope.image_visible(workspace, &source).await?
+			scope.image_visible(thread, &source).await?
 		} else if entry.deleted {
 			true
 		} else {
-			scope.source(workspace, &source).await?.is_some()
+			scope.source(thread, &source).await?.is_some()
 		};
 		let silence = scope.take_row_silence();
-		if unconfirmed.settle(silence, Kind::SemanticEntry, workspace, source_visible) {
+		if unconfirmed.settle(silence, Kind::SemanticEntry, thread, source_visible) {
 			visible.push(entry);
 		}
 	}
@@ -218,7 +218,7 @@ pub async fn entries(
 
 pub async fn change(
 	scope: &mut dyn SemanticEntriesSession,
-	workspace: Uuid,
+	thread: Uuid,
 	id: Uuid,
 	revision: i64,
 	delete: bool,
@@ -229,10 +229,10 @@ pub async fn change(
 	} else {
 		"semantic.write"
 	};
-	scope.workspace(workspace, action).await?;
-	let index = scope.index(workspace, true).await?;
+	scope.thread(thread, action).await?;
+	let index = scope.index(thread, true).await?;
 	let entry = scope
-		.lock_entry(workspace, id)
+		.lock_entry(thread, id)
 		.await?
 		.ok_or(Error::Forbidden)?;
 	if delete
@@ -277,7 +277,7 @@ pub async fn change(
 	}
 	if !delete {
 		let text = scope
-			.source(workspace, &serde_json::from_value(entry.source.clone())?)
+			.source(thread, &serde_json::from_value(entry.source.clone())?)
 			.await?
 			.ok_or(Error::Forbidden)?;
 		validate_text(&text, index.configuration()?.max_input_bytes)?;
@@ -285,12 +285,12 @@ pub async fn change(
 
 	let saved = scope.saved()?;
 	let entry = scope
-		.change(workspace, id, Uuid::new_v4(), index.revision, delete, saved)
+		.change(thread, id, Uuid::new_v4(), index.revision, delete, saved)
 		.await?;
 	scope.schedule(&entry, &index.collection).await?;
 	scope
 		.history(
-			workspace,
+			thread,
 			id,
 			entry.revision,
 			&entry.state,
@@ -304,15 +304,12 @@ pub async fn change(
 	Ok(entry)
 }
 
-pub async fn history(
-	scope: &mut dyn SemanticEntriesSession,
-	workspace: Uuid,
-) -> Result<Vec<History>> {
-	scope.workspace(workspace, "semantic.read").await?;
+pub async fn history(scope: &mut dyn SemanticEntriesSession, thread: Uuid) -> Result<Vec<History>> {
+	scope.thread(thread, "semantic.read").await?;
 	let mut visible = vec![];
 	let mut cursor = i64::MAX;
 	loop {
-		let rows = scope.history_page(workspace, cursor).await?;
+		let rows = scope.history_page(thread, cursor).await?;
 		let exhausted = rows.len() < 200;
 		for row in rows {
 			cursor = row.sequence;
@@ -323,7 +320,7 @@ pub async fn history(
 				}
 				let source: aidash_domain::semantic::Source =
 					serde_json::from_value(entry.source.clone())?;
-				if source.is_image() && !scope.image_visible(workspace, &source).await? {
+				if source.is_image() && !scope.image_visible(thread, &source).await? {
 					continue;
 				}
 			}

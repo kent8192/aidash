@@ -28,24 +28,24 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 	write(&b.f, "acme", b.mapping(&a, credential.id, true, 0))
 		.await
 		.unwrap();
-	for (index, workspace) in [
+	for (index, thread) in [
 		a.f.store
 			.task(&TEST_FIXTURE, task_a)
 			.await
 			.unwrap()
-			.workspace_id,
+			.thread_id,
 		b.f.store
 			.task(&TEST_FIXTURE, task_b)
 			.await
 			.unwrap()
-			.workspace_id,
+			.thread_id,
 	]
 	.into_iter()
 	.enumerate()
 	{
 		manifest.participants[index].mutations =
-			vec![aidash_server::transactions::Mutation::WorkspaceTitle {
-				workspace_id: workspace,
+			vec![aidash_server::transactions::Mutation::ThreadTitle {
+				thread_id: thread,
 				expected_revision: 0,
 				title: "Title".into(),
 			}];

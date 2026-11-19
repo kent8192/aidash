@@ -203,7 +203,7 @@ impl Authorization {
 }
 
 impl Actor {
-	/// The scope of work the actor does without naming a Workspace: a
+	/// The scope of work the actor does without naming a Thread: a
 	/// Subject's own Tenant, or the Deployment Administrator's rows without a Tenant.
 	pub(crate) fn tenancy(&self) -> Result<TenancyScope> {
 		match self {

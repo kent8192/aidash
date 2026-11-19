@@ -51,6 +51,8 @@ fn subnode_member_policy() -> String {
 		.into_iter()
 		.find(|policy| policy.id == "members")
 		.expect("the initial member policy exists");
+	// Its text predates the Thread actions (#1008), which have their own migration.
+	let current = crate::apps::identity::services::thread_policy_backfill::before_threads(current);
 	let mut previous = current.clone();
 	previous
 		.actions

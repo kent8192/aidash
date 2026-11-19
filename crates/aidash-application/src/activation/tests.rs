@@ -22,7 +22,7 @@ fn raw(now: DateTime<Utc>) -> RawRun {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			task_id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			home_node: "aidash://home/brave-otter-k3m9q2xa".into(),
 			agent_id: "fixture".into(),
 			agent_version: "1.0.0".into(),
@@ -101,7 +101,7 @@ async fn an_operation_wait_wakes_for_input_or_completion_unless_paused(
 #[case::task_finished(false, Some(2), Some(2))]
 #[case::no_change(false, None, Some(300))]
 #[tokio::test]
-async fn workspace_wait_selects_input_or_a_coalesced_task_event(
+async fn thread_wait_selects_input_or_a_coalesced_task_event(
 	now: DateTime<Utc>,
 	repository: Repository,
 	#[case] input: bool,
@@ -120,7 +120,7 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 	)
 	.unwrap();
 	repository.0.input.store(input, Ordering::Release);
-	*repository.0.workspace_event.lock().unwrap() =
+	*repository.0.thread_event.lock().unwrap() =
 		event_in.map(|seconds| now + chrono::Duration::seconds(seconds));
 	let mut scope = Scope {
 		state: repository.0.clone(),
@@ -137,7 +137,7 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 
 #[rstest]
 #[tokio::test]
-async fn a_workspace_wait_on_a_remote_home_is_polled_without_waiting_for_the_ceiling(
+async fn a_thread_wait_on_a_remote_home_is_polled_without_waiting_for_the_ceiling(
 	now: DateTime<Utc>,
 	repository: Repository,
 ) {
@@ -337,7 +337,7 @@ struct State {
 	/// Whether the Run accepted input after the sequence asked about.
 	input: AtomicBool,
 	operation_done: AtomicBool,
-	workspace_event: Mutex<Option<DateTime<Utc>>>,
+	thread_event: Mutex<Option<DateTime<Utc>>>,
 	dependencies: AtomicBool,
 	claimable: AtomicBool,
 	repairable: AtomicBool,
@@ -382,7 +382,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		answered: AtomicBool::new(false),
 		input: AtomicBool::new(false),
 		operation_done: AtomicBool::new(false),
-		workspace_event: Mutex::new(None),
+		thread_event: Mutex::new(None),
 		dependencies: AtomicBool::new(false),
 		claimable: AtomicBool::new(true),
 		repairable: AtomicBool::new(true),
@@ -456,8 +456,8 @@ impl SchedulingScope for Scope {
 	async fn operation_finished(&mut self, _: Uuid, _: Uuid) -> Result<bool> {
 		Ok(self.state.operation_done.load(Ordering::Acquire))
 	}
-	async fn workspace_event_after(&mut self, _: Uuid, _: i64) -> Result<Option<DateTime<Utc>>> {
-		Ok(*self.state.workspace_event.lock().unwrap())
+	async fn thread_event_after(&mut self, _: Uuid, _: i64) -> Result<Option<DateTime<Utc>>> {
+		Ok(*self.state.thread_event.lock().unwrap())
 	}
 	async fn approval(&mut self, _: Uuid) -> Result<Option<Approval>> {
 		self.state.record("approval");

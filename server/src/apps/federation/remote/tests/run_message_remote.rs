@@ -23,7 +23,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 		&app,
 		&token,
 		"POST",
-		"/api/conversations",
+		"/api/threads",
 		json!({"title":"Atomic terminal transition","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 	)
 	.await;
@@ -148,16 +148,16 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 	let runtime_owner = runtime.await;
 	let (f, url, schema) = runtime_owner.parts();
 	let scope = common::tenant_scope(&f.store, "acme").await;
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&scope, "alice", "Remote output fence")
+		.create_thread(&scope, "alice", "Remote output fence")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Remote task".into(),
 				description: "Fence stale output".into(),
@@ -198,7 +198,7 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 		f.store
 			.message(
 				&TEST_FIXTURE,
-				workspace.id,
+				thread.id,
 				"agent@aidash://executor",
 				"stale peer output",
 				Some(&peer_output_key),
@@ -224,7 +224,7 @@ async fn remote_history_references_can_span_multiple_inference_pages(
 		&app,
 		&token,
 		"POST",
-		"/api/conversations",
+		"/api/threads",
 		json!({"title":"Paged remote history","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 	)
 	.await;
@@ -237,7 +237,7 @@ async fn remote_history_references_can_span_multiple_inference_pages(
 			.store
 			.message_record(
 				&TEST_FIXTURE,
-				run.workspace_id,
+				run.thread_id,
 				"human@remote",
 				&format!("history {index}: {}", "x".repeat(4096)),
 				Some(&format!("remote-history-{index}")),

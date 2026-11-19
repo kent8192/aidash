@@ -9,14 +9,14 @@ fn management_schema_has_typed_results_and_distinct_recipient_contracts() {
 	assert_eq!(schemas["Recipient"]["additionalProperties"], false);
 	assert!(
 		schemas["Recipient"]["properties"]
-			.get("workspace_id")
+			.get("thread_id")
 			.is_none()
 	);
 	assert!(
 		schemas["FileRecipient"]["required"]
 			.as_array()
 			.unwrap()
-			.contains(&json!("workspace_id"))
+			.contains(&json!("thread_id"))
 	);
 	for expected in [
 		"core_agent_configure",

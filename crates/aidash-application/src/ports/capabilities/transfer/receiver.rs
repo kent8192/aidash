@@ -26,7 +26,7 @@ pub trait ReceiverScope: TransferScope {
 	async fn finish_pending(&mut self, digest: &str) -> Result<(Uuid, String)>;
 	async fn read_file(&mut self, file: &MountedFile) -> Result<Vec<u8>>;
 	async fn publish(&mut self, area: &mut Area) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: serde_json::Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: serde_json::Value) -> Result<()>;
 }
 #[async_trait]
 pub trait ReceiverRepository: TransferRepository {

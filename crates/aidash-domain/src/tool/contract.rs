@@ -38,7 +38,10 @@ pub enum Continuation {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResultFitting {
-	WorkspaceRecord,
+	/// Serialized under its name before #1008: admitted Runs pin the contract
+	/// digest over these bytes.
+	#[serde(rename = "WorkspaceRecord")]
+	ThreadRecord,
 	SkillText,
 	JournalText,
 	JournalSearch,
@@ -115,7 +118,7 @@ pub struct AgentPluginTool {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResourceTarget {
-	Workspace,
+	Thread,
 	Task,
 	Agent,
 	Run,
@@ -199,9 +202,9 @@ impl ToolBehavior {
 	}
 	pub fn fitting_for(&self, input: &Value) -> Option<ResultFitting> {
 		match self.fitting {
-			Some(ResultFitting::WorkspaceRecord) if input["kind"] == "attachment" => None,
+			Some(ResultFitting::ThreadRecord) if input["kind"] == "attachment" => None,
 			Some(ResultFitting::SkillText) if input.get("skill").is_none() => None,
-			Some(ResultFitting::WorkspaceRecord) if input["kind"] == "file" => None,
+			Some(ResultFitting::ThreadRecord) if input["kind"] == "file" => None,
 			other => other,
 		}
 	}
@@ -216,8 +219,7 @@ impl ToolBehavior {
 	) -> Option<crate::media::ModelMedia> {
 		use crate::media::{ModelFileSelection, ModelMedia, WorkingImageSelection};
 		if !(self.yields_model_media
-			|| self.fitting == Some(ResultFitting::WorkspaceRecord)
-				&& input["kind"] == "attachment")
+			|| self.fitting == Some(ResultFitting::ThreadRecord) && input["kind"] == "attachment")
 		{
 			return None;
 		}
@@ -247,7 +249,12 @@ impl ToolBehavior {
 			return serde_json::from_value::<ModelFileSelection>(serde_json::json!({
 				"file_id": input["file_id"],
 				"expected_digest": input["expected_digest"],
-				"workspace_id": input["workspace_id"],
+				// `workspace_read`, which saved Agents pin, names it `workspace_id`.
+				"thread_id": if input["thread_id"].is_null() {
+					input["workspace_id"].clone()
+				} else {
+					input["thread_id"].clone()
+				},
 				"area_id": input["area_id"],
 			}))
 			.ok()
@@ -294,7 +301,7 @@ impl ToolContract {
 		if self.digest()? == digest {
 			return Ok(Some(self));
 		}
-		if self.behavior.fitting == Some(ResultFitting::WorkspaceRecord)
+		if self.behavior.fitting == Some(ResultFitting::ThreadRecord)
 			&& self.behavior.yields_model_media
 		{
 			let mut previous = self.clone();
@@ -459,6 +466,8 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		kind,
 		target,
 	};
+	// A Workspace tool a saved Agent pins has its Thread tool's contract.
+	let name = crate::tool::thread_tools::current(name);
 	match name {
 		"journal_read" | "journal_search" | "journal_query" => {
 			behavior.effect = ToolEffect::ReadOnly;
@@ -483,7 +492,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"task_create" => {
 			auth.flag = Some(AgentFlag::TaskCreation);
 			auth.requirements
-				.push(resource("task.create", "workspace", Workspace));
+				.push(resource("task.create", "thread", Thread));
 			contract.remote_exposure = true;
 		}
 		"task_assign" => {
@@ -507,9 +516,9 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 				.push(resource("artifact.create", "artifact", Task));
 			contract.remote_exposure = true;
 		}
-		"workspace_message" => {
+		"thread_message" => {
 			auth.requirements
-				.push(resource("message.create", "workspace", Workspace));
+				.push(resource("message.create", "thread", Thread));
 			contract.remote_exposure = true;
 		}
 		"attachment_copy" => {
@@ -545,22 +554,22 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			contract.remote_exposure = true;
 			behavior.effect = ToolEffect::ReadOnly;
 		}
-		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_search" => {
+		"thread_read" | "thread_observe" | "task_wait" | "thread_search" => {
 			auth.flag = Some(AgentFlag::WorkspaceRetrieval);
-			contract.remote_exposure = name != "workspace_search";
+			contract.remote_exposure = name != "thread_search";
 			behavior.effect = ToolEffect::ReadOnly;
 			match name {
-				"workspace_read" => {
-					behavior.fitting = Some(ResultFitting::WorkspaceRecord);
+				"thread_read" => {
+					behavior.fitting = Some(ResultFitting::ThreadRecord);
 					behavior.catch_up = true;
 					behavior.media_pending = true;
 					behavior.yields_model_media = true;
 				}
-				"workspace_observe" => {
+				"thread_observe" => {
 					behavior.fitting = Some(ResultFitting::Observation);
 					behavior.media_pending = true;
 				}
-				"workspace_wait" => behavior.continuation = Continuation::Wait,
+				"task_wait" => behavior.continuation = Continuation::Wait,
 				_ => {}
 			}
 		}
@@ -1011,9 +1020,9 @@ mod tests {
 	#[test]
 	fn subnode_model_media_keeps_the_area_needed_for_authorization() {
 		let file = uuid::Uuid::new_v4();
-		let workspace = uuid::Uuid::new_v4();
+		let thread = uuid::Uuid::new_v4();
 		let area = uuid::Uuid::new_v4();
-		let input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input","workspace_id":workspace,"area_id":area});
+		let input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input","thread_id":thread,"area_id":area});
 		let output = serde_json::json!({"status":"completed","metadata":{"file_id":file}});
 		let selected = builtin_contract("file_read")
 			.unwrap()
@@ -1022,7 +1031,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(
 			serde_json::to_value(selected).unwrap(),
-			serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","workspace_id":workspace,"area_id":area})
+			serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","thread_id":thread,"area_id":area})
 		);
 		let old_input = serde_json::json!({"file_id":file,"expected_digest":"sha256:fixture","representation":"model_input"});
 		let old = builtin_contract("file_read")
@@ -1040,7 +1049,7 @@ mod tests {
 		// Admitted Runs pin `provider_contract_digest` over these bytes.
 		let contract = builtin_contract("workspace_read")
 			.unwrap()
-			.pinned(PINNED_WORKSPACE_READ_DIGEST)
+			.pinned(PINNED_THREAD_READ_DIGEST)
 			.unwrap()
 			.unwrap();
 		assert_eq!(
@@ -1049,11 +1058,11 @@ mod tests {
 		);
 		assert_eq!(
 			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
-			PINNED_WORKSPACE_READ_DIGEST
+			PINNED_THREAD_READ_DIGEST
 		);
 	}
 	#[test]
-	fn admitted_workspace_reader_descriptor_keeps_its_original_contract() {
+	fn admitted_thread_reader_descriptor_keeps_its_original_contract() {
 		let identity =
 			crate::registry::bindings::QualifiedRef::builtin("aidash://node", "workspace_read");
 		let descriptor =
@@ -1077,7 +1086,7 @@ mod tests {
 		assert_eq!(current.pinned(&old.digest().unwrap()).unwrap(), Some(old));
 	}
 	#[test]
-	fn workspace_image_selection_requires_the_exact_returned_file_version() {
+	fn thread_image_selection_requires_the_exact_returned_file_version() {
 		let behavior = builtin_contract("workspace_read").unwrap().behavior;
 		let id = uuid::Uuid::from_u128(1);
 		let area = uuid::Uuid::from_u128(2);
@@ -1214,7 +1223,7 @@ mod tests {
 				.tenant_tool_call()
 		);
 	}
-	const PINNED_WORKSPACE_READ_DIGEST: &str =
+	const PINNED_THREAD_READ_DIGEST: &str =
 		"sha256:b170d3d1156fa2b6e7a52d332864282afa6b5c3b742597a1ca9833520f4ada4e";
 	#[test]
 	fn admitted_read_only_definitions_keep_their_approval_gated_contract() {

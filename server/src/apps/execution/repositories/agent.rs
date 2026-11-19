@@ -29,8 +29,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// How many of a Run's newest Workspace task changes one wake reports.
-const WORKSPACE_EVENT_WINDOW: u64 = 32;
+/// How many of a Run's newest Thread task changes one wake reports.
+const THREAD_EVENT_WINDOW: u64 = 32;
 
 #[async_trait]
 impl ExecutionStore for RunStore {
@@ -87,7 +87,7 @@ impl ExecutionStore for RunStore {
 		tx.commit().await?;
 		Ok(u64::try_from(pending).unwrap_or_default())
 	}
-	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents> {
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<ThreadEvents> {
 		use reinhardt::db::orm::execution::convert_values;
 		use reinhardt::query::{
 			Alias, Expr, ExprTrait, Func, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -99,11 +99,11 @@ impl ExecutionStore for RunStore {
 			.and_where(Expr::col("generation").gt(Expr::value(after)))
 			.cond_where(
 				reinhardt::query::Condition::any()
-					.add(Expr::col("reason").like("workspace_task:%"))
+					.add(Expr::col("reason").like("thread_task:%"))
 					.add(Expr::col("reason").like("duty_event:%")),
 			)
 			.order_by(Alias::new("generation"), Order::Desc)
-			.limit(WORKSPACE_EVENT_WINDOW)
+			.limit(THREAD_EVENT_WINDOW)
 			.build(PostgresQueryBuilder);
 		let mut tx = self.store.pool.begin(&self.scope).await?;
 		let rows = tx
@@ -145,7 +145,7 @@ impl ExecutionStore for RunStore {
 					{
 						duty_event["input"] = serde_json::json!(input);
 					}
-					events.push(WorkspaceEvent {
+					events.push(ThreadEvent {
 						generation,
 						task_id: Uuid::nil(),
 						status: "duty_event".into(),
@@ -155,14 +155,14 @@ impl ExecutionStore for RunStore {
 				continue;
 			}
 			let (id, status) = reason
-				.strip_prefix("workspace_task:")
+				.strip_prefix("thread_task:")
 				.and_then(|value| value.split_once(':'))
 				.ok_or_else(|| {
-					aidash_application::Error::Invalid("invalid workspace activation".into())
+					aidash_application::Error::Invalid("invalid thread activation".into())
 				})?;
 			let task_id = Uuid::parse_str(id)
-				.map_err(|_| aidash_application::Error::Invalid("invalid workspace task".into()))?;
-			events.push(WorkspaceEvent {
+				.map_err(|_| aidash_application::Error::Invalid("invalid thread task".into()))?;
+			events.push(ThreadEvent {
 				generation,
 				task_id,
 				status: status.to_owned(),
@@ -175,7 +175,7 @@ impl ExecutionStore for RunStore {
 		// event returned is never delivered, so count exactly that: an event
 		// committed since the first query is newer and comes with the next wake.
 		let mut dropped = 0;
-		if events.len() as u64 == WORKSPACE_EVENT_WINDOW
+		if events.len() as u64 == THREAD_EVENT_WINDOW
 			&& let Some(oldest) = events.first()
 		{
 			let (sql, values) = Query::select()
@@ -189,7 +189,7 @@ impl ExecutionStore for RunStore {
 				.and_where(Expr::col("generation").lt(Expr::value(oldest.generation)))
 				.cond_where(
 					reinhardt::query::Condition::any()
-						.add(Expr::col("reason").like("workspace_task:%"))
+						.add(Expr::col("reason").like("thread_task:%"))
 						.add(Expr::col("reason").like("duty_event:%")),
 				)
 				.build(PostgresQueryBuilder);
@@ -204,7 +204,7 @@ impl ExecutionStore for RunStore {
 			dropped = u64::try_from(count).unwrap_or_default();
 		}
 		tx.commit().await?;
-		Ok(WorkspaceEvents { events, dropped })
+		Ok(ThreadEvents { events, dropped })
 	}
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run =
@@ -313,8 +313,8 @@ impl ExecutionStore for RunStore {
 			.await
 			.map_err(Into::into)
 	}
-	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
-		Store::emit(&self.store, &self.scope, workspace, kind, data)
+	async fn emit(&self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
+		Store::emit(&self.store, &self.scope, thread, kind, data)
 			.await
 			.map_err(Into::into)
 	}
@@ -661,13 +661,13 @@ impl ExecutionHome for NativeHome {
 	}
 	async fn read_subnode_record_chunk(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: &str,
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value> {
-		Home::read_subnode_record_chunk(&self.0, workspace, kind, id, offset, maximum)
+		Home::read_subnode_record_chunk(&self.0, thread, kind, id, offset, maximum)
 			.await
 			.map_err(Into::into)
 	}
@@ -1696,15 +1696,10 @@ impl ExecutionEnvironment for Environment<'_> {
 		})?;
 		// The executing node's local Tenant: the worker's Access for scoped and
 		// remote Runs (the receiver's mapped Tenant), otherwise the Tenant that
-		// owns the local workspace.
+		// owns the local thread.
 		let tenant = match &self.authority {
 			Some(authority) => authority.guard.tenant().await,
-			None => {
-				self.federation
-					.store
-					.workspace_tenant(run.workspace_id)
-					.await?
-			}
+			None => self.federation.store.thread_tenant(run.thread_id).await?,
 		};
 		Ok(aidash_domain::projection::CacheScope {
 			tenant,
@@ -1793,12 +1788,12 @@ impl ExecutionEnvironment for Environment<'_> {
 				.map_err(Into::into);
 		}
 		// Trusted local execution has no worker policy: a dependency is current
-		// while the message still exists in the Run's Workspace.
+		// while the message still exists in the Run's Thread.
 		for id in &dependencies.message_ids {
 			match self
 				.federation
 				.store
-				.workspace_record(&self.run_store.scope, run.workspace_id, "message", *id)
+				.thread_record(&self.run_store.scope, run.thread_id, "message", *id)
 				.await
 			{
 				Ok(_) => {}
@@ -1980,13 +1975,13 @@ impl Environment<'_> {
 		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 		degrade_on_outage: bool,
 	) -> SemanticContextRead {
-		let mut workspace_retrieved = false;
+		let mut thread_retrieved = false;
 		let result: Result<Option<Value>> = async {
 			let settings =
 				AgentConfig::automatic_context(run.context.binding_snapshot.as_ref().ok_or_else(
 					|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
 				)?)?;
-			if !settings.semantic_memory && !settings.workspace_context {
+			if !settings.semantic_memory && !settings.thread_context {
 				return Ok(None);
 			}
 			if let Some(authority) = &self.authority {
@@ -2001,7 +1996,7 @@ impl Environment<'_> {
 						degrade_on_outage,
 					)
 					.await;
-				workspace_retrieved = read.workspace_retrieved;
+				thread_retrieved = read.thread_retrieved;
 				return read.result;
 			}
 			let _ = entry;
@@ -2018,49 +2013,46 @@ impl Environment<'_> {
 				aidash_domain::context::source::MAX_SOURCE_BYTES,
 			)?
 			.text;
-			let degrade = degrade_on_outage && agent.workspace_degrades;
+			let degrade = degrade_on_outage && agent.thread_degrades;
 			let semantic = crate::semantic::service::context_in(
 				&self.federation.store,
 				&mut lease,
 				run,
 				&query,
-				crate::semantic::services::memory_context::workspace_budget(budget)?,
+				crate::semantic::services::memory_context::thread_budget(budget)?,
 				&agent,
 				degrade,
 			)
 			.await;
 			let result = async {
-				let semantic =
-					match semantic? {
-						// Optional workspace context may degrade; memory still follows
-						// and still fails closed (ADR 0059).
-						// A Data Protection refusal never clears by waiting, so an
-						// optional slot degrades at once instead of after retries (#963).
-						aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
-							cause,
-						) if degrade
+				let semantic = match semantic? {
+					// Optional thread context may degrade; memory still follows
+					// and still fails closed (ADR 0059).
+					// A Data Protection refusal never clears by waiting, so an
+					// optional slot degrades at once instead of after retries (#963).
+					aidash_application::semantic::retrieval::ThreadContext::Unavailable(cause)
+						if degrade
 							|| (cause
 								== aidash_domain::semantic::degraded::OutageCause::DataProtection
-								&& agent.workspace_degrades) =>
-						{
-							Some(aidash_domain::semantic::degraded::marker(cause))
-						}
-						// Only the READY part of an incomplete index (ADR 0129).
-						aidash_application::semantic::retrieval::WorkspaceContext::Partial(
-							result,
-						) if degrade => Some(aidash_domain::semantic::degraded::partial(
+								&& agent.thread_degrades) =>
+					{
+						Some(aidash_domain::semantic::degraded::marker(cause))
+					}
+					// Only the READY part of an incomplete index (ADR 0129).
+					aidash_application::semantic::retrieval::ThreadContext::Partial(result)
+						if degrade =>
+					{
+						Some(aidash_domain::semantic::degraded::partial(
 							serde_json::to_value(result)?,
-						)),
-						workspace => workspace
-							.required()?
-							.map(serde_json::to_value)
-							.transpose()?,
-					};
-				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
+						))
+					}
+					thread => thread.required()?.map(serde_json::to_value).transpose()?,
+				};
+				thread_retrieved = semantic.as_ref().is_some_and(|value| {
 					aidash_domain::semantic::degraded::degraded(value).is_none()
 				});
 				let reserved =
-					serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?
+					serde_json::to_vec(&serde_json::json!({"thread":semantic,"memory":null}))?
 						.len();
 				let memory = crate::semantic::services::memory_context::retrieve(
 					&self.federation.store,
@@ -2085,7 +2077,7 @@ impl Environment<'_> {
 		SemanticContextRead {
 			selections: vec![],
 			contributions: vec![],
-			workspace_retrieved,
+			thread_retrieved,
 			result,
 		}
 	}

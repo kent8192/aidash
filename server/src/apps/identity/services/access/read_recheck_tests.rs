@@ -15,7 +15,7 @@ struct Fixture {
 	_database: DatabaseFixture,
 	store: Store,
 	identity: SubjectIdentity,
-	workspace: Uuid,
+	thread: Uuid,
 	task: Uuid,
 	run: Uuid,
 }
@@ -128,19 +128,25 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 	)
 	.await
 	.unwrap();
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let scratch = crate::apps::execution::test_database::fixture_scratch_space(
 		&driver, "acme", &node, "reader",
 	)
 	.await;
-	sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','{}',1,$3,'reader')").bind(workspace).bind(&node).bind(scratch).execute(&driver).await.unwrap();
-	sqlx::query("INSERT INTO authorization_workspaces (workspace_id,tenant,owner_subject) VALUES ($1,'acme','reader')").bind(workspace).execute(&driver).await.unwrap();
+	sqlx::query("INSERT INTO threads (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','{}',1,$3,'reader')").bind(thread).bind(&node).bind(scratch).execute(&driver).await.unwrap();
+	sqlx::query(
+		"INSERT INTO authorization_threads (thread_id,tenant,owner_subject) VALUES ($1,'acme','reader')",
+	)
+	.bind(thread)
+	.execute(&driver)
+	.await
+	.unwrap();
 	let credential = Uuid::new_v4();
 	sqlx::query("INSERT INTO authorization_credentials (id,tenant,subject,token_hash,created_at,expires_at,issued_by) VALUES ($1,'acme','reader',$2,clock_timestamp(),clock_timestamp()+interval '1 day','fixture')").bind(credential).bind(vec![1u8;32]).execute(&driver).await.unwrap();
 	let task = Uuid::new_v4();
 	let read_task = Uuid::new_v4();
 	for id in [task, read_task] {
-		sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(id).bind(workspace).execute(&driver).await.unwrap();
+		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(id).bind(thread).execute(&driver).await.unwrap();
 	}
 	let run = Uuid::new_v4();
 	let pending = aidash_domain::run_state::encode(
@@ -148,16 +154,16 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(workspace).bind(&node).bind(DEPLOYMENT).bind(pending).execute(&driver).await.unwrap();
+	sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(&driver).await.unwrap();
 	let artifact = Uuid::new_v4();
-	sqlx::query("INSERT INTO artifacts (id,tenant,workspace_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Fixture','{}','reader',$1::text)").bind(artifact).bind(workspace).bind(read_task).execute(&driver).await.unwrap();
+	sqlx::query("INSERT INTO artifacts (id,tenant,thread_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Fixture','{}','reader',$1::text)").bind(artifact).bind(thread).bind(read_task).execute(&driver).await.unwrap();
 	let mut sources = vec![
 		("task".to_owned(), read_task),
 		("artifact".to_owned(), artifact),
 	];
 	for _ in 0..reads {
 		let message = Uuid::new_v4();
-		sqlx::query("INSERT INTO messages (id,tenant,workspace_id,sender,content) VALUES ($1,'acme',$2,'reader','Fixture')").bind(message).bind(workspace).execute(&driver).await.unwrap();
+		sqlx::query("INSERT INTO messages (id,tenant,thread_id,sender,content) VALUES ($1,'acme',$2,'reader','Fixture')").bind(message).bind(thread).execute(&driver).await.unwrap();
 		sources.push(("message".to_owned(), message));
 	}
 	let mut tx = store
@@ -170,7 +176,7 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 		&ExecutionGrant {
 			run_id: run,
 			task_id: task,
-			workspace_id: workspace,
+			thread_id: thread,
 			tenant: "acme".into(),
 			credential_id: credential,
 			root_subject: "reader".into(),
@@ -180,7 +186,7 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 	.await
 	.unwrap();
 	crate::apps::identity::models::AuthorizationRunRead::record_sources(
-		&mut *tx, run, workspace, &sources,
+		&mut *tx, run, thread, &sources,
 	)
 	.await
 	.unwrap();
@@ -194,7 +200,7 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 			tenant: "acme".into(),
 			subject: "reader".into(),
 		},
-		workspace,
+		thread,
 		task,
 		run,
 	}
@@ -264,7 +270,7 @@ async fn the_statement_count_does_not_grow_with_the_reads(
 	let mut sources = vec![];
 	for _ in 0..190 {
 		let message = Uuid::new_v4();
-		sqlx::query("INSERT INTO messages (id,tenant,workspace_id,sender,content) VALUES ($1,'acme',$2,'reader','Fixture')").bind(message).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
+		sqlx::query("INSERT INTO messages (id,tenant,thread_id,sender,content) VALUES ($1,'acme',$2,'reader','Fixture')").bind(message).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
 		sources.push(("message".to_owned(), message));
 	}
 	let mut tx = fixture
@@ -276,7 +282,7 @@ async fn the_statement_count_does_not_grow_with_the_reads(
 	crate::apps::identity::models::AuthorizationRunRead::record_sources(
 		&mut *tx,
 		fixture.run,
-		fixture.workspace,
+		fixture.thread,
 		&sources,
 	)
 	.await
@@ -512,7 +518,7 @@ async fn the_continuation_check_never_reads_what_the_run_has_read(
 
 	// Assert
 	assert_eq!(run.unwrap().task_id, fixture.task);
-	assert_eq!(access.context["workspace_id"], json!(fixture.workspace));
+	assert_eq!(access.context["thread_id"], json!(fixture.thread));
 	assert!(
 		statements
 			.iter()
@@ -551,8 +557,8 @@ async fn the_decision_page_names_the_run(#[future] database: DatabaseFixture) {
 async fn running_targets(fixture: &Fixture) -> (Uuid, Uuid) {
 	let driver = fixture.driver();
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,$4,'running')")
-		.bind(area).bind(DEPLOYMENT).bind(fixture.workspace).bind(Uuid::new_v4())
+	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,$4,'running')")
+		.bind(area).bind(DEPLOYMENT).bind(fixture.thread).bind(Uuid::new_v4())
 		.execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')")
 		.bind(area)
@@ -601,8 +607,8 @@ fn home_node() -> String {
 
 /// A Remote Grant Run as the receiver holds it.
 struct RemoteRun {
-	/// The Home's Workspace, which has no row on the receiver (#904).
-	workspace: Uuid,
+	/// The Home's Thread, which has no row on the receiver (#904).
+	thread: Uuid,
 	/// What the receiver pinned at admission.
 	description: aidash_domain::federation::execution::Description,
 }
@@ -623,7 +629,7 @@ impl RemoteRun {
 /// It names no dependency definitions, so the catalog checks are not exercised.
 fn admission_description(
 	fixture: &Fixture,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> aidash_domain::federation::execution::Description {
 	use aidash_domain::{
 		federation::execution::{Description, Inspection},
@@ -639,7 +645,7 @@ fn admission_description(
 		source_subject: SOURCE_SUBJECT.into(),
 		task: aidash_domain::Task {
 			id: fixture.task,
-			workspace_id: workspace,
+			thread_id: thread,
 			title: "Fixture".into(),
 			description: "Fixture".into(),
 			status: aidash_domain::TaskStatus::Running,
@@ -682,7 +688,7 @@ fn admission_description(
 }
 
 /// Turns `fixture.run` into a Remote Grant Run as the receiver admitted it: its
-/// Home is a Node on another Deployment, its Workspace exists only there, it has
+/// Home is a Node on another Deployment, its Thread exists only there, it has
 /// an admission instead of a local grant, and the Peer Mapping its admission
 /// came through is enabled. The read journal stays local.
 async fn remote_preview(fixture: &Fixture) -> RemoteRun {
@@ -693,10 +699,10 @@ async fn remote_preview(fixture: &Fixture) -> RemoteRun {
 		.await
 		.unwrap();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
-	let workspace = Uuid::new_v4();
-	sqlx::query("UPDATE runs SET home_node = $1, workspace_id = $2 WHERE id = $3")
+	let thread = Uuid::new_v4();
+	sqlx::query("UPDATE runs SET home_node = $1, thread_id = $2 WHERE id = $3")
 		.bind(home_node())
-		.bind(workspace)
+		.bind(thread)
 		.bind(fixture.run)
 		.execute(driver)
 		.await
@@ -707,29 +713,29 @@ async fn remote_preview(fixture: &Fixture) -> RemoteRun {
 	sqlx::query("INSERT INTO authorization_peer_mappings (tenant,node,source_node,source_subject,credential_id,enabled,revision,actor) VALUES ('acme',$1,$2,$3,$4,true,1,'fixture')")
 		.bind(&node).bind(home_node()).bind(SOURCE_SUBJECT).bind(fixture.identity.credential_id)
 		.execute(driver).await.unwrap();
-	let description = admission_description(fixture, workspace);
+	let description = admission_description(fixture, thread);
 	sqlx::query("INSERT INTO authorization_remote_admissions (id,node,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES ($1,$2,$3,$4,$5,'acme',$6,$7,$8)")
 		.bind(fixture.run).bind(&node).bind(home_node()).bind(description.grant_id).bind(fixture.task)
 		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
 		.bind(serde_json::to_value(&description).unwrap())
 		.execute(driver).await.unwrap();
 	RemoteRun {
-		workspace,
+		thread,
 		description,
 	}
 }
 
 #[rstest]
 #[tokio::test]
-async fn remote_preview_recheck_without_receiver_workspace(#[future] database: DatabaseFixture) {
+async fn remote_preview_recheck_without_receiver_thread(#[future] database: DatabaseFixture) {
 	use aidash_application::ports::capabilities::read_recheck::{
 		Outcome, ReadRecheckRepository, Target,
 	};
 	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
 	let remote = remote_preview(&fixture).await;
-	let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1)")
-		.bind(remote.workspace)
+	let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1)")
+		.bind(remote.thread)
 		.fetch_one(fixture.driver())
 		.await
 		.unwrap();
@@ -776,7 +782,7 @@ async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
 }
 
 /// The Read Recheck of a Remote Grant Run's preview still judges the Run itself
-/// through its admission (#904 drops only the local Workspace step): what the
+/// through its admission (#904 drops only the local Thread step): what the
 /// receiver revokes there stops the preview.
 #[rstest]
 #[tokio::test]
@@ -1224,8 +1230,8 @@ async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: 
 	let [shared, between] = [Uuid::new_v4(), Uuid::new_v4()];
 	for run in [shared, between] {
 		let task = Uuid::new_v4();
-		sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
-		sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.workspace).bind(&node).bind(DEPLOYMENT).bind(pending.clone()).execute(fixture.driver()).await.unwrap();
+		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
+		sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.thread).bind(&node).bind(DEPLOYMENT).bind(pending.clone()).execute(fixture.driver()).await.unwrap();
 	}
 	let mut tx = fixture
 		.store
@@ -1245,7 +1251,7 @@ async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: 
 			&ExecutionGrant {
 				run_id: run,
 				task_id: task,
-				workspace_id: fixture.workspace,
+				thread_id: fixture.thread,
 				tenant: "acme".into(),
 				credential_id: fixture.identity.credential_id,
 				root_subject: "reader".into(),
@@ -1263,7 +1269,7 @@ async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: 
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut *tx,
 			reader,
-			fixture.workspace,
+			fixture.thread,
 			&[("run".to_owned(), read)],
 		)
 		.await
@@ -1414,8 +1420,8 @@ async fn finished_run(fixture: &Fixture) -> Uuid {
 	.unwrap();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let [run, task] = [Uuid::new_v4(), Uuid::new_v4()];
-	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
-	sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.workspace).bind(&node).bind(DEPLOYMENT).bind(pending).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(fixture.driver()).await.unwrap();
 	let mut tx = fixture
 		.store
 		.pool
@@ -1427,7 +1433,7 @@ async fn finished_run(fixture: &Fixture) -> Uuid {
 		&ExecutionGrant {
 			run_id: run,
 			task_id: task,
-			workspace_id: fixture.workspace,
+			thread_id: fixture.thread,
 			tenant: "acme".into(),
 			credential_id: fixture.identity.credential_id,
 			root_subject: "reader".into(),
@@ -1460,12 +1466,12 @@ async fn disclosure_passes(
 	access: &mut Access,
 	grant: &aidash_domain::federation::execution::home::Grant,
 	message: Uuid,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> bool {
 	let row = crate::apps::workspaces::models::Message::read_in(
 		access.tx.as_mut(),
 		message,
-		workspace,
+		thread,
 		true,
 	)
 	.await
@@ -1496,8 +1502,8 @@ async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_
 	let fixture = fixture(database.await, 1).await;
 	let x = finished_run(&fixture).await;
 	let [x_only, disclosed] = [Uuid::new_v4(), Uuid::new_v4()];
-	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Only X','Fixture','COMPLETED',1,'reader')").bind(x_only).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
-	sqlx::query("INSERT INTO messages (id,tenant,workspace_id,sender,content) VALUES ($1,'acme',$2,'reader','Disclosed')").bind(disclosed).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Only X','Fixture','COMPLETED',1,'reader')").bind(x_only).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO messages (id,tenant,thread_id,sender,content) VALUES ($1,'acme',$2,'reader','Disclosed')").bind(disclosed).bind(fixture.thread).execute(fixture.driver()).await.unwrap();
 	let read: Uuid = sqlx::query_scalar(
 		"SELECT resource_id FROM authorization_run_reads WHERE run_id=$1 AND resource_kind='message'",
 	)
@@ -1514,7 +1520,7 @@ async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_
 	crate::apps::identity::models::AuthorizationRunRead::record_sources(
 		&mut *tx,
 		x,
-		fixture.workspace,
+		fixture.thread,
 		&[("task".to_owned(), x_only)],
 	)
 	.await
@@ -1523,7 +1529,7 @@ async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_
 		crate::apps::identity::models::AuthorizationRunOutput::record(
 			&mut *tx,
 			x,
-			fixture.workspace,
+			fixture.thread,
 			"message",
 			message,
 		)
@@ -1546,7 +1552,7 @@ async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_
 		id: Uuid::new_v4(),
 		task_id: fixture.task,
 		task_revision: 1,
-		workspace_id: fixture.workspace,
+		thread_id: fixture.thread,
 		node_id: "aidash://peer".into(),
 		tenant: "acme".into(),
 		credential_id: fixture.identity.credential_id,
@@ -1568,10 +1574,10 @@ async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_
 	// Act
 	let (viewer_sees, grant_sees) = if viewer_first {
 		let viewer_sees = viewer_passes(&mut access, &fixture).await;
-		let grant_sees = disclosure_passes(&mut access, &grant, disclosed, fixture.workspace).await;
+		let grant_sees = disclosure_passes(&mut access, &grant, disclosed, fixture.thread).await;
 		(viewer_sees, grant_sees)
 	} else {
-		let grant_sees = disclosure_passes(&mut access, &grant, disclosed, fixture.workspace).await;
+		let grant_sees = disclosure_passes(&mut access, &grant, disclosed, fixture.thread).await;
 		let viewer_sees = viewer_passes(&mut access, &fixture).await;
 		(viewer_sees, grant_sees)
 	};
@@ -1672,14 +1678,14 @@ async fn what_an_access_is_asked_after_a_check_is_recorded_as_it_is_today(
 async fn a_write_a_subnode_fences_is_checked_afresh_inside_a_check(
 	#[future] database: DatabaseFixture,
 ) {
-	// Arrange: the Run's own Workspace is an active Subnode.
+	// Arrange: the Run's own Thread is an active Subnode.
 	let fixture = fixture(database.await, 1).await;
 	sqlx::query(
 		"INSERT INTO subnodes (id, tenant, node, creator_run_id, creator_task_id, \
 		  creator_agent_id, creator_agent_version, leader_agent_id, leader_agent_version, \
-		  allowance, workspace_id, title, state, created_at, creation_key, creation_fingerprint) \
+		  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
 		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
-		  $2, workspace_id, 'Fenced', 'active', now(), 'fenced', 'fenced' \
+		  $2, thread_id, 'Fenced', 'active', now(), 'fenced', 'fenced' \
 		 FROM runs WHERE id = $3",
 	)
 	.bind(Uuid::new_v4())
@@ -1689,20 +1695,20 @@ async fn a_write_a_subnode_fences_is_checked_afresh_inside_a_check(
 	.await
 	.unwrap();
 	let mut access = fixture.access().await;
-	let workspace = access.resource("workspace", fixture.workspace, json!({}));
+	let thread = access.resource("thread", fixture.thread, json!({}));
 	let mut check = access.rechecking(fixture.run);
-	assert!(check.decide(&workspace, "workspace.update").await.unwrap());
+	assert!(check.decide(&thread, "thread.update").await.unwrap());
 
 	// Act: the Subnode ends in this transaction, which holds its share lock.
 	crate::database::native::query(&format!(
 		"UPDATE subnodes SET state='dissolved', ended_at=now(), ended_reason='dissolved' \
-		 WHERE workspace_id='{}'",
-		fixture.workspace
+		 WHERE thread_id='{}'",
+		fixture.thread
 	))
 	.execute(&mut **check.tx)
 	.await
 	.unwrap();
-	let repeat = check.decide(&workspace, "workspace.update").await;
+	let repeat = check.decide(&thread, "thread.update").await;
 
 	// Assert
 	assert!(matches!(repeat, Err(Error::Forbidden)), "{repeat:?}");
@@ -1744,8 +1750,8 @@ async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_su
 		.execute(fixture.driver())
 		.await
 		.unwrap();
-	let space: Uuid = sqlx::query_scalar("SELECT scratch_space_id FROM workspaces WHERE id = $1")
-		.bind(fixture.workspace)
+	let space: Uuid = sqlx::query_scalar("SELECT scratch_space_id FROM threads WHERE id = $1")
+		.bind(fixture.thread)
 		.fetch_one(fixture.driver())
 		.await
 		.unwrap();

@@ -4,7 +4,7 @@ use super::*;
 #[rstest::rstest]
 fn rejects_multihop_graph_requests() {
 	let options = GraphOptions {
-		scope_workspace: None,
+		scope_thread: None,
 		depth: 2,
 		mode: "mesh".into(),
 		kinds: vec!["agent".into()],
@@ -22,7 +22,7 @@ fn source_rejects_cross_node_and_dangling_projection() {
 		node_id: "aidash://b".into(),
 		sending_node: None,
 		options: GraphOptions {
-			scope_workspace: None,
+			scope_thread: None,
 			depth: 1,
 			mode: "mesh".into(),
 			kinds: vec!["agent".into()],
@@ -43,7 +43,7 @@ fn source_rejects_cross_node_and_dangling_projection() {
 			name: BTreeMap::from([("en".into(), "One".into())]),
 			resource_id: Some("one".into()),
 			version: Some("1.0.0".into()),
-			workspace_id: None,
+			thread_id: None,
 			status: None,
 			goal_body: None,
 			at: None,

@@ -53,11 +53,19 @@ const RETIRED: &[&str] = &[
 	"tenant_retention_rules",
 	// The Tenant Duty limits (#1012).
 	"schedule_limits",
+	// Reply threads and the Task to reply-thread map (#1008).
+	"channel_threads",
+	"core_task_sessions",
 ];
 
 /// Tables renamed after their policy migration ran: Schedules became Duties
-/// (#1011).
-const RENAMED: &[(&str, &str)] = &[("schedules", "duties"), ("schedule_ticks", "duty_ticks")];
+/// (#1011), and the Workspace became the Thread (#1008).
+const RENAMED: &[(&str, &str)] = &[
+	("schedules", "duties"),
+	("schedule_ticks", "duty_ticks"),
+	("workspaces", "threads"),
+	("authorization_workspaces", "authorization_threads"),
+];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
 /// their tables' policies. They run while no policy exists: forward before the
@@ -74,6 +82,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0089_remove_agent_cluster forward",
 	"execution.0090_run_created_at forward",
 	"execution.0141_remove_research forward",
+	"execution.0148_threads forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
 	"identity.0067_scratch_member_policy forward",
@@ -84,6 +93,9 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"identity.0085_remove_research_approvals forward",
 	"identity.0098_duty_member_policy backward",
 	"identity.0098_duty_member_policy forward",
+	"identity.0110_threads forward",
+	"identity.0111_thread_member_policy backward",
+	"identity.0111_thread_member_policy forward",
 	"registry.0054_remove_agent_cluster forward",
 	"registry.0070_remove_package_index_draft_bindings forward",
 	"registry.0072_remove_agent_external_service_draft_bindings forward",
@@ -92,6 +104,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"workspaces.0024_workspace_scratch_space forward",
 	"workspaces.0033_duty_checks backward",
 	"workspaces.0033_duty_checks forward",
+	"workspaces.0049_threads backward",
 ];
 
 #[rstest::rstest]

@@ -18,7 +18,7 @@ fn scope() -> Scope {
 		}),
 		task: Task {
 			id: Uuid::from_u128(2),
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,

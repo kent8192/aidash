@@ -1,6 +1,6 @@
 //! The audit record and replay receipt of a Deployment Administrator's Safety
 //! Stop (ADR 0101). `run_id` has no foreign key: the record is audit history
-//! and outlives the Run, its Workspace and the purge of its Tenant.
+//! and outlives the Run, its Thread and the purge of its Tenant.
 use crate::Result;
 use aidash_application::safety_stop::{Receipt, Stored};
 use aidash_domain::safety_stop::{Action, Actor, Command, Outcome, Record};

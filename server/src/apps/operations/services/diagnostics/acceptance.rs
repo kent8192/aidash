@@ -54,8 +54,8 @@ pub(super) fn document() -> serde_json::Value {
 			"tx_coordinator":evidence("atomic_coordinators",&["id","digest","decision","visible","complete"],"id=:'transaction'::uuid"),
 			"tx_participant":evidence("atomic_participants",&["id","digest","phase"],"id=:'transaction'::uuid"),
 			"tx_barrier":evidence("atomic_gate",&["transaction_id","commit_epoch"],"singleton"),
-			"tx_workspace":evidence("workspaces",&["id","revision"],"id=:'workspace'::uuid"),
-			"tx_events":evidence("events",&["id","kind"],"workspace_id=:'workspace'::uuid AND kind='workspace.updated'"),
+			"tx_thread":evidence("threads",&["id","revision"],"id=:'thread'::uuid"),
+			"tx_events":evidence("events",&["id","kind"],"thread_id=:'thread'::uuid AND kind='thread.updated'"),
 			"remote_admissions":count("authorization_remote_admissions"),
 			"remote_bindings":count("authorization_remote_execution")})
 }

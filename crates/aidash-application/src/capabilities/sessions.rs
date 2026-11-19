@@ -19,26 +19,26 @@ pub async fn load(scope: &mut dyn SessionScope, id: Uuid) -> Result<Area> {
 	Ok(area)
 }
 pub async fn authorize(scope: &mut dyn SessionScope, area: &Area, action: &str) -> Result<()> {
-	let workspace = scope.workspace(area.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
+	let thread = scope.thread(area.thread_id).await?;
+	scope.set_context(thread.attributes.clone());
 	if area.tenant != scope.tenant() || area.owner != scope.principal() {
 		return Err(Error::NotFound("working area unavailable".into()));
 	}
 	let resource = scope.resource(
 		"working_area",
 		area.id,
-		json!({"owner":area.owner,"agent_id":area.agent_id,"workspace_id":area.workspace_id}),
+		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
 	);
-	scope.require(&workspace, "workspace.read").await?;
+	scope.require(&thread, "thread.read").await?;
 	scope
 		.require(&resource, action)
 		.await
 		.map_err(|_| Error::NotFound("working area unavailable".into()))?;
-	authorize_sources(scope, area.workspace_id, &area.constraints).await
+	authorize_sources(scope, area.thread_id, &area.constraints).await
 }
 pub async fn authorize_sources(
 	scope: &mut dyn SessionScope,
-	workspace: Uuid,
+	thread: Uuid,
 	constraints: &Value,
 ) -> Result<()> {
 	let mut references = Vec::new();
@@ -49,7 +49,7 @@ pub async fn authorize_sources(
 		match source["kind"].as_str() {
 			Some("message") => {
 				scope
-					.message(workspace, serde_json::from_value(source["id"].clone())?)
+					.message(thread, serde_json::from_value(source["id"].clone())?)
 					.await?
 			}
 			Some("reference_text") => {
@@ -84,7 +84,7 @@ pub async fn for_run(scope: &mut dyn SessionScope, run: &RunMetadata) -> Result<
 	let area = load(scope, id).await?;
 	if area.agent_id != run.agent_id
 		|| area.generation != generation
-		|| area.workspace_id != run.workspace_id
+		|| area.thread_id != run.thread_id
 		|| area.home_node != run.home_node
 	{
 		return Err(Error::Forbidden);
@@ -130,8 +130,8 @@ pub async fn prepare_admission(
 				.into(),
 		));
 	}
-	// The Working Area is keyed on (home Node, Workspace, Agent, owner)
-	// (#1008, ADR 0140): every Task of a Workspace shares it.
+	// The Working Area is keyed on (home Node, Thread, Agent, owner)
+	// (#1008, ADR 0140): every Task of a Thread shares it.
 	let mut ancestor = task.parent_id;
 	for _ in 0..64 {
 		let Some(id) = ancestor else {
@@ -152,8 +152,8 @@ pub async fn prepare_admission(
 			"SESSION_DEPENDENCY_CYCLE: ancestor limit exceeded".into(),
 		));
 	}
-	scope.lock_thread(task.workspace_id).await?;
-	Ok(Some(task.workspace_id))
+	scope.lock_thread(task.thread_id).await?;
+	Ok(Some(task.thread_id))
 }
 pub async fn admit(
 	scope: &mut dyn SessionScope,
@@ -166,7 +166,7 @@ pub async fn admit(
 	let Some(thread) = thread else {
 		return Ok(());
 	};
-	debug_assert_eq!(thread, task.workspace_id);
+	debug_assert_eq!(thread, task.thread_id);
 	let mut area = scope.ensure_area(task, agent_id).await?;
 	authorize(scope, &area, "file.read").await?;
 	if !matches!(area.state.as_str(), "active" | "running") {
@@ -185,7 +185,7 @@ pub async fn admit(
 	scope.enqueue(run_id, &area, initialized).await?;
 	scope
 		.event(
-			task.workspace_id,
+			task.thread_id,
 			"capability.queued",
 			json!({"area_id":area.id,"run_id":run_id,"sequence":area.next_sequence}),
 		)

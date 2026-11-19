@@ -62,7 +62,7 @@ impl StdioHost {
 		}
 		crate::apps::execution::repositories::subnodes::require_writable(
 			access.tx.native_mut(),
-			self.run.workspace_id,
+			self.run.thread_id,
 		)
 		.await?;
 		let operation = stdio_session::mcp_stdio_operation();
@@ -274,10 +274,10 @@ impl StdioPluginHost for StdioHost {
 	}
 
 	async fn data_not_saved(&self, plugin: &PluginName, cause: &str) {
-		let workspace = self
+		let thread = self
 			.run
 			.is_local(self.store.deployment.as_str())
-			.then_some(self.run.workspace_id);
+			.then_some(self.run.thread_id);
 		let data = json!({"plugin": plugin.as_str(), "cause": cause});
 		let result = async {
 			let mut tx = self.store.pool.begin(&self.tenancy).await?;
@@ -285,7 +285,7 @@ impl StdioPluginHost for StdioHost {
 				.run_event(
 					&mut tx,
 					self.run.id,
-					workspace,
+					thread,
 					"agent_plugin_data_not_saved",
 					data,
 				)

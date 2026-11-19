@@ -35,7 +35,7 @@ fn receipt() -> Value {
 		operation_digest: "operation-digest".into(),
 		home_node: "home".into(),
 		tenant: "tenant".into(),
-		workspace_id: Uuid::from_u128(21),
+		thread_id: Uuid::from_u128(21),
 		grant_id: Uuid::from_u128(22),
 		admission_id: Uuid::from_u128(23),
 		executor: "executor".into(),
@@ -67,7 +67,7 @@ fn receipt() -> Value {
 		candidate_digest: "candidates".into(),
 		sources: vec![],
 		result: SearchResult {
-			workspace_id: Uuid::from_u128(21),
+			thread_id: Uuid::from_u128(21),
 			index_revision: 1,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -110,7 +110,7 @@ impl GenerationVisibility for Scope {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, _: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, _: Uuid) -> Result<Resource> {
 		panic!("foreign request visibility uses qualified task authority")
 	}
 	async fn task(&mut self, _: Uuid, _: Uuid) -> Result<Option<Task>> {
@@ -150,7 +150,7 @@ impl StatusScope for Scope {
 			prepared: true,
 			grant_id: None,
 			admission_id: None,
-			workspace_id: Uuid::from_u128(11),
+			thread_id: Uuid::from_u128(11),
 			credential_id: Uuid::from_u128(12),
 			root_subject: "alice".into(),
 			subject_chain: vec!["alice".into()],

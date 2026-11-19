@@ -6,7 +6,7 @@ use serde_json::json;
 fn binding() -> (Record, ExecutionPrincipal, Description) {
 	let task = crate::Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: String::new(),
 		status: crate::TaskStatus::Open,

@@ -23,7 +23,7 @@ impl EmbeddingAllowance for crate::generation::embedding::Reservation {
 pub async fn invoke(
 	scope: &mut dyn SemanticEmbeddingScope,
 	provider: &dyn EmbeddingProvider,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	text: &str,
 	origin: Origin,
@@ -31,7 +31,7 @@ pub async fn invoke(
 	invoke_input(
 		scope,
 		provider,
-		workspace,
+		thread,
 		config,
 		aidash_domain::semantic::EmbeddingInput::Text(text),
 		origin,
@@ -42,13 +42,13 @@ pub async fn invoke(
 pub async fn invoke_input(
 	scope: &mut dyn SemanticEmbeddingScope,
 	provider: &dyn EmbeddingProvider,
-	workspace: Uuid,
+	thread: Uuid,
 	config: &EmbeddingConfig,
 	input: aidash_domain::semantic::EmbeddingInput<'_>,
 	origin: Origin,
 ) -> Result<Vec<f32>> {
 	input.validate(config)?;
-	let reservation = scope.reserve(workspace, config, input, origin).await?;
+	let reservation = scope.reserve(thread, config, input, origin).await?;
 	let output = provider
 		.embed(config, input)
 		.await

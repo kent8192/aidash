@@ -10,12 +10,12 @@ use crate::apps::workspaces::serializers::channels::ChannelMessageInput;
 use crate::apps::workspaces::serializers::channels::ChannelMessagePage;
 use crate::apps::workspaces::serializers::entities::NewTask;
 use crate::apps::workspaces::serializers::entities::Task;
-use crate::apps::workspaces::serializers::entities::Workspace;
-use crate::apps::workspaces::serializers::entities::WorkspaceSnapshot;
+use crate::apps::workspaces::serializers::entities::Thread;
+use crate::apps::workspaces::serializers::entities::ThreadSnapshot;
 use crate::apps::workspaces::serializers::management::AbandonInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
+use crate::apps::workspaces::serializers::management::ThreadInput;
 use crate::apps::workspaces::serializers::management::TitleInput;
-use crate::apps::workspaces::serializers::management::WorkspaceInput;
 use crate::apps::workspaces::serializers::scratch::{
 	ScratchCreate, ScratchLimits, ScratchList, ScratchMember, ScratchView,
 };
@@ -33,13 +33,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		};
 		use aidash_domain::duties::{Definition, Patch};
 		let json = "application/json";
-		contracts.path(document, views::duties::workspace_list, &["Uuid"])?;
-		contracts.response::<_, Vec<DutyView>>(
-			document,
-			views::duties::workspace_list,
-			200,
-			json,
-		)?;
+		contracts.path(document, views::duties::thread_list, &["Uuid"])?;
+		contracts.response::<_, Vec<DutyView>>(document, views::duties::thread_list, 200, json)?;
 		contracts.path(document, views::duties::create, &["Uuid"])?;
 		contracts.request::<_, Definition>(document, views::duties::create)?;
 		contracts.response::<_, DutyView>(document, views::duties::create, 200, json)?;
@@ -156,28 +151,28 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.query::<_, PageQuery>(document, views::management::task_list)?;
-	contracts.response::<_, aidash_domain::workspaces::WorkspaceOpened>(
+	contracts.response::<_, aidash_domain::threads::ThreadOpened>(
 		document,
-		views::management::workspace_create,
+		views::management::thread_create,
 		200,
 		"application/json",
 	)?;
-	contracts.request::<_, WorkspaceInput>(document, views::management::workspace_create)?;
-	contracts.response::<_, WorkspaceSnapshot>(
+	contracts.request::<_, ThreadInput>(document, views::management::thread_create)?;
+	contracts.response::<_, ThreadSnapshot>(
 		document,
-		views::management::workspace_get,
+		views::management::thread_get,
 		200,
 		"application/json",
 	)?;
-	contracts.path(document, views::management::workspace_get, &["Uuid"])?;
-	contracts.response::<_, Workspace>(
+	contracts.path(document, views::management::thread_get, &["Uuid"])?;
+	contracts.response::<_, Thread>(
 		document,
-		views::management::workspace_update,
+		views::management::thread_update,
 		200,
 		"application/json",
 	)?;
-	contracts.request::<_, TitleInput>(document, views::management::workspace_update)?;
-	contracts.path(document, views::management::workspace_update, &["Uuid"])?;
+	contracts.request::<_, TitleInput>(document, views::management::thread_update)?;
+	contracts.path(document, views::management::thread_update, &["Uuid"])?;
 	contracts.response::<_, Task>(
 		document,
 		views::management::task_create,

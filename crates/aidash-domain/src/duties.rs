@@ -18,7 +18,7 @@ pub mod events;
 pub mod scripts;
 
 /// Registering Duties, and changing, pausing and deleting your own. Judged
-/// on the Workspace the Duty belongs to. Members hold it by default.
+/// on the Thread the Duty belongs to. Members hold it by default.
 pub const CREATE: &str = "duty.create";
 /// Seeing, stopping and deleting anyone's Duties and naming a successor for
 /// a Duty whose Requester left. Judged on the Tenant. Administrators hold it.
@@ -272,14 +272,14 @@ pub struct Timing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Duty {
 	pub id: Uuid,
-	/// The Duty's own Workspace, opened when it is registered: its Tasks
+	/// The Duty's own Thread, opened when it is registered: its Tasks
 	/// belong there, report there, and its Requester talks to it there
 	/// (#1008, ADR 0140).
-	pub workspace_id: Uuid,
-	/// The Workspace it was registered from: its Agents list and change the
-	/// Duty there too. None for a Duty from before #1008, whose own Workspace
+	pub thread_id: Uuid,
+	/// The Thread it was registered from: its Agents list and change the
+	/// Duty there too. None for a Duty from before #1008, whose own Thread
 	/// is the one it was registered in.
-	pub origin_workspace_id: Option<Uuid>,
+	pub origin_thread_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
 	pub requester: String,
 	/// The Requester's credential its Runs are admitted with. Revoking it, as

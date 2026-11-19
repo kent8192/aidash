@@ -1,0 +1,29 @@
+-- PostgreSQL renames constraints and indexes only with ALTER ... RENAME, which
+-- typed Reinhardt operations cannot express. Names follow the Thread (#1008).
+ALTER TABLE public.artifacts RENAME CONSTRAINT artifacts_task_workspace TO artifacts_task_thread;
+ALTER TABLE public.artifacts RENAME CONSTRAINT artifacts_workspace_id_fkey TO artifacts_thread_id_fkey;
+ALTER TABLE public.channel_attachments RENAME CONSTRAINT channel_attachments_workspace_id_fkey TO channel_attachments_thread_id_fkey;
+ALTER TABLE public.channel_attachments RENAME CONSTRAINT channel_attachments_workspace_id_message_id_fkey TO channel_attachments_thread_id_message_id_fkey;
+ALTER TABLE public.channel_message_context RENAME CONSTRAINT channel_message_context_workspace_id_message_id_fkey TO channel_message_context_thread_id_message_id_fkey;
+ALTER TABLE public.conversations RENAME CONSTRAINT conversations_workspace_id_fkey TO conversations_thread_id_fkey;
+ALTER TABLE public.duties RENAME CONSTRAINT schedules_workspace_fkey TO duties_thread_fkey;
+ALTER TABLE public.duty_bookings RENAME CONSTRAINT duty_bookings_workspace_fkey TO duty_bookings_thread_fkey;
+ALTER TABLE public.duty_events RENAME CONSTRAINT duty_events_workspace_fkey TO duty_events_thread_fkey;
+ALTER TABLE public.duty_ticks RENAME CONSTRAINT schedule_ticks_workspace_fkey TO duty_ticks_thread_fkey;
+ALTER TABLE public.duty_triggers RENAME CONSTRAINT duty_triggers_workspace_fkey TO duty_triggers_thread_fkey;
+ALTER TABLE public.messages RENAME CONSTRAINT messages_tenant_workspace_id_id_key TO messages_tenant_thread_id_id_key;
+ALTER TABLE public.messages RENAME CONSTRAINT messages_workspace_id_fkey TO messages_thread_id_fkey;
+ALTER TABLE public.task_dependencies RENAME CONSTRAINT tasks_dependencies_source_workspace TO tasks_dependencies_source_thread;
+ALTER TABLE public.task_dependencies RENAME CONSTRAINT tasks_dependencies_target_workspace TO tasks_dependencies_target_thread;
+ALTER TABLE public.tasks RENAME CONSTRAINT tasks_parent_workspace TO tasks_parent_thread;
+ALTER TABLE public.tasks RENAME CONSTRAINT tasks_tenant_id_workspace_id_key TO tasks_tenant_id_thread_id_key;
+ALTER TABLE public.tasks RENAME CONSTRAINT tasks_workspace_id_fkey TO tasks_thread_id_fkey;
+ALTER TABLE public.threads RENAME CONSTRAINT workspaces_node_fkey TO threads_node_fkey;
+ALTER TABLE public.threads RENAME CONSTRAINT workspaces_pkey TO threads_pkey;
+ALTER TABLE public.threads RENAME CONSTRAINT workspaces_scratch_space_fkey TO threads_scratch_space_fkey;
+ALTER TABLE public.threads RENAME CONSTRAINT workspaces_tenant_id_key TO threads_tenant_id_key;
+ALTER TABLE public.threads RENAME CONSTRAINT workspaces_tenant_root_fkey TO threads_tenant_root_fkey;
+ALTER INDEX public.schedules_workspace RENAME TO duties_thread;
+ALTER INDEX public.tasks_id_workspace_unique RENAME TO tasks_id_thread_unique;
+ALTER INDEX public.tasks_workspace RENAME TO tasks_thread;
+ALTER INDEX public.idx_workspaces_tenant_scratch_space_id RENAME TO idx_threads_tenant_scratch_space_id;

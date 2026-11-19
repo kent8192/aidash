@@ -13,7 +13,7 @@ use aidash_server::{
 			},
 			services::decisions::CoordinatorTransition,
 		},
-		workspaces::models::Workspace,
+		workspaces::models::Thread,
 	},
 	generation::provision,
 	harness::Harness,
@@ -29,11 +29,11 @@ use rstest::rstest;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-async fn workspace(node: &Node, id: Uuid) -> Workspace {
+async fn thread(node: &Node, id: Uuid) -> Thread {
 	node.database
 		.fixture(async |tx| {
-			Ok(Workspace::objects()
-				.filter(Workspace::field_id().eq(id))
+			Ok(Thread::objects()
+				.filter(Thread::field_id().eq(id))
 				.get_with_db(tx)
 				.await?)
 		})
@@ -44,8 +44,8 @@ async fn updates(node: &Node, id: Uuid) -> usize {
 	node.database
 		.fixture(async |tx| {
 			Ok(Event::objects()
-				.filter(Event::field_workspace_id().eq(Some(id)))
-				.filter(Event::field_kind().eq("workspace.updated"))
+				.filter(Event::field_thread_id().eq(Some(id)))
+				.filter(Event::field_kind().eq("thread.updated"))
 				.all_with_db(tx)
 				.await?
 				.len())
@@ -94,11 +94,11 @@ async fn complete(node: &Node, id: Uuid) -> Status {
 	}
 	panic!("transaction did not finish: {:?}", node.status(id).await);
 }
-async fn unavailable(node: &Node, workspace_id: Uuid) {
+async fn unavailable(node: &Node, thread_id: Uuid) {
 	for path in [
 		"/api/state".to_string(),
 		"/api/registry".into(),
-		format!("/api/workspaces/{workspace_id}"),
+		format!("/api/threads/{thread_id}"),
 		"/api/events".into(),
 		"/.well-known/aidash".into(),
 	] {
@@ -131,7 +131,7 @@ async fn unavailable(node: &Node, workspace_id: Uuid) {
 	assert!(
 		node.f
 			.store
-			.update_title(&TEST_FIXTURE, workspace_id, 0, "bypass")
+			.update_title(&TEST_FIXTURE, thread_id, 0, "bypass")
 			.await
 			.is_err(),
 		"pending atomic work must reject a competing write"
@@ -182,8 +182,8 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	);
 	let final_state = complete(&a, manifest.id).await;
 	assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
-	assert_eq!(workspace(&a, wa).await.revision, 0);
-	assert_eq!(workspace(&b, wb).await.revision, 0);
+	assert_eq!(thread(&a, wa).await.revision, 0);
+	assert_eq!(thread(&b, wb).await.revision, 0);
 	let history = AtomicHistory::objects()
 		.filter(AtomicHistory::field_transaction_id().eq(manifest.id))
 		.all_with_db(&mut a.database.lease.handle())
@@ -223,8 +223,8 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		Err(Error::TransactionPending)
 	));
 	steps(&a, manifest.id, 2).await; // Both prepared; speculative writes rolled back.
-	assert_eq!(workspace(&a, wa).await.revision, 0);
-	assert_eq!(workspace(&b, wb).await.revision, 0);
+	assert_eq!(thread(&a, wa).await.revision, 0);
+	assert_eq!(thread(&b, wb).await.revision, 0);
 	steps(&a, manifest.id, 1).await; // Durable commit precedes any application.
 	assert_eq!(
 		a.status(manifest.id).await.decision.as_deref(),
@@ -248,25 +248,22 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 		.unwrap();
 	assert_eq!(stored.decision, Some(AtomicCoordinatorDecision::Commit));
 	steps(&a, manifest.id, 1).await;
-	assert_eq!(workspace(&a, wa).await.title, "new-a");
-	assert_eq!(workspace(&b, wb).await.revision, 0);
+	assert_eq!(thread(&a, wa).await.title, "new-a");
+	assert_eq!(thread(&b, wb).await.revision, 0);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	steps(&a, manifest.id, 1).await;
-	assert_eq!(workspace(&b, wb).await.title, "new-b");
+	assert_eq!(thread(&b, wb).await.title, "new-b");
 	assert!(!a.status(manifest.id).await.visible);
 	steps(&a, manifest.id, 1).await; // Visibility certificate, barriers still retained.
 	assert!(a.status(manifest.id).await.visible);
 	steps(&a, manifest.id, 1).await;
-	assert_eq!(a.get(&format!("/api/workspaces/{wa}")).await.0, 200);
-	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 503);
+	assert_eq!(a.get(&format!("/api/threads/{wa}")).await.0, 200);
+	assert_eq!(b.get(&format!("/api/threads/{wb}")).await.0, 503);
 	let done = complete(&a, manifest.id).await;
 	assert!(done.visible);
-	for (node, workspace_id) in [(&a, wa), (&b, wb)] {
-		assert_eq!(
-			node.get(&format!("/api/workspaces/{workspace_id}")).await.0,
-			200
-		);
+	for (node, thread_id) in [(&a, wa), (&b, wb)] {
+		assert_eq!(node.get(&format!("/api/threads/{thread_id}")).await.0, 200);
 		assert_eq!(
 			participant::finish(&node.f, None, a.address.as_str(), &manifest)
 				.await
@@ -274,7 +271,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 				.phase,
 			"COMMITTED"
 		);
-		assert_eq!(updates(node, workspace_id).await, 1);
+		assert_eq!(updates(node, thread_id).await, 1);
 	}
 }
 
@@ -286,7 +283,7 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	let Some((a, b, mut manifest, wa, wb)) = Box::pin(pair).await else {
 		return;
 	};
-	if let Mutation::WorkspaceTitle {
+	if let Mutation::ThreadTitle {
 		expected_revision, ..
 	} = &mut manifest.participants[1].mutations[0]
 	{
@@ -296,12 +293,9 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("ABORT"));
 	assert!(!done.visible);
-	for (node, workspace_id) in [(&a, wa), (&b, wb)] {
-		assert_eq!(workspace(node, workspace_id).await.revision, 0);
-		assert_eq!(
-			node.get(&format!("/api/workspaces/{workspace_id}")).await.0,
-			200
-		);
+	for (node, thread_id) in [(&a, wa), (&b, wb)] {
+		assert_eq!(thread(node, thread_id).await.revision, 0);
+		assert_eq!(node.get(&format!("/api/threads/{thread_id}")).await.0, 200);
 		assert_eq!(
 			participant::reserve(&node.f, None, a.address.as_str(), &manifest)
 				.await
@@ -342,8 +336,8 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 	unavailable(&b, wb).await;
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("COMMIT"));
-	assert_eq!(workspace(&a, wa).await.revision, 1);
-	assert_eq!(workspace(&b, wb).await.revision, 1);
+	assert_eq!(thread(&a, wa).await.revision, 1);
+	assert_eq!(thread(&b, wb).await.revision, 1);
 }
 
 #[rstest]
@@ -372,15 +366,15 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 		complete(&b, second.id).await.decision.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(workspace(&a, wa).await.revision, 1);
-	assert_eq!(workspace(&b, wb).await.revision, 1);
+	assert_eq!(thread(&a, wa).await.revision, 1);
+	assert_eq!(thread(&b, wb).await.revision, 1);
 }
 
 #[rstest]
 #[case::ordinary(false)]
 #[case::node_deletion_after_decision(true)]
 #[tokio::test]
-async fn workspace_task_execution_and_artifact_commit_together_once(
+async fn thread_task_execution_and_artifact_commit_together_once(
 	#[future] pair: Option<Pair>,
 	#[case] delete_after_decision: bool,
 ) {
@@ -628,13 +622,13 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 	steps(&a, manifest.id, 4).await;
 	a.stop().await;
 	assert_eq!(participant::recover_once(&b.f).await.unwrap(), 0);
-	assert_eq!(workspace(&b, wb).await.revision, 0);
+	assert_eq!(thread(&b, wb).await.revision, 0);
 	unavailable(&b, wb).await;
 	a.restart().await;
 	steps(&a, manifest.id, 1).await;
 	// The coordinator has not sent apply, but a participant can recover its vote.
 	assert_eq!(participant::recover_once(&b.f).await.unwrap(), 1);
-	assert_eq!(workspace(&b, wb).await.revision, 1);
+	assert_eq!(thread(&b, wb).await.revision, 1);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	assert_eq!(
@@ -657,7 +651,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	let mut response =
 		a.f.client
 			.get(format!(
-				"{}/api/events/stream?workspace_id={wa}",
+				"{}/api/events/stream?thread_id={wa}",
 				a.f.config.endpoint
 			))
 			.bearer_auth(&subject)
@@ -667,7 +661,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	assert_eq!(response.status(), 200);
 	assert_eq!(response.headers()["content-type"], "text/event-stream");
 	let first = next_frame(&mut response).await;
-	assert!(first.contains("workspace.created"), "{first}");
+	assert!(first.contains("thread.created"), "{first}");
 	a.submit(&manifest).await;
 	steps(&a, manifest.id, 6).await;
 	assert!(
@@ -701,8 +695,8 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		Some("ABORT")
 	);
 	complete(&a, manifest.id).await;
-	assert_eq!(workspace(&a, wa).await.revision, 0);
-	assert_eq!(workspace(&b, wb).await.revision, 0);
+	assert_eq!(thread(&a, wa).await.revision, 0);
+	assert_eq!(thread(&b, wb).await.revision, 0);
 
 	assert_eq!(b.set_trust(&a, true, 2).await, 200);
 	let mut admitted = manifest.clone();
@@ -739,7 +733,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	.await
 	.unwrap();
 	assert_eq!(response.status_code(), 403, "{}", response.text());
-	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 200);
+	assert_eq!(b.get(&format!("/api/threads/{wb}")).await.0, 200);
 	a.submit(&admitted).await;
 	steps(&a, admitted.id, 2).await;
 	// The registration is guarded like any other Tenant data: while `b` holds
@@ -750,8 +744,8 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		complete(&a, admitted.id).await.decision.as_deref(),
 		Some("COMMIT")
 	);
-	assert_eq!(workspace(&a, wa).await.revision, 1);
-	assert_eq!(workspace(&b, wb).await.revision, 1);
+	assert_eq!(thread(&a, wa).await.revision, 1);
+	assert_eq!(thread(&b, wb).await.revision, 1);
 	assert_eq!(b.set_trust(&a, false, 3).await, 200);
 }
 
@@ -772,10 +766,10 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(
 		transitions += 1;
 		if !state.visible {
 			// No node may expose a new value before the global visibility decision.
-			for (node, workspace_id) in [(&a, wa), (&b, wb)] {
-				let (status, value) = node.get(&format!("/api/workspaces/{workspace_id}")).await;
+			for (node, thread_id) in [(&a, wa), (&b, wb)] {
+				let (status, value) = node.get(&format!("/api/threads/{thread_id}")).await;
 				assert!(
-					status == 503 || (status == 200 && value["workspace"]["revision"] == 0),
+					status == 503 || (status == 200 && value["thread"]["revision"] == 0),
 					"{status}: {value}"
 				);
 			}
@@ -786,8 +780,8 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(
 		assert!(transitions < 20);
 	}
 	assert_eq!(transitions, 11);
-	assert_eq!(workspace(&a, wa).await.revision, 1);
-	assert_eq!(workspace(&b, wb).await.revision, 1);
+	assert_eq!(thread(&a, wa).await.revision, 1);
+	assert_eq!(thread(&b, wb).await.revision, 1);
 }
 
 #[rstest]
@@ -809,8 +803,8 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 		complete(&a, manifest.id).await.decision.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(workspace(&a, wa).await.revision, 0);
-	assert_eq!(workspace(&b, wb).await.revision, 0);
+	assert_eq!(thread(&a, wa).await.revision, 0);
+	assert_eq!(thread(&b, wb).await.revision, 0);
 }
 
 #[rstest]
@@ -880,9 +874,9 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	});
 	restarted_a.kill().await;
 	restarted_b.kill().await;
-	for (node, workspace_id) in [(&a, wa), (&b, wb)] {
-		assert_eq!(workspace(node, workspace_id).await.revision, 1);
-		assert_eq!(updates(node, workspace_id).await, 1);
+	for (node, thread_id) in [(&a, wa), (&b, wb)] {
+		assert_eq!(thread(node, thread_id).await.revision, 1);
+		assert_eq!(updates(node, thread_id).await, 1);
 	}
 }
 
@@ -913,7 +907,7 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 		}
 	}
 	assert!(a.status(local.id).await.complete);
-	assert_eq!(workspace(&a, wa).await.revision, 1);
+	assert_eq!(thread(&a, wa).await.revision, 1);
 }
 
 async fn next_frame(response: &mut reqwest::Response) -> String {

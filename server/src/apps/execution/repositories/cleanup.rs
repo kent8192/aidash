@@ -91,7 +91,7 @@ impl From<ManagedArea> for NativeManagedArea {
 	fn from(v: ManagedArea) -> Self {
 		Self {
 			area_id: v.area_id,
-			workspace_id: v.workspace_id,
+			thread_id: v.thread_id,
 			agent_id: v.agent_id,
 			owner: v.owner,
 			state: v.state,
@@ -185,8 +185,24 @@ impl CleanupScope for Scope<'_> {
 	async fn serialize(&mut self) -> Result<()> {
 		sharing::serialize(self.access).await.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
+	}
+	async fn thread_deleted(&mut self, id: Uuid) -> Result<bool> {
+		let deleted: Option<i32> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::value(1_i32))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(
+					Expr::col(Alias::new("tenant")).eq(Expr::value(&self.access.identity.tenant)),
+				)
+				.and_where(Expr::col(Alias::new("deleted_at")).is_not_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		Ok(deleted.is_some())
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -194,8 +210,8 @@ impl CleanupScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn sources(&mut self, workspace: Uuid, constraints: &Value) -> Result<()> {
-		sessions::authorize_sources(self.access, workspace, constraints)
+	async fn sources(&mut self, thread: Uuid, constraints: &Value) -> Result<()> {
+		sessions::authorize_sources(self.access, thread, constraints)
 			.await
 			.map_err(Into::into)
 	}
@@ -216,9 +232,9 @@ impl CleanupScope for Scope<'_> {
 		.await?;
 		Ok(state.as_deref() == Some("ready"))
 	}
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()> {
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<()> {
 		self.access
-			.workspace_record(workspace, "message", id)
+			.thread_record(thread, "message", id)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -417,7 +433,7 @@ impl CleanupScope for Scope<'_> {
 			let id = {
 				let query_bind_1 = &area.tenant;
 				let query_bind_2 = &area.home_node;
-				let query_bind_3 = area.workspace_id;
+				let query_bind_3 = area.thread_id;
 				let query_bind_5 = &area.agent_id;
 				let query_bind_6 = &area.owner;
 				let query_bind_7 = area.id;
@@ -441,13 +457,11 @@ impl CleanupScope for Scope<'_> {
 								)),
 						)
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-								"workspace_id",
-							)))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_3.to_owned()).into()],
+								)),
 						)
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("agent_id")))
@@ -1021,9 +1035,9 @@ impl ErasureScope for Erasure<'_> {
 		*record = domain(row);
 		Ok(())
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
-			.event(&mut self.tx, Some(workspace), kind, data)
+			.event(&mut self.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

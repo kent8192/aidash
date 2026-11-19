@@ -1,4 +1,4 @@
-//! Tenant Administrators choose whether the Agent may recall across Workspaces.
+//! Tenant Administrators choose whether the Agent may recall across Threads.
 use super::tenant_administration::TenantAdministrations;
 use crate::apps::identity::{
 	models::{AdministrationActor, AdministrationEvent},

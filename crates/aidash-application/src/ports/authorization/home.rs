@@ -29,7 +29,7 @@ pub trait HomeScope: Send + Sized {
 	/// The current control projection uses the original task SHARE lock, without reading producer text.
 	async fn control_task(&mut self, id: Uuid) -> Result<Option<Task>>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn human_requests(
 		&mut self,
@@ -51,8 +51,8 @@ pub trait HomeScope: Send + Sized {
 	async fn task_grant(&mut self, task: Uuid, grant: Uuid) -> Result<Option<Grant>>;
 	/// Whether the policy allows `action` on `resource`, without writing a denial.
 	async fn may(&mut self, resource: &Resource, action: &str) -> Result<bool>;
-	/// Record on the Task's Workspace that a person declined a call of a remote Run.
-	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()>;
+	/// Record on the Task's Thread that a person declined a call of a remote Run.
+	async fn call_declined(&mut self, thread: Uuid, event: Value) -> Result<()>;
 	async fn binding(&mut self, grant: Uuid) -> Result<Option<HomeBinding>>;
 	async fn grants(&mut self, task: Uuid) -> Result<Vec<Grant>>;
 	/// Grants of other requesters, considered only for a content-free decline offer.
@@ -82,7 +82,7 @@ pub trait HomeScope: Send + Sized {
 		&mut self,
 		grant: Uuid,
 		admission: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		subject: &str,
 	) -> Result<()>;
 	async fn remote_semantic_sources(&mut self, grant: Uuid) -> Result<()>;
@@ -91,7 +91,7 @@ pub trait HomeScope: Send + Sized {
 	async fn provenance(&mut self, value: Option<Value>) -> Result<Option<Provenance>>;
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		subject: &str,
 		key: &str,
@@ -103,15 +103,15 @@ pub trait HomeScope: Send + Sized {
 pub trait HomeRepository: Send + Sync {
 	type Scope: HomeScope;
 	/// The address of the Node Home sends its requests as: the Node the
-	/// Workspace belongs to.
-	async fn node_address(&self, workspace: Uuid) -> Result<String>;
+	/// Thread belongs to.
+	async fn node_address(&self, thread: Uuid) -> Result<String>;
 	fn identity(&self) -> Option<ExecutionPrincipal>;
 	async fn begin(&self) -> Result<Self::Scope>;
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Self::Scope, Description)>;
 	/// Deserialize directly from bounded response bytes to preserve strict wire decoding.
 	async fn request<T: DeserializeOwned + Send>(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		node: &str,
 		path: &str,
 		input: &Value,

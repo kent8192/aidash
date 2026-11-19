@@ -26,7 +26,7 @@ struct Authority {
 #[fixture]
 fn authority_store() -> Authority {
 	let authority = Authority {
-		document: json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"parent":{"kind":"user"}},"policies":[{"id":"stream","effect":"allow","subjects":{"any":true},"actions":["workspace.read","workspace.events"],"resources":{"kinds":["workspace"]},"condition":{"op":"all","conditions":[{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"saved-owner"}},{"op":"eq","left":{"source":"environment","path":"/transport"},"right":{"source":"literal","value":"api"}},{"op":"eq","left":{"source":"environment","path":"/node_id"},"right":{"source":"literal","value":"aidash://local"}}]}}]}),
+		document: json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"parent":{"kind":"user"}},"policies":[{"id":"stream","effect":"allow","subjects":{"any":true},"actions":["thread.read","thread.events"],"resources":{"kinds":["thread"]},"condition":{"op":"all","conditions":[{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"saved-owner"}},{"op":"eq","left":{"source":"environment","path":"/transport"},"right":{"source":"literal","value":"api"}},{"op":"eq","left":{"source":"environment","path":"/node_id"},"right":{"source":"literal","value":"aidash://local"}}]}}]}),
 		present: true,
 		mapping: false,
 		mapping_enabled: Some(true),
@@ -78,13 +78,13 @@ impl StreamAuthorityStore for Authority {
 }
 #[rstest]
 #[case::global(None)]
-#[case::workspace(Some(Uuid::from_u128(1)))]
+#[case::thread(Some(Uuid::from_u128(1)))]
 #[tokio::test]
 async fn idle_authority_uses_one_snapshot_and_the_saved_owner_environment(
 	authority_store: Authority,
-	#[case] workspace: Option<Uuid>,
+	#[case] thread: Option<Uuid>,
 ) {
-	authority(&authority_store, workspace).await.unwrap();
+	authority(&authority_store, thread).await.unwrap();
 	assert_eq!(authority_store.reads.load(Ordering::SeqCst), 1);
 }
 #[rstest]
@@ -191,10 +191,10 @@ async fn invalid_or_revoked_subject_authority_denies_idle_streams(
 	));
 }
 #[rstest]
-#[case::read("workspace.read")]
-#[case::events("workspace.events")]
+#[case::read("thread.read")]
+#[case::events("thread.events")]
 #[tokio::test]
-async fn selected_stream_requires_both_current_workspace_actions(
+async fn selected_stream_requires_both_current_thread_actions(
 	mut authority_store: Authority,
 	#[case] omitted: &str,
 ) {
@@ -240,11 +240,11 @@ async fn snapshot_adapter_failure_keeps_its_opaque_identity(mut authority_store:
 struct Session {
 	events: Vec<Event>,
 	visible: Vec<Uuid>,
-	event_workspaces: Vec<Uuid>,
+	event_threads: Vec<Uuid>,
 	calls: Vec<String>,
 	queries: Vec<(i64, usize, Option<Uuid>, Vec<Uuid>)>,
 	deny_action: Option<&'static str>,
-	denied_workspace: Option<Uuid>,
+	denied_thread: Option<Uuid>,
 	verdicts_seen: Vec<usize>,
 	fail: Option<&'static str>,
 	/// The Node an event marked `silent` stops at (#770).
@@ -255,11 +255,11 @@ fn session() -> Session {
 	Session {
 		events: vec![],
 		visible: vec![Uuid::from_u128(3), Uuid::from_u128(2), Uuid::from_u128(1)],
-		event_workspaces: vec![Uuid::from_u128(1)],
+		event_threads: vec![Uuid::from_u128(1)],
 		calls: vec![],
 		queries: vec![],
 		deny_action: None,
-		denied_workspace: Some(Uuid::from_u128(2)),
+		denied_thread: Some(Uuid::from_u128(2)),
 		verdicts_seen: vec![],
 		fail: None,
 		silence: None,
@@ -280,7 +280,7 @@ fn event(sequence: i64, visible: bool) -> Event {
 		sequence,
 		id: Uuid::from_u128(sequence as u128),
 		node: None,
-		workspace_id: Some(Uuid::from_u128(1)),
+		thread_id: Some(Uuid::from_u128(1)),
 		kind: "task.created".into(),
 		data: json!({"visible":visible}),
 		created_at: now(),
@@ -299,11 +299,11 @@ impl crate::ports::authorization::visibility::RowOutcome for Session {
 }
 #[async_trait]
 impl StreamSession for Session {
-	async fn event_workspaces(&mut self, _: Option<Uuid>) -> Result<Vec<Uuid>> {
-		self.touch("event_workspaces")?;
-		Ok(self.event_workspaces.clone())
+	async fn event_threads(&mut self, _: Option<Uuid>) -> Result<Vec<Uuid>> {
+		self.touch("event_threads")?;
+		Ok(self.event_threads.clone())
 	}
-	async fn require_workspace(&mut self, _: Uuid, action: &str) -> Result<()> {
+	async fn require_thread(&mut self, _: Uuid, action: &str) -> Result<()> {
 		self.touch("require")?;
 		self.calls.push(action.into());
 		if self.deny_action == Some(action) {
@@ -313,23 +313,23 @@ impl StreamSession for Session {
 		}
 	}
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>> {
-		assert_eq!(action, "workspace.read");
+		assert_eq!(action, "thread.read");
 		self.touch("visible")?;
 		Ok(self.visible.clone())
 	}
-	async fn allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool> {
-		assert_eq!(action, "workspace.events");
+	async fn allowed(&mut self, thread: Uuid, action: &str) -> Result<bool> {
+		assert_eq!(action, "thread.events");
 		self.touch("allowed")?;
-		Ok(self.denied_workspace != Some(workspace))
+		Ok(self.denied_thread != Some(thread))
 	}
 	async fn stream_rows(
 		&mut self,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 	) -> Result<Vec<Event>> {
 		self.touch("stream_rows")?;
-		self.queries.push((after, 100, workspace, visible.to_vec()));
+		self.queries.push((after, 100, thread, visible.to_vec()));
 		Ok(self
 			.events
 			.iter()
@@ -341,13 +341,13 @@ impl StreamSession for Session {
 	async fn read_rows(
 		&mut self,
 		cursor: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		visible: &[Uuid],
 		page_size: usize,
 	) -> Result<Vec<Event>> {
 		self.touch("read_rows")?;
 		self.queries
-			.push((cursor, page_size, workspace, visible.to_vec()));
+			.push((cursor, page_size, thread, visible.to_vec()));
 		Ok(self
 			.events
 			.iter()
@@ -394,7 +394,7 @@ async fn stream_page_cursor_advances_over_hidden_rows_and_keeps_candidate_fullne
 #[rstest]
 #[tokio::test]
 async fn selected_stream_denial_precedes_query_notification_and_event_rows(mut session: Session) {
-	session.event_workspaces.clear();
+	session.event_threads.clear();
 	let queried = Cell::new(false);
 	assert!(matches!(
 		stream_page(&mut session, 0, Some(Uuid::from_u128(1)), || queried
@@ -404,7 +404,7 @@ async fn selected_stream_denial_precedes_query_notification_and_event_rows(mut s
 	));
 	assert!(!queried.get());
 	assert!(session.queries.is_empty());
-	assert_eq!(session.calls, vec!["event_workspaces"]);
+	assert_eq!(session.calls, vec!["event_threads"]);
 }
 #[rstest]
 #[tokio::test]
@@ -426,7 +426,7 @@ async fn replay_continues_past_hidden_pages_and_returns_the_last_scanned_event(
 	);
 	assert_eq!(
 		&session.calls[..4],
-		&["require", "workspace.read", "require", "workspace.events"]
+		&["require", "thread.read", "require", "thread.events"]
 	);
 }
 #[rstest]
@@ -485,10 +485,10 @@ async fn replay_keeps_the_existing_limit_bounds_and_sequence_order(
 	assert_eq!(rows.last().unwrap().sequence, count as i64);
 }
 #[rstest]
-#[case::read("workspace.read")]
-#[case::events("workspace.events")]
+#[case::read("thread.read")]
+#[case::events("thread.events")]
 #[tokio::test]
-async fn replay_workspace_denial_keeps_queries_unstarted(
+async fn replay_thread_denial_keeps_queries_unstarted(
 	mut session: Session,
 	#[case] action: &'static str,
 ) {
@@ -501,29 +501,29 @@ async fn replay_workspace_denial_keeps_queries_unstarted(
 	assert_eq!(session.calls.last().unwrap(), action);
 }
 #[rstest]
-#[case::workspace_absent(0)]
-#[case::workspace_denied(1)]
+#[case::thread_absent(0)]
+#[case::thread_denied(1)]
 #[case::event_denied(2)]
 #[case::permitted(3)]
 #[tokio::test]
-async fn each_buffered_frame_requires_current_workspace_and_event_authority(
+async fn each_buffered_frame_requires_current_thread_and_event_authority(
 	mut session: Session,
 	#[case] state: u8,
 ) {
 	let mut frame = event(1, state != 2);
 	if state == 0 {
-		frame.workspace_id = None;
+		frame.thread_id = None;
 	}
 	if state == 1 {
-		session.event_workspaces.clear();
+		session.event_threads.clear();
 	}
 	assert_eq!(can_emit(&mut session, &frame).await.unwrap(), state == 3);
 	assert_eq!(
 		session.calls,
 		match state {
 			0 => vec![],
-			1 => vec!["event_workspaces"],
-			_ => vec!["event_workspaces", "event_visible"],
+			1 => vec!["event_threads"],
+			_ => vec!["event_threads", "event_visible"],
 		}
 	);
 }
@@ -571,7 +571,7 @@ async fn replay_counts_the_events_a_silent_node_left_out_and_not_the_hidden_ones
 		vec![aidash_domain::unconfirmed::Unconfirmed {
 			node: "aidash://other/silent".into(),
 			kind: aidash_domain::unconfirmed::Kind::Event,
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			count: 3,
 		}]
 	);

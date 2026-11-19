@@ -25,14 +25,14 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Constraints")
+	let thread = store
+		.create_thread(&scope, "alice", "Constraints")
 		.await
 		.unwrap();
 	service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		ConfigureIndex {
 			expected_revision: 0,
 			spec,
@@ -43,7 +43,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	let saved = service::put(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		memory("Source".into()),
 	)
 	.await
@@ -100,7 +100,7 @@ async fn persisted_semantic_authority_and_revision_counters_remain_constrained(
 	assert_eq!(unchanged.authority, original.authority);
 	assert_eq!(unchanged.revision, 1);
 	assert_eq!(
-		service::get_index(&store, &administrator(&store).await, workspace.id)
+		service::get_index(&store, &administrator(&store).await, thread.id)
 			.await
 			.unwrap()
 			.revision,
@@ -162,14 +162,14 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Limits")
+	let thread = store
+		.create_thread(&scope, "alice", "Limits")
 		.await
 		.unwrap();
 	service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		ConfigureIndex {
 			expected_revision: 0,
 			spec: spec.clone(),
@@ -182,13 +182,13 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	let oversized = service::put(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		memory("あ".repeat(86)),
 	)
 	.await;
 	assert!(matches!(oversized, Err(Error::Invalid(_))), "{oversized:?}");
 	assert!(
-		service::entries(&store, &administrator(&store).await, workspace.id)
+		service::entries(&store, &administrator(&store).await, thread.id)
 			.await
 			.unwrap()
 			.is_empty()
@@ -196,7 +196,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	let saved = service::put(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		memory("あ".repeat(80)),
 	)
 	.await
@@ -206,7 +206,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	let reduced = service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		ConfigureIndex {
 			expected_revision: 1,
 			spec: spec.clone(),
@@ -214,13 +214,13 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	)
 	.await;
 	assert!(matches!(reduced, Err(Error::Conflict(_))), "{reduced:?}");
-	let unchanged = service::get_index(&store, &administrator(&store).await, workspace.id)
+	let unchanged = service::get_index(&store, &administrator(&store).await, thread.id)
 		.await
 		.unwrap();
 	assert_eq!(unchanged.revision, 1);
 	assert_eq!(unchanged.configuration().unwrap().max_input_bytes, 256);
 	assert_eq!(
-		service::entries(&store, &administrator(&store).await, workspace.id)
+		service::entries(&store, &administrator(&store).await, thread.id)
 			.await
 			.unwrap()[0]
 			.id,
@@ -231,7 +231,7 @@ async fn memory_and_index_limits_are_enforced_without_triggers(
 	let equal = service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		ConfigureIndex {
 			expected_revision: 1,
 			spec,
@@ -257,14 +257,11 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Race")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&scope, "alice", "Race").await.unwrap();
 	service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		ConfigureIndex {
 			expected_revision: 0,
 			spec: spec.clone(),
@@ -275,11 +272,11 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 	spec.max_input_bytes = 128;
 	let actor = administrator(&store).await;
 	let (write, reduce) = tokio::join!(
-		service::put(&store, &actor, workspace.id, memory("x".repeat(240))),
+		service::put(&store, &actor, thread.id, memory("x".repeat(240))),
 		service::configure(
 			&store,
 			&actor,
-			workspace.id,
+			thread.id,
 			ConfigureIndex {
 				expected_revision: 1,
 				spec
@@ -291,11 +288,11 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		reduce.is_ok(),
 		"exactly one operation must win: {write:?}, {reduce:?}"
 	);
-	let index = service::get_index(&store, &administrator(&store).await, workspace.id)
+	let index = service::get_index(&store, &administrator(&store).await, thread.id)
 		.await
 		.unwrap();
 	let limit = index.configuration().unwrap().max_input_bytes;
-	for entry in service::entries(&store, &administrator(&store).await, workspace.id)
+	for entry in service::entries(&store, &administrator(&store).await, thread.id)
 		.await
 		.unwrap()
 	{
@@ -308,7 +305,7 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 
 #[rstest]
 #[tokio::test]
-async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain_workspace_scoped(
+async fn deployment_administrator_vectors_record_the_thread_tenant_and_remain_thread_scoped(
 	#[future] database: DatabaseFixture,
 	spec: IndexSpec,
 ) {
@@ -323,8 +320,8 @@ async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Deployment Administrator vectors")
+	let thread = store
+		.create_thread(&scope, "alice", "Deployment Administrator vectors")
 		.await
 		.unwrap();
 	let transport = aidash_server::bootstrap::semantic_transport(&store);
@@ -344,11 +341,11 @@ async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain
 			"deployment-administrator-fixture",
 			point,
 			&values,
-			json!({"workspace_id":workspace.id,"tenant":"acme"}),
+			json!({"thread_id":thread.id,"tenant":"acme"}),
 		)
 		.await
 		.unwrap();
-	for (scope, expected) in [(workspace.id, 1), (Uuid::now_v7(), 0)] {
+	for (scope, expected) in [(thread.id, 1), (Uuid::now_v7(), 0)] {
 		let found = transport
 			.query(
 				&spec.vector,
@@ -356,7 +353,7 @@ async fn deployment_administrator_vectors_record_the_workspace_tenant_and_remain
 				&values,
 				VectorFilter {
 					allowed: &[point],
-					workspace: scope,
+					thread: scope,
 					tenant: "acme",
 				},
 				1,

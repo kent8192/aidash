@@ -328,12 +328,12 @@ async fn schedule_run(store: &Store, run_id: Uuid) -> Result<Option<Uuid>> {
 		crate::authorization::execution::access_for_run(store, &run.metadata(), true).await;
 	let mut lease = match access {
 		Ok(Some(access)) => Lease::Scoped(Box::new(access)),
-		Ok(None) => Lease::within(store, &store.workspace_tenancy(run.workspace_id).await?).await?,
+		Ok(None) => Lease::within(store, &store.thread_tenancy(run.thread_id).await?).await?,
 		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(None),
 		Err(e) => return Err(e),
 	};
 	let result = async {
-		repository::lock_workspace(&mut lease, run.workspace_id, true).await?;
+		repository::lock_thread(&mut lease, run.thread_id, true).await?;
 		let binding = super::bindings::load(&mut **lease.tx(), &run.metadata())
 			.await?
 			.ok_or(Error::Forbidden)?;
@@ -431,7 +431,7 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	let bank = Bank {
 		home: bank_row.try_get("home")?,
 		tenant: bank_row.try_get("tenant")?,
-		workspace: bank_row.try_get("workspace_id")?,
+		thread: bank_row.try_get("thread_id")?,
 		participant: bank_row.try_get("participant_id")?,
 	};
 	let entry = crate::apps::registry::models::Definition::read_of(
@@ -600,9 +600,9 @@ async fn execute(
 	input: &Input,
 	authority: serde_json::Value,
 ) -> Result<()> {
-	let mut lease = Lease::restore(store, authority, bank.workspace).await?;
+	let mut lease = Lease::restore(store, authority, bank.thread).await?;
 	let result = async {
-		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
+		repository::lock_thread(&mut lease, bank.thread, true).await?;
 		// Hold the exact claim through admission, so an expired worker cannot publish.
 		let active = native::query(
 			&Query::select()
@@ -730,7 +730,7 @@ async fn execute(
 				.fetch_one(&mut **scope.lease.tx())
 				.await?;
 				if !record.is_local(store.deployment.as_str())
-					|| record.workspace_id != bank.workspace
+					|| record.thread_id != bank.thread
 					|| record.revision != *revision
 					|| !matches!(
 						record.state,

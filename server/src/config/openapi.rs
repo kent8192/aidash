@@ -443,6 +443,6 @@ mod tests {
 				"{offering}: {path}"
 			);
 		}
-		assert!(document.paths.paths.contains_key("/api/workspaces"));
+		assert!(document.paths.paths.contains_key("/api/threads"));
 	}
 }

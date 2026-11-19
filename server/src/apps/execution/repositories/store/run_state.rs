@@ -295,8 +295,7 @@ impl Store {
 		self.run_event(
 			&mut tx,
 			m.id,
-			m.is_local(self.deployment.as_str())
-				.then_some(m.workspace_id),
+			m.is_local(self.deployment.as_str()).then_some(m.thread_id),
 			kind,
 			json!({"run_id":m.id,"task_id":m.task_id,"phase":state.phase(),"delivery_error":error}),
 		)

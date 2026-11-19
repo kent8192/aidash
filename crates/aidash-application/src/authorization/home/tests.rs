@@ -83,7 +83,7 @@ fn principal() -> ExecutionPrincipal {
 fn task() -> Task {
 	Task {
 		id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		title: "old intent".into(),
 		description: "invalid producer context".into(),
 		status: TaskStatus::Running,
@@ -106,7 +106,7 @@ fn grant(required: bool) -> Grant {
 		id: Uuid::from_u128(4),
 		task_id: task().id,
 		task_revision: 7,
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		node_id: "aidash://receiver".into(),
 		tenant: "tenant".into(),
 		credential_id: principal().credential_id,
@@ -306,8 +306,8 @@ impl HomeScope for Scope {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		Ok(self.resource("task", task.id, json!({})))
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Ok(self.resource("workspace", id, json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		Ok(self.resource("thread", id, json!({})))
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
 		self.repository.call(action);
@@ -860,7 +860,7 @@ async fn slow_peer_status_preserves_home_owned_human_continuations() {
 	let request = aidash_domain::HumanRequest {
 		id: Uuid::from_u128(8),
 		run_id: Uuid::from_u128(5),
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		kind: "APPROVAL_REQUIRED".into(),
 		prompt: "Approve the saved effect".into(),
 		response: None,

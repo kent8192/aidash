@@ -45,7 +45,7 @@ pub(crate) fn federated_source(source: Uuid, tenant: &str) -> SimpleExpr {
 pub(crate) struct Grant {
 	pub(crate) run_id: Uuid,
 	pub(crate) task_id: Uuid,
-	pub(crate) workspace_id: Uuid,
+	pub(crate) thread_id: Uuid,
 	pub(crate) tenant: String,
 	pub(crate) credential_id: Uuid,
 	pub(crate) root_subject: String,
@@ -54,7 +54,7 @@ pub(crate) struct Grant {
 crate::native_record!(Grant {
 	run_id,
 	task_id,
-	workspace_id,
+	thread_id,
 	tenant,
 	credential_id,
 	root_subject,
@@ -77,7 +77,7 @@ impl From<Grant> for ExecutionGrant {
 		Self {
 			run_id: value.run_id,
 			task_id: value.task_id,
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			tenant: value.tenant,
 			credential_id: value.credential_id,
 			root_subject: value.root_subject,
@@ -90,7 +90,7 @@ impl From<ExecutionGrant> for Grant {
 		Self {
 			run_id: value.run_id,
 			task_id: value.task_id,
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			tenant: value.tenant,
 			credential_id: value.credential_id,
 			root_subject: value.root_subject,
@@ -321,8 +321,8 @@ impl ExecutionGrantSession for GrantScope<'_> {
 			.await;
 		federated.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	fn set_context(&mut self, context: Value) {
 		self.access.context = context;

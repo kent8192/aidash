@@ -39,7 +39,7 @@ pub struct AdmissionLimits {
 #[derive(Clone)]
 pub struct AreaSnapshot {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub state: String,
 	pub epoch: i64,
 	pub revision: i64,

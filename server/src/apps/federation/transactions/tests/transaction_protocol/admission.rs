@@ -41,24 +41,24 @@ async fn scoped_pair(#[future(awt)] pair: Pair) -> ScopedPair {
 	let (_, token_b, task_b) = common::bootstrap(&b.f, &app_b, "http://localhost:1").await;
 	map_subject(&a, &b).await;
 	map_subject(&b, &a).await;
-	for (index, workspace) in [
+	for (index, thread) in [
 		a.f.store
 			.task(&TEST_FIXTURE, task_a)
 			.await
 			.unwrap()
-			.workspace_id,
+			.thread_id,
 		b.f.store
 			.task(&TEST_FIXTURE, task_b)
 			.await
 			.unwrap()
-			.workspace_id,
+			.thread_id,
 	]
 	.into_iter()
 	.enumerate()
 	{
 		manifest.participants[index].mutations =
-			vec![aidash_server::transactions::Mutation::WorkspaceTitle {
-				workspace_id: workspace,
+			vec![aidash_server::transactions::Mutation::ThreadTitle {
+				thread_id: thread,
 				expected_revision: 0,
 				title: "Title".into(),
 			}];
@@ -336,16 +336,11 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 	.await;
 	let (_, _, task) = common::bootstrap(&c.f, &c.application, "http://localhost:1").await;
 	map_subject(&a, &c).await;
-	let workspace =
-		c.f.store
-			.task(&TEST_FIXTURE, task)
-			.await
-			.unwrap()
-			.workspace_id;
+	let thread = c.f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut third = manifest.participants[0].clone();
 	third.node_id = c.address.clone();
-	third.mutations = vec![aidash_server::transactions::Mutation::WorkspaceTitle {
-		workspace_id: workspace,
+	third.mutations = vec![aidash_server::transactions::Mutation::ThreadTitle {
+		thread_id: thread,
 		expected_revision: 0,
 		title: "Title".into(),
 	}];

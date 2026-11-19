@@ -221,7 +221,7 @@ pub async fn cancel(
 				&scope.resource(
 					"task",
 					&task.to_string(),
-					json!({"workspace_id":intent.task.workspace_id}),
+					json!({"thread_id":intent.task.thread_id}),
 				),
 				"task.delegate",
 			)

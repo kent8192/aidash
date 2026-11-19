@@ -8,7 +8,7 @@ use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
 use crate::apps::workspaces::models::{
 	Artifact as ArtifactRecord, Message as MessageRecord, Task as TaskRecord,
-	Workspace as WorkspaceRecord,
+	Thread as ThreadRecord,
 };
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::apps::workspaces::services::snapshots;
@@ -40,7 +40,7 @@ pub struct RunStore {
 		std::sync::Arc<std::sync::Mutex<Vec<aidash_application::context::offload::JournalRange>>>,
 }
 
-pub(crate) struct WorkspaceInsert<'a> {
+pub(crate) struct ThreadInsert<'a> {
 	pub id: Uuid,
 	pub tenant: &'a str,
 	pub node: &'a aidash_domain::nodes::NodeName,
@@ -113,7 +113,7 @@ pub struct Store {
 	/// The only Pod port the Preview NetworkPolicy admits.
 	pub preview_pod_port: Option<u16>,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
-	/// Tenants found for Runs, Workspaces, tasks and grants, shared by every
+	/// Tenants found for Runs, Threads, tasks and grants, shared by every
 	/// clone of this Store.
 	pub(crate) tenancies: std::sync::Arc<tenancies::Tenancies>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
@@ -218,7 +218,7 @@ pub(crate) struct RunResponseMessage<'a> {
 }
 
 pub(crate) struct RunMessageDelivery<'a> {
-	pub workspace: uuid::Uuid,
+	pub thread: uuid::Uuid,
 	pub task_id: uuid::Uuid,
 	pub run_id: uuid::Uuid,
 	pub sender: &'a str,
@@ -228,7 +228,7 @@ pub(crate) struct RunMessageDelivery<'a> {
 }
 
 pub(crate) struct FencedRunMessageOutput<'a> {
-	pub workspace: uuid::Uuid,
+	pub thread: uuid::Uuid,
 	pub task_id: uuid::Uuid,
 	pub run_id: uuid::Uuid,
 	pub included_input_seq: i64,
@@ -270,13 +270,13 @@ impl Store {
 			track_output,
 		} = request;
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.thread_id).await?;
 		RunRecord::ensure_response_current(tx.as_mut(), run.id, worker, included_input_seq).await?;
 		RunRecord::worker_context(tx.as_mut()).await?;
 		nonempty(content, "message")?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			run.workspace_id,
+			run.thread_id,
 			sender,
 			content,
 			key,
@@ -287,7 +287,7 @@ impl Store {
 			AuthorizationRunOutput::record(
 				tx.as_mut(),
 				run.id,
-				run.workspace_id,
+				run.thread_id,
 				"message",
 				message.id,
 			)
@@ -328,34 +328,32 @@ impl Store {
 		Ok(tenant.into())
 	}
 
-	/// The Tenant that owns a local workspace.
-	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<String> {
-		if let Some(tenant) = self.tenancies.workspace(workspace) {
+	/// The Tenant that owns a local thread.
+	pub(crate) async fn thread_tenant(&self, thread: Uuid) -> Result<String> {
+		if let Some(tenant) = self.tenancies.thread(thread) {
 			return Ok(tenant.into_inner());
 		}
 		let scope = &TenancyScope::Deployment(DeploymentScopeReason::RunTenant);
 		let tenant: Option<String> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(self.pool.in_scope(scope))
 		.await?;
-		let tenant = tenant.ok_or_else(|| Error::NotFound("workspace".into()))?;
-		self.tenancies.remember_workspace(
-			workspace,
+		let tenant = tenant.ok_or_else(|| Error::NotFound("thread".into()))?;
+		self.tenancies.remember_thread(
+			thread,
 			aidash_domain::tenancy::TenantName::new(tenant.clone())?,
 		);
 		Ok(tenant)
 	}
 
-	/// The scope of a Workspace that a caller names only by id: its Tenant.
-	pub(crate) async fn workspace_tenancy(&self, workspace: Uuid) -> Result<TenancyScope> {
-		Ok(TenancyScope::tenant(
-			&self.workspace_tenant(workspace).await?,
-		)?)
+	/// The scope of a Thread that a caller names only by id: its Tenant.
+	pub(crate) async fn thread_tenancy(&self, thread: Uuid) -> Result<TenancyScope> {
+		Ok(TenancyScope::tenant(&self.thread_tenant(thread).await?)?)
 	}
 
 	/// The scope of a cross-node generation or semantic operation, found from
@@ -769,17 +767,16 @@ impl Store {
 	pub async fn event(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
-		self.event_in_executor(&mut **tx, workspace, kind, data)
-			.await
+		self.event_in_executor(&mut **tx, thread, kind, data).await
 	}
 	pub(crate) async fn event_in_executor(
 		&self,
 		tx: &mut dyn TransactionExecutor,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
@@ -793,7 +790,7 @@ impl Store {
 		.await?;
 		Ok({
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_3 = workspace;
+			let query_bind_3 = thread;
 			let query_bind_4 = kind;
 			let query_bind_5 = data;
 			aidash_server::database::query_as(
@@ -802,7 +799,7 @@ impl Store {
 					.columns([
 						Alias::new("id"),
 						Alias::new("node"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("kind"),
 						Alias::new("data"),
 						Alias::new("tenant"),
@@ -813,7 +810,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_1.to_owned()).into()],
 							))
-							.expr(event_records::event_node(workspace))
+							.expr(event_records::event_node(thread))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],
@@ -826,7 +823,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()],
 							))
-							.expr(crate::database::scope::event_tenant(workspace))
+							.expr(crate::database::scope::event_tenant(thread))
 							.to_owned(),
 					)
 					.returning_all()
@@ -841,33 +838,31 @@ impl Store {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		run: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<()> {
-		event_records::append_run(&mut **tx, run, workspace, kind, data).await
+		event_records::append_run(&mut **tx, run, thread, kind, data).await
 	}
 	pub async fn emit(
 		&self,
 		scope: &TenancyScope,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
 		self.pool
 			.atomic(scope, async |tx| {
-				Ok(event_records::create(tx, workspace, kind, data)
-					.await?
-					.into())
+				Ok(event_records::create(tx, thread, kind, data).await?.into())
 			})
 			.await
 	}
-	pub async fn create_workspace(
+	pub async fn create_thread(
 		&self,
 		scope: &TenancyScope,
 		owner: &str,
 		title: &str,
-	) -> Result<Workspace> {
+	) -> Result<Thread> {
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		nonempty(title, "title")?;
 		let mut tx = self.pool.begin(scope).await?;
@@ -897,10 +892,10 @@ impl Store {
 			last_used_at: now,
 		};
 		crate::apps::workspaces::repositories::scratch::insert(&mut *tx, tenant, &space).await?;
-		let workspace = self
-			.create_workspace_in(
+		let thread = self
+			.create_thread_in(
 				&mut tx,
-				WorkspaceInsert {
+				ThreadInsert {
 					id: Uuid::new_v4(),
 					tenant,
 					node: &node,
@@ -910,43 +905,39 @@ impl Store {
 				},
 			)
 			.await?;
-		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
+		self.record_thread_tenant_in(&mut tx, thread.id, tenant, owner)
 			.await?;
 		tx.commit().await?;
-		Ok(workspace)
+		Ok(thread)
 	}
-	pub(crate) async fn record_workspace_tenant_in(
+	pub(crate) async fn record_thread_tenant_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		tenant: &str,
 		owner: &str,
 	) -> Result<()> {
 		crate::database::native::query(
 			&Query::insert()
-				.into_table(Alias::new("authorization_workspaces"))
+				.into_table(Alias::new("authorization_threads"))
 				.columns([
-					Alias::new("workspace_id"),
+					Alias::new("thread_id"),
 					Alias::new("tenant"),
 					Alias::new("owner_subject"),
 				])
-				.values_panic([
-					Expr::value(workspace),
-					Expr::value(tenant),
-					Expr::value(owner),
-				])
+				.values_panic([Expr::value(thread), Expr::value(tenant), Expr::value(owner)])
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
 		.await?;
 		Ok(())
 	}
-	pub(crate) async fn create_workspace_in(
+	pub(crate) async fn create_thread_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		input: WorkspaceInsert<'_>,
-	) -> Result<Workspace> {
-		let WorkspaceInsert {
+		input: ThreadInsert<'_>,
+	) -> Result<Thread> {
+		let ThreadInsert {
 			id,
 			tenant,
 			node,
@@ -955,12 +946,12 @@ impl Store {
 			created_by,
 		} = input;
 		nonempty(title, "title")?;
-		let w: Workspace = {
+		let w: Thread = {
 			let query_bind_1 = id;
 			let query_bind_2 = title;
 			aidash_server::database::query_as(
 				&Query::insert()
-					.into_table(Alias::new("workspaces"))
+					.into_table(Alias::new("threads"))
 					.columns([
 						Alias::new("id"),
 						Alias::new("node"),
@@ -991,23 +982,23 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		self.event(tx, Some(w.id), "workspace.created", json!(w))
+		self.event(tx, Some(w.id), "thread.created", json!(w))
 			.await?;
 		Ok(w)
 	}
-	pub async fn workspaces(&self, scope: &TenancyScope) -> Result<Vec<Workspace>> {
+	pub async fn threads(&self, scope: &TenancyScope) -> Result<Vec<Thread>> {
 		Ok(self
 			.pool
-			.atomic(scope, async |tx| WorkspaceRecord::newest_first(tx).await)
+			.atomic(scope, async |tx| ThreadRecord::newest_first(tx).await)
 			.await?
 			.into_iter()
 			.map(Into::into)
 			.collect())
 	}
-	pub async fn workspace(&self, scope: &TenancyScope, id: Uuid) -> Result<Workspace> {
+	pub async fn thread(&self, scope: &TenancyScope, id: Uuid) -> Result<Thread> {
 		Ok(self
 			.pool
-			.atomic(scope, async |tx| WorkspaceRecord::read(tx, id).await)
+			.atomic(scope, async |tx| ThreadRecord::read(tx, id).await)
 			.await?
 			.into())
 	}
@@ -1017,11 +1008,11 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		title: &str,
-	) -> Result<Workspace> {
+	) -> Result<Thread> {
 		let mut tx = self.pool.begin(scope).await?;
-		let workspace = self.update_title_in(&mut tx, id, revision, title).await?;
+		let thread = self.update_title_in(&mut tx, id, revision, title).await?;
 		tx.commit().await?;
-		Ok(workspace)
+		Ok(thread)
 	}
 	pub(crate) async fn update_title_in(
 		&self,
@@ -1029,7 +1020,7 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		title: &str,
-	) -> Result<Workspace> {
+	) -> Result<Thread> {
 		nonempty(title, "title")?;
 		let w = {
 			let query_bind_1 = id;
@@ -1037,7 +1028,7 @@ impl Store {
 			let query_bind_3 = title;
 			aidash_server::database::query_as(
 				&Query::update()
-					.table(Alias::new("workspaces"))
+					.table(Alias::new("threads"))
 					.value_expr(
 						Alias::new("title"),
 						SimpleExpr::CustomWithExpr(
@@ -1059,9 +1050,8 @@ impl Store {
 			.fetch_optional(&mut **tx)
 			.await?
 		}
-		.ok_or_else(|| Error::Conflict("workspace revision changed".into()))?;
-		self.event(tx, Some(id), "workspace.updated", json!(w))
-			.await?;
+		.ok_or_else(|| Error::Conflict("thread revision changed".into()))?;
+		self.event(tx, Some(id), "thread.updated", json!(w)).await?;
 		Ok(w)
 	}
 	pub async fn task(&self, scope: &TenancyScope, id: Uuid) -> Result<Task> {
@@ -1076,11 +1066,11 @@ impl Store {
 			.atomic(scope, async |tx| TaskRecord::page(tx, offset).await)
 			.await
 	}
-	pub async fn tasks(&self, scope: &TenancyScope, workspace: Option<Uuid>) -> Result<Vec<Task>> {
+	pub async fn tasks(&self, scope: &TenancyScope, thread: Option<Uuid>) -> Result<Vec<Task>> {
 		Ok(self
 			.pool
 			.atomic(scope, async |tx| {
-				TaskRecord::chronological(tx, workspace).await
+				TaskRecord::chronological(tx, thread).await
 			})
 			.await?
 			.into_iter()
@@ -1090,14 +1080,14 @@ impl Store {
 	pub async fn create_task(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
 		let mut tx = self.pool.begin(scope).await?;
 		let task = self
-			.create_task_in(&mut tx, workspace, input, creator, key)
+			.create_task_in(&mut tx, thread, input, creator, key)
 			.await?;
 		tx.commit().await?;
 		Ok(task)
@@ -1105,7 +1095,7 @@ impl Store {
 	pub(crate) async fn create_task_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		creator: &str,
 		key: Option<&str>,
@@ -1120,11 +1110,11 @@ impl Store {
 		for dep in input.dependencies.iter().chain(input.parent_id.iter()) {
 			let valid: bool = {
 				let query_bind_1 = dep;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
-							"(EXISTS(SELECT 1 FROM tasks WHERE id = ? AND workspace_id = ?))"
+							"(EXISTS(SELECT 1 FROM tasks WHERE id = ? AND thread_id = ?))"
 								.to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
@@ -1138,7 +1128,7 @@ impl Store {
 			};
 			if !valid {
 				return Err(Error::Invalid(
-					"dependencies and parent must belong to the same workspace".into(),
+					"dependencies and parent must belong to the same thread".into(),
 				));
 			}
 		}
@@ -1212,7 +1202,7 @@ impl Store {
 		}
 		let task: Option<Task> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = workspace;
+			let query_bind_2 = thread;
 			let query_bind_3 = &input.title;
 			let query_bind_4 = &input.description;
 			let query_bind_5 = &input.requirements;
@@ -1225,7 +1215,7 @@ impl Store {
 					.into_table(reinhardt::query::Alias::new("tasks"))
 					.columns([
 						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("title"),
 						reinhardt::query::Alias::new("description"),
 						reinhardt::query::Alias::new("requirements"),
@@ -1274,7 +1264,7 @@ impl Store {
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -1295,7 +1285,7 @@ impl Store {
 		};
 		let task = match task {
 			Some(t) => {
-				self.event(tx, Some(workspace), "task.created", json!(t))
+				self.event(tx, Some(thread), "task.created", json!(t))
 					.await?;
 				t
 			}
@@ -1317,7 +1307,7 @@ impl Store {
 					.fetch_one(&mut **tx)
 					.await?
 				};
-				if t.workspace_id != workspace
+				if t.thread_id != thread
 					|| t.title != input.title
 					|| t.description != input.description
 					|| t.requirements != input.requirements
@@ -1357,16 +1347,16 @@ impl Store {
 		tx.commit().await?;
 		Ok(claimed)
 	}
-	/// The Node of a Workspace, read in the caller's transaction.
-	pub(crate) async fn workspace_node_in(
+	/// The Node of a Thread, read in the caller's transaction.
+	pub(crate) async fn thread_node_in(
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<aidash_domain::nodes::NodeName> {
 		let name: String = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.from(Alias::new("threads"))
+				.and_where(Expr::col("id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **tx)
@@ -1392,7 +1382,7 @@ impl Store {
 			));
 		}
 		let claimed: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; aidash_server::database::query_as(&Query::update().table(Alias::new("tasks")).value_expr(Alias::new("status"), Expr::cust("'CLAIMED'")).value_expr(Alias::new("owner"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND status = 'OPEN' AND NOT EXISTS(SELECT 1 FROM delegations AS d WHERE d.task_id = tasks.id AND d.node_id || '/agents/' || d.agent_id || '@' || d.agent_version <> ?) AND NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(tasks.dependencies) AND d.status <> 'COMPLETED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
-		let node = Self::workspace_node_in(tx, claimed.workspace_id).await?;
+		let node = Self::thread_node_in(tx, claimed.thread_id).await?;
 		let node_name = node.as_str().to_owned();
 		let address = self.deployment.node(node);
 		if owner == qualified_agent(&address, &agent.id, &agent.version) {
@@ -1413,8 +1403,8 @@ impl Store {
 			let tenant: String = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("tenant"))
-					.from(Alias::new("workspaces"))
-					.and_where(Expr::col("id").eq(Expr::value(claimed.workspace_id)))
+					.from(Alias::new("threads"))
+					.and_where(Expr::col("id").eq(Expr::value(claimed.thread_id)))
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_one(&mut **tx)
@@ -1450,7 +1440,7 @@ impl Store {
 			{
 				let query_bind_1 = Uuid::new_v4();
 				let query_bind_2 = id;
-				let query_bind_3 = claimed.workspace_id;
+				let query_bind_3 = claimed.thread_id;
 				let query_bind_4 = address.to_string();
 				let query_bind_5 = &agent.id;
 				let query_bind_6 = &agent.version;
@@ -1461,7 +1451,7 @@ impl Store {
 						.columns([
 							Alias::new("id"),
 							Alias::new("task_id"),
-							Alias::new("workspace_id"),
+							Alias::new("thread_id"),
 							Alias::new("home_node"),
 							Alias::new("node"),
 							Alias::new("agent_id"),
@@ -1498,7 +1488,7 @@ impl Store {
 								))
 								.expr(Expr::value(query_bind_7))
 								.expr(crate::database::scope::tenant_of(
-									"workspaces",
+									"threads",
 									"id",
 									query_bind_3,
 								))
@@ -1551,10 +1541,10 @@ impl Store {
 			)
 			.scalar_one(&mut **tx)
 			.await?;
-			crate::apps::identity::repositories::provider_credentials::admit_workspace(
+			crate::apps::identity::repositories::provider_credentials::admit_thread(
 				&mut **tx,
 				run_id,
-				claimed.workspace_id,
+				claimed.thread_id,
 				context
 					.binding_snapshot
 					.as_deref()
@@ -1572,13 +1562,8 @@ impl Store {
 			)
 			.await?;
 		}
-		self.event(
-			tx,
-			Some(claimed.workspace_id),
-			"task.claimed",
-			json!(claimed),
-		)
-		.await?;
+		self.event(tx, Some(claimed.thread_id), "task.claimed", json!(claimed))
+			.await?;
 		Ok(claimed)
 	}
 	pub async fn transition(
@@ -1643,7 +1628,7 @@ impl Store {
 			)));
 		}
 		let t: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; let query_bind_4 = next; aidash_server::database::query_as(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("tasks")).value_expr(reinhardt::query::Alias::new("status"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.as_str()).into()])).value_expr(reinhardt::query::Alias::new("owner"), SimpleExpr::CustomWithExpr("(CASE WHEN ? = 'OPEN' THEN NULL ELSE ? END)".to_owned(), vec![Expr::value(query_bind_4.as_str()).into(), Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND (owner = ? OR (owner IS NULL AND status = 'OPEN' AND ? IN ('CANCELLED', 'FAILED'))))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.as_str()).into()])).returning_all().to_string(reinhardt::query::PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
-		self.event(tx, Some(t.workspace_id), "task.updated", json!(t))
+		self.event(tx, Some(t.thread_id), "task.updated", json!(t))
 			.await?;
 		Ok(t)
 	}
@@ -1793,7 +1778,7 @@ impl Store {
 		};
 		self.event(
 			tx,
-			Some(task.workspace_id),
+			Some(task.thread_id),
 			"task.abandoned",
 			json!({"task":updated,"previous_status":task.status,"reason":reason,"actor":actor}),
 		)
@@ -2069,14 +2054,8 @@ impl Store {
 					"completion key reused with different input".into(),
 				));
 			}
-			self.record_output_in(
-				tx,
-				publication.tracked_run(),
-				t.workspace_id,
-				"artifact",
-				a.id,
-			)
-			.await?;
+			self.record_output_in(tx, publication.tracked_run(), t.thread_id, "artifact", a.id)
+				.await?;
 			return Ok(t);
 		}
 		if t.status != crate::domain::TaskStatus::Running {
@@ -2138,7 +2117,7 @@ impl Store {
 		}
 		let a: Artifact = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = t.workspace_id;
+			let query_bind_2 = t.thread_id;
 			let query_bind_3 = id;
 			let query_bind_4 = &artifact.kind;
 			let query_bind_5 = &artifact.name;
@@ -2151,7 +2130,7 @@ impl Store {
 					.into_table(reinhardt::query::Alias::new("artifacts"))
 					.columns([
 						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("task_id"),
 						reinhardt::query::Alias::new("kind"),
 						reinhardt::query::Alias::new("name"),
@@ -2200,7 +2179,7 @@ impl Store {
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -2212,14 +2191,8 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		self.record_output_in(
-			tx,
-			publication.tracked_run(),
-			t.workspace_id,
-			"artifact",
-			a.id,
-		)
-		.await?;
+		self.record_output_in(tx, publication.tracked_run(), t.thread_id, "artifact", a.id)
+			.await?;
 		let t: Task = {
 			let query_bind_1 = id;
 			let query_bind_2 = key;
@@ -2253,7 +2226,7 @@ impl Store {
 		};
 		self.event(
 			tx,
-			Some(t.workspace_id),
+			Some(t.thread_id),
 			"task.completed",
 			json!({"task":t,"artifact":a}),
 		)
@@ -2298,16 +2271,16 @@ impl Store {
 		publication: Publication,
 	) -> Result<Artifact> {
 		input.validate()?;
-		let workspace: Uuid = crate::database::native::query_scalar(
+		let thread: Uuid = crate::database::native::query_scalar(
 			&Query::select()
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.from(Alias::new("tasks"))
 				.and_where(Expr::col("id").eq(Expr::value(task_id)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **tx)
 		.await?;
-		super::subnodes::require_writable(tx.as_mut(), workspace).await?;
+		super::subnodes::require_writable(tx.as_mut(), thread).await?;
 		let task: Task = {
 			let query_bind_1 = task_id;
 			aidash_server::database::query_as(
@@ -2329,7 +2302,7 @@ impl Store {
 		}
 		let a: Option<Artifact> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = task.workspace_id;
+			let query_bind_2 = task.thread_id;
 			let query_bind_3 = task_id;
 			let query_bind_4 = &input.kind;
 			let query_bind_5 = &input.name;
@@ -2342,7 +2315,7 @@ impl Store {
 					.into_table(Alias::new("artifacts"))
 					.columns([
 						Alias::new("id"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("task_id"),
 						Alias::new("kind"),
 						Alias::new("name"),
@@ -2391,7 +2364,7 @@ impl Store {
 								vec![Expr::value(query_bind_9.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -2410,7 +2383,7 @@ impl Store {
 		};
 		let a = match a {
 			Some(a) => {
-				self.event(tx, Some(task.workspace_id), "artifact.published", json!(a))
+				self.event(tx, Some(task.thread_id), "artifact.published", json!(a))
 					.await?;
 				a
 			}
@@ -2443,7 +2416,7 @@ impl Store {
 		self.record_output_in(
 			tx,
 			publication.tracked_run(),
-			task.workspace_id,
+			task.thread_id,
 			"artifact",
 			a.id,
 		)
@@ -2455,13 +2428,13 @@ impl Store {
 		&self,
 		scope: &TenancyScope,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		limit: i64,
 	) -> Result<Vec<Event>> {
 		Ok(self
 			.pool
 			.atomic(scope, async |tx| {
-				EventRecord::after(tx, after, workspace, limit).await
+				EventRecord::after(tx, after, thread, limit).await
 			})
 			.await?
 			.into_iter()
@@ -2471,37 +2444,37 @@ impl Store {
 	pub async fn snapshot_page(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		collection: &str,
 		after: Option<Uuid>,
 	) -> Result<SnapshotPage> {
 		let rows = self
 			.pool
 			.atomic(scope, async |tx| {
-				WorkspaceRecord::snapshot_rows(tx, workspace, collection, after).await
+				ThreadRecord::snapshot_rows(tx, thread, collection, after).await
 			})
 			.await?;
 		snapshots::page(rows, after)
 	}
-	/// Read one exact workspace record without relying on the bounded recent
+	/// Read one exact thread record without relying on the bounded recent
 	/// event/message collections in `snapshot`.
-	pub async fn workspace_record(
+	pub async fn thread_record(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Value> {
 		self.pool
 			.atomic(scope, async |db| match kind {
-				"workspace" if workspace == id => Ok(json!(Workspace::from(
-					WorkspaceRecord::read(db, workspace).await?
-				))),
-				"workspace" => Err(Error::Invalid("workspace record not available".into())),
+				"thread" if thread == id => {
+					Ok(json!(Thread::from(ThreadRecord::read(db, thread).await?)))
+				}
+				"thread" => Err(Error::Invalid("thread record not available".into())),
 				"event" => Ok(json!(Event::from(
-					EventRecord::in_workspace(db, workspace, id).await?
+					EventRecord::in_thread(db, thread, id).await?
 				))),
-				_ => WorkspaceRecord::record(db, workspace, kind, id).await,
+				_ => ThreadRecord::record(db, thread, kind, id).await,
 			})
 			.await
 	}
@@ -2509,16 +2482,16 @@ impl Store {
 	pub async fn child_task_summary(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
 		self.pool
 			.atomic(scope, async |tx| {
-				TaskRecord::child_summary(tx, workspace, parent).await
+				TaskRecord::child_summary(tx, thread, parent).await
 			})
 			.await
 	}
-	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<WorkspaceSnapshot> {
+	pub async fn snapshot(&self, scope: &TenancyScope, id: Uuid) -> Result<ThreadSnapshot> {
 		self.pool
 			.atomic(scope, async |db| {
 				if let Some(tenant) = scope.tenant_name() {
@@ -2528,14 +2501,14 @@ impl Store {
 					)
 					.await?;
 				}
-				Ok(WorkspaceSnapshot {
-					workspace: WorkspaceRecord::read(db, id).await?.into(),
+				Ok(ThreadSnapshot {
+					thread: ThreadRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
 						.await?
 						.into_iter()
 						.map(Into::into)
 						.collect(),
-					artifacts: ArtifactRecord::for_workspace(db, id)
+					artifacts: ArtifactRecord::for_thread(db, id)
 						.await?
 						.into_iter()
 						.map(Into::into)
@@ -2558,26 +2531,26 @@ impl Store {
 	pub async fn message(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<()> {
-		self.message_record(scope, workspace, sender, content, key)
+		self.message_record(scope, thread, sender, content, key)
 			.await
 			.map(|_| ())
 	}
 	pub async fn message_record(
 		&self,
 		scope: &TenancyScope,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
 		let mut tx = self.pool.begin(scope).await?;
 		let message = self
-			.message_in(&mut tx, workspace, sender, content, key)
+			.message_in(&mut tx, thread, sender, content, key)
 			.await?;
 		tx.commit().await?;
 		Ok(message)
@@ -2659,7 +2632,7 @@ impl Store {
 		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
 		let FencedRunMessageOutput {
-			workspace,
+			thread,
 			task_id,
 			run_id,
 			included_input_seq,
@@ -2688,7 +2661,7 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		if task.workspace_id != workspace {
+		if task.thread_id != thread {
 			return Err(Error::Unauthorized);
 		}
 		if matches!(
@@ -2723,7 +2696,7 @@ impl Store {
 		.scalar_one(&mut **tx)
 		.await?;
 		let message = self
-			.message_in(tx, workspace, sender, content, Some(key))
+			.message_in(tx, thread, sender, content, Some(key))
 			.await?;
 		Ok(message)
 	}
@@ -2772,7 +2745,7 @@ impl Store {
 		.await
 	}
 	/// A Subnode member's message to the Run that created the Subnode. Returns the
-	/// creator's Workspace and the copy written there, none when the creator is remote.
+	/// creator's Thread and the copy written there, none when the creator is remote.
 	pub(crate) async fn accept_member_message_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -3062,10 +3035,10 @@ impl Store {
 	) -> Result<()> {
 		nonempty(content, "message")?;
 		let mut tx = self.pool.begin(scope).await?;
-		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.thread_id).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
-			run.workspace_id,
+			run.thread_id,
 			sender,
 			content,
 			key,
@@ -3073,14 +3046,8 @@ impl Store {
 		)
 		.await?;
 		if track_output {
-			self.record_output_in(
-				&mut tx,
-				Some(run.id),
-				run.workspace_id,
-				"message",
-				message.id,
-			)
-			.await?;
+			self.record_output_in(&mut tx, Some(run.id), run.thread_id, "message", message.id)
+				.await?;
 		}
 		tx.commit().await?;
 		Ok(())
@@ -3089,7 +3056,7 @@ impl Store {
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		run: Option<Uuid>,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
@@ -3100,13 +3067,13 @@ impl Store {
 			.expr(Expr::value(1_i32))
 			.from(Alias::new("authorization_execution"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_owned();
 		let subnode = Query::select()
 			.expr(Expr::value(1_i32))
 			.from(Alias::new("subnodes"))
 			.and_where(Expr::col("creator_run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.to_owned();
 		let valid: bool = crate::database::native::query_scalar(
 			&Query::select()
@@ -3126,21 +3093,21 @@ impl Store {
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut **tx,
 			run,
-			workspace,
+			thread,
 			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
-		Self::insert_output_in(tx, run, workspace, kind, id).await
+		Self::insert_output_in(tx, run, thread, kind, id).await
 	}
 	/// A Subnode member Run produced the `message` it sent to the Run that created
-	/// the Subnode, in that creator's Workspace (#793). Only that case is accepted:
-	/// `workspace` must be one the creating Run works in. The member does not read its
-	/// own message there, so no self-read is journaled; its Workspace is a foreign one.
+	/// the Subnode, in that creator's Thread (#793). Only that case is accepted:
+	/// `thread` must be one the creating Run works in. The member does not read its
+	/// own message there, so no self-read is journaled; its Thread is a foreign one.
 	pub(crate) async fn record_member_message_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		member: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 	) -> Result<()> {
 		let valid: bool = crate::database::native::query_scalar(
@@ -3150,9 +3117,9 @@ impl Store {
 						.expr(Expr::value(1_i32))
 						.from(Alias::new("subnodes"))
 						.and_where(
-							Expr::col("workspace_id").in_subquery(
+							Expr::col("thread_id").in_subquery(
 								Query::select()
-									.column(Alias::new("workspace_id"))
+									.column(Alias::new("thread_id"))
 									.from(Alias::new("authorization_execution"))
 									.and_where(Expr::col("run_id").eq(Expr::value(member)))
 									.to_owned(),
@@ -3163,7 +3130,7 @@ impl Store {
 								Query::select()
 									.column(Alias::new("run_id"))
 									.from(Alias::new("authorization_execution"))
-									.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+									.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 									.to_owned(),
 							),
 						)
@@ -3176,12 +3143,12 @@ impl Store {
 		if !valid {
 			return Err(Error::Forbidden);
 		}
-		Self::insert_output_in(tx, member, workspace, "message", message).await
+		Self::insert_output_in(tx, member, thread, "message", message).await
 	}
 	async fn insert_output_in(
 		tx: &mut crate::database::native::Transaction,
 		run: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()> {
@@ -3191,7 +3158,7 @@ impl Store {
 				.columns(
 					[
 						"run_id",
-						"workspace_id",
+						"thread_id",
 						"resource_kind",
 						"resource_id",
 						"tenant",
@@ -3201,7 +3168,7 @@ impl Store {
 				.from_subquery(
 					Query::select()
 						.expr(Expr::value(run))
-						.expr(Expr::value(workspace))
+						.expr(Expr::value(thread))
 						.expr(Expr::value(kind))
 						.expr(Expr::value(id))
 						.expr(crate::database::scope::tenant_of("runs", "id", run))
@@ -3222,13 +3189,13 @@ impl Store {
 	pub(crate) async fn message_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
 		nonempty(content, "message")?;
-		self.message_in_with_attachments(tx, workspace, sender, content, key)
+		self.message_in_with_attachments(tx, thread, sender, content, key)
 			.await
 	}
 
@@ -3237,14 +3204,14 @@ impl Store {
 	pub(crate) async fn message_in_with_attachments(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
 		let inserted: Option<Message> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = workspace;
+			let query_bind_2 = thread;
 			let query_bind_3 = sender;
 			let query_bind_4 = content;
 			let query_bind_5 = key;
@@ -3253,7 +3220,7 @@ impl Store {
 					.into_table(Alias::new("messages"))
 					.columns([
 						Alias::new("id"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("sender"),
 						Alias::new("content"),
 						Alias::new("idempotency_key"),
@@ -3282,7 +3249,7 @@ impl Store {
 								vec![Expr::value(query_bind_5.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -3300,7 +3267,7 @@ impl Store {
 			.await?
 		};
 		let message = if let Some(message) = inserted {
-			self.event(tx, Some(workspace), "message.created", json!(message))
+			self.event(tx, Some(thread), "message.created", json!(message))
 				.await?;
 			message
 		} else {
@@ -3320,7 +3287,7 @@ impl Store {
 				.await?
 			};
 			// This path never publishes for a Run, so a Run's message is no replay.
-			if message.workspace_id != workspace
+			if message.thread_id != thread
 				|| message.sender != sender
 				|| message.content != content
 				|| message.run_id.is_some()
@@ -3538,7 +3505,7 @@ impl Store {
 		} else {
 			Vec::new()
 		};
-		let mut data = json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage});
+		let mut data = json!({"run_id":saved.id,"task_id":saved.task_id,"thread_id":saved.thread_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage});
 		if kind == "run.semantic_degraded"
 			&& let Some(degraded) = run.recovery.degraded.recent.last()
 		{
@@ -3574,7 +3541,7 @@ impl Store {
 		self.run_event(
 			tx,
 			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 			kind,
 			data,
 		)
@@ -3740,7 +3707,7 @@ impl Store {
 					.fetch_one(&mut *tx)
 					.await?
 				};
-				self.event(&mut tx, Some(run.workspace_id), "task.updated", json!(task))
+				self.event(&mut tx, Some(run.thread_id), "task.updated", json!(task))
 					.await?;
 			}
 			phase
@@ -3813,7 +3780,7 @@ impl Store {
 			&mut tx,
 			run.id,
 			run.is_local(self.deployment.as_str())
-				.then_some(run.workspace_id),
+				.then_some(run.thread_id),
 			if phase == "CANCELLED" {
 				"run.cancelled"
 			} else {
@@ -4008,8 +3975,8 @@ impl Store {
 			)
 			.await?;
 		}
-		let workspace =
-			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.workspace_id);
+		let thread =
+			(r.metadata.is_local(self.deployment.as_str())).then_some(r.metadata.thread_id);
 		if let Some(reason) = semantic_retry {
 			// An authorized manual retry of a semantic pause opens the Run's next
 			// Retry Cycle, so its memory operations get a fresh retry ledger while
@@ -4030,7 +3997,7 @@ impl Store {
 			event_records::append_run(
 				tx,
 				id,
-				workspace,
+				thread,
 				"semantic.manual_retry",
 				json!({"run_id":id,"cycle":cycle,"cause":reason,"reason":"authorized_resume"}),
 			)
@@ -4039,7 +4006,7 @@ impl Store {
 		event_records::append_run(
 			tx,
 			id,
-			workspace,
+			thread,
 			"run.control",
 			// Only a decision of someone other than the Tenant names its source.
 			if source == ControlSource::Tenant {
@@ -4087,7 +4054,7 @@ impl Store {
 		// Match a Subnode end, which locks the Subnode before its member Runs:
 		// take the Subnode's share lock first, then the Run. An ended Subnode
 		// therefore refuses as Forbidden ahead of the Run's own end.
-		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.thread_id).await?;
 		HumanRequestRecord::require_active_run(tx.as_mut(), run.id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
@@ -4103,7 +4070,7 @@ impl Store {
 		request: &HumanRequest,
 		key: &str,
 	) -> Result<()> {
-		if request.run_id != run.id || request.workspace_id != run.workspace_id {
+		if request.run_id != run.id || request.thread_id != run.thread_id {
 			return Err(Error::Forbidden);
 		}
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
@@ -4131,13 +4098,13 @@ impl Store {
 	) -> Result<HumanRequest> {
 		human_interaction::validate_request(kind, prompt)?;
 		let (request, created) =
-			HumanRequestRecord::admit(tx, run.workspace_id, run.id, kind, prompt, key).await?;
+			HumanRequestRecord::admit(tx, run.thread_id, run.id, kind, prompt, key).await?;
 		human_interaction::validate_replay(&request, run, kind, prompt)?;
 		if created {
 			event_records::append_run(
 				tx,
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"human.requested",
 				json!(request),
 			)
@@ -4275,7 +4242,7 @@ impl Store {
 		event_records::append_run(
 			tx,
 			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 			"human.answered",
 			json!(request),
 		)
@@ -4466,7 +4433,7 @@ impl Store {
 		run: &Run,
 		worker: Uuid,
 	) -> Result<()> {
-		// The bounded call and any prepared workspace-read chunk must survive a
+		// The bounded call and any prepared thread-read chunk must survive a
 		// worker crash once the idempotency key becomes durable. Keep this update
 		// and its derived phase in the same transaction as invocation creation.
 		let persisted = {
@@ -4662,7 +4629,7 @@ impl Store {
 			self.run_event(
 				tx,
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"tool.started",
 				json!({"run_id":run.id,"tool":tool,"idempotency_key":key,"input":input}),
 			)
@@ -4708,7 +4675,7 @@ impl Store {
 			event_records::append_run(
 				tx.as_mut(),
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":failure}),
 			)
@@ -4802,7 +4769,7 @@ impl Store {
 			event_records::append_run(
 				tx.as_mut(),
 				run.id,
-				(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+				(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 				"tool.completed",
 				json!({"run_id":run.id,"idempotency_key":key,"result":result}),
 			)
@@ -5030,13 +4997,8 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
-		self.event(
-			tx,
-			Some(updated.workspace_id),
-			"task.updated",
-			json!(updated),
-		)
-		.await?;
+		self.event(tx, Some(updated.thread_id), "task.updated", json!(updated))
+			.await?;
 		Ok(updated)
 	}
 	pub(crate) async fn run_message_delivery_in(
@@ -5045,7 +5007,7 @@ impl Store {
 		delivery: RunMessageDelivery<'_>,
 	) -> Result<Message> {
 		let RunMessageDelivery {
-			workspace,
+			thread,
 			task_id,
 			run_id,
 			sender,
@@ -5071,7 +5033,7 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
-		if task.workspace_id != workspace {
+		if task.thread_id != thread {
 			return Err(Error::Unauthorized);
 		}
 		let reservation: Option<(Uuid, String, bool, bool, bool)> = {
@@ -5148,7 +5110,7 @@ impl Store {
 		.scalar_one(&mut **tx)
 		.await?;
 		let message = self
-			.message_in(tx, workspace, sender, content, Some(message_key))
+			.message_in(tx, thread, sender, content, Some(message_key))
 			.await?;
 		{
 			let query_bind_1 = task_id;
@@ -5215,12 +5177,12 @@ impl Store {
 		);
 		let full_message_key = format!("{peer_node}:{task_id}:{key}");
 		let message_exists: bool = {
-			let query_bind_1 = task.workspace_id;
+			let query_bind_1 = task.thread_id;
 			let query_bind_2 = &full_message_key;
 			let query_bind_3 = format!("human@{peer_node}");
 			let query_bind_4 = content;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM messages WHERE workspace_id = ? AND idempotency_key = ? AND sender = ? AND content = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
+				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM messages WHERE thread_id = ? AND idempotency_key = ? AND sender = ? AND content = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
 		.scalar_one(&mut **tx)
 		.await?
@@ -5552,11 +5514,11 @@ impl Store {
 				let query_bind_1 = task_id;
 				let query_bind_2 = run_id;
 				let query_bind_3 = key;
-				let query_bind_4 = task.workspace_id;
+				let query_bind_4 = task.thread_id;
 				let query_bind_5 = full_key;
 				crate::database::native::query(&reinhardt::query::Query::delete()
 					.from_table(reinhardt::query::Alias::new("remote_run_message_fences"))
-					.and_where(SimpleExpr::CustomWithExpr("(task_id = ? AND run_id = ? AND idempotency_key = ? AND NOT consumed AND (expires_at IS NOT NULL OR input_seq IS NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE workspace_id = ? AND idempotency_key = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()]))
+					.and_where(SimpleExpr::CustomWithExpr("(task_id = ? AND run_id = ? AND idempotency_key = ? AND NOT consumed AND (expires_at IS NOT NULL OR input_seq IS NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ? AND idempotency_key = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()]))
 					.to_string(reinhardt::query::PostgresQueryBuilder))
 			.execute(&mut **tx)
 			.await?
@@ -5777,7 +5739,7 @@ impl Store {
 		self.run_event(
 			&mut tx,
 			run.id,
-			(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+			(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 			event_kind,
 			// The tool and the check only; never what the call addressed.
 			match refusal {
@@ -5922,7 +5884,7 @@ impl Store {
 		nonempty(prompt, "human request prompt")?;
 		let h: Option<HumanRequest> = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = run.workspace_id;
+			let query_bind_2 = run.thread_id;
 			let query_bind_3 = run.id;
 			let query_bind_4 = kind;
 			let query_bind_5 = prompt;
@@ -5932,7 +5894,7 @@ impl Store {
 					.into_table(reinhardt::query::Alias::new("human_requests"))
 					.columns([
 						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("workspace_id"),
+						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("run_id"),
 						reinhardt::query::Alias::new("kind"),
 						reinhardt::query::Alias::new("prompt"),
@@ -5990,7 +5952,7 @@ impl Store {
 				self.run_event(
 					tx,
 					run.id,
-					(run.is_local(self.deployment.as_str())).then_some(run.workspace_id),
+					(run.is_local(self.deployment.as_str())).then_some(run.thread_id),
 					"human.requested",
 					json!(h),
 				)

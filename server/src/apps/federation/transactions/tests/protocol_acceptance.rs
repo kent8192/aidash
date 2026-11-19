@@ -168,17 +168,17 @@ fn pair(
 		let wa = a
 			.f
 			.store
-			.create_workspace(&scope, "alice", "A")
+			.create_thread(&scope, "alice", "A")
 			.await
 			.unwrap();
 		let scope = common::tenant_scope(&b.f.store, "acme").await;
 		let wb = b
 			.f
 			.store
-			.create_workspace(&scope, "alice", "B")
+			.create_thread(&scope, "alice", "B")
 			.await
 			.unwrap();
-		let manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.address,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.address,"mutations":[{"kind":"workspace_title","workspace_id":wa.id,"expected_revision":0,"title":"new-a"}]},{"node_id":b.address,"mutations":[{"kind":"workspace_title","workspace_id":wb.id,"expected_revision":0,"title":"new-b"}]}]})).unwrap();
+		let manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.address,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.address,"mutations":[{"kind":"thread_title","thread_id":wa.id,"expected_revision":0,"title":"new-a"}]},{"node_id":b.address,"mutations":[{"kind":"thread_title","thread_id":wb.id,"expected_revision":0,"title":"new-b"}]}]})).unwrap();
 		(a, b, manifest, wa.id, wb.id)
 	}
 	.boxed()
@@ -572,11 +572,11 @@ async fn complete(node: &Node, id: Uuid) -> aidash_server::transactions::Status 
 		coordinator::status(&node.f, id).await.unwrap()
 	);
 }
-async fn unavailable(node: &Node, workspace: Uuid) {
+async fn unavailable(node: &Node, thread: Uuid) {
 	for path in [
 		"/api/state".to_string(),
 		"/api/registry".into(),
-		format!("/api/workspaces/{workspace}"),
+		format!("/api/threads/{thread}"),
 		"/api/events".into(),
 		"/.well-known/aidash".into(),
 	] {
@@ -602,7 +602,7 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	assert!(
 		node.f
 			.store
-			.update_title(&TEST_FIXTURE, workspace, 0, "bypass")
+			.update_title(&TEST_FIXTURE, thread, 0, "bypass")
 			.await
 			.is_err(),
 		"statement trigger must reject a direct write"
@@ -655,19 +655,11 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	let final_state = complete(&a, manifest.id).await;
 	assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		0
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		0
 	);
 	let decisions: i64 = { let query_bind_1 = manifest.id; sqlx::query_scalar(&reinhardt::query::Query::select()
@@ -706,19 +698,11 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	));
 	steps(&a, manifest.id, 2).await; // Both prepared; speculative writes rolled back.
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		0
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		0
 	);
 	steps(&a, manifest.id, 1).await; // Durable commit precedes any application.
@@ -751,22 +735,18 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	);
 	steps(&a, manifest.id, 1).await;
 	assert_eq!(
-		a.f.store.workspace(&TEST_FIXTURE, wa).await.unwrap().title,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().title,
 		"new-a"
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		0
 	);
 	unavailable(&a, wa).await;
 	unavailable(&b, wb).await;
 	steps(&a, manifest.id, 1).await;
 	assert_eq!(
-		b.f.store.workspace(&TEST_FIXTURE, wb).await.unwrap().title,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().title,
 		"new-b"
 	);
 	assert!(
@@ -783,15 +763,12 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 			.visible
 	);
 	steps(&a, manifest.id, 1).await;
-	assert_eq!(a.get(&format!("/api/workspaces/{wa}")).await.0, 200);
-	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 503);
+	assert_eq!(a.get(&format!("/api/threads/{wa}")).await.0, 200);
+	assert_eq!(b.get(&format!("/api/threads/{wb}")).await.0, 503);
 	let done = complete(&a, manifest.id).await;
 	assert!(done.visible);
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
-		assert_eq!(
-			node.get(&format!("/api/workspaces/{workspace}")).await.0,
-			200
-		);
+	for (node, thread) in [(&a, wa), (&b, wb)] {
+		assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 		assert_eq!(
 			participant::finish(&node.f, None, a.address.as_str(), &manifest)
 				.await
@@ -800,13 +777,13 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 			"COMMITTED"
 		);
 		let updates: i64 = {
-			let query_bind_1 = workspace;
+			let query_bind_1 = thread;
 			sqlx::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 					.from(reinhardt::query::Alias::new("events"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(workspace_id = ? AND kind = 'workspace.updated')".to_owned(),
+						"(thread_id = ? AND kind = 'thread.updated')".to_owned(),
 						vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()],
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -827,7 +804,7 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	#[future(awt)] pair: Pair,
 ) {
 	let (a, b, mut manifest, wa, wb) = pair;
-	if let aidash_server::transactions::Mutation::WorkspaceTitle {
+	if let aidash_server::transactions::Mutation::ThreadTitle {
 		expected_revision, ..
 	} = &mut manifest.participants[1].mutations[0]
 	{
@@ -837,20 +814,17 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("ABORT"));
 	assert!(!done.visible);
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
+	for (node, thread) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
 			node.f
 				.store
-				.workspace(&TEST_FIXTURE, workspace)
+				.thread(&TEST_FIXTURE, thread)
 				.await
 				.unwrap()
 				.revision,
 			0
 		);
-		assert_eq!(
-			node.get(&format!("/api/workspaces/{workspace}")).await.0,
-			200
-		);
+		assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 		assert_eq!(
 			participant::reserve(&node.f, None, a.address.as_str(), &manifest)
 				.await
@@ -949,19 +923,11 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 		Some("COMMIT")
 	);
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		1
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		1
 	);
 	a.cleanup().await;
@@ -993,19 +959,11 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 		Some("ABORT")
 	);
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		1
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		1
 	);
 	a.cleanup().await;
@@ -1014,7 +972,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_task_execution_and_artifact_commit_together_once(#[future(awt)] pair: Pair) {
+async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] pair: Pair) {
 	use aidash_server::{
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
@@ -1246,11 +1204,7 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 	a.stop().await;
 	assert_eq!(participant::recover_once(&b.f).await.unwrap(), 0);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		0
 	);
 	unavailable(&b, wb).await;
@@ -1259,11 +1213,7 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 	// The coordinator has not sent apply, but a participant can recover its vote.
 	assert_eq!(participant::recover_once(&b.f).await.unwrap(), 1);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		1
 	);
 	unavailable(&a, wa).await;
@@ -1294,7 +1244,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 		.streaming_http
 		.get(
 			a.application
-				.url(format!("/api/events/stream?workspace_id={wa}")),
+				.url(format!("/api/events/stream?thread_id={wa}")),
 		)
 		.bearer_auth(&a.subject_token)
 		.send()
@@ -1307,7 +1257,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 		.unwrap()
 		.unwrap()
 		.unwrap();
-	assert!(String::from_utf8_lossy(&first).contains("workspace.created"));
+	assert!(String::from_utf8_lossy(&first).contains("thread.created"));
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 6).await;
 	tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -1355,19 +1305,11 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	);
 	complete(&a, manifest.id).await;
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		0
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		0
 	);
 
@@ -1400,7 +1342,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	}
 	let response = request.send().await.unwrap();
 	assert_eq!(response.status(), 403);
-	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 200);
+	assert_eq!(b.get(&format!("/api/threads/{wb}")).await.0, 200);
 	coordinator::submit(&a.f, &admitted).await.unwrap();
 	steps(&a, admitted.id, 2).await;
 	// The registration is guarded like any other Tenant data: while `b` holds
@@ -1412,19 +1354,11 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		Some("COMMIT")
 	);
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		1
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		1
 	);
 	a.cleanup().await;
@@ -1453,18 +1387,18 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future
 			.unwrap();
 		if !state.visible {
 			// No node may expose a new value before the global visibility decision.
-			for (node, workspace) in [(&a, wa), (&b, wb)] {
+			for (node, thread) in [(&a, wa), (&b, wb)] {
 				let (status, value) = environment
 					.bounded(
 						format!(
-							"transition {transitions}: read {} workspace",
+							"transition {transitions}: read {} thread",
 							node.f.config.deployment
 						),
-						node.get(&format!("/api/workspaces/{workspace}")),
+						node.get(&format!("/api/threads/{thread}")),
 					)
 					.await;
 				assert!(
-					status == 503 || (status == 200 && value["workspace"]["revision"] == 0),
+					status == 503 || (status == 200 && value["thread"]["revision"] == 0),
 					"{status}: {value}"
 				);
 			}
@@ -1476,19 +1410,11 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future
 	}
 	assert_eq!(transitions, 11);
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		1
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		1
 	);
 	a.cleanup().await;
@@ -1513,19 +1439,11 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 		Some("ABORT")
 	);
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		0
 	);
 	assert_eq!(
-		b.f.store
-			.workspace(&TEST_FIXTURE, wb)
-			.await
-			.unwrap()
-			.revision,
+		b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 		0
 	);
 	a.cleanup().await;
@@ -1628,24 +1546,24 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	);
 	drop(restarted_a);
 	drop(restarted_b);
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
+	for (node, thread) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
 			node.f
 				.store
-				.workspace(&TEST_FIXTURE, workspace)
+				.thread(&TEST_FIXTURE, thread)
 				.await
 				.unwrap()
 				.revision,
 			1
 		);
 		let events: i64 = {
-			let query_bind_1 = workspace;
+			let query_bind_1 = thread;
 			sqlx::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 					.from(reinhardt::query::Alias::new("events"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(workspace_id = ? AND kind = 'workspace.updated')".to_owned(),
+						"(thread_id = ? AND kind = 'thread.updated')".to_owned(),
 						vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()],
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -1686,11 +1604,7 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 	}
 	assert!(coordinator::status(&a.f, local.id).await.unwrap().complete);
 	assert_eq!(
-		a.f.store
-			.workspace(&TEST_FIXTURE, wa)
-			.await
-			.unwrap()
-			.revision,
+		a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 		1
 	);
 	a.cleanup().await;
@@ -1734,13 +1648,13 @@ async fn mapped_transaction_admission_and_revocation(
 			.task(&TEST_FIXTURE, task_a)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let wb =
 		b.f.store
 			.task(&TEST_FIXTURE, task_b)
 			.await
 			.unwrap()
-			.workspace_id;
+			.thread_id;
 	let auth_a = Authorization {
 		pool: a.f.store.control_pool.clone(),
 	};
@@ -1764,10 +1678,10 @@ async fn mapped_transaction_admission_and_revocation(
 	write(&b.f, "acme", b.mapping(&a, credential_b.id, true, 0))
 		.await
 		.unwrap();
-	for (index, workspace) in [wa, wb].into_iter().enumerate() {
+	for (index, thread) in [wa, wb].into_iter().enumerate() {
 		manifest.participants[index].mutations =
-			vec![aidash_server::transactions::Mutation::WorkspaceTitle {
-				workspace_id: workspace,
+			vec![aidash_server::transactions::Mutation::ThreadTitle {
+				thread_id: thread,
 				expected_revision: 0,
 				title: "Title".into(),
 			}];
@@ -1795,12 +1709,7 @@ async fn mapped_transaction_admission_and_revocation(
 			.unwrap();
 		let app_c = c.application.clone();
 		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
-		let workspace =
-			c.f.store
-				.task(&TEST_FIXTURE, task)
-				.await
-				.unwrap()
-				.workspace_id;
+		let thread = c.f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 		let auth = Authorization {
 			pool: c.f.store.control_pool.clone(),
 		};
@@ -1820,13 +1729,13 @@ async fn mapped_transaction_admission_and_revocation(
 			.participants
 			.push(aidash_server::transactions::Participant {
 				node_id: c.address.clone(),
-				mutations: vec![aidash_server::transactions::Mutation::WorkspaceTitle {
-					workspace_id: workspace,
+				mutations: vec![aidash_server::transactions::Mutation::ThreadTitle {
+					thread_id: thread,
 					expected_revision: 0,
 					title: "Title".into(),
 				}],
 			});
-		third = Some((c, workspace));
+		third = Some((c, thread));
 	}
 	if revocation == "disclosure" {
 		let snapshot = auth_b.snapshot("acme").await.unwrap();
@@ -2119,31 +2028,28 @@ async fn mapped_transaction_admission_and_revocation(
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["pending_transactions"], json!([]));
 	}
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
+	for (node, thread) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
 			node.f
 				.store
-				.workspace(&TEST_FIXTURE, workspace)
+				.thread(&TEST_FIXTURE, thread)
 				.await
 				.unwrap()
 				.revision,
 			i64::from(expected == "COMMIT")
 		);
-		assert_eq!(
-			node.get(&format!("/api/workspaces/{workspace}")).await.0,
-			200
-		);
+		assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 	}
-	if let Some((c, workspace)) = third {
+	if let Some((c, thread)) = third {
 		assert_eq!(
 			c.f.store
-				.workspace(&TEST_FIXTURE, workspace)
+				.thread(&TEST_FIXTURE, thread)
 				.await
 				.unwrap()
 				.revision,
 			i64::from(expected == "COMMIT")
 		);
-		assert_eq!(c.get(&format!("/api/workspaces/{workspace}")).await.0, 200);
+		assert_eq!(c.get(&format!("/api/threads/{thread}")).await.0, 200);
 		c.cleanup().await;
 	}
 	a.cleanup().await;
@@ -2364,11 +2270,11 @@ async fn node_closure_preserves_decided_recovery_but_denies_new_or_misbound_requ
 	unavailable(&b, wb).await;
 	let done = complete(&a, manifest.id).await;
 	assert_eq!(done.decision.as_deref(), Some("COMMIT"));
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
+	for (node, thread) in [(&a, wa), (&b, wb)] {
 		assert_eq!(
 			node.f
 				.store
-				.workspace(&TEST_FIXTURE, workspace)
+				.thread(&TEST_FIXTURE, thread)
 				.await
 				.unwrap()
 				.revision,

@@ -9,6 +9,7 @@ pub use contract::*;
 pub mod provider_tools;
 pub mod providers;
 pub mod refusal;
+pub mod thread_tools;
 pub use refusal::{
 	AuthorityRefusal, DO_NOT_REPEAT, RefusalCheck, RefusalKind, RefusedCall, RefusedToolCall,
 };

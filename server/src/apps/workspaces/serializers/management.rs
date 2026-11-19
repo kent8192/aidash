@@ -4,13 +4,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Opening a Workspace (#1008, ADR 0140). With a `target`, the `request` is
+/// Opening a Thread (#1008, ADR 0140). With a `target`, the `request` is
 /// a person's request to that Agent or cluster: it becomes the first message
 /// and the description of the Root Task delegated to the target. Without one,
-/// the Workspace opens empty and `request`, if given, is its first message.
+/// the Thread opens empty and `request`, if given, is its first message.
 #[derive(Deserialize, Serialize, JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WorkspaceInput {
+pub(crate) struct ThreadInput {
 	#[serde(deserialize_with = "crate::apps::workspaces::services::validation::trimmed_text")]
 	#[validate(length(min = 1))]
 	pub(crate) title: String,
@@ -23,13 +23,13 @@ pub(crate) struct WorkspaceInput {
 	pub(crate) target: Option<EntityRef>,
 	#[serde(default)]
 	pub(crate) target_kind: Option<String>,
-	/// The Node the Workspace belongs to. The Tenant's default Node when absent.
+	/// The Node the Thread belongs to. The Tenant's default Node when absent.
 	#[serde(default)]
 	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
 	#[serde(default)]
 	pub(crate) scratch_space_id: Option<Uuid>,
 }
-/// Renaming a Workspace: its title is the only attribute that changes.
+/// Renaming a Thread: its title is the only attribute that changes.
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TitleInput {

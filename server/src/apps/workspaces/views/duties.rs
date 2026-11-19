@@ -11,36 +11,29 @@ use reinhardt::{Path, Query, Response, delete, get, patch, post};
 use uuid::Uuid;
 
 #[get(
-	"/api/workspaces/{workspace}/duties",
-	name = "workspace-duties",
+	"/api/threads/{thread}/duties",
+	name = "thread-duties",
 	auth = "protected"
 )]
-pub async fn workspace_list(
+pub async fn thread_list(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(
-		execute(
-			&runtime,
-			actor,
-			Operation::List(Listing::Workspace(workspace)),
-		)
-		.await,
-	)
+	crate::http::json(execute(&runtime, actor, Operation::List(Listing::Thread(thread))).await)
 }
 #[post(
-	"/api/workspaces/{workspace}/duties",
+	"/api/threads/{thread}/duties",
 	name = "duty-create",
 	auth = "protected"
 )]
 pub async fn create(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<Definition>,
 ) -> ViewResult<Response> {
-	crate::http::json(execute(&runtime, actor, Operation::Create(workspace, input)).await)
+	crate::http::json(execute(&runtime, actor, Operation::Create(thread, input)).await)
 }
 #[get("/api/duties", name = "duty-list", auth = "protected")]
 pub async fn list(

@@ -22,7 +22,7 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 ) {
 	let c = Box::pin(lowered_content_fixture).await;
 	let run = admit(&c).await;
-	let message = source(&c, run.workspace_id, &"東京の資料\n".repeat(8)).await;
+	let message = source(&c, run.thread_id, &"東京の資料\n".repeat(8)).await;
 	let base = format!("/api/runs/{}", run.id);
 	let (status, created) = common::post(&c.app, &c.token, &format!("{base}/files/materialize"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"notes.txt","source":{"kind":"message","message_id":message}})).await;
 	assert_eq!(status, 200, "{created}");
@@ -109,7 +109,7 @@ fn search_boundary_fixture(
 		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 		let c = lowered_content_fixture.await;
 		let run = admit(&c).await;
-		let message = source(&c, run.workspace_id, &"matched text ".repeat(60)).await;
+		let message = source(&c, run.thread_id, &"matched text ".repeat(60)).await;
 		let (status, large) = common::post(&c.app, &c.token, &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"a".repeat(1000),"source":{"kind":"message","message_id":message}})).await;
 		assert_eq!(status, 200, "{large}");
 		let (_, area) = common::get(

@@ -28,7 +28,7 @@ pub struct Restore {
 #[derive(Debug, Serialize)]
 pub struct ManagedArea {
 	pub area_id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub agent_id: String,
 	pub owner: String,
 	pub state: String,

@@ -398,7 +398,7 @@ mod exposure {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::new_v4(),
 			task_id: Uuid::new_v4(),
-			workspace_id: Uuid::new_v4(),
+			thread_id: Uuid::new_v4(),
 			home_node: NODE.into(),
 			agent_id: "agent".into(),
 			agent_version: "1.0.0".into(),
@@ -510,7 +510,7 @@ mod exposure {
 		config.skill_attachments = vec![attachment.clone()];
 		let area: Area = serde_json::from_value(json!({
 			"id": Uuid::new_v4(), "tenant": "tenant", "home_node": NODE,
-			"workspace_id": Uuid::new_v4(), "agent_id": "agent",
+			"thread_id": Uuid::new_v4(), "agent_id": "agent",
 			"owner": "owner", "generation": 0, "revision": 0, "epoch": 0, "state": "ready",
 			"manifest": [], "constraints": {}, "next_sequence": 0,
 		}))
@@ -547,7 +547,7 @@ mod exposure {
 		let mut attachment = metadata();
 		attachment.origin = "attachment:first".into();
 		let mut root = metadata();
-		root.origin = "area:workspace:.agents/skills/second".into();
+		root.origin = "area:thread:.agents/skills/second".into();
 		let mut unloaded = metadata();
 		unloaded.origin = "attachment:unloaded".into();
 		let mut scope = scope(deferred, &attachment);
@@ -632,9 +632,9 @@ mod exposure {
 			},
 		};
 		let mut public = metadata();
-		public.origin = "area:workspace:.agents/skills/public".into();
+		public.origin = "area:thread:.agents/skills/public".into();
 		let mut private = metadata();
-		private.origin = "area:workspace:private/.agents/skills/private".into();
+		private.origin = "area:thread:private/.agents/skills/private".into();
 		let mut scope = scope(deferred, &public);
 		let mut root = crate::test_support::agent("agent");
 		root.config["instructions"] = json!("");

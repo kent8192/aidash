@@ -43,11 +43,8 @@ pub(crate) struct Repository {
 	pub(crate) worker: Option<aidash_domain::RunMetadata>,
 }
 impl Repository {
-	/// The Node a Workspace of the acting subject's Tenant belongs to.
-	async fn workspace_node(
-		&self,
-		workspace: Uuid,
-	) -> NativeResult<aidash_domain::nodes::NodeName> {
+	/// The Node a Thread of the acting subject's Tenant belongs to.
+	async fn thread_node(&self, thread: Uuid) -> NativeResult<aidash_domain::nodes::NodeName> {
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden);
 		};
@@ -59,8 +56,8 @@ impl Repository {
 				crate::database::native::query_scalar::<String>(
 					&Query::select()
 						.column(Alias::new("node"))
-						.from(Alias::new("workspaces"))
-						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+						.from(Alias::new("threads"))
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_one(&mut **tx)
@@ -115,8 +112,8 @@ impl HomeScope for Scope {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access
@@ -169,7 +166,7 @@ impl HomeScope for Scope {
 		for request in
 			super::remote_commands::humans::read(&mut **self.access.tx, grant, false).await?
 		{
-			if request.run_id != admission || request.workspace_id != task.workspace_id {
+			if request.run_id != admission || request.thread_id != task.thread_id {
 				return Err(aidash_application::Error::Forbidden);
 			}
 			let human = self.access.resource(
@@ -318,11 +315,11 @@ impl HomeScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()> {
+	async fn call_declined(&mut self, thread: Uuid, event: Value) -> Result<()> {
 		let result: NativeResult<()> = async {
 			crate::apps::execution::models::event_records::append(
 				&mut **self.access.tx,
-				Some(workspace),
+				Some(thread),
 				"remote.call_declined",
 				event,
 			)
@@ -683,7 +680,7 @@ impl HomeScope for Scope {
 		&mut self,
 		grant: Uuid,
 		admission: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		subject: &str,
 	) -> Result<()> {
 		crate::semantic::remote::journal::resume_in(
@@ -691,7 +688,7 @@ impl HomeScope for Scope {
 			&mut self.access.tx,
 			grant,
 			admission,
-			workspace,
+			thread,
 			subject,
 		)
 		.await
@@ -720,14 +717,14 @@ impl HomeScope for Scope {
 	}
 	async fn create_task(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: &NewTask,
 		subject: &str,
 		key: &str,
 	) -> Result<Task> {
 		self.runtime
 			.store
-			.create_task_in(&mut self.access.tx, workspace, input, subject, Some(key))
+			.create_task_in(&mut self.access.tx, thread, input, subject, Some(key))
 			.await
 			.map_err(Into::into)
 	}
@@ -741,12 +738,12 @@ impl HomeScope for Scope {
 #[async_trait]
 impl HomeRepository for Repository {
 	type Scope = Scope;
-	async fn node_address(&self, workspace: Uuid) -> Result<String> {
+	async fn node_address(&self, thread: Uuid) -> Result<String> {
 		Ok(self
 			.runtime
 			.config
 			.deployment
-			.node(self.workspace_node(workspace).await?)
+			.node(self.thread_node(thread).await?)
 			.to_string())
 	}
 	fn identity(&self) -> Option<ExecutionPrincipal> {
@@ -792,12 +789,12 @@ impl HomeRepository for Repository {
 	}
 	async fn request<T: DeserializeOwned + Send>(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		node: &str,
 		path: &str,
 		input: &Value,
 	) -> Result<T> {
-		// Home calls as the Node the Workspace belongs to, for the Tenant of the
+		// Home calls as the Node the Thread belongs to, for the Tenant of the
 		// subject that acts.
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
@@ -805,7 +802,7 @@ impl HomeRepository for Repository {
 		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.runtime,
 			&aidash_domain::federation::route::Sender {
-				node: Some(self.workspace_node(workspace).await?),
+				node: Some(self.thread_node(thread).await?),
 				..crate::authorization::peer::node_sender(&identity.tenant)?
 			},
 			node,

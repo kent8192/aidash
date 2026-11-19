@@ -60,6 +60,10 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 	Some(match operation {
 		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message"
 		| "workspace_search" => "core.workspace@1",
+		// The Thread tools that replace the Workspace tools (#1008, ADR 0140).
+		"thread_read" | "thread_observe" | "task_wait" | "thread_message" | "thread_search" => {
+			"core.threads@1"
+		}
 		"human_request" | "connection_request" => "core.human@1",
 		"subnode_create"
 		| "subnode_task"
@@ -386,8 +390,8 @@ pub fn validate_concurrency(contract: &ToolContract, narrow: &Narrowing) -> Resu
 pub fn validate_restrictions(operation: &str, narrow: &Narrowing) -> Result<()> {
 	let (hosts, scopes, limits): (bool, &[&str], &[&str]) = match operation {
 		"outbound_get" => (true, &[], &[]),
-		"workspace_read" => (false, &["kind", "id"], &["max_chars"]),
-		"workspace_observe" => (false, &[], &["limit"]),
+		"workspace_read" | "thread_read" => (false, &["kind", "id"], &["max_chars"]),
+		"workspace_observe" | "thread_observe" => (false, &[], &["limit"]),
 		"file_search" => (false, &["scope"], &["limit"]),
 		"file_read" => (false, &["file_id", "representation"], &["max_bytes"]),
 		"file_share" => (

@@ -1,6 +1,6 @@
 //! Scoped graph identity, bounds, and projection rules independent of transport.
 use crate::{
-	Artifact, Conversation, Error, Event, Result, RunControl, RunMetadata, Task, Workspace,
+	Artifact, Conversation, Error, Event, Result, RunControl, RunMetadata, Task, Thread,
 	registry::Entry,
 };
 use chrono::{DateTime, Utc};
@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GraphOptions {
-	pub scope_workspace: Option<Uuid>,
+	pub scope_thread: Option<Uuid>,
 	#[serde(default = "direct_depth")]
 	#[schemars(range(min = 1, max = 1))]
 	pub depth: u8,
@@ -36,7 +36,7 @@ pub struct GraphNode {
 	pub name: BTreeMap<String, String>,
 	pub resource_id: Option<String>,
 	pub version: Option<String>,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 	pub status: Option<String>,
 	pub goal_body: Option<String>,
 	pub at: Option<DateTime<Utc>>,
@@ -104,7 +104,7 @@ impl GraphOptions {
 			|| self.kinds.iter().any(|kind| {
 				!matches!(
 					kind.as_str(),
-					"workspace"
+					"thread"
 						| "goal" | "task" | "run"
 						| "artifact" | "conversation"
 						| "agent" | "cluster"
@@ -130,7 +130,7 @@ impl GraphOptions {
 #[derive(Clone)]
 pub enum Candidate {
 	Registry(Box<Entry>),
-	Workspace(Workspace),
+	Thread(Thread),
 	Task(Task),
 	Run(RunMetadata),
 	Artifact(Artifact),
@@ -151,7 +151,7 @@ pub fn kind_allowed(kind: &str, options: &GraphOptions) -> bool {
 		"execution" => matches!(kind, "goal" | "task" | "run" | "agent" | "artifact"),
 		"collaboration" => matches!(
 			kind,
-			"workspace" | "goal" | "conversation" | "task" | "agent" | "cluster" | "artifact"
+			"thread" | "goal" | "conversation" | "task" | "agent" | "cluster" | "artifact"
 		),
 		"knowledge" => kind != "run",
 		_ => true,
@@ -196,13 +196,13 @@ pub fn build_edges(
 	};
 	for record in records {
 		match record {
-			// A Workspace has no goal of its own (#1008, ADR 0140): its Root
+			// A Thread has no goal of its own (#1008, ADR 0140): its Root
 			// Tasks hang below it.
-			Candidate::Workspace(_) => {}
+			Candidate::Thread(_) => {}
 			Candidate::Task(task) => {
 				let id = resource_key(node, "task", task.id);
 				add(
-					resource_key(node, "workspace", task.workspace_id),
+					resource_key(node, "thread", task.thread_id),
 					id.clone(),
 					"contains",
 					"configuration",
@@ -248,7 +248,7 @@ pub fn build_edges(
 			Candidate::Conversation(conversation) => {
 				let id = resource_key(node, "conversation", conversation.id);
 				add(
-					resource_key(node, "workspace", conversation.workspace_id),
+					resource_key(node, "thread", conversation.thread_id),
 					id.clone(),
 					"contains",
 					"configuration",
@@ -313,7 +313,7 @@ pub fn event_reference(event: &Event, node: &str) -> Option<String> {
 			.or_else(|| id(&data["id"]))
 			.map(|id| resource_key(node, "run", id));
 	}
-	let workspace = event.workspace_id?;
+	let thread = event.thread_id?;
 	if event.kind.starts_with("task.") {
 		return id(&data["task"]["id"])
 			.or_else(|| id(&data["task_id"]))
@@ -326,8 +326,8 @@ pub fn event_reference(event: &Event, node: &str) -> Option<String> {
 	if event.kind.starts_with("conversation.") {
 		return id(&data["id"]).map(|id| resource_key(node, "conversation", id));
 	}
-	if event.kind.starts_with("message.") || event.kind.starts_with("workspace.") {
-		return Some(resource_key(node, "workspace", workspace));
+	if event.kind.starts_with("message.") || event.kind.starts_with("thread.") {
+		return Some(resource_key(node, "thread", thread));
 	}
 	None
 }
@@ -335,7 +335,7 @@ impl Candidate {
 	pub fn kind(&self) -> &str {
 		match self {
 			Self::Registry(entry) => &entry.kind,
-			Self::Workspace(_) => "workspace",
+			Self::Thread(_) => "thread",
 			Self::Task(_) => "task",
 			Self::Run(_) => "run",
 			Self::Artifact(_) => "artifact",
@@ -353,24 +353,24 @@ impl Candidate {
 				name: entry.name.clone(),
 				resource_id: Some(entry.id.clone()),
 				version: Some(entry.version.clone()),
-				workspace_id: None,
+				thread_id: None,
 				status: None,
 				goal_body: None,
 				at: None,
 			}),
-			Self::Workspace(workspace) => {
-				if kind_allowed("workspace", options) {
+			Self::Thread(thread) => {
+				if kind_allowed("thread", options) {
 					nodes.push(GraphNode {
-						id: resource_key(node_id, "workspace", workspace.id),
+						id: resource_key(node_id, "thread", thread.id),
 						node_id: node_id.to_owned(),
-						kind: "workspace".into(),
-						name: name(&workspace.title),
-						resource_id: Some(workspace.id.to_string()),
+						kind: "thread".into(),
+						name: name(&thread.title),
+						resource_id: Some(thread.id.to_string()),
 						version: None,
-						workspace_id: Some(workspace.id),
+						thread_id: Some(thread.id),
 						status: None,
 						goal_body: None,
-						at: Some(workspace.created_at),
+						at: Some(thread.created_at),
 					});
 				}
 			}
@@ -381,7 +381,7 @@ impl Candidate {
 				name: name(&task.title),
 				resource_id: Some(task.id.to_string()),
 				version: None,
-				workspace_id: Some(task.workspace_id),
+				thread_id: Some(task.thread_id),
 				status: Some(task.status.to_string()),
 				goal_body: None,
 				at: Some(task.created_at),
@@ -393,7 +393,7 @@ impl Candidate {
 				name: name(&format!("Run {}", run.id.simple())),
 				resource_id: Some(run.id.to_string()),
 				version: None,
-				workspace_id: Some(run.workspace_id),
+				thread_id: Some(run.thread_id),
 				status: Some(if run.control == RunControl::Paused {
 					"PAUSED".into()
 				} else {
@@ -409,7 +409,7 @@ impl Candidate {
 				name: name(&artifact.name),
 				resource_id: Some(artifact.id.to_string()),
 				version: None,
-				workspace_id: Some(artifact.workspace_id),
+				thread_id: Some(artifact.thread_id),
 				status: Some(artifact.kind.clone()),
 				goal_body: None,
 				at: Some(artifact.created_at),
@@ -421,7 +421,7 @@ impl Candidate {
 				name: name("Conversation"),
 				resource_id: Some(conversation.id.to_string()),
 				version: None,
-				workspace_id: Some(conversation.workspace_id),
+				thread_id: Some(conversation.thread_id),
 				status: None,
 				goal_body: None,
 				at: Some(conversation.created_at),
@@ -441,8 +441,8 @@ pub fn valid_remote_page(page: &GraphPage, node_id: &str, options: &GraphOptions
 						| crate::unconfirmed::Kind::Run
 						| crate::unconfirmed::Kind::Artifact
 				) || options
-				.scope_workspace
-				.is_some_and(|workspace| workspace != entry.workspace_id)
+				.scope_thread
+				.is_some_and(|thread| thread != entry.thread_id)
 		}) || page
 		.unconfirmed
 		.iter()

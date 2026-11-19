@@ -795,13 +795,13 @@ impl ApprovalPreferences {
 		&self,
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<ThreadMode> {
 		let mut access = self.session(actor, origin).await?;
 		let result = async {
-			crate::apps::execution::capabilities::services::endpoints::readable_workspace(
+			crate::apps::execution::capabilities::services::endpoints::readable_thread(
 				&mut access,
-				workspace,
+				thread,
 			)
 			.await?;
 			let (tenant, subject) = (
@@ -809,11 +809,10 @@ impl ApprovalPreferences {
 				access.identity.subject.clone(),
 			);
 			let row = repository::preference(&mut *access.tx, &tenant, &subject).await?;
-			let node = access.workspace_node(workspace).await?;
+			let node = access.thread_node(thread).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
-				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, workspace)
-					.await?,
+				mode: repository::thread_mode(&mut *access.tx, &tenant, &subject, thread).await?,
 				default_mode: repository::default_mode(row.as_ref())?,
 				modes: modes(
 					&access.snapshot.bundle,
@@ -834,14 +833,14 @@ impl ApprovalPreferences {
 		&self,
 		actor: Actor,
 		origin: Option<BrowserOrigin>,
-		workspace: Uuid,
+		thread: Uuid,
 		input: ThreadModeUpdate,
 	) -> Result<ThreadMode> {
 		let mut access = self.session(actor, origin).await?;
 		let result = async {
-			crate::apps::execution::capabilities::services::endpoints::readable_workspace(
+			crate::apps::execution::capabilities::services::endpoints::readable_thread(
 				&mut access,
-				workspace,
+				thread,
 			)
 			.await?;
 			let (tenant, subject) = (
@@ -865,9 +864,9 @@ impl ApprovalPreferences {
 					));
 				}
 			}
-			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, workspace, input.mode)
+			repository::set_thread_mode(&mut *access.tx, &tenant, &subject, thread, input.mode)
 				.await?;
-			let node = access.workspace_node(workspace).await?;
+			let node = access.thread_node(thread).await?;
 			let auto = auto_availability(&mut *access.tx, &tenant, &node).await?;
 			Ok(ThreadMode {
 				mode: input.mode,

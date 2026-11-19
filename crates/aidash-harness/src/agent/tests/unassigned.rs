@@ -455,14 +455,14 @@ async fn the_ceiling_of_the_internal_wait_rechecks_children_without_a_model_call
 	let inferred = calls(&fixture, "provider.infer");
 	advance_sources(&mut fixture).await.unwrap();
 	let (event, saved) = last_write(&fixture);
-	assert_eq!(event, "run.waiting_for_workspace");
+	assert_eq!(event, "run.waiting_for_thread");
 	assert_eq!(saved.step, step);
 	assert_eq!(calls(&fixture, "provider.infer"), inferred);
 	let RunState::Waiting(waiting) = &saved.state else {
 		panic!("expected the Run to keep waiting");
 	};
 	let WaitingState::TaskWait { wake_at, .. } = **waiting else {
-		panic!("expected a workspace wait");
+		panic!("expected a thread wait");
 	};
 	let before = chrono::Utc::now();
 	assert!(wake_at > before + chrono::Duration::seconds(seconds - 60));

@@ -18,7 +18,7 @@ pub async fn verify<S: SemanticSourceScope + ?Sized>(scope: &mut S, grant: Uuid)
 			return Err(Error::Forbidden);
 		}
 		let text = scope
-			.source_text(entry.workspace_id, &serde_json::from_value(entry.source)?)
+			.source_text(entry.thread_id, &serde_json::from_value(entry.source)?)
 			.await?
 			.ok_or(Error::Forbidden)?;
 		if content_digest(&text) != source.content_digest {

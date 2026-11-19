@@ -431,16 +431,18 @@ pub(crate) fn live_node_condition(tenant: SimpleExpr, node: SimpleExpr) -> Simpl
 	Expr::exists(live).into()
 }
 
-/// A Workspace's durable identity does not retain authority after its Node closes.
-pub(crate) fn live_workspace_condition(workspace: SimpleExpr, tenant: SimpleExpr) -> SimpleExpr {
+/// A Thread's durable identity does not retain authority after its Node closes.
+pub(crate) fn live_thread_condition(thread: SimpleExpr, tenant: SimpleExpr) -> SimpleExpr {
 	let mut live = Query::select();
 	live.expr(Expr::value(1_i32))
-		.from_as(Alias::new("workspaces"), Alias::new("live_workspace"))
-		.and_where(Expr::col((Alias::new("live_workspace"), Alias::new("id"))).eq(workspace))
-		.and_where(Expr::col((Alias::new("live_workspace"), Alias::new("tenant"))).eq(tenant))
+		.from_as(Alias::new("threads"), Alias::new("live_thread"))
+		.and_where(Expr::col((Alias::new("live_thread"), Alias::new("id"))).eq(thread))
+		.and_where(Expr::col((Alias::new("live_thread"), Alias::new("tenant"))).eq(tenant))
+		// A deleted Thread is gone for every reader and writer (#1008).
+		.and_where(Expr::col((Alias::new("live_thread"), Alias::new("deleted_at"))).is_null())
 		.and_where(live_node_condition(
-			Expr::col((Alias::new("live_workspace"), Alias::new("tenant"))).into(),
-			Expr::col((Alias::new("live_workspace"), Alias::new("node"))).into(),
+			Expr::col((Alias::new("live_thread"), Alias::new("tenant"))).into(),
+			Expr::col((Alias::new("live_thread"), Alias::new("node"))).into(),
 		));
 	Expr::exists(live).into()
 }

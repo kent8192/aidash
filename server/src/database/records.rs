@@ -37,7 +37,7 @@ macro_rules! record {
         }
     };
 }
-record!(Workspace {
+record!(Thread {
 	id,
 	scratch_space_id,
 	node,
@@ -49,7 +49,7 @@ record!(Workspace {
 record!(
 	Task {
 		id,
-		workspace_id,
+		thread_id,
 		title,
 		description,
 		requirements,
@@ -64,7 +64,7 @@ record!(
 );
 record!(Artifact {
 	id,
-	workspace_id,
+	thread_id,
 	task_id,
 	kind,
 	name,
@@ -78,7 +78,7 @@ record!(Event {
 	sequence,
 	id,
 	node,
-	workspace_id,
+	thread_id,
 	kind,
 	data,
 	created_at
@@ -87,7 +87,7 @@ record!(Conversation {
 	scratch_space_id,
 	created_by,
 	id,
-	workspace_id,
+	thread_id,
 	target,
 	target_kind,
 	created_at
@@ -96,7 +96,7 @@ record!(
 	HumanRequest {
 		answered_by,
 		id,
-		workspace_id,
+		thread_id,
 		run_id,
 		kind,
 		prompt,
@@ -107,7 +107,7 @@ record!(
 );
 record!(Message {
 	id,
-	workspace_id,
+	thread_id,
 	sender,
 	content,
 	idempotency_key,
@@ -118,7 +118,7 @@ record!(
 	RunMetadata {
 		id,
 		task_id,
-		workspace_id,
+		thread_id,
 		node,
 		home_node,
 		agent_id,

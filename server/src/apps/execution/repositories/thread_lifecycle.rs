@@ -58,22 +58,53 @@ impl From<NativeDeleteThread> for DeleteThread {
 	}
 }
 #[async_trait]
-impl ThreadScope for Scope<'_> {
-	async fn lock_for_deletion(&mut self, workspace: Uuid) -> Result<()> {
-		crate::apps::workspaces::models::Workspace::lock_existing(&mut *self.access.tx, workspace)
+impl aidash_application::ports::capabilities::thread_lifecycle::DeletionAuthority for Scope<'_> {
+	async fn decide(
+		&mut self,
+		resource: &aidash_domain::policy::Resource,
+		action: &str,
+	) -> Result<bool> {
+		self.access
+			.decide(resource, action)
 			.await
 			.map_err(Into::into)
 	}
-	async fn owned_areas(&mut self, workspace: Uuid, offset: u64) -> Result<Vec<Area>> {
+	async fn node_resource(&mut self, thread: Uuid) -> Result<aidash_domain::policy::Resource> {
+		let node = self.access.thread_node(thread).await?;
+		Ok(self
+			.access
+			.resource("node", node.as_str(), serde_json::json!({})))
+	}
+}
+#[async_trait]
+impl ThreadScope for Scope<'_> {
+	async fn lock_for_deletion(&mut self, thread: Uuid) -> Result<()> {
+		crate::apps::workspaces::models::Thread::lock_existing(&mut *self.access.tx, thread)
+			.await
+			.map_err(Into::into)
+	}
+	async fn mark_deleted(&mut self, thread: Uuid) -> Result<()> {
+		let query = Query::update()
+			.table(Alias::new("threads"))
+			.value_expr(Alias::new("deleted_at"), Expr::cust("CURRENT_TIMESTAMP"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
+			.and_where(Expr::col(Alias::new("deleted_at")).is_null())
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut **self.access.tx)
+			.await?;
+		Ok(())
+	}
+	async fn owned_areas(&mut self, thread: Uuid, offset: u64) -> Result<Vec<Area>> {
 		let result: NativeResult<Vec<NativeArea>> = async {
 			let access = &mut *self.access;
 			Ok({
-				let query_bind_1 = workspace;
+				let query_bind_1 = thread;
 				let query_bind_3 = &access.identity.subject;
 				crate::database::native::query_as(
 					&sessions::select("core_areas")
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(query_bind_1.to_owned())))
-				// Deleting a shared Workspace never grants management of another
+				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_1.to_owned())))
+				// Deleting a shared Thread never grants management of another
 				// subject's private files. Their areas remain available in settings.
 				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_3.to_owned())))
 				.order_by(Alias::new("id"), Order::Asc)
@@ -90,13 +121,13 @@ impl ThreadScope for Scope<'_> {
 			.map(|areas| areas.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn delete_attachments(&mut self, workspace: Uuid) -> Result<()> {
-		// Indexed images leave the Workspace index with their attachments
+	async fn delete_attachments(&mut self, thread: Uuid) -> Result<()> {
+		// Indexed images leave the Thread index with their attachments
 		// (#622 decision 11); the cleanup sweep removes their vectors.
 		let images = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("media_type")).like("image/%"))
 			.to_string(PostgresQueryBuilder);
 		let images: Vec<Uuid> = crate::database::native::query_scalar(&images)
@@ -107,14 +138,14 @@ impl ThreadScope for Scope<'_> {
 				crate::apps::knowledge::repositories::access::Lease::Inherited(&mut *self.access);
 			for image in images {
 				crate::apps::knowledge::repositories::attachment_images::retire(
-					&mut lease, workspace, image,
+					&mut lease, thread, image,
 				)
 				.await?;
 			}
 		}
 		let query = Query::delete()
 			.from_table(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&query)
 			.execute(&mut **self.access.tx)
@@ -167,10 +198,10 @@ impl ThreadScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
 			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

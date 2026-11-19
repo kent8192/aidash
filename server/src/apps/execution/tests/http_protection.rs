@@ -168,7 +168,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		("GET", "/auth/config", 1 << 20),
 		("GET", "/api/dashboard/registrations", 1 << 20),
 		("POST", "/api/transactions", 1 << 20),
-		("POST", "/api/workspaces", 1 << 20),
+		("POST", "/api/threads", 1 << 20),
 		("POST", "/api/references/uploads", 6 << 20),
 	] {
 		let response = http_client
@@ -183,7 +183,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		assert!(response.headers().contains_key("x-request-id"));
 	}
 	for (path, limit) in [
-		("/api/workspaces", 1 << 20),
+		("/api/threads", 1 << 20),
 		("/api/references/uploads", 6 << 20),
 	] {
 		let body = reqwest::Body::wrap_stream(futures_util::stream::iter([
@@ -216,14 +216,14 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.unwrap();
 	let refused = deployment_administrator
 		.post(
-			"/api/workspaces",
-			&json!({"title":"Administrator workspace","request":"valid"}),
+			"/api/threads",
+			&json!({"title":"Administrator thread","request":"valid"}),
 			"json",
 		)
 		.await
 		.unwrap();
 	assert_eq!(refused.status_code(), 403);
-	let invalid_conversation = member.post("/api/conversations", &json!({"title":" ", "request":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
+	let invalid_conversation = member.post("/api/threads", &json!({"title":" ", "request":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
 	assert_eq!(invalid_conversation.status_code(), 400);
 	assert_eq!(
 		invalid_conversation.json_value().unwrap()["error"],
@@ -235,7 +235,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		("{}", "text/plain", 415),
 	] {
 		let response = member
-			.post_raw("/api/workspaces", body.as_bytes(), content_type)
+			.post_raw("/api/threads", body.as_bytes(), content_type)
 			.await
 			.unwrap();
 		assert_eq!(response.status_code(), status);
@@ -246,7 +246,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	}
 	let invalid = member
 		.post(
-			"/api/workspaces",
+			"/api/threads",
 			&json!({"title":"   ","request":"valid"}),
 			"json",
 		)
@@ -260,7 +260,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let scope = common::tenant_scope(&federation.store, "acme").await;
 	federation
 		.store
-		.create_workspace(&scope, "alice", "first")
+		.create_thread(&scope, "alice", "first")
 		.await
 		.unwrap();
 	let before = federation
@@ -273,7 +273,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.sequence;
 	federation
 		.store
-		.create_workspace(&scope, "alice", "second")
+		.create_thread(&scope, "alice", "second")
 		.await
 		.unwrap();
 	let after = federation

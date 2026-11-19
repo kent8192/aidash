@@ -77,7 +77,7 @@ async fn schema_export_is_valid_json_without_runtime_settings_or_services(
 	let schema: Value =
 		serde_json::from_slice(&output.stdout).expect("stdout contains only the schema");
 	assert_eq!(schema["info"]["title"], "Aidash API");
-	assert!(schema["paths"]["/api/workspaces"]["post"].is_object());
+	assert!(schema["paths"]["/api/threads"]["post"].is_object());
 	assert!(schema["paths"]["/api/events/stream"]["get"]["responses"]["200"]["content"]["text/event-stream"].is_object());
 	assert!(schema["components"]["schemas"]["Policy"].is_object());
 }
@@ -350,7 +350,7 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 	] {
 		paths.extend(
 			["forward", "backward"]
-				.map(|direction| format!("workspaces/sql/{direction}/{migration}.sql")),
+				.map(|direction| format!("threads/sql/{direction}/{migration}.sql")),
 		);
 	}
 	for migration in ["0067_scratch_member_policy", "0080_schedule_member_policy"] {

@@ -36,7 +36,7 @@ fn receipt(binding: Binding) -> Receipt {
 		operation_digest: "operation-digest".into(),
 		home_node: "home".into(),
 		tenant: "tenant".into(),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		grant_id: Uuid::from_u128(4),
 		admission_id: Uuid::from_u128(5),
 		executor: "receiver/agent@1".into(),
@@ -50,7 +50,7 @@ fn receipt(binding: Binding) -> Receipt {
 			content_digest: "source-digest".into(),
 		}],
 		result: SearchResult {
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			index_revision: 7,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -237,7 +237,7 @@ fn native_summary_distinguishes_empty_and_no_space(
 			bank: crate::memory::Bank {
 				home: receipt.home_node.clone(),
 				tenant: receipt.tenant.clone(),
-				workspace: receipt.workspace_id,
+				thread: receipt.thread_id,
 				participant: None,
 			},
 			provider: EntityRef {
@@ -261,7 +261,7 @@ fn native_provenance_retains_exact_support_without_claim_bodies(mut receipt: Rec
 	let bank = crate::memory::Bank {
 		home: receipt.home_node.clone(),
 		tenant: receipt.tenant.clone(),
-		workspace: receipt.workspace_id,
+		thread: receipt.thread_id,
 		participant: None,
 	};
 	let unit: crate::memory::Unit = serde_json::from_value(json!({"id":Uuid::from_u128(100),"bank":bank,"revision":7,

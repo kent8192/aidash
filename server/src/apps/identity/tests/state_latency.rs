@@ -1,5 +1,5 @@
 //! Measurement only (#849): `GET /api/state` cost for a Tenant with
-//! 665 Workspaces and 670 Runs. Not a regression test; run it on a release build:
+//! 665 Threads and 670 Runs. Not a regression test; run it on a release build:
 //!
 //! `cargo test --release --config 'profile.release.package.aidash-server.debug-assertions=true' \
 //!   -p aidash-server --test state_latency -- --ignored --nocapture`
@@ -22,7 +22,7 @@ mod common;
 #[path = "../../execution/tests/support/statements.rs"]
 mod statements;
 
-const WORKSPACES: i64 = 665;
+const THREADS: i64 = 665;
 const RUNS: i64 = 670;
 const WARM_UP: usize = 5;
 const TIMED: usize = 30;
@@ -122,7 +122,7 @@ fn summary(label: &str, mut samples: Vec<Duration>) {
 #[rstest::rstest]
 #[tokio::test]
 #[ignore = "measurement only: run on a release build with --ignored --nocapture"]
-async fn state_latency_with_665_workspaces_and_670_runs(
+async fn state_latency_with_665_threads_and_670_runs(
 	#[future(awt)]
 	#[from(common::native_application)]
 	// Seeding sends ~2,000 requests from one subject; lift its request budget.
@@ -149,13 +149,13 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 		}
 	};
 	claim(first_task.to_string()).await;
-	// A few Conversations first; they may add Workspaces or Runs of their own.
+	// A few Conversations first; they may add Threads or Runs of their own.
 	for index in 0..3 {
 		let (status, body) = common::request(
 			&app,
 			&token,
 			"POST",
-			"/api/conversations",
+			"/api/threads",
 			json!({"title":format!("Conversation {index}"),"request":"Measure","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 		)
 		.await;
@@ -169,23 +169,23 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 		.await
 		.unwrap()
 	};
-	let mut last_workspace = String::new();
-	while count("workspaces").await < WORKSPACES {
-		let (status, workspace) = common::request(
+	let mut last_thread = String::new();
+	while count("threads").await < THREADS {
+		let (status, thread) = common::request(
 			&app,
 			&token,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			json!({"title":"Measured", "request":"Bounded state"}),
 		)
 		.await;
-		assert_eq!(status, 200, "{workspace}");
-		last_workspace = workspace["id"].as_str().unwrap().to_owned();
+		assert_eq!(status, 200, "{thread}");
+		last_thread = thread["id"].as_str().unwrap().to_owned();
 		let (status, task) = common::request(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/workspaces/{last_workspace}/tasks"),
+			&format!("/api/threads/{last_thread}/tasks"),
 			json!({"title":"Measured task", "description":"Create a run"}),
 		)
 		.await;
@@ -197,7 +197,7 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/workspaces/{last_workspace}/tasks"),
+			&format!("/api/threads/{last_thread}/tasks"),
 			json!({"title":"Extra task", "description":"Create a run"}),
 		)
 		.await;
@@ -206,15 +206,15 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 	}
 	// Five pending Human Requests on the oldest Runs.
 	let waiting: Vec<(Uuid, Uuid)> = sqlx::query_as(
-		"SELECT id, workspace_id FROM runs WHERE tenant = 'acme' ORDER BY created_at LIMIT 5",
+		"SELECT id, thread_id FROM runs WHERE tenant = 'acme' ORDER BY created_at LIMIT 5",
 	)
 	.fetch_all(db)
 	.await
 	.unwrap();
-	for (index, (run, workspace)) in waiting.iter().enumerate() {
+	for (index, (run, thread)) in waiting.iter().enumerate() {
 		let request_id = Uuid::new_v4();
-		sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', $4, now())")
-			.bind(request_id).bind(workspace).bind(run).bind(format!("measure-{index}")).execute(db).await.unwrap();
+		sqlx::query("INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', $4, now())")
+			.bind(request_id).bind(thread).bind(run).bind(format!("measure-{index}")).execute(db).await.unwrap();
 		let state =
 			aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
 				request_id,
@@ -231,18 +231,18 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 	}
 	// Artifacts on the newest Tasks.
 	let tasks: Vec<(Uuid, Uuid)> = sqlx::query_as(
-		"SELECT id, workspace_id FROM tasks WHERE tenant = 'acme' ORDER BY created_at DESC LIMIT 20",
+		"SELECT id, thread_id FROM tasks WHERE tenant = 'acme' ORDER BY created_at DESC LIMIT 20",
 	)
 	.fetch_all(db)
 	.await
 	.unwrap();
-	for (task, workspace) in &tasks {
-		sqlx::query("INSERT INTO artifacts (id,tenant,workspace_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Measured','{}','alice',$1::text)")
-			.bind(Uuid::new_v4()).bind(workspace).bind(task).execute(db).await.unwrap();
+	for (task, thread) in &tasks {
+		sqlx::query("INSERT INTO artifacts (id,tenant,thread_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Measured','{}','alice',$1::text)")
+			.bind(Uuid::new_v4()).bind(thread).bind(task).execute(db).await.unwrap();
 	}
 	let mut shape = vec![];
 	for table in [
-		"workspaces",
+		"threads",
 		"tasks",
 		"runs",
 		"human_requests",
@@ -298,10 +298,10 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 		common::cleanup(f, &url, &schema).await;
 		return;
 	}
-	let node = state["workspaces"][0]["node"].as_str().unwrap().to_owned();
+	let node = state["threads"][0]["node"].as_str().unwrap().to_owned();
 	let sizes = |state: &Value| {
 		[
-			"workspaces",
+			"threads",
 			"tasks",
 			"runs",
 			"artifacts",

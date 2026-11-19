@@ -5,7 +5,7 @@ fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 	let run = RunMetadata {
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		home_node: "aidash://node/brave-otter-k3m9q2xa".into(),
 		agent_id: "agent".into(),
@@ -26,7 +26,7 @@ fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 	let grant = ExecutionGrant {
 		run_id: run.id,
 		task_id: run.task_id,
-		workspace_id: run.workspace_id,
+		thread_id: run.thread_id,
 		tenant: "tenant".into(),
 		credential_id: Uuid::from_u128(4),
 		root_subject: "root".into(),
@@ -49,7 +49,7 @@ fn fixture() -> (RunMetadata, ExecutionGrant, ExecutionPrincipal) {
 #[case::home("home", false)]
 #[case::run("run", false)]
 #[case::task("task", false)]
-#[case::workspace("workspace", false)]
+#[case::thread("thread", false)]
 #[case::root("root", false)]
 #[case::agent("agent", false)]
 #[case::missing_chain("missing", false)]
@@ -63,7 +63,7 @@ fn worker_grants_require_the_admitted_node_and_complete_chain(
 		"home" => run.home_node = "aidash://foreign".into(),
 		"run" => grant.run_id = Uuid::from_u128(9),
 		"task" => grant.task_id = Uuid::from_u128(9),
-		"workspace" => grant.workspace_id = Uuid::from_u128(9),
+		"thread" => grant.thread_id = Uuid::from_u128(9),
 		"root" => grant.subject_chain[0] = "replacement".into(),
 		"agent" => grant.subject_chain.pop().map(drop).unwrap(),
 		"missing" => grant.subject_chain.clear(),
@@ -86,7 +86,7 @@ fn credential_rotation_is_allowed_for_management_inheritance_and_fenced_for_work
 #[case::root("root", false)]
 #[case::credential("credential", false)]
 #[case::task("task", false)]
-#[case::workspace("workspace", false)]
+#[case::thread("thread", false)]
 #[case::agent("agent", false)]
 #[case::chain("chain", false)]
 fn refresh_checks_the_current_identity_and_qualified_agent(
@@ -101,7 +101,7 @@ fn refresh_checks_the_current_identity_and_qualified_agent(
 		"root" => grant.root_subject = "other".into(),
 		"credential" => grant.credential_id = Uuid::from_u128(9),
 		"task" => grant.task_id = Uuid::from_u128(9),
-		"workspace" => grant.workspace_id = Uuid::from_u128(9),
+		"thread" => grant.thread_id = Uuid::from_u128(9),
 		"agent" => *grant.subject_chain.last_mut().unwrap() = "old-agent".into(),
 		"chain" => grant.subject_chain.clear(),
 		_ => unreachable!(),

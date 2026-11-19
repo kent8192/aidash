@@ -21,11 +21,11 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", conversation()).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", conversation()).await;
 	assert_eq!(status, 200, "{created}");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let run: Run = {
-		let query_bind_1 = workspace.parse::<Uuid>().unwrap();
+		let query_bind_1 = thread.parse::<Uuid>().unwrap();
 		aidash_server::database::query_as(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
@@ -33,7 +33,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.from(reinhardt::query::Alias::new("runs"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -74,7 +74,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 		]
 	);
 	let sender: String = {
-		let query_bind_1 = run.workspace_id;
+		let query_bind_1 = run.thread_id;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
@@ -82,7 +82,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.from(reinhardt::query::Alias::new("messages"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -92,7 +92,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	}
 	.unwrap();
 	assert_eq!(sender, "alice");
-	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM threads), (SELECT COUNT(*) FROM authorization_threads), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
 	assert_eq!(
 		common::post(
@@ -106,12 +106,12 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 		200
 	);
 	assert_eq!(
-		common::post(&app, &token, "/api/conversations", conversation())
+		common::post(&app, &token, "/api/threads", conversation())
 			.await
 			.0,
 		403
 	);
-	let after:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	let after:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM threads), (SELECT COUNT(*) FROM authorization_threads), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
 	assert_eq!(
 		before, after,
 		"a late admission denial must roll back the entire conversation"
@@ -137,6 +137,61 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_request_opens_a_thread_whose_root_task_carries_it(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+
+	// Act: a person asks an Agent for something (#1008, ADR 0140).
+	let (status, opened) = common::post(&app, &token, "/api/threads", conversation()).await;
+
+	// Assert: the Thread has no goal of its own; its Root Task carries the
+	// request, and the request is the Thread's first message.
+	assert_eq!(status, 200, "{opened}");
+	let thread = opened["id"].as_str().unwrap();
+	assert_eq!(opened["title"], "Scoped conversation");
+	assert!(opened.get("goal").is_none(), "{opened}");
+	assert_eq!(opened["task"]["thread_id"], thread);
+	assert_eq!(opened["task"]["description"], "Complete approved work");
+	assert!(opened["task"]["parent_id"].is_null(), "{opened}");
+	assert_eq!(opened["conversation"]["thread_id"], thread);
+	assert_eq!(opened["delegation"]["task_id"], opened["task"]["id"]);
+	let (status, snapshot) = common::get(&app, &token, &format!("/api/threads/{thread}")).await;
+	assert_eq!(status, 200, "{snapshot}");
+	let tasks = snapshot["tasks"].as_array().unwrap();
+	assert_eq!(tasks.len(), 1, "{snapshot}");
+	assert_eq!(tasks[0]["id"], opened["task"]["id"]);
+	assert!(
+		snapshot["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|message| message["content"] == "Complete approved work"),
+		"{snapshot}"
+	);
+	// Without a target the Thread opens empty.
+	let (status, empty) = common::post(
+		&app,
+		&token,
+		"/api/threads",
+		json!({"title":"Just a Thread"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{empty}");
+	assert!(
+		empty["task"].is_null() && empty["conversation"].is_null(),
+		"{empty}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_attribution(
 	#[future(awt)]
 	#[from(common::native_application)]
@@ -146,15 +201,11 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = common::post(&app, &token, "/api/conversations", conversation()).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", conversation()).await;
 	assert_eq!(status, 200);
-	let workspace = created["workspace"]["id"]
-		.as_str()
-		.unwrap()
-		.parse::<Uuid>()
-		.unwrap();
+	let thread = created["id"].as_str().unwrap().parse::<Uuid>().unwrap();
 	let run: Run = {
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		aidash_server::database::query_as(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
@@ -162,7 +213,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.from(reinhardt::query::Alias::new("runs"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -287,7 +338,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		409
 	);
 	let sender: String = {
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
@@ -295,7 +346,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.from(reinhardt::query::Alias::new("messages"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ? AND content = 'authorized message')".to_owned(),
+					"(thread_id = ? AND content = 'authorized message')".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -337,13 +388,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		409
 	);
 	let answered: i64 = {
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 				.from(reinhardt::query::Alias::new("events"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ? AND kind = 'human.answered')".to_owned(),
+					"(thread_id = ? AND kind = 'human.answered')".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -418,13 +469,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	.unwrap();
 	assert!(response.is_none());
 	let count: i64 = {
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 				.from(reinhardt::query::Alias::new("messages"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ? AND content = 'forbidden message')".to_owned(),
+					"(thread_id = ? AND content = 'forbidden message')".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -457,8 +508,8 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	);
 	for path in [
 		"/api/state".to_owned(),
-		format!("/api/events?workspace_id={workspace}"),
-		format!("/api/workspaces/{workspace}"),
+		format!("/api/events?thread_id={thread}"),
+		format!("/api/threads/{thread}"),
 	] {
 		let (status, value) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200);
@@ -534,13 +585,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	assert_eq!(status, 200);
 	assert_eq!(abandoned["status"], "ABANDONED");
 	let actor: String = {
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("data ->> 'actor'"))
 				.from(reinhardt::query::Alias::new("events"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ? AND kind = 'task.abandoned')".to_owned(),
+					"(thread_id = ? AND kind = 'task.abandoned')".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -572,7 +623,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	input["target"]["id"] = json!("cluster");
 	input["target_kind"] = json!("cluster");
 	assert_eq!(
-		common::post(&app, &token, "/api/conversations", input.clone())
+		common::post(&app, &token, "/api/threads", input.clone())
 			.await
 			.0,
 		403
@@ -583,7 +634,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 		.0,
 		200
 	);
-	let (status, created) = common::post(&app, &token, "/api/conversations", input).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", input).await;
 	assert_eq!(status, 200, "{created}");
 	let task = created["task"]["id"]
 		.as_str()
@@ -630,11 +681,11 @@ use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
 
-/// A conversation creates its new Workspace, so it also creates the index the
+/// A conversation creates its new Thread, so it also creates the index the
 /// target's memory bank requires, from the memory policy's embedding (#647).
 #[rstest::rstest]
 #[tokio::test]
-async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
+async fn a_conversation_with_a_memory_target_creates_the_thread_index(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -690,15 +741,15 @@ async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
 	let mut input = conversation();
 	input["target"]["id"] = json!("remembering");
 	// Act
-	let (status, created) = common::post(&app, &token, "/api/conversations", input).await;
+	let (status, created) = common::post(&app, &token, "/api/threads", input).await;
 	// Assert: the agent was delegated, and the index carries the policy's embedding.
 	assert_eq!(status, 200, "{created}");
 	assert_eq!(created["task"]["status"], "CLAIMED");
-	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let thread = created["id"].as_str().unwrap();
 	let (status, index) = common::get(
 		&app,
 		&token,
-		&format!("/api/workspaces/{workspace}/semantic/index"),
+		&format!("/api/threads/{thread}/semantic/index"),
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");
@@ -709,9 +760,9 @@ async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
 	assert_eq!(index["spec"]["enabled"], true);
 	assert_eq!(index["spec"]["auto_context"], false);
 	let event: Value = sqlx::query_scalar(
-		"SELECT data FROM events WHERE workspace_id = $1 AND kind = 'conversation.index_created'",
+		"SELECT data FROM events WHERE thread_id = $1 AND kind = 'conversation.index_created'",
 	)
-	.bind(workspace.parse::<Uuid>().unwrap())
+	.bind(thread.parse::<Uuid>().unwrap())
 	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();

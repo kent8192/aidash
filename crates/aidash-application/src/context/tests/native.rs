@@ -463,7 +463,7 @@ fn a_native_summary_request_continues_the_main_request() {
 		"identity": {"agent_id": "agent"},
 		"task": {"id": "t", "title": "Task"},
 		"agent_state": {"phase": "THINKING"},
-		"workspace": {"tasks": [{"title": "Task"}]},
+		"thread": {"tasks": [{"title": "Task"}]},
 		"semantic_memory": {"fact": "observed"},
 	});
 	aidash_domain::projection::native::record_step_state(&mut context, &pinned);

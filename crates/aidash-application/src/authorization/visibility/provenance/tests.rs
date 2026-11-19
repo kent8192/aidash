@@ -53,9 +53,9 @@ impl Scope {
 		}
 		Ok(())
 	}
-	fn lookup(&mut self, name: &'static str, id: Uuid, workspace: Uuid) -> Result<()> {
+	fn lookup(&mut self, name: &'static str, id: Uuid, thread: Uuid) -> Result<()> {
 		self.touch(name)?;
-		self.calls.push(format!("lookup:{name}:{id}:{workspace}"));
+		self.calls.push(format!("lookup:{name}:{id}:{thread}"));
 		Ok(())
 	}
 }
@@ -80,13 +80,13 @@ impl ResourceVisibilityScope for Scope {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.touch("workspace")?;
-		Ok(self.resource("workspace", &id.to_string(), json!({"workspace_id":id})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.touch("thread")?;
+		Ok(self.resource("thread", &id.to_string(), json!({"thread_id":id})))
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		let key = match action {
-			"workspace.events" => "workspace.events",
+			"thread.events" => "thread.events",
 			"task.read" => "task.read",
 			"artifact.read" => "artifact.read",
 			"message.read" => "message.read",
@@ -98,18 +98,18 @@ impl ResourceVisibilityScope for Scope {
 		Ok(self.denied != Some(key))
 	}
 	async fn artifact_task(&mut self, a: &Artifact) -> Result<Option<Task>> {
-		self.lookup("artifact_task", a.task_id, a.workspace_id)?;
+		self.lookup("artifact_task", a.task_id, a.thread_id)?;
 		let mut t = task();
 		t.id = a.task_id;
-		t.workspace_id = a.workspace_id;
+		t.thread_id = a.thread_id;
 		Ok(Some(t))
 	}
-	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.touch("output")?;
 		Ok(self.denied != Some("output")
 			&& self
 				.outputs
-				.get(&(workspace, kind.to_owned(), id))
+				.get(&(thread, kind.to_owned(), id))
 				.is_none_or(|producers| {
 					producers
 						.iter()
@@ -140,14 +140,14 @@ impl ReadProvenanceScope for Scope {
 	}
 	async fn output_producers(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<Option<Vec<Uuid>>> {
 		self.touch("output")?;
 		Ok((self.denied != Some("output")).then(|| {
 			self.outputs
-				.get(&(workspace, kind.to_owned(), id))
+				.get(&(thread, kind.to_owned(), id))
 				.cloned()
 				.unwrap_or_default()
 		}))
@@ -212,63 +212,63 @@ impl ReadProvenanceScope for Scope {
 		self.touch("sources")?;
 		Ok(self.graph.get(&run).cloned().unwrap_or_default())
 	}
-	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
-		self.lookup("task", id, workspace)?;
+	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
+		self.lookup("task", id, thread)?;
 		let mut t = task();
 		t.id = id;
-		t.workspace_id = workspace;
+		t.thread_id = thread;
 		Ok((!self.missing).then_some(t))
 	}
-	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
-		self.lookup("artifact", id, workspace)?;
+	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
+		self.lookup("artifact", id, thread)?;
 		let mut a = artifact();
 		a.id = id;
-		a.workspace_id = workspace;
+		a.thread_id = thread;
 		Ok((!self.missing).then_some(a))
 	}
-	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
-		self.lookup("message", id, workspace)?;
+	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
+		self.lookup("message", id, thread)?;
 		let mut m = message(id.as_u128(), "stored-sender");
-		m.workspace_id = workspace;
+		m.thread_id = thread;
 		Ok((!self.missing).then_some(m))
 	}
 	async fn source_attachment_message(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<Message>> {
-		self.lookup("attachment", id, workspace)?;
+		self.lookup("attachment", id, thread)?;
 		let mut message = message(id.as_u128(), "stored-sender");
-		message.workspace_id = workspace;
+		message.thread_id = thread;
 		Ok((!self.missing).then_some(message))
 	}
-	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>> {
-		self.lookup("run", id, workspace)?;
+	async fn source_run(&mut self, id: Uuid, thread: Uuid) -> Result<Option<RunMetadata>> {
+		self.lookup("run", id, thread)?;
 		let mut r = run();
 		r.id = id;
-		r.workspace_id = workspace;
+		r.thread_id = thread;
 		Ok((!self.missing).then_some(r))
 	}
 	async fn source_conversation(
 		&mut self,
 		id: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<Option<Conversation>> {
-		self.lookup("conversation", id, workspace)?;
+		self.lookup("conversation", id, thread)?;
 		Ok((!self.missing).then(|| Conversation {
 			scratch_space_id: uuid::Uuid::nil(),
 			id,
-			workspace_id: workspace,
+			thread_id: thread,
 			created_by: "stored-author".into(),
 			target: "agent".into(),
 			target_kind: "agent".into(),
 			created_at: chrono::Utc::now(),
 		}))
 	}
-	async fn source_generation(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Request>> {
-		self.lookup("generation", id, workspace)?;
+	async fn source_generation(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Request>> {
+		self.lookup("generation", id, thread)?;
 		let mut job = generation(id.as_u128());
-		job.workspace_id = workspace;
+		job.thread_id = thread;
 		Ok((!self.missing).then_some(job))
 	}
 	async fn run_base_visible(&mut self, _: &RunMetadata) -> Result<bool> {
@@ -292,11 +292,11 @@ impl ReadProvenanceScope for Scope {
 impl crate::ports::semantic::memory::SemanticMemoryReadSession for Scope {
 	async fn classified_output_source(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		source: &aidash_domain::semantic::Source,
 		pending: &mut Vec<Uuid>,
 	) -> Result<Option<String>> {
-		classified_semantic_output_source(self, workspace, source, pending).await
+		classified_semantic_output_source(self, thread, source, pending).await
 	}
 	async fn entry_authorized(
 		&mut self,
@@ -315,7 +315,7 @@ impl crate::ports::semantic::memory::SemanticMemoryReadSession for Scope {
 			aidash_domain::semantic::Source::Message { id } => ("message", id),
 			_ => unreachable!(),
 		};
-		ResourceVisibilityScope::output_visible(self, entry.workspace_id, kind, id).await
+		ResourceVisibilityScope::output_visible(self, entry.thread_id, kind, id).await
 	}
 	async fn source(
 		&mut self,
@@ -359,16 +359,16 @@ impl crate::ports::semantic::memory::SemanticMemoryReadSession for Scope {
 fn semantic_output_fixture(mut scope: Scope, kind: &str) -> Scope {
 	let root = Uuid::from_u128(1);
 	let producer = Uuid::from_u128(2);
-	let workspace = Uuid::from_u128(3);
+	let thread = Uuid::from_u128(3);
 	let source = Uuid::from_u128(4);
 	scope
 		.outputs
-		.insert((workspace, kind.into(), source), vec![producer]);
+		.insert((thread, kind.into(), source), vec![producer]);
 	scope.semantic_entry = Some((
 		root,
 		aidash_domain::semantic::mutations::Entry {
 			id: Uuid::from_u128(5),
-			workspace_id: workspace,
+			thread_id: thread,
 			key: "key".into(),
 			source: json!({"kind": kind, "id": source}),
 			agent: None,
@@ -455,7 +455,7 @@ async fn changed_producer_source_retains_invalidation_through_output_provenance(
 ) {
 	let root = Uuid::from_u128(1);
 	let producer = Uuid::from_u128(2);
-	let workspace = Uuid::from_u128(3);
+	let thread = Uuid::from_u128(3);
 	let source = Uuid::from_u128(4);
 	let output = if output_kind == "task" && source_kind == "artifact" {
 		artifact().task_id
@@ -464,10 +464,10 @@ async fn changed_producer_source_retains_invalidation_through_output_provenance(
 	};
 	scope
 		.graph
-		.insert(root, vec![(workspace, source_kind.into(), source)]);
+		.insert(root, vec![(thread, source_kind.into(), source)]);
 	scope
 		.outputs
-		.insert((workspace, output_kind.into(), output), vec![producer]);
+		.insert((thread, output_kind.into(), output), vec![producer]);
 	scope.invalid_runs.insert(producer, Failure::Invalidated);
 	assert_eq!(
 		run_reads_invalidity(&mut scope, root).await.unwrap(),
@@ -480,17 +480,17 @@ async fn changed_producer_source_retains_invalidation_through_output_provenance(
 async fn output_producer_cycles_terminate_and_preserve_other_producer_failure(mut scope: Scope) {
 	let root = Uuid::from_u128(1);
 	let producer = Uuid::from_u128(2);
-	let workspace = Uuid::from_u128(3);
+	let thread = Uuid::from_u128(3);
 	let message = Uuid::from_u128(4);
 	scope
 		.graph
-		.insert(root, vec![(workspace, "message".into(), message)]);
+		.insert(root, vec![(thread, "message".into(), message)]);
 	scope
 		.graph
-		.insert(producer, vec![(workspace, "message".into(), message)]);
+		.insert(producer, vec![(thread, "message".into(), message)]);
 	scope
 		.outputs
-		.insert((workspace, "message".into(), message), vec![root, producer]);
+		.insert((thread, "message".into(), message), vec![root, producer]);
 	assert_eq!(run_reads_invalidity(&mut scope, root).await.unwrap(), None);
 	scope.invalid_runs.insert(producer, Failure::Configuration);
 	assert_eq!(
@@ -509,14 +509,14 @@ async fn denied_output_authority_is_not_masked_by_an_invalid_producer(
 ) {
 	let root = Uuid::from_u128(1);
 	let producer = Uuid::from_u128(2);
-	let workspace = Uuid::from_u128(3);
+	let thread = Uuid::from_u128(3);
 	let message = Uuid::from_u128(4);
 	scope
 		.graph
-		.insert(root, vec![(workspace, "message".into(), message)]);
+		.insert(root, vec![(thread, "message".into(), message)]);
 	scope
 		.outputs
-		.insert((workspace, "message".into(), message), vec![producer]);
+		.insert((thread, "message".into(), message), vec![producer]);
 	scope.invalid_runs.insert(producer, Failure::Invalidated);
 	scope.denied = Some(gate);
 	assert_eq!(
@@ -613,20 +613,20 @@ async fn cycles_and_duplicate_run_references_terminate_after_checking_each_journ
 /// What a Run opens stays open only for that Run's own reads, however they end.
 #[rstest]
 #[tokio::test]
-async fn a_run_opens_its_subnode_workspaces_only_while_its_own_reads_are_checked(
+async fn a_run_opens_its_subnode_threads_only_while_its_own_reads_are_checked(
 	mut scope: Scope,
 	#[values(None, Some("sources"))] fail: Option<&'static str>,
 ) {
 	let creator = Uuid::from_u128(1);
 	let other = Uuid::from_u128(2);
-	let workspace = Uuid::from_u128(3);
+	let thread = Uuid::from_u128(3);
 	scope.opening = vec![creator];
 	scope
 		.graph
-		.insert(creator, vec![(workspace, "run".into(), other)]);
+		.insert(creator, vec![(thread, "run".into(), other)]);
 	scope
 		.graph
-		.insert(other, vec![(workspace, "task".into(), Uuid::from_u128(4))]);
+		.insert(other, vec![(thread, "task".into(), Uuid::from_u128(4))]);
 	scope.fail = fail;
 	let result = run_reads_visible(&mut scope, creator).await;
 	assert_eq!(result.is_err(), fail.is_some());
@@ -645,7 +645,7 @@ async fn a_run_opens_its_subnode_workspaces_only_while_its_own_reads_are_checked
 }
 #[rstest]
 #[tokio::test]
-async fn the_recovery_walk_opens_a_runs_subnode_workspaces_the_same_way(mut scope: Scope) {
+async fn the_recovery_walk_opens_a_runs_subnode_threads_the_same_way(mut scope: Scope) {
 	let creator = Uuid::from_u128(1);
 	scope.opening = vec![creator];
 	scope.graph.insert(creator, vec![]);
@@ -665,11 +665,11 @@ async fn the_recovery_walk_opens_a_runs_subnode_workspaces_the_same_way(mut scop
 async fn long_run_dependency_chains_use_a_worklist_instead_of_recursive_stack_frames(
 	mut scope: Scope,
 ) {
-	let workspace = Uuid::from_u128(9000);
+	let thread = Uuid::from_u128(9000);
 	for id in 1..512 {
 		scope.graph.insert(
 			Uuid::from_u128(id),
-			vec![(workspace, "run".into(), Uuid::from_u128(id + 1))],
+			vec![(thread, "run".into(), Uuid::from_u128(id + 1))],
 		);
 	}
 	assert!(
@@ -778,27 +778,27 @@ async fn denied_nested_run_stops_before_reading_its_journal_or_later_sources(mut
 #[case("conversation")]
 #[case("generation")]
 #[tokio::test]
-async fn source_lookups_retain_the_exact_journal_workspace_and_missing_rows_fail_closed(
+async fn source_lookups_retain_the_exact_journal_thread_and_missing_rows_fail_closed(
 	mut scope: Scope,
 	#[case] kind: &str,
 ) {
-	let workspace = Uuid::from_u128(3);
+	let thread = Uuid::from_u128(3);
 	let id = Uuid::from_u128(6);
 	let mut pending = vec![];
 	scope.missing = true;
 	assert!(
-		!source_visible(&mut scope, workspace, kind, id, &mut pending)
+		!source_visible(&mut scope, thread, kind, id, &mut pending)
 			.await
 			.unwrap()
 	);
 	assert!(pending.is_empty());
 	assert_eq!(
 		scope.calls,
-		vec![kind.to_owned(), format!("lookup:{kind}:{id}:{workspace}")]
+		vec![kind.to_owned(), format!("lookup:{kind}:{id}:{thread}")]
 	);
 }
 #[rstest]
-#[case("workspace_events", "workspace.events")]
+#[case("workspace_events", "thread.events")]
 #[case("task", "task.read")]
 #[case("artifact", "artifact.read")]
 #[case("message", "message.read")]
@@ -937,7 +937,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		home_node: "aidash://node".into(),
 		agent_id: "agent".into(),
 		agent_version: "1".into(),
@@ -970,7 +970,7 @@ fn generation(id: u128) -> Request {
 		prepared: true,
 		grant_id: None,
 		admission_id: None,
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		credential_id: Uuid::from_u128(4),
 		root_subject: "alice".into(),
 		subject_chain: vec!["alice".into()],
@@ -991,7 +991,7 @@ fn generation(id: u128) -> Request {
 fn task() -> Task {
 	Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: String::new(),
 		status: aidash_domain::TaskStatus::Open,
@@ -1009,7 +1009,7 @@ fn task() -> Task {
 fn artifact() -> Artifact {
 	Artifact {
 		id: Uuid::from_u128(3),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		task_id: Uuid::from_u128(1),
 		kind: "text".into(),
 		name: "Artifact".into(),
@@ -1024,7 +1024,7 @@ fn artifact() -> Artifact {
 fn message(id: u128, sender: &str) -> Message {
 	Message {
 		id: Uuid::from_u128(id),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		sender: sender.into(),
 		content: "same content".into(),
 		idempotency_key: None,

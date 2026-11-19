@@ -141,7 +141,7 @@ fn persisted_semantic_decode_errors_keep_the_internal_error_boundary(#[case] sou
 		aidash_domain::semantic::indexing::source(
 			&aidash_domain::semantic::indexing::IndexingEntry {
 				id: uuid::Uuid::nil(),
-				workspace_id: uuid::Uuid::nil(),
+				thread_id: uuid::Uuid::nil(),
 				source: serde_json::json!({"kind":"memory","private":"saved source diagnostic"}),
 				revision: 1,
 				point_id: uuid::Uuid::nil(),
@@ -152,7 +152,7 @@ fn persisted_semantic_decode_errors_keep_the_internal_error_boundary(#[case] sou
 		.unwrap_err()
 	} else {
 		aidash_domain::semantic::mutations::Index {
-			workspace_id: uuid::Uuid::nil(),
+			thread_id: uuid::Uuid::nil(),
 			tenant: "tenant".into(),
 			revision: 1,
 			spec: serde_json::json!({"private":"saved index diagnostic"}),

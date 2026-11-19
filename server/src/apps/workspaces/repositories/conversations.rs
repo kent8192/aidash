@@ -1,5 +1,5 @@
 //! Conversation writes retain the same access transaction and audit context.
-use crate::apps::identity::models::AuthorizationWorkspace;
+use crate::apps::identity::models::AuthorizationThread;
 use crate::apps::workspaces::models::Conversation as ConversationRecord;
 use crate::semantic::{native_memory, repositories::bindings, service::Lease};
 use crate::{
@@ -8,10 +8,10 @@ use crate::{
 };
 use aidash_application::{
 	Result,
-	ports::workspaces::{ConversationScope, MemoryEmbedding},
+	ports::threads::{ConversationScope, MemoryEmbedding},
 };
 use aidash_domain::{
-	Conversation, NewTask, Task, Workspace,
+	Conversation, NewTask, Task, Thread,
 	federation::Delegation,
 	registry::{EntityRef, Entry},
 	semantic::indexing::IndexingSpec,
@@ -26,29 +26,29 @@ use uuid::Uuid;
 pub(crate) struct NativeConversation<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) access: &'a mut Access,
-	workspace: Option<Resource>,
-	workspace_id: Option<Uuid>,
+	thread: Option<Resource>,
+	thread_id: Option<Uuid>,
 }
 impl<'a> NativeConversation<'a> {
 	pub(crate) fn new(federation: &'a Federation, access: &'a mut Access) -> Self {
 		Self {
 			federation,
 			access,
-			workspace: None,
-			workspace_id: None,
+			thread: None,
+			thread_id: None,
 		}
 	}
 }
 #[async_trait]
 impl ConversationScope for NativeConversation<'_> {
-	async fn create_workspace(
+	async fn create_thread(
 		&mut self,
 		title: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
 		scratch_space_id: Option<Uuid>,
-	) -> Result<Workspace> {
+	) -> Result<Thread> {
 		self.access
-			.create_workspace(
+			.create_thread(
 				&self.federation.store,
 				title,
 				node,
@@ -58,18 +58,18 @@ impl ConversationScope for NativeConversation<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_context(&mut self, workspace: Uuid) -> Result<()> {
-		let resource = self.access.workspace(workspace).await?;
+	async fn thread_context(&mut self, thread: Uuid) -> Result<()> {
+		let resource = self.access.thread(thread).await?;
 		self.access.context = resource.attributes.clone();
-		self.workspace = Some(resource);
-		self.workspace_id = Some(workspace);
+		self.thread = Some(resource);
+		self.thread_id = Some(thread);
 		Ok(())
 	}
-	async fn require_workspace(&mut self, action: &str) -> Result<()> {
+	async fn require_thread(&mut self, action: &str) -> Result<()> {
 		let resource = self
-			.workspace
+			.thread
 			.as_ref()
-			.expect("workspace context initialized by conversation use case");
+			.expect("thread context initialized by conversation use case");
 		self.access
 			.require(resource, action)
 			.await
@@ -82,15 +82,15 @@ impl ConversationScope for NativeConversation<'_> {
 	}
 	async fn select_scratch_space(
 		&mut self,
-		workspace: &Workspace,
+		thread: &Thread,
 		name: &str,
 		requested: Option<Uuid>,
 	) -> Result<Uuid> {
 		let _ = name;
 		let (sql, values) = Query::select()
 			.column(Alias::new("scratch_space_id"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace.id)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread.id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(self.access.identity.tenant.clone())))
 			.build(PostgresQueryBuilder);
 		let row = self
@@ -111,14 +111,14 @@ impl ConversationScope for NativeConversation<'_> {
 	}
 	async fn create_conversation(
 		&mut self,
-		workspace_id: Uuid,
+		thread_id: Uuid,
 		scratch_space_id: Uuid,
 		target: &EntityRef,
 		target_kind: &str,
 	) -> Result<Conversation> {
 		let conversation: ConversationRecord = {
 			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = workspace_id;
+			let query_bind_2 = thread_id;
 			let query_bind_3 = format!("{}@{}", target.id, target.version);
 			let query_bind_4 = target_kind;
 			let query_bind_5 = &self.access.identity.subject;
@@ -127,7 +127,7 @@ impl ConversationScope for NativeConversation<'_> {
 					.into_table(Alias::new("conversations"))
 					.columns([
 						Alias::new("id"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("scratch_space_id"),
 						Alias::new("target"),
 						Alias::new("target_kind"),
@@ -158,7 +158,7 @@ impl ConversationScope for NativeConversation<'_> {
 								vec![Expr::value(query_bind_5.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -188,7 +188,7 @@ impl ConversationScope for NativeConversation<'_> {
 			.store
 			.event(
 				&mut self.access.tx,
-				Some(conversation.workspace_id),
+				Some(conversation.thread_id),
 				"conversation.created",
 				json!(conversation),
 			)
@@ -196,12 +196,12 @@ impl ConversationScope for NativeConversation<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn message(&mut self, workspace: Uuid, content: &str) -> Result<()> {
+	async fn message(&mut self, thread: Uuid, content: &str) -> Result<()> {
 		self.federation
 			.store
 			.message_in(
 				&mut self.access.tx,
-				workspace,
+				thread,
 				&self.access.identity.subject,
 				content,
 				None,
@@ -210,12 +210,12 @@ impl ConversationScope for NativeConversation<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn create_task(&mut self, workspace: Uuid, input: &NewTask) -> Result<Task> {
+	async fn create_task(&mut self, thread: Uuid, input: &NewTask) -> Result<Task> {
 		self.federation
 			.store
 			.create_task_in(
 				&mut self.access.tx,
-				workspace,
+				thread,
 				input,
 				&self.access.identity.subject,
 				None,
@@ -232,18 +232,18 @@ impl ConversationScope for NativeConversation<'_> {
 	}
 	/// The same resolution a local claim makes before it pins the memory bank.
 	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
-		let workspace = self
-			.workspace_id
-			.expect("workspace context initialized by conversation use case");
+		let thread = self
+			.thread_id
+			.expect("thread context initialized by conversation use case");
 		let entry = catalog::entry(self.access, agent, "registry.read").await?;
-		let tenant = AuthorizationWorkspace::tenant_in(&mut **self.access.tx, workspace)
+		let tenant = AuthorizationThread::tenant_in(&mut **self.access.tx, thread)
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)?;
 		// The agent's dependencies are used by the agent, so resolve them with
 		// the subject chain the claim builds: the executing agent appended
 		// after whoever starts the conversation. Restore the chain and the
 		// approvals cached under it before any check made for the person.
-		let node = self.access.workspace_node(workspace).await?;
+		let node = self.access.thread_node(thread).await?;
 		let subject = aidash_domain::qualified_agent(
 			&self.federation.config.deployment.node(node),
 			&agent.id,
@@ -266,11 +266,11 @@ impl ConversationScope for NativeConversation<'_> {
 		provider: &EntityRef,
 		spec: &IndexingSpec,
 	) -> Result<()> {
-		let workspace = conversation.workspace_id;
+		let thread = conversation.thread_id;
 		let revision = crate::semantic::repositories::mutations::create_first_index(
 			&self.federation.store,
 			&mut **self.access.tx,
-			workspace,
+			thread,
 			spec,
 			"new immutable index generation for the conversation target's memory",
 		)
@@ -279,12 +279,12 @@ impl ConversationScope for NativeConversation<'_> {
 			.store
 			.event(
 				&mut self.access.tx,
-				Some(workspace),
+				Some(thread),
 				"conversation.index_created",
 				// `id` names the conversation, whose readers may see this event.
 				json!({
 					"id": conversation.id,
-					"workspace_id": workspace,
+					"thread_id": thread,
 					"revision": revision,
 					"agent": agent,
 					"memory_provider": provider,

@@ -8,14 +8,14 @@ use reinhardt::query::{
 };
 use std::collections::BTreeMap;
 
-/// Lock and validate the workspace's semantic index against the policy's embedding role.
+/// Lock and validate the thread's semantic index against the policy's embedding role.
 async fn index(
 	lease: &mut Lease<'_>,
 	bank: &aidash_domain::memory::Bank,
 	embedding: &EmbeddingConfig,
 ) -> Result<crate::apps::knowledge::serializers::contracts::Index> {
 	let index =
-		crate::semantic::models::SemanticIndexe::locked(&mut **lease.tx(), bank.workspace, false)
+		crate::semantic::models::SemanticIndexe::locked(&mut **lease.tx(), bank.thread, false)
 			.await?
 			.ok_or(Error::SemanticUnavailable)?;
 	let spec = index.configuration()?;

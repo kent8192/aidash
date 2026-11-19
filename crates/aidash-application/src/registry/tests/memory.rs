@@ -1,10 +1,10 @@
-//! One Workspace index requires compatible embeddings for every declared bank.
+//! One Thread index requires compatible embeddings for every declared bank.
 use super::*;
 
 #[rstest]
-#[case("workspace_same", true)]
-#[case("workspace_foreign", true)]
-#[case("workspace_version", true)]
+#[case("thread_same", true)]
+#[case("thread_foreign", true)]
+#[case("thread_version", true)]
 #[case("same", true)]
 #[case("participant_same", true)]
 #[case("participant_foreign", true)]
@@ -34,9 +34,7 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","context_window":32768,"modalities":["text"],"cost":{}})));
 	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","model":"text","model_version":"1","dimensions":3});
 	let mut other = embedding.clone();
-	if !changed.starts_with("participant_")
-		&& !changed.starts_with("workspace_")
-		&& changed != "same"
+	if !changed.starts_with("participant_") && !changed.starts_with("thread_") && changed != "same"
 	{
 		other[changed] = match changed {
 			"dimensions" => json!(4),
@@ -58,14 +56,14 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 		scope.put(definition(
 			&format!("source-{name}"),
 			"source",
-			json!({"scope":if changed.starts_with("participant_") {"participant"} else {"workspace"},"memory":reference(name),"max_tokens":512}),
+			json!({"scope":if changed.starts_with("participant_") {"participant"} else {"thread"},"memory":reference(name),"max_tokens":512}),
 		));
 	}
-	if changed.starts_with("workspace_") {
+	if changed.starts_with("thread_") {
 		let mut source = scope.entries["source-memory-b@1.0.0"].clone();
 		source.config["memory"] = match changed {
-			"workspace_same" => reference("memory-a"),
-			"workspace_version" => json!({"id":"memory-a","version":"1.0.1"}),
+			"thread_same" => reference("memory-a"),
+			"thread_version" => json!({"id":"memory-a","version":"1.0.1"}),
 			_ => reference("memory-b"),
 		};
 		scope.put(source);
@@ -73,7 +71,7 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 		provider.version = "1.0.1".into();
 		scope.put(provider);
 	}
-	let source_ids = if changed.starts_with("workspace_") || !private {
+	let source_ids = if changed.starts_with("thread_") || !private {
 		vec!["source-memory-a", "source-memory-b"]
 	} else {
 		vec![if changed == "participant_same" {
@@ -103,16 +101,16 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 		let expected = if changed.starts_with("participant_") {
 			"participant Sources require the Agent's exact primary memory provider"
 		} else {
-			"workspace Sources require one exact memory provider version"
+			"thread Sources require one exact memory provider version"
 		};
 		assert!(matches!(result, Err(Error::Invalid(message)) if message == expected));
 		assert!(!scope.entries.contains_key("agent@1.0.0"));
-	} else if changed == "workspace_foreign" || changed == "workspace_version" {
+	} else if changed == "thread_foreign" || changed == "thread_version" {
 		assert!(
-			matches!(result, Err(Error::Invalid(message)) if message == "workspace Sources require one exact memory provider version")
+			matches!(result, Err(Error::Invalid(message)) if message == "thread Sources require one exact memory provider version")
 		);
 		assert!(!scope.entries.contains_key("agent@1.0.0"));
-	} else if changed == "same" || changed == "participant_same" || changed == "workspace_same" {
+	} else if changed == "same" || changed == "participant_same" || changed == "thread_same" {
 		assert!(result.unwrap());
 		assert!(scope.entries.contains_key("agent@1.0.0"));
 	} else if changed == "participant_foreign" {

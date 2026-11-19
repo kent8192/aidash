@@ -50,7 +50,7 @@ impl Candidate {
 }
 /// The refusal of a Thread Attachment image query the Run has not selected
 /// for itself. It says what to do and nothing about the attachment.
-pub const ATTACHMENT_NOT_SEEN: &str = "ATTACHMENT_NOT_SEEN: this Run has not selected that Thread Attachment; open it with workspace_read representation=model_input before using it as an image query";
+pub const ATTACHMENT_NOT_SEEN: &str = "ATTACHMENT_NOT_SEEN: this Run has not selected that Thread Attachment; open it with thread_read (workspace_read in an Agent from before #1008) representation=model_input before using it as an image query";
 pub fn attachment_not_seen() -> Error {
 	Error::Invalid(ATTACHMENT_NOT_SEEN.into())
 }
@@ -163,24 +163,24 @@ fn vector_outage(error: Error) -> Error {
 }
 pub async fn prepare(
 	scope: &mut dyn SemanticRetrievalSession,
-	workspace: Uuid,
+	thread: Uuid,
 	input: &Search,
 	agent_controls: Option<&AgentConfig>,
 ) -> Result<PreparedSearch> {
-	prepare_reads(scope, workspace, input, agent_controls, false).await
+	prepare_reads(scope, thread, input, agent_controls, false).await
 }
 
 /// [`prepare`], optionally keeping the READY part of an incomplete index for a
 /// Run step's optional context, which may degrade (ADR 0129).
 async fn prepare_reads(
 	scope: &mut dyn SemanticRetrievalSession,
-	workspace: Uuid,
+	thread: Uuid,
 	input: &Search,
 	agent_controls: Option<&AgentConfig>,
 	partial: bool,
 ) -> Result<PreparedSearch> {
-	scope.workspace(workspace, "semantic.search").await?;
-	let index = scope.index(workspace).await?;
+	scope.thread(thread, "semantic.search").await?;
+	let index = scope.index(thread).await?;
 	let spec = index.configuration()?;
 	if !spec.enabled {
 		return Err(Error::Conflict("semantic index is disabled".into()));
@@ -191,7 +191,7 @@ async fn prepare_reads(
 	let rows = if agent_controls.is_some() && !spec.auto_context {
 		Vec::new()
 	} else {
-		scope.candidates(workspace).await?
+		scope.candidates(thread).await?
 	};
 	if rows
 		.iter()
@@ -221,7 +221,7 @@ async fn prepare_reads(
 			Source::Artifact { .. }
 			| Source::Message { .. }
 			| Source::WorkingImage { .. }
-			| Source::AttachmentImage { .. } => !agent.workspace_context,
+			| Source::AttachmentImage { .. } => !agent.thread_context,
 		}) {
 			continue;
 		}
@@ -239,24 +239,24 @@ async fn prepare_reads(
 		}
 		if !scope.permits(&entry, "semantic.read").await? {
 			let silence = scope.take_row_silence();
-			unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
+			unconfirmed.settle(silence, Kind::SemanticEntry, thread, false);
 			continue;
 		}
 		let content = if source.is_image() {
 			let Some((pointer, digest)) = scope
-				.image_pointer(workspace, &source)
+				.image_pointer(thread, &source)
 				.await?
 				.and_then(|value| image_pointer(&source, value))
 			else {
 				let silence = scope.take_row_silence();
-				unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
+				unconfirmed.settle(silence, Kind::SemanticEntry, thread, false);
 				continue;
 			};
 			Candidate::Image { pointer, digest }
 		} else {
-			let Some(text) = scope.source(workspace, &source).await? else {
+			let Some(text) = scope.source(thread, &source).await? else {
 				let silence = scope.take_row_silence();
-				unconfirmed.settle(silence, Kind::SemanticEntry, workspace, false);
+				unconfirmed.settle(silence, Kind::SemanticEntry, thread, false);
 				continue;
 			};
 			Candidate::Text(text)
@@ -286,7 +286,7 @@ async fn prepare_reads(
 		));
 	}
 	let mut result = SearchResult {
-		workspace_id: workspace,
+		thread_id: thread,
 		index_revision: index.revision,
 		model: spec.embedding.model.clone(),
 		model_version: spec.embedding.model_version.clone(),
@@ -327,7 +327,7 @@ pub async fn finish(
 		max_tokens,
 		incomplete: _,
 	} = prepared;
-	let workspace = index.workspace_id;
+	let thread = index.thread_id;
 	let points = backend
 		.query(
 			&spec.vector,
@@ -335,7 +335,7 @@ pub async fn finish(
 			vector,
 			VectorFilter {
 				allowed: &allowed.keys().copied().collect::<Vec<_>>(),
-				workspace,
+				thread,
 				tenant: &index.tenant,
 			},
 			limit,
@@ -364,7 +364,7 @@ pub async fn finish(
 			|| point.payload["revision"] != entry.revision
 			|| point.payload["index_revision"] != index.revision
 			|| point.payload["tenant"] != index.tenant
-			|| point.payload["workspace_id"] != workspace.to_string()
+			|| point.payload["thread_id"] != thread.to_string()
 		{
 			if strict {
 				return Err(Error::RemoteSemantic(Failure::ProviderContract));
@@ -378,10 +378,10 @@ pub async fn finish(
 		let current = if scope.permits(entry, "semantic.read").await? {
 			match content {
 				Candidate::Text(text) => {
-					scope.source(workspace, &source).await?.as_ref() == Some(text)
+					scope.source(thread, &source).await?.as_ref() == Some(text)
 				}
 				Candidate::Image { pointer, digest } => scope
-					.image_pointer(workspace, &source)
+					.image_pointer(thread, &source)
 					.await?
 					.and_then(|value| image_pointer(&source, value))
 					.is_some_and(|(current, current_digest)| {
@@ -399,7 +399,7 @@ pub async fn finish(
 			// out of this answer and counted with it (#770).
 			if let Some(node) = scope.take_row_silence() {
 				let mut tally = Tally::from_entries(std::mem::take(&mut result.unconfirmed));
-				tally.record(&node, Kind::SemanticEntry, workspace);
+				tally.record(&node, Kind::SemanticEntry, thread);
 				result.unconfirmed = tally.into_entries();
 				refit(&mut result, max_tokens)?;
 			}
@@ -452,12 +452,12 @@ fn refit(result: &mut SearchResult, max_tokens: usize) -> Result<()> {
 pub async fn search(
 	scope: &mut dyn SemanticRetrievalSession,
 	vector: &dyn VectorIndex,
-	workspace: Uuid,
+	thread: Uuid,
 	input: &Search,
 	run: Option<Uuid>,
 	controls: Option<&AgentConfig>,
 ) -> Result<SearchResult> {
-	match search_or_outage(scope, vector, workspace, input, run, controls, false).await? {
+	match search_or_outage(scope, vector, thread, input, run, controls, false).await? {
 		Retrieval::Found(result) => Ok(result),
 		Retrieval::Incomplete(_) => Err(Error::RemoteSemantic(Failure::Unavailable)),
 		Retrieval::Outage(cause) => Err(unavailable(cause)),
@@ -487,7 +487,7 @@ enum Retrieval {
 async fn search_or_outage(
 	scope: &mut dyn SemanticRetrievalSession,
 	vector: &dyn VectorIndex,
-	workspace: Uuid,
+	thread: Uuid,
 	input: &Search,
 	run: Option<Uuid>,
 	controls: Option<&AgentConfig>,
@@ -510,7 +510,7 @@ async fn search_or_outage(
 			return Err(attachment_not_seen());
 		}
 	}
-	let prepared = prepare_reads(scope, workspace, input, controls, partial).await?;
+	let prepared = prepare_reads(scope, thread, input, controls, partial).await?;
 	let found = if prepared.incomplete {
 		Retrieval::Incomplete
 	} else {
@@ -518,13 +518,13 @@ async fn search_or_outage(
 	};
 	let query_image = if let Some(attachment) = &input.attachment {
 		let content = scope
-			.query_attachment(workspace, attachment, prepared.spec.max_image_bytes)
+			.query_attachment(thread, attachment, prepared.spec.max_image_bytes)
 			.await?;
 		content.input().validate(&prepared.spec.embedding)?;
 		Some(content)
 	} else if let Some(image) = &input.image {
 		let content = scope
-			.query_image(workspace, image, prepared.spec.max_image_bytes)
+			.query_image(thread, image, prepared.spec.max_image_bytes)
 			.await?;
 		aidash_domain::semantic::EmbeddingInput::Image {
 			media_type: &content.media_type,
@@ -546,11 +546,11 @@ async fn search_or_outage(
 	}
 	let embedding = match if let Some(image) = &query_image {
 		scope
-			.embed_image(workspace, &prepared.spec.embedding, image, run)
+			.embed_image(thread, &prepared.spec.embedding, image, run)
 			.await
 	} else {
 		scope
-			.embed(workspace, &prepared.spec.embedding, &input.query, run)
+			.embed(thread, &prepared.spec.embedding, &input.query, run)
 			.await
 	} {
 		Err(error) if outage(&error) => {
@@ -569,12 +569,12 @@ async fn search_or_outage(
 			if let Some(original) = &query_image {
 				let current = if let Some(attachment) = &input.attachment {
 					scope
-						.query_attachment(workspace, attachment, max_image_bytes)
+						.query_attachment(thread, attachment, max_image_bytes)
 						.await?
 				} else {
 					let selection = input.image.as_ref().expect("image query");
 					scope
-						.query_image(workspace, selection, max_image_bytes)
+						.query_image(thread, selection, max_image_bytes)
 						.await?
 				};
 				if current.media_type != original.media_type || current.bytes != original.bytes {
@@ -588,9 +588,9 @@ async fn search_or_outage(
 	}
 }
 
-/// The workspace slot of an Agent's semantic context.
+/// The thread slot of an Agent's semantic context.
 #[derive(Debug)]
-pub enum WorkspaceContext {
+pub enum ThreadContext {
 	Retrieved(Option<SearchResult>),
 	/// The index is not complete yet: only its READY part was searched. The
 	/// caller waits for the complete index unless the slot may degrade, in
@@ -600,7 +600,7 @@ pub enum WorkspaceContext {
 	/// unless the slot may degrade (ADR 0059, ADR 0129).
 	Unavailable(OutageCause),
 }
-impl WorkspaceContext {
+impl ThreadContext {
 	/// The result, or the `Unavailable` error a Run retries and then pauses
 	/// on. A Data Protection refusal stops the Run instead, since waiting
 	/// never fixes it (#963).
@@ -621,15 +621,15 @@ pub async fn context(
 	budget: usize,
 	agent: &AgentConfig,
 ) -> Result<Option<SearchResult>> {
-	workspace_context(scope, vector, run, query, budget, agent, false)
+	thread_context(scope, vector, run, query, budget, agent, false)
 		.await?
 		.required()
 }
 
 /// `partial`: return the READY part of an incomplete index as
-/// [`WorkspaceContext::Partial`] for a step that may degrade (ADR 0129). A step
+/// [`ThreadContext::Partial`] for a step that may degrade (ADR 0129). A step
 /// that may not fails before embedding, so waiting costs no provider call.
-pub async fn workspace_context(
+pub async fn thread_context(
 	scope: &mut dyn SemanticRetrievalSession,
 	vector: &dyn VectorIndex,
 	run: &aidash_domain::Run,
@@ -637,22 +637,22 @@ pub async fn workspace_context(
 	budget: usize,
 	agent: &AgentConfig,
 	partial: bool,
-) -> Result<WorkspaceContext> {
-	// A native provider opts into its own Bank retrieval. Ordinary workspace
-	// indexing remains available only through an explicit workspace Source.
-	if (!agent.semantic_memory || bound_provider(agent)) && !agent.workspace_context {
-		return Ok(WorkspaceContext::Retrieved(None));
+) -> Result<ThreadContext> {
+	// A native provider opts into its own Bank retrieval. Ordinary thread
+	// indexing remains available only through an explicit thread Source.
+	if (!agent.semantic_memory || bound_provider(agent)) && !agent.thread_context {
+		return Ok(ThreadContext::Retrieved(None));
 	}
-	let configured = scope.configured(run.workspace_id).await?;
+	let configured = scope.configured(run.thread_id).await?;
 	let Some(configured) = configured else {
-		return Ok(WorkspaceContext::Retrieved(None));
+		return Ok(ThreadContext::Retrieved(None));
 	};
 	let spec = configured.configuration()?;
 	if !spec.enabled || !spec.auto_context {
-		return Ok(WorkspaceContext::Retrieved(None));
+		return Ok(ThreadContext::Retrieved(None));
 	}
 	let minimum = SearchResult {
-		workspace_id: run.workspace_id,
+		thread_id: run.thread_id,
 		index_revision: configured.revision,
 		model: spec.embedding.model.clone(),
 		model_version: spec.embedding.model_version.clone(),
@@ -662,7 +662,7 @@ pub async fn workspace_context(
 		unconfirmed: vec![],
 	};
 	if budget.min(spec.max_result_tokens) < result_tokens(&minimum)? {
-		return Ok(WorkspaceContext::Retrieved(None));
+		return Ok(ThreadContext::Retrieved(None));
 	}
 	let mut query = query.to_owned();
 	if query.len() > spec.max_input_bytes {
@@ -675,7 +675,7 @@ pub async fn workspace_context(
 	let result = search_or_outage(
 		scope,
 		vector,
-		run.workspace_id,
+		run.thread_id,
 		&Search {
 			query,
 			image: None,
@@ -695,9 +695,9 @@ pub async fn workspace_context(
 	)
 	.await?;
 	Ok(match result {
-		Retrieval::Found(result) => WorkspaceContext::Retrieved(Some(result)),
-		Retrieval::Incomplete(result) => WorkspaceContext::Partial(result),
-		Retrieval::Outage(cause) => WorkspaceContext::Unavailable(cause),
+		Retrieval::Found(result) => ThreadContext::Retrieved(Some(result)),
+		Retrieval::Incomplete(result) => ThreadContext::Partial(result),
+		Retrieval::Outage(cause) => ThreadContext::Unavailable(cause),
 	})
 }
 
@@ -709,14 +709,12 @@ pub async fn recheck(
 	scope: &mut dyn SemanticRetrievalSession,
 	result: &SearchResult,
 ) -> Result<()> {
-	scope
-		.workspace(result.workspace_id, "semantic.search")
-		.await?;
-	let index = scope.index(result.workspace_id).await?;
+	scope.thread(result.thread_id, "semantic.search").await?;
+	let index = scope.index(result.thread_id).await?;
 	if index.revision != result.index_revision {
 		return Err(Error::Conflict("observed semantic index changed".into()));
 	}
-	let entries = scope.candidates(result.workspace_id).await?;
+	let entries = scope.candidates(result.thread_id).await?;
 	for matched in &result.matches {
 		let entry = entries
 			.iter()
@@ -733,13 +731,12 @@ pub async fn recheck(
 		let current = if source.is_image() {
 			matched.text.is_empty()
 				&& scope
-					.image_pointer(result.workspace_id, &source)
+					.image_pointer(result.thread_id, &source)
 					.await?
 					.and_then(|value| image_pointer(&source, value))
 					.is_some_and(|(pointer, _)| pointer == matched.metadata)
 		} else {
-			scope.source(result.workspace_id, &source).await?.as_deref()
-				== Some(matched.text.as_str())
+			scope.source(result.thread_id, &source).await?.as_deref() == Some(matched.text.as_str())
 		};
 		if !current {
 			return Err(Error::Forbidden);

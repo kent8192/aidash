@@ -285,11 +285,11 @@ pub async fn file_share(
 }
 
 #[post(
-	"/api/workspaces/{workspace}/agents/{agent}/runs",
-	name = "!core_workspace_run",
+	"/api/threads/{thread}/agents/{agent}/runs",
+	name = "!core_thread_run",
 	auth = "protected"
 )]
-pub async fn workspace_run(
+pub async fn thread_run(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
 	request: Request,
@@ -298,20 +298,18 @@ pub async fn workspace_run(
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	let workspace = request
+	let thread = request
 		.path_params
-		.get("workspace")
+		.get("thread")
 		.and_then(|value| value.parse::<Uuid>().ok())
-		.ok_or_else(|| FrameworkError::Validation("invalid workspace path".into()))?;
+		.ok_or_else(|| FrameworkError::Validation("invalid thread path".into()))?;
 	let agent = request
 		.path_params
 		.get("agent")
 		.map(str::to_owned)
 		.ok_or_else(|| FrameworkError::Validation("missing agent path".into()))?;
 
-	crate::http::json(
-		api::workspace_run(service.runtime.clone(), actor, (workspace, agent), input).await,
-	)
+	crate::http::json(api::thread_run(service.runtime.clone(), actor, (thread, agent), input).await)
 }
 
 #[post(
@@ -756,20 +754,20 @@ pub async fn reference_list(
 }
 
 #[post(
-	"/api/workspaces/{workspace}/delete",
+	"/api/threads/{thread}/delete",
 	name = "!core_thread_delete",
 	auth = "protected"
 )]
 pub async fn thread_delete(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<crate::capabilities::thread_lifecycle::DeleteThread>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(api::thread_delete(service.runtime.clone(), actor, workspace, input).await)
+	crate::http::json(api::thread_delete(service.runtime.clone(), actor, thread, input).await)
 }
 
 use crate::authorization::identity::Actor;

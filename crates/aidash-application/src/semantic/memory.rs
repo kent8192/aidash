@@ -31,18 +31,18 @@ pub async fn reads_visible(scope: &mut dyn SemanticMemoryReadSession, run: Uuid)
 			// text of its message: the image and that message must still be
 			// readable. Its point holds no text to compare; an edited
 			// description changes the entry's revision instead.
-			if !scope.image_visible(entry.workspace_id, &source).await? {
+			if !scope.image_visible(entry.thread_id, &source).await? {
 				return Ok(false);
 			}
 			if let Some(message) = attachment_message(&source)
-				&& scope.source(entry.workspace_id, &message).await?.is_none()
+				&& scope.source(entry.thread_id, &message).await?.is_none()
 			{
 				return Ok(false);
 			}
 			continue;
 		}
 		let Some(text) = scope
-			.source(entry.workspace_id, &serde_json::from_value(entry.source)?)
+			.source(entry.thread_id, &serde_json::from_value(entry.source)?)
 			.await?
 		else {
 			return Ok(false);
@@ -73,15 +73,12 @@ pub async fn reads_invalidity(
 			return Ok(Some(Failure::Invalidated));
 		}
 		let source: Source = serde_json::from_value(entry.source.clone())?;
-		if scope
-			.source_invalidated(entry.workspace_id, &source)
-			.await?
-		{
+		if scope.source_invalidated(entry.thread_id, &source).await? {
 			return Ok(Some(Failure::Invalidated));
 		}
 		if source.is_image() {
 			if !scope.permits(&entry, "semantic.read").await?
-				|| !scope.image_visible(entry.workspace_id, &source).await?
+				|| !scope.image_visible(entry.thread_id, &source).await?
 			{
 				return Ok(Some(Failure::Authority));
 			}
@@ -89,7 +86,7 @@ pub async fn reads_invalidity(
 			// as a message match does.
 			if let Some(message) = attachment_message(&source)
 				&& scope
-					.classified_output_source(entry.workspace_id, &message, pending)
+					.classified_output_source(entry.thread_id, &message, pending)
 					.await?
 					.is_none()
 			{
@@ -99,13 +96,13 @@ pub async fn reads_invalidity(
 		}
 		let text = if matches!(source, Source::Artifact { .. } | Source::Message { .. }) {
 			scope
-				.classified_output_source(entry.workspace_id, &source, pending)
+				.classified_output_source(entry.thread_id, &source, pending)
 				.await?
 		} else {
 			if !scope.permits(&entry, "semantic.read").await? {
 				return Ok(Some(Failure::Authority));
 			}
-			scope.source(entry.workspace_id, &source).await?
+			scope.source(entry.thread_id, &source).await?
 		};
 		let Some(text) = text else {
 			return Ok(Some(Failure::Authority));

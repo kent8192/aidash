@@ -4,7 +4,7 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 #[rstest]
-#[case("workspace")]
+#[case("thread")]
 #[case("settings")]
 #[tokio::test]
 async fn retention_skips_a_full_busy_page_and_retries_after_release(
@@ -13,13 +13,13 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	#[case] busy: &str,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let mut candidates = Vec::new();
 	for _ in 0..32 {
 		let bank = memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -29,25 +29,22 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 		.bank;
 		candidates.push(review_delivery::candidate(&store, &bank).await);
 	}
-	let later_workspace = store
-		.create_workspace(
+	let later_thread = store
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"deployment_administrator",
 			"Later bank",
 		)
 		.await
 		.unwrap();
-	let index = aidash_server::semantic::service::get_index(
-		&store,
-		&administrator(&store).await,
-		workspace,
-	)
-	.await
-	.unwrap();
+	let index =
+		aidash_server::semantic::service::get_index(&store, &administrator(&store).await, thread)
+			.await
+			.unwrap();
 	aidash_server::semantic::service::configure(
 		&store,
 		&administrator(&store).await,
-		later_workspace.id,
+		later_thread.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
 			spec: serde_json::from_value(index.spec).unwrap(),
@@ -58,7 +55,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	let later_bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		later_workspace.id,
+		later_thread.id,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -89,7 +86,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 					Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("memory_banks"))
-						.and_where(Expr::col("workspace_id").eq(Expr::value(later_workspace.id)))
+						.and_where(Expr::col("thread_id").eq(Expr::value(later_thread.id)))
 						.to_owned(),
 				),
 			)
@@ -100,11 +97,11 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	tx.commit().await.unwrap();
 	let mut reader = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut locked = Query::select();
-	if busy == "workspace" {
+	if busy == "thread" {
 		locked
 			.column(Alias::new("id"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)));
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread)));
 	} else {
 		locked
 			.column(Alias::new("bank_id"))
@@ -114,7 +111,7 @@ async fn retention_skips_a_full_busy_page_and_retries_after_release(
 					Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("memory_banks"))
-						.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+						.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 						.to_owned(),
 				),
 			);
@@ -187,11 +184,11 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -349,8 +346,8 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	let (store, _, indexed) = setup(&database, bounds).await;
 	// Admit the bank against a valid index, then remove the disposable search
 	// service. Its source quota is independent of the Run lifetime read journal.
-	let workspace = store
-		.create_workspace(
+	let thread = store
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"deployment_administrator",
 			"Long Run",
@@ -367,7 +364,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	aidash_server::semantic::service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
 			spec,
@@ -378,7 +375,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -391,7 +388,7 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new(table))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)
@@ -454,7 +451,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 ) {
 	use aidash_server::semantic::services::memory_recovery as recovery;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
@@ -482,7 +479,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -499,7 +496,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 			.columns(
 				[
 					"id",
-					"workspace_id",
+					"thread_id",
 					"sender",
 					"content",
 					"idempotency_key",
@@ -511,7 +508,7 @@ async fn restore_propagates_withholding_beyond_recall_hop_limit(
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(message))
-					.expr(Expr::value(workspace))
+					.expr(Expr::value(thread))
 					.expr(Expr::value("deployment_administrator"))
 					.expr(Expr::value(body))
 					.expr(Expr::value(format!("primary-{message}")))
@@ -602,11 +599,11 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 	#[case] previously_cleared: bool,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -783,11 +780,11 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 	bounds.max_candidates = 2;
 	bounds.max_results = 2;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

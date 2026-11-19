@@ -24,10 +24,12 @@ fn observed_media_type(run: &aidash_domain::Run, id: &str) -> Option<String> {
 		let aidash_domain::context::ContextEvent::Tool { call, result } = &entry.event else {
 			return None;
 		};
-		if call.name == "workspace_read" && result["metadata"]["id"].as_str() == Some(id) {
+		if aidash_domain::tool::thread_tools::is(&call.name, "thread_read")
+			&& result["metadata"]["id"].as_str() == Some(id)
+		{
 			return result["metadata"]["media_type"].as_str().map(str::to_owned);
 		}
-		if call.name == "workspace_read"
+		if aidash_domain::tool::thread_tools::is(&call.name, "thread_read")
 			&& result["kind"] == "message"
 			&& result["offset"] == 0
 			&& result["next_offset"].is_null()
@@ -42,7 +44,7 @@ fn observed_media_type(run: &aidash_domain::Run, id: &str) -> Option<String> {
 						.flatten()
 				});
 		}
-		if call.name != "workspace_observe" {
+		if !aidash_domain::tool::thread_tools::is(&call.name, "thread_observe") {
 			return None;
 		}
 		result["messages"].as_array()?.iter().find_map(|message| {
@@ -398,7 +400,7 @@ impl ToolOperations for Operations {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_image(
+	async fn thread_image(
 		&self,
 		selection: &aidash_domain::media::WorkingImageSelection,
 		representation: &str,
@@ -413,11 +415,11 @@ impl ToolOperations for Operations {
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
-			.workspace_image(&ctx.store, &ctx.run, selection, representation)
+			.thread_image(&ctx.store, &ctx.run, selection, representation)
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_search(&self, input: Value) -> Result<Value> {
+	async fn thread_search(&self, input: Value) -> Result<Value> {
 		let ctx = &self.0;
 		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
 			return Err(aidash_application::Error::Forbidden);
@@ -428,14 +430,14 @@ impl ToolOperations for Operations {
 			.as_ref()
 			.ok_or(aidash_application::Error::Forbidden)?;
 		authority
-			.workspace_search(&ctx.store, &ctx.run, input)
+			.thread_search(&ctx.store, &ctx.run, input)
 			.await
 			.map_err(Into::into)
 	}
 
 	async fn read_subnode_record_chunk(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: &str,
 		offset: usize,
@@ -443,7 +445,7 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		self.0
 			.home
-			.read_subnode_record_chunk(workspace, kind, id, offset, maximum)
+			.read_subnode_record_chunk(thread, kind, id, offset, maximum)
 			.await
 			.map_err(Into::into)
 	}

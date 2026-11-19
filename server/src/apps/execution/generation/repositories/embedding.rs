@@ -159,7 +159,7 @@ impl GenerationEmbeddingSession for Session {
 		};
 		let usage = EmbeddingAttempt {
 			id: attempt.id,
-			workspace: attempt.workspace,
+			thread: attempt.thread,
 			run,
 			entry,
 			purpose,

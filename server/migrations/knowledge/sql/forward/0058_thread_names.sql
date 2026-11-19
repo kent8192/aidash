@@ -1,0 +1,12 @@
+-- PostgreSQL renames constraints and indexes only with ALTER ... RENAME, which
+-- typed Reinhardt operations cannot express. Names follow the Thread (#1008).
+ALTER TABLE public.memory_banks RENAME CONSTRAINT memory_bank_workspace TO memory_bank_thread;
+ALTER TABLE public.memory_participants RENAME CONSTRAINT memory_participant_workspace TO memory_participant_thread;
+ALTER TABLE public.semantic_collections RENAME CONSTRAINT semantic_collections_workspace_id_fkey TO semantic_collections_thread_id_fkey;
+ALTER TABLE public.semantic_entries RENAME CONSTRAINT semantic_entries_workspace_id_fkey TO semantic_entries_thread_id_fkey;
+ALTER TABLE public.semantic_entries RENAME CONSTRAINT semantic_entries_workspace_id_key_key TO semantic_entries_thread_id_key_key;
+ALTER TABLE public.semantic_image_ledgers RENAME CONSTRAINT semantic_image_ledgers_workspace_fkey TO semantic_image_ledgers_thread_fkey;
+ALTER TABLE public.semantic_image_publications RENAME CONSTRAINT semantic_image_publications_workspace_fkey TO semantic_image_publications_thread_fkey;
+ALTER TABLE public.semantic_indexes RENAME CONSTRAINT semantic_indexes_tenant_workspace_id_key TO semantic_indexes_tenant_thread_id_key;
+ALTER TABLE public.semantic_indexes RENAME CONSTRAINT semantic_indexes_workspace_id_fkey TO semantic_indexes_thread_id_fkey;
+ALTER INDEX public.idx_semantic_image_publications_workspace_id_sequence RENAME TO idx_semantic_image_publications_thread_id_sequence;

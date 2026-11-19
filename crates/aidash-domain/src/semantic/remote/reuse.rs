@@ -41,7 +41,7 @@ impl CitedOperation {
 		Ok(())
 	}
 
-	/// The Home: the Workspace corpus still has the digest recorded before the
+	/// The Home: the Thread corpus still has the digest recorded before the
 	/// retrieval, so the reused result is the one a new retrieval would draw from.
 	pub fn current(&self, corpus_digest: &str) -> Result<(), Refusal> {
 		if self.corpus_digest.as_deref() != Some(corpus_digest) {

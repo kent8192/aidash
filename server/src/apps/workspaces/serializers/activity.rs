@@ -12,7 +12,7 @@ impl From<EventRecord> for Event {
 			node: record.node.map(|node| {
 				aidash_domain::nodes::NodeName::parse(&node).expect("stored Node name")
 			}),
-			workspace_id: record.workspace_id,
+			thread_id: record.thread_id,
 			kind: record.kind,
 			data: record.data.0,
 			created_at: record.created_at,
@@ -22,10 +22,10 @@ impl From<EventRecord> for Event {
 
 impl From<MessageRecord> for Message {
 	fn from(record: MessageRecord) -> Self {
-		let workspace_id = record.workspace_id();
+		let thread_id = record.thread_id();
 		Self {
 			id: record.id,
-			workspace_id,
+			thread_id,
 			sender: record.sender,
 			content: record.content,
 			idempotency_key: record.idempotency_key,

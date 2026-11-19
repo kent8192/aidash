@@ -43,8 +43,8 @@ async fn damage(store: &Store, id: Uuid, phase: RunPhase, pending: Value, contex
 	}
 	.unwrap();
 }
-async fn create(f: &Federation, agent: &Entry, workspace: Uuid) -> Run {
-	let task = running_task(f, agent, workspace, None).await;
+async fn create(f: &Federation, agent: &Entry, thread: Uuid) -> Run {
+	let task = running_task(f, agent, thread, None).await;
 	common::local_run(&f.store, &ACME, &task, agent).await
 }
 #[rstest::rstest]
@@ -79,8 +79,8 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		))
 		.await
 		.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Isolation")
+	let thread = store
+		.create_thread(&ACME, "alice", "Isolation")
 		.await
 		.unwrap();
 	let mut damaged = vec![];
@@ -104,7 +104,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			),
 		),
 	] {
-		let run = create(&f, &agent, workspace.id).await;
+		let run = create(&f, &agent, thread.id).await;
 		damage(&store, run.id, phase, pending, context).await;
 		damaged.push(run);
 	}
@@ -121,7 +121,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			json!({"state_version":1,"data":{"reason":"unknown"},"recovery":{"retry":null}}),
 		),
 	] {
-		let run = create(&f, &agent, workspace.id).await;
+		let run = create(&f, &agent, thread.id).await;
 		damage(&store, run.id, phase, pending, common::context(json!({}))).await;
 		newer.push((run, phase));
 	}
@@ -154,11 +154,11 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let healthy_workspace = store
-		.create_workspace(&ACME, "alice", "Healthy")
+	let healthy_thread = store
+		.create_thread(&ACME, "alice", "Healthy")
 		.await
 		.unwrap();
-	let healthy = create(&f, &agent, healthy_workspace.id).await;
+	let healthy = create(&f, &agent, healthy_thread.id).await;
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -216,22 +216,22 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Controls")
+	let thread = store
+		.create_thread(&ACME, "alice", "Controls")
 		.await
 		.unwrap();
-	let paused = create(&f, &agent, workspace.id).await;
+	let paused = create(&f, &agent, thread.id).await;
 	store
 		.control(&ACME, paused.id, RunControlAction::Pause)
 		.await
 		.unwrap();
 	damage(&store, paused.id, RunPhase::Ready, json!({}), json!([])).await;
-	let live = create(&f, &agent, workspace.id).await;
+	let live = create(&f, &agent, thread.id).await;
 	let token = Uuid::new_v4();
 	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
 	assert_eq!(leased.id, live.id);
 	damage(&store, live.id, RunPhase::Ready, json!({}), json!([])).await;
-	let terminal = create(&f, &agent, workspace.id).await;
+	let terminal = create(&f, &agent, thread.id).await;
 	damage(
 		&store,
 		terminal.id,
@@ -290,12 +290,9 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Paging")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&ACME, "alice", "Paging").await.unwrap();
 	for _ in 0..129 {
-		let run = create(&f, &agent, workspace.id).await;
+		let run = create(&f, &agent, thread.id).await;
 		damage(
 			&store,
 			run.id,
@@ -308,7 +305,7 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 		)
 		.await;
 	}
-	let healthy = create(&f, &agent, workspace.id).await;
+	let healthy = create(&f, &agent, thread.id).await;
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	assert_eq!(
 		store
@@ -333,11 +330,11 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Delivery")
+	let thread = store
+		.create_thread(&ACME, "alice", "Delivery")
 		.await
 		.unwrap();
-	let ordinary = create(&f, &agent, workspace.id).await;
+	let ordinary = create(&f, &agent, thread.id).await;
 	store
 		.control(&ACME, ordinary.id, RunControlAction::Pause)
 		.await
@@ -357,7 +354,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 			.is_err(),
 		"ordinary execution must still reject an invalid Context"
 	);
-	let run = create(&f, &agent, workspace.id).await;
+	let run = create(&f, &agent, thread.id).await;
 	damage(
 		&store,
 		run.id,

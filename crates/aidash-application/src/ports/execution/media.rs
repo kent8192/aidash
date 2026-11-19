@@ -13,18 +13,17 @@ pub struct MediaAttachment {
 }
 #[async_trait]
 pub trait MediaAttachments: Send {
-	async fn attachments(&mut self, workspace: Uuid, message: Uuid)
-	-> Result<Vec<MediaAttachment>>;
+	async fn attachments(&mut self, thread: Uuid, message: Uuid) -> Result<Vec<MediaAttachment>>;
 	/// Return a cached or newly generated immutable WAV representation.
 	async fn wav_rendition(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		attachment: &MediaAttachment,
 	) -> Result<Vec<u8>>;
 }
 #[async_trait]
 pub trait AuthorizedMediaScope: MediaAttachments {
-	async fn authorize_message(&mut self, workspace: Uuid, message: Uuid) -> Result<()>;
+	async fn authorize_message(&mut self, thread: Uuid, message: Uuid) -> Result<()>;
 }
 
 /// The native adapter retains its current area, authority and file snapshot through all reads.
@@ -33,13 +32,13 @@ pub trait SelectedMediaScope: Send {
 	async fn current_files(&mut self) -> Result<Vec<aidash_domain::media::SelectedFile>>;
 	async fn subnode_file(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_area: Uuid,
 		_file: Uuid,
 	) -> Result<aidash_domain::media::SelectedFile> {
 		Err(crate::Error::Forbidden)
 	}
-	async fn workspace_image(
+	async fn thread_image(
 		&mut self,
 		_area: Uuid,
 		_generation: i64,

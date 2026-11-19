@@ -23,9 +23,9 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let subject = common::tenant_token(&f.store, "acme").await;
 	common::tenant_root(&f, "other").await;
 	let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&acme, "alice", "Safety Stop")
+		.create_thread(&acme, "alice", "Safety Stop")
 		.await
 		.unwrap();
 	let new_task = |title: &str| aidash_server::domain::NewTask {
@@ -37,7 +37,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	};
 	let task = f
 		.store
-		.create_task(&acme, workspace.id, &new_task("Local"), "human", None)
+		.create_task(&acme, thread.id, &new_task("Local"), "human", None)
 		.await
 		.unwrap();
 	let mut agent = None;
@@ -67,7 +67,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 	let run = common::admitted_run(&f, "acme", &task, &agent.unwrap()).await;
 	let received = f
 		.store
-		.create_task(&acme, workspace.id, &new_task("Received"), "human", None)
+		.create_task(&acme, thread.id, &new_task("Received"), "human", None)
 		.await
 		.unwrap();
 	let receiver = common::remote_run_in(

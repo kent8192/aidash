@@ -105,7 +105,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace(&ACME, "alice", "Research")
+		.create_thread(&ACME, "alice", "Research")
 		.await
 		.unwrap();
 	let task = store
@@ -213,10 +213,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 			.await
 			.is_ok()
 	);
-	let w2 = store
-		.create_workspace(&ACME, "alice", "Other")
-		.await
-		.unwrap();
+	let w2 = store.create_thread(&ACME, "alice", "Other").await.unwrap();
 	assert!(
 		store
 			.create_task(&ACME, w2.id, &dependent, "human", None)
@@ -245,12 +242,12 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered","native"]}))).await.unwrap();
 	let agent = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":version}))).await.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Research")
+	let thread = store
+		.create_thread(&ACME, "alice", "Research")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let owner = qualified_agent(
@@ -282,7 +279,7 @@ async fn salted_run_creation_requires_a_cache_salt_key(
 		.unwrap();
 	assert_eq!(salted_claim.revision, 1);
 	let other = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let legacy = registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"legacy"}))).await.unwrap();
@@ -310,7 +307,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace(&ACME, "alice", "Journal")
+		.create_thread(&ACME, "alice", "Journal")
 		.await
 		.unwrap();
 	let task = store
@@ -644,7 +641,7 @@ async fn a_refused_invocation_is_accepted_and_resume_starts_it_again(
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
-		.create_workspace(&ACME, "alice", "Refusals")
+		.create_thread(&ACME, "alice", "Refusals")
 		.await
 		.unwrap();
 	let task = store
@@ -818,12 +815,12 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	let agent = seed(&registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Controls")
+	let thread = store
+		.create_thread(&ACME, "alice", "Controls")
 		.await
 		.unwrap();
 	let task = store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 	let federation = _api_runtime.await.federation;
@@ -922,7 +919,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		.await
 		.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
-	let snapshot = store.snapshot(&ACME, workspace.id).await.unwrap();
+	let snapshot = store.snapshot(&ACME, thread.id).await.unwrap();
 	assert_eq!(snapshot.messages[0].sender, "alice");
 	store
 		.control(
@@ -1018,17 +1015,12 @@ fn federation(
 	.shared()
 }
 
-async fn running_task(
-	f: &Federation,
-	agent: &Entry,
-	workspace: Uuid,
-	parent: Option<Uuid>,
-) -> Task {
+async fn running_task(f: &Federation, agent: &Entry, thread: Uuid, parent: Option<Uuid>) -> Task {
 	let store = &f.store;
 	let mut input = new_task();
 	input.parent_id = parent;
 	let task = store
-		.create_task(&ACME, workspace, &input, "alice", None)
+		.create_task(&ACME, thread, &input, "alice", None)
 		.await
 		.unwrap();
 	let owner = qualified_agent(
@@ -1107,18 +1099,18 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	let f = _federation.await.federation;
 	let token = common::tenant_token(&store, "acme").await;
 	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Partial results")
+	let thread = store
+		.create_thread(&ACME, "alice", "Partial results")
 		.await
 		.unwrap();
-	let parent = running_task(&f, &agent, workspace.id, None).await;
+	let parent = running_task(&f, &agent, thread.id, None).await;
 	let mut children = Vec::new();
 	for status in [
 		TaskStatus::Failed,
 		TaskStatus::Blocked,
 		TaskStatus::Cancelled,
 	] {
-		let child = running_task(&f, &agent, workspace.id, Some(parent.id)).await;
+		let child = running_task(&f, &agent, thread.id, Some(parent.id)).await;
 		let child = store
 			.transition(
 				&ACME,
@@ -1230,17 +1222,14 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	);
 	assert_eq!(
 		store
-			.snapshot(&ACME, workspace.id)
+			.snapshot(&ACME, thread.id)
 			.await
 			.unwrap()
 			.artifacts
 			.len(),
 		1
 	);
-	let events = store
-		.events(&ACME, 0, Some(workspace.id), 1000)
-		.await
-		.unwrap();
+	let events = store.events(&ACME, 0, Some(thread.id), 1000).await.unwrap();
 	assert_eq!(
 		events
 			.iter()
@@ -1281,11 +1270,11 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.await
 		.unwrap();
 	let agent = f.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Retries")
+	let thread = store
+		.create_thread(&ACME, "alice", "Retries")
 		.await
 		.unwrap();
-	let task = running_task(&f, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, thread.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: (1..=2)
 			.map(|call| aidash_server::provider::ToolCall {
@@ -1408,11 +1397,11 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.await
 		.unwrap();
 	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Web research")
+	let thread = store
+		.create_thread(&ACME, "alice", "Web research")
 		.await
 		.unwrap();
-	let task = running_task(&federation, &agent, workspace.id, None).await;
+	let task = running_task(&federation, &agent, thread.id, None).await;
 	let harness = Harness { federation };
 	for _ in 0..40 {
 		let progress = harness.worker_once().await.unwrap();
@@ -1452,12 +1441,12 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		"each permitted source is fetched once"
 	);
 	assert_eq!(
-		store.snapshot(&ACME, workspace.id).await.unwrap().artifacts[0].content,
+		store.snapshot(&ACME, thread.id).await.unwrap().artifacts[0].content,
 		json!("Used alternate evidence")
 	);
 	assert!(
 		!store
-			.events(&ACME, 0, Some(workspace.id), 100)
+			.events(&ACME, 0, Some(thread.id), 100)
 			.await
 			.unwrap()
 			.iter()
@@ -1505,10 +1494,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		.await
 		.unwrap();
 	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Waits")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&ACME, "alice", "Waits").await.unwrap();
 	// The first artifact of this test fails the way a fired statement limit does.
 	let owner = common::owner_pool(store.pool.fixture_driver()).await;
 	for ddl in [
@@ -1521,7 +1507,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 	] {
 		sqlx::query(ddl).execute(&owner).await.unwrap();
 	}
-	let task = running_task(&federation, &agent, workspace.id, None).await;
+	let task = running_task(&federation, &agent, thread.id, None).await;
 	let harness = Harness { federation };
 	// Act: the retry is due a second after the failure.
 	for _ in 0..80 {
@@ -1546,7 +1532,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 	);
 	assert!(
 		store
-			.events(&ACME, 0, Some(workspace.id), 100)
+			.events(&ACME, 0, Some(thread.id), 100)
 			.await
 			.unwrap()
 			.iter()
@@ -1554,7 +1540,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		"the Run waited instead of failing"
 	);
 	assert_eq!(
-		store.snapshot(&ACME, workspace.id).await.unwrap().artifacts[0].content,
+		store.snapshot(&ACME, thread.id).await.unwrap().artifacts[0].content,
 		json!("Used alternate evidence")
 	);
 	owner.close().await;
@@ -1573,11 +1559,11 @@ async fn child_creation_and_parent_completion_are_serialized(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Children")
+	let thread = store
+		.create_thread(&ACME, "alice", "Children")
 		.await
 		.unwrap();
-	let parent = running_task(&f, &agent, workspace.id, None).await;
+	let parent = running_task(&f, &agent, thread.id, None).await;
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
 	let artifact = ArtifactInput {
@@ -1586,7 +1572,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 		content: json!("done"),
 	};
 	let (child, completed) = tokio::join!(
-		store.create_task(&ACME, workspace.id, &input, "human", Some("child")),
+		store.create_task(&ACME, thread.id, &input, "human", Some("child")),
 		store.complete(
 			&ACME,
 			parent.id,
@@ -1627,7 +1613,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 			.unwrap();
 		assert_eq!(
 			store
-				.create_task(&ACME, workspace.id, &input, "human", Some("child"))
+				.create_task(&ACME, thread.id, &input, "human", Some("child"))
 				.await
 				.unwrap()
 				.id,
@@ -1636,7 +1622,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 	}
 	assert!(
 		store
-			.create_task(&ACME, workspace.id, &input, "human", Some("new-child"))
+			.create_task(&ACME, thread.id, &input, "human", Some("new-child"))
 			.await
 			.is_err()
 	);
@@ -1672,11 +1658,11 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 		)
 		.await
 		.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Skill read")
+	let thread = store
+		.create_thread(&ACME, "alice", "Skill read")
 		.await
 		.unwrap();
-	let task = running_task(&f, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, thread.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "read-guide".into(),
@@ -1746,11 +1732,11 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Recovery")
+	let thread = store
+		.create_thread(&ACME, "alice", "Recovery")
 		.await
 		.unwrap();
-	let parent = running_task(&f, &agent, workspace.id, None).await;
+	let parent = running_task(&f, &agent, thread.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "bad".into(),
@@ -1818,7 +1804,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
 	let child = store
-		.create_task(&ACME, workspace.id, &input, "human", None)
+		.create_task(&ACME, thread.id, &input, "human", None)
 		.await
 		.unwrap();
 	// A child somebody is running holds the parent. (An open child nobody has
@@ -1907,20 +1893,20 @@ async fn an_agent_runs_only_on_a_node_that_approved_it(
 	let second_name = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
 	let second = f.store.deployment.node(second_name.clone());
 	assert_ne!(first, second);
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&ACME, "alice", "Build")
+		.create_thread(&ACME, "alice", "Build")
 		.await
 		.unwrap();
-	sqlx::query("UPDATE workspaces SET node = $1 WHERE id = $2")
+	sqlx::query("UPDATE threads SET node = $1 WHERE id = $2")
 		.bind(second_name.as_str())
-		.bind(workspace.id)
+		.bind(thread.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let task = f
 		.store
-		.create_task(&ACME, workspace.id, &new_task(), "human", None)
+		.create_task(&ACME, thread.id, &new_task(), "human", None)
 		.await
 		.unwrap();
 
@@ -2015,13 +2001,13 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	.execute(&owner)
 	.await
 	.unwrap();
-	let response=http_client.request(Method::POST, app.url("/api/conversations"))
+	let response=http_client.request(Method::POST, app.url("/api/threads"))
 		.header("authorization", format!("Bearer {token}"))
 		.header("content-type","application/json")
 		.body(json!({"title":"Atomic","request":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())
 		.send().await.unwrap();
 	assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-	assert!(store.workspaces(&ACME).await.unwrap().is_empty());
+	assert!(store.threads(&ACME).await.unwrap().is_empty());
 	cleanup(store, &url, &schema).await;
 }
 
@@ -2155,11 +2141,11 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		)
 		.await
 		.unwrap();
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Reconcile")
+	let thread = store
+		.create_thread(&ACME, "alice", "Reconcile")
 		.await
 		.unwrap();
-	let task = running_task(&f, &agent, workspace.id, None).await;
+	let task = running_task(&f, &agent, thread.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: vec![aidash_server::provider::ToolCall {
 			id: "unsafe".into(),
@@ -2301,11 +2287,11 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		.await
 		.unwrap();
 	common::approve_agent(&f, "acme", &agent).await;
-	let workspace = store
-		.create_workspace(&ACME, "alice", "Agent tool")
+	let thread = store
+		.create_thread(&ACME, "alice", "Agent tool")
 		.await
 		.unwrap();
-	let task = running_task(&f, &delegating, workspace.id, None).await;
+	let task = running_task(&f, &delegating, thread.id, None).await;
 	let response = aidash_server::provider::ModelResponse {
 		tool_calls: [
 			json!({"title":"Child","description":"Delegated work"}),
@@ -2350,14 +2336,14 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 	.unwrap();
 	let harness = aidash_server::harness::Harness { federation: f };
 	let children = async || -> Vec<Option<Uuid>> {
-		let query_bind_1 = workspace.id;
+		let query_bind_1 = thread.id;
 		let query_bind_2 = task.id;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.column(reinhardt::query::Alias::new("parent_id"))
 				.from(reinhardt::query::Alias::new("tasks"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ? AND id <> ?)".to_owned(),
+					"(thread_id = ? AND id <> ?)".to_owned(),
 					vec![
 						Expr::value(query_bind_1.to_owned()).into(),
 						Expr::value(query_bind_2.to_owned()).into(),

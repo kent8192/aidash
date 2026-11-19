@@ -29,7 +29,7 @@ pub async fn authorize_run(
 /// is allowed. A caller that may stop its Live preview without controlling the
 /// Run checks its own requester relation instead (ADR 0070).
 pub async fn authorize(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
-	let run = in_workspace(scope, id).await?;
+	let run = in_thread(scope, id).await?;
 	if !scope.run_visible(&run).await? {
 		return Err(Error::Forbidden);
 	}
@@ -37,12 +37,12 @@ pub async fn authorize(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunI
 	Ok(run)
 }
 
-async fn in_workspace(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
+async fn in_thread(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
 	let raw = scope.run(id).await?.ok_or(Error::Forbidden)?;
 	let run = raw.inspect();
-	let workspace = scope.workspace(run.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
-	scope.require(&workspace, "workspace.read").await?;
+	let thread = scope.thread(run.thread_id).await?;
+	scope.set_context(thread.attributes.clone());
+	scope.require(&thread, "thread.read").await?;
 	Ok(run)
 }
 
@@ -118,11 +118,11 @@ pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunI
 	scope.resume_run(id).await
 }
 
-/// The local permissions a resume of `id` needs: the Workspace, `run.control`, being the
+/// The local permissions a resume of `id` needs: the Thread, `run.control`, being the
 /// subject the Run acts for, and what the Run read and uses. A manual resume and the automatic
 /// resume after a lifted suspension (#876 decision 16) both ask it.
 pub async fn authorize_resume(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
-	let run = in_workspace(scope, id).await?;
+	let run = in_thread(scope, id).await?;
 	let invalidated = invalidated(&run);
 	let block = if invalidated {
 		None
@@ -173,7 +173,7 @@ pub async fn decline_call_in(
 	if call.is_empty() || call.len() > CALL_KEY_LIMIT {
 		return Err(Error::Invalid("call key is empty or too long".into()));
 	}
-	let run = in_workspace(scope, id).await?;
+	let run = in_thread(scope, id).await?;
 	// A Run another Node executes is declined from its Home, never by this Node's people.
 	if !run.is_local(scope.node_id()) {
 		return Err(Error::Forbidden);
@@ -186,7 +186,7 @@ pub async fn decline_call_in(
 	} else {
 		let resource = scope.resource("run", &id.to_string(), json!({}));
 		scope.require(&resource, "run.decline_call").await?;
-		// Anyone else needs the Workspace and the action, not the Run's content (a Working Area
+		// Anyone else needs the Thread and the action, not the Run's content (a Working Area
 		// is private to its owner): only what the Run read has to be readable (#763).
 		scope.run_reads_stop(&run).await?
 	};

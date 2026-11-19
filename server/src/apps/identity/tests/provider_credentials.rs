@@ -924,7 +924,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 
 #[rstest]
 #[tokio::test]
-async fn workspace_embedding_credential_is_pinned_with_environment_model_admission(
+async fn thread_embedding_credential_is_pinned_with_environment_model_admission(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_application::provider_access::{Context, ProviderAccess, Source};
@@ -975,10 +975,10 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		)
 		.await
 		.unwrap();
-	let workspace = f
+	let thread = f
 		.runtime
 		.store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("beta").unwrap(),
 			"actor",
 			"BYOK retrieval",
@@ -987,13 +987,13 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.unwrap();
 	let mut tx = f.database.begin_fixture().await;
 	let index = SemanticIndexe::build()
-		.workspace_id(workspace.id).tenant("beta").revision(1)
+		.thread_id(thread.id).tenant("beta").revision(1)
 		.spec(Json(json!({
 			"embedding":{"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"fixture","model_version":"1","dimensions":3},
 			"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 			"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192
 		})))
-		.collection("workspace-embedding-fixture").finish();
+		.collection("thread-embedding-fixture").finish();
 	SemanticIndexe::objects()
 		.insert_with_executor(tx.as_mut(), &index)
 		.await
@@ -1004,7 +1004,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		.store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace.id,
+			thread.id,
 			&aidash_domain::NewTask {
 				title: "Embedding admission".into(),
 				description: "Env model, Tenant embedding".into(),

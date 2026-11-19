@@ -35,15 +35,15 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 	);
 	let token = common::tenant_token(&f.store, "acme").await;
 	for app in [&a, &b, &c] {
-		let (status, workspace) = common::request(
+		let (status, thread) = common::request(
 			app,
 			&token,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			json!({"title":"Replica startup", "request":"Use the migrated schema"}),
 		)
 		.await;
-		assert_eq!(status, 200, "{workspace}");
+		assert_eq!(status, 200, "{thread}");
 	}
 	// Assert: startup neither creates another history nor reapplies schema operations.
 	let applied = recorder.get_applied_migrations().await.unwrap();
@@ -57,7 +57,7 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 		.collect();
 	assert_eq!(actual, expected);
 	assert_eq!(applied.len(), migrations.len());
-	assert_eq!(f.store.workspaces(&TEST_FIXTURE).await.unwrap().len(), 3);
+	assert_eq!(f.store.threads(&TEST_FIXTURE).await.unwrap().len(), 3);
 	common::cleanup(f, &url, &schema).await;
 }
 

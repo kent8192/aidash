@@ -115,9 +115,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		409,
 		"another grant cannot replace the task's existing admission"
 	);
-	// Receiver policy scopes a foreign workspace by its qualified source ID.
+	// Receiver policy scopes a foreign thread by its qualified source ID.
 	let mut denied = bp.clone();
-	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-foreign-workspace","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_node"},"right":{"source":"literal","value":default_node(&a.store,"acme").await}}}));
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-foreign-thread","effect":"deny","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["thread"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_node"},"right":{"source":"literal","value":default_node(&a.store,"acme").await}}}));
 	assert_eq!(
 		common::post(
 			&ba,
@@ -149,7 +149,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		200
 	);
 	let mut denied_model = bp.clone();
-	denied_model["policies"].as_array_mut().unwrap().push(json!({"id":"deny-model-in-workspace","effect":"deny","subjects":{"any":true},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_workspace_id"},"right":{"source":"literal","value":source_task.workspace_id}}}));
+	denied_model["policies"].as_array_mut().unwrap().push(json!({"id":"deny-model-in-thread","effect":"deny","subjects":{"any":true},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_thread_id"},"right":{"source":"literal","value":source_task.thread_id}}}));
 	assert_eq!(
 		common::post(
 			&ba,
@@ -164,7 +164,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	assert_eq!(
 		peer(&fresh_app, (&a, &b), &verification, json!({})).await.0,
 		403,
-		"executor metadata checks must include the admitted workspace context"
+		"executor metadata checks must include the admitted thread context"
 	);
 	assert_eq!(
 		common::post(
@@ -288,7 +288,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let (status, candidate) = common::post(
 		&aa,
 		&at,
-		&format!("/api/workspaces/{}/tasks", source_task.workspace_id),
+		&format!("/api/threads/{}/tasks", source_task.thread_id),
 		json!({"title":"Admission race","description":"Fixture"}),
 	)
 	.await;
@@ -430,14 +430,14 @@ async fn remote_home_child_summary_observes_terminal_transition(
 	let (status, child) = common::post(
 		&aa,
 		&token,
-		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+		&format!("/api/threads/{}/tasks", parent.thread_id),
 		json!({"title":"Remote child","description":"Wait fixture","parent_id":task}),
 	)
 	.await;
 	assert_eq!(status, 200, "{child}");
 	let id = Uuid::parse_str(child["id"].as_str().unwrap()).unwrap();
 	let receiver = default_node(&a.store, "acme").await;
-	let command = json!({"grant_id":grant,"admission_id":activation["admission_id"],"operation":"workspace_children","data":{"parent_id":task}});
+	let command = json!({"grant_id":grant,"admission_id":activation["admission_id"],"operation":"thread_children","data":{"parent_id":task}});
 	let fetch = || {
 		common::peer_request(
 			&aa,

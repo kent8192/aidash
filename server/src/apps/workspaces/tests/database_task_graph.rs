@@ -30,29 +30,14 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Graph")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&scope, "alice", "Graph").await.unwrap();
 	let ancestor = store
-		.create_task(
-			&scope,
-			workspace.id,
-			&task,
-			"deployment_administrator",
-			None,
-		)
+		.create_task(&scope, thread.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![ancestor.id];
 	let dependent = store
-		.create_task(
-			&scope,
-			workspace.id,
-			&task,
-			"deployment_administrator",
-			None,
-		)
+		.create_task(&scope, thread.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	// ancestor -> child -> dependent -> ancestor is a cycle even though the
@@ -62,7 +47,7 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	let rejected = store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&task,
 			"deployment_administrator",
 			Some("cycle"),
@@ -76,10 +61,7 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 	let error = error.database_error().expect("native database constraint");
 	assert_eq!(error.code(), Some("23514"));
 	assert_eq!(error.constraint(), Some("tasks_dependency_cycle"));
-	assert_eq!(
-		store.tasks(&scope, Some(workspace.id)).await.unwrap().len(),
-		2
-	);
+	assert_eq!(store.tasks(&scope, Some(thread.id)).await.unwrap().len(), 2);
 }
 
 #[rstest]
@@ -96,25 +78,16 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Graph")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&scope, "alice", "Graph").await.unwrap();
 	let dependency = store
-		.create_task(
-			&scope,
-			workspace.id,
-			&task,
-			"deployment_administrator",
-			None,
-		)
+		.create_task(&scope, thread.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![dependency.id, dependency.id];
 	let saved = store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&task,
 			"deployment_administrator",
 			Some("projection"),
@@ -124,7 +97,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 	let repeated = store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&task,
 			"deployment_administrator",
 			Some("projection"),
@@ -139,12 +112,9 @@ async fn dependency_projection_is_atomic_and_idempotent(
 		.unwrap();
 	assert_eq!(links.len(), 1);
 	assert_eq!(links[0].dependency_key, dependency.id);
-	assert_eq!(links[0].workspace_key, workspace.id);
+	assert_eq!(links[0].thread_key, thread.id);
 
-	let other = store
-		.create_workspace(&scope, "alice", "Other")
-		.await
-		.unwrap();
+	let other = store.create_thread(&scope, "alice", "Other").await.unwrap();
 	let rejected = store
 		.create_task(&scope, other.id, &task, "deployment_administrator", None)
 		.await;
@@ -160,7 +130,7 @@ async fn dependency_projection_is_atomic_and_idempotent(
 
 #[rstest]
 #[tokio::test]
-async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
+async fn dependency_relations_prevent_target_deletion_and_thread_changes(
 	#[future] database: DatabaseFixture,
 	mut task: NewTask,
 ) {
@@ -172,33 +142,15 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Graph")
-		.await
-		.unwrap();
-	let other = store
-		.create_workspace(&scope, "alice", "Other")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&scope, "alice", "Graph").await.unwrap();
+	let other = store.create_thread(&scope, "alice", "Other").await.unwrap();
 	let target = store
-		.create_task(
-			&scope,
-			workspace.id,
-			&task,
-			"deployment_administrator",
-			None,
-		)
+		.create_task(&scope, thread.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![target.id];
 	let source = store
-		.create_task(
-			&scope,
-			workspace.id,
-			&task,
-			"deployment_administrator",
-			None,
-		)
+		.create_task(&scope, thread.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	let mut db = database.lease.handle();
@@ -212,12 +164,12 @@ async fn dependency_relations_prevent_target_deletion_and_workspace_changes(
 		assert!(
 			Task::objects()
 				.filter(Task::field_id().eq(id))
-				.update_fields_with_conn(&mut db, [(Task::field_workspace_id(), other.id)])
+				.update_fields_with_conn(&mut db, [(Task::field_thread_id(), other.id)])
 				.await
 				.is_err()
 		);
 		let unchanged = Task::objects().get(id).get_with_db(&mut db).await.unwrap();
-		assert_eq!(unchanged.workspace_id, workspace.id);
+		assert_eq!(unchanged.thread_id, thread.id);
 	}
 	Task::objects()
 		.delete_with_conn(&mut db, source.id)
@@ -252,18 +204,9 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	.await
 	.unwrap();
 	let scope = crate::tenant_roots::tenant_scope(&store, "acme").await;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Graph")
-		.await
-		.unwrap();
+	let thread = store.create_thread(&scope, "alice", "Graph").await.unwrap();
 	let target = store
-		.create_task(
-			&scope,
-			workspace.id,
-			&task,
-			"deployment_administrator",
-			None,
-		)
+		.create_task(&scope, thread.id, &task, "deployment_administrator", None)
 		.await
 		.unwrap();
 	task.dependencies = vec![target.id];
@@ -271,13 +214,7 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 	let tasks = Task::objects();
 	let (created, deleted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
 		tokio::join!(
-			store.create_task(
-				&scope,
-				workspace.id,
-				&task,
-				"deployment_administrator",
-				None
-			),
+			store.create_task(&scope, thread.id, &task, "deployment_administrator", None),
 			tasks.delete_with_conn(&mut db, target.id)
 		)
 	})
@@ -289,12 +226,12 @@ async fn concurrent_dependency_creation_and_target_deletion_never_leave_dangling
 		"both competing writes must not commit"
 	);
 	let tasks = Task::objects()
-		.filter(Task::field_workspace_id().eq(workspace.id))
+		.filter(Task::field_thread_id().eq(thread.id))
 		.all_with_db(&mut db)
 		.await
 		.unwrap();
 	let edges = TaskDependency::objects()
-		.filter(TaskDependency::field_workspace_key().eq(workspace.id))
+		.filter(TaskDependency::field_thread_key().eq(thread.id))
 		.all_with_db(&mut db)
 		.await
 		.unwrap();

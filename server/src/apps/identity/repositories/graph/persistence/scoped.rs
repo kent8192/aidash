@@ -1,5 +1,5 @@
-//! A source-owned workspace has no receiver-local workspace or task row.
-//! Its receiving admission, not a coincidental local workspace UUID, owns the run.
+//! A source-owned thread has no receiver-local thread or task row.
+//! Its receiving admission, not a coincidental local thread UUID, owns the run.
 use super::{
 	Candidate, GraphActivity, GraphAuthority, GraphNode, GraphOptions, event_reference,
 	kind_allowed,
@@ -35,7 +35,7 @@ fn from_source(column: &str, source: &str) -> SimpleExpr {
 	}
 }
 
-fn runs(tenant: &str, workspace: Uuid, source_node: &str) -> SelectStatement {
+fn runs(tenant: &str, thread: Uuid, source_node: &str) -> SelectStatement {
 	Query::select()
 		.from_as(Alias::new("runs"), Alias::new("r"))
 		.join(
@@ -47,22 +47,20 @@ fn runs(tenant: &str, workspace: Uuid, source_node: &str) -> SelectStatement {
 			Expr::cust("a.id = r.id AND a.source_node = r.home_node AND a.task_id = r.task_id"),
 		)
 		.and_where(Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::value(tenant)))
-		.and_where(
-			Expr::col((Alias::new("r"), Alias::new("workspace_id"))).eq(Expr::value(workspace)),
-		)
+		.and_where(Expr::col((Alias::new("r"), Alias::new("thread_id"))).eq(Expr::value(thread)))
 		.and_where(from_source("r.home_node", source_node))
 		.to_owned()
 }
 
 pub(super) async fn candidates(
 	authority: &mut GraphAuthority<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	source_node: &str,
 	offset: u64,
 ) -> Result<Vec<Candidate>> {
 	let tenant = authority.tenant().to_owned();
 	let rows: Vec<RunMetadata> = aidash_server::database::query_as(
-		&runs(&tenant, workspace, source_node)
+		&runs(&tenant, thread, source_node)
 			.expr(Expr::cust("r.*"))
 			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
 			.limit(super::CANDIDATE_BATCH)
@@ -76,22 +74,22 @@ pub(super) async fn candidates(
 
 fn source_attributes(description: &Description) -> Value {
 	json!({
-		"source_workspace_id": description.task.workspace_id,
+		"source_thread_id": description.task.thread_id,
 		"source_task_id": description.task.id,
 		"source_task_revision": description.task.revision,
 	})
 }
 
-fn workspace_resource(
+fn thread_resource(
 	access: &Access,
 	source: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	description: &Description,
 ) -> Resource {
 	// Match the receiving admission's qualified foreign resource namespace.
 	access.resource(
-		"workspace",
-		format!("{source}/workspaces/{workspace}"),
+		"thread",
+		format!("{source}/threads/{thread}"),
 		source_attributes(description),
 	)
 }
@@ -136,7 +134,7 @@ pub(crate) async fn visible(
 		|| description.source_node != run.home_node
 		|| description.target_node != receiver
 		|| description.task.id != run.task_id
-		|| description.task.workspace_id != run.workspace_id
+		|| description.task.thread_id != run.thread_id
 		|| description.inspection.node_id != receiver
 		|| description.inspection.agent.kind != "agent"
 		|| description.inspection.agent.id != run.agent_id
@@ -145,12 +143,12 @@ pub(crate) async fn visible(
 		return Ok(false);
 	}
 	let GraphAuthority(access) = authority;
-	let workspace = workspace_resource(access, &run.home_node, run.workspace_id, &description);
+	let thread = thread_resource(access, &run.home_node, run.thread_id, &description);
 	let task = access.resource(
 		"task",
 		format!("{}/tasks/{}", run.home_node, run.task_id),
 		json!({"created_by":description.task.created_by,"requirements":description.task.requirements,
-			"source_workspace_id":description.task.workspace_id,"source_task_id":description.task.id,
+			"source_thread_id":description.task.thread_id,"source_task_id":description.task.id,
 			"source_task_revision":description.task.revision}),
 	);
 	let resource = access.resource("run", run.id, source_attributes(&description));
@@ -160,13 +158,13 @@ pub(crate) async fn visible(
 		json!({
 			"created_by":run.executor_subject(f.config.deployment.as_str()),
 			"version":run.agent_version,
-			"source_workspace_id":description.task.workspace_id,
+			"source_thread_id":description.task.thread_id,
 			"source_task_id":description.task.id,
 			"source_task_revision":description.task.revision,
 		}),
 	);
 	// Admission identifies the data; only the current mapped viewer authorizes it.
-	if !access.decide(&workspace, "workspace.read").await?
+	if !access.decide(&thread, "thread.read").await?
 		|| !access.decide(&task, "task.read").await?
 		|| !access.decide(&resource, "run.read").await?
 		|| !access.decide(&memory, "memory.read").await?
@@ -184,7 +182,7 @@ pub(crate) async fn visible(
 		return Ok(false);
 	}
 	let held = base_silence.or(reads_silence);
-	let human = access.human_reads(run.workspace_id, run.id).await?;
+	let human = access.human_reads(run.thread_id, run.id).await?;
 	let human_silent = access.take_row_silence();
 	if human || human_silent.is_some() {
 		access.set_row_silence(held.or(human_silent));
@@ -195,7 +193,7 @@ pub(crate) async fn visible(
 pub(super) async fn revision(
 	authority: &mut GraphAuthority<'_>,
 	options: &GraphOptions,
-	workspace: Uuid,
+	thread: Uuid,
 	source_node: &str,
 ) -> Result<Value> {
 	if !kind_allowed("run", options) {
@@ -203,7 +201,7 @@ pub(super) async fn revision(
 	}
 	let tenant = authority.tenant().to_owned();
 	let revisions: (Option<i64>, i64) = crate::database::native::query_as(
-		&runs(&tenant, workspace, source_node)
+		&runs(&tenant, thread, source_node)
 			.expr(Expr::cust("SUM(r.revision)::bigint"))
 			.expr(Expr::cust("COUNT(*)"))
 			.to_string(PostgresQueryBuilder),
@@ -212,13 +210,13 @@ pub(super) async fn revision(
 	.fetch_one(authority.connection())
 	.await?;
 	let events: Option<i64> = crate::database::native::query_scalar(
-		&runs(&tenant, workspace, source_node)
+		&runs(&tenant, thread, source_node)
 			.expr(Expr::cust("MAX(e.sequence)"))
 			.join(
 				JoinType::InnerJoin,
 				reinhardt::query::TableRef::table_alias(Alias::new("events"), Alias::new("e")),
 				Expr::cust(
-					"e.workspace_id IS NULL AND COALESCE(e.data->>'run_id', e.data->>'id') = r.id::text",
+					"e.thread_id IS NULL AND COALESCE(e.data->>'run_id', e.data->>'id') = r.id::text",
 				),
 			)
 			.and_where(Expr::cust("e.kind LIKE 'run.%'"))
@@ -235,7 +233,7 @@ pub(super) async fn activity(
 	nodes: &[GraphNode],
 	window_end: DateTime<Utc>,
 	(source_node, node): (&str, &str),
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Result<Vec<GraphActivity>> {
 	let mut visible_nodes: Vec<&GraphNode> =
 		nodes.iter().filter(|node| node.kind == "run").collect();
@@ -269,13 +267,12 @@ pub(super) async fn activity(
 				continue;
 			};
 			let description: Description = serde_json::from_value(description)?;
-			if description.source_node != source_node || description.task.workspace_id != workspace
-			{
+			if description.source_node != source_node || description.task.thread_id != thread {
 				continue;
 			}
 			let GraphAuthority(access) = &mut *authority;
-			let resource = workspace_resource(access, source_node, workspace, &description);
-			if access.decide(&resource, "workspace.events").await? {
+			let resource = thread_resource(access, source_node, thread, &description);
+			if access.decide(&resource, "thread.events").await? {
 				allowed.push(node);
 			}
 		}
@@ -292,7 +289,7 @@ pub(super) async fn activity(
 	query
 		.expr(Expr::cust("e.*"))
 		.from_as(Alias::new("events"), Alias::new("e"))
-		.and_where(Expr::col((Alias::new("e"), Alias::new("workspace_id"))).is_null())
+		.and_where(Expr::col((Alias::new("e"), Alias::new("thread_id"))).is_null())
 		.and_where(Expr::cust("e.kind LIKE 'run.%'"))
 		.and_where(Expr::cust("COALESCE(e.data->>'run_id', e.data->>'id')").is_in(ids))
 		.and_where(
@@ -310,7 +307,7 @@ pub(super) async fn activity(
 	let sql = query.to_string(PostgresQueryBuilder);
 	let request = aidash_server::database::query_as::<Event>(&sql);
 	// These run nodes already passed admission binding and all current read gates.
-	// Do not re-enter local-workspace authorization for their source-owned UUIDs.
+	// Do not re-enter local-thread authorization for their source-owned UUIDs.
 	let events = request.fetch_all(authority.connection()).await?;
 	Ok(events
 		.into_iter()

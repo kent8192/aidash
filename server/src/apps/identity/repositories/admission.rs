@@ -102,8 +102,8 @@ impl ExecutionGrantSession for Admission<'_> {
 		.federated_origin(task)
 		.await
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	fn set_context(&mut self, context: Value) {
 		self.access.context = context;
@@ -125,11 +125,8 @@ impl ExecutionAdmissionSession for Admission<'_> {
 	fn node_id(&self) -> &str {
 		self.f.config.deployment.as_str()
 	}
-	async fn workspace_node(
-		&mut self,
-		workspace: Uuid,
-	) -> Result<aidash_domain::nodes::NodeAddress> {
-		let node = self.access.workspace_node(workspace).await?;
+	async fn thread_node(&mut self, thread: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
+		let node = self.access.thread_node(thread).await?;
 		self.access.set_node(node.clone());
 		Ok(self.f.config.deployment.node(node))
 	}
@@ -359,9 +356,9 @@ impl ExecutionAdmissionSession for Admission<'_> {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_1.to_owned()).into()],
 								))
-								// The delegated Task runs on its Workspace's Node.
+								// The delegated Task runs on its Thread's Node.
 								.expr(SimpleExpr::CustomWithExpr(
-									"(? || '/' || (SELECT node FROM workspaces WHERE id = (SELECT workspace_id FROM tasks WHERE id = ?)))".to_owned(),
+									"(? || '/' || (SELECT node FROM threads WHERE id = (SELECT thread_id FROM tasks WHERE id = ?)))".to_owned(),
 									vec![
 										Expr::value(query_bind_2.to_owned()).into(),
 										Expr::value(query_bind_1.to_owned()).into(),
@@ -514,12 +511,12 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn delegation_event(&mut self, workspace: Uuid, delegation: &Delegation) -> Result<()> {
+	async fn delegation_event(&mut self, thread: Uuid, delegation: &Delegation) -> Result<()> {
 		self.f
 			.store
 			.event(
 				&mut self.access.tx,
-				Some(workspace),
+				Some(thread),
 				"task.delegated",
 				json!(delegation),
 			)
@@ -538,11 +535,7 @@ pub(crate) async fn persist_grant_in(
 	use reinhardt::{db::orm::execution::convert_values, query::LockType};
 	for (table, key, id) in [
 		("runs", "id", grant.run_id),
-		(
-			"authorization_workspaces",
-			"workspace_id",
-			grant.workspace_id,
-		),
+		("authorization_threads", "thread_id", grant.thread_id),
 		("tasks", "id", grant.task_id),
 	] {
 		let mut query = Query::select();
@@ -553,7 +546,7 @@ pub(crate) async fn persist_grant_in(
 			.and_where(Expr::col("tenant").eq(Expr::value(&grant.tenant)))
 			.lock(LockType::KeyShare);
 		if table == "runs" || table == "tasks" {
-			query.and_where(Expr::col("workspace_id").eq(Expr::value(grant.workspace_id)));
+			query.and_where(Expr::col("thread_id").eq(Expr::value(grant.thread_id)));
 		}
 		if table == "runs" {
 			query.and_where(Expr::col("task_id").eq(Expr::value(grant.task_id)));
@@ -573,7 +566,7 @@ pub(crate) async fn persist_grant_in(
 			[
 				"run_id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"tenant",
 				"credential_id",
 				"root_subject",
@@ -585,7 +578,7 @@ pub(crate) async fn persist_grant_in(
 			Query::select()
 				.expr(Expr::value(grant.run_id))
 				.expr(Expr::value(grant.task_id))
-				.expr(Expr::value(grant.workspace_id))
+				.expr(Expr::value(grant.thread_id))
 				.expr(Expr::value(&grant.tenant))
 				.expr(Expr::value(grant.credential_id))
 				.expr(Expr::value(&grant.root_subject))

@@ -422,7 +422,7 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 	if crate::apps::knowledge::services::remote_memory::bind(
 		&home,
 		&mut lease,
-		binding.participant.bank.workspace,
+		binding.participant.bank.thread,
 		&binding.selection,
 		binding.generation.as_ref(),
 	)
@@ -510,7 +510,7 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 			// Match admission: the checked root is outside its content traversal.
 			units::current(
 				&mut lease,
-				unit.bank.workspace,
+				unit.bank.thread,
 				&unit.content.evidence,
 				policy.bounds.max_graph_visits,
 			)

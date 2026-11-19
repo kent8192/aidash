@@ -16,10 +16,10 @@ use uuid::Uuid;
 /// Which Duties a list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Listing {
-	/// Every Duty of one Workspace the person can see: the Duty whose own
-	/// Workspace it is and those registered from it.
-	Workspace(Uuid),
-	/// The person's own Duties, in every Workspace, and those waiting for
+	/// Every Duty of one Thread the person can see: the Duty whose own
+	/// Thread it is and those registered from it.
+	Thread(Uuid),
+	/// The person's own Duties, in every Thread, and those waiting for
 	/// them to take over as the named successor.
 	Mine,
 	/// Every Duty of the Tenant, for holders of `duty.administer`.
@@ -40,10 +40,10 @@ pub trait DutyScope: Send {
 	/// The Duty an Agent's tool call with this key already registered.
 	async fn created_by(&mut self, run: Uuid, key: &str) -> Result<Option<Duty>>;
 	fn now(&self) -> DateTime<Utc>;
-	/// Refuses unless the Tenant's policy allows `action` on the Workspace.
-	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
-	/// Whether the person may see the Workspace.
-	async fn sees_workspace(&mut self, workspace: Uuid) -> Result<bool>;
+	/// Refuses unless the Tenant's policy allows `action` on the Thread.
+	async fn require_thread(&mut self, thread: Uuid, action: &str) -> Result<()>;
+	/// Whether the person may see the Thread.
+	async fn sees_thread(&mut self, thread: Uuid) -> Result<bool>;
 	/// Whether the Tenant's policy allows the person `duty.administer`.
 	async fn administers(&mut self) -> Result<bool>;
 	/// Whether the Tenant's policy lets the person use the mode.
@@ -60,10 +60,10 @@ pub trait DutyScope: Send {
 	/// The Tenant's Duties. The adapter serializes registrations of one
 	/// Tenant so two cannot pass a Tier cap together.
 	async fn count(&mut self) -> Result<i64>;
-	/// Opens the Duty's own Workspace in the Node and Scratch Space of
+	/// Opens the Duty's own Thread in the Node and Scratch Space of
 	/// `from`, created by the Requester, with the Duty's title and its
 	/// mission as the first message (#1008, ADR 0140).
-	async fn open_workspace(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid>;
+	async fn open_thread(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid>;
 	async fn insert(&mut self, duty: &Duty) -> Result<()>;
 	/// Loads and locks a Duty for change.
 	async fn load_for_update(&mut self, id: Uuid) -> Result<Duty>;
@@ -103,15 +103,15 @@ pub struct Detail {
 pub const HISTORY_LIMIT: u32 = 50;
 
 /// Checks everything a definition names as the person who will be its
-/// Requester: the Workspace, the Agent version and the mode.
+/// Requester: the Thread, the Agent version and the mode.
 async fn check_definition(
 	scope: &mut dyn DutyScope,
-	workspace: Uuid,
+	thread: Uuid,
 	definition: &Definition,
 ) -> Result<()> {
 	definition.validate(scope.now())?;
 	// Its Runs start Tasks here, so the Requester must be able to.
-	scope.require_workspace(workspace, "task.create").await?;
+	scope.require_thread(thread, "task.create").await?;
 	scope.require_agent(&definition.agent).await?;
 	if let Some(mode) = definition.approval_mode
 		&& !scope.mode_allowed(mode).await?
@@ -123,21 +123,21 @@ async fn check_definition(
 	Ok(())
 }
 
-/// Registers a Duty from `workspace` acting as the scope's person. The Duty
-/// opens its own Workspace beside it (#1008, ADR 0140).
+/// Registers a Duty from `thread` acting as the scope's person. The Duty
+/// opens its own Thread beside it (#1008, ADR 0140).
 pub async fn register(
 	scope: &mut dyn DutyScope,
-	workspace: Uuid,
+	thread: Uuid,
 	definition: Definition,
 	origin: Origin,
 ) -> Result<Duty> {
-	scope.require_workspace(workspace, "workspace.read").await?;
+	scope.require_thread(thread, "thread.read").await?;
 	if let Origin::Agent { run_id, key } = &origin
 		&& let Some(existing) = scope.created_by(*run_id, key).await?
 	{
 		return Ok(existing);
 	}
-	scope.require_workspace(workspace, duties::CREATE).await?;
+	scope.require_thread(thread, duties::CREATE).await?;
 	let requester = scope.subject().to_owned();
 	// A Duty always acts as one person (ADR 0134): a service or Agent
 	// subject cannot be a Requester, however it authenticated.
@@ -146,15 +146,15 @@ pub async fn register(
 			"a Duty acts as a person, and only a person of the Tenant can register one".into(),
 		));
 	}
-	check_definition(scope, workspace, &definition).await?;
+	check_definition(scope, thread, &definition).await?;
 	let total = scope.count().await?;
 	duties::admit_within_tier(total, scope.tier_cap().await?)?;
 	let now = scope.now();
-	let own = scope.open_workspace(workspace, &definition).await?;
+	let own = scope.open_thread(thread, &definition).await?;
 	let mut duty = Duty {
 		id: Uuid::new_v4(),
-		workspace_id: own,
-		origin_workspace_id: Some(workspace),
+		thread_id: own,
+		origin_thread_id: Some(thread),
 		requester,
 		credential_id: scope.requester_credential().await?,
 		definition,
@@ -196,12 +196,12 @@ async fn visible(scope: &mut dyn DutyScope, id: Uuid, lock: bool) -> Result<Duty
 		scope.load(id).await?
 	};
 	// The named successor sees the Duty they are asked to take over,
-	// even without the Workspace, so they can review and resume it.
+	// even without the Thread, so they can review and resume it.
 	if duty.requester == scope.subject()
 		|| duty.successor.as_deref() == Some(scope.subject())
-		|| scope.sees_workspace(duty.workspace_id).await?
-		|| match duty.origin_workspace_id {
-			Some(origin) => scope.sees_workspace(origin).await?,
+		|| scope.sees_thread(duty.thread_id).await?
+		|| match duty.origin_thread_id {
+			Some(origin) => scope.sees_thread(origin).await?,
 			None => false,
 		} || scope.administers().await?
 	{
@@ -232,11 +232,9 @@ pub async fn update(scope: &mut dyn DutyScope, id: Uuid, patch: Patch) -> Result
 	if patch.is_empty() {
 		return Ok(duty);
 	}
-	scope
-		.require_workspace(duty.workspace_id, duties::CREATE)
-		.await?;
+	scope.require_thread(duty.thread_id, duties::CREATE).await?;
 	let (definition, retimed) = patch.apply(&duty.definition);
-	check_definition(scope, duty.workspace_id, &definition).await?;
+	check_definition(scope, duty.thread_id, &definition).await?;
 	let rewatched = definition.watcher != duty.definition.watcher;
 	duty.definition = definition;
 	let now = scope.now();
@@ -288,10 +286,8 @@ pub async fn resume(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 	)?;
 	// Resuming is registering again: the person must still be allowed to,
 	// within the limits, with what the Duty names.
-	scope
-		.require_workspace(duty.workspace_id, duties::CREATE)
-		.await?;
-	check_definition(scope, duty.workspace_id, &duty.definition).await?;
+	scope.require_thread(duty.thread_id, duties::CREATE).await?;
+	check_definition(scope, duty.thread_id, &duty.definition).await?;
 	if resumption == Resumption::Successor {
 		duty.requester = subject;
 		duty.created_by_run_id = None;
@@ -331,8 +327,8 @@ pub async fn name_successor(scope: &mut dyn DutyScope, id: Uuid, successor: &str
 
 pub async fn list(scope: &mut dyn DutyScope, listing: Listing) -> Result<Vec<Duty>> {
 	match listing {
-		Listing::Workspace(workspace) => {
-			scope.require_workspace(workspace, "workspace.read").await?;
+		Listing::Thread(thread) => {
+			scope.require_thread(thread, "thread.read").await?;
 		}
 		Listing::Mine => {}
 		Listing::Tenant => {
@@ -368,7 +364,7 @@ pub async fn detail(scope: &mut dyn DutyScope, id: Uuid) -> Result<Detail> {
 }
 
 /// What an Agent sends to the Duty tools. The Duty is set up for the person
-/// at the root of the Run's chain, in the Run's Workspace.
+/// at the root of the Run's chain, in the Run's Thread.
 pub mod tool {
 	use aidash_domain::{
 		approval_rules::ApprovalMode,

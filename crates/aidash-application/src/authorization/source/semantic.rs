@@ -20,7 +20,7 @@ pub fn requirements(
 				memory.id != aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
 			}) && agent.allow_cross_conversation_memory != Some(false),
 			memory_available: inspection.semantic_memory == VERSION
-				&& (agent.semantic_memory || agent.workspace_context),
+				&& (agent.semantic_memory || agent.thread_context),
 		},
 	)
 }
@@ -49,23 +49,21 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	if inspection.semantic_memory != VERSION {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
-	if !agent.semantic_memory && !agent.workspace_context {
+	if !agent.semantic_memory && !agent.thread_context {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
 	super::authorize(access, task, node, inspection).await?;
 	let subjects = sending_chain(access);
 	let result = async {
-		let mut workspace = access.source_workspace(task.workspace_id).await?;
-		workspace.attributes["remote_node"] = json!(node);
-		workspace.attributes["inference_model"] = json!(agent.model);
-		access.source_require(&workspace, "semantic.search").await?;
+		let mut thread = access.source_thread(task.thread_id).await?;
+		thread.attributes["remote_node"] = json!(node);
+		thread.attributes["inference_model"] = json!(agent.model);
+		access.source_require(&thread, "semantic.search").await?;
 		// Disclosure is independently selectable in policy; local read/search is
 		// not permission to send text to the execution node and its providers.
-		access
-			.source_require(&workspace, "semantic.disclose")
-			.await?;
+		access.source_require(&thread, "semantic.disclose").await?;
 		let (index, spec) = access
-			.semantic_index(task.workspace_id)
+			.semantic_index(task.thread_id)
 			.await
 			.map_err(|error| {
 				if matches!(error, Error::NotFound(_)) {
@@ -114,7 +112,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 					.transpose()?;
 				Some(Box::new(
 					access
-						.native_binding(task.workspace_id, native, generation.as_ref())
+						.native_binding(task.thread_id, native, generation.as_ref())
 						.await?,
 				))
 			} else {

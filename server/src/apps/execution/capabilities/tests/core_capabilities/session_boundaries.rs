@@ -18,7 +18,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (_, child) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+		&format!("/api/threads/{}/tasks", parent.thread_id),
 		json!({"title":"Child","description":"Dependent work","parent_id":parent.task_id}),
 	)
 	.await;
@@ -41,7 +41,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (_, other) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+		&format!("/api/threads/{}/tasks", parent.thread_id),
 		json!({"title":"Independent","description":"A separate conversation"}),
 	)
 	.await;
@@ -89,12 +89,7 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
 	let predecessor = admit(&c).await;
-	let message = source(
-		&c,
-		predecessor.workspace_id,
-		"Successor-only current file\n",
-	)
-	.await;
+	let message = source(&c, predecessor.thread_id, "Successor-only current file\n").await;
 	let (status, materialized) = common::post(&c.app, &c.token, &format!("/api/runs/{}/files/materialize", predecessor.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}))
 	.await;
 	assert_eq!(status, 200, "{materialized}");
@@ -289,7 +284,7 @@ async fn eligible_approver_is_rechecked_and_preserves_the_original_requester(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn approval_list_and_decision_restore_the_request_workspace_context(
+async fn approval_list_and_decision_restore_the_request_thread_context(
 	#[future] approver_fixture: (CoreFixture, aidash_server::domain::Run, String),
 ) {
 	let (c, run, bob) = Box::pin(approver_fixture).await;
@@ -304,12 +299,12 @@ async fn approval_list_and_decision_restore_the_request_workspace_context(
 		"resources":{"kinds":["outbound"]}
 	}));
 	policies.push(json!({
-		"id":"workspace-bound-approver",
+		"id":"thread-bound-approver",
 		"effect":"allow",
 		"subjects":{"ids":["bob"]},
 		"actions":["capability.approve"],
 		"resources":{"kinds":["outbound"]},
-		"condition":{"op":"eq","left":{"source":"resource","path":"/workspace_id"},"right":{"source":"literal","value":run.workspace_id}}
+		"condition":{"op":"eq","left":{"source":"resource","path":"/thread_id"},"right":{"source":"literal","value":run.thread_id}}
 	}));
 	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
 	let (status, pending) = common::post(
@@ -437,10 +432,10 @@ async fn an_approval_on_a_deleted_node_fails_no_approvals_list(
 	sqlx::query(
 		"INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purge_failures) \
 		 SELECT $1,tenant,node,CURRENT_TIMESTAMP,'deployment_administrator',CURRENT_TIMESTAMP + INTERVAL '1 day',0 \
-		 FROM workspaces WHERE id = $2",
+		 FROM threads WHERE id = $2",
 	)
 	.bind(Uuid::new_v4())
-	.bind(run.workspace_id)
+	.bind(run.thread_id)
 	.execute(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();

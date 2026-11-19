@@ -7,8 +7,8 @@ struct Fake {
 	subject: String,
 	credential: Uuid,
 	now: DateTime<Utc>,
-	/// Workspaces the person holds every action on.
-	workspaces: BTreeSet<Uuid>,
+	/// Threads the person holds every action on.
+	threads: BTreeSet<Uuid>,
 	/// Actions refused everywhere.
 	refused: BTreeSet<&'static str>,
 	administers: bool,
@@ -26,7 +26,7 @@ impl Fake {
 			subject: subject.into(),
 			credential: Uuid::new_v4(),
 			now: "2026-11-13T00:00:00Z".parse().unwrap(),
-			workspaces: BTreeSet::new(),
+			threads: BTreeSet::new(),
 			refused: BTreeSet::new(),
 			administers: false,
 			bypass: false,
@@ -68,15 +68,15 @@ impl DutyScope for Fake {
 	fn now(&self) -> DateTime<Utc> {
 		self.now
 	}
-	async fn require_workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
-		if self.workspaces.contains(&workspace) && !self.refused.contains(action) {
+	async fn require_thread(&mut self, thread: Uuid, action: &str) -> Result<()> {
+		if self.threads.contains(&thread) && !self.refused.contains(action) {
 			Ok(())
 		} else {
 			Err(Error::Forbidden)
 		}
 	}
-	async fn sees_workspace(&mut self, workspace: Uuid) -> Result<bool> {
-		Ok(self.workspaces.contains(&workspace))
+	async fn sees_thread(&mut self, thread: Uuid) -> Result<bool> {
+		Ok(self.threads.contains(&thread))
 	}
 	async fn administers(&mut self) -> Result<bool> {
 		Ok(self.administers)
@@ -112,12 +112,12 @@ impl DutyScope for Fake {
 	async fn count(&mut self) -> Result<i64> {
 		Ok(self.duties.len() as i64)
 	}
-	async fn open_workspace(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid> {
-		assert!(self.workspaces.contains(&from));
+	async fn open_thread(&mut self, from: Uuid, definition: &Definition) -> Result<Uuid> {
+		assert!(self.threads.contains(&from));
 		assert!(!definition.title.is_empty());
 		// The Requester opens it, so they hold everything in it.
 		let own = Uuid::new_v4();
-		self.workspaces.insert(own);
+		self.threads.insert(own);
 		Ok(own)
 	}
 	async fn insert(&mut self, duty: &Duty) -> Result<()> {
@@ -148,8 +148,8 @@ impl DutyScope for Fake {
 			.duties
 			.values()
 			.filter(|duty| match listing {
-				Listing::Workspace(workspace) => {
-					duty.workspace_id == workspace || duty.origin_workspace_id == Some(workspace)
+				Listing::Thread(thread) => {
+					duty.thread_id == thread || duty.origin_thread_id == Some(thread)
 				}
 				Listing::Mine => duty.requester == self.subject,
 				Listing::Tenant => true,
@@ -188,9 +188,9 @@ fn definition() -> Definition {
 	}
 }
 
-fn alice_in(workspace: Uuid) -> Fake {
+fn alice_in(thread: Uuid) -> Fake {
 	let mut fake = Fake::new("alice");
-	fake.workspaces.insert(workspace);
+	fake.threads.insert(thread);
 	fake
 }
 
@@ -198,10 +198,10 @@ fn alice_in(workspace: Uuid) -> Fake {
 #[tokio::test]
 async fn a_registered_duty_acts_as_its_requester_and_knows_its_next_time() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut scope = alice_in(workspace);
+	let thread = Uuid::new_v4();
+	let mut scope = alice_in(thread);
 	// Act
-	let duty = register(&mut scope, workspace, definition(), Origin::Person)
+	let duty = register(&mut scope, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
 	// Assert: Monday 09:00 in Tokyo after Friday 2026-11-13 00:00 UTC.
@@ -217,33 +217,33 @@ async fn a_registered_duty_acts_as_its_requester_and_knows_its_next_time() {
 
 #[rstest]
 #[tokio::test]
-async fn a_duty_opens_its_own_workspace_beside_the_one_it_was_registered_from() {
+async fn a_duty_opens_its_own_thread_beside_the_one_it_was_registered_from() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut scope = alice_in(workspace);
+	let thread = Uuid::new_v4();
+	let mut scope = alice_in(thread);
 	// Act
-	let duty = register(&mut scope, workspace, definition(), Origin::Person)
+	let duty = register(&mut scope, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
-	let again = register(&mut scope, workspace, definition(), Origin::Person)
+	let again = register(&mut scope, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
-	// Assert: each Duty owns a Workspace of its own (#1008, ADR 0140).
-	assert_ne!(duty.workspace_id, workspace);
-	assert_ne!(duty.workspace_id, again.workspace_id);
-	assert!(scope.workspaces.contains(&duty.workspace_id));
+	// Assert: each Duty owns a Thread of its own (#1008, ADR 0140).
+	assert_ne!(duty.thread_id, thread);
+	assert_ne!(duty.thread_id, again.thread_id);
+	assert!(scope.threads.contains(&duty.thread_id));
 }
 
 #[rstest]
 #[tokio::test]
-async fn registering_needs_duty_create_and_task_create_in_the_workspace() {
-	for action in [duties::CREATE, "task.create", "workspace.read"] {
+async fn registering_needs_duty_create_and_task_create_in_the_thread() {
+	for action in [duties::CREATE, "task.create", "thread.read"] {
 		// Arrange
-		let workspace = Uuid::new_v4();
-		let mut scope = alice_in(workspace);
+		let thread = Uuid::new_v4();
+		let mut scope = alice_in(thread);
 		scope.refused.insert(action);
 		// Act
-		let result = register(&mut scope, workspace, definition(), Origin::Person).await;
+		let result = register(&mut scope, thread, definition(), Origin::Person).await;
 		// Assert
 		assert!(matches!(result, Err(Error::Forbidden)), "{action}");
 		assert!(scope.duties.is_empty());
@@ -253,12 +253,12 @@ async fn registering_needs_duty_create_and_task_create_in_the_workspace() {
 #[rstest]
 #[tokio::test]
 async fn only_a_person_registers_a_duty() {
-	// Arrange: a service subject holding every action in the Workspace.
-	let workspace = Uuid::new_v4();
+	// Arrange: a service subject holding every action in the Thread.
+	let thread = Uuid::new_v4();
 	let mut scope = Fake::new("nightly-service");
-	scope.workspaces.insert(workspace);
+	scope.threads.insert(thread);
 	// Act
-	let result = register(&mut scope, workspace, definition(), Origin::Person).await;
+	let result = register(&mut scope, thread, definition(), Origin::Person).await;
 	// Assert
 	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
 	assert!(scope.duties.is_empty());
@@ -267,7 +267,7 @@ async fn only_a_person_registers_a_duty() {
 #[rstest]
 #[tokio::test]
 async fn a_duty_names_only_what_its_requester_may_use() {
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let mut unknown_agent = definition();
 	unknown_agent.agent.version = "9.9.9".into();
 	let mut bypass = definition();
@@ -276,9 +276,9 @@ async fn a_duty_names_only_what_its_requester_may_use() {
 	negative.pause_after_failures = -1;
 	for (case, expect_forbidden) in [(unknown_agent, true), (bypass, false), (negative, false)] {
 		// Arrange
-		let mut scope = alice_in(workspace);
+		let mut scope = alice_in(thread);
 		// Act
-		let result = register(&mut scope, workspace, case, Origin::Person).await;
+		let result = register(&mut scope, thread, case, Origin::Person).await;
 		// Assert
 		match result {
 			Err(Error::Forbidden) => assert!(expect_forbidden),
@@ -294,19 +294,19 @@ async fn a_duty_names_only_what_its_requester_may_use() {
 #[tokio::test]
 async fn any_frequency_and_any_number_of_duties_unless_a_plan_caps_them() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut scope = alice_in(workspace);
+	let thread = Uuid::new_v4();
+	let mut scope = alice_in(thread);
 	let mut every_second = definition();
 	every_second.trigger = Some(Trigger::Interval { every_seconds: 1 });
 	// Act
-	let frequent = register(&mut scope, workspace, every_second, Origin::Person).await;
+	let frequent = register(&mut scope, thread, every_second, Origin::Person).await;
 	for _ in 0..20 {
-		register(&mut scope, workspace, definition(), Origin::Person)
+		register(&mut scope, thread, definition(), Origin::Person)
 			.await
 			.unwrap();
 	}
 	scope.tier = Some(21);
-	let over_plan = register(&mut scope, workspace, definition(), Origin::Person).await;
+	let over_plan = register(&mut scope, thread, definition(), Origin::Person).await;
 	// Assert
 	assert!(frequent.is_ok(), "{frequent:?}");
 	assert_eq!(scope.duties.len(), 21);
@@ -319,13 +319,13 @@ async fn any_frequency_and_any_number_of_duties_unless_a_plan_caps_them() {
 #[tokio::test]
 async fn an_agent_registers_for_the_person_at_its_root_and_the_run_is_kept() {
 	// Arrange
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let run_id = Uuid::new_v4();
-	let mut scope = alice_in(workspace);
+	let mut scope = alice_in(thread);
 	// Act
 	let duty = register(
 		&mut scope,
-		workspace,
+		thread,
 		definition(),
 		Origin::Agent {
 			run_id,
@@ -343,12 +343,12 @@ async fn an_agent_registers_for_the_person_at_its_root_and_the_run_is_kept() {
 #[tokio::test]
 async fn only_the_requester_changes_it_and_a_new_trigger_counts_from_now() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut alice = alice_in(workspace);
-	let duty = register(&mut alice, workspace, definition(), Origin::Person)
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let duty = register(&mut alice, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
-	let mut bob = alice_in(workspace).acting_as("bob");
+	let mut bob = alice_in(thread).acting_as("bob");
 	bob.duties = alice.duties.clone();
 	bob.administers = true;
 	let patch = Patch {
@@ -378,14 +378,14 @@ async fn only_the_requester_changes_it_and_a_new_trigger_counts_from_now() {
 #[tokio::test]
 async fn an_administrator_pauses_but_only_the_requester_resumes() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut alice = alice_in(workspace);
-	let duty = register(&mut alice, workspace, definition(), Origin::Person)
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let duty = register(&mut alice, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
-	// The administrator can see the Workspace and register there too, so
+	// The administrator can see the Thread and register there too, so
 	// nothing but the resume rule refuses them.
-	let mut admin = alice_in(workspace).acting_as("admin");
+	let mut admin = alice_in(thread).acting_as("admin");
 	admin.administers = true;
 	admin.duties = alice.duties.clone();
 	// Act
@@ -408,9 +408,9 @@ async fn an_administrator_pauses_but_only_the_requester_resumes() {
 #[tokio::test]
 async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
 	// Arrange: Alice left; the Duty stopped.
-	let workspace = Uuid::new_v4();
-	let mut alice = alice_in(workspace);
-	let mut duty = register(&mut alice, workspace, definition(), Origin::Person)
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
 	duty.stop(Halt::RequesterLeft, alice.now);
@@ -419,9 +419,9 @@ async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
 	admin.duties.insert(duty.id, duty.clone());
 	// Act
 	let named = name_successor(&mut admin, duty.id, "carol").await.unwrap();
-	let mut carol = alice_in(workspace).acting_as("carol");
+	let mut carol = alice_in(thread).acting_as("carol");
 	carol.duties = admin.duties.clone();
-	let mut bob = alice_in(workspace).acting_as("bob");
+	let mut bob = alice_in(thread).acting_as("bob");
 	bob.duties = admin.duties.clone();
 	let refused = resume(&mut bob, duty.id).await;
 	let taken = resume(&mut carol, duty.id).await.unwrap();
@@ -441,11 +441,11 @@ async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
 
 #[rstest]
 #[tokio::test]
-async fn the_named_successor_sees_the_duty_without_its_workspace() {
-	// Arrange: Alice left, and Carol, who cannot see the Workspace, is named.
-	let workspace = Uuid::new_v4();
-	let mut alice = alice_in(workspace);
-	let mut duty = register(&mut alice, workspace, definition(), Origin::Person)
+async fn the_named_successor_sees_the_duty_without_its_thread() {
+	// Arrange: Alice left, and Carol, who cannot see the Thread, is named.
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let mut duty = register(&mut alice, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
 	duty.stop(Halt::RequesterLeft, alice.now);
@@ -457,18 +457,18 @@ async fn the_named_successor_sees_the_duty_without_its_workspace() {
 	// Act
 	let shown = detail(&mut carol, duty.id).await.unwrap();
 	let hidden = detail(&mut bob, duty.id).await;
-	// Assert: she may take it over; nobody else outside the Workspace sees it.
+	// Assert: she may take it over; nobody else outside the Thread sees it.
 	assert!(!shown.may_edit);
 	assert!(matches!(hidden, Err(Error::NotFound(_))));
 }
 
 #[rstest]
 #[tokio::test]
-async fn others_see_a_duty_only_through_its_workspace() {
+async fn others_see_a_duty_only_through_its_thread() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut alice = alice_in(workspace);
-	let duty = register(&mut alice, workspace, definition(), Origin::Person)
+	let thread = Uuid::new_v4();
+	let mut alice = alice_in(thread);
+	let duty = register(&mut alice, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
 	let mut outsider = Fake::new("bob");
@@ -491,23 +491,23 @@ async fn others_see_a_duty_only_through_its_workspace() {
 #[tokio::test]
 async fn a_retried_agent_call_returns_the_duty_it_registered() {
 	// Arrange
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let run_id = Uuid::new_v4();
-	let mut scope = alice_in(workspace);
+	let mut scope = alice_in(thread);
 	let origin = Origin::Agent {
 		run_id,
 		key: "call-7".into(),
 	};
 	// Act
-	let first = register(&mut scope, workspace, definition(), origin.clone())
+	let first = register(&mut scope, thread, definition(), origin.clone())
 		.await
 		.unwrap();
-	let again = register(&mut scope, workspace, definition(), origin)
+	let again = register(&mut scope, thread, definition(), origin)
 		.await
 		.unwrap();
 	let another = register(
 		&mut scope,
-		workspace,
+		thread,
 		definition(),
 		Origin::Agent {
 			run_id,
@@ -526,9 +526,9 @@ async fn a_retried_agent_call_returns_the_duty_it_registered() {
 #[tokio::test]
 async fn a_watcher_runs_at_the_next_pass_once_set_and_never_once_removed() {
 	// Arrange
-	let workspace = Uuid::new_v4();
-	let mut fake = alice_in(workspace);
-	let duty = register(&mut fake, workspace, definition(), Origin::Person)
+	let thread = Uuid::new_v4();
+	let mut fake = alice_in(thread);
+	let duty = register(&mut fake, thread, definition(), Origin::Person)
 		.await
 		.unwrap();
 	assert_eq!(duty.watcher_next_at, None);

@@ -61,7 +61,7 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::file_share)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(super::views::management::workspace_run)
+			.endpoint(super::views::management::thread_run)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::outbound_get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())

@@ -342,7 +342,7 @@ impl Executor<'_> {
 		self.environment
 			.store()
 			.emit(
-				Some(run.workspace_id),
+				Some(run.thread_id),
 				"mcp.input_failed",
 				json!({"run_id":run.id,"call":checkpoint.key,"code":code}),
 			)

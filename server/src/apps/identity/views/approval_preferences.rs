@@ -120,7 +120,7 @@ pub async fn settings_of(
 }
 
 #[get(
-	"/api/workspaces/{workspace}/approval-mode",
+	"/api/threads/{thread}/approval-mode",
 	name = "thread-approval-mode",
 	auth = "protected"
 )]
@@ -128,13 +128,13 @@ pub async fn thread_mode(
 	#[inject] service: Depends<ApprovalPreferences>,
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 ) -> ViewResult<Response> {
-	json(service.thread_mode(actor, origin, workspace).await)
+	json(service.thread_mode(actor, origin, thread).await)
 }
 
 #[put(
-	"/api/workspaces/{workspace}/approval-mode",
+	"/api/threads/{thread}/approval-mode",
 	name = "thread-approval-mode-update",
 	auth = "protected"
 )]
@@ -142,14 +142,10 @@ pub async fn set_thread_mode(
 	#[inject] service: Depends<ApprovalPreferences>,
 	#[inject] actor: Actor,
 	#[inject] origin: Option<BrowserOrigin>,
-	Path(workspace): Path<Uuid>,
+	Path(thread): Path<Uuid>,
 	Json(input): Json<ThreadModeUpdate>,
 ) -> ViewResult<Response> {
-	json(
-		service
-			.set_thread_mode(actor, origin, workspace, input)
-			.await,
-	)
+	json(service.set_thread_mode(actor, origin, thread, input).await)
 }
 
 #[get(

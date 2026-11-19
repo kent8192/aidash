@@ -32,9 +32,9 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 		access
 			.generation_home(task, node, inspection.generation.as_ref())
 			.await?;
-		let workspace = access.source_workspace(task.workspace_id).await?;
-		access.source_context(workspace.attributes.clone());
-		access.source_require(&workspace, "workspace.read").await?;
+		let thread = access.source_thread(task.thread_id).await?;
+		access.source_context(thread.attributes.clone());
+		access.source_require(&thread, "thread.read").await?;
 		let resource = access.source_task_resource(task).await?;
 		access.source_require(&resource, "task.read").await?;
 		access.source_require(&resource, "task.delegate").await?;

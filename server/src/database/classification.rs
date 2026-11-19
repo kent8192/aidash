@@ -258,7 +258,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "authorization_run_registry_reads", TenantOwned),
 	table("identity", "authorization_run_remote_reads", TenantOwned),
 	table("identity", "authorization_task_origins", TenantOwned),
-	table("identity", "authorization_workspaces", TenantOwned),
+	table("identity", "authorization_threads", TenantOwned),
 	// the Master Key check
 	table("identity", "credential_store_keys", DeploymentWide),
 	table("identity", "credential_store_resources", TenantOwned),
@@ -447,7 +447,7 @@ pub const TABLES: &[Table] = &[
 	table("workspaces", "message_file_versions", TenantOwned),
 	table("workspaces", "task_dependencies", TenantOwned),
 	table("workspaces", "tasks", TenantOwned),
-	table("workspaces", "workspaces", TenantOwned),
+	table("workspaces", "threads", TenantOwned),
 ];
 
 #[cfg(test)]

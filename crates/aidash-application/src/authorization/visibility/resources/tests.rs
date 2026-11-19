@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 fn task() -> Task {
 	Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: String::new(),
 		status: aidash_domain::TaskStatus::Open,
@@ -25,7 +25,7 @@ fn task() -> Task {
 fn artifact() -> Artifact {
 	Artifact {
 		id: Uuid::from_u128(3),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		task_id: Uuid::from_u128(1),
 		kind: "text".into(),
 		name: "Artifact".into(),
@@ -39,7 +39,7 @@ fn artifact() -> Artifact {
 fn message(id: u128, sender: &str) -> Message {
 	Message {
 		id: Uuid::from_u128(id),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		sender: sender.into(),
 		content: "same content".into(),
 		idempotency_key: None,
@@ -50,7 +50,7 @@ fn message(id: u128, sender: &str) -> Message {
 fn human(id: u128) -> HumanRequest {
 	HumanRequest {
 		id: Uuid::from_u128(id),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		run_id: Uuid::from_u128(9),
 		kind: "approval".into(),
 		prompt: String::new(),
@@ -115,12 +115,12 @@ impl ResourceVisibilityScope for Scope {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.touch("workspace")?;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.touch("thread")?;
 		Ok(self.resource(
-			"workspace",
+			"thread",
 			&id.to_string(),
-			json!({"workspace_id":id,"owner":"stored-owner"}),
+			json!({"thread_id":id,"owner":"stored-owner"}),
 		))
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
@@ -139,12 +139,12 @@ impl ResourceVisibilityScope for Scope {
 	async fn artifact_task(&mut self, a: &Artifact) -> Result<Option<Task>> {
 		self.touch("artifact_task")?;
 		self.lookups
-			.push(("artifact_task".into(), a.task_id, Some(a.workspace_id)));
+			.push(("artifact_task".into(), a.task_id, Some(a.thread_id)));
 		Ok(self.task.clone())
 	}
-	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.touch("output")?;
-		self.calls.push(format!("output:{workspace}:{kind}:{id}"));
+		self.calls.push(format!("output:{thread}:{kind}:{id}"));
 		Ok(self.output)
 	}
 	fn cached_human(&self, id: Uuid) -> Option<bool> {
@@ -153,8 +153,8 @@ impl ResourceVisibilityScope for Scope {
 	fn remember_human(&mut self, id: Uuid, allowed: bool) {
 		self.cache.insert(id, allowed);
 	}
-	async fn humans(&mut self, workspace: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
-		assert_eq!(workspace, Uuid::from_u128(2));
+	async fn humans(&mut self, thread: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
+		assert_eq!(thread, Uuid::from_u128(2));
 		assert_eq!(run, Uuid::from_u128(9));
 		self.touch("humans")?;
 		Ok(self.humans.clone())
@@ -172,30 +172,30 @@ impl ResourceAccessScope for Scope {
 }
 #[async_trait]
 impl ResourceEventScope for Scope {
-	async fn event_task(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Task>> {
+	async fn event_task(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Task>> {
 		self.touch("event_task")?;
-		self.lookups.push(("task".into(), id, workspace));
+		self.lookups.push(("task".into(), id, thread));
 		Ok(self.task.clone())
 	}
-	async fn artifact(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Artifact>> {
+	async fn artifact(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Artifact>> {
 		self.touch("artifact")?;
-		self.lookups.push(("artifact".into(), id, workspace));
+		self.lookups.push(("artifact".into(), id, thread));
 		Ok(self.artifact.clone())
 	}
-	async fn messages_id(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Vec<Message>> {
+	async fn messages_id(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Vec<Message>> {
 		self.touch("messages_id")?;
-		self.lookups.push(("message".into(), id, workspace));
+		self.lookups.push(("message".into(), id, thread));
 		Ok(self.messages.clone())
 	}
 	async fn messages_legacy(
 		&mut self,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		sender: Option<&str>,
 		content: Option<&str>,
 	) -> Result<Vec<Message>> {
 		self.touch("messages_legacy")?;
 		self.legacy = Some((
-			workspace,
+			thread,
 			sender.map(str::to_owned),
 			content.map(str::to_owned),
 		));
@@ -207,7 +207,7 @@ fn event(kind: &str, data: Value) -> Event {
 		sequence: 1,
 		id: Uuid::from_u128(10),
 		node: None,
-		workspace_id: Some(Uuid::from_u128(2)),
+		thread_id: Some(Uuid::from_u128(2)),
 		kind: kind.into(),
 		data,
 		created_at: chrono::Utc::now(),
@@ -223,7 +223,7 @@ async fn artifact_disclosure_rechecks_saved_author_parent_task_and_both_output_j
 	assert!(artifact_visible(&mut scope, &artifact).await.unwrap());
 	assert_eq!(
 		scope.decisions[0].attributes,
-		json!({"workspace_id":artifact.workspace_id,"owner":"stored-owner","created_by":"stored-artifact-author","task_id":artifact.task_id,"kind":"text"})
+		json!({"thread_id":artifact.thread_id,"owner":"stored-owner","created_by":"stored-artifact-author","task_id":artifact.task_id,"kind":"text"})
 	);
 	assert_eq!(
 		scope.decisions[1].attributes["created_by"],
@@ -234,7 +234,7 @@ async fn artifact_disclosure_rechecks_saved_author_parent_task_and_both_output_j
 		vec![(
 			"artifact_task".into(),
 			artifact.task_id,
-			Some(artifact.workspace_id)
+			Some(artifact.thread_id)
 		)]
 	);
 	assert_eq!(
@@ -270,7 +270,7 @@ async fn artifact_visibility_never_bypasses_a_hidden_parent_or_producer(
 	if matches!(gate, "artifact.read" | "missing_task" | "task.read") {
 		assert!(!scope.calls.contains(&format!(
 			"output:{}:artifact:{}",
-			artifact.workspace_id, artifact.id
+			artifact.thread_id, artifact.id
 		)));
 	}
 }
@@ -282,7 +282,7 @@ async fn message_authorship_and_sender_are_taken_from_the_saved_row(mut scope: S
 	assert!(message_visible(&mut scope, &m).await.unwrap());
 	assert_eq!(
 		scope.decisions[0].attributes,
-		json!({"workspace_id":m.workspace_id,"owner":"stored-owner","created_by":"stored-sender","sender":"stored-sender"})
+		json!({"thread_id":m.thread_id,"owner":"stored-owner","created_by":"stored-sender","sender":"stored-sender"})
 	);
 }
 
@@ -383,7 +383,7 @@ async fn direct_task_reads_hide_missing_denied_and_tainted_tasks(
 
 #[rstest]
 #[tokio::test]
-async fn related_tasks_must_be_readable_and_in_the_same_workspace(mut scope: Scope) {
+async fn related_tasks_must_be_readable_and_in_the_same_thread(mut scope: Scope) {
 	let input = NewTask {
 		title: String::new(),
 		description: String::new(),
@@ -559,7 +559,7 @@ async fn explicit_message_event_ids_do_not_fall_back_to_same_content_rows(mut sc
 }
 
 #[rstest]
-#[case("workspace")]
+#[case("thread")]
 #[case("artifact.read")]
 #[case("artifact_task")]
 #[case("task.read")]

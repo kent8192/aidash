@@ -369,7 +369,7 @@ async fn resuming_human_input_journals_only_answers_intended_for_the_model(
 ) {
 	let request = HumanRequest {
 		id: Uuid::new_v4(),
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: kind.into(),
 		prompt: "Server-only personal form".into(),

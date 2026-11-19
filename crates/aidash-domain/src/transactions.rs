@@ -16,9 +16,9 @@ pub enum Isolation {
 #[schemars(rename = "TransactionMutation")]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mutation {
-	/// Rename a Workspace (its only mutable attribute).
-	WorkspaceTitle {
-		workspace_id: Uuid,
+	/// Rename a Thread (its only mutable attribute).
+	ThreadTitle {
+		thread_id: Uuid,
 		expected_revision: i64,
 		title: String,
 	},
@@ -97,18 +97,18 @@ impl Manifest {
 			let mut keys = std::collections::BTreeSet::new();
 			for mutation in &participant.mutations {
 				let key = match mutation {
-					Mutation::WorkspaceTitle {
-						workspace_id,
+					Mutation::ThreadTitle {
+						thread_id,
 						expected_revision,
 						title,
 					} => {
 						if *expected_revision < 0 || title.trim().is_empty() {
 							return Err(Error::Invalid(
-								"workspace mutation requires a revision and a title".into(),
+								"thread mutation requires a revision and a title".into(),
 							)
 							.into());
 						}
-						format!("workspace:{workspace_id}")
+						format!("thread:{thread_id}")
 					}
 					Mutation::CompleteTask {
 						task_id,

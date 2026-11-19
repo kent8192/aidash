@@ -13,7 +13,7 @@ pub struct AuthorizationExecution {
 	#[field]
 	pub task_id: uuid::Uuid,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[rel(

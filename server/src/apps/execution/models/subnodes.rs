@@ -29,7 +29,7 @@ pub struct SubnodeRecord {
 	#[field]
 	pub allowance: Json<Value>,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field(field_type = "text", null = true)]
 	pub title: Option<String>,
 	#[field(field_type = "text")]
@@ -47,26 +47,26 @@ pub struct SubnodeRecord {
 }
 
 impl SubnodeRecord {
-	/// The Workspaces of the Subnodes `run` created or works in, ended ones included.
-	pub(crate) async fn workspaces_of_run(
+	/// The Threads of the Subnodes `run` created or works in, ended ones included.
+	pub(crate) async fn threads_of_run(
 		tx: impl crate::database::native::Executor,
 		tenant: &str,
 		run: Uuid,
 	) -> crate::Result<Vec<Uuid>> {
 		let own = Query::select()
-			.column(Alias::new("workspace_id"))
+			.column(Alias::new("thread_id"))
 			.from(Alias::new("authorization_execution"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.to_owned();
 		crate::database::native::query_scalar(
 			&Query::select()
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.from(Alias::new("subnodes"))
 				.and_where(Expr::col("tenant").eq(tenant))
 				.and_where(
 					Expr::col("creator_run_id")
 						.eq(Expr::value(run))
-						.or(Expr::col("workspace_id").in_subquery(own)),
+						.or(Expr::col("thread_id").in_subquery(own)),
 				)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -74,18 +74,18 @@ impl SubnodeRecord {
 		.await
 	}
 
-	/// The Run that created the Subnode owning `workspace`, if a Subnode owns it.
-	pub(crate) async fn creator_of_workspace(
+	/// The Run that created the Subnode owning `thread`, if a Subnode owns it.
+	pub(crate) async fn creator_of_thread(
 		tx: impl crate::database::native::Executor,
 		tenant: &str,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> crate::Result<Option<Uuid>> {
 		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("creator_run_id"))
 				.from(Alias::new("subnodes"))
 				.and_where(Expr::col("tenant").eq(tenant))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(tx)
@@ -142,7 +142,7 @@ fn framework(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 }
 
 impl SubnodeRecord {
-	/// Caller holds the transaction and its workspace or creator lock.
+	/// Caller holds the transaction and its thread or creator lock.
 	pub(crate) async fn domain(self, tx: &mut dyn TransactionExecutor) -> Result<Subnode> {
 		let members = SubnodeMemberRecord::objects()
 			.filter(SubnodeMemberRecord::field_tenant().eq(self.tenant.clone()))
@@ -184,7 +184,7 @@ impl SubnodeRecord {
 			},
 			members,
 			allowance: serde_json::from_value(self.allowance.0)?,
-			workspace_id: self.workspace_id,
+			thread_id: self.thread_id,
 			title: self.title,
 			state,
 			created_at: self.created_at,
@@ -230,7 +230,7 @@ impl SubnodeRecord {
 			leader_agent_id: value.leader.id.clone(),
 			leader_agent_version: value.leader.version.clone(),
 			allowance: Json(serde_json::to_value(&value.allowance)?),
-			workspace_id: value.workspace_id,
+			thread_id: value.thread_id,
 			title: value.title.clone(),
 			state: "active".into(),
 			created_at: value.created_at,

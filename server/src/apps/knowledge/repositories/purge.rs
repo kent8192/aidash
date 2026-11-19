@@ -118,9 +118,9 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 		let mut lease =
 			Lease::deployment(store, DeploymentScopeReason::SemanticMaintenance).await?;
 		let result = async {
-			let workspace: uuid::Uuid = native::query_scalar(
+			let thread: uuid::Uuid = native::query_scalar(
 				&Query::select()
-					.column(Alias::new("workspace_id"))
+					.column(Alias::new("thread_id"))
 					.from(Alias::new("memory_banks"))
 					.and_where(Expr::col("id").eq(Expr::value(bank)))
 					.and_where(crate::database::scope::in_deployment(
@@ -132,7 +132,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			.scalar_optional(&mut **lease.tx())
 			.await?
 			.ok_or(Error::Forbidden)?;
-			repository::lock_workspace(&mut lease, workspace, true).await?;
+			repository::lock_thread(&mut lease, thread, true).await?;
 			let unit = units::load(&mut lease, id, false)
 				.await?
 				.ok_or(Error::Forbidden)?;

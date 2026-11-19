@@ -112,7 +112,7 @@ impl Record {
 	pub fn matches_run(&self, run: &RunMetadata, description: &Description) -> bool {
 		self.source_node == run.home_node
 			&& self.task_id == run.task_id
-			&& description.task.workspace_id == run.workspace_id
+			&& description.task.thread_id == run.thread_id
 			&& description.inspection.agent.id == run.agent_id
 			&& description.inspection.agent.version == run.agent_version
 	}

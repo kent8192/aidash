@@ -1,4 +1,4 @@
-//! The boundary between a Subnode's Workspace and the Workspace of the Run that
+//! The boundary between a Subnode's Thread and the Thread of the Run that
 //! created it, in both directions (#750, #755, ADR 0110).
 //!
 //! The creator here starts from a conversation, and agents hold what a Tenant's
@@ -21,19 +21,19 @@ impl SubnodeRig {
 			app,
 			&token,
 			"POST",
-			"/api/conversations",
+			"/api/threads",
 			json!({"title":"Coordinate","request":"Coordinate the work","target":{"id":"subnode-creator","version":"1.0.0"},"target_kind":"agent"}),
 		)
 		.await;
 		assert_eq!(status, 200, "conversation: {created}");
-		let workspace = Uuid::parse_str(created["workspace"]["id"].as_str().unwrap()).unwrap();
+		let thread = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
 		let creator_run = f
 			.store
 			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.into_iter()
-			.find(|run| run.workspace_id == workspace)
+			.find(|run| run.thread_id == thread)
 			.expect("the conversation started the creator")
 			.id;
 		Self {
@@ -92,7 +92,7 @@ impl SubnodeRig {
 	}
 
 	/// Read the Run's own Task, as a Run started from a conversation does before
-	/// it does anything else. This records a read in its own Workspace.
+	/// it does anything else. This records a read in its own Thread.
 	async fn read_own_task(&self, run: Uuid) {
 		let task = self.f.store.run(&TEST_FIXTURE, run).await.unwrap().task_id;
 		self.call(
@@ -105,7 +105,7 @@ impl SubnodeRig {
 	}
 
 	/// Create a Subnode led by `subnode-leader` and give it a Task. Returns its
-	/// id, its Workspace, the Task and the leader's Run.
+	/// id, its Thread, the Task and the leader's Run.
 	async fn subnode_with_task(&self) -> (Value, Uuid, Uuid, Uuid) {
 		let created = self
 			.call(
@@ -120,7 +120,7 @@ impl SubnodeRig {
 				"create-subnode",
 			)
 			.await;
-		let workspace = Uuid::parse_str(created["workspace_id"].as_str().unwrap()).unwrap();
+		let thread = Uuid::parse_str(created["thread_id"].as_str().unwrap()).unwrap();
 		let given = self
 			.call(
 				self.creator_run,
@@ -132,7 +132,7 @@ impl SubnodeRig {
 		let task = Uuid::parse_str(given["task_id"].as_str().unwrap()).unwrap();
 		(
 			created["subnode_id"].clone(),
-			workspace,
+			thread,
 			task,
 			self.run_of_task(task).await,
 		)
@@ -503,9 +503,9 @@ async fn subnode_member_can_export_only_the_handed_creator_range(
 	cleanup(f, &url, &schema).await;
 }
 
-/// #755: `subnode_task` records a read in the Subnode's Workspace, and the next
+/// #755: `subnode_task` records a read in the Subnode's Thread, and the next
 /// delegation checks that read under an authority that names only the creator's
-/// Workspace.
+/// Thread.
 #[rstest::rstest]
 #[tokio::test]
 async fn creator_delegates_after_giving_its_subnode_a_task(
@@ -591,7 +591,7 @@ async fn creator_delegates_in_the_same_step_as_giving_its_subnode_a_task(
 	cleanup(f, &url, &schema).await;
 }
 
-/// ADR 0110 keeps a Subnode's Workspace with the creator's records once it ends.
+/// ADR 0110 keeps a Subnode's Thread with the creator's records once it ends.
 #[rstest::rstest]
 #[tokio::test]
 async fn creator_delegates_after_its_subnode_ended(
@@ -617,7 +617,7 @@ async fn creator_delegates_after_its_subnode_ended(
 
 /// A Run the creator delegated to reads a Task the creator produced, so its
 /// checks walk the creator's reads too. It still cannot read the Subnode's
-/// Workspace itself.
+/// Thread itself.
 #[rstest::rstest]
 #[tokio::test]
 async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subnode(
@@ -632,7 +632,7 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 	let helper = rig
 		.delegate(rig.creator_run, helper_task, "delegate-target")
 		.await;
-	let (_, workspace, root, _) = rig.subnode_with_task().await;
+	let (_, thread, root, _) = rig.subnode_with_task().await;
 	rig.read_own_task(helper).await;
 	let task = rig.create_task(helper, "from-helper", &[]).await;
 	rig.delegate(helper, task, "subnode-second").await;
@@ -648,7 +648,7 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 	rig.script(
 		helper,
 		"workspace_read",
-		json!({"workspace_id":workspace,"kind":"task","id":root}),
+		json!({"thread_id":thread,"kind":"task","id":root}),
 		"helper-names-subnode",
 	)
 	.await;
@@ -656,7 +656,7 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 		rig.result_of(helper, "helper-names-subnode")
 			.await
 			.is_none(),
-		"only the creator reads the Subnode's Workspace"
+		"only the creator reads the Subnode's Thread"
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -665,7 +665,7 @@ async fn run_the_creator_delegated_to_passes_the_check_but_cannot_read_the_subno
 /// cannot read what the creator had read.
 #[rstest::rstest]
 #[tokio::test]
-async fn member_creates_and_delegates_tasks_when_its_creator_has_read_its_own_workspace(
+async fn member_creates_and_delegates_tasks_when_its_creator_has_read_its_own_thread(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -741,7 +741,7 @@ async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
 	rig.read_own_task(creator).await;
 	rig.call(creator, "agent_discover", json!({}), "creator-discovers")
 		.await;
-	let (subnode, workspace, root, leader) = rig.subnode_with_task().await;
+	let (subnode, thread, root, leader) = rig.subnode_with_task().await;
 	let mut policy = rig.policy.clone();
 	policy["subjects"]["carol"] = json!({"kind":"user"});
 	set_policy(&rig.f, &rig.app, &policy).await;
@@ -764,7 +764,7 @@ async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
 	rig.script(
 		creator,
 		"workspace_read",
-		json!({"workspace_id":workspace,"kind":"task","id":root}),
+		json!({"thread_id":thread,"kind":"task","id":root}),
 		"creator-after-withdrawal",
 	)
 	.await;
@@ -841,7 +841,7 @@ async fn creator_reads_a_members_output_and_then_delegates(
 ) {
 	let rig = SubnodeRig::from_conversation(&f, app).await;
 	rig.read_own_task(rig.creator_run).await;
-	let (_, workspace, _, leader) = rig.subnode_with_task().await;
+	let (_, thread, _, leader) = rig.subnode_with_task().await;
 	rig.read_own_task(leader).await;
 	if member_discovers {
 		rig.call(leader, "agent_discover", json!({}), "member-discovers")
@@ -852,7 +852,7 @@ async fn creator_reads_a_members_output_and_then_delegates(
 		.call(
 			rig.creator_run,
 			"workspace_read",
-			json!({"workspace_id":workspace,"kind":"task","id":output}),
+			json!({"thread_id":thread,"kind":"task","id":output}),
 			"creator-reads-member",
 		)
 		.await;
@@ -942,7 +942,7 @@ async fn parent_depends_on_a_task_its_child_created_after_discovering_other_agen
 
 /// A member that discovered agents writes to the Run that created its Subnode, and
 /// a policy for what it discovered is then withdrawn or not (#793). Returns what
-/// carol, a person in the creator's Workspace, and the creator's next call see.
+/// carol, a person in the creator's Thread, and the creator's next call see.
 async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, bool) {
 	const TEXT: &str = "Investigation complete";
 	let creator = rig.creator_run;
@@ -964,7 +964,7 @@ async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, 
 		.run(&TEST_FIXTURE, creator)
 		.await
 		.unwrap()
-		.workspace_id;
+		.thread_id;
 	let mut policy = rig.policy.clone();
 	policy["subjects"]["carol"] = json!({"kind":"user"});
 	set_policy(&rig.f, &rig.app, &policy).await;
@@ -986,7 +986,7 @@ async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, 
 		&rig.app,
 		carol,
 		"GET",
-		&format!("/api/workspaces/{home}/message-history"),
+		&format!("/api/threads/{home}/message-history"),
 		Value::Null,
 	)
 	.await;

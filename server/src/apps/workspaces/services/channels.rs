@@ -18,17 +18,17 @@ pub async fn channels(#[inject] runtime: Federation, #[inject] actor: Actor) -> 
 impl Channels {
 	pub async fn post_message(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: ChannelMessageInput,
 	) -> Result<ChannelMessage> {
 		crate::http::validate(&input)?;
 		let mut lease =
-			Lease::begin_message_create(&self.runtime.store, self.actor.clone(), workspace).await?;
+			Lease::begin_message_create(&self.runtime.store, self.actor.clone(), thread).await?;
 		let result = posting::post(
 			&self.runtime.store,
 			Some(&self.runtime),
 			&mut lease,
-			workspace,
+			thread,
 			input,
 		)
 		.await;
@@ -37,7 +37,7 @@ impl Channels {
 				let mut attachments: Vec<_> = message.attachments.iter_mut().collect();
 				super::readability::annotate(
 					&mut lease,
-					workspace,
+					thread,
 					self.runtime.config.deployment.as_str(),
 					&mut attachments,
 				)
@@ -50,19 +50,19 @@ impl Channels {
 	}
 	pub async fn history(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: ChannelHistoryQuery,
 	) -> Result<ChannelMessagePage> {
 		crate::http::validate(&input)?;
 		let mut lease = Lease::begin(
 			&self.runtime.store,
 			self.actor.clone(),
-			workspace,
-			"workspace.read",
+			thread,
+			"thread.read",
 		)
 		.await?;
 		lease.access_mut().lists = true;
-		let result = history::page(&self.runtime.store, &mut lease, workspace, input).await;
+		let result = history::page(&self.runtime.store, &mut lease, thread, input).await;
 		let result = match result {
 			Ok(mut page) => {
 				let mut attachments: Vec<_> = page
@@ -72,7 +72,7 @@ impl Channels {
 					.collect();
 				super::readability::annotate(
 					&mut lease,
-					workspace,
+					thread,
 					self.runtime.config.deployment.as_str(),
 					&mut attachments,
 				)
@@ -85,7 +85,7 @@ impl Channels {
 	}
 	pub async fn upload(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		input: ChannelAttachmentUploadQuery,
 		body: &[u8],
 	) -> Result<ChannelAttachment> {
@@ -93,16 +93,16 @@ impl Channels {
 		let mut lease = Lease::begin(
 			&self.runtime.store,
 			self.actor.clone(),
-			workspace,
+			thread,
 			"message.create",
 		)
 		.await?;
 		let result =
-			attachments::upload(&self.runtime.store, &mut lease, workspace, input, body).await;
+			attachments::upload(&self.runtime.store, &mut lease, thread, input, body).await;
 		let result = match result {
 			Ok(mut attachment) => super::readability::annotate(
 				&mut lease,
-				workspace,
+				thread,
 				self.runtime.config.deployment.as_str(),
 				&mut [&mut attachment],
 			)
@@ -114,7 +114,7 @@ impl Channels {
 	}
 	pub async fn describe(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		attachment: Uuid,
 		input: ChannelAttachmentDescription,
 	) -> Result<ChannelAttachment> {
@@ -122,14 +122,14 @@ impl Channels {
 		let mut lease = Lease::begin(
 			&self.runtime.store,
 			self.actor.clone(),
-			workspace,
+			thread,
 			"message.create",
 		)
 		.await?;
 		let result = attachments::describe(
 			&self.runtime.store,
 			&mut lease,
-			workspace,
+			thread,
 			attachment,
 			&input.description,
 		)
@@ -138,18 +138,18 @@ impl Channels {
 	}
 	pub async fn download(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		attachment: Uuid,
 	) -> Result<(ChannelAttachment, Vec<u8>)> {
 		let mut lease = Lease::begin(
 			&self.runtime.store,
 			self.actor.clone(),
-			workspace,
-			"workspace.read",
+			thread,
+			"thread.read",
 		)
 		.await?;
 		let result =
-			attachments::download(&self.runtime.store, &mut lease, workspace, attachment).await;
+			attachments::download(&self.runtime.store, &mut lease, thread, attachment).await;
 		lease.finish(result).await
 	}
 }

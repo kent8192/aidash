@@ -30,14 +30,14 @@ pub struct HumanPage {
 	pub unconfirmed: Vec<Unconfirmed>,
 }
 
-pub async fn workspace_runs(
+pub async fn thread_runs(
 	scope: &mut dyn Scope,
-	workspace: Uuid,
+	thread: Uuid,
 	live: bool,
 	cursor: Option<Uuid>,
 ) -> Result<RunPage> {
-	scope.require_workspace(workspace).await?;
-	let rows = scope.workspace_runs(workspace, live, cursor).await?;
+	scope.require_thread(thread).await?;
+	let rows = scope.thread_runs(thread, live, cursor).await?;
 	let next_cursor =
 		(rows.len() == PAGE_SIZE).then(|| rows.last().unwrap().metadata.id.to_string());
 	let mut items = Vec::new();
@@ -49,7 +49,7 @@ pub async fn workspace_runs(
 		match run {
 			Some(run) => items.push(run.into()),
 			None => {
-				unconfirmed.settle(silence, Kind::Run, row.metadata.workspace_id, false);
+				unconfirmed.settle(silence, Kind::Run, row.metadata.thread_id, false);
 			}
 		}
 	}
@@ -73,11 +73,11 @@ pub async fn runs(scope: &mut dyn Scope, task: Uuid, cursor: Option<Uuid>) -> Re
 		scope.begin_row();
 		let run = scope.visible_run(row.metadata.id).await?;
 		let silence = scope.take_row_silence();
-		let workspace = row.metadata.workspace_id;
+		let thread = row.metadata.thread_id;
 		match run {
 			Some(run) => items.push(run.into()),
 			None => {
-				unconfirmed.settle(silence, Kind::Run, workspace, false);
+				unconfirmed.settle(silence, Kind::Run, thread, false);
 			}
 		}
 	}
@@ -95,7 +95,7 @@ pub async fn humans(
 	cursor: Option<Uuid>,
 ) -> Result<HumanPage> {
 	let mut visible = HashMap::new();
-	let mut workspaces = HashMap::new();
+	let mut threads = HashMap::new();
 	if let Some(id) = run {
 		visible.insert(id, Some(scope.require_run(id).await?));
 	}
@@ -106,12 +106,10 @@ pub async fn humans(
 	// The Node each hidden Run's check gave up on, for the requests that follow it.
 	let mut silent: HashMap<Uuid, String> = HashMap::new();
 	for mut request in rows {
-		if let std::collections::hash_map::Entry::Vacant(entry) =
-			workspaces.entry(request.workspace_id)
-		{
-			entry.insert(scope.workspace_allowed(request.workspace_id).await?);
+		if let std::collections::hash_map::Entry::Vacant(entry) = threads.entry(request.thread_id) {
+			entry.insert(scope.thread_allowed(request.thread_id).await?);
 		}
-		if !workspaces[&request.workspace_id] {
+		if !threads[&request.thread_id] {
 			continue;
 		}
 		if let std::collections::hash_map::Entry::Vacant(entry) = visible.entry(request.run_id) {
@@ -128,7 +126,7 @@ pub async fn humans(
 			if let Some(node) = silent.get(&request.run_id) {
 				let resource = scope.human_resource(&request).await?;
 				if scope.decide(&resource, "human.read").await? {
-					unconfirmed.record(node, Kind::HumanRequest, request.workspace_id);
+					unconfirmed.record(node, Kind::HumanRequest, request.thread_id);
 				}
 			}
 			continue;
@@ -164,15 +162,10 @@ mod tests {
 	impl crate::ports::authorization::visibility::RowOutcome for Hidden {}
 	#[async_trait]
 	impl Scope for Hidden {
-		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+		async fn require_thread(&mut self, _: Uuid) -> Result<()> {
 			unreachable!()
 		}
-		async fn workspace_runs(
-			&mut self,
-			_: Uuid,
-			_: bool,
-			_: Option<Uuid>,
-		) -> Result<Vec<RawRun>> {
+		async fn thread_runs(&mut self, _: Uuid, _: bool, _: Option<Uuid>) -> Result<Vec<RawRun>> {
 			unreachable!()
 		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
@@ -191,7 +184,7 @@ mod tests {
 					metadata: RunMetadata {
 						id: Uuid::from_u128(id),
 						task_id: Uuid::from_u128(90),
-						workspace_id: Uuid::from_u128(91),
+						thread_id: Uuid::from_u128(91),
 						node: "brave-otter-k3m9q2xa".parse().unwrap(),
 						home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 						agent_id: "agent".into(),
@@ -222,7 +215,7 @@ mod tests {
 		) -> Result<Vec<HumanRequest>> {
 			unreachable!()
 		}
-		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+		async fn thread_allowed(&mut self, _: Uuid) -> Result<bool> {
 			Ok(true)
 		}
 		async fn human_resource(&mut self, _: &HumanRequest) -> Result<Resource> {
@@ -250,15 +243,10 @@ mod tests {
 	impl crate::ports::authorization::visibility::RowOutcome for Requests {}
 	#[async_trait]
 	impl Scope for Requests {
-		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+		async fn require_thread(&mut self, _: Uuid) -> Result<()> {
 			unreachable!()
 		}
-		async fn workspace_runs(
-			&mut self,
-			_: Uuid,
-			_: bool,
-			_: Option<Uuid>,
-		) -> Result<Vec<RawRun>> {
+		async fn thread_runs(&mut self, _: Uuid, _: bool, _: Option<Uuid>) -> Result<Vec<RawRun>> {
 			unreachable!()
 		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
@@ -284,7 +272,7 @@ mod tests {
 			Ok((1..=2)
 				.map(|id| HumanRequest {
 					id: Uuid::from_u128(id),
-					workspace_id: self.run.workspace_id,
+					thread_id: self.run.thread_id,
 					run_id: self.run.id,
 					kind: "QUESTION".into(),
 					prompt: "Question".into(),
@@ -295,7 +283,7 @@ mod tests {
 				})
 				.collect())
 		}
-		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+		async fn thread_allowed(&mut self, _: Uuid) -> Result<bool> {
 			Ok(true)
 		}
 		async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
@@ -359,15 +347,10 @@ mod tests {
 	}
 	#[async_trait]
 	impl Scope for Mixed {
-		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+		async fn require_thread(&mut self, _: Uuid) -> Result<()> {
 			unreachable!()
 		}
-		async fn workspace_runs(
-			&mut self,
-			_: Uuid,
-			_: bool,
-			_: Option<Uuid>,
-		) -> Result<Vec<RawRun>> {
+		async fn thread_runs(&mut self, _: Uuid, _: bool, _: Option<Uuid>) -> Result<Vec<RawRun>> {
 			unreachable!()
 		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
@@ -396,7 +379,7 @@ mod tests {
 		) -> Result<Vec<HumanRequest>> {
 			let request = |id: u128, prompt: &str| HumanRequest {
 				id: Uuid::from_u128(id),
-				workspace_id: Uuid::from_u128(91),
+				thread_id: Uuid::from_u128(91),
 				run_id: Uuid::from_u128(1),
 				kind: "QUESTION".into(),
 				prompt: prompt.into(),
@@ -407,7 +390,7 @@ mod tests {
 			};
 			Ok(vec![request(70, "readable"), request(71, "hidden")])
 		}
-		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+		async fn thread_allowed(&mut self, _: Uuid) -> Result<bool> {
 			Ok(true)
 		}
 		async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
@@ -433,7 +416,7 @@ mod tests {
 			vec![Unconfirmed {
 				node: "aidash://other/silent".into(),
 				kind: Kind::Run,
-				workspace_id: Uuid::from_u128(91),
+				thread_id: Uuid::from_u128(91),
 				count: 3,
 			}]
 		);
@@ -452,7 +435,7 @@ mod tests {
 			vec![Unconfirmed {
 				node: "aidash://other/silent".into(),
 				kind: Kind::HumanRequest,
-				workspace_id: Uuid::from_u128(91),
+				thread_id: Uuid::from_u128(91),
 				count: 1,
 			}]
 		);

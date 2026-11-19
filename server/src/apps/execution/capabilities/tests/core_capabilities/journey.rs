@@ -173,7 +173,7 @@ async fn journey_fixture(
 	} = peers;
 	let server = _provider.await;
 	let receiver = admit(&peer).await;
-	*recipient.lock().unwrap() = json!({"node_id":common::default_node(&peer.f.store,"acme").await,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
+	*recipient.lock().unwrap() = json!({"node_id":common::default_node(&peer.f.store,"acme").await,"agent_id":"research","agent_version":"1.1.0","thread_id":receiver.thread_id});
 	let (status, result) = common::post(
 		&c.app,
 		&c.token,

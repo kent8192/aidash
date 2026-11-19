@@ -122,8 +122,8 @@ impl RetentionScope for Scope<'_> {
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access

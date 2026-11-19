@@ -389,7 +389,7 @@ async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 		..Default::default()
 	};
 	let node = NodeName::derived("conversation");
-	let id = select_for_workspace(&mut scope, &node, "New conversation", None, now)
+	let id = select_for_thread(&mut scope, &node, "New conversation", None, now)
 		.await
 		.unwrap();
 	assert_eq!(scope.spaces[&id].creator, "alice");
@@ -399,7 +399,7 @@ async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 		HostAllowlist::Hosts(BTreeSet::new())
 	);
 	assert_eq!(
-		select_for_workspace(
+		select_for_thread(
 			&mut scope,
 			&node,
 			"Other",
@@ -413,12 +413,12 @@ async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 	assert_eq!(scope.spaces[&id].last_used_at, now + Duration::days(1));
 	let other_node = NodeName::derived("other");
 	assert!(matches!(
-		select_for_workspace(&mut scope, &other_node, "Other", Some(id), now).await,
+		select_for_thread(&mut scope, &other_node, "Other", Some(id), now).await,
 		Err(Error::Forbidden)
 	));
 	scope.person = "bob".into();
 	assert!(matches!(
-		select_for_workspace(&mut scope, &node, "Other", Some(id), now).await,
+		select_for_thread(&mut scope, &node, "Other", Some(id), now).await,
 		Err(Error::Forbidden)
 	));
 }
@@ -453,7 +453,7 @@ async fn members_can_use_services_already_shared_with_the_space() {
 	scope.person = "bob".into();
 	scope.deny_references = true;
 	assert_eq!(
-		select_for_workspace(&mut scope, &space.node, "reuse", Some(space.id), now)
+		select_for_thread(&mut scope, &space.node, "reuse", Some(space.id), now)
 			.await
 			.unwrap(),
 		space.id
@@ -478,7 +478,7 @@ async fn members_can_use_services_already_shared_with_the_space() {
 }
 
 #[tokio::test]
-async fn a_workspace_gets_its_dedicated_space_without_scratch_create() {
+async fn a_thread_gets_its_dedicated_space_without_scratch_create() {
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 	let node: NodeName = "brave-otter-k3m9q2xa".parse().unwrap();
 	let mut scope = Memory {
@@ -486,7 +486,7 @@ async fn a_workspace_gets_its_dedicated_space_without_scratch_create() {
 		deny_create: true,
 		..Default::default()
 	};
-	let id = select_for_workspace(&mut scope, &node, "Project", None, now)
+	let id = select_for_thread(&mut scope, &node, "Project", None, now)
 		.await
 		.unwrap();
 	assert_eq!(scope.spaces[&id].creator, "alice");
@@ -517,7 +517,7 @@ async fn expired_space_is_visible_and_revived_on_authorized_run() {
 		1
 	);
 	assert_eq!(
-		select_for_workspace(&mut scope, &space.node, "Next", Some(space.id), expired)
+		select_for_thread(&mut scope, &space.node, "Next", Some(space.id), expired)
 			.await
 			.unwrap(),
 		space.id
@@ -682,7 +682,7 @@ async fn dedicated_space_defaults_fit_current_resource_ceilings() {
 		..Default::default()
 	};
 	let node = NodeName::derived("limited");
-	let id = select_for_workspace(&mut scope, &node, "Limited", None, now)
+	let id = select_for_thread(&mut scope, &node, "Limited", None, now)
 		.await
 		.unwrap();
 	assert_eq!(scope.spaces[&id].settings.cpu_millis, ceilings.cpu_millis);

@@ -17,9 +17,9 @@ fn effect_commands_use_the_durable_replay_journal(#[case] operation: &str) {
 #[rstest]
 #[case::task("task")]
 #[case::snapshot("snapshot")]
-#[case::record("workspace_record")]
-#[case::chunk("workspace_record_chunk")]
-#[case::children("workspace_children")]
+#[case::record("thread_record")]
+#[case::chunk("thread_record_chunk")]
+#[case::children("thread_children")]
 #[case::unknown("unknown")]
 fn reads_and_unknown_commands_do_not_enter_the_mutation_journal(#[case] operation: &str) {
 	assert!(!prepare(operation, &json!({})).unwrap().mutation);

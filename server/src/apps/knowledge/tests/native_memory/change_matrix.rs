@@ -24,11 +24,11 @@ async fn every_unit_change_fences_a_dependent_run_regardless_of_its_shape(
 ) {
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -148,11 +148,11 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 ) {
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -175,7 +175,7 @@ async fn concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers(
 	.await
 	.unwrap();
 	let (scope, first_reader) = recorded_run(&store, &bank, &[id]).await;
-	let second_reader = another_reader(&store, workspace, first_reader).await;
+	let second_reader = another_reader(&store, thread, first_reader).await;
 	assert!(run_visible(&scope, &store, second_reader).await);
 	let correct = |text: &str| {
 		mutation(
@@ -249,12 +249,12 @@ async fn an_identical_write_changes_nothing_but_still_checks_its_revision(
 ) {
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let actor = administrator(&store).await;
 	let bank = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -371,12 +371,12 @@ async fn an_identical_write_fails_when_its_batch_changes_what_it_cites(
 ) {
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let actor = administrator(&store).await;
 	let bank = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -460,12 +460,12 @@ async fn an_identical_write_fails_when_its_batch_changes_what_it_cites(
 }
 
 /// A second Run, for its own Task, with the same Binding and read journal as `run`.
-async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
+async fn another_reader(store: &Store, thread: Uuid, run: Uuid) -> Uuid {
 	use aidash_server::database::native;
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&aidash_domain::NewTask {
 				title: "Second reader".into(),
 				description: "Read the same shared Unit".into(),
@@ -486,7 +486,7 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 			"id",
 			Some(("task_id", task.id)),
 			&[
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -576,11 +576,11 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 	let server = reinhardt::test::fixtures::test_server_guard(router).await;
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -739,11 +739,11 @@ async fn impact_answers_a_foreign_unit_like_an_unknown_id(
 	use aidash_server::apps::knowledge::services::memory_impact::impact;
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -828,7 +828,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	use aidash_server::{apps::knowledge::services::memory_impact::impact, database::native};
 	// Arrange
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_retention(
+	let (store, _, thread) = setup_endpoint_retention(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -839,7 +839,7 @@ async fn impact_reports_only_live_units_and_fences_expired_reads(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

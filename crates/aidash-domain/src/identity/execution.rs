@@ -14,7 +14,7 @@ pub struct ExecutionPrincipal {
 pub struct ExecutionGrant {
 	pub run_id: Uuid,
 	pub task_id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub tenant: String,
 	pub credential_id: Uuid,
 	pub root_subject: String,
@@ -30,14 +30,14 @@ impl ExecutionGrant {
 		run.is_local(deployment)
 			&& self.run_id == run.id
 			&& self.task_id == run.task_id
-			&& self.workspace_id == run.workspace_id
+			&& self.thread_id == run.thread_id
 			&& self.agent_matches(&run.home_node, run)
 	}
 	pub fn matches_inherited(&self, identity: &ExecutionPrincipal, run: &RunMetadata) -> bool {
 		self.tenant == identity.tenant
 			&& self.root_subject == identity.subject
 			&& self.task_id == run.task_id
-			&& self.workspace_id == run.workspace_id
+			&& self.thread_id == run.thread_id
 			&& self.agent_matches(&run.home_node, run)
 	}
 	pub fn matches_refreshed(
@@ -48,7 +48,7 @@ impl ExecutionGrant {
 	) -> bool {
 		self.run_id == run.id
 			&& self.task_id == run.task_id
-			&& self.workspace_id == run.workspace_id
+			&& self.thread_id == run.thread_id
 			&& self.tenant == identity.tenant
 			&& self.root_subject == identity.subject
 			&& self.credential_id == identity.credential_id

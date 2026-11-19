@@ -17,9 +17,9 @@ pub trait SessionScope: Send {
 	fn admission(&self) -> Result<bool>;
 	fn set_context(&mut self, context: Value);
 	fn resource(&self, kind: &str, id: Uuid, attributes: Value) -> Resource;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()>;
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<()>;
 	async fn agent(&mut self, reference: &EntityRef) -> Result<()>;
 	/// Whether Reference files an Area was given can still be used (ADR 0114).
 	async fn references(&mut self, ids: &[Uuid]) -> Result<()>;
@@ -29,10 +29,10 @@ pub trait SessionScope: Send {
 	async fn context_area(&mut self, run_id: Uuid) -> Result<Option<Area>>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
 	async fn parent_areas(&mut self, id: Uuid) -> Result<Vec<Area>>;
-	/// Lock the Workspace whose Working Area a Run is admitted to, refusing a
+	/// Lock the Thread whose Working Area a Run is admitted to, refusing a
 	/// deleted one.
-	async fn lock_thread(&mut self, workspace: Uuid) -> Result<()>;
-	/// The Working Area of (home Node, Workspace, Agent, owner) for `task`.
+	async fn lock_thread(&mut self, thread: Uuid) -> Result<()>;
+	/// The Working Area of (home Node, Thread, Agent, owner) for `task`.
 	async fn ensure_area(&mut self, task: &Task, agent_id: &str) -> Result<Area>;
 	async fn initialized(&mut self, run_id: Uuid) -> Result<Option<bool>>;
 	async fn initialized_locked(&mut self, run_id: Uuid) -> Result<bool>;
@@ -43,5 +43,5 @@ pub trait SessionScope: Send {
 	async fn last(&mut self, area: &Area) -> Result<Option<(Uuid, String)>>;
 	async fn previous(&mut self, key: Uuid) -> Result<Option<(String, Value)>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 }

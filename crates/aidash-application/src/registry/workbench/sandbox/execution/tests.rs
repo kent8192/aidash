@@ -248,7 +248,7 @@ fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
 		),
 		("tool", "aidash.research.page.fetch", "tool.call_unapproved")
 	);
-	assert!(result.resource.attributes.get("workspace_id").is_none());
+	assert!(result.resource.attributes.get("thread_id").is_none());
 }
 #[async_trait]
 impl SandboxScope for Scope<'_> {
@@ -561,7 +561,7 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 }
 #[tokio::test]
 async fn deferred_load_results_reshape_the_next_request() {
-	// Arrange: a deferred Agent whose default workspace tools are Discoverable.
+	// Arrange: a deferred Agent whose default thread tools are Discoverable.
 	let mut repository = Repository::new();
 	repository.entry.config["exposure"] = json!({"version":"deferred@1"});
 	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);

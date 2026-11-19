@@ -20,8 +20,8 @@ mod task_dependencies;
 pub use task_dependencies::TaskDependency;
 mod tasks;
 pub use tasks::Task;
-mod workspaces;
-pub use workspaces::Workspace;
+mod threads;
+pub use threads::Thread;
 
 pub mod states;
 

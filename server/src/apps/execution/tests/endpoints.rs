@@ -1,4 +1,4 @@
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
+use crate::endpoint::{EndpointFixture, assert_json, endpoint, thread};
 use rstest::rstest;
 use serde_json::json;
 
@@ -13,22 +13,22 @@ async fn public_health_and_openapi_use_the_registered_routes(#[future] endpoint:
 	// Assert
 	assert_eq!(assert_json(health, 200)["status"], "ok");
 	let schema = assert_json(schema, 200);
-	assert!(schema["paths"]["/api/workspaces"].is_object());
+	assert!(schema["paths"]["/api/threads"].is_object());
 }
 
 #[rstest]
 #[tokio::test]
-async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint: EndpointFixture) {
+async fn event_queries_honor_thread_and_cursor_parameters(#[future] endpoint: EndpointFixture) {
 	// Arrange
 	let app = endpoint.await;
 	let (member, _) = crate::endpoint::tenant_member(&app).await;
-	let selected = workspace(&member, "Selected").await;
+	let selected = thread(&member, "Selected").await;
 	let id = selected["id"].as_str().unwrap();
-	workspace(&member, "Excluded").await;
+	thread(&member, "Excluded").await;
 	assert_json(
 		member
 			.patch(
-				&format!("/api/workspaces/{id}"),
+				&format!("/api/threads/{id}"),
 				&json!({"revision":0,"title":"Step"}),
 				"json",
 			)
@@ -39,7 +39,7 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 	// Act
 	let first = assert_json(
 		member
-			.get(&format!("/api/events?workspace_id={id}&after=0"))
+			.get(&format!("/api/events?thread_id={id}&after=0"))
 			.await
 			.unwrap(),
 		200,
@@ -47,7 +47,7 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 		.clone();
 	let cursor = first[0]["sequence"].as_i64().unwrap();
 	let next = member
-		.get(&format!("/api/events?workspace_id={id}&after={cursor}"))
+		.get(&format!("/api/events?thread_id={id}&after={cursor}"))
 		.await
 		.unwrap();
 	// Assert
@@ -57,11 +57,11 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|event| event["workspace_id"] == id)
+			.all(|event| event["thread_id"] == id)
 	);
 	let next = assert_json(next, 200)["events"].clone();
 	assert_eq!(next.as_array().unwrap().len(), 1);
-	assert_eq!(next[0]["kind"], "workspace.updated");
+	assert_eq!(next[0]["kind"], "thread.updated");
 	assert!(next[0]["sequence"].as_i64().unwrap() > cursor);
 }
 
@@ -86,11 +86,11 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 			},
 		)));
 	let (member, token) = crate::endpoint::tenant_member(&app).await;
-	let selected = workspace(&member, "Stream selection").await;
+	let selected = thread(&member, "Stream selection").await;
 	let id = selected["id"].as_str().unwrap();
-	workspace(&member, "Excluded from stream").await;
+	thread(&member, "Excluded from stream").await;
 	let client = http_client.clone();
-	let url = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
+	let url = format!("{}/api/events/stream?thread_id={id}", app.server.url);
 	// Act
 	let mut response = client.get(&url).bearer_auth(&token).send().await.unwrap();
 	// Assert
@@ -98,7 +98,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 	assert_eq!(response.headers()["content-type"], "text/event-stream");
 	assert!(!response.headers().contains_key("content-length"));
 	let first = next_frame(&mut response).await;
-	assert!(first.contains("workspace.created"), "{first}");
+	assert!(first.contains("thread.created"), "{first}");
 	assert!(first.contains(id), "{first}");
 	assert!(!first.contains("Excluded from stream"));
 	let cursor = first
@@ -108,7 +108,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 	assert_json(
 		member
 			.patch(
-				&format!("/api/workspaces/{id}"),
+				&format!("/api/threads/{id}"),
 				&json!({
 					"revision":0, "title":"Live"
 				}),
@@ -119,7 +119,7 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 		200,
 	);
 	let next = next_frame(&mut response).await;
-	assert!(next.contains("workspace.updated"), "{next}");
+	assert!(next.contains("thread.updated"), "{next}");
 	drop(response);
 	let mut resumed = client
 		.get(&url)
@@ -129,11 +129,8 @@ async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 		.await
 		.unwrap();
 	let resumed_frame = next_frame(&mut resumed).await;
-	assert!(
-		resumed_frame.contains("workspace.updated"),
-		"{resumed_frame}"
-	);
-	assert!(!resumed_frame.contains("workspace.created"));
+	assert!(resumed_frame.contains("thread.updated"), "{resumed_frame}");
+	assert!(!resumed_frame.contains("thread.created"));
 }
 
 #[rstest]
@@ -142,19 +139,19 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 	#[future] endpoint: EndpointFixture,
 	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
 ) {
-	// Arrange: a Tenant Subject has a Workspace with events.
+	// Arrange: a Tenant Subject has a Thread with events.
 	let app = endpoint.await;
 	let (member, _) = crate::endpoint::tenant_member(&app).await;
-	let selected = workspace(&member, "Private to the Tenant").await;
+	let selected = thread(&member, "Private to the Tenant").await;
 	let id = selected["id"].as_str().unwrap();
 	let other = crate::endpoint::tenant_token(&app.runtime.store, "globex").await;
 	let administrator = &app.runtime.config.api_token;
-	let stream = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
+	let stream = format!("{}/api/events/stream?thread_id={id}", app.server.url);
 
 	// Act and Assert: the shared bearer is refused on event reads.
 	for path in [
 		"/api/events".to_owned(),
-		format!("/api/events?workspace_id={id}&after=0"),
+		format!("/api/events?thread_id={id}&after=0"),
 	] {
 		let response = app.deployment_administrator.get(&path).await.unwrap();
 		assert_eq!(response.status_code(), 403, "{path}");
@@ -170,7 +167,7 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 		assert_eq!(response.status(), 403, "{cursor:?}");
 		assert!(!response.text().await.unwrap().contains(id), "{cursor:?}");
 	}
-	// Without a Workspace filter the stream is still Tenant content: refused.
+	// Without a Thread filter the stream is still Tenant content: refused.
 	let unfiltered = http_client
 		.get(format!("{}/api/events/stream", app.server.url))
 		.bearer_auth(administrator)
@@ -182,7 +179,7 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 	// Another Tenant's Subject sees none of this Tenant's events.
 	let response = http_client
 		.get(format!(
-			"{}/api/events?workspace_id={id}&after=0",
+			"{}/api/events?thread_id={id}&after=0",
 			app.server.url
 		))
 		.bearer_auth(&other)
@@ -199,7 +196,7 @@ async fn deployment_administrators_and_other_tenants_read_no_events_or_event_str
 	// The authorized Tenant Subject still reads them.
 	let events = assert_json(
 		member
-			.get(&format!("/api/events?workspace_id={id}&after=0"))
+			.get(&format!("/api/events?thread_id={id}&after=0"))
 			.await
 			.unwrap(),
 		200,

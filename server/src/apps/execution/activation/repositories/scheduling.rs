@@ -320,7 +320,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.await
 			.map_err(aidash_application::Error::from)?)
 	}
-	async fn workspace_event_after(
+	async fn thread_event_after(
 		&mut self,
 		run: Uuid,
 		cursor: i64,
@@ -332,7 +332,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.and_where(Expr::col("generation").gt(Expr::value(cursor)))
 			.cond_where(
 				Condition::any()
-					.add(Expr::col("reason").like("workspace_task:%"))
+					.add(Expr::col("reason").like("thread_task:%"))
 					.add(Expr::col("reason").like("duty_event:%")),
 			)
 			.order_by(Alias::new("generation"), Order::Asc)
@@ -453,11 +453,11 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			// Commit claim-time evidence before an Isolated Step can abort the process.
 			let (sql, values) = Query::insert()
 				.into_table(Alias::new("events"))
-				.columns([Alias::new("id"), Alias::new("node"), Alias::new("workspace_id"), Alias::new("kind"), Alias::new("data"), Alias::new("tenant")])
+				.columns([Alias::new("id"), Alias::new("node"), Alias::new("thread_id"), Alias::new("kind"), Alias::new("data"), Alias::new("tenant")])
 				.from_subquery(Query::select()
 					.expr(Expr::value(Uuid::new_v4()))
 					.expr(Expr::value(run.is_local(node).then(|| run.node.to_string())))
-					.expr(Expr::value(run.is_local(node).then_some(run.workspace_id)))
+					.expr(Expr::value(run.is_local(node).then_some(run.thread_id)))
 					.expr(Expr::value("run.lease_recovery_claimed"))
 					.expr(Expr::value(json!({"run_id": run.id, "task_id": run.task_id, "lease_recoveries": run.recovery.lease_recoveries, "isolated": true})))
 					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
@@ -538,7 +538,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.columns([
 				Alias::new("id"),
 				Alias::new("node"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
 				Alias::new("tenant"),
@@ -549,9 +549,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value(
 						owned.is_local(node).then(|| owned.node.to_string()),
 					))
-					.expr(Expr::value(
-						owned.is_local(node).then_some(owned.workspace_id),
-					))
+					.expr(Expr::value(owned.is_local(node).then_some(owned.thread_id)))
 					.expr(Expr::value("run.invalid_state"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"category":reason}),
@@ -584,7 +582,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.columns([
 				Alias::new("id"),
 				Alias::new("node"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("kind"),
 				Alias::new("data"),
 				Alias::new("tenant"),
@@ -595,9 +593,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value(
 						owned.is_local(node).then(|| owned.node.to_string()),
 					))
-					.expr(Expr::value(
-						owned.is_local(node).then_some(owned.workspace_id),
-					))
+					.expr(Expr::value(owned.is_local(node).then_some(owned.thread_id)))
 					.expr(Expr::value("run.crash_loop"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"lease_recoveries":lease_recoveries}),

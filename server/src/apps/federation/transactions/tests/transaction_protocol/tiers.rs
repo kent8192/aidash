@@ -12,14 +12,14 @@ async fn independent_database_tiers_converge_after_partial_partition(
 	tier_nodes: Vec<Node>,
 ) {
 	let mut nodes = tier_nodes;
-	let mut workspaces = Vec::new();
+	let mut threads = Vec::new();
 	for node in &mut nodes {
 		node.join().await;
 		let scope = common::tenant_scope(&node.f.store, "acme").await;
-		workspaces.push(
+		threads.push(
 			node.f
 				.store
-				.create_workspace(&scope, "alice", "Atomic tier")
+				.create_thread(&scope, "alice", "Atomic tier")
 				.await
 				.unwrap()
 				.id,
@@ -36,8 +36,8 @@ async fn independent_database_tiers_converge_after_partial_partition(
 	for repetition in 0..3 {
 		let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":nodes[0].address,
             "isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-            "participants":nodes.iter().zip(&workspaces).map(|(node,workspace)|json!({"node_id":node.address,
-                "mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":if abort {0}else{repetition},"title":"Committed"}]})).collect::<Vec<_>>() })).unwrap();
+            "participants":nodes.iter().zip(&threads).map(|(node,thread)|json!({"node_id":node.address,
+                "mutations":[{"kind":"thread_title","thread_id":thread,"expected_revision":if abort {0}else{repetition},"title":"Committed"}]})).collect::<Vec<_>>() })).unwrap();
 		coordinator::submit(&nodes[0].f, &manifest).await.unwrap();
 		steps(&nodes[0], manifest.id, count * 2).await;
 		if abort {
@@ -47,11 +47,8 @@ async fn independent_database_tiers_converge_after_partial_partition(
 		}
 		nodes[1].stop().await;
 		steps(&nodes[0], manifest.id, 2).await;
-		for (node, workspace) in nodes.iter().zip(&workspaces).skip(2) {
-			assert_eq!(
-				node.get(&format!("/api/workspaces/{workspace}")).await.0,
-				503
-			);
+		for (node, thread) in nodes.iter().zip(&threads).skip(2) {
+			assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 503);
 		}
 		assert!(
 			!coordinator::status(&nodes[0].f, manifest.id)
@@ -77,20 +74,17 @@ async fn independent_database_tiers_converge_after_partial_partition(
 			result.decision.as_deref(),
 			Some(if abort { "ABORT" } else { "COMMIT" })
 		);
-		for (node, workspace) in nodes.iter().zip(&workspaces) {
+		for (node, thread) in nodes.iter().zip(&threads) {
 			assert_eq!(
 				node.f
 					.store
-					.workspace(&TEST_FIXTURE, *workspace)
+					.thread(&TEST_FIXTURE, *thread)
 					.await
 					.unwrap()
 					.revision,
 				if abort { 0 } else { repetition + 1 }
 			);
-			assert_eq!(
-				node.get(&format!("/api/workspaces/{workspace}")).await.0,
-				200
-			);
+			assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 		}
 	}
 	for node in nodes {

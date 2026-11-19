@@ -16,8 +16,8 @@ pub enum HumanState {
 
 #[async_trait]
 pub trait Scope: Send + RowOutcome {
-	async fn require_workspace(&mut self, id: Uuid) -> Result<()>;
-	async fn workspace_runs(
+	async fn require_thread(&mut self, id: Uuid) -> Result<()>;
+	async fn thread_runs(
 		&mut self,
 		id: Uuid,
 		live: bool,
@@ -33,7 +33,7 @@ pub trait Scope: Send + RowOutcome {
 		state: HumanState,
 		cursor: Option<Uuid>,
 	) -> Result<Vec<HumanRequest>>;
-	async fn workspace_allowed(&mut self, id: Uuid) -> Result<bool>;
+	async fn thread_allowed(&mut self, id: Uuid) -> Result<bool>;
 	async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 }

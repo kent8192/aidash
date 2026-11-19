@@ -12,26 +12,39 @@ fn blob_path(c: &CoreFixture, digest: &str) -> std::path::PathBuf {
 		.join(digest)
 }
 
-pub(super) async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, minimum: i64) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let query = Query::select()
-		.expr(Expr::cust("count(*)"))
-		.from(Alias::new("pg_stat_activity"))
-		.and_where(Expr::col(Alias::new("wait_event_type")).eq("Lock"))
-		.and_where(Expr::col(Alias::new("query")).like("%channel_threads%"))
+/// Holds the Thread row lock that Thread deletion, a Thread run and Task
+/// admission all take, and returns the holding connection's pid.
+pub(super) async fn hold_thread_lock(
+	pool: &sqlx::PgPool,
+	thread: Uuid,
+) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
+	use reinhardt::query::{
+		Alias, Expr, IntoIden, LockType, PostgresQueryBuilder, Query, SimpleExpr,
+	};
+	let mut blocker = pool.begin().await.unwrap();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("threads"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
+		.lock(LockType::Update)
 		.to_string(PostgresQueryBuilder);
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-	loop {
-		let waiting: i64 = sqlx::query_scalar(&query).fetch_one(pool).await.unwrap();
-		if waiting >= minimum {
-			return;
-		}
-		assert!(
-			tokio::time::Instant::now() < deadline,
-			"expected {minimum} thread lock waiters; found {waiting}"
-		);
-		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-	}
+	let locked: Uuid = sqlx::query_scalar(&lock)
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+	assert_eq!(locked, thread);
+	let pid: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				Alias::new("pg_backend_pid").into_iden(),
+				vec![],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *blocker)
+	.await
+	.unwrap();
+	(blocker, pid)
 }
 
 pub(super) async fn wait_for_blocked_connection(pool: &sqlx::PgPool, blocker: i32) -> i32 {
@@ -237,28 +250,17 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 ) {
 	use reinhardt::query::{Alias, ColumnRef, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
-	let workspace =
+	let thread =
 		c.f.store
 			.task(&TEST_FIXTURE, c.task)
 			.await
 			.unwrap()
-			.workspace_id;
-	let root = source(&c, workspace, "Delete a thread with many areas").await;
-	let (status, thread) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":root}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
-	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+			.thread_id;
 	let (status, area) = request(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),
+		&format!("/api/threads/{thread}/agents/research/runs"),
 		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Exercise bounded area pagination"}),
 	)
 	.await;
@@ -298,7 +300,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 					"id",
 					"tenant",
 					"home_node",
-					"workspace_id",
+					"thread_id",
 					"agent_id",
 					"owner",
 					"generation",
@@ -324,7 +326,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 			.bind(extra.id)
 			.bind(extra.tenant)
 			.bind(extra.home_node)
-			.bind(extra.workspace_id)
+			.bind(extra.thread_id)
 			.bind(extra.agent_id)
 			.bind(extra.owner)
 			.bind(extra.generation)
@@ -345,15 +347,14 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 		.await;
 	}
 	let areas: Vec<(Uuid, i64)> = {
-		let query_bind_1 = workspace;
-		let query_bind_2 = thread_id;
-		let query_bind_3 = "alice";
+		let query_bind_1 = thread;
+		let query_bind_2 = "alice";
 		sqlx::query_as(
 			&Query::select()
 				.columns([Alias::new("id"), Alias::new("revision")])
 				.from(Alias::new("core_areas"))
 				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id"))).eq(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id"))).eq(
 						SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -361,18 +362,10 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 					),
 				)
 				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					),
-				)
-				.and_where(
 					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("owner"))).eq(
 						SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
-							vec![Expr::value(query_bind_3.to_owned()).into()],
+							vec![Expr::value(query_bind_2.to_owned()).into()],
 						),
 					),
 				)
@@ -392,7 +385,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/threads/{thread_id}/delete"),
+		&format!("/api/threads/{thread}/delete"),
 		json!({"idempotency_key":Uuid::new_v4(),"files":files}),
 	)
 	.await;
@@ -407,47 +400,22 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 	#[future] capability_fixture: CoreFixture,
 ) {
-	use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
-	let workspace =
+	let thread =
 		c.f.store
 			.task(&TEST_FIXTURE, c.task)
 			.await
 			.unwrap()
-			.workspace_id;
-	let root = source(&c, workspace, "Serialize run creation with deletion").await;
-	let (status, thread) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":root}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
-	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+			.thread_id;
 
-	// Hold the serialization row while the delete request queues first. The
-	// later run request must wait behind it, then observe the committed tombstone.
-	let mut blocker = c.f.store.pool.fixture_driver().begin().await.unwrap();
-	let lock_thread = Query::select()
-		.column(Alias::new("id"))
-		.from(Alias::new("channel_threads"))
-		.and_where(
-			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
-		)
-		.lock(LockType::Update)
-		.to_string(PostgresQueryBuilder);
-	let locked: Uuid = sqlx::query_scalar(&lock_thread)
-		.bind(thread_id)
-		.fetch_one(&mut *blocker)
-		.await
-		.unwrap();
-	assert_eq!(locked, thread_id);
+	// Hold the Thread row while the delete request queues first. The later
+	// run request must wait behind it, then observe the committed deletion.
+	let (blocker, blocker_pid) = hold_thread_lock(c.f.store.pool.fixture_driver(), thread).await;
 
 	let delete_app = c.app.clone();
 	let delete_token = c.token.clone();
-	let delete_path = format!("/api/workspaces/{workspace}/threads/{thread_id}/delete");
+	let delete_path = format!("/api/threads/{thread}/delete");
 	let deleting = tokio::spawn(async move {
 		request(
 			&delete_app,
@@ -458,11 +426,12 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 		)
 		.await
 	});
-	wait_for_channel_thread_lock_waiters(c.f.store.pool.fixture_driver(), 1).await;
+	let delete_pid =
+		wait_for_blocked_connection(c.f.store.pool.fixture_driver(), blocker_pid).await;
 
 	let run_app = c.app.clone();
 	let run_token = c.token.clone();
-	let run_path = format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs");
+	let run_path = format!("/api/threads/{thread}/agents/research/runs");
 	let creating = tokio::spawn(async move {
 		request(
 			&run_app,
@@ -473,7 +442,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 		)
 		.await
 	});
-	wait_for_channel_thread_lock_waiters(c.f.store.pool.fixture_driver(), 2).await;
+	wait_for_blocked_connection(c.f.store.pool.fixture_driver(), delete_pid).await;
 	blocker.commit().await.unwrap();
 
 	let (delete_status, deleted) = deleting.await.unwrap();
@@ -486,21 +455,16 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 		.expr(Expr::cust("count(*)"))
 		.from(Alias::new("core_areas"))
 		.and_where(
-			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-				.eq(Expr::cust("$1")),
-		)
-		.and_where(
 			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
-				.eq(Expr::cust("$2")),
+				.eq(Expr::cust("$1")),
 		)
 		.to_string(PostgresQueryBuilder);
 	let areas: i64 = sqlx::query_scalar(&count_query)
-		.bind(workspace)
-		.bind(thread_id)
+		.bind(thread)
 		.fetch_one(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	assert_eq!(areas, 0, "a tombstoned thread cannot gain a new area");
+	assert_eq!(areas, 0, "a deleted thread cannot gain a new area");
 	c.close().await;
 }
 
@@ -508,28 +472,17 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 #[tokio::test]
 async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture: CoreFixture) {
 	let c = Box::pin(capability_fixture).await;
-	let workspace =
+	let thread =
 		c.f.store
 			.task(&TEST_FIXTURE, c.task)
 			.await
 			.unwrap()
-			.workspace_id;
-	let root = source(&c, workspace, "Bound thread run queue admission").await;
-	let (status, thread) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":root}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
-	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+			.thread_id;
 	let (status, area) = request(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),
+		&format!("/api/threads/{thread}/agents/research/runs"),
 		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"First run","description":"Create the area"}),
 	)
 	.await;
@@ -550,7 +503,7 @@ async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture:
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),
+		&format!("/api/threads/{thread}/agents/research/runs"),
 		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Overflow run","description":"Must not create run 101"}),
 	)
 	.await;
@@ -571,28 +524,19 @@ async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture:
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_thread(
+async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = Box::pin(capability_fixture).await;
-	let workspace =
+	let thread =
 		c.f.store
 			.task(&TEST_FIXTURE, c.task)
 			.await
 			.unwrap()
-			.workspace_id;
-	let root = source(&c, workspace, "This thread will be deleted").await;
-	let (status, thread) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":root}),
-	)
-	.await;
-	assert_eq!(status, 200, "{thread}");
-	let thread_id = thread["id"].as_str().unwrap();
-	let (status,area)=request(&c.app,&c.token,"POST",&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Preserve files"})).await;
+			.thread_id;
+	let marker = "This thread will be deleted";
+	source(&c, thread, marker).await;
+	let (status,area)=request(&c.app,&c.token,"POST",&format!("/api/threads/{thread}/agents/research/runs"),json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Preserve files"})).await;
 	assert_eq!(status, 200, "{area}");
 	let (status, session) = request(
 		&c.app,
@@ -617,7 +561,7 @@ async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_th
 		Value::Null,
 	)
 	.await;
-	let path = format!("/api/workspaces/{workspace}/threads/{thread_id}/delete");
+	let path = format!("/api/threads/{thread}/delete");
 	assert_eq!(
 		request(
 			&c.app,
@@ -638,27 +582,18 @@ async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_th
 		request(&c.app, &c.token, "POST", &path, input).await,
 		(200, deleted)
 	);
-	assert_eq!(
-		request(
-			&c.app,
-			&c.token,
-			"GET",
-			&format!("/api/workspaces/{workspace}/message-history?thread_id={thread_id}"),
-			Value::Null
-		)
-		.await
-		.0,
-		404
-	);
-	let (_, history) = request(
+	// The deleted Thread is gone for everyone, its messages with it.
+	let (status, history) = request(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/message-history"),
+		&format!("/api/threads/{thread}/message-history"),
 		Value::Null,
 	)
 	.await;
-	assert!(!history.to_string().contains("This thread will be deleted"));
+	assert!(matches!(status, 403 | 404), "{history}");
+	assert!(!history.to_string().contains(marker));
+	// Kept files stay in the owner's settings.
 	let (status, inventory) =
 		request(&c.app, &c.token, "GET", "/api/working-files", Value::Null).await;
 	assert_eq!(status, 200, "{inventory}");
@@ -670,21 +605,7 @@ async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_th
 		"/api/working-areas/{}/restore",
 		area["id"].as_str().unwrap()
 	);
-	let invalid = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":retained["snapshot_id"],"thread_id":thread_id});
-	assert_eq!(
-		request(&c.app, &c.token, "POST", &restore, invalid).await.0,
-		404
-	);
-	let new_root = source(&c, workspace, "New authorized conversation").await;
-	let (_, new_thread) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/threads"),
-		json!({"root_message_id":new_root}),
-	)
-	.await;
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":retained["snapshot_id"],"thread_id":new_thread["id"]});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":retained["snapshot_id"]});
 	let (_, bob) = async {
 		(
 			200_u16,
@@ -704,12 +625,10 @@ async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_th
 		.0,
 		404
 	);
-	let (status, restored) = request(&c.app, &c.token, "POST", &restore, input).await;
-	assert_eq!(status, 200, "{restored}");
-	assert_eq!(restored["manifest"], before["manifest"]);
-	assert_eq!(restored["thread_id"], new_thread["id"]);
-	assert_ne!(restored["generation"], before["generation"]);
-	assert_ne!(request(&c.app,&c.token,"POST",&format!("/api/runs/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":restored["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+late\n*** End Patch"})).await.0,200);
+	// An Area is restored only into its own Thread, which is gone.
+	let (status, refused) = request(&c.app, &c.token, "POST", &restore, input).await;
+	assert!(matches!(status, 403 | 404), "{refused}");
+	assert_ne!(request(&c.app,&c.token,"POST",&format!("/api/runs/{run}/patch"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+late\n*** End Patch"})).await.0,200);
 	c.close().await;
 }
 

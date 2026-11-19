@@ -114,7 +114,7 @@ fn world() -> World {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(101),
 		task_id: Uuid::from_u128(102),
-		workspace_id: Uuid::from_u128(103),
+		thread_id: Uuid::from_u128(103),
 		home_node: "aidash://home".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -161,7 +161,7 @@ fn world() -> World {
 		source_subject: "creator".into(),
 		task: Task {
 			id: run.task_id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			title: "Task".into(),
 			description: "Work".into(),
 			status: TaskStatus::Running,
@@ -991,7 +991,7 @@ fn shared_memory_role_uses_the_smallest_bank_allowance(
 	let bank = aidash_domain::memory::Bank {
 		home: description.source_node.clone(),
 		tenant: "tenant".into(),
-		workspace: state.run.workspace_id,
+		thread: state.run.thread_id,
 		participant: Some(Uuid::from_u128(501)),
 	};
 	let policy = reference("memory-policy");

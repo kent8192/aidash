@@ -16,9 +16,9 @@ const MAINTENANCE: TenancyScope =
 pub(crate) async fn sweep(store: &Store) -> Result<()> {
 	// Filter busy banks before LIMIT: otherwise 32 active banks can permanently
 	// hide every later maintenance candidate. Claiming all joined rows with
-	// SKIP LOCKED also avoids waiting on settings readers or workspace writers.
+	// SKIP LOCKED also avoids waiting on settings readers or thread writers.
 	// Release the discovery locks before each independently bounded pass, which
-	// reacquires and validates its own workspace/policy authority below.
+	// reacquires and validates its own thread/policy authority below.
 	let mut discovery = store.pool.begin(&MAINTENANCE).await?;
 	let due = native::query(
 		&Query::select()
@@ -34,8 +34,8 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			)
 			.join(
 				JoinType::InnerJoin,
-				Alias::new("workspaces"),
-				Expr::col(("memory_banks", "workspace_id")).equals(("workspaces", "id")),
+				Alias::new("threads"),
+				Expr::col(("memory_banks", "thread_id")).equals(("threads", "id")),
 			)
 			.and_where(
 				Expr::col(("memory_bank_settings", "next_maintenance"))
@@ -72,21 +72,21 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			let bank = Bank {
 				home: row.try_get("home")?,
 				tenant: row.try_get("tenant")?,
-				workspace: row.try_get("workspace_id")?,
+				thread: row.try_get("thread_id")?,
 				participant: row.try_get("participant_id")?,
 			};
 			if aidash_domain::nodes::deployment_of(&bank.home) != store.deployment {
 				return Err(Error::Forbidden);
 			}
-			// An indexer can retain a workspace reader while opening another
+			// An indexer can retain a thread reader while opening another
 			// current-origin reader. Queuing a writer behind it blocks that reader
 			// and creates a lock cycle across the indexer's independent scopes.
 			// Discovery skips busy banks before its page limit; recheck races here.
 			if native::query(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("workspaces"))
-					.and_where(Expr::col("id").eq(Expr::value(bank.workspace)))
+					.from(Alias::new("threads"))
+					.and_where(Expr::col("id").eq(Expr::value(bank.thread)))
 					.lock(LockType::Update)
 					.lock_behavior(LockBehavior::SkipLocked)
 					.to_string(PostgresQueryBuilder),
@@ -270,7 +270,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			// A broken bank cannot monopolize the oldest due page. Advance
 			// only the exact observed provider/revision after rolling back.
 			let mut tx = store.pool.begin(&MAINTENANCE).await?;
-			// A reader can arrive after the failed pass releases its workspace.
+			// A reader can arrive after the failed pass releases its thread.
 			// Never queue a settings writer behind it while postponing a retry.
 			if native::query(
 				&Query::select()

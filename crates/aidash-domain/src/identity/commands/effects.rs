@@ -8,7 +8,7 @@ pub fn field<'a>(data: &'a Value, name: &str) -> Result<&'a str> {
 		.ok_or_else(|| Error::Invalid(format!("missing {name}")))
 }
 pub fn child_eligible(parent: &Task, child: &Task, owner: &str) -> bool {
-	child.workspace_id == parent.workspace_id
+	child.thread_id == parent.thread_id
 		&& child.parent_id == Some(parent.id)
 		&& child.created_by == owner
 		&& child.owner.is_none()

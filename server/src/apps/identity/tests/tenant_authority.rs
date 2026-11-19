@@ -52,7 +52,7 @@ async fn shared_bearer_is_refused_on_tenant_content_but_not_on_administered_rout
 	assert_eq!(state.status_code(), 200, "{}", state.text());
 	let state = state.json_value().unwrap();
 	for collection in [
-		"workspaces",
+		"threads",
 		"tasks",
 		"runs",
 		"events",

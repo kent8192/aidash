@@ -153,7 +153,7 @@ impl RunMessages for Messages<'_> {
 			return self
 				.federation
 				.store
-				.message_record(&scope, self.run.workspace_id, "human", content, Some(key))
+				.message_record(&scope, self.run.thread_id, "human", content, Some(key))
 				.await
 				.map(Some)
 				.map_err(Into::into);

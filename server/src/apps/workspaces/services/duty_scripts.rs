@@ -259,7 +259,7 @@ async fn watcher_failed(
 			EventOutcome::Failed,
 			format!("Watcher: {reason}"),
 		);
-		event_repository::insert_event(&mut tx, tenant, duty.workspace_id, &event, None).await
+		event_repository::insert_event(&mut tx, tenant, duty.thread_id, &event, None).await
 	}
 	.await;
 	match result {
@@ -404,7 +404,7 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 						event_repository::insert_event(
 							lease.tx(),
 							tenant,
-							duty.workspace_id,
+							duty.thread_id,
 							&event,
 							None,
 						)
@@ -422,7 +422,7 @@ async fn settle(f: &Federation, script: &repository::Ended, now: DateTime<Utc>) 
 					event_repository::insert_event(
 						lease.tx(),
 						tenant,
-						duty.workspace_id,
+						duty.thread_id,
 						&event,
 						None,
 					)
@@ -486,7 +486,7 @@ async fn settle_failed(
 					EventOutcome::Failed,
 					format!("Watcher: {reason}"),
 				);
-				event_repository::insert_event(&mut tx, tenant, duty.workspace_id, &event, None)
+				event_repository::insert_event(&mut tx, tenant, duty.thread_id, &event, None)
 					.await?;
 			}
 		}
@@ -569,7 +569,7 @@ async fn decide(
 				duty_repository::insert_tick(
 					lease.tx(),
 					&tenant,
-					duty.workspace_id,
+					duty.thread_id,
 					&Tick {
 						id: Uuid::new_v4(),
 						duty_id: duty.id,
@@ -615,7 +615,7 @@ async fn decide(
 	)
 	.await?;
 	// The input reaches the Task's Run as data with the event, as a booked
-	// event does: its next Workspace wait returns it (ADR 0142).
+	// event does: its next Thread wait returns it (ADR 0142).
 	if let Some(run) = run {
 		event_repository::wake(lease.tx(), run, event.id).await?;
 	}

@@ -56,7 +56,7 @@ fn event_of(row: DutyEventRecord) -> Result<DutyEvent> {
 pub(crate) async fn insert_trigger(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	trigger: &DutyTrigger,
 ) -> Result<()> {
 	let (source, from_node) = match &trigger.kind {
@@ -72,7 +72,7 @@ pub(crate) async fn insert_trigger(
 	let row = DutyTriggerRecord::build()
 		.id(trigger.id)
 		.tenant(tenant.to_owned())
-		.workspace_id(workspace)
+		.thread_id(thread)
 		.duty_id(trigger.duty_id)
 		.kind(trigger.kind.as_str().to_owned())
 		.source_duty_id(source)
@@ -141,7 +141,7 @@ pub(crate) async fn delete_trigger(
 	Ok(true)
 }
 
-/// The Tenant and Workspace of a trigger named only by its id, as a webhook
+/// The Tenant and Thread of a trigger named only by its id, as a webhook
 /// names it, read across Tenants.
 pub(crate) async fn locate(pool: &Pool, trigger: Uuid) -> Result<Option<(String, DutyTrigger)>> {
 	let scope = TenancyScope::Deployment(DeploymentScopeReason::DutyTicks);
@@ -179,14 +179,14 @@ pub(crate) async fn triggers_on_completion(
 pub(crate) async fn insert_event(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	event: &DutyEvent,
 	run: Option<Uuid>,
 ) -> Result<()> {
 	let row = DutyEventRecord::build()
 		.id(event.id)
 		.tenant(tenant.to_owned())
-		.workspace_id(workspace)
+		.thread_id(thread)
 		.duty_id(event.duty_id)
 		.trigger_id(event.trigger_id)
 		.received_at(event.received_at)
@@ -341,7 +341,7 @@ pub(crate) async fn conclude(
 pub(crate) async fn book(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
-	workspace: Uuid,
+	thread: Uuid,
 	trigger: Uuid,
 	task: Uuid,
 	run: Uuid,
@@ -359,7 +359,7 @@ pub(crate) async fn book(
 	let row = DutyBookingRecord::build()
 		.id(Uuid::new_v4())
 		.tenant(tenant.to_owned())
-		.workspace_id(workspace)
+		.thread_id(thread)
 		.trigger_id(trigger)
 		.task_id(task)
 		.run_id(run)
@@ -425,10 +425,10 @@ pub(crate) async fn take_booking(
 }
 
 /// Wakes the Run an event was delivered to, as a finished child Task wakes
-/// its parent: the activation is the Run's Workspace event.
+/// its parent: the activation is the Run's Thread event.
 pub(crate) async fn wake(tx: &mut dyn TransactionExecutor, run: Uuid, event: Uuid) -> Result<()> {
-	// The lock orders this producer as the Workspace wait triggers order
-	// theirs (`aidash_workspace_task_activation`).
+	// The lock orders this producer as the Thread wait triggers order
+	// theirs (`aidash_thread_task_activation`).
 	native::query(
 		&Query::select()
 			.expr(SimpleExpr::FunctionCall(
@@ -436,7 +436,7 @@ pub(crate) async fn wake(tx: &mut dyn TransactionExecutor, run: Uuid, event: Uui
 				vec![SimpleExpr::FunctionCall(
 					"hashtextextended".into_iden(),
 					vec![
-						Expr::value(format!("aidash:workspace-wait:{run}")).into(),
+						Expr::value(format!("aidash:thread-wait:{run}")).into(),
 						Expr::value(71_500_644_i64).into(),
 					],
 				)],
@@ -461,7 +461,7 @@ pub(crate) async fn wake(tx: &mut dyn TransactionExecutor, run: Uuid, event: Uui
 	Ok(())
 }
 
-/// What a Workspace wait's activation names for a delivered event.
+/// What a Thread wait's activation names for a delivered event.
 pub(crate) fn event_of_activation(reason: &str) -> Option<Uuid> {
 	reason
 		.strip_prefix("duty_event:")

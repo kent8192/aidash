@@ -75,7 +75,7 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		.mapped(receiver, source, &description.source_subject)
 		.await?;
 	let result = async {
-		scope.context()["source_workspace_id"] = json!(description.task.workspace_id);
+		scope.context()["source_thread_id"] = json!(description.task.thread_id);
 		scope.context()["source_task_id"] = json!(description.task.id);
 		scope.context()["source_task_revision"] = json!(description.task.revision);
 		let input = InspectInput {
@@ -107,20 +107,20 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		if !fresh.satisfies(&description.inspection) {
 			return Err(Error::Forbidden);
 		};
-		let workspace = scope.resource(
-			"workspace",
-			&format!("{source}/workspaces/{}", description.task.workspace_id),
+		let thread = scope.resource(
+			"thread",
+			&format!("{source}/threads/{}", description.task.thread_id),
 			json!({}),
 		);
-		scope.require(&workspace, "workspace.read").await?;
+		scope.require(&thread, "thread.read").await?;
 		if !description.semantic.disabled() {
 			if fresh.semantic_memory != VERSION {
 				return Err(Error::RemoteSemantic(Failure::Configuration));
 			};
-			scope.require(&workspace, "semantic.use").await?
+			scope.require(&thread, "semantic.use").await?
 		};
 		if description.semantic.native().is_some() {
-			scope.require(&workspace, "memory.use").await?;
+			scope.require(&thread, "memory.use").await?;
 		}
 		let task = scope.resource(
 			"task",
@@ -167,7 +167,7 @@ async fn described<R: PeerAdmissionRepository>(
 	};
 	Ok(reply)
 }
-/// Lease the receiver authority Home describes, keeping the Workspace corpus
+/// Lease the receiver authority Home describes, keeping the Thread corpus
 /// digest the same reply reports (#191). `None` when the grant carries no Home
 /// semantic access.
 async fn described_lease<R: PeerAdmissionRepository>(
@@ -380,7 +380,7 @@ pub async fn activate<R: PeerAdmissionRepository>(
 			.await?
 			.ok_or_else(|| Error::Conflict("source task already has another execution".into()))?;
 		if run.task_id != description.task.id
-			|| run.workspace_id != description.task.workspace_id
+			|| run.thread_id != description.task.thread_id
 			|| run.home_node != source
 			|| run.agent_id != description.inspection.agent.id
 			|| run.agent_version != description.inspection.agent.version
@@ -582,8 +582,8 @@ pub async fn message<R: PeerAdmissionRepository>(
 		scope
 			.require(
 				&scope.resource(
-					"workspace",
-					&format!("{source}/workspaces/{}", run.workspace_id),
+					"thread",
+					&format!("{source}/threads/{}", run.thread_id),
 					json!({}),
 				),
 				"message.create",

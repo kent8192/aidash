@@ -205,13 +205,13 @@ async fn observe(
 	process: &Process,
 	fixture: &Fixture,
 	client_id: usize,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	after: i64,
 	output: mpsc::UnboundedSender<Received>,
 ) -> RemoteStream {
 	let mut path = format!("{}/api/events/stream?after={after}", process.endpoint);
-	if let Some(workspace) = workspace {
-		path.push_str(&format!("&workspace_id={workspace}"));
+	if let Some(thread) = thread {
+		path.push_str(&format!("&thread_id={thread}"));
 	}
 	let response = fixture
 		.streaming_client
@@ -355,7 +355,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	}
 	let (send, mut received) = mpsc::unbounded_channel();
 	let mut streams = Vec::new();
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	for (n, process) in processes.iter().enumerate() {
 		streams.push(observe(process, &fixture, n, Some(ws), -1, send.clone()).await);
 	}
@@ -380,7 +380,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	let client = fixture.f.client.clone();
 	let began = Instant::now();
 	let response = client
-		.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
+		.patch(format!("{}/api/threads/{ws}", processes[0].endpoint))
 		.bearer_auth(&fixture.token)
 		.json(&json!({"revision":0,"title":"Number"}))
 		.send()
@@ -481,7 +481,7 @@ async fn oversized_reference_notification_replays_canonical_bytes(
 	let dir = dir_future.await;
 	let mut process = initial;
 	let (send, mut received) = mpsc::unbounded_channel();
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	let stream = observe(&process, &fixture, 0, Some(ws), -1, send).await;
 	let warmup = fixture.emit(ws, 1).await;
 	assert_eq!(receive(&mut received, 1, 3).await[0].id, warmup.sequence);
@@ -523,7 +523,7 @@ async fn oversized_reference_notification_replays_canonical_bytes(
 		.emit(
 			&TEST_FIXTURE,
 			Some(ws),
-			"workspace.updated",
+			"thread.updated",
 			json!({"id":ws,"text":"x".repeat(body_bytes)}),
 		)
 		.await
@@ -588,7 +588,7 @@ async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
 	}
 	let (send, mut received) = mpsc::unbounded_channel();
 	let mut streams = Vec::new();
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	for (n, process) in processes.iter().enumerate() {
 		streams.push(observe(process, &fixture, n, Some(ws), -1, send.clone()).await);
 	}
@@ -602,7 +602,7 @@ async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
 		.f
 		.client
 		.clone()
-		.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
+		.patch(format!("{}/api/threads/{ws}", processes[0].endpoint))
 		.bearer_auth(&fixture.token)
 		.json(&json!({"revision":0,"title":"Boundary"}))
 		.send()

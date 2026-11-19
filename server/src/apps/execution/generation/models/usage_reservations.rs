@@ -201,7 +201,7 @@ impl GenerationUsage {
 
 pub(crate) struct EmbeddingAttempt<'a> {
 	pub id: uuid::Uuid,
-	pub workspace: uuid::Uuid,
+	pub thread: uuid::Uuid,
 	pub run: Option<uuid::Uuid>,
 	pub entry: Option<uuid::Uuid>,
 	pub purpose: &'a str,
@@ -223,7 +223,7 @@ impl GenerationEmbeddingUsage {
 				[
 					"request_id",
 					"attempt_id",
-					"workspace_id",
+					"thread_id",
 					"run_id",
 					"entry_id",
 					"purpose",
@@ -238,7 +238,7 @@ impl GenerationEmbeddingUsage {
 			.values_expr(vec![
 				IntoValue::into_value(request).into(),
 				IntoValue::into_value(attempt.id).into(),
-				IntoValue::into_value(attempt.workspace).into(),
+				IntoValue::into_value(attempt.thread).into(),
 				IntoValue::into_value(attempt.run).into(),
 				IntoValue::into_value(attempt.entry).into(),
 				IntoValue::into_value(attempt.purpose).into(),

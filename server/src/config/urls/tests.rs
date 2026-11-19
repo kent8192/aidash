@@ -178,7 +178,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 	let removed: Vec<_> = [
 		("POST", "/federation/v0.1/control"),
 		("POST", "/federation/v0.1/offers"),
-		("POST", "/federation/v0.1/workspace"),
+		("POST", "/federation/v0.1/thread"),
 		("POST", "/api/remote"),
 	]
 	.into_iter()

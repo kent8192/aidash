@@ -19,7 +19,7 @@ pub trait PermissionScope: Send {
 	async fn catalog_enabled(&mut self, tenant: &str, entry: &EntityRef) -> Result<Option<bool>>;
 	async fn evaluate(&mut self, tenant: &str, input: &Evaluation) -> Result<Decision>;
 	/// Read ownership for the selected tenant under the existing shared lock.
-	async fn workspace_owner(&mut self, workspace: Uuid, tenant: &str) -> Result<Option<String>>;
+	async fn thread_owner(&mut self, thread: Uuid, tenant: &str) -> Result<Option<String>>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }
 #[async_trait]

@@ -18,9 +18,9 @@ pub struct Viewer {
 	/// Nodes the person administers (`node.administer`): they see its
 	/// Subnodes and its spend.
 	pub administers: BTreeSet<String>,
-	/// Workspaces the person may read (`workspace.read`): they see the
+	/// Threads the person may read (`thread.read`): they see the
 	/// Duties that work there, as the Duty list does.
-	pub workspaces: BTreeSet<Uuid>,
+	pub threads: BTreeSet<Uuid>,
 	/// `duty.administer`: every Duty.
 	pub duty_administrator: bool,
 	/// `budget.manage`: every spend.
@@ -30,11 +30,11 @@ pub struct Viewer {
 impl Viewer {
 	/// Whether the person sees `duty`, by the rule of a Duty's own page
 	/// (`aidash_application::duties`): its Requester, its named successor,
-	/// whoever may read its Workspace, and `duty.administer`.
+	/// whoever may read its Thread, and `duty.administer`.
 	pub fn sees_duty(&self, duty: &DutyRow) -> bool {
 		duty.requester == self.subject
 			|| duty.successor.as_deref() == Some(self.subject.as_str())
-			|| self.workspaces.contains(&duty.workspace)
+			|| self.threads.contains(&duty.thread)
 			|| self.duty_administrator
 	}
 
@@ -59,8 +59,8 @@ pub struct NodeRow {
 pub struct DutyRow {
 	pub id: Uuid,
 	pub node: String,
-	/// The Workspace it works in, whose readers see it.
-	pub workspace: Uuid,
+	/// The Thread it works in, whose readers see it.
+	pub thread: Uuid,
 	/// The person named to take it over, who sees it too.
 	pub successor: Option<String>,
 	pub title: String,

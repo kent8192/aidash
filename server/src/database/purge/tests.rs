@@ -19,13 +19,13 @@ fn through(child: &str, parent: &str, column: &str) -> Reference {
 fn children_are_deleted_before_their_parents() {
 	let references = [
 		reference("messages", "tasks"),
-		reference("tasks", "workspaces"),
-		reference("messages", "workspaces"),
+		reference("tasks", "threads"),
+		reference("messages", "threads"),
 	];
 
-	let order = deletion_order(["workspaces", "messages", "tasks"], &references, &[]).unwrap();
+	let order = deletion_order(["threads", "messages", "tasks"], &references, &[]).unwrap();
 
-	assert_eq!(order, ["messages", "tasks", "workspaces"]);
+	assert_eq!(order, ["messages", "tasks", "threads"]);
 }
 
 #[test]

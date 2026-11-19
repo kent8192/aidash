@@ -89,7 +89,7 @@ pub(crate) async fn areas(
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = &access.identity.subject;
 			let query_bind_3 = page.cursor.unwrap_or(Uuid::nil());
-			let query_bind_5 = page.workspace_id;
+			let query_bind_5 = page.thread_id;
 			crate::database::native::query_as(
 				&sessions::select("core_areas")
 					.and_where(
@@ -100,7 +100,7 @@ pub(crate) async fn areas(
 					)
 					.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned())))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(?::uuid IS NULL OR workspace_id = ?)".into(),
+						"(?::uuid IS NULL OR thread_id = ?)".into(),
 						vec![
 							Expr::value(query_bind_5.to_owned()).into(),
 							Expr::value(query_bind_5.to_owned()).into(),
@@ -167,7 +167,7 @@ async fn dispatch(
 		) {
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
-				run.workspace_id,
+				run.thread_id,
 			)
 			.await?;
 		}
@@ -230,7 +230,7 @@ pub(crate) async fn materialize(
 	let result = async {
 		crate::apps::execution::repositories::subnodes::require_writable(
 			access.tx.native_mut(),
-			run.workspace_id,
+			run.thread_id,
 		)
 		.await?;
 		service::materialize(&f.store, &mut access, &run, input).await
@@ -267,14 +267,14 @@ pub(crate) async fn enqueue(
 			return Err(Error::Conflict("QUEUE_LIMIT".into()));
 		}
 		check_url_intents(&input.read_pages)?;
-		let workspace = access.workspace(area.workspace_id).await?;
-		access.require(&workspace, "task.create").await?;
+		let thread = access.thread(area.thread_id).await?;
+		access.require(&thread, "task.create").await?;
 		let creator = access.identity.subject.clone();
 		let task = f
 			.store
 			.create_task_in(
 				&mut access.tx,
-				area.workspace_id,
+				area.thread_id,
 				&NewTask {
 					title: input.title,
 					description: input.description,
@@ -395,7 +395,7 @@ pub(crate) async fn steer(f: Federation, actor: Actor, id: Uuid, input: Steer) -
 			.await?;
 		access
 			.require(
-				&access.resource("workspace", area.workspace_id, json!({})),
+				&access.resource("thread", area.thread_id, json!({})),
 				"message.create",
 			)
 			.await?;
@@ -518,50 +518,50 @@ pub(crate) async fn file_share(
 	dispatch(f, actor, id, "file_share", json!(input)).await
 }
 
-/// Checks that `workspace` is a live Workspace the caller may read, holding
-/// its row lock like Workspace deletion does, so a deletion that already
+/// Checks that `thread` is a live Thread the caller may read, holding
+/// its row lock like Thread deletion does, so a deletion that already
 /// passed its final area page cannot race the caller's write.
-pub(crate) async fn readable_workspace(access: &mut Access, workspace: Uuid) -> Result<()> {
-	crate::apps::workspaces::models::Workspace::lock_existing(&mut *access.tx, workspace)
+pub(crate) async fn readable_thread(access: &mut Access, thread: Uuid) -> Result<()> {
+	crate::apps::workspaces::models::Thread::lock_existing(&mut *access.tx, thread)
 		.await
 		.map_err(|error| match error {
-			Error::NotFound(_) => Error::NotFound("workspace unavailable".into()),
+			Error::NotFound(_) => Error::NotFound("thread unavailable".into()),
 			error => error,
 		})?;
-	super::thread_lifecycle::visible(&mut access.tx, workspace).await?;
-	let resource = access.workspace(workspace).await?;
-	access.require(&resource, "workspace.read").await?;
+	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
+	let resource = access.thread(thread).await?;
+	access.require(&resource, "thread.read").await?;
 	Ok(())
 }
 
-/// Starts an Agent's Run in a Workspace inside `access`'s transaction, as its
+/// Starts an Agent's Run in a Thread inside `access`'s transaction, as its
 /// subject: a Root Task and its delegation. Duties start their Tasks through
 /// it as their Requester (#557, #1011). The Task is None when the idempotency
 /// key returned an earlier start.
-pub(crate) async fn start_in_workspace(
+pub(crate) async fn start_in_thread(
 	f: &Federation,
 	access: &mut Access,
-	(workspace, agent): (Uuid, String),
+	(thread, agent): (Uuid, String),
 	input: Enqueue,
 ) -> Result<(Area, Option<Uuid>)> {
-	// Workspace deletion takes this same row lock before writing its
+	// Thread deletion takes this same row lock before writing its
 	// tombstone, so a Run cannot commit behind a delete that already passed
 	// its final area page.
-	readable_workspace(access, workspace).await?;
-	let digest = crate::registry::digest(&json!(["workspace_run", workspace, agent, input]));
+	readable_thread(access, thread).await?;
+	let digest = crate::registry::digest(&json!(["thread_run", thread, agent, input]));
 	if let Some(previous) = sessions::cached(access, input.idempotency_key, &digest).await? {
 		let id = serde_json::from_value(previous["area_id"].clone())?;
 		return Ok((sessions::load(access, id).await?, None));
 	}
 	check_url_intents(&input.read_pages)?;
-	let resource = access.workspace(workspace).await?;
+	let resource = access.thread(thread).await?;
 	access.require(&resource, "task.create").await?;
 	let creator = access.identity.subject.clone();
 	let task = f
 		.store
 		.create_task_in(
 			&mut access.tx,
-			workspace,
+			thread,
 			&NewTask {
 				title: input.title,
 				description: input.description,
@@ -597,14 +597,14 @@ pub(crate) async fn start_in_workspace(
 	Ok((area, Some(task.id)))
 }
 
-pub(crate) async fn workspace_run(
+pub(crate) async fn thread_run(
 	f: Federation,
 	actor: Actor,
 	target: (Uuid, String),
 	input: Enqueue,
 ) -> Result<Area> {
 	let mut access = access(&f, actor).await?;
-	let result = start_in_workspace(&f, &mut access, target, input)
+	let result = start_in_thread(&f, &mut access, target, input)
 		.await
 		.map(|(area, _)| area);
 	let result = access.finish(result).await?;
@@ -839,7 +839,7 @@ async fn approval_card(
 	};
 	// A rule can name an outbound read or a tool call, and
 	// only the person the Run's delegation chain starts at may make one. Only
-	// someone who may decide it can, which also skips a record whose Workspace
+	// someone who may decide it can, which also skips a record whose Thread
 	// is no longer live, as its Run's context no longer loads.
 	let allow_always = state == "pending"
 		&& reader.approver
@@ -1460,19 +1460,19 @@ pub(crate) async fn reference_list(
 pub(crate) async fn thread_delete(
 	f: Federation,
 	actor: Actor,
-	workspace: Uuid,
+	thread: Uuid,
 	input: super::thread_lifecycle::DeleteThread,
 ) -> Result<DeletedThread> {
 	let mut access = access(&f, actor).await?;
 	let releases =
-		match super::federation_previews::releases_for_thread(&f, &mut access, workspace).await {
+		match super::federation_previews::releases_for_thread(&f, &mut access, thread).await {
 			Ok(releases) => releases,
 			Err(error) => {
 				tracing::warn!(%error, "remote File version release routes could not be gathered");
 				Vec::new()
 			}
 		};
-	let result = super::thread_lifecycle::delete(&f.store, &mut access, workspace, input).await;
+	let result = super::thread_lifecycle::delete(&f.store, &mut access, thread, input).await;
 	let result = access.finish(result).await?;
 	if tokio::time::timeout(
 		std::time::Duration::from_secs(10),

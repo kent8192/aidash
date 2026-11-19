@@ -12,8 +12,8 @@ pub(crate) struct Disclosure<'a, 'scope> {
 }
 #[async_trait]
 impl SemanticDisclosureScope for Disclosure<'_, '_> {
-	async fn unit(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<String>> {
-		match super::units::text(self.lease, id, workspace).await {
+	async fn unit(&mut self, id: Uuid, thread: Uuid) -> Result<Option<String>> {
+		match super::units::text(self.lease, id, thread).await {
 			Err(Error::Forbidden | Error::Conflict(_)) => Ok(None),
 			result => result.map_err(Into::into),
 		}
@@ -27,16 +27,16 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 				| Lease::BorrowedProofWithoutSubject(_)
 		)
 	}
-	async fn deployment_administrator_visible(&mut self, workspace: Uuid) -> Result<bool> {
-		crate::authorization::remote::deployment_administrator::visible(self.lease.tx(), workspace)
+	async fn deployment_administrator_visible(&mut self, thread: Uuid) -> Result<bool> {
+		crate::authorization::remote::deployment_administrator::visible(self.lease.tx(), thread)
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_resource(&mut self, workspace: Uuid) -> Result<Resource> {
+	async fn thread_resource(&mut self, thread: Uuid) -> Result<Resource> {
 		self.lease
 			.access()
 			.ok_or(Error::Forbidden)?
-			.workspace(workspace)
+			.thread(thread)
 			.await
 			.map_err(Into::into)
 	}
@@ -54,11 +54,11 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+	async fn artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
 		let result: NativeResult<Option<Artifact>> = async {
 			let row: Option<Artifact> = {
 				let query_bind_1 = &id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
@@ -66,7 +66,7 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 						))
 						.from(reinhardt::query::Alias::new("artifacts"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ? AND workspace_id = ?)".to_owned(),
+							"(id = ? AND thread_id = ?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),
@@ -83,11 +83,11 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+	async fn message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		let result: NativeResult<Option<Message>> = async {
 			let row: Option<Message> = {
 				let query_bind_1 = &id;
-				let query_bind_2 = workspace;
+				let query_bind_2 = thread;
 				aidash_server::database::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
@@ -95,7 +95,7 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 						))
 						.from(reinhardt::query::Alias::new("messages"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ? AND workspace_id = ?)".to_owned(),
+							"(id = ? AND thread_id = ?)".to_owned(),
 							vec![
 								Expr::value(query_bind_1.to_owned()).into(),
 								Expr::value(query_bind_2.to_owned()).into(),

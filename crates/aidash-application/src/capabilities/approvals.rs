@@ -443,7 +443,7 @@ pub struct Reader {
 pub async fn reader(scope: &mut dyn ApprovalScope, record: &Record) -> Result<Reader> {
 	let principal = scope.principal().to_owned();
 	let owner = record.owner == principal;
-	// A record outlives a Workspace that is no longer live, as on a
+	// A record outlives a Thread that is no longer live, as on a
 	// soft-deleted Node. Nobody can act on it as an approver then, but its
 	// requester still sees it, and one such record must not fail a whole list.
 	let targets = match targets_of(scope, record).await {
@@ -554,7 +554,7 @@ pub async fn prepare(
 		.await?;
 	scope
 		.event(
-			run.workspace_id,
+			run.thread_id,
 			"capability.approval_requested",
 			json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"]}),
 		)
@@ -827,11 +827,7 @@ pub async fn decide(
 	let result = json!({"approval_id":id,"state":record.state,"revision":record.revision,"grant_id":record.data["grant_id"]});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	scope
-		.event(
-			run.workspace_id,
-			"capability.approval_decided",
-			result.clone(),
-		)
+		.event(run.thread_id, "capability.approval_decided", result.clone())
 		.await?;
 	Ok(result)
 }
@@ -1068,7 +1064,7 @@ pub async fn tool_call(
 	scope
 		.cache(cache_key, &digest, &json!({"operation_id":id}))
 		.await?;
-	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"action":CALL_UNAPPROVED})).await?;
+	scope.event(run.thread_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"action":CALL_UNAPPROVED})).await?;
 	Ok(settled_tool_call(&record))
 }
 
@@ -1248,7 +1244,7 @@ pub async fn settle(
 	}
 	let result = json!({"approval_id":id,"state":record.state,"revision":record.revision,"grant_id":Value::Null});
 	scope
-		.event(run.workspace_id, "capability.approval_decided", result)
+		.event(run.thread_id, "capability.approval_decided", result)
 		.await?;
 	Ok(true)
 }

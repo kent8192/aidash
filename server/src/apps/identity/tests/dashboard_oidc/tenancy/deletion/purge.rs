@@ -8,25 +8,25 @@ use std::collections::BTreeMap;
 const AUDIT_DAYS: u32 = 365;
 
 impl Deployment {
-	/// A Tenant with a Workspace and a Task, as its first administrator made them.
+	/// A Tenant with a Thread and a Task, as its first administrator made them.
 	async fn tenant_with_work(&self, person: &Person, label: &str) -> (String, String) {
 		let (tenant, context) = self.tenant_of(person, label).await;
-		let (status, workspace) = self
+		let (status, thread) = self
 			.as_person(
 				person,
 				"POST",
-				"/api/workspaces",
+				"/api/threads",
 				Some(&context),
 				json!({"title":"Work","request":"Keep working"}),
 			)
 			.await;
-		assert_eq!(status, 200, "{workspace}");
-		let workspace = workspace["id"].as_str().unwrap().to_owned();
+		assert_eq!(status, 200, "{thread}");
+		let thread = thread["id"].as_str().unwrap().to_owned();
 		let (status, task) = self
 			.as_person(
 				person,
 				"POST",
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				Some(&context),
 				json!({"title":"work","description":"keep working"}),
 			)
@@ -37,7 +37,7 @@ impl Deployment {
 			.as_person(
 				person,
 				"POST",
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				Some(&context),
 				json!({"title":"after","description":"wait","dependencies":[task["id"]]}),
 			)
@@ -155,7 +155,7 @@ async fn purge_deletes_the_tenants_rows_and_leaves_other_tenants_and_audit_histo
 	let before = d.rows_of(&tenant).await;
 	let neighbour_before = d.rows_of(&neighbour).await;
 	for table in [
-		"workspaces",
+		"threads",
 		"tasks",
 		"task_dependencies",
 		"registry",
@@ -258,7 +258,7 @@ async fn a_failed_purge_step_is_retried_from_itself_and_a_purge_that_keeps_faili
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
 	// Arrange: a foreign key from outside the Tenant's data blocks deleting its
-	// Workspaces until it is dropped. Only the table owner changes the schema.
+	// Threads until it is dropped. Only the table owner changes the schema.
 	let d = Deployment::new(runtime, open_rules()).await;
 	let alice = d.person("alice").await;
 	let (tenant, context) = d.tenant_with_work(&alice, "Team").await;
@@ -268,12 +268,12 @@ async fn a_failed_purge_step_is_retried_from_itself_and_a_purge_that_keeps_faili
 	let pool = d.federation.store.pool.fixture_driver();
 	let owner = common::owner_pool(pool).await;
 	sqlx::query(
-		"CREATE TABLE fixture_purge_guard (id UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE RESTRICT)",
+		"CREATE TABLE fixture_purge_guard (id UUID PRIMARY KEY REFERENCES threads(id) ON DELETE RESTRICT)",
 	)
 	.execute(&owner)
 	.await
 	.unwrap();
-	sqlx::query("INSERT INTO fixture_purge_guard SELECT id FROM workspaces WHERE tenant = $1")
+	sqlx::query("INSERT INTO fixture_purge_guard SELECT id FROM threads WHERE tenant = $1")
 		.bind(&tenant)
 		.execute(pool)
 		.await
@@ -312,7 +312,7 @@ async fn a_failed_purge_step_is_retried_from_itself_and_a_purge_that_keeps_faili
 	let record = d.deployment_tenant(&tenant).await;
 	assert!(!record["deletion"]["purged_at"].is_null(), "{record}");
 	assert!(record["purge"].is_null(), "{record}");
-	assert_eq!(d.rows_of(&tenant).await["workspaces"], 0);
+	assert_eq!(d.rows_of(&tenant).await["threads"], 0);
 	d.finish().await;
 }
 
@@ -371,7 +371,7 @@ async fn only_a_deployment_administrator_purges_a_deleted_tenant_at_once(
 		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 	}
 	assert!(purged, "the purge never finished");
-	assert_eq!(d.rows_of(&tenant).await["workspaces"], 0);
+	assert_eq!(d.rows_of(&tenant).await["threads"], 0);
 	d.finish().await;
 }
 

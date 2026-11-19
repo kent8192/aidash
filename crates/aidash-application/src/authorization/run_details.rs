@@ -23,7 +23,7 @@ pub async fn visible(repository: &dyn RunDetailsRepository, id: Uuid) -> Result<
 	scope.finish_visible(result).await
 }
 pub async fn visible_in(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<RunInspection> {
-	let run = in_workspace(scope, id).await?;
+	let run = in_thread(scope, id).await?;
 	scope.prepare_visible(std::slice::from_ref(&run)).await?;
 	if !scope.run_visible(&run).await? {
 		return Err(Error::Forbidden);
@@ -32,10 +32,10 @@ pub async fn visible_in(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<Run
 }
 /// [`visible_in`] for many Runs, each `None` where [`visible_in`] is `Forbidden`.
 ///
-/// The Runs are read together, and each Workspace's Runs are prepared together
-/// under that Workspace's authority, so the reads do not grow with the Runs of
-/// one Workspace. Runs of another Node keep the caller's authority and are
-/// decided first, before any Workspace context is set; the caller restores its
+/// The Runs are read together, and each Thread's Runs are prepared together
+/// under that Thread's authority, so the reads do not grow with the Runs of
+/// one Thread. Runs of another Node keep the caller's authority and are
+/// decided first, before any Thread context is set; the caller restores its
 /// own context afterwards.
 pub async fn visible_many_in(
 	scope: &mut dyn RunDetailsScope,
@@ -61,20 +61,20 @@ pub async fn visible_many_counted_in(
 		}
 		let run = raw.inspect();
 		if run.is_local(scope.node_id()) {
-			local.entry(run.workspace_id).or_default().push(run);
+			local.entry(run.thread_id).or_default().push(run);
 		} else {
 			remote.push(run);
 		}
 	}
 	decide_prepared(scope, remote, &mut visible, &mut silent).await?;
-	for (workspace_id, runs) in local {
-		let workspace = match scope.workspace(workspace_id).await {
-			Ok(workspace) => workspace,
+	for (thread_id, runs) in local {
+		let thread = match scope.thread(thread_id).await {
+			Ok(thread) => thread,
 			Err(Error::Forbidden) => continue,
 			Err(error) => return Err(error),
 		};
-		scope.set_context(workspace.attributes.clone());
-		match scope.require(&workspace, "workspace.read").await {
+		scope.set_context(thread.attributes.clone());
+		match scope.require(&thread, "thread.read").await {
 			Ok(()) => {}
 			Err(Error::Forbidden) => continue,
 			Err(error) => return Err(error),
@@ -135,13 +135,13 @@ async fn decide(
 	}
 	Ok(visible)
 }
-async fn in_workspace(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<RunInspection> {
+async fn in_thread(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<RunInspection> {
 	let raw = scope.run(id).await?.ok_or(Error::Forbidden)?;
 	let run = raw.inspect();
 	if run.is_local(scope.node_id()) {
-		let workspace = scope.workspace(run.workspace_id).await?;
-		scope.set_context(workspace.attributes.clone());
-		scope.require(&workspace, "workspace.read").await?;
+		let thread = scope.thread(run.thread_id).await?;
+		scope.set_context(thread.attributes.clone());
+		scope.require(&thread, "thread.read").await?;
 	}
 	Ok(run)
 }
@@ -150,7 +150,7 @@ pub async fn inspect_in(
 	id: Uuid,
 	offset: u64,
 ) -> Result<RunDetails> {
-	let mut run = in_workspace(scope, id).await?;
+	let mut run = in_thread(scope, id).await?;
 	if !scope.run_visible(&run).await? {
 		return Err(scope
 			.run_reads_block(&run)

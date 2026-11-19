@@ -20,7 +20,7 @@ pub struct Match {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticSearchResult")]
 pub struct SearchResult {
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub index_revision: i64,
 	pub model: String,
 	pub model_version: String,

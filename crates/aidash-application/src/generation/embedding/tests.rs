@@ -430,7 +430,7 @@ async fn authority_and_all_ancestors_commit_before_returning_a_receipt(
 	assert_eq!(first, &state.ledger.attempts[&Uuid::from_u128(22)]);
 	assert_eq!(
 		(
-			first.workspace,
+			first.thread,
 			first.origin,
 			first.request_bytes,
 			first.amount

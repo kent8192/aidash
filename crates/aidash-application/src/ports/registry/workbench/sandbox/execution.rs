@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
-/// One approval needed by a test, evaluated without a Run or workspace.
+/// One approval needed by a test, evaluated without a Run or thread.
 #[derive(Debug, Clone)]
 pub struct TestApproval {
 	pub call: aidash_domain::provider::ToolCall,

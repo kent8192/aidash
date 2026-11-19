@@ -22,11 +22,11 @@ async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomi
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -224,12 +224,12 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 	#[case] participant: bool,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let bank = if participant {
 		memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -242,7 +242,7 @@ async fn replacement_history_count_is_enforced_for_unchanged_units_during_mainte
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		}
 	};
@@ -391,12 +391,12 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 	#[case] record_cap: bool,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let bank = if participant {
 		memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -409,7 +409,7 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		}
 	};
@@ -580,12 +580,12 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 	// Admit the model's full output reservation before injecting transport failure.
 	bounds.max_model_tokens = 32_768;
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds.clone()).await;
+	let (store, registry, thread) = setup(&database, bounds.clone()).await;
 	let bank = if participant {
 		memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -598,7 +598,7 @@ async fn smaller_operation_policy_preserves_durable_capacity_and_participant_rev
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		}
 	};
@@ -793,7 +793,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 	bounds.max_candidates = 2;
 	bounds.max_results = 2;
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_retention(
+	let (store, _, thread) = setup_endpoint_retention(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -804,7 +804,7 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -908,11 +908,11 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 	bounds.max_units = 32;
 	bounds.max_graph_visits = 4096;
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -955,7 +955,7 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 		.await
 		.unwrap();
 	let entries =
-		aidash_server::semantic::service::entries(&store, &administrator(&store).await, workspace)
+		aidash_server::semantic::service::entries(&store, &administrator(&store).await, thread)
 			.await
 			.unwrap();
 	assert_eq!(
@@ -974,8 +974,8 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 ) {
 	let database = database.await;
 	let (store, _, indexed) = setup(&database, bounds).await;
-	let workspace = store
-		.create_workspace(
+	let thread = store
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"deployment_administrator",
 			"Late index",
@@ -992,7 +992,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	aidash_server::semantic::service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
 			spec,
@@ -1003,7 +1003,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1076,7 +1076,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	.unwrap();
 	assert!(deleted[0].deleted);
 	let entries =
-		aidash_server::semantic::service::entries(&store, &administrator(&store).await, workspace)
+		aidash_server::semantic::service::entries(&store, &administrator(&store).await, thread)
 			.await
 			.unwrap();
 	assert_eq!(entries.iter().filter(|entry| !entry.deleted).count(), 1);
@@ -1116,7 +1116,7 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 	)
 	.await;
 	assert!(
-		matches!(denied, Err(aidash_server::Error::Conflict(message)) if message == "Workspace search source limit reached")
+		matches!(denied, Err(aidash_server::Error::Conflict(message)) if message == "Thread search source limit reached")
 	);
 }
 
@@ -1129,8 +1129,8 @@ pub(super) async fn recorded_run(
 	store: &Store,
 	bank: &Bank,
 	units: &[Uuid],
-) -> (aidash_server::authorization::workspace::Workspaces, Uuid) {
-	// Workspace inspection now resolves built-in capabilities through Registry.
+) -> (aidash_server::authorization::thread::Threads, Uuid) {
+	// Thread inspection now resolves built-in capabilities through Registry.
 	aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)
 		.unwrap()
 		.seed_system()
@@ -1170,7 +1170,7 @@ pub(super) async fn recorded_run(
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			bank.workspace,
+			bank.thread,
 			&aidash_domain::NewTask {
 				title: "Large provenance Run".into(),
 				description: "Read the admitted graph".into(),
@@ -1196,7 +1196,7 @@ pub(super) async fn recorded_run(
 			vec![
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -1209,7 +1209,7 @@ pub(super) async fn recorded_run(
 			vec![
 				Expr::value(run),
 				Expr::value(task.id),
-				Expr::value(bank.workspace),
+				Expr::value(bank.thread),
 				Expr::value(
 					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 						.to_string(),
@@ -1279,7 +1279,7 @@ pub(super) async fn recorded_run(
 	}
 
 	tx.commit().await.unwrap();
-	let scope = aidash_server::authorization::workspace::Workspaces {
+	let scope = aidash_server::authorization::thread::Threads {
 		store: store.clone(),
 		identity,
 	};
@@ -1287,7 +1287,7 @@ pub(super) async fn recorded_run(
 }
 
 pub(super) async fn run_visible(
-	scope: &aidash_server::authorization::workspace::Workspaces,
+	scope: &aidash_server::authorization::thread::Threads,
 	store: &Store,
 	run: Uuid,
 ) -> bool {
@@ -1366,12 +1366,12 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 	#[case] limit: &str,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let bank = if participant {
 		memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -1384,7 +1384,7 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		}
 	};

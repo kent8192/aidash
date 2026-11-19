@@ -1,5 +1,5 @@
 use super::*;
-use aidash_domain::Workspace;
+use aidash_domain::Thread;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rstest::rstest;
@@ -9,10 +9,10 @@ fn now() -> DateTime<Utc> {
 }
 fn options() -> GraphOptions {
 	GraphOptions {
-		scope_workspace: None,
+		scope_thread: None,
 		depth: 1,
 		mode: "mesh".into(),
-		kinds: vec!["workspace".into()],
+		kinds: vec!["thread".into()],
 		relations: vec![],
 		hours: 0,
 		limit: 2,
@@ -22,12 +22,12 @@ fn options() -> GraphOptions {
 fn subject() -> &'static str {
 	"root"
 }
-fn workspace(n: u128) -> Candidate {
-	Candidate::Workspace(Workspace {
+fn thread(n: u128) -> Candidate {
+	Candidate::Thread(Thread {
 		scratch_space_id: uuid::Uuid::nil(),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(n),
-		title: format!("workspace {n}"),
+		title: format!("thread {n}"),
 		created_by: "subject".into(),
 		revision: 0,
 		created_at: now(),
@@ -47,7 +47,7 @@ struct Scope {
 impl Scope {
 	fn new(n: u128) -> Self {
 		Self {
-			rows: (1..=n).map(workspace).collect(),
+			rows: (1..=n).map(thread).collect(),
 			deny_through: 0,
 			calls: vec![],
 			scoped: vec![],
@@ -109,12 +109,12 @@ impl GraphProjectionScope for Scope {
 			return Ok(false);
 		}
 		Ok(match c {
-			Candidate::Workspace(w) => w.id.as_u128() > self.deny_through,
+			Candidate::Thread(w) => w.id.as_u128() > self.deny_through,
 			Candidate::Task(w) => w.id.as_u128() > self.deny_through,
 			_ => false,
 		})
 	}
-	async fn linked_workspace(&mut self, _: Uuid) -> Result<Option<Candidate>> {
+	async fn linked_thread(&mut self, _: Uuid) -> Result<Option<Candidate>> {
 		Ok(None)
 	}
 	async fn linked_task(&mut self, _: Uuid) -> Result<Option<Candidate>> {
@@ -198,7 +198,7 @@ async fn adapter_failure_keeps_its_identity() {
 async fn scoped_projection_uses_the_receiving_admission_authority() {
 	let mut s = Scope::new(1);
 	let mut o = options();
-	o.scope_workspace = Some(Uuid::from_u128(8));
+	o.scope_thread = Some(Uuid::from_u128(8));
 	project(&mut s, "aidash://source", subject(), &o)
 		.await
 		.unwrap();
@@ -207,8 +207,8 @@ async fn scoped_projection_uses_the_receiving_admission_authority() {
 #[tokio::test]
 async fn an_oversized_first_group_is_rejected_without_advancing_a_cursor() {
 	let mut s = Scope::new(1);
-	let Candidate::Workspace(w) = &mut s.rows[0] else {
-		panic!("workspace fixture")
+	let Candidate::Thread(w) = &mut s.rows[0] else {
+		panic!("thread fixture")
 	};
 	w.title = "x".repeat(3_000_001);
 	let error = project(&mut s, "aidash://source", subject(), &options())
@@ -298,7 +298,7 @@ async fn graph_reports_unconfirmed_rows_under_the_answering_node() {
 		.map(|n| {
 			Candidate::Task(aidash_domain::Task {
 				id: Uuid::from_u128(n),
-				workspace_id: Uuid::from_u128(10),
+				thread_id: Uuid::from_u128(10),
 				title: "task".into(),
 				description: String::new(),
 				status: aidash_domain::TaskStatus::Open,
@@ -323,7 +323,7 @@ async fn graph_reports_unconfirmed_rows_under_the_answering_node() {
 	assert_eq!(body["nodes"].as_array().unwrap().len(), 1);
 	assert_eq!(
 		body["unconfirmed"],
-		json!([{ "node": "aidash://b", "kind": "task", "workspace_id": Uuid::from_u128(10), "count": 1 }])
+		json!([{ "node": "aidash://b", "kind": "task", "thread_id": Uuid::from_u128(10), "count": 1 }])
 	);
 	assert!(!body.to_string().contains("aidash://silent-c"));
 	scope.silent_row = None;

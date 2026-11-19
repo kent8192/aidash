@@ -63,15 +63,15 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 		.0,
 		409
 	);
-	let (_, workspace) = request(
+	let (_, thread) = request(
 		&app,
 		&token,
 		"POST",
-		"/api/workspaces",
+		"/api/threads",
 		json!({"title":"Missing agent","request":"Specialist research"}),
 	)
 	.await;
-	let (_,task)=request(&app,&token,"POST",&format!("/api/workspaces/{}/tasks",workspace["id"].as_str().unwrap()),json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
+	let (_,task)=request(&app,&token,"POST",&format!("/api/threads/{}/tasks",thread["id"].as_str().unwrap()),json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
 	let path = format!(
 		"/api/generation/acme/tasks/{}/assign",
 		task["id"].as_str().unwrap()
@@ -155,12 +155,12 @@ async fn missing_task(app: &common::TestApplication, token: &str) -> String {
 		app,
 		token,
 		"POST",
-		"/api/workspaces",
+		"/api/threads",
 		json!({"title":"Generated work","request":"Special research"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{ws}");
-	let (status, task) = request(app, token, "POST", &format!("/api/workspaces/{}/tasks", ws["id"].as_str().unwrap()), json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
+	let (status, task) = request(app, token, "POST", &format!("/api/threads/{}/tasks", ws["id"].as_str().unwrap()), json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
 	assert_eq!(status, 200, "{task}");
 	task["id"].as_str().unwrap().to_owned()
 }
@@ -1572,7 +1572,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	assert_eq!(run.phase().as_str(), "CANCELLED");
 	assert!(
 		f.store
-			.snapshot(&TEST_FIXTURE, run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
 			.artifacts
@@ -1724,7 +1724,7 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	bundle["policies"][0]["resources"]["kinds"] = json!([
-		"workspace",
+		"thread",
 		"generation_policy",
 		"agent",
 		"model",
@@ -2241,7 +2241,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 			let child = uuid::Uuid::new_v4();
 			let source = Query::select()
 				.expr(Expr::value(child))
-				.column(Alias::new("workspace_id"))
+				.column(Alias::new("thread_id"))
 				.expr(Expr::val("Hidden"))
 				.expr(Expr::val("Fixture"))
 				.expr(Expr::cust("'{}'::jsonb"))
@@ -2260,7 +2260,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 					.columns(
 						[
 							"id",
-							"workspace_id",
+							"thread_id",
 							"title",
 							"description",
 							"requirements",
@@ -2282,7 +2282,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				"policy_id",
 				"policy_revision",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"credential_id",
 				"root_subject",
 				"subject_chain",
@@ -2297,7 +2297,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				"node",
 				"home_node",
 				"local_task_id",
-				"local_workspace_id",
+				"local_thread_id",
 			];
 			let mut source = Query::select();
 			for field in fields {
@@ -2305,8 +2305,8 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 					"local_task_id" => {
 						source.expr(Expr::value(child));
 					}
-					"local_workspace_id" => {
-						source.column(Alias::new("workspace_id"));
+					"local_thread_id" => {
+						source.column(Alias::new("thread_id"));
 					}
 					"id" => {
 						source.expr(Expr::cust("gen_random_uuid()"));
@@ -2354,16 +2354,16 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	);
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	{
-		let query_bind_1 = run.workspace_id;
+		let query_bind_1 = run.thread_id;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("authorization_workspaces"))
+				.table(reinhardt::query::Alias::new("authorization_threads"))
 				.value_expr(
 					reinhardt::query::Alias::new("owner_subject"),
 					reinhardt::query::Expr::cust("'bob'"),
 				)
 				.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -2412,7 +2412,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	f.store
 		.event(
 			&mut tx,
-			Some(job["workspace_id"].as_str().unwrap().parse().unwrap()),
+			Some(job["thread_id"].as_str().unwrap().parse().unwrap()),
 			"generation.changed",
 			json!({"id":job_id}),
 		)
@@ -2421,7 +2421,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	f.store
 		.event(
 			&mut tx,
-			Some(run.workspace_id),
+			Some(run.thread_id),
 			"run.updated",
 			json!({"run_id":run.id}),
 		)
@@ -2589,7 +2589,7 @@ fn provider_4_router() -> upstream_fixtures::RouterFuture {
 	let server=reinhardt::test::stub::StubRouter::new()
 .route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
         let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let child=context["current"]["workspace"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
+        let child=context["current"]["thread"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
         let (name,arguments)=if let Some(child)=child {("task_assign",json!({"task_id":child["id"],"policy_id":"research","reason":"nested specialist"}))}else{("task_create",json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}))};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
     }})).into_server_router();

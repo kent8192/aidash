@@ -1,18 +1,13 @@
 //! All mutation reads, writes and events borrow one caller-owned transaction.
 use crate::Result;
-use aidash_domain::{Artifact, ArtifactInput, Task, Workspace, run_state::RawRun};
+use aidash_domain::{Artifact, ArtifactInput, Task, Thread, run_state::RawRun};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
 #[async_trait]
 pub trait MutationScope: Send {
-	async fn replace_workspace(
-		&mut self,
-		id: Uuid,
-		revision: i64,
-		title: String,
-	) -> Result<Workspace>;
+	async fn replace_thread(&mut self, id: Uuid, revision: i64, title: String) -> Result<Thread>;
 	/// Retain the row lock until the caller settles its transaction.
 	async fn lock_task(&mut self, id: Uuid) -> Result<Task>;
 	async fn unfinished_children(&mut self, id: Uuid) -> Result<bool>;
@@ -25,13 +20,7 @@ pub trait MutationScope: Send {
 		key: &str,
 	) -> Result<(Task, Artifact)>;
 	async fn source_run(&mut self, task: Uuid) -> Result<Option<Uuid>>;
-	async fn record_output(
-		&mut self,
-		run: Uuid,
-		workspace: Uuid,
-		kind: &str,
-		id: Uuid,
-	) -> Result<()>;
+	async fn record_output(&mut self, run: Uuid, thread: Uuid, kind: &str, id: Uuid) -> Result<()>;
 	/// Return undecoded state and the database-clock lease result under the row lock.
 	async fn lock_run(&mut self, id: Uuid) -> Result<(RawRun, bool)>;
 	async fn complete_run(&mut self, id: Uuid) -> Result<()>;
@@ -40,10 +29,5 @@ pub trait MutationScope: Send {
 	async fn lock_subnode_end(&mut self, _run: Uuid) -> Result<()> {
 		Ok(())
 	}
-	async fn append_event(
-		&mut self,
-		workspace: Option<Uuid>,
-		kind: &str,
-		data: Value,
-	) -> Result<()>;
+	async fn append_event(&mut self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<()>;
 }

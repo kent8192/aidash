@@ -34,7 +34,7 @@ pub const PEER_MAPPING_UPDATE: &str = "peer_mapping.update";
 pub const NODE_READ: &str = "node.read";
 /// Creating a Scratch Space on a Node.
 pub const SCRATCH_CREATE: &str = "scratch.create";
-/// Working in a Node: creating a Workspace there, or reaching it from another
+/// Working in a Node: creating a Thread there, or reaching it from another
 /// Node of the same Tenant. Members hold it; the receiving Node checks it.
 pub const NODE_USE: &str = "node.use";
 /// Creating a Node, within "Nodes per Tenant".

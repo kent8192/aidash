@@ -223,8 +223,8 @@ impl Authority {
 			subject: self.subject.clone(),
 		};
 		let mut access = Access::begin(&self.runtime.store, &identity).await?;
-		let workspace = self.workspace(&mut access).await?;
-		let node = access.workspace_node(workspace).await?;
+		let thread = self.thread(&mut access).await?;
+		let node = access.thread_node(thread).await?;
 		access.set_node(node);
 		if let ObservationOrigin::Run { run, .. } = self.frame.origin {
 			let current = access.run_for_interaction(run).await?;
@@ -242,8 +242,8 @@ impl Authority {
 		let entry =
 			crate::authorization::catalog::entry(access, &pin.identity.local(), INVOKE).await?;
 		pin.check(&entry)?;
-		let workspace_id = self.workspace(access).await?;
-		let node = access.workspace_node(workspace_id).await?;
+		let thread_id = self.thread(access).await?;
+		let node = access.thread_node(thread_id).await?;
 		if !crate::apps::identity::repositories::approval_decider::approved(
 			&mut *access.tx,
 			&self.frame.tenant,
@@ -255,17 +255,17 @@ impl Authority {
 			return Err(Error::Forbidden);
 		}
 		// A live catalog grant never grants private source disclosure.
-		let workspace = access.workspace(workspace_id).await?;
-		access.require(&workspace, "workspace.read").await?;
+		let thread = access.thread(thread_id).await?;
+		access.require(&thread, "thread.read").await?;
 		Ok(entry)
 	}
-	async fn workspace(&self, access: &mut Access) -> Result<Uuid> {
+	async fn thread(&self, access: &mut Access) -> Result<Uuid> {
 		match self.frame.origin {
 			ObservationOrigin::Run { run, .. } => {
-				Ok(access.run_for_interaction(run).await?.workspace_id)
+				Ok(access.run_for_interaction(run).await?.thread_id)
 			}
 			ObservationOrigin::Generation { task, .. } => {
-				Ok(access.task_read(task).await?.workspace_id)
+				Ok(access.task_read(task).await?.thread_id)
 			}
 		}
 	}
@@ -547,7 +547,7 @@ pub(crate) async fn provider_scope(
 		}
 	}
 	tx.commit().await?;
-	// Current subject, workspace disclosure and exact Catalog Approval remain independent checks.
+	// Current subject, thread disclosure and exact Catalog Approval remain independent checks.
 	let identity = SubjectIdentity {
 		http_session: None,
 		credential_id: job.credential_id,
@@ -556,10 +556,10 @@ pub(crate) async fn provider_scope(
 	};
 	let mut access = Access::begin(store, &identity).await?;
 	let result = async {
-		let node = access.workspace_node(job.workspace_id).await?;
+		let node = access.thread_node(job.thread_id).await?;
 		access.set_node(node.clone());
-		let workspace = access.workspace(job.workspace_id).await?;
-		access.require(&workspace, "workspace.read").await?;
+		let thread = access.thread(job.thread_id).await?;
+		access.require(&thread, "thread.read").await?;
 		let pin = frame.settings.decider.as_ref().ok_or(Error::Forbidden)?;
 		let entry =
 			crate::authorization::catalog::entry(&mut access, &pin.identity.local(), INVOKE)

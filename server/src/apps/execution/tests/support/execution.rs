@@ -115,10 +115,10 @@ pub fn execution(
 			.set_header("Authorization", &format!("Bearer {subject_token}"))
 			.await
 			.unwrap();
-		let workspace = assert_json(
+		let thread = assert_json(
 			subject
 				.post(
-					"/api/workspaces",
+					"/api/threads",
 					&json!({"title":"Approved task","request":"Use approved tools"}),
 					"json",
 				)
@@ -129,10 +129,7 @@ pub fn execution(
 		let task = assert_json(
 			subject
 				.post(
-					&format!(
-						"/api/workspaces/{}/tasks",
-						workspace["id"].as_str().unwrap()
-					),
+					&format!("/api/threads/{}/tasks", thread["id"].as_str().unwrap()),
 					&json!({"title":"Research","description":"Use approved tools"}),
 					"json",
 				)

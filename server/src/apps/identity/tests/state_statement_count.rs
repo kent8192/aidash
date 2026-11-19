@@ -22,21 +22,21 @@ async fn state_statement_count_does_not_grow_with_runs(
 		let task = if index == 0 {
 			first_task.to_string()
 		} else {
-			let (status, workspace) = common::request(
+			let (status, thread) = common::request(
 				&app,
 				&token,
 				"POST",
-				"/api/workspaces",
+				"/api/threads",
 				json!({"title":"Measured", "request":"Bounded state"}),
 			)
 			.await;
-			assert_eq!(status, 200, "{workspace}");
-			let workspace = workspace["id"].as_str().unwrap();
+			assert_eq!(status, 200, "{thread}");
+			let thread = thread["id"].as_str().unwrap();
 			let (status, task) = common::request(
 				&app,
 				&token,
 				"POST",
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				json!({"title":"Measured task", "description":"Create a run"}),
 			)
 			.await;
@@ -102,15 +102,15 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 	let app = fixture.application;
 	let (mut bundle, token, first_task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let db = f.store.pool.fixture_driver();
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
 		.bind(first_task)
 		.fetch_one(db)
 		.await
 		.unwrap();
 	let artifacts = [Uuid::new_v4(), Uuid::new_v4()];
 	for id in artifacts {
-		sqlx::query("INSERT INTO artifacts (id, tenant, workspace_id, task_id, kind, name, content, created_by, idempotency_key) VALUES ($1, 'acme', $2, $3, 'json', 'Source', '{}', 'alice', $1::text)")
-			.bind(id).bind(workspace).bind(first_task).execute(db).await.unwrap();
+		sqlx::query("INSERT INTO artifacts (id, tenant, thread_id, task_id, kind, name, content, created_by, idempotency_key) VALUES ($1, 'acme', $2, $3, 'json', 'Source', '{}', 'alice', $1::text)")
+			.bind(id).bind(thread).bind(first_task).execute(db).await.unwrap();
 	}
 	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-source", "effect":"deny", "subjects":{"ids":["alice"]},
@@ -136,7 +136,7 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 				&app,
 				&token,
 				"POST",
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				json!({"title":"Measured task", "description":"Create a run"}),
 			)
 			.await;
@@ -163,12 +163,12 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 		} else {
 			visible.push(run);
 		}
-		sqlx::query("INSERT INTO authorization_run_reads (run_id, tenant, workspace_id, resource_kind, resource_id) VALUES ($1, 'acme', $2, 'artifact', $3)")
-			.bind(run).bind(workspace).bind(artifacts[usize::from(is_hidden)]).execute(db).await.unwrap();
+		sqlx::query("INSERT INTO authorization_run_reads (run_id, tenant, thread_id, resource_kind, resource_id) VALUES ($1, 'acme', $2, 'artifact', $3)")
+			.bind(run).bind(thread).bind(artifacts[usize::from(is_hidden)]).execute(db).await.unwrap();
 		if index == 0 {
 			let request = Uuid::new_v4();
-			sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'measure-mixed', now())")
-				.bind(request).bind(workspace).bind(run).execute(db).await.unwrap();
+			sqlx::query("INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'measure-mixed', now())")
+				.bind(request).bind(thread).bind(run).execute(db).await.unwrap();
 			let state =
 				aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
 					request_id: request,
@@ -254,7 +254,7 @@ async fn state_statement_count_does_not_grow_with_runs_waiting_on_a_person(
 	let app = fixture.application;
 	let (_, token, first_task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let db = f.store.pool.fixture_driver();
-	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+	let thread: Uuid = sqlx::query_scalar("SELECT thread_id FROM tasks WHERE id = $1")
 		.bind(first_task)
 		.fetch_one(db)
 		.await
@@ -268,7 +268,7 @@ async fn state_statement_count_does_not_grow_with_runs_waiting_on_a_person(
 				&app,
 				&token,
 				"POST",
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				json!({"title":"Measured task", "description":"Create a run"}),
 			)
 			.await;
@@ -291,8 +291,8 @@ async fn state_statement_count_does_not_grow_with_runs_waiting_on_a_person(
 			.unwrap();
 		// Every Run waits on its own pending Human Request.
 		let request = Uuid::new_v4();
-		sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', $1::text, now())")
-			.bind(request).bind(workspace).bind(run).execute(db).await.unwrap();
+		sqlx::query("INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', $1::text, now())")
+			.bind(request).bind(thread).bind(run).execute(db).await.unwrap();
 		let state =
 			aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
 				request_id: request,

@@ -58,7 +58,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 pub fn builtin(operation: &str) -> Option<&'static str> {
 	match operation {
 		"human_request" | "human_read" => Some("human_request"),
-		"workspace_record" | "workspace_record_chunk" => Some("workspace_read"),
+		"thread_record" | "thread_record_chunk" => Some("workspace_read"),
 		"artifact" => Some("artifact_publish"),
 		"message" => Some("workspace_message"),
 		"create_task" => Some("task_create"),

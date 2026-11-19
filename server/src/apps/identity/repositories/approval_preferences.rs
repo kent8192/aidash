@@ -512,7 +512,7 @@ pub(crate) async fn covering(
 				Alias::new("m"),
 			),
 			Expr::cust(
-				"m.tenant = e.tenant AND m.subject = e.root_subject AND m.thread_id = e.workspace_id",
+				"m.tenant = e.tenant AND m.subject = e.root_subject AND m.thread_id = e.thread_id",
 			),
 		)
 		.and_where(Expr::col(column("e", "run_id")).eq(Expr::value(run.id)))

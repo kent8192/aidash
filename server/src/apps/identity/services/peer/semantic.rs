@@ -100,7 +100,7 @@ pub(crate) async fn context(
 		|| receipt.operation_digest != operation.digest()?
 		|| receipt.home_node != run.home_node
 		|| receipt.tenant != description.source_tenant
-		|| receipt.workspace_id != run.workspace_id
+		|| receipt.thread_id != run.thread_id
 		|| receipt.grant_id != description.grant_id
 		|| receipt.admission_id != run.id
 		|| receipt.binding != description.semantic

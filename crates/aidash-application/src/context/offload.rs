@@ -392,7 +392,7 @@ mod tests {
 		let mut pinned = json!({
 			"agent_state": {"phase": phase},
 			"turn_instructions": "i".repeat(1000),
-			"workspace": {"tasks": tasks},
+			"thread": {"tasks": tasks},
 		});
 		aidash_domain::projection::native::record_step_state(context, &pinned);
 		aidash_domain::projection::native::record_evidence(context, &mut pinned, usize::MAX);
@@ -446,9 +446,9 @@ mod tests {
 		let before = context.history.len();
 		step(&mut context, "c", &tasks);
 		assert_eq!(context.history.len(), before);
-		let pinned = json!({"workspace": {"tasks": tasks}});
+		let pinned = json!({"thread": {"tasks": tasks}});
 		let delivered =
-			aidash_domain::projection::native::delivered_evidence(&context, &pinned, "workspace")
+			aidash_domain::projection::native::delivered_evidence(&context, &pinned, "thread")
 				.unwrap();
 		assert_eq!(delivered["tasks"][0], Value::Null);
 	}

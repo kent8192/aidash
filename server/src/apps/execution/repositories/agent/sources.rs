@@ -20,10 +20,19 @@ fn align_default_source_tools(declaration: &mut SourceDeclaration, identities: &
 		.iter_mut()
 		.chain(declaration.tools.read.iter_mut())
 	{
+		// The same builtin, or the Workspace tool a Thread tool replaces, which
+		// an Agent version admitted before #1008 binds.
+		let operation = |id: &str| {
+			aidash_domain::tool::thread_tools::current(id.strip_prefix("aidash.").unwrap_or(id))
+				.to_owned()
+		};
 		if !identities.contains(reference)
 			&& let Some(saved) = identities.iter().find(|saved| {
-				saved.id == reference.id
-					&& saved.registry_deployment == reference.registry_deployment
+				saved.registry_deployment == reference.registry_deployment
+					&& (saved.id == reference.id
+						|| saved.id.starts_with("aidash.")
+							&& reference.id.starts_with("aidash.")
+							&& operation(&saved.id) == operation(&reference.id))
 			}) {
 			*reference = saved.clone();
 		}
@@ -112,7 +121,7 @@ impl ContextSourceProvider for NativeContribution<'_> {
 		} else {
 			return Err(aidash_application::Error::Forbidden);
 		};
-		if descriptor.operation != expected {
+		if !aidash_domain::tool::thread_tools::is(&descriptor.operation, expected) {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let alias = binding
@@ -217,7 +226,7 @@ impl Slot {
 			Self::RegistrySkills => "registry_skills",
 			Self::ResidentSkills => "resident_skills",
 			Self::Semantic => "semantic_memory",
-			Self::Observation => "workspace",
+			Self::Observation => "thread",
 		}
 	}
 	fn matches(self, binding: &ResolvedBinding) -> bool {
@@ -277,7 +286,7 @@ impl Environment<'_> {
 				return SemanticContextRead {
 					selections: vec![],
 					contributions: vec![],
-					workspace_retrieved: false,
+					thread_retrieved: false,
 					result: Err(error),
 				};
 			}
@@ -407,7 +416,7 @@ impl Environment<'_> {
 				return SemanticContextRead {
 					selections: vec![],
 					contributions: vec![],
-					workspace_retrieved: false,
+					thread_retrieved: false,
 					result: Err(error),
 				};
 			}
@@ -615,7 +624,7 @@ impl Environment<'_> {
 			};
 			let message: Message =
 				serde_json::from_value(home.read_record("message", &id.to_string()).await?)?;
-			if message.workspace_id != run.workspace_id || message.content != input.content {
+			if message.thread_id != run.thread_id || message.content != input.content {
 				return Err(aidash_application::Error::Conflict(
 					"run input message binding changed".into(),
 				));
@@ -1068,7 +1077,7 @@ impl Environment<'_> {
 					}
 				}
 				Slot::Semantic => {
-					let workspace = matches!(
+					let thread = matches!(
 						native.as_ref().map(|native| &native.source),
 						Some(
 							NativeSource::WorkspaceRetrieval { .. }
@@ -1076,8 +1085,8 @@ impl Environment<'_> {
 								| NativeSource::ConversationMemory { .. }
 						)
 					);
-					if workspace {
-						for prefix in ["/workspace/matches", "/matches", "/result/matches"] {
+					if thread {
+						for prefix in ["/thread/matches", "/matches", "/result/matches"] {
 							if let Some(items) = content.pointer(prefix).and_then(Value::as_array) {
 								for (index, item) in items.iter().enumerate() {
 									let memory = item["source"]["kind"] == "memory";
@@ -1117,7 +1126,7 @@ impl Environment<'_> {
 										bank["provider"]["id"] == config.memory.id
 											&& bank["provider"]["version"] == config.memory.version
 											&& match config.scope {
-												aidash_domain::memory::SourceScope::Workspace => {
+												aidash_domain::memory::SourceScope::Thread => {
 													bank["bank"]["participant"].is_null()
 												}
 												aidash_domain::memory::SourceScope::Participant => {

@@ -8,11 +8,11 @@ fn tool_data() -> Value {
 		"response_epoch":9,"cursor":0,"included_input_seq":3,"request_window":128000,"request_tokens":100,"finalizing":false,
 		"media_inferred_seq_before_response":0,"observed_input_seq_before_response":0,"inferred_selected_media":[],"deferred_selected_media":[],"selected_media":[],"deferred_human_media":false,
 		"media_inferred_through_seq":null,"media_intake_through_seq":0,"required_run_message_reads":[],"references_read_at_inference":true,"run_message_catchup":false,"run_message_summary_end_seq":0,"run_message_summary_limit":1024,
-		"deferred_reads":thinking_data(),"workspace_read_plan":null,"skill_read_plan":null,"workspace_observation_plan":null,"home_approval":null,"approval":null
+		"deferred_reads":thinking_data(),"thread_read_plan":null,"skill_read_plan":null,"workspace_observation_plan":null,"home_approval":null,"approval":null
 	})
 }
 fn thinking_data() -> Value {
-	json!({"force_workspace_read_compaction":false,"deferred_workspace_read":null,"deferred_skill_read":null,"deferred_workspace_observation":null,"selected_media":[],"media_intake_through_seq":null,"deferred_run_message_reads":[]})
+	json!({"force_thread_read_compaction":false,"deferred_thread_read":null,"deferred_skill_read":null,"deferred_thread_observation":null,"selected_media":[],"media_intake_through_seq":null,"deferred_run_message_reads":[]})
 }
 fn envelope(data: Value) -> Value {
 	json!({"state_version":1,"data":data,"recovery":{"retry":null}})
@@ -366,7 +366,7 @@ fn a_runnable_run_that_needs_capabilities_is_waiting_for_a_capable_worker() {
 	let mut run = RunMetadata {
 		id: Uuid::nil(),
 		task_id: Uuid::nil(),
-		workspace_id: Uuid::nil(),
+		thread_id: Uuid::nil(),
 		node: crate::nodes::NodeName::parse("brave-otter-k3m9q2xa").unwrap(),
 		home_node: "aidash://home".into(),
 		agent_id: "fixture".into(),

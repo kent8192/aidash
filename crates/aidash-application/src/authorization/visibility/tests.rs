@@ -10,7 +10,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		home_node: "aidash://node/brave-otter-k3m9q2xa".into(),
 		agent_id: "agent".into(),
 		agent_version: "1".into(),
@@ -118,31 +118,27 @@ impl LocalRunVisibilityScope for Scope {
 			attributes,
 		}
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.touch("workspace")?;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.touch("thread")?;
 		Ok(self.resource(
-			"workspace",
+			"thread",
 			&id.to_string(),
-			json!({"workspace_id":id,"owner":"root"}),
+			json!({"thread_id":id,"owner":"root"}),
 		))
 	}
-	async fn memory_resource(
-		&mut self,
-		run: &RunMetadata,
-		workspace: &Resource,
-	) -> Result<Resource> {
+	async fn memory_resource(&mut self, run: &RunMetadata, thread: &Resource) -> Result<Resource> {
 		self.touch("memory")?;
 		Ok(self.resource(
 			"memory",
 			&run.agent_id,
-			memory_attributes(run, workspace.attributes.clone()),
+			memory_attributes(run, thread.attributes.clone()),
 		))
 	}
 	async fn task(&mut self, run: &RunMetadata) -> Result<Option<Task>> {
 		self.touch("task")?;
 		Ok((!self.missing_task).then(|| Task {
 			id: run.task_id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			title: "task".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
@@ -212,7 +208,7 @@ async fn local_disclosure_keeps_task_policy_memory_provenance_and_content_gates(
 	assert_eq!(
 		scope.calls,
 		[
-			"workspace",
+			"thread",
 			"memory",
 			"task",
 			"task_visible",
@@ -226,7 +222,7 @@ async fn local_disclosure_keeps_task_policy_memory_provenance_and_content_gates(
 	assert_eq!(scope.decisions[0].id, run.id.to_string());
 	assert_eq!(
 		scope.decisions[1].attributes,
-		json!({"workspace_id":run.workspace_id,"owner":"root","created_by":aidash_domain::agent_subject(&run.home_node,&run.agent_id,&run.agent_version),"version":"1"})
+		json!({"thread_id":run.thread_id,"owner":"root","created_by":aidash_domain::agent_subject(&run.home_node,&run.agent_id,&run.agent_version),"version":"1"})
 	);
 }
 
@@ -378,7 +374,7 @@ async fn foreign_run_without_admission_requires_an_exact_legacy_grant(
 }
 
 #[rstest]
-#[case("workspace")]
+#[case("thread")]
 #[case("memory")]
 #[case("task")]
 #[case("task_visible")]
@@ -436,9 +432,9 @@ impl Events {
 		}
 		Ok(())
 	}
-	fn lookup(&mut self, name: &'static str, id: Uuid, workspace: Option<Uuid>) -> Result<()> {
+	fn lookup(&mut self, name: &'static str, id: Uuid, thread: Option<Uuid>) -> Result<()> {
 		self.touch(name)?;
-		self.last_lookup = Some((id, workspace));
+		self.last_lookup = Some((id, thread));
 		Ok(())
 	}
 }
@@ -447,7 +443,7 @@ fn event(kind: &str, data: Value) -> Event {
 		sequence: 1,
 		id: Uuid::from_u128(8),
 		node: None,
-		workspace_id: Some(Uuid::from_u128(3)),
+		thread_id: Some(Uuid::from_u128(3)),
 		kind: kind.into(),
 		data,
 		created_at: chrono::Utc::now(),
@@ -467,9 +463,9 @@ impl EventVisibilityScope for Events {
 	async fn generation(
 		&mut self,
 		id: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 	) -> Result<Option<aidash_domain::generation::requests::Request>> {
-		self.lookup("generation", id, workspace)?;
+		self.lookup("generation", id, thread)?;
 		Ok(self.present.then(|| generation(1)))
 	}
 	async fn generation_visible(
@@ -482,13 +478,13 @@ impl EventVisibilityScope for Events {
 	async fn conversation(
 		&mut self,
 		id: Uuid,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 	) -> Result<Option<Conversation>> {
-		self.lookup("conversation", id, workspace)?;
+		self.lookup("conversation", id, thread)?;
 		Ok(self.present.then(|| Conversation {
 			scratch_space_id: uuid::Uuid::nil(),
 			id,
-			workspace_id: workspace.unwrap(),
+			thread_id: thread.unwrap(),
 			created_by: "root".into(),
 			target: "agent".into(),
 			target_kind: "agent".into(),
@@ -509,11 +505,11 @@ impl EventVisibilityScope for Events {
 		self.touch("conversation.read")?;
 		Ok(self.allowed)
 	}
-	async fn human(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<HumanRequest>> {
-		self.lookup("human", id, workspace)?;
+	async fn human(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<HumanRequest>> {
+		self.lookup("human", id, thread)?;
 		Ok(self.present.then(|| HumanRequest {
 			id,
-			workspace_id: workspace.unwrap(),
+			thread_id: thread.unwrap(),
 			run_id: Uuid::from_u128(1),
 			kind: "input".into(),
 			prompt: String::new(),
@@ -527,8 +523,8 @@ impl EventVisibilityScope for Events {
 		self.touch("human_visible")?;
 		Ok(self.human_allowed)
 	}
-	async fn run(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<RunMetadata>> {
-		self.lookup("run", id, workspace)?;
+	async fn run(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<RunMetadata>> {
+		self.lookup("run", id, thread)?;
 		Ok(self.present.then(run))
 	}
 	async fn run_visible(&mut self, _: &RunMetadata) -> Result<bool> {
@@ -560,8 +556,8 @@ async fn explicit_event_readers_take_precedence_over_generic_run_lookup(
 }
 
 #[rstest]
-#[case("workspace.created",json!({}),true)]
-#[case("workspace.updated",json!({}),true)]
+#[case("thread.created",json!({}),true)]
+#[case("thread.updated",json!({}),true)]
 #[case("new.family",json!({}),false)]
 #[case("run.updated",json!({"id":Uuid::from_u128(1)}),false)]
 #[case("run.created",json!({"id":Uuid::from_u128(1),"run_id":null}),false)]
@@ -588,7 +584,7 @@ async fn malformed_identifiers_and_unregistered_event_families_cannot_disclose_c
 #[case("run.updated", "run_id")]
 #[case("new.family", "run_id")]
 #[tokio::test]
-async fn generic_event_disclosure_uses_the_exact_workspace_and_run_reader(
+async fn generic_event_disclosure_uses_the_exact_thread_and_run_reader(
 	#[case] kind: &str,
 	#[case] key: &str,
 ) {
@@ -714,7 +710,7 @@ fn generation(id: u128) -> aidash_domain::generation::requests::Request {
 		prepared: true,
 		grant_id: None,
 		admission_id: None,
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		credential_id: Uuid::from_u128(4),
 		root_subject: "alice".into(),
 		subject_chain: vec!["alice".into()],
@@ -759,11 +755,11 @@ async fn one_scan_evaluates_each_run_once_for_all_of_its_events(#[case] allowed:
 
 #[rstest]
 #[tokio::test]
-async fn another_scan_or_workspace_evaluates_the_run_again() {
+async fn another_scan_or_thread_evaluates_the_run_again() {
 	let mut scope = Events::new();
 	let mut runs = RunVerdicts::default();
 	let mut elsewhere = run_update();
-	elsewhere.workspace_id = Some(Uuid::from_u128(4));
+	elsewhere.thread_id = Some(Uuid::from_u128(4));
 	assert!(
 		event_visible_in(&mut scope, &run_update(), &mut runs)
 			.await

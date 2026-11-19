@@ -33,7 +33,7 @@ pub(crate) fn descriptor(home: &str, entry: &Entry) -> Result<Provider> {
 pub(crate) async fn bind(
 	deployment: &str,
 	lease: &mut Lease<'_>,
-	workspace: Uuid,
+	thread: Uuid,
 	selection: &NativeRequest,
 	generation: Option<&NativeOrigin>,
 ) -> Result<NativeBinding> {
@@ -45,19 +45,19 @@ pub(crate) async fn bind(
 	let tenant: String = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("tenant"))
-			.from(Alias::new("authorization_workspaces"))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.from(Alias::new("authorization_threads"))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_one(&mut **lease.tx())
 	.await?;
-	// The Workspace's memory lives at the Node the Workspace belongs to.
+	// The Thread's memory lives at the Node the Thread belongs to.
 	let node: String = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("node"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_one(&mut **lease.tx())
@@ -67,7 +67,7 @@ pub(crate) async fn bind(
 	let mut bank = Bank {
 		home: home.into(),
 		tenant,
-		workspace,
+		thread,
 		participant: Some(selection.participant),
 	};
 	for action in ["memory.participant.use"] {
@@ -132,7 +132,7 @@ pub(crate) async fn bind(
 			));
 		}
 		let mut selected = bank.clone();
-		if source.scope == SourceScope::Workspace {
+		if source.scope == SourceScope::Thread {
 			selected.participant = None;
 		}
 		super::memory_context::declare_bank(
@@ -212,7 +212,7 @@ pub(crate) async fn stamp(
 	let current = bind(
 		store.deployment.as_str(),
 		lease,
-		binding.participant.bank.workspace,
+		binding.participant.bank.thread,
 		&binding.selection,
 		binding.generation.as_ref(),
 	)

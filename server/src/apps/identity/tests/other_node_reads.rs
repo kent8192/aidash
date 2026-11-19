@@ -301,13 +301,8 @@ async fn world(provider: Provider) -> World {
 		assert_eq!(status, 200, "{body}");
 		let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":NodeName::derived("acme"),"entry":{"id":"home-embedding","version":"1.0.0"},"expected_revision":0,"enabled":true})).await;
 		assert_eq!(status, 200, "{body}");
-		let workspace = f
-			.store
-			.task(&TEST_FIXTURE, task)
-			.await
-			.unwrap()
-			.workspace_id;
-		let (status, body) = request(&app, &common::tenant_token(&f.store, "acme").await, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":100,"max_results":10,"max_result_tokens":4096,"max_input_bytes":32768}})).await;
+		let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+		let (status, body) = request(&app, &common::tenant_token(&f.store, "acme").await, "POST", &format!("/api/threads/{thread}/semantic/index"), json!({"expected_revision":0,"spec":{"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":100,"max_results":10,"max_result_tokens":4096,"max_input_bytes":32768}})).await;
 		assert_eq!(status, 200, "{body}");
 	}
 	// The second Node comes from the real route, as a Tenant Administrator uses it.
@@ -431,10 +426,10 @@ impl World {
 
 	/// Every Task the coordinator created.
 	async fn all_handed_over(&self) -> Vec<Task> {
-		let workspace = self.f.store.task(&TEST_FIXTURE, self.task).await.unwrap();
+		let thread = self.f.store.task(&TEST_FIXTURE, self.task).await.unwrap();
 		self.f
 			.store
-			.tasks(&TEST_FIXTURE, Some(workspace.workspace_id))
+			.tasks(&TEST_FIXTURE, Some(thread.thread_id))
 			.await
 			.unwrap()
 			.into_iter()
@@ -444,10 +439,10 @@ impl World {
 
 	/// The Task the coordinator created.
 	async fn handed_over(&self) -> Task {
-		let workspace = self.f.store.task(&TEST_FIXTURE, self.task).await.unwrap();
+		let thread = self.f.store.task(&TEST_FIXTURE, self.task).await.unwrap();
 		self.f
 			.store
-			.tasks(&TEST_FIXTURE, Some(workspace.workspace_id))
+			.tasks(&TEST_FIXTURE, Some(thread.thread_id))
 			.await
 			.unwrap()
 			.into_iter()
@@ -521,16 +516,16 @@ async fn add_policies(world: &World, subjects: &[&str], policies: Vec<Value>) {
 	assert_eq!(status, 200, "{body}");
 }
 
-/// Bob may read the Workspace but may not discover the second Node.
+/// Bob may read the Thread but may not discover the second Node.
 fn bob_cannot_discover() -> Value {
 	json!({"id":"bob-cannot-discover","effect":"deny","subjects":{"ids":["bob"]},
 		"actions":["federation.discover"],"resources":{"kinds":["node"]}})
 }
 
-/// Carol may not read Workspaces.
+/// Carol may not read Threads.
 fn carol_reads_nothing() -> Value {
 	json!({"id":"carol-reads-nothing","effect":"deny","subjects":{"ids":["carol"]},
-		"actions":["workspace.read"],"resources":{"kinds":["*"]}})
+		"actions":["thread.read"],"resources":{"kinds":["*"]}})
 }
 
 /// The receiver's Run is admitted and starts on the second Node, then stops
@@ -884,7 +879,7 @@ async fn deleting_the_discovered_node_hides_nothing(#[future(awt)] provider: Pro
 
 /// Opening a Run's live inference stream while the second Node is silent: what the
 /// Run read there is decided here (#769), so the stream opens. A reader who may not
-/// discover that Node, and one who may not read Workspaces, stay `403` naming no Node.
+/// discover that Node, and one who may not read Threads, stay `403` naming no Node.
 #[rstest::rstest]
 #[tokio::test]
 async fn opening_a_run_stream_while_a_node_is_silent_opens_and_a_refusal_stays(
@@ -925,7 +920,7 @@ async fn opening_a_run_stream_while_a_node_is_silent_opens_and_a_refusal_stays(
 	world.close().await;
 }
 
-/// Entries of `unconfirmed` for one kind, as `(node, workspace, count)`.
+/// Entries of `unconfirmed` for one kind, as `(node, thread, count)`.
 fn unconfirmed_of(body: &Value, kind: &str) -> Vec<(String, String, u64)> {
 	body["unconfirmed"]
 		.as_array()
@@ -935,14 +930,14 @@ fn unconfirmed_of(body: &Value, kind: &str) -> Vec<(String, String, u64)> {
 		.map(|entry| {
 			(
 				entry["node"].as_str().unwrap().to_owned(),
-				entry["workspace_id"].as_str().unwrap().to_owned(),
+				entry["thread_id"].as_str().unwrap().to_owned(),
 				entry["count"].as_u64().unwrap(),
 			)
 		})
 		.collect()
 }
 
-/// Bob may read the Workspace but may not discover Nodes (#770, decision 4).
+/// Bob may read the Thread but may not discover Nodes (#770, decision 4).
 async fn credential_without_discovery(world: &World) -> String {
 	let (status, current) = request(
 		&world.app,
@@ -1000,9 +995,9 @@ async fn establish_delegated_read(world: &World, created: usize) -> Task {
 		"the completed Task stays bound to its grant: {revisions:?}"
 	);
 	let remote_outputs: Vec<(String, Uuid)> = sqlx::query_as(
-		"SELECT resource_kind, resource_id FROM authorization_remote_outputs WHERE workspace_id = $1",
+		"SELECT resource_kind, resource_id FROM authorization_remote_outputs WHERE thread_id = $1",
 	)
-	.bind(receiver.workspace_id)
+	.bind(receiver.thread_id)
 	.fetch_all(world.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
@@ -1070,7 +1065,7 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	let delegated = establish_delegated_read(&world, 4).await;
 	let children = world.all_handed_over().await;
 	assert_eq!(children.len(), 4);
-	let workspace = children[0].workspace_id.to_string();
+	let thread = children[0].thread_id.to_string();
 	let source =
 		common::register_source(&world.f, &world.app, "aidash://graph-asker", "acme").await;
 	let credential = common::issued_credential(&world.f.store, "acme", "alice").await;
@@ -1129,7 +1124,7 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	assert!(listed(&tasks, world.task), "{tasks}");
 	let expected = vec![(
 		world.sibling.to_string(),
-		workspace.clone(),
+		thread.clone(),
 		hidden.len() as u64,
 	)];
 	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
@@ -1155,7 +1150,7 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 		&source,
 		"viewer",
 		&json!({
-			"subject":"viewer", "scope_workspace":null, "mode":"mesh", "kinds":["task"],
+			"subject":"viewer", "scope_thread":null, "mode":"mesh", "kinds":["task"],
 			"relations":[], "hours":0, "limit":80, "cursor":null
 		}),
 	)
@@ -1163,7 +1158,7 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 	assert_eq!(status, 200, "{graph}");
 	assert_eq!(
 		unconfirmed_of(&graph, "task"),
-		vec![(source.receiver.to_string(), workspace.clone(), 4)],
+		vec![(source.receiver.to_string(), thread.clone(), 4)],
 		"{graph}"
 	);
 	assert!(
@@ -1171,24 +1166,22 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 		"{graph}"
 	);
 	let single = format!("/api/tasks/{}/runs", hidden[0].id);
-	// The same Node is named in the state and the Workspace.
+	// The same Node is named in the state and the Thread.
 	let (status, state) = world.get("/api/state").await;
 	assert_eq!(status, 200, "{state}");
 	assert_eq!(unconfirmed_of(&state, "task"), expected, "{state}");
-	let (status, snapshot) = world.get(&format!("/api/workspaces/{workspace}")).await;
+	let (status, snapshot) = world.get(&format!("/api/threads/{thread}")).await;
 	assert_eq!(status, 200, "{snapshot}");
 	assert_eq!(unconfirmed_of(&snapshot, "task"), expected, "{snapshot}");
 	// The events of the missing rows are counted under the same Node.
-	let (status, events) = world
-		.get(&format!("/api/events?workspace_id={workspace}"))
-		.await;
+	let (status, events) = world.get(&format!("/api/events?thread_id={thread}")).await;
 	assert_eq!(status, 200, "{events}");
 	let counted: u64 = unconfirmed_of(&events, "event")
 		.iter()
 		.map(|(node, ws, count)| {
 			assert_eq!(
 				(node, ws),
-				(&world.sibling.to_string(), &workspace),
+				(&world.sibling.to_string(), &thread),
 				"{events}"
 			);
 			*count
@@ -1646,8 +1639,8 @@ async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] pro
 	assert_eq!(status, 200, "{current}");
 	let mut bundle = current["bundle"].clone();
 	bundle["policies"].as_array_mut().unwrap().push(json!({
-		"id":"alice-reads-no-workspace","effect":"deny","subjects":{"ids":["alice"]},
-		"actions":["workspace.read"],"resources":{"kinds":["*"]}
+		"id":"alice-reads-no-thread","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["thread.read"],"resources":{"kinds":["*"]}
 	}));
 	let (status, body) = common::post(
 		&world.app,

@@ -17,8 +17,8 @@ pub use super::policy;
 pub mod remote;
 #[path = "resources.rs"]
 pub mod resources;
-#[path = "workspace.rs"]
-pub mod workspace;
+#[path = "thread.rs"]
+pub mod thread;
 
 use crate::apps::identity::models::{
 	AuthorizationBundle, AuthorizationDecision, AuthorizationRevision,

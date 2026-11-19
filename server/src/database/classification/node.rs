@@ -7,7 +7,7 @@ use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Root {
-	Workspace,
+	Thread,
 	Run,
 	Task,
 	Area,
@@ -60,7 +60,7 @@ use Root::*;
 /// classification is itself proof that a reviewed table survives Node purge.
 pub fn ownership(name: &str) -> Result<Ownership> {
 	Ok(match name {
-		"workspaces"
+		"threads"
 		| "runs"
 		| "generation_requests"
 		| "node_cancellation_jobs"
@@ -100,7 +100,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"subnode_members" => Link("subnode_id", Subnode),
 		"scratch_space_settings" | "scratch_space_members" => Link("space_id", ScratchSpace),
 		"agent_plugin_data" => Link("scratch_space_id", ScratchSpace),
-		"identity_thread_approval_modes" => Link("thread_id", Workspace),
+		"identity_thread_approval_modes" => Link("thread_id", Thread),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
 		"tasks"
@@ -114,7 +114,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "conversations"
 		| "channel_attachments"
 		| "channel_message_context"
-		| "authorization_workspaces"
+		| "authorization_threads"
 		| "semantic_image_ledgers"
 		| "semantic_image_publications"
 		| "semantic_indexes"
@@ -123,7 +123,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "semantic_history"
 		| "semantic_vectors"
 		| "memory_banks"
-		| "memory_participants" => Link("workspace_id", Workspace),
+		| "memory_participants" => Link("thread_id", Thread),
 		// A Duty's script versions and script runs are keyed on the Duty and
 		// go with it (#1011).
 		"duty_script_versions" | "duty_script_runs" => Link("duty_id", Duty),
@@ -164,7 +164,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "subnode_operation_receipts" => Link("run_id", Run),
 		"generation_budgets" => Link("request_id", Request),
 		"generation_remote_usage" => RemoteUsageRows,
-		"generation_embedding_usage" => Link("workspace_id", Workspace),
+		"generation_embedding_usage" => Link("thread_id", Thread),
 		"generation_history" => Link("request_id", Request),
 		"generation_remote_finalizations" => Finalizations,
 		"generation_remote_dispatches" => Dispatches,

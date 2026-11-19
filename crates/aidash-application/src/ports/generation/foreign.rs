@@ -25,7 +25,7 @@ pub trait ForeignGenerationGuard: Send {
 	/// Hold the same shared intent-row lock until the caller completes its transaction.
 	async fn intent(&mut self, id: Uuid) -> Result<Option<Record>>;
 	async fn lineage(&mut self, node: &str) -> Result<Vec<Ancestor>>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	/// Preserve exact Home/task/grant/admission, ACTIVE/quota and database-time predicates.

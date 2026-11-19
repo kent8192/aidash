@@ -77,7 +77,7 @@ fn a_nonhuman_cannot_approve_even_when_it_is_the_requester(mut bundle: PolicyBun
 
 #[test]
 fn workbench_preserves_a_conditional_deny_with_an_independent_matching_branch() {
-	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"tenant","subjects":{"user":{"kind":"user","attributes":{"contractor":true}}},"policies":[{"id":"approval","effect":"allow","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}},{"id":"contractor-deny","effect":"deny","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]},"condition":{"op":"any","conditions":[{"op":"exists","value":{"source":"resource","path":"/workspace_id"}},{"op":"eq","left":{"source":"subject","path":"/contractor"},"right":{"source":"literal","value":true}}]}}]})).unwrap();
+	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"tenant","subjects":{"user":{"kind":"user","attributes":{"contractor":true}}},"policies":[{"id":"approval","effect":"allow","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}},{"id":"contractor-deny","effect":"deny","subjects":{"ids":["user"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]},"condition":{"op":"any","conditions":[{"op":"exists","value":{"source":"resource","path":"/thread_id"}},{"op":"eq","left":{"source":"subject","path":"/contractor"},"right":{"source":"literal","value":true}}]}}]})).unwrap();
 	let target = Resource {
 		tenant: "tenant".into(),
 		kind: "tool".into(),
@@ -118,7 +118,7 @@ fn workbench_approver_uses_only_the_approval_resource() {
 	bundle.policies.pop();
 	bundle.policies[0].condition = Some(crate::policy::Condition::Exists {
 		value: crate::policy::Operand::Resource {
-			path: "/workspace_id".into(),
+			path: "/thread_id".into(),
 		},
 	});
 	assert!(!workbench_approver_eligible(&bundle, "user", &target));
@@ -132,7 +132,7 @@ fn workbench_approver_uses_only_the_approval_resource() {
 	let mut forged = target.clone();
 	forged.attributes["run_id"] = json!(uuid::Uuid::new_v4());
 	assert!(!workbench_approver_eligible(&bundle, "user", &forged));
-	bundle.policies[0].condition = Some(serde_json::from_value(json!({"op":"any","conditions":[{"op":"exists","value":{"source":"resource","path":"/workspace_id"}},{"op":"eq","left":{"source":"literal","value":true},"right":{"source":"literal","value":true}}]})).unwrap());
+	bundle.policies[0].condition = Some(serde_json::from_value(json!({"op":"any","conditions":[{"op":"exists","value":{"source":"resource","path":"/thread_id"}},{"op":"eq","left":{"source":"literal","value":true},"right":{"source":"literal","value":true}}]})).unwrap());
 	assert!(!workbench_approver_eligible(&bundle, "user", &target));
 }
 

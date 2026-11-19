@@ -1,5 +1,5 @@
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
-use aidash_server::apps::workspaces::models::{Task, TaskDependency, Workspace};
+use crate::endpoint::{EndpointFixture, assert_json, endpoint, thread};
+use aidash_server::apps::workspaces::models::{Task, TaskDependency, Thread};
 use http::Method;
 use reinhardt::db::orm::Model;
 use rstest::rstest;
@@ -8,15 +8,15 @@ use uuid::Uuid;
 
 #[rstest]
 #[tokio::test]
-async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
+async fn thread_round_trip_and_revision_conflict_preserve_saved_state(
 	#[future] endpoint: EndpointFixture,
 ) {
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let created = workspace(&member, "Workspace over HTTP").await;
+	let created = thread(&member, "Thread over HTTP").await;
 	let id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
-	let path = format!("/api/workspaces/{id}");
+	let path = format!("/api/threads/{id}");
 	let scratch: Uuid = serde_json::from_value(created["scratch_space_id"].clone()).unwrap();
 	// Act
 	let updated = member
@@ -32,10 +32,10 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 	assert_eq!(assert_json(updated, 200)["revision"], 1);
 	assert_json(stale, 409);
 	let snapshot = assert_json(snapshot, 200);
-	assert_eq!(snapshot["workspace"]["title"], "Step");
-	assert_eq!(snapshot["workspace"]["scratch_space_id"], json!(scratch));
-	let saved = Workspace::objects()
-		.filter(Workspace::field_id().eq(id))
+	assert_eq!(snapshot["thread"]["title"], "Step");
+	assert_eq!(snapshot["thread"]["scratch_space_id"], json!(scratch));
+	let saved = Thread::objects()
+		.filter(Thread::field_id().eq(id))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
@@ -52,9 +52,9 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 	// Arrange
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let workspace = workspace(&member, "Task graph").await;
-	let workspace_id = workspace["id"].as_str().unwrap();
-	let path = format!("/api/workspaces/{workspace_id}/tasks");
+	let thread = thread(&member, "Task graph").await;
+	let thread_id = thread["id"].as_str().unwrap();
+	let path = format!("/api/threads/{thread_id}/tasks");
 	let ancestor = assert_json(
 		member
 			.post(
@@ -103,7 +103,7 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 	assert_eq!(links.len(), 1);
 	let snapshot = assert_json(
 		member
-			.get(&format!("/api/workspaces/{workspace_id}"))
+			.get(&format!("/api/threads/{thread_id}"))
 			.await
 			.unwrap(),
 		200,
@@ -121,24 +121,24 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	// Act
 	let malformed = member
-		.post_raw("/api/workspaces", b"{", "application/json")
+		.post_raw("/api/threads", b"{", "application/json")
 		.await
 		.unwrap();
 	let unknown = member
 		.post(
-			"/api/workspaces",
+			"/api/threads",
 			&json!({"title":"Rejected","request":"Contract","unexpected":true}),
 			"json",
 		)
 		.await
 		.unwrap();
-	let invalid_id = member.get("/api/workspaces/not-a-uuid").await.unwrap();
+	let invalid_id = member.get("/api/threads/not-a-uuid").await.unwrap();
 	// Assert
 	assert_eq!(malformed.status_code(), 400, "{}", malformed.text());
 	assert_eq!(unknown.status_code(), 422, "{}", unknown.text());
 	assert_eq!(invalid_id.status_code(), 400, "{}", invalid_id.text());
 	assert!(
-		Workspace::objects()
+		Thread::objects()
 			.all()
 			.all_with_db(&mut app.database.lease.handle())
 			.await
@@ -149,13 +149,13 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 
 #[rstest]
 #[tokio::test]
-async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
+async fn thread_and_task_content_reject_unicode_blank_strings_over_http(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let home = workspace(&member, "Validation boundary").await;
-	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
+	let home = thread(&member, "Validation boundary").await;
+	let path = format!("/api/threads/{}/tasks", home["id"].as_str().unwrap());
 	let whitespace: Vec<_> = (0..=0x10ffff)
 		.filter_map(char::from_u32)
 		.filter(|c| c.is_whitespace())
@@ -164,12 +164,9 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 	blanks.extend([whitespace.iter().collect(), String::new()]);
 	for blank in blanks {
 		for field in ["title", "goal"] {
-			let mut input = json!({"title":"Workspace", "request":"Goal"});
+			let mut input = json!({"title":"Thread", "request":"Goal"});
 			input[field] = json!(blank);
-			let response = member
-				.post("/api/workspaces", &input, "json")
-				.await
-				.unwrap();
+			let response = member.post("/api/threads", &input, "json").await.unwrap();
 			assert_eq!(
 				response.status_code(),
 				400,
@@ -190,7 +187,7 @@ async fn workspace_and_task_content_reject_unicode_blank_strings_over_http(
 		}
 	}
 	assert_eq!(
-		Workspace::objects()
+		Thread::objects()
 			.all()
 			.all_with_db(&mut app.database.lease.handle())
 			.await

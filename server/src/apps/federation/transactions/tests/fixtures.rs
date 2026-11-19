@@ -64,27 +64,27 @@ pub fn pair(
 				.to_string();
 		}
 		connect(&mut a, &mut b).await;
-		let mut workspaces = vec![];
+		let mut threads = vec![];
 		for (node, title) in [(&a, "A"), (&b, "B")] {
 			let scope = tenant_roots::tenant_scope(&node.f.store, "acme").await;
-			workspaces.push(
+			threads.push(
 				node.f
 					.store
-					.create_workspace(&scope, "alice", title)
+					.create_thread(&scope, "alice", title)
 					.await
 					.unwrap()
 					.id,
 			);
 		}
-		let (wa, wb) = (workspaces[0], workspaces[1]);
+		let (wa, wb) = (threads[0], threads[1]);
 		let manifest = serde_json::from_value(json!({
 			"id":Uuid::new_v4(), "coordinator":a.address,
 			"isolation":"serializable", "deadline":Utc::now()+Duration::minutes(5),
 			"participants":[
-				{"node_id":a.address,"mutations":[{"kind":"workspace_title",
-					"workspace_id":wa,"expected_revision":0,"title":"new-a"}]},
-				{"node_id":b.address,"mutations":[{"kind":"workspace_title",
-					"workspace_id":wb,"expected_revision":0,"title":"new-b"}]}
+				{"node_id":a.address,"mutations":[{"kind":"thread_title",
+					"thread_id":wa,"expected_revision":0,"title":"new-a"}]},
+				{"node_id":b.address,"mutations":[{"kind":"thread_title",
+					"thread_id":wb,"expected_revision":0,"title":"new-b"}]}
 			]
 		}))
 		.unwrap();

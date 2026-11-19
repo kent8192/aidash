@@ -3,11 +3,11 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
-async fn journal_proof(store: &Store, workspace: Uuid) -> Evidence {
+async fn journal_proof(store: &Store, thread: Uuid) -> Evidence {
 	let participant = memory::create_participant(
 		store,
 		&administrator(store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -53,12 +53,12 @@ async fn builtin_only_banks_do_not_prevent_initializing_a_recovery_ledger(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	memory::operate(
@@ -97,11 +97,11 @@ async fn journal_evidence_requires_current_run_read_authority(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -179,13 +179,13 @@ async fn builtin_evicts_oldest_units_when_the_live_cap_is_reached(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
-	let proof = journal_proof(&store, workspace).await;
+	let (store, _, thread) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, thread).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let provider = reference("aidash.memory");
@@ -307,13 +307,13 @@ async fn builtin_eviction_keeps_the_oldest_unit_when_the_new_unit_rests_on_it(
 ) {
 	// Arrange: a full built-in bank of 64 live Units.
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
-	let proof = journal_proof(&store, workspace).await;
+	let (store, _, thread) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, thread).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let provider = reference("aidash.memory");
@@ -420,14 +420,14 @@ async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
-	let proof = journal_proof(&store, workspace).await;
+	let (store, _, thread) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, thread).await;
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for table in ["semantic_collections", "semantic_indexes"] {
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new(table))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)
@@ -439,7 +439,7 @@ async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let provider = reference("aidash.memory");
@@ -529,12 +529,12 @@ async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
 
 #[rstest]
 #[tokio::test]
-async fn keyword_only_bank_can_write_and_recall_without_a_workspace_index(
+async fn keyword_only_bank_can_write_and_recall_without_a_thread_index(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let mut provider = registry.get(&tenant, "p", "1.0.0").await.unwrap();
 	provider.id = "keyword-only".into();
@@ -546,7 +546,7 @@ async fn keyword_only_bank_can_write_and_recall_without_a_workspace_index(
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new(table))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)
@@ -558,7 +558,7 @@ async fn keyword_only_bank_can_write_and_recall_without_a_workspace_index(
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let provider = reference("keyword-only");
@@ -627,7 +627,7 @@ async fn keyword_only_upgrade_refuses_a_nonempty_indexed_bank(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let mut provider = registry.get(&tenant, "p", "1.0.0").await.unwrap();
 	provider.id = "keyword-only".into();
@@ -638,7 +638,7 @@ async fn keyword_only_upgrade_refuses_a_nonempty_indexed_bank(
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	memory::operate(
@@ -696,13 +696,13 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 	#[case] participant: bool,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for table in ["semantic_collections", "semantic_indexes"] {
 		native::query(
 			&Query::delete()
 				.from_table(Alias::new(table))
-				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *tx)
@@ -714,7 +714,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 		memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -735,7 +735,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 					)
 					.to_string(),
 					tenant: "acme".into(),
-					workspace,
+					thread,
 					participant: None,
 				},
 				action: memory::Action::ConfigureBank {
@@ -747,7 +747,7 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 		.map(|_| ())
 	};
 	assert!(
-		matches!(result, Err(aidash_server::Error::Conflict(message)) if message == "memory banks require an enabled Workspace index")
+		matches!(result, Err(aidash_server::Error::Conflict(message)) if message == "memory banks require an enabled Thread index")
 	);
 	for table in [
 		"memory_bank_settings",
@@ -794,7 +794,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let attempts = bounds.max_retries as i32;
-	let (store, _, workspace) = setup_endpoint_flags(
+	let (store, _, thread) = setup_endpoint_flags(
 		&database,
 		bounds,
 		&endpoint,
@@ -804,7 +804,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -938,21 +938,18 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	let page = bounds.max_graph_visits;
 	bounds.max_units = 2 * page + 4;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
-	let index = aidash_server::semantic::service::get_index(
-		&store,
-		&administrator(&store).await,
-		workspace,
-	)
-	.await
-	.unwrap();
+	let (store, _, thread) = setup(&database, bounds).await;
+	let index =
+		aidash_server::semantic::service::get_index(&store, &administrator(&store).await, thread)
+			.await
+			.unwrap();
 	let mut spec = index.configuration().unwrap();
 	// Match this regression's admitted bank size within the public index bound.
 	spec.max_sources = 2 * page + 4;
 	aidash_server::semantic::service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,
 			spec,
@@ -963,7 +960,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1009,7 +1006,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 		let task = store
 			.create_task(
 				&TEST_FIXTURE,
-				workspace,
+				thread,
 				&NewTask {
 					title: format!("Memory reader {ordinal}"),
 					description: "Retained journal fixture".into(),
@@ -1032,7 +1029,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 					[
 						"id",
 						"task_id",
-						"workspace_id",
+						"thread_id",
 						"home_node",
 						"node",
 						"agent_id",
@@ -1045,7 +1042,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 					Query::select()
 						.expr(Expr::value(last_run))
 						.expr(Expr::value(task.id))
-						.expr(Expr::value(workspace))
+						.expr(Expr::value(thread))
 						.expr(Expr::value(
 							aidash_domain::nodes::NodeAddress::derived(
 								store.deployment.as_str(),

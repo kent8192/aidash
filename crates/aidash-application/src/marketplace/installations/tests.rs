@@ -48,8 +48,8 @@ pub(crate) struct Fixture {
 	pub(crate) source_pages: Vec<(usize, u64)>,
 	/// The hosts of the installing Tenant's Tenant Secrets, by name.
 	pub(crate) secret_hosts: BTreeMap<String, Vec<String>>,
-	/// The Node a workspace event's check stopped at, when `denied` is
-	/// `workspace_event_silent` (#770).
+	/// The Node a thread event's check stopped at, when `denied` is
+	/// `thread_event_silent` (#770).
 	pub(crate) silence: Option<String>,
 }
 impl Fixture {
@@ -677,17 +677,17 @@ impl crate::ports::authorization::visibility::RowOutcome for Fixture {
 }
 #[async_trait]
 impl crate::ports::marketplace::EventScope for Fixture {
-	async fn workspace_allowed(&mut self, _: Uuid, action: &str) -> Result<bool> {
+	async fn thread_allowed(&mut self, _: Uuid, action: &str) -> Result<bool> {
 		self.calls.push(action.into());
 		Ok(self.denied.as_deref() != Some(action))
 	}
-	async fn workspace_event_visible(&mut self, _: &aidash_domain::Event) -> Result<bool> {
-		self.calls.push("workspace_event_visible".into());
-		if self.denied.as_deref() == Some("workspace_event_silent") {
+	async fn thread_event_visible(&mut self, _: &aidash_domain::Event) -> Result<bool> {
+		self.calls.push("thread_event_visible".into());
+		if self.denied.as_deref() == Some("thread_event_silent") {
 			self.silence = Some("aidash://other/silent".into());
 			return Ok(false);
 		}
-		Ok(self.denied.as_deref() != Some("workspace_event_visible"))
+		Ok(self.denied.as_deref() != Some("thread_event_visible"))
 	}
 }
 #[async_trait]

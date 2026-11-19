@@ -148,12 +148,8 @@ fn scope() -> Scope {
 }
 #[async_trait]
 impl MediaAttachments for Scope {
-	async fn attachments(
-		&mut self,
-		workspace: Uuid,
-		message: Uuid,
-	) -> Result<Vec<MediaAttachment>> {
-		assert_eq!(workspace, id(10));
+	async fn attachments(&mut self, thread: Uuid, message: Uuid) -> Result<Vec<MediaAttachment>> {
+		assert_eq!(thread, id(10));
 		self.calls.push(("attachments", message));
 		if self.fail == Some(message) {
 			return Err(Error::Port(Box::new(std::io::Error::other(
@@ -164,7 +160,7 @@ impl MediaAttachments for Scope {
 	}
 	async fn wav_rendition(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		attachment: &MediaAttachment,
 	) -> Result<Vec<u8>> {
 		self.calls.push(("wav", attachment.id));
@@ -177,8 +173,8 @@ impl MediaAttachments for Scope {
 }
 #[async_trait]
 impl AuthorizedMediaScope for Scope {
-	async fn authorize_message(&mut self, workspace: Uuid, message: Uuid) -> Result<()> {
-		assert_eq!(workspace, id(10));
+	async fn authorize_message(&mut self, thread: Uuid, message: Uuid) -> Result<()> {
+		assert_eq!(thread, id(10));
 		self.calls.push(("authorize", message));
 		if self.denied == Some(message) {
 			Err(Error::Forbidden)
@@ -627,7 +623,7 @@ fn file_scope() -> FileScope {
 fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
 	ModelMedia::File(Selection {
 		file_id,
-		workspace_id: None,
+		thread_id: None,
 		area_id: None,
 		expected_digest: scope
 			.files
@@ -648,7 +644,7 @@ async fn subnode_media_is_denied_unless_the_adapter_authorizes_that_area(
 		ModelMedia::File(file) => file,
 		_ => unreachable!(),
 	};
-	selected_file.workspace_id = Some(id(100));
+	selected_file.thread_id = Some(id(100));
 	selected_file.area_id = Some(id(101));
 	assert!(matches!(
 		selected(&mut file_scope, &[ModelMedia::File(selected_file)]).await,
@@ -668,7 +664,7 @@ async fn subnode_media_rechecks_area_and_digest_before_reading(mut file_scope: F
 		ModelMedia::File(file) => file,
 		_ => unreachable!(),
 	};
-	selected_file.workspace_id = Some(id(100));
+	selected_file.thread_id = Some(id(100));
 	selected_file.area_id = Some(id(101));
 	selected(&mut file_scope, &[ModelMedia::File(selected_file.clone())])
 		.await
@@ -702,14 +698,9 @@ impl SelectedMediaScope for FileScope {
 			Ok(self.files.clone())
 		}
 	}
-	async fn subnode_file(
-		&mut self,
-		workspace: Uuid,
-		area: Uuid,
-		file: Uuid,
-	) -> Result<SelectedFile> {
+	async fn subnode_file(&mut self, thread: Uuid, area: Uuid, file: Uuid) -> Result<SelectedFile> {
 		self.calls.push(("subnode", area));
-		if self.subnode_area != Some((workspace, area)) {
+		if self.subnode_area != Some((thread, area)) {
 			return Err(Error::Forbidden);
 		}
 		self.files
@@ -727,14 +718,14 @@ impl SelectedMediaScope for FileScope {
 		}
 		Ok(self.content[&file].clone())
 	}
-	async fn workspace_image(
+	async fn thread_image(
 		&mut self,
 		area: Uuid,
 		generation: i64,
 		file: Uuid,
 		path: &str,
 	) -> Result<Option<SelectedFile>> {
-		self.calls.push(("workspace_image", area));
+		self.calls.push(("thread_image", area));
 		if self.denied {
 			return Err(Error::Forbidden);
 		}
@@ -762,9 +753,7 @@ impl SelectedMediaScope for FileScope {
 
 #[rstest]
 #[tokio::test]
-async fn a_workspace_match_opens_through_the_existing_model_media_reader(
-	mut file_scope: FileScope,
-) {
+async fn a_thread_match_opens_through_the_existing_model_media_reader(mut file_scope: FileScope) {
 	let file = file_scope.files[0].clone();
 	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
 		area_id: id(20),
@@ -785,7 +774,7 @@ async fn a_workspace_match_opens_through_the_existing_model_media_reader(
 		file_scope.calls,
 		vec![
 			("snapshot", Uuid::nil()),
-			("workspace_image", id(20)),
+			("thread_image", id(20)),
 			("read", id(1))
 		]
 	);
@@ -793,7 +782,7 @@ async fn a_workspace_match_opens_through_the_existing_model_media_reader(
 
 #[rstest]
 #[tokio::test]
-async fn a_stale_workspace_image_never_reads_bytes(mut file_scope: FileScope) {
+async fn a_stale_thread_image_never_reads_bytes(mut file_scope: FileScope) {
 	let file = file_scope.files[0].clone();
 	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
 		area_id: id(20),
@@ -886,7 +875,7 @@ async fn selected_missing_file_keeps_order_and_the_original_not_found(
 	}
 	selections.push(ModelMedia::File(Selection {
 		file_id: id(99),
-		workspace_id: None,
+		thread_id: None,
 		area_id: None,
 		expected_digest: "unavailable".into(),
 	}));
@@ -912,7 +901,7 @@ async fn selected_changed_digest_is_rejected_before_reading_that_file(
 	}
 	selections.push(ModelMedia::File(Selection {
 		file_id: id(2),
-		workspace_id: None,
+		thread_id: None,
 		area_id: None,
 		expected_digest: "stale digest".into(),
 	}));
@@ -977,7 +966,7 @@ async fn selected_duplicate_metadata_uses_the_first_matching_saved_file(mut file
 	file_scope.files.push(duplicate);
 	let selections = [ModelMedia::File(Selection {
 		file_id: id(1),
-		workspace_id: None,
+		thread_id: None,
 		area_id: None,
 		expected_digest: "later duplicate digest".into(),
 	})];

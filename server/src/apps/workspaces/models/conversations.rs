@@ -23,10 +23,10 @@ pub struct Conversation {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "conversations_workspace_id_fkey",
+		db_constraint = "conversations_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[field(field_type = "text")]
 	pub target: String,
 	#[field(field_type = "text", max_length = 64)]
@@ -48,8 +48,8 @@ impl crate::database::Record for Conversation {
 			scratch_space: ForeignKeyField::new(),
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
-			workspace_id: row.try_get("workspace_id")?,
-			workspace: ForeignKeyField::new(),
+			thread_id: row.try_get("thread_id")?,
+			thread: ForeignKeyField::new(),
 			target: row.try_get("target")?,
 			target_kind,
 			created_at: row.try_get("created_at")?,
@@ -62,7 +62,7 @@ impl From<Conversation> for aidash_domain::Conversation {
 		Self {
 			scratch_space_id: record.scratch_space_id,
 			id: record.id,
-			workspace_id: record.workspace_id,
+			thread_id: record.thread_id,
 			target: record.target,
 			target_kind: match record.target_kind {
 				ConversationTargetKind::Agent => "agent",

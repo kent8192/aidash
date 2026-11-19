@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn run() -> RunMetadata {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/airy-hawk-2lu4as22","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE","step":0,"revision":0,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),"node":"brave-otter-k3m9q2xa","home_node":"aidash://home/airy-hawk-2lu4as22","agent_id":"agent","agent_version":"1","phase":"READY","control":"ACTIVE","step":0,"revision":0,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z"})).unwrap()
 }
 #[fixture]
 fn input() -> Preflight {
@@ -31,7 +31,7 @@ fn input() -> Preflight {
 		],
 		targets: vec![
 			Target {
-				kind: "workspace".into(),
+				kind: "thread".into(),
 				id: Uuid::from_u128(3),
 				task_id: None,
 			},
@@ -164,7 +164,7 @@ impl TransactionAuthorityScope for Scope {
 			subject_chain: vec!["root".into(), "agent".into()],
 			source_tenant: "source".into(),
 			source_subject: "origin".into(),
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			agent_id: run.agent_id.clone(),
 			agent_version: run.agent_version.clone(),
 		}))
@@ -173,15 +173,15 @@ impl TransactionAuthorityScope for Scope {
 		self.call("run".into())?;
 		Ok(self.run.clone())
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.call("workspace".into())?;
-		Ok(self.resource("workspace", id, json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.call("thread".into())?;
+		Ok(self.resource("thread", id, json!({})))
 	}
 	async fn task(&mut self, id: Uuid) -> Result<Task> {
 		self.call("task".into())?;
 		Ok(Task {
 			id,
-			workspace_id: self.run.workspace_id,
+			thread_id: self.run.thread_id,
 			title: String::new(),
 			description: String::new(),
 			status: aidash_domain::TaskStatus::Claimed,
@@ -226,11 +226,11 @@ async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_orde
 			"run",
 			"inherit_local_run",
 			"transaction.prepare",
-			"workspace",
-			"workspace.read",
-			"workspace.update",
-			"transaction.disclose:workspace:aidash://home/airy-hawk-2lu4as22",
-			"transaction.disclose:workspace:aidash://peer/airy-hawk-2lu4as22",
+			"thread",
+			"thread.read",
+			"thread.update",
+			"transaction.disclose:thread:aidash://home/airy-hawk-2lu4as22",
+			"transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22",
 			"task",
 			"task_resource",
 			"task.complete",
@@ -264,8 +264,8 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 			"run",
 			"inherit_local_run",
 			"transaction.read",
-			"workspace",
-			"workspace.read",
+			"thread",
+			"thread.read",
 			"task",
 			"task_resource",
 			"run",
@@ -278,8 +278,8 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 #[case::origin("inherit_task")]
 #[case::run("run")]
 #[case::inherit("inherit_local_run")]
-#[case::workspace("workspace.update")]
-#[case::disclosure("transaction.disclose:workspace:aidash://peer/airy-hawk-2lu4as22")]
+#[case::thread("thread.update")]
+#[case::disclosure("transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22")]
 #[case::artifact("artifact.create")]
 #[tokio::test]
 async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_identity(
@@ -382,8 +382,8 @@ fn preflight_discloses_only_identifiers_but_digests_the_full_manifest(input: Pre
 		participants: vec![Participant {
 			node_id: input.coordinator.clone(),
 			mutations: vec![
-				Mutation::WorkspaceTitle {
-					workspace_id: Uuid::from_u128(3),
+				Mutation::ThreadTitle {
+					thread_id: Uuid::from_u128(3),
 					expected_revision: 8,
 					title: "Title".into(),
 				},
@@ -417,16 +417,16 @@ fn source_manifest(input: &Preflight) -> Manifest {
 		participants: vec![
 			Participant {
 				node_id: input.coordinator.clone(),
-				mutations: vec![Mutation::WorkspaceTitle {
-					workspace_id: Uuid::from_u128(3),
+				mutations: vec![Mutation::ThreadTitle {
+					thread_id: Uuid::from_u128(3),
 					expected_revision: 0,
 					title: "Title".into(),
 				}],
 			},
 			Participant {
 				node_id: "aidash://peer/airy-hawk-2lu4as22".into(),
-				mutations: vec![Mutation::WorkspaceTitle {
-					workspace_id: Uuid::from_u128(7),
+				mutations: vec![Mutation::ThreadTitle {
+					thread_id: Uuid::from_u128(7),
 					expected_revision: 0,
 					title: "Title".into(),
 				}],
@@ -448,7 +448,7 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 	source_checks(&mut scope, &manifest, &input.origin, action)
 		.await
 		.unwrap();
-	let qualified = format!("{action}:workspace:aidash://peer/airy-hawk-2lu4as22");
+	let qualified = format!("{action}:thread:aidash://peer/airy-hawk-2lu4as22");
 	let start = scope
 		.calls
 		.iter()
@@ -457,8 +457,8 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 	let expected = if disclosures {
 		vec![
 			qualified,
-			"transaction.disclose:workspace:aidash://home/airy-hawk-2lu4as22".into(),
-			"transaction.disclose:workspace:aidash://peer/airy-hawk-2lu4as22".into(),
+			"transaction.disclose:thread:aidash://home/airy-hawk-2lu4as22".into(),
+			"transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22".into(),
 		]
 	} else {
 		vec![qualified]
@@ -469,7 +469,7 @@ async fn remote_resources_require_source_permission_and_ordered_recipient_disclo
 #[tokio::test]
 async fn denied_source_permission_stops_remote_disclosure(mut scope: Scope, input: Preflight) {
 	let manifest = source_manifest(&input);
-	let failure = "transaction.submit:workspace:aidash://peer/airy-hawk-2lu4as22";
+	let failure = "transaction.submit:thread:aidash://peer/airy-hawk-2lu4as22";
 	scope.failure = Some(failure.into());
 	assert!(
 		matches!(source_checks(&mut scope,&manifest,&input.origin,"transaction.submit").await,Err(Error::External(message)) if message==format!("fault:{failure}"))

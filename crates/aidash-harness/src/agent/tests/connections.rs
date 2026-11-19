@@ -193,7 +193,7 @@ async fn explicit_connection_request_waits_under_dont_ask_and_returns_the_answer
 	let id = Uuid::now_v7();
 	*state.human.lock().unwrap() = Some(HumanRequest {
 		id,
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: CONNECTION_REQUEST_KIND.into(),
 		prompt:

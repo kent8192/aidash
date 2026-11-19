@@ -10,17 +10,17 @@ use uuid::Uuid;
 
 pub(crate) async fn index(
 	tx: &mut crate::database::native::Transaction,
-	workspace: Uuid,
+	thread: Uuid,
 	exclusive: bool,
 ) -> Result<Index> {
 	{
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		crate::database::native::query_as(&if exclusive {
 			Query::select()
 				.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 				.from(Alias::new("semantic_indexes"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.lock(LockType::Update)
@@ -30,7 +30,7 @@ pub(crate) async fn index(
 				.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 				.from(Alias::new("semantic_indexes"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(workspace_id = ?)".to_owned(),
+					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
 				.lock(LockType::Share)
@@ -44,14 +44,14 @@ pub(crate) async fn index(
 
 pub(crate) async fn history(
 	tx: &mut crate::database::native::Transaction,
-	workspace: Uuid,
+	thread: Uuid,
 	entry: Option<Uuid>,
 	revision: i64,
 	state: &str,
 	detail: &str,
 ) -> Result<()> {
 	{
-		let query_bind_1 = workspace;
+		let query_bind_1 = thread;
 		let query_bind_2 = entry;
 		let query_bind_3 = revision;
 		let query_bind_4 = state;
@@ -60,7 +60,7 @@ pub(crate) async fn history(
 			&Query::insert()
 				.into_table(Alias::new("semantic_history"))
 				.columns([
-					Alias::new("workspace_id"),
+					Alias::new("thread_id"),
 					Alias::new("entry_id"),
 					Alias::new("revision"),
 					Alias::new("state"),
@@ -90,7 +90,7 @@ pub(crate) async fn history(
 							vec![Expr::value(query_bind_5.to_owned()).into()],
 						))
 						.expr(crate::database::scope::tenant_of(
-							"workspaces",
+							"threads",
 							"id",
 							query_bind_1,
 						))

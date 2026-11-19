@@ -3,7 +3,7 @@ use crate::apps::workspaces::services::access::Lease;
 use crate::{Error, Result, authorization::access::Access, store::Store};
 use aidash_application::capabilities::sessions;
 use aidash_domain::capabilities::{operations::MountedFile, retention::Holder, sessions::Area};
-use aidash_domain::workspaces::channels::{ChannelCitation, CitedFileVersion};
+use aidash_domain::threads::channels::{ChannelCitation, CitedFileVersion};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
@@ -92,12 +92,12 @@ pub(crate) async fn object_digest(
 /// after the local deletion transaction commits.
 pub(crate) async fn remote_for_thread(
 	access: &mut Access,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Result<Vec<(Uuid, Uuid, Uuid)>> {
 	let ids = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("messages"))
-		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 		.to_owned();
 	let rows: Vec<(Uuid, Uuid, Uuid)> = crate::database::native::query_as(
 		&Query::select()

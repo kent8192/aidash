@@ -9,7 +9,7 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::apps::workspaces::models::states::ArtifactKind;
 use aidash_server::apps::workspaces::models::{Artifact, Message};
 use aidash_server::{
-	domain::{NewTask, Task, Workspace},
+	domain::{NewTask, Task, Thread},
 	federation::Home,
 	tool::{ToolContext, builtins},
 };
@@ -29,16 +29,16 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	endpoint_fixtures::register_fixture_agent(&app, "lead").await;
 	let f = &app.runtime;
 	let scope = endpoint_fixtures::tenant_scope(&f.store, "acme").await;
-	let workspace: Workspace = f
+	let thread: Thread = f
 		.store
-		.create_workspace(&scope, "alice", "Airline")
+		.create_thread(&scope, "alice", "Airline")
 		.await
 		.unwrap();
 	let task: Task = f
 		.store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&NewTask {
 				title: "Plan".into(),
 				description: "Coordinate specialists".into(),
@@ -91,7 +91,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.await
 			.unwrap();
 		// Assert
-		let audit = f.store.snapshot(&scope, workspace.id).await.unwrap();
+		let audit = f.store.snapshot(&scope, thread.id).await.unwrap();
 		assert!(
 			audit
 				.events
@@ -115,7 +115,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			"observation grew recursively: {size}"
 		);
 	}
-	let snapshot = f.store.snapshot(&scope, workspace.id).await.unwrap();
+	let snapshot = f.store.snapshot(&scope, thread.id).await.unwrap();
 	let event = snapshot
 		.events
 		.iter()
@@ -178,7 +178,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.store
 			.create_task(
 				&scope,
-				workspace.id,
+				thread.id,
 				&NewTask {
 					title: format!("Child {index}"),
 					description: "large child description ".repeat(2_500),
@@ -206,7 +206,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	}
 	let children = f
 		.store
-		.child_task_summary(&scope, workspace.id, task.id)
+		.child_task_summary(&scope, thread.id, task.id)
 		.await
 		.unwrap();
 	assert!(children.has_pending && children.has_failed);
@@ -220,7 +220,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.store
 		.emit(
 			&scope,
-			Some(workspace.id),
+			Some(thread.id),
 			"old-record-regression",
 			json!({"marker":"beyond the recent event snapshot"}),
 		)
@@ -229,7 +229,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	f.store
 		.message(
 			&scope,
-			workspace.id,
+			thread.id,
 			"review-test",
 			"old message",
 			Some("observation-old-message"),
@@ -241,7 +241,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.pool
 		.atomic(&TEST_FIXTURE, async |db| {
 			let old_message = Message::objects()
-				.filter(Message::field_workspace_id().eq(workspace.id))
+				.filter(Message::field_thread_id().eq(thread.id))
 				.filter(
 					Message::field_idempotency_key().eq(Some("observation-old-message".to_owned())),
 				)
@@ -250,7 +250,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 				.id;
 			let artifact = Artifact::build()
 				.tenant("acme")
-				.workspace(workspace.id)
+				.thread(thread.id)
 				.task(task.id)
 				.kind(ArtifactKind::Text)
 				.name("review artifact")
@@ -276,7 +276,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	] {
 		let record = f
 			.store
-			.workspace_record(&scope, workspace.id, kind, id)
+			.thread_record(&scope, thread.id, kind, id)
 			.await
 			.unwrap();
 		assert!(record.to_string().contains(expected));
@@ -285,7 +285,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		f.store
 			.emit(
 				&scope,
-				Some(workspace.id),
+				Some(thread.id),
 				"newer-record",
 				json!({"index":index}),
 			)
@@ -294,7 +294,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		f.store
 			.message(
 				&scope,
-				workspace.id,
+				thread.id,
 				"review-test",
 				&format!("new message {index}"),
 				Some(&format!("observation-new-message-{index}")),
@@ -302,7 +302,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.await
 			.unwrap();
 	}
-	let recent = f.store.snapshot(&scope, workspace.id).await.unwrap();
+	let recent = f.store.snapshot(&scope, thread.id).await.unwrap();
 	assert!(!recent.events.iter().any(|event| event.id == old_event.id));
 	assert!(
 		!recent
@@ -330,7 +330,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	prepared_run.state = aidash_server::domain::RunState::ToolCall(Box::new(state::tool_call(
 		json!({
 			"response":{"tool_calls":[{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}}]},
-			"workspace_read_plan":{"step":prepared_run.step,"cursor":0,"call":{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}},"result":{"content":"stable chunk"}}
+			"thread_read_plan":{"step":prepared_run.step,"cursor":0,"call":{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}},"result":{"content":"stable chunk"}}
 		}),
 	)));
 	let prepared_input = json!({"kind":"artifact","id":Uuid::new_v4(),"max_chars":97});
@@ -339,7 +339,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			&scope,
 			&prepared_run,
 			worker,
-			"workspace-read-plan-durability",
+			"thread-read-plan-durability",
 			"workspace_read",
 			&prepared_input,
 			true,
@@ -353,12 +353,12 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	);
 	let other = f
 		.store
-		.create_workspace(&scope, "alice", "Private")
+		.create_thread(&scope, "alice", "Private")
 		.await
 		.unwrap();
 	assert!(
 		tools["workspace_read"]
-			.invoke(&ctx, json!({"kind":"workspace","id":other.id}), "other")
+			.invoke(&ctx, json!({"kind":"thread","id":other.id}), "other")
 			.await
 			.is_err()
 	);

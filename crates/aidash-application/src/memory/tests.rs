@@ -79,7 +79,7 @@ fn unit() -> Unit {
 		bank: Bank {
 			home: "home".into(),
 			tenant: "tenant".into(),
-			workspace: Uuid::from_u128(100),
+			thread: Uuid::from_u128(100),
 			participant: Some(Uuid::from_u128(101)),
 		},
 		revision: 1,

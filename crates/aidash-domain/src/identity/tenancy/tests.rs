@@ -185,7 +185,7 @@ fn the_creator_administers_and_members_use() {
 		},
 	);
 	for action in [
-		"workspace.create",
+		"thread.create",
 		"scratch.create",
 		"duty.create",
 		"run.read",

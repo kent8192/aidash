@@ -1,39 +1,73 @@
-//! Deleting a Workspace preserves each owned Area's explicit retention and journal.
+//! Deleting a Thread preserves each owned Area's explicit retention and journal.
 use crate::{
 	Error, Result,
 	capabilities::cleanup,
-	ports::capabilities::{cleanup::Creation, thread_lifecycle::ThreadScope},
+	ports::capabilities::{
+		cleanup::Creation,
+		thread_lifecycle::{DeletionAuthority, ThreadScope},
+	},
 };
 use aidash_domain::capabilities::{
 	cleanup::{Choice, Cleanup},
 	sessions::Area,
 	thread_lifecycle::{DeleteThread, choices, require_idle},
 };
+use aidash_domain::policy::Resource;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Deleting a Thread removes a whole conversation for everyone in it
+/// (#1008): only its owner holding `thread.delete`, or an administrator of its
+/// Node, may. A person who may only read it, or who holds `thread.delete`
+/// without owning it, is refused.
+pub async fn may_delete(
+	scope: &mut dyn DeletionAuthority,
+	principal: &str,
+	resource: &Resource,
+	thread: Uuid,
+) -> Result<bool> {
+	if resource.attributes["owner"].as_str() == Some(principal)
+		&& scope.decide(resource, "thread.delete").await?
+	{
+		return Ok(true);
+	}
+	let node = scope.node_resource(thread).await?;
+	scope
+		.decide(
+			&node,
+			aidash_domain::identity::tenant_administration::NODE_ADMINISTER,
+		)
+		.await
+}
+
 pub async fn delete(
 	scope: &mut dyn ThreadScope,
-	workspace: Uuid,
+	thread: Uuid,
 	input: DeleteThread,
 ) -> Result<Value> {
 	scope.serialize().await?;
-	let resource = scope.workspace(workspace).await?;
-	scope.require(&resource, "workspace.read").await?;
-	scope.require(&resource, "thread.delete").await?;
-	let digest =
-		aidash_domain::registry::rules::digest(&json!(["thread_delete", workspace, input]));
+	// A replay returns the recorded result before the Thread is read again: the
+	// deletion it records refuses every later read of the Thread. The record is
+	// the same person's, for this Thread and these choices.
+	let digest = aidash_domain::registry::rules::digest(&json!(["thread_delete", thread, input]));
 	if let Some(cached) = scope.cached(input.idempotency_key, &digest).await? {
 		return Ok(cached);
 	}
-	scope.lock_for_deletion(workspace).await?;
-	scope.visible_thread(workspace).await?;
+	let resource = scope.thread(thread).await?;
+	scope.require(&resource, "thread.read").await?;
+	let principal = scope.principal().to_owned();
+	if !may_delete(scope, &principal, &resource, thread).await? {
+		return Err(Error::Forbidden);
+	}
+	scope.lock_for_deletion(thread).await?;
+	scope.visible_thread(thread).await?;
 	let mut choices = choices(input.files)?;
 	let mut results = vec![];
 	let mut offset = 0_u64;
 	loop {
 		// Area rows remain in this query after cleanup, so ordered offset pages
 		// keep a stable membership while bounding each database fetch.
-		let areas: Vec<Area> = scope.owned_areas(workspace, offset).await?;
+		let areas: Vec<Area> = scope.owned_areas(thread, offset).await?;
 		if areas.is_empty() {
 			break;
 		}
@@ -77,27 +111,27 @@ pub async fn delete(
 	if !choices.is_empty() {
 		return Err(Error::Conflict("CHOOSE_RETENTION_FOR_EACH_AREA".into()));
 	}
-	scope.delete_attachments(workspace).await?;
-	scope.stop_schedules(workspace).await?;
-	// The tombstone hides the Workspace everywhere (#1008, ADR 0140).
+	scope.delete_attachments(thread).await?;
+	scope.stop_schedules(thread).await?;
+	scope.mark_deleted(thread).await?;
+	// The tombstone hides the Thread everywhere (#1008, ADR 0140).
 	scope
 		.create(Creation {
-			id: workspace,
+			id: thread,
 			area: None,
 			kind: "thread_tombstone",
 			state: "deleted",
-			data: json!({"workspace_id":workspace,"file_choices":results}),
+			data: json!({"thread_id":thread,"file_choices":results}),
 			expires: None,
 		})
 		.await?;
-	let result = json!({"workspace_id":workspace,"state":"deleted","file_operations":results});
+	let result = json!({"thread_id":thread,"state":"deleted","file_operations":results});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	scope
-		.event(
-			workspace,
-			"workspace.deleted",
-			json!({"workspace_id":workspace}),
-		)
+		.event(thread, "thread.deleted", json!({"thread_id":thread}))
 		.await?;
 	Ok(result)
 }
+
+#[cfg(test)]
+mod tests;

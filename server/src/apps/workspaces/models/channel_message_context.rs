@@ -11,8 +11,8 @@ pub struct ChannelMessageContext {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	/// Denormalized business reference; the typed relation is authoritative.
-	#[field(db_column = "workspace_id")]
-	pub workspace_key: uuid::Uuid,
+	#[field(db_column = "thread_id")]
+	pub thread_key: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub attachment_digest: String,
 }
@@ -22,7 +22,7 @@ impl crate::database::Record for ChannelMessageContext {
 		Ok(Self {
 			message_id: row.try_get("message_id")?,
 			tenant: row.try_get("tenant")?,
-			workspace_key: row.try_get("workspace_id")?,
+			thread_key: row.try_get("thread_id")?,
 			attachment_digest: row.try_get("attachment_digest")?,
 		})
 	}

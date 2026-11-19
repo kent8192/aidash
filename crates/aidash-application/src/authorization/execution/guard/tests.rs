@@ -17,7 +17,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
-		workspace_id: Uuid::from_u128(3),
+		thread_id: Uuid::from_u128(3),
 		home_node: "aidash://local/brave-otter-k3m9q2xa".into(),
 		agent_id: "producer".into(),
 		agent_version: "1.0.0".into(),
@@ -166,7 +166,7 @@ impl RunGuardScope for Scope {
 		self.record("task_read")?;
 		Ok(Task {
 			id,
-			workspace_id: Uuid::from_u128(3),
+			thread_id: Uuid::from_u128(3),
 			title: "Saved task".into(),
 			description: String::new(),
 			status: TaskStatus::Open,

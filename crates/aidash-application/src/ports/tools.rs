@@ -308,7 +308,7 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value>;
 	async fn read_subnode_record_chunk(
 		&self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_kind: &str,
 		_id: &str,
 		_offset: usize,
@@ -316,16 +316,16 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// Resolve a Workspace File pointer under the Run's current authority.
-	async fn workspace_image(
+	/// Resolve a Thread File pointer under the Run's current authority.
+	async fn thread_image(
 		&self,
 		_selection: &aidash_domain::media::WorkingImageSelection,
 		_representation: &str,
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// Search the Run's Workspace under its current authority.
-	async fn workspace_search(&self, _input: Value) -> Result<Value> {
+	/// Search the Run's Thread under its current authority.
+	async fn thread_search(&self, _input: Value) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
 	/// Books the next event of a Duty Trigger for this Run (#1011, decision

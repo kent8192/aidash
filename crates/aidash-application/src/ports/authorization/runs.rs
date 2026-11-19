@@ -17,7 +17,7 @@ pub trait RunControlScope: Send {
 	fn set_context(&mut self, context: Value);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn run(&mut self, id: Uuid) -> Result<Option<RawRun>>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool>;
 	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms

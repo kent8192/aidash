@@ -34,18 +34,18 @@ struct Fixture {
 	service: sse::Service,
 	token: String,
 	credential: Uuid,
-	workspaces: Vec<Uuid>,
+	threads: Vec<Uuid>,
 }
 impl Fixture {
 	async fn open(
 		&self,
 		after: i64,
-		workspace: Option<Uuid>,
+		thread: Option<Uuid>,
 		header: Option<&str>,
 	) -> reinhardt::Response {
 		let mut path = format!("/api/events/stream?after={after}");
-		if let Some(id) = workspace {
-			path.push_str(&format!("&workspace_id={id}"));
+		if let Some(id) = thread {
+			path.push_str(&format!("&thread_id={id}"));
 		}
 		let mut request =
 			Request::get(path).header("authorization", format!("Bearer {}", self.token));
@@ -58,8 +58,8 @@ impl Fixture {
 			.await
 			.unwrap()
 	}
-	async fn stream(&self, after: i64, workspace: Option<Uuid>, header: Option<&str>) -> Frames {
-		let mut response = self.open(after, workspace, header).await;
+	async fn stream(&self, after: i64, thread: Option<Uuid>, header: Option<&str>) -> Frames {
+		let mut response = self.open(after, thread, header).await;
 		assert_eq!(response.status, 200);
 		response.take_stream_body().unwrap().boxed()
 	}
@@ -79,14 +79,14 @@ impl Fixture {
 		until(|| self.service.snapshot().transport_ready).await;
 		(stop, task)
 	}
-	async fn emit(&self, workspace: Uuid, number: usize) -> Event {
+	async fn emit(&self, thread: Uuid, number: usize) -> Event {
 		self.f
 			.store
 			.emit(
 				&TEST_FIXTURE,
-				Some(workspace),
-				"workspace.updated",
-				json!({"id":workspace,"number":number}),
+				Some(thread),
+				"thread.updated",
+				json!({"id":thread,"number":number}),
 			)
 			.await
 			.unwrap()
@@ -158,8 +158,8 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 ) {
 	let fixture = root.await;
 	let (stop, subscriber) = subscription;
-	let ws = fixture.workspaces[0];
-	let other = fixture.workspaces[1];
+	let ws = fixture.threads[0];
+	let other = fixture.threads[1];
 	let mut selected = fixture.stream(-1, Some(ws), None).await;
 	let mut all = fixture.stream(-1, None, None).await;
 	let mut unrelated = fixture.stream(-1, Some(other), None).await;
@@ -167,7 +167,7 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
 		.unwrap();
-	// Unknown UUIDs, incorrect Workspace hints and supplied data never become frames.
+	// Unknown UUIDs, incorrect Thread hints and supplied data never become frames.
 	hint(&nats, &fixture.f, json!({"specversion":"1.0","id":Uuid::new_v4(),"source":fixture.f.config.deployment,"subject":ws,"sequence":i64::MAX,"data":{"secret":"forged"},"dataref":"http://127.0.0.1:1/must-not-fetch"})).await;
 	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let rolled_back = fixture
@@ -176,7 +176,7 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 		.event(
 			&mut tx,
 			Some(ws),
-			"workspace.updated",
+			"thread.updated",
 			json!({"secret":"uncommitted"}),
 		)
 		.await
@@ -259,14 +259,14 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 	root: Arc<Fixture>,
 ) {
 	let fixture = root;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	let mut tx = fixture.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut expected = Vec::new();
 	for n in 0..550 {
 		let kind = if n < 325 {
 			"unrecognized.private-event"
 		} else {
-			"workspace.updated"
+			"thread.updated"
 		};
 		let event = fixture
 			.f
@@ -339,12 +339,12 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 ) {
 	let fixture = root.await;
 	let (stop, subscriber) = subscription;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	let response = fixture.open(0, Some(ws), None).await;
 	assert_eq!(response.status, 200); // Intentionally never poll the body.
-	let mut idle = fixture.stream(-1, Some(fixture.workspaces[1]), None).await;
+	let mut idle = fixture.stream(-1, Some(fixture.threads[1]), None).await;
 	assert_eq!(fixture.open(-1, None, None).await.status, 503);
-	let healthy = fixture.emit(fixture.workspaces[1], 42).await;
+	let healthy = fixture.emit(fixture.threads[1], 42).await;
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
 		.unwrap();
@@ -409,7 +409,7 @@ async fn closed_gate_suppresses_reads_and_resumes_without_a_new_hint(
 	root: Arc<Fixture>,
 ) {
 	let fixture = root;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	fixture.emit(ws, 1).await;
 	let mut stream = fixture.stream(0, Some(ws), None).await;
 	frame(&mut stream).await;
@@ -480,18 +480,18 @@ async fn closed_gate_suppresses_reads_and_resumes_without_a_new_hint(
 
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
+async fn global_stream_filters_revoked_threads_without_rewinding_on_restore(
 	#[future(awt)]
 	#[from(sse_fixture)]
 	#[with(Duration::from_millis(250), Duration::from_secs(30), 128)]
 	root: Arc<Fixture>,
 ) {
 	let fixture = root;
-	let ws = fixture.workspaces[0];
+	let ws = fixture.threads[0];
 	let mut all = fixture.stream(-1, None, None).await;
 	let mut selected = fixture.stream(-1, Some(ws), None).await;
 	let mut denied = policy(fixture.f.config.deployment.as_str());
-	denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[ws]}}));
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"revoked","effect":"deny","subjects":{"any":true},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[ws]}}));
 	for (revision, bundle) in [
 		(1, denied),
 		(
@@ -504,7 +504,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		match revision {
 			1 => {
 				fixture.emit(ws, 11).await;
-				let allowed = fixture.emit(fixture.workspaces[1], 12).await;
+				let allowed = fixture.emit(fixture.threads[1], 12).await;
 				assert_eq!(frame(&mut all).await.0, allowed.sequence);
 				let terminal = tokio::time::timeout(Duration::from_secs(2), selected.next())
 					.await
@@ -523,7 +523,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 				assert_eq!(
 					fixture.service.snapshot().registered_scopes,
 					1,
-					"valid identity with no Workspaces stays connected"
+					"valid identity with no Threads stays connected"
 				);
 			}
 			3 => {
@@ -545,7 +545,7 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 		.emit(
 			&TEST_FIXTURE,
 			Some(ws),
-			"workspace.updated",
+			"thread.updated",
 			json!({"id":ws,"text":"x".repeat(300_000)}),
 		)
 		.await
@@ -633,18 +633,18 @@ fn sse_fixture(
 			.unwrap()
 			.parse()
 			.unwrap();
-		let mut workspaces = Vec::new();
+		let mut threads = Vec::new();
 		for n in 0..10 {
-			let (status, workspace) = request(
+			let (status, thread) = request(
 				&app,
 				&token,
 				"POST",
-				"/api/workspaces",
+				"/api/threads",
 				json!({"title":format!("SSE fixture {n}"),"request":"delivery"}),
 			)
 			.await;
-			assert_eq!(status, 200, "{workspace}");
-			workspaces.push(workspace["id"].as_str().unwrap().parse().unwrap());
+			assert_eq!(status, 200, "{thread}");
+			threads.push(thread["id"].as_str().unwrap().parse().unwrap());
 		}
 		Fixture {
 			_owner: application_fixture,
@@ -656,7 +656,7 @@ fn sse_fixture(
 			service,
 			token,
 			credential,
-			workspaces,
+			threads,
 		}
 	}
 	.map(Arc::new)

@@ -1,4 +1,4 @@
-//! Remote corrections retain their original workspace and qualified input identity.
+//! Remote corrections retain their original thread and qualified input identity.
 use crate::{Error, Message, Result, RunMetadata};
 
 pub fn full_key(node: &str, task: uuid::Uuid, key: &str) -> String {
@@ -18,9 +18,9 @@ pub fn historical_batch(
 			.as_deref()
 			.and_then(|key| key.strip_prefix(&prefix))
 			.ok_or_else(|| Error::Conflict("historical run message key changed".into()))?;
-		if message.workspace_id != run.workspace_id {
+		if message.thread_id != run.thread_id {
 			return Err(Error::Conflict(
-				"historical run message workspace changed".into(),
+				"historical run message thread changed".into(),
 			));
 		}
 		batch.push((key.to_owned(), message));
@@ -36,7 +36,7 @@ pub fn validate_delivery(
 	content: &str,
 	message: &Message,
 ) -> Result<()> {
-	if message.workspace_id != run.workspace_id
+	if message.thread_id != run.thread_id
 		|| message.content != content
 		|| message.idempotency_key.as_deref() != Some(full_key(node, run.task_id, key).as_str())
 	{

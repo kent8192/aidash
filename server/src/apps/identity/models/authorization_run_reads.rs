@@ -12,7 +12,7 @@ pub struct AuthorizationRunRead {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	#[field(primary_key = true, field_type = "text", max_length = 64)]
 	pub resource_kind: AuthorizationRunReadResourceKind,
 	#[field(primary_key = true, field_type = "uuid")]

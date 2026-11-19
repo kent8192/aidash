@@ -8,19 +8,19 @@
           "type": "string"
         },
         "participant": {
-          "description": "`None` is the explicitly published Workspace bank.",
+          "description": "`None` is the explicitly published Thread bank.",
           "format": "uuid",
           "type": ["string", "null"]
         },
         "tenant": {
           "type": "string"
         },
-        "workspace": {
+        "thread": {
           "format": "uuid",
           "type": "string"
         }
       },
-      "required": ["home", "tenant", "workspace"],
+      "required": ["home", "tenant", "thread"],
       "type": "object"
     },
     "Change": {

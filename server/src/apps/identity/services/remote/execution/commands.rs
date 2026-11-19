@@ -92,7 +92,7 @@ pub(crate) async fn thread_attachment(
 	.await?;
 	access.worker();
 	access.read_grant = Some(input.grant_id);
-	let workspace = description.task.workspace_id;
+	let thread = description.task.thread_id;
 	let mut lease = crate::collaboration::access::Lease::from_access(access);
 	let result: Result<AttachmentResponse> = async {
 		let binding = super::binding(lease.access_mut(), input.grant_id)
@@ -103,13 +103,13 @@ pub(crate) async fn thread_attachment(
 		}
 		let mut mapped = crate::authorization::peer::access(&f, &admitted).await?;
 		let readable = mapped
-			.workspace_record(workspace, "attachment", input.attachment_id)
+			.thread_record(thread, "attachment", input.attachment_id)
 			.await
 			.map(|_| ());
 		mapped.finish(readable).await?;
 		let record = lease
 			.access_mut()
-			.workspace_record(workspace, "attachment", input.attachment_id)
+			.thread_record(thread, "attachment", input.attachment_id)
 			.await?;
 		// Attachment reads must remain visible to grant provenance after the lease closes.
 		{
@@ -122,7 +122,7 @@ pub(crate) async fn thread_attachment(
 					journal
 						.record_sources(
 							ReadMembership::RemoteGrant(grant),
-							workspace,
+							thread,
 							&[("attachment".into(), input.attachment_id)],
 						)
 						.await?
@@ -133,7 +133,7 @@ pub(crate) async fn thread_attachment(
 		let (attachment, bytes) = crate::collaboration::attachments::download(
 			&f.store,
 			&mut lease,
-			workspace,
+			thread,
 			input.attachment_id,
 		)
 		.await?;

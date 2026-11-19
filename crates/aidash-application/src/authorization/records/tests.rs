@@ -1,11 +1,11 @@
 use super::*;
 use crate::ports::authorization::records::ChildTaskRecord;
-use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Workspace, policy::Resource};
+use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Thread, policy::Resource};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
 struct Scope {
-	workspace: Workspace,
+	thread: Thread,
 	task: Task,
 	artifact: Artifact,
 	message: Message,
@@ -13,7 +13,7 @@ struct Scope {
 	event: Event,
 	calls: Vec<&'static str>,
 	reads: Vec<(Uuid, Uuid)>,
-	tracked: Vec<WorkspaceSnapshot>,
+	tracked: Vec<ThreadSnapshot>,
 	required: bool,
 	events_allowed: bool,
 	found: bool,
@@ -27,20 +27,20 @@ struct Scope {
 #[fixture]
 fn scope() -> Scope {
 	let now = Utc::now();
-	let workspace = Uuid::from_u128(1);
+	let thread = Uuid::from_u128(1);
 	Scope {
-		workspace: Workspace {
+		thread: Thread {
 			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
-			id: workspace,
-			title: "workspace".into(),
+			id: thread,
+			title: "thread".into(),
 			created_by: "subject".into(),
 			revision: 9,
 			created_at: now,
 		},
 		task: Task {
 			id: Uuid::from_u128(11),
-			workspace_id: workspace,
+			thread_id: thread,
 			title: "task".into(),
 			description: "description".into(),
 			status: TaskStatus::Open,
@@ -54,7 +54,7 @@ fn scope() -> Scope {
 		},
 		artifact: Artifact {
 			id: Uuid::from_u128(12),
-			workspace_id: workspace,
+			thread_id: thread,
 			task_id: Uuid::from_u128(11),
 			kind: "text".into(),
 			name: "artifact".into(),
@@ -66,7 +66,7 @@ fn scope() -> Scope {
 		},
 		message: Message {
 			id: Uuid::from_u128(13),
-			workspace_id: workspace,
+			thread_id: thread,
 			sender: "saved-sender".into(),
 			content: "日本語\u{0000}".into(),
 			idempotency_key: None,
@@ -78,7 +78,7 @@ fn scope() -> Scope {
 			sequence: 15,
 			id: Uuid::from_u128(14),
 			node: None,
-			workspace_id: Some(workspace),
+			thread_id: Some(thread),
 			kind: "message.created".into(),
 			data: json!({"id":Uuid::from_u128(13)}),
 			created_at: now,
@@ -109,19 +109,19 @@ impl Scope {
 	fn resource(&self) -> Resource {
 		Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
-			id: self.workspace.id.to_string(),
+			kind: "thread".into(),
+			id: self.thread.id.to_string(),
 			attributes: json!({"owner":"saved-owner"}),
 		}
 	}
 	async fn owned_resource(&mut self, id: Uuid) -> Result<Resource> {
-		assert_eq!(id, self.workspace.id);
-		self.touch("workspace")?;
+		assert_eq!(id, self.thread.id);
+		self.touch("thread")?;
 		Ok(self.resource())
 	}
 	async fn required(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		assert_eq!(resource.attributes["owner"], "saved-owner");
-		assert_eq!(action, "workspace.read");
+		assert_eq!(action, "thread.read");
 		self.touch("require")?;
 		if self.required {
 			Ok(())
@@ -131,36 +131,36 @@ impl Scope {
 	}
 }
 #[async_trait]
-impl WorkspaceRecordScope for Scope {
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+impl ThreadRecordScope for Scope {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		self.owned_resource(id).await
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.required(resource, action).await
 	}
 	async fn decide(&mut self, _: &Resource, action: &str) -> Result<bool> {
-		assert_eq!(action, "workspace.events");
+		assert_eq!(action, "thread.events");
 		self.touch("decide")?;
 		Ok(self.events_allowed)
 	}
-	async fn workspace_row(&mut self, id: Uuid) -> Result<Workspace> {
-		assert_eq!(id, self.workspace.id);
-		self.touch("workspace_row")?;
-		Ok(self.workspace.clone())
+	async fn thread_row(&mut self, id: Uuid) -> Result<Thread> {
+		assert_eq!(id, self.thread.id);
+		self.touch("thread_row")?;
+		Ok(self.thread.clone())
 	}
-	async fn task_record(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Task>> {
+	async fn task_record(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Task>> {
 		self.touch("task")?;
-		self.reads.push((workspace, id));
+		self.reads.push((thread, id));
 		Ok(self.found.then(|| self.task.clone()))
 	}
-	async fn artifact_record(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Artifact>> {
+	async fn artifact_record(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Artifact>> {
 		self.touch("artifact")?;
-		self.reads.push((workspace, id));
+		self.reads.push((thread, id));
 		Ok(self.found.then(|| self.artifact.clone()))
 	}
-	async fn message_record(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Message>> {
+	async fn message_record(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Message>> {
 		self.touch("message")?;
-		self.reads.push((workspace, id));
+		self.reads.push((thread, id));
 		Ok(self.found.then(|| self.message.clone()))
 	}
 	async fn message_attachments(
@@ -190,9 +190,9 @@ impl WorkspaceRecordScope for Scope {
 				sha256: "digest".into(),
 			}))
 	}
-	async fn event_record(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Event>> {
+	async fn event_record(&mut self, thread: Uuid, id: Uuid) -> Result<Option<Event>> {
 		self.touch("event")?;
-		self.reads.push((workspace, id));
+		self.reads.push((thread, id));
 		Ok(self.found.then(|| self.event.clone()))
 	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
@@ -215,7 +215,7 @@ impl WorkspaceRecordScope for Scope {
 		self.touch("event_visible")?;
 		Ok(self.visible)
 	}
-	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()> {
+	async fn track(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
 		self.touch("track")?;
 		self.tracked.push(snapshot.clone());
 		Ok(())
@@ -234,7 +234,7 @@ impl crate::ports::authorization::visibility::RowOutcome for Scope {
 }
 #[async_trait]
 impl ChildSummaryScope for Scope {
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		self.owned_resource(id).await
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
@@ -242,11 +242,11 @@ impl ChildSummaryScope for Scope {
 	}
 	async fn children(
 		&mut self,
-		workspace_id: Uuid,
+		thread_id: Uuid,
 		parent_id: Uuid,
 		after: Option<Uuid>,
 	) -> Result<Vec<ChildTaskRecord>> {
-		assert_eq!(workspace_id, self.workspace.id);
+		assert_eq!(thread_id, self.thread.id);
 		assert_eq!(parent_id, Uuid::from_u128(99));
 		self.touch("children")?;
 		self.cursors.push(after);
@@ -270,12 +270,12 @@ impl ChildSummaryScope for Scope {
 	async fn visible(
 		&mut self,
 		resource: &Resource,
-		workspace: Uuid,
+		thread: Uuid,
 		_: Uuid,
 		created_by: &str,
 	) -> Result<bool> {
 		assert_eq!(resource.attributes["owner"], "saved-owner");
-		assert_eq!(workspace, self.workspace.id);
+		assert_eq!(thread, self.thread.id);
 		self.touch("summary_visible")?;
 		if created_by == "silent" {
 			self.silence = Some("aidash://other/silent".into());
@@ -283,15 +283,15 @@ impl ChildSummaryScope for Scope {
 		}
 		Ok(created_by == "visible")
 	}
-	async fn track_tasks(&mut self, workspace: Uuid, tasks: &[Uuid]) -> Result<()> {
-		assert_eq!(workspace, self.workspace.id);
+	async fn track_tasks(&mut self, thread: Uuid, tasks: &[Uuid]) -> Result<()> {
+		assert_eq!(thread, self.thread.id);
 		self.touch("task_track")?;
 		self.task_reads.push(tasks.to_vec());
 		Ok(())
 	}
 }
 #[rstest]
-#[case::workspace("workspace", 1)]
+#[case::thread("thread", 1)]
 #[case::task("task", 11)]
 #[case::artifact("artifact", 12)]
 #[case::message("message", 13)]
@@ -303,7 +303,7 @@ async fn a_record_returns_the_original_serialized_value_after_exact_membership_t
 	#[case] id: u128,
 ) {
 	let expected = match kind {
-		"workspace" => json!(scope.workspace),
+		"thread" => json!(scope.thread),
 		"task" => json!(scope.task),
 		"artifact" => json!(scope.artifact),
 		"message" => {
@@ -319,13 +319,13 @@ async fn a_record_returns_the_original_serialized_value_after_exact_membership_t
 	assert_eq!(result, expected);
 	assert_eq!(scope.tracked.len(), 1);
 	let snapshot = &scope.tracked[0];
-	assert_eq!(snapshot.workspace.id, Uuid::from_u128(1));
+	assert_eq!(snapshot.thread.id, Uuid::from_u128(1));
 	assert_eq!(snapshot.tasks.len(), usize::from(kind == "task"));
 	assert_eq!(snapshot.artifacts.len(), usize::from(kind == "artifact"));
 	assert_eq!(snapshot.messages.len(), usize::from(kind == "message"));
 	assert_eq!(snapshot.events.len(), usize::from(kind == "event"));
 	assert_eq!(scope.calls.last(), Some(&"track"));
-	if kind != "workspace" {
+	if kind != "thread" {
 		assert_eq!(scope.reads, vec![(Uuid::from_u128(1), Uuid::from_u128(id))]);
 	}
 }
@@ -385,30 +385,24 @@ async fn event_read_permission_is_checked_before_the_event_row(mut scope: Scope)
 	));
 	assert_eq!(
 		scope.calls,
-		vec!["workspace", "require", "workspace_row", "decide"]
+		vec!["thread", "require", "thread_row", "decide"]
 	);
 	assert!(scope.reads.is_empty());
 	assert!(scope.tracked.is_empty());
 }
 #[rstest]
 #[tokio::test]
-async fn full_workspace_read_requires_the_selected_workspace_identity(mut scope: Scope) {
+async fn full_thread_read_requires_the_selected_thread_identity(mut scope: Scope) {
 	assert!(matches!(
-		record(
-			&mut scope,
-			Uuid::from_u128(1),
-			"workspace",
-			Uuid::from_u128(2)
-		)
-		.await,
+		record(&mut scope, Uuid::from_u128(1), "thread", Uuid::from_u128(2)).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(scope.calls, vec!["workspace", "require", "workspace_row"]);
+	assert_eq!(scope.calls, vec!["thread", "require", "thread_row"]);
 	assert!(scope.tracked.is_empty());
 }
 #[rstest]
 #[tokio::test]
-async fn unknown_record_kind_keeps_validation_after_workspace_authority(mut scope: Scope) {
+async fn unknown_record_kind_keeps_validation_after_thread_authority(mut scope: Scope) {
 	let error = record(
 		&mut scope,
 		Uuid::from_u128(1),
@@ -417,28 +411,26 @@ async fn unknown_record_kind_keeps_validation_after_workspace_authority(mut scop
 	)
 	.await
 	.unwrap_err();
-	assert!(
-		matches!(error,Error::Invalid(ref message) if message=="unknown workspace record kind")
-	);
-	assert_eq!(scope.calls, vec!["workspace", "require", "workspace_row"]);
+	assert!(matches!(error,Error::Invalid(ref message) if message=="unknown thread record kind"));
+	assert_eq!(scope.calls, vec!["thread", "require", "thread_row"]);
 	assert!(scope.tracked.is_empty());
 }
 #[rstest]
 #[tokio::test]
-async fn workspace_read_denial_precedes_record_lookup(mut scope: Scope) {
+async fn thread_read_denial_precedes_record_lookup(mut scope: Scope) {
 	scope.required = false;
 	assert!(matches!(
 		record(&mut scope, Uuid::from_u128(1), "task", Uuid::from_u128(11)).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(scope.calls, vec!["workspace", "require"]);
+	assert_eq!(scope.calls, vec!["thread", "require"]);
 	assert!(scope.reads.is_empty());
 	assert!(scope.tracked.is_empty());
 }
 #[rstest]
-#[case::workspace("workspace", "workspace")]
-#[case::read_policy("workspace", "require")]
-#[case::workspace_row("workspace", "workspace_row")]
+#[case::thread("thread", "thread")]
+#[case::read_policy("thread", "require")]
+#[case::thread_row("thread", "thread_row")]
 #[case::task("task", "task")]
 #[case::task_policy("task", "task_visible")]
 #[case::artifact("artifact", "artifact")]
@@ -448,7 +440,7 @@ async fn workspace_read_denial_precedes_record_lookup(mut scope: Scope) {
 #[case::event_permission("event", "decide")]
 #[case::event("event", "event")]
 #[case::event_policy("event", "event_visible")]
-#[case::journal("workspace", "track")]
+#[case::journal("thread", "track")]
 #[tokio::test]
 async fn record_failures_keep_their_opaque_identity_without_returning_partial_records(
 	mut scope: Scope,
@@ -583,7 +575,7 @@ async fn child_summary_keeps_empty_and_exact_full_page_exhaustion(
 	assert!(scope.task_reads.last().unwrap().is_empty());
 }
 #[rstest]
-#[case::ownership("workspace")]
+#[case::ownership("thread")]
 #[case::permission("require")]
 #[case::rows("children")]
 #[case::policy("summary_visible")]
@@ -622,8 +614,8 @@ async fn summary_dependencies_recheck_messages_without_tracking(
 		"hidden" => scope.visible = false,
 		_ => {}
 	}
-	let workspace = scope.workspace.id;
-	let readable = messages_readable(&mut scope, workspace, [Uuid::from_u128(13)])
+	let thread = scope.thread.id;
+	let readable = messages_readable(&mut scope, thread, [Uuid::from_u128(13)])
 		.await
 		.unwrap();
 	assert_eq!(readable, state == "readable");

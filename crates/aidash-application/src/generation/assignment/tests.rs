@@ -77,7 +77,7 @@ impl Scope {
 		Self {
 			task: Task {
 				id: Uuid::from_u128(2),
-				workspace_id: Uuid::from_u128(3),
+				thread_id: Uuid::from_u128(3),
 				title: "Task".into(),
 				description: "Do work".into(),
 				status: TaskStatus::Open,
@@ -246,7 +246,7 @@ impl GenerationCreationScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://local"
 	}
-	async fn workspace_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
+	async fn thread_node(&mut self, _: Uuid) -> Result<aidash_domain::nodes::NodeAddress> {
 		Ok(node())
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -325,8 +325,8 @@ impl GenerationCreationScope for Scope {
 		self.effects.push(format!("history:{status}"));
 		Ok(())
 	}
-	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
-		assert_eq!(workspace, Uuid::from_u128(3));
+	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
+		assert_eq!(thread, Uuid::from_u128(3));
 		assert_eq!(kind, "generation.requested");
 		assert_eq!(
 			data,
@@ -380,13 +380,13 @@ impl GenerationAssignmentScope for Scope {
 		self.point("task.lock").await?;
 		Ok(self.task.clone())
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		assert_eq!(id, self.task.workspace_id);
-		self.point("workspace").await?;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		assert_eq!(id, self.task.thread_id);
+		self.point("thread").await?;
 		Ok(self.resource(
-			"workspace",
+			"thread",
 			&id.to_string(),
-			json!({"workspace_id":id,"team":"research"}),
+			json!({"thread_id":id,"team":"research"}),
 		))
 	}
 	async fn inherit_task_origin(&mut self, _id: Uuid) -> Result<bool> {
@@ -494,10 +494,10 @@ async fn local_creation_locks_before_reservation_and_notifies_after_commit(
 		[
 			"begin",
 			"task.lock",
-			"workspace",
+			"thread",
 			"context",
 			"origin",
-			"decide:workspace.read:alice",
+			"decide:thread.read:alice",
 			"task.resource",
 			"decide:task.read:alice",
 			"decide:task.delegate:alice",
@@ -588,7 +588,7 @@ async fn inherited_worker_origin_preserves_the_narrowed_chain(validation: Defini
 	assert_eq!(scope.context["team"], "research");
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("task.read")]
 #[case("task.delegate")]
 #[case("generation.request")]
@@ -786,7 +786,7 @@ async fn a_generated_agent_is_reused_only_in_its_root_persons_chains(
 	assert!(!scope.calls().iter().any(|c| c == "insert"));
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("agent.execute")]
 #[case("task.read")]
 #[case("task.execute")]

@@ -1,5 +1,5 @@
-//! Native permission inspection retains current identity, effective metadata and shared catalog/workspace locks.
-use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationWorkspace};
+//! Native permission inspection retains current identity, effective metadata and shared catalog/thread locks.
+use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationThread};
 use crate::{
 	authorization::{Authorization, identity::Actor},
 	federation::Federation,
@@ -119,8 +119,8 @@ impl PermissionScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
-	async fn workspace_owner(&mut self, workspace: Uuid, tenant: &str) -> Result<Option<String>> {
-		AuthorizationWorkspace::owner_in(self.tx.as_mut(), workspace, tenant, true)
+	async fn thread_owner(&mut self, thread: Uuid, tenant: &str) -> Result<Option<String>> {
+		AuthorizationThread::owner_in(self.tx.as_mut(), thread, tenant, true)
 			.await
 			.map_err(Into::into)
 	}

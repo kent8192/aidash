@@ -99,7 +99,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		);
 		assert!(
 			f.store
-				.snapshot(&TEST_FIXTURE, task.workspace_id)
+				.snapshot(&TEST_FIXTURE, task.thread_id)
 				.await
 				.unwrap()
 				.artifacts
@@ -143,7 +143,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		);
 		let artifacts = f
 			.store
-			.snapshot(&TEST_FIXTURE, task.workspace_id)
+			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap()
 			.artifacts;
@@ -169,17 +169,12 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, subject, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let manifest: Manifest = serde_json::from_value(json!({
 		"id": Uuid::new_v4(), "coordinator":node(&f).await,
 		"isolation": "serializable", "deadline": Utc::now() + Duration::minutes(5),
 		"participants": [{"node_id":node(&f).await, "mutations": [{
-			"kind": "workspace_title", "workspace_id": workspace,
+			"kind": "thread_title", "thread_id": thread,
 			"expected_revision": 0, "title":"Committed"
 		}]}]
 	}))
@@ -232,7 +227,7 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	assert_eq!(outcome.decision.as_deref(), Some(decision));
 	assert_eq!(
 		f.store
-			.workspace(&TEST_FIXTURE, workspace)
+			.thread(&TEST_FIXTURE, thread)
 			.await
 			.unwrap()
 			.revision,
@@ -272,9 +267,9 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		common::get(&app, &subject, "/api/transactions").await.0,
 		200
 	);
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"Atomic",
@@ -282,7 +277,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.await
 		.unwrap();
 	let id = Uuid::new_v4();
-	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace.id,"expected_revision":0,"title":"Committed"}]}]});
+	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"thread_title","thread_id":thread.id,"expected_revision":0,"title":"Committed"}]}]});
 	let (status, response) =
 		common::post(&app, &subject, "/api/transactions", manifest.clone()).await;
 	assert_eq!(status, 202, "{response}");
@@ -339,7 +334,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	));
 	assert_eq!(
 		f.store
-			.workspace(&TEST_FIXTURE, workspace.id)
+			.thread(&TEST_FIXTURE, thread.id)
 			.await
 			.unwrap()
 			.revision,
@@ -350,7 +345,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 
 #[rstest::rstest]
 #[case::transaction_action("transaction.submit")]
-#[case::underlying_action("workspace.update")]
+#[case::underlying_action("thread.update")]
 #[case::manifest_disclosure("transaction.disclose")]
 #[tokio::test]
 async fn subject_transaction_requires_all_authority_before_persisting_a_manifest(
@@ -375,15 +370,10 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 	)
 	.await
 	.unwrap();
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]});
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"thread_title","thread_id":thread,"expected_revision":0,"title":"Committed"}]}]});
 	let (status, body) = common::post(&app, &token, "/api/transactions", manifest).await;
 	assert_eq!(status, 403, "{body}");
 	assert!(matches!(
@@ -392,7 +382,7 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 	));
 	assert_eq!(
 		f.store
-			.workspace(&TEST_FIXTURE, workspace)
+			.thread(&TEST_FIXTURE, thread)
 			.await
 			.unwrap()
 			.revision,
@@ -412,15 +402,10 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]});
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"thread_title","thread_id":thread,"expected_revision":0,"title":"Committed"}]}]});
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", manifest.clone())
 			.await
@@ -448,7 +433,7 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 			.0,
 		200
 	);
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-read","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["*"]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-read","effect":"deny","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["*"]}}));
 	let auth = aidash_server::authorization::Authorization {
 		pool: f.store.control_pool.clone(),
 	};
@@ -486,7 +471,7 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 	);
 	assert_eq!(
 		f.store
-			.workspace(&TEST_FIXTURE, workspace)
+			.thread(&TEST_FIXTURE, thread)
 			.await
 			.unwrap()
 			.revision,
@@ -506,14 +491,9 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
-        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_title","workspace_id":workspace,"expected_revision":0,"title":"Committed"}]}]})).unwrap();
+        "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"thread_title","thread_id":thread,"expected_revision":0,"title":"Committed"}]}]})).unwrap();
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", json!(manifest))
 			.await
@@ -546,7 +526,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 			&app,
 			&token,
 			"PATCH",
-			&format!("/api/workspaces/{workspace}"),
+			&format!("/api/threads/{thread}"),
 			json!({"revision":0,"title":"Escape"})
 		)
 		.await
@@ -555,7 +535,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	);
 	assert!(
 		f.store
-			.update_title(&TEST_FIXTURE, workspace, 0, "escape")
+			.update_title(&TEST_FIXTURE, thread, 0, "escape")
 			.await
 			.is_err()
 	);
@@ -583,7 +563,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	}
 	assert_eq!(
 		f.store
-			.workspace(&TEST_FIXTURE, workspace)
+			.thread(&TEST_FIXTURE, thread)
 			.await
 			.unwrap()
 			.revision,
@@ -614,13 +594,8 @@ async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
-	let own = review::manifest(node(&f).await.as_str(), workspace);
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	let own = review::manifest(node(&f).await.as_str(), thread);
 	let own_id = own["id"].as_str().unwrap().to_owned();
 	assert_eq!(
 		common::post(&app, &token, "/api/transactions", own.clone())
@@ -641,7 +616,7 @@ async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions
 			None => request(&app, &f.config.api_token, method, path, body).await,
 		}
 	};
-	let attempted = review::manifest(node(&f).await.as_str(), workspace);
+	let attempted = review::manifest(node(&f).await.as_str(), thread);
 	let attempted_id = Uuid::parse_str(attempted["id"].as_str().unwrap()).unwrap();
 	// Act and assert: every administrator request is refused without content.
 	let (status, body) = as_administrator("POST", "/api/transactions", attempted).await;

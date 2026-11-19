@@ -1,5 +1,5 @@
 //! Bounded model views. Durable snapshots and audit payloads remain unchanged.
-use crate::{Error, Result, WorkspaceSnapshot};
+use crate::{Error, Result, ThreadSnapshot};
 use serde_json::{Value, json};
 
 pub const DEFAULT_LIMIT: usize = 20;
@@ -19,12 +19,12 @@ fn preview(text: &str, limit: usize) -> String {
 /// Collections are paged independently with a common offset. Events/messages
 /// are newest first; tasks/artifacts retain snapshot order. Counts and cursors
 /// describe this snapshot, so callers should refresh after concurrent changes.
-pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Value {
+pub fn project(snapshot: &ThreadSnapshot, offset: usize, limit: usize) -> Value {
 	let limit = limit.clamp(1, MAX_LIMIT);
-	let w = &snapshot.workspace;
+	let w = &snapshot.thread;
 	let mut value = json!({
 		"view":"workspace_observation_v1",
-		"workspace":{"id":w.id,"title":preview(&w.title,256),"revision":w.revision},
+		"thread":{"id":w.id,"title":preview(&w.title,256),"revision":w.revision},
 		"tasks":snapshot.tasks.iter().skip(offset).take(limit).map(|t| json!({
 			"id":t.id,"title":preview(&t.title,256),"description_preview":preview(&t.description,512),
 			"status":t.status,"owner":t.owner,"parent_id":t.parent_id,"revision":t.revision,
@@ -56,12 +56,12 @@ pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Val
 	value
 }
 
-/// Drop the Workspace events that `run` produced itself (`data.run_id`) from
+/// Drop the Thread events that `run` produced itself (`data.run_id`) from
 /// a snapshot, before it is projected for that Run's per-step view (#942).
 /// They are the Run's own lifecycle telemetry, which its history already
 /// holds; every step mints new ones, so as evidence they would never repeat
 /// and history would grow each step. The model's observe tool keeps them.
-pub fn without_run_events(snapshot: &mut WorkspaceSnapshot, run: uuid::Uuid) {
+pub fn without_run_events(snapshot: &mut ThreadSnapshot, run: uuid::Uuid) {
 	snapshot.events.retain(|event| {
 		event
 			.data
@@ -77,7 +77,7 @@ pub fn without_run_events(snapshot: &mut WorkspaceSnapshot, run: uuid::Uuid) {
 /// projection against the complete pending tool event, then track only the
 /// page returned here.
 pub fn fit_projection<F, E>(
-	snapshot: &WorkspaceSnapshot,
+	snapshot: &ThreadSnapshot,
 	offset: usize,
 	requested_limit: usize,
 	mut fits: F,
@@ -104,13 +104,11 @@ pub fn chunk_record(
 ) -> Result<Value> {
 	let id = id
 		.parse::<uuid::Uuid>()
-		.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+		.map_err(|_| Error::Invalid("invalid thread record id".into()))?;
 	let text = value.to_string();
 	let total = text.chars().count();
 	if offset > total {
-		return Err(Error::Invalid(
-			"workspace record offset out of range".into(),
-		));
+		return Err(Error::Invalid("thread record offset out of range".into()));
 	}
 	let content: String = text
 		.chars()
@@ -130,9 +128,9 @@ pub fn chunk_record(
 pub fn normalize_history(history: &mut [super::HistoryEntry]) {
 	for entry in history {
 		if let super::ContextEvent::Tool { call, result } = &mut entry.event
-			&& call.name == "workspace_observe"
+			&& crate::tool::thread_tools::is(&call.name, "thread_observe")
 			&& result["view"] != "workspace_observation_v1"
-			&& let Ok(snapshot) = serde_json::from_value::<WorkspaceSnapshot>(result.clone())
+			&& let Ok(snapshot) = serde_json::from_value::<ThreadSnapshot>(result.clone())
 		{
 			*result = project(&snapshot, 0, DEFAULT_LIMIT);
 		}

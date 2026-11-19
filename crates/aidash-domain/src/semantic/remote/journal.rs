@@ -82,7 +82,7 @@ pub struct Retry {
 pub fn retry(record: &Record, failure: Failure) -> Retry {
 	// An earlier call may still answer, such as a native memory model attempt
 	// inside its call deadline. The operation waits and spends none of its
-	// outage retries (#233). Every fresh claim repeats the charged workspace
+	// outage retries (#233). Every fresh claim repeats the charged thread
 	// embedding, so, as a worker does, only the first wait is a second and a
 	// repeated one is `PENDING_REPLAY_SECONDS`.
 	if failure == Failure::Pending {

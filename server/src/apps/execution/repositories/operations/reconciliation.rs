@@ -184,7 +184,7 @@ impl OperationReconciliationScope for Scope<'_> {
 		let run = check.run_for_continued_use(run).await?;
 		crate::apps::execution::repositories::subnodes::require_writable(
 			check.tx.native_mut(),
-			run.workspace_id,
+			run.thread_id,
 		)
 		.await?;
 		let area = sessions::for_run(&mut check, &run).await?;
@@ -194,7 +194,7 @@ impl OperationReconciliationScope for Scope<'_> {
 			run: run.metadata(),
 			area: Area {
 				id: area.id,
-				workspace_id: area.workspace_id,
+				thread_id: area.thread_id,
 				generation: area.generation,
 				revision: area.revision,
 				epoch: area.epoch,
@@ -371,7 +371,7 @@ impl OperationReconciliationScope for Scope<'_> {
 		self.store
 			.event(
 				&mut self.access.tx,
-				Some(self.area.as_ref().unwrap().workspace_id),
+				Some(self.area.as_ref().unwrap().thread_id),
 				"capability.operation_changed",
 				data,
 			)

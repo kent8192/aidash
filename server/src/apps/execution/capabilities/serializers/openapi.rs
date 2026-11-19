@@ -216,19 +216,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(document, views::management::file_share, &["Uuid"])?;
 	contracts.response::<_, crate::apps::execution::capabilities::serializers::contracts::Area>(
 		document,
-		views::management::workspace_run,
+		views::management::thread_run,
 		200,
 		"application/json",
 	)?;
 	contracts.request::<_, crate::apps::execution::capabilities::serializers::contracts::Enqueue>(
 		document,
-		views::management::workspace_run,
+		views::management::thread_run,
 	)?;
-	contracts.path(
-		document,
-		views::management::workspace_run,
-		&["Uuid", "String"],
-	)?;
+	contracts.path(document, views::management::thread_run, &["Uuid", "String"])?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::contracts::Envelope>(
 			document,

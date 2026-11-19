@@ -183,7 +183,7 @@ fn run(snapshot: BindingSnapshot) -> Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		home_node: NODE.into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),

@@ -45,7 +45,7 @@ struct Cleanup {
 fn snapshot(entry: &Entry) -> IndexingEntry {
 	IndexingEntry {
 		id: entry.id,
-		workspace_id: entry.workspace_id,
+		thread_id: entry.thread_id,
 		source: entry.source.clone(),
 		revision: entry.revision,
 		point_id: entry.point_id,
@@ -106,33 +106,33 @@ impl SemanticIndexingRepository for NativeIndexing {
 		let store = &self.store;
 		Ok(crate::database::native::query_as::<(Uuid, Value)>(
 			&Query::select()
-				.expr(SimpleExpr::from(Expr::col(Alias::new("workspace_id"))))
+				.expr(SimpleExpr::from(Expr::col(Alias::new("thread_id"))))
 				.expr(SimpleExpr::from(Expr::col(Alias::new("authority"))))
 				.from(Alias::new("semantic_entries"))
 				.and_where(Expr::cust("id = $1 AND NOT deleted"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.columns(&["workspace_id", "authority"])
+		.columns(&["thread_id", "authority"])
 		.bind(id)
 		.fetch_optional(store.pool.in_scope(&INDEXING))
 		.await?)
 	}
 	async fn restore(
 		&self,
-		workspace: Uuid,
+		thread: Uuid,
 		authority: &Value,
 	) -> Result<Box<dyn SemanticIndexingSession>> {
 		Ok(Box::new(Session {
 			store: self.store.clone(),
-			lease: Lease::restore(&self.store, authority.clone(), workspace).await?,
+			lease: Lease::restore(&self.store, authority.clone(), thread).await?,
 			entry: None,
 		}))
 	}
-	async fn revoke(&self, workspace: Uuid, id: Uuid, authority: &Value) -> Result<()> {
+	async fn revoke(&self, thread: Uuid, id: Uuid, authority: &Value) -> Result<()> {
 		let store = &self.store;
 		let result: crate::Result<()> = async {
 			let mut tx = store.pool.begin(&MAINTENANCE).await?;
-			service::index(&mut tx, workspace, false).await?;
+			service::index(&mut tx, thread, false).await?;
 			let entry: Option<Entry> = {
 				let query_bind_1 = id;
 				let query_bind_2 = authority;
@@ -180,7 +180,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 				};
 				service::history(
 					&mut tx,
-					workspace,
+					thread,
 					Some(id),
 					entry.revision,
 					"REVOKED",
@@ -223,18 +223,18 @@ impl SemanticIndexingSession for Session {
 	fn durable(&mut self) {
 		self.lease.durable();
 	}
-	async fn workspace_write(&mut self, workspace: Uuid) -> Result<()> {
+	async fn thread_write(&mut self, thread: Uuid) -> Result<()> {
 		self.lease
-			.workspace(workspace, "semantic.write")
+			.thread(thread, "semantic.write")
 			.await
 			.map_err(Into::into)
 	}
-	async fn plan(&mut self, workspace: Uuid) -> Result<IndexingPlan> {
-		// Fence maintenance before source/settings reads: its workspace writer
+	async fn plan(&mut self, thread: Uuid) -> Result<IndexingPlan> {
+		// Fence maintenance before source/settings reads: its thread writer
 		// would otherwise block the independent reservation's foreign-key lock
 		// while waiting for those reads to finish.
-		super::native_memory::lock_workspace(&mut self.lease, workspace, false).await?;
-		let index = service::index(self.lease.tx(), workspace, false).await?;
+		super::native_memory::lock_thread(&mut self.lease, thread, false).await?;
+		let index = service::index(self.lease.tx(), thread, false).await?;
 		Ok(IndexingPlan {
 			collection: index.collection,
 			tenant: index.tenant,
@@ -292,15 +292,12 @@ impl SemanticIndexingSession for Session {
 			.ok_or_else(|| Error::Conflict("indexing entry was not locked".into()))?;
 		self.lease.permits(entry, action).await.map_err(Into::into)
 	}
-	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>> {
-		self.lease
-			.source(workspace, source)
-			.await
-			.map_err(Into::into)
+	async fn source(&mut self, thread: Uuid, source: &Source) -> Result<Option<String>> {
+		self.lease.source(thread, source).await.map_err(Into::into)
 	}
 	async fn image(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		source: &Source,
 		max_bytes: usize,
 	) -> Result<Option<IndexImageRead>> {
@@ -309,7 +306,7 @@ impl SemanticIndexingSession for Session {
 			return super::attachment_images::read(
 				&store,
 				&mut self.lease,
-				workspace,
+				thread,
 				source,
 				max_bytes,
 			)
@@ -317,7 +314,7 @@ impl SemanticIndexingSession for Session {
 			.map_err(Into::into);
 		}
 		let access = self.lease.access().ok_or(Error::Forbidden)?;
-		let Some(file) = super::image_files::current(access, workspace, source).await? else {
+		let Some(file) = super::image_files::current(access, thread, source).await? else {
 			return Ok(None);
 		};
 		if file.size > max_bytes as u64 {
@@ -332,7 +329,7 @@ impl SemanticIndexingSession for Session {
 	}
 	async fn embed_image(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		image: &IndexImage,
 		entry: Uuid,
@@ -340,7 +337,7 @@ impl SemanticIndexingSession for Session {
 		service::embed_input(
 			&self.store,
 			&mut self.lease,
-			workspace,
+			thread,
 			config,
 			image.input(),
 			crate::generation::embedding::Origin::Index(entry),
@@ -598,26 +595,19 @@ impl SemanticIndexingSession for Session {
 	}
 	async fn history(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 		revision: i64,
 		state: &str,
 		detail: &str,
 	) -> Result<()> {
-		service::history(
-			self.lease.tx(),
-			workspace,
-			Some(id),
-			revision,
-			state,
-			detail,
-		)
-		.await
-		.map_err(Into::into)
+		service::history(self.lease.tx(), thread, Some(id), revision, state, detail)
+			.await
+			.map_err(Into::into)
 	}
 	async fn embed(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		config: &EmbeddingConfig,
 		text: &str,
 		entry: Uuid,
@@ -693,7 +683,7 @@ impl SemanticIndexingSession for Session {
 		service::embed(
 			&self.store,
 			&mut self.lease,
-			workspace,
+			thread,
 			config,
 			text,
 			crate::generation::embedding::Origin::Index(entry),

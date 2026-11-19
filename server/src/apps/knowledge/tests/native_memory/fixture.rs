@@ -203,7 +203,7 @@ async fn setup_endpoint_policy_with_window(
 	decay: Option<Decay>,
 	diversity_lambda_millionths: Option<u32>,
 ) -> (Store, Registry, Uuid) {
-	let (flags, context_window, workspace_owner) = settings;
+	let (flags, context_window, thread_owner) = settings;
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
 		aidash_domain::nodes::DeploymentId::parse("aidash://native-memory").unwrap(),
@@ -341,10 +341,10 @@ async fn setup_endpoint_policy_with_window(
 	.replace("acme", 0, bundle, "fixture")
 	.await
 	.unwrap();
-	let workspace = store
-		.create_workspace(
+	let thread = store
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
-			workspace_owner,
+			thread_owner,
 			"Memory",
 		)
 		.await
@@ -352,7 +352,7 @@ async fn setup_endpoint_policy_with_window(
 	aidash_server::semantic::service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace.id,
+		thread.id,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
 			spec: aidash_server::semantic::IndexSpec {
@@ -363,7 +363,7 @@ async fn setup_endpoint_policy_with_window(
 			},
 		},
 	).await.unwrap();
-	(store, registry, workspace.id)
+	(store, registry, thread.id)
 }
 pub(super) fn content(text: &str) -> Content {
 	Content {

@@ -247,7 +247,7 @@ impl DecisionAuthority for Authority<'_> {
 
 /// A leased Run whose journaled context holds ten large tool results.
 async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uuid) {
-	let (status, created) = request(app, token, "POST", "/api/conversations", json!({
+	let (status, created) = request(app, token, "POST", "/api/threads", json!({
 		"title":"Decisions", "request":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
 	}))
 	.await;

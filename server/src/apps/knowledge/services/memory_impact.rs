@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, VecDeque};
 use uuid::Uuid;
 
 pub async fn impact(store: &Store, actor: &Actor, input: ImpactQuery) -> Result<Impact> {
-	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
+	let mut lease = Lease::begin(store, actor, input.bank.thread).await?;
 	let result = async {
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
 		bank_provider(&mut lease, &input.bank, &input.provider).await?;
@@ -182,7 +182,7 @@ async fn supported(lease: &mut Lease<'_>, unit: &aidash_domain::memory::Unit) ->
 	};
 	match units::current(
 		lease,
-		unit.bank.workspace,
+		unit.bank.thread,
 		&unit.content.evidence,
 		policy.bounds.max_graph_visits,
 	)

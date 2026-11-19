@@ -26,7 +26,7 @@ impl Record for Request {
 			prepared: row.try_get("prepared")?,
 			grant_id: row.try_get("grant_id")?,
 			admission_id: row.try_get("admission_id")?,
-			workspace_id: row.try_get("workspace_id")?,
+			thread_id: row.try_get("thread_id")?,
 			credential_id: row.try_get("credential_id")?,
 			root_subject: row.try_get("root_subject")?,
 			subject_chain: row.try_get("subject_chain")?,
@@ -83,17 +83,13 @@ impl GenerationVisibility for NativeVisibility<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> aidash_application::Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> aidash_application::Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
-	async fn task(
-		&mut self,
-		id: Uuid,
-		workspace: Uuid,
-	) -> aidash_application::Result<Option<Task>> {
+	async fn task(&mut self, id: Uuid, thread: Uuid) -> aidash_application::Result<Option<Task>> {
 		let task: Option<crate::domain::Task> = {
 			let query_bind_1 = id;
-			let query_bind_2 = workspace;
+			let query_bind_2 = thread;
 			aidash_server::database::query_as(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::SimpleExpr::from(
@@ -101,7 +97,7 @@ impl GenerationVisibility for NativeVisibility<'_> {
 					))
 					.from(reinhardt::query::Alias::new("tasks"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ? AND workspace_id = ?)".to_owned(),
+						"(id = ? AND thread_id = ?)".to_owned(),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),

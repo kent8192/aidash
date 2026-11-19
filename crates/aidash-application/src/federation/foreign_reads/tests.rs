@@ -77,11 +77,7 @@ impl ForeignRunReadScope for Scope {
 		assert_eq!(resource.tenant, "acme");
 		// Viewer policies may be conditioned on the admission's trusted source
 		// attributes, so every viewer check carries them.
-		for attribute in [
-			"source_workspace_id",
-			"source_task_id",
-			"source_task_revision",
-		] {
+		for attribute in ["source_thread_id", "source_task_id", "source_task_revision"] {
 			assert!(
 				resource.attributes.get(attribute).is_some(),
 				"{action} lacks {attribute}"
@@ -210,7 +206,7 @@ impl ForeignSourceAuthority for Source<'_> {
 
 #[fixture]
 fn run() -> RunMetadata {
-	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"workspace_id":Uuid::from_u128(3),
+	serde_json::from_value(json!({"id":Uuid::from_u128(1),"task_id":Uuid::from_u128(2),"thread_id":Uuid::from_u128(3),
         "node":"brave-otter-k3m9q2xa","home_node":"aidash://home","agent_id":"a","agent_version":"1.0.0","phase":"THINKING","control":"ACTIVE",
         "step":0,"revision":1,"observed_input_seq":0,"ledger_worker_ready":false,"error":null,"lease_owner":null,"lease_until":null,"updated_at":"2026-10-03T00:00:00Z"})).unwrap()
 }
@@ -232,7 +228,7 @@ fn scope(run: RunMetadata) -> Scope {
 		source_subject: "home-reader".into(),
 		task: Task {
 			id: run.task_id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			title: "Task".into(),
 			description: "".into(),
 			status: TaskStatus::Running,
@@ -323,14 +319,14 @@ async fn disclosure_checks_both_authorities_and_restores_the_viewer(
 		scope.calls,
 		vec![
 			"admission",
-			"viewer:workspace.read",
+			"viewer:thread.read",
 			"viewer:task.read",
 			"viewer:run.read",
 			"viewer:memory.read",
 			"mapping",
 			"source-snapshot",
 			"source-lease",
-			"source:workspace.read",
+			"source:thread.read",
 			"source:task.read",
 			"source:task.execute",
 			"current-definition",
@@ -341,7 +337,7 @@ async fn disclosure_checks_both_authorities_and_restores_the_viewer(
 	restored(&scope);
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("task.read")]
 #[case("run.read")]
 #[case("memory.read")]
@@ -364,7 +360,7 @@ async fn viewer_denials_stop_before_source_authority(
 #[case("source")]
 #[case("target")]
 #[case("task")]
-#[case("workspace")]
+#[case("thread")]
 #[case("agent")]
 #[case("version")]
 #[case("expired")]
@@ -379,7 +375,7 @@ async fn rebound_or_expired_descriptions_fail_before_viewer_checks(
 		"source" => d.source_node = "aidash://other".into(),
 		"target" => d.target_node = "aidash://other".into(),
 		"task" => d.task.id = Uuid::nil(),
-		"workspace" => d.task.workspace_id = Uuid::nil(),
+		"thread" => d.task.thread_id = Uuid::nil(),
 		"agent" => d.inspection.agent.id = "other".into(),
 		"version" => d.inspection.agent.version = "2.0.0".into(),
 		"expired" => d.expires_at = scope.now,
@@ -410,7 +406,7 @@ async fn source_storage_failures_propagate(mut scope: Scope, run: RunMetadata) {
 	);
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("task.read")]
 #[case("task.execute")]
 #[case("agent.execute")]
@@ -561,7 +557,7 @@ async fn retirement_cannot_enable_an_unrelated_subject(
 }
 #[rstest]
 #[tokio::test]
-async fn required_home_semantics_recheck_the_source_workspace_permission(
+async fn required_home_semantics_recheck_the_source_thread_permission(
 	mut scope: Scope,
 	run: RunMetadata,
 ) {

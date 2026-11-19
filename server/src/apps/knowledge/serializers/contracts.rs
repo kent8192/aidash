@@ -44,7 +44,7 @@ pub struct ConfigureIndex {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticIndex")]
 pub struct Index {
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub tenant: String,
 	pub revision: i64,
 	pub spec: Value,
@@ -52,7 +52,7 @@ pub struct Index {
 	pub updated_at: DateTime<Utc>,
 }
 crate::native_record!(Index {
-	workspace_id,
+	thread_id,
 	tenant,
 	revision,
 	spec,
@@ -89,7 +89,7 @@ pub struct EntryList {
 #[schemars(rename = "SemanticEntry")]
 pub struct Entry {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub key: String,
 	pub source: Value,
 	pub agent: Option<String>,
@@ -106,7 +106,7 @@ pub struct Entry {
 }
 crate::native_record!(Entry {
 	id,
-	workspace_id,
+	thread_id,
 	key,
 	source,
 	agent,
@@ -152,7 +152,7 @@ pub struct Search {
 #[schemars(rename = "SemanticHistory")]
 pub struct History {
 	pub sequence: i64,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub entry_id: Option<Uuid>,
 	pub revision: i64,
 	pub state: String,
@@ -161,7 +161,7 @@ pub struct History {
 }
 crate::native_record!(History {
 	sequence,
-	workspace_id,
+	thread_id,
 	entry_id,
 	revision,
 	state,

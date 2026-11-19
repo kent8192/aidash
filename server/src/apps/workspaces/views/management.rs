@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 use crate::apps::workspaces::serializers::management::AbandonInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
+use crate::apps::workspaces::serializers::management::ThreadInput;
 use crate::apps::workspaces::serializers::management::TitleInput;
-use crate::apps::workspaces::serializers::management::WorkspaceInput;
 use crate::apps::workspaces::services::management::CollaborationManagement;
 
 #[get("/api/tasks", name = "task-list", auth = "protected")]
@@ -28,44 +28,44 @@ pub async fn task_list(
 	crate::http::json(service.task_list(actor, page).await)
 }
 
-#[get("/api/workspaces", name = "workspace-list", auth = "protected")]
-pub async fn workspace_list(
+#[get("/api/threads", name = "thread-list", auth = "protected")]
+pub async fn thread_list(
 	#[inject] service: Depends<crate::apps::execution::services::management::HarnessManagement>,
 	#[inject] actor: Actor,
-	Query(query): Query<crate::apps::execution::serializers::state::WorkspacePageQuery>,
+	Query(query): Query<crate::apps::execution::serializers::state::ThreadPageQuery>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.workspace_page(actor, query).await)
+	crate::http::json(service.thread_page(actor, query).await)
 }
 
-#[post("/api/workspaces", name = "workspace-create", auth = "protected")]
-pub async fn workspace_create(
+#[post("/api/threads", name = "thread-create", auth = "protected")]
+pub async fn thread_create(
 	#[inject] service: Depends<CollaborationManagement>,
 	#[inject] actor: Actor,
-	validated_json::Json(input): validated_json::Json<WorkspaceInput>,
+	validated_json::Json(input): validated_json::Json<ThreadInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.workspace_create(actor, input).await)
+	crate::http::json(service.thread_create(actor, input).await)
 }
 
-#[get("/api/workspaces/{id}", name = "workspace-get", auth = "protected")]
-pub async fn workspace_get(
+#[get("/api/threads/{id}", name = "thread-get", auth = "protected")]
+pub async fn thread_get(
 	#[inject] service: Depends<CollaborationManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.workspace_get(actor, id).await)
+	crate::http::json(service.thread_get(actor, id).await)
 }
 
-#[patch("/api/workspaces/{id}", name = "workspace-update", auth = "protected")]
-pub async fn workspace_update(
+#[patch("/api/threads/{id}", name = "thread-update", auth = "protected")]
+pub async fn thread_update(
 	#[inject] service: Depends<CollaborationManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
 	Json(input): Json<TitleInput>,
 ) -> ViewResult<Response> {
-	crate::http::json(service.workspace_update(actor, id, input).await)
+	crate::http::json(service.thread_update(actor, id, input).await)
 }
 
-#[post("/api/workspaces/{id}/tasks", name = "task-create", auth = "protected")]
+#[post("/api/threads/{id}/tasks", name = "task-create", auth = "protected")]
 pub async fn task_create(
 	#[inject] service: Depends<CollaborationManagement>,
 	#[inject] actor: Actor,
@@ -81,7 +81,7 @@ pub async fn task_create(
 }
 
 #[post(
-	"/api/workspaces/{id}/messages",
+	"/api/threads/{id}/messages",
 	name = "message-create",
 	auth = "protected"
 )]

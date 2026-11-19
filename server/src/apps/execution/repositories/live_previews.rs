@@ -544,7 +544,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 		access.subjects = subjects;
 	}
 	let result = if remote {
-		// Skip only the local Workspace step (#904): the Run itself is still
+		// Skip only the local Thread step (#904): the Run itself is still
 		// checked, through its admission (expiry, Peer Mapping, the chain's
 		// read policies), and then what it has read.
 		let mut check = access.rechecking(preview.run_id);

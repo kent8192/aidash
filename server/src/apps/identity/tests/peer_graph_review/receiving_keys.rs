@@ -81,7 +81,7 @@ async fn token(
 }
 
 fn graph(subject: &str, limit: u64, cursor: Value) -> Value {
-	json!({"subject":subject,"scope_workspace":null,"mode":"mesh","kinds":["workspace"],"relations":[],"hours":0,"limit":limit,"cursor":cursor})
+	json!({"subject":subject,"scope_thread":null,"mode":"mesh","kinds":["thread"],"relations":[],"hours":0,"limit":limit,"cursor":cursor})
 }
 
 async fn post(app: &common::TestApplication, raw: &str, body: &Value) -> (u16, Value) {
@@ -120,7 +120,7 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 			&app,
 			&local_token,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			json!({"title":title,"request":"cursor"}),
 		)
 		.await;

@@ -211,7 +211,7 @@ async fn another_person_can_run_the_agent_but_cannot_download_its_files(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/workspaces/{}/tasks", run.workspace_id),
+		&format!("/api/threads/{}/tasks", run.thread_id),
 		json!({"title":"Bob's work","description":"Read the plan"}),
 	)
 	.await;
@@ -829,12 +829,12 @@ async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
 	let bob = credential["token"].as_str().unwrap().to_owned();
 	let (status, _) = start(&c, &alice, c.task).await;
 	assert_eq!(status, 200);
-	let workspace = latest_run(&c).await.workspace_id;
+	let thread = latest_run(&c).await.thread_id;
 	let (status, task) = request(
 		&c.app,
 		&bob,
 		"POST",
-		&format!("/api/workspaces/{workspace}/tasks"),
+		&format!("/api/threads/{thread}/tasks"),
 		json!({"title":"Bob's work","description":"Copy the plan"}),
 	)
 	.await;

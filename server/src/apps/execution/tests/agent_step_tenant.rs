@@ -120,14 +120,14 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 		.await
 		.unwrap();
 	seed.commit().await.unwrap();
-	let workspace = store
-		.create_workspace(&tenant, "fixture", "Step policy")
+	let thread = store
+		.create_thread(&tenant, "fixture", "Step policy")
 		.await
 		.unwrap();
 	let task = store
 		.create_task(
 			&tenant,
-			workspace.id,
+			thread.id,
 			&aidash_domain::NewTask {
 				title: "Step inference".into(),
 				description: "Tenant authority fixture".into(),
@@ -148,7 +148,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 			[
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -162,7 +162,7 @@ async fn a_steps_scope_controls_access_to_its_persisted_provider_credential_pin(
 			Query::select()
 				.expr(Expr::value(run))
 				.expr(Expr::value(task.id))
-				.expr(Expr::value(workspace.id))
+				.expr(Expr::value(thread.id))
 				.expr(Expr::value(node.to_string()))
 				.expr(Expr::value(node.node.as_str()))
 				.expr(Expr::value("fixture-agent"))

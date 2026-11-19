@@ -112,7 +112,7 @@ fn bundle() -> Value {
 		"roles":{"reader":{},"editor":{"inherits":["reader"]}},
 		"policies":[{
 			"id":"department-reader","effect":"allow","subjects":{"roles":["reader"]},
-			"actions":["workspace.read"],"resources":{"kinds":["workspace"]},
+			"actions":["thread.read"],"resources":{"kinds":["thread"]},
 			"condition":{"op":"eq","left":{"source":"subject","path":"/department"},
 				"right":{"source":"resource","path":"/department"}}
 		}]
@@ -120,25 +120,25 @@ fn bundle() -> Value {
 }
 
 fn evaluation() -> Value {
-	json!({"subject":"alice","action":"workspace.read","resource":{
-        "tenant":"acme","kind":"workspace","id":"research-workspace","attributes":{"department":"research"}},
+	json!({"subject":"alice","action":"thread.read","resource":{
+        "tenant":"acme","kind":"thread","id":"research-thread","attributes":{"department":"research"}},
         "environment":{"network":"internal"}})
 }
 
-fn workspace_policy(tenant: &str) -> Value {
+fn thread_policy(tenant: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},
-        "policies":[{"id":"workspace-owner","effect":"allow","subjects":{"ids":["alice"]},
-            "actions":["workspace.create","workspace.read","workspace.update","task.create","message.create","workspace.events"],
-            "resources":{"kinds":["workspace"]},
+        "policies":[{"id":"thread-owner","effect":"allow","subjects":{"ids":["alice"]},
+            "actions":["thread.create","thread.read","thread.update","task.create","message.create","thread.events"],
+            "resources":{"kinds":["thread"]},
             "condition":{"op":"eq","left":{"source":"resource","path":"/owner"},
                 "right":{"source":"literal","value":"alice"}}},
             {"id":"node-use","effect":"allow","subjects":{"ids":["alice"]},"actions":["node.use"],"resources":{"kinds":["node"]}},
-            {"id":"workspace-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
+            {"id":"thread-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
+async fn subject_credentials_enforce_thread_isolation_and_live_revocation(
 	#[future] endpoint: EndpointFixture,
 ) {
 	let app = Arc::new(endpoint.await);
@@ -150,7 +150,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			request(
 				&app,
 				&format!("/api/authorization/{tenant}"),
-				json!({"expected_revision":0,"bundle":workspace_policy(tenant)}),
+				json!({"expected_revision":0,"bundle":thread_policy(tenant)}),
 				true
 			)
 			.await
@@ -161,18 +161,12 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	}
 	let token = tokens[0]["token"].as_str().unwrap();
 	let other = tokens[1]["token"].as_str().unwrap();
-	let workspace_body = json!({"title":"private","request":"tenant secret"});
-	let (status, workspace) = scoped_request(
-		&app,
-		token,
-		"POST",
-		"/api/workspaces",
-		workspace_body.clone(),
-	)
-	.await;
-	assert_eq!(status, 200, "workspace creation: {workspace}");
-	let id = workspace["id"].as_str().unwrap();
-	let path = format!("/api/workspaces/{id}");
+	let thread_body = json!({"title":"private","request":"tenant secret"});
+	let (status, thread) =
+		scoped_request(&app, token, "POST", "/api/threads", thread_body.clone()).await;
+	assert_eq!(status, 200, "thread creation: {thread}");
+	let id = thread["id"].as_str().unwrap();
+	let path = format!("/api/threads/{id}");
 	assert_eq!(
 		scoped_request(
 			&app,
@@ -233,7 +227,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			&app,
 			token,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			json!({"title":"forged","request":"x","tenant":"other","owner":"alice"})
 		)
 		.await
@@ -282,7 +276,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	);
 	let (status, own_state) = scoped_request(&app, token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200);
-	assert_eq!(own_state["workspaces"].as_array().unwrap().len(), 1);
+	assert_eq!(own_state["threads"].as_array().unwrap().len(), 1);
 	assert_eq!(own_state["tasks"][0]["id"], task["id"]);
 	assert_eq!(own_state["registry"], json!([]));
 	assert_eq!(own_state["offering"], "self-hosted");
@@ -296,7 +290,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert_eq!(administrator_state["registry"], json!([]));
 	let (_, other_state) = scoped_request(&app, other, "GET", "/api/state", Value::Null).await;
 	for key in [
-		"workspaces",
+		"threads",
 		"tasks",
 		"artifacts",
 		"events",
@@ -315,7 +309,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 			&app,
 			other,
 			"GET",
-			&format!("/api/events?workspace_id={id}"),
+			&format!("/api/events?thread_id={id}"),
 			Value::Null
 		)
 		.await
@@ -367,7 +361,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 		.filter(|record| record.token_hash == token.as_bytes())
 		.count();
 	assert_eq!(count, 0, "plaintext token was stored as a digest");
-	let mut changed = workspace_policy("acme");
+	let mut changed = thread_policy("acme");
 	changed["policies"] = json!([]);
 	assert_eq!(
 		request(
@@ -387,13 +381,13 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 		403
 	);
 	assert_eq!(
-		scoped_request(&app, token, "POST", "/api/workspaces", workspace_body)
+		scoped_request(&app, token, "POST", "/api/threads", thread_body)
 			.await
 			.0,
 		403
 	);
 	let (_, hidden) = scoped_request(&app, token, "GET", "/api/state", Value::Null).await;
-	assert_eq!(hidden["workspaces"], json!([]));
+	assert_eq!(hidden["threads"], json!([]));
 	let credential_id = tokens[0]["credential"]["id"].as_str().unwrap();
 	let revoke = format!("/api/authorization/acme/credentials/{credential_id}/revoke");
 	// Revoking a Tenant's credential is Tenant authority, not Deployment administration.
@@ -428,7 +422,7 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 		request(
 			&app,
 			"/api/authorization/acme",
-			json!({"expected_revision":0,"bundle":workspace_policy("acme")}),
+			json!({"expected_revision":0,"bundle":thread_policy("acme")}),
 			true
 		)
 		.await
@@ -436,16 +430,16 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 		200
 	);
 	let credential = crate::endpoint::issued_credential(&app.runtime.store, "acme", "alice").await;
-	let (status, workspace) = scoped_request(
+	let (status, thread) = scoped_request(
 		&app,
 		credential["token"].as_str().unwrap(),
 		"POST",
-		"/api/workspaces",
+		"/api/threads",
 		json!({"title":"stream","request":"private"}),
 	)
 	.await;
 	assert_eq!(status, 200);
-	(app, store, credential, workspace)
+	(app, store, credential, thread)
 }
 
 #[rstest::rstest]
@@ -453,16 +447,16 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 async fn a_large_scoped_response_retains_every_authorization_decision(
 	#[future] endpoint: EndpointFixture,
 ) {
-	// Arrange: visibility and event checks for 55 Workspaces cross an audit batch.
-	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
+	// Arrange: visibility and event checks for 55 Threads cross an audit batch.
+	let (app, store, credential, thread) = subject_fixture(endpoint.await).await;
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
-	let mut ids = vec![workspace["id"].as_str().unwrap().to_owned()];
+	let mut ids = vec![thread["id"].as_str().unwrap().to_owned()];
 	for index in 1..55 {
-		let workspace = store
-			.create_workspace(&scope, "alice", &format!("Audit {index}"))
+		let thread = store
+			.create_thread(&scope, "alice", &format!("Audit {index}"))
 			.await
 			.unwrap();
-		ids.push(workspace.id.to_string());
+		ids.push(thread.id.to_string());
 	}
 	let authorization = Authorization {
 		pool: store.pool.clone(),
@@ -486,14 +480,14 @@ async fn a_large_scoped_response_retains_every_authorization_decision(
 	.await;
 	// Assert: batching preserves the allowed decisions, their identities and order.
 	assert_eq!(status, 200, "{state}");
-	// The Workspace list is the newest-50 window (#664 decision 1); the event
-	// window still checks all 55 Workspaces, which crosses the audit batch.
-	assert_eq!(state["workspaces"].as_array().unwrap().len(), 50);
-	assert!(state["next_cursors"]["workspaces"].is_string(), "{state}");
+	// The Thread list is the newest-50 window (#664 decision 1); the event
+	// window still checks all 55 Threads, which crosses the audit batch.
+	assert_eq!(state["threads"].as_array().unwrap().len(), 50);
+	assert!(state["next_cursors"]["threads"].is_string(), "{state}");
 	let audit = authorization.decisions("acme", cursor, 200).await.unwrap();
 	assert!(audit.len() > 100, "the response must cross an audit batch");
 	for id in ids {
-		for action in ["workspace.read", "workspace.events"] {
+		for action in ["thread.read", "thread.events"] {
 			let decisions = audit
 				.iter()
 				.filter(|row| row["resource_id"] == id && row["action"] == action)
@@ -516,49 +510,40 @@ async fn a_large_scoped_response_retains_every_authorization_decision(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn subject_receives_thread_opened_event_for_a_visible_root_message(
+async fn subject_receives_the_event_of_a_message_posted_into_a_visible_thread(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use futures_util::StreamExt;
 	use std::time::Duration;
 
-	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
+	let (app, store, credential, thread) = subject_fixture(endpoint.await).await;
 	let token = credential["token"].as_str().unwrap();
-	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
-	store
-		.message(&TEST_FIXTURE, workspace_id, "alice", "Visible root", None)
-		.await
-		.unwrap();
-	let snapshot = store.snapshot(&TEST_FIXTURE, workspace_id).await.unwrap();
-	let root_id = snapshot
-		.messages
-		.iter()
-		.find(|message| message.content == "Visible root")
-		.unwrap()
-		.id
-		.to_string();
+	let thread_id = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 	let cursor = store
-		.events(&TEST_FIXTURE, 0, Some(workspace_id), 100)
+		.events(&TEST_FIXTURE, 0, Some(thread_id), 100)
 		.await
 		.unwrap()
 		.last()
 		.unwrap()
 		.sequence;
-	let stream_path = format!("/api/events/stream?workspace_id={workspace_id}&after={cursor}");
+	let stream_path = format!("/api/events/stream?thread_id={thread_id}&after={cursor}");
 	let mut response = stream_response(&app, &stream_path, token).await;
 	assert_eq!(response.status, 200);
 	let mut stream = response
 		.take_stream_body()
 		.expect("native streaming response");
-	let (status, thread) = scoped_request(
+	// Messages are flat (#1008): posting one is a `message.created` event of
+	// the Thread itself, not a reply thread opened on a root message.
+	let (status, posted) = scoped_request(
 		&app,
 		token,
 		"POST",
-		&format!("/api/workspaces/{workspace_id}/threads"),
-		json!({"root_message_id":root_id}),
+		&format!("/api/threads/{thread_id}/channel-messages"),
+		json!({"content":"Visible message","idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
-	assert_eq!(status, 200, "{thread}");
+	assert_eq!(status, 200, "{posted}");
+	let message_id = posted["message"]["id"].as_str().unwrap().to_owned();
 	// This router fixture has no broker supervisor; exercise canonical fallback.
 	let frame = tokio::time::timeout(Duration::from_secs(6), stream.next())
 		.await
@@ -566,21 +551,25 @@ async fn subject_receives_thread_opened_event_for_a_visible_root_message(
 		.unwrap()
 		.unwrap();
 	let frame = String::from_utf8_lossy(&frame);
-	assert!(frame.contains("message.thread_opened"), "{frame}");
-	assert!(frame.contains(&root_id), "{frame}");
+	assert!(frame.contains("message.created"), "{frame}");
+	assert!(frame.contains(&message_id), "{frame}");
 	let (status, events) = scoped_request(
 		&app,
 		token,
 		"GET",
-		&format!("/api/events?workspace_id={workspace_id}"),
+		&format!("/api/events?thread_id={thread_id}"),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{events}");
 	assert!(events["events"].as_array().unwrap().iter().any(|event| {
-		event["kind"] == "message.thread_opened"
-			&& event["data"]["id"].as_str() == Some(root_id.as_str())
+		event["kind"] == "message.created"
+			&& event["data"]["id"].as_str() == Some(message_id.as_str())
 	}));
+	assert!(
+		!events.to_string().contains("message.thread_opened"),
+		"no reply thread is opened: {events}"
+	);
 }
 
 #[rstest::rstest]
@@ -590,20 +579,20 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 ) {
 	use futures_util::StreamExt;
 	use std::time::Duration;
-	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
+	let (app, store, credential, thread) = subject_fixture(endpoint.await).await;
 	let token = credential["token"].as_str().unwrap();
-	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	let thread_id = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 	store
 		.message(
 			&TEST_FIXTURE,
-			workspace_id,
+			thread_id,
 			"alice",
 			"must not escape a revoked stream",
 			None,
 		)
 		.await
 		.unwrap();
-	let stream_path = format!("/api/events/stream?workspace_id={workspace_id}");
+	let stream_path = format!("/api/events/stream?thread_id={thread_id}");
 	for revoke_policy in [true, false] {
 		let mut response = stream_response(&app, &stream_path, token).await;
 		assert_eq!(response.status, 200);
@@ -617,9 +606,9 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 			.unwrap()
 			.unwrap();
 		assert!(String::from_utf8_lossy(&first).contains("event: mesh"));
-		// The first poll buffered both workspace.created and message.created.
+		// The first poll buffered both thread.created and message.created.
 		if revoke_policy {
-			let mut denied = workspace_policy("acme");
+			let mut denied = thread_policy("acme");
 			denied["policies"] = json!([]);
 			assert_eq!(
 				request(
@@ -660,7 +649,7 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 				request(
 					&app,
 					"/api/authorization/acme",
-					json!({"expected_revision":2,"bundle":workspace_policy("acme")}),
+					json!({"expected_revision":2,"bundle":thread_policy("acme")}),
 					true
 				)
 				.await
@@ -673,14 +662,14 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 
 #[rstest::rstest]
 #[tokio::test]
-async fn credential_revocation_serializes_with_workspace_mutation(
+async fn credential_revocation_serializes_with_thread_mutation(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use std::time::Duration;
-	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
+	let (app, store, credential, thread) = subject_fixture(endpoint.await).await;
 	let token = credential["token"].as_str().unwrap().to_owned();
 	let credential_id = Uuid::parse_str(credential["credential"]["id"].as_str().unwrap()).unwrap();
-	let path = format!("/api/workspaces/{}", workspace["id"].as_str().unwrap());
+	let path = format!("/api/threads/{}", thread["id"].as_str().unwrap());
 	// Pause at the durable event boundary, after the authorized UPDATE and
 	// before commit, to test the actual HTTP mutation rather than a dry run.
 	let mut barrier = app.database.connection.begin().await.unwrap();
@@ -771,9 +760,9 @@ async fn credential_revocation_serializes_with_workspace_mutation(
 		.0,
 		401
 	);
-	let id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	let id = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 	assert_eq!(
-		store.workspace(&TEST_FIXTURE, id).await.unwrap().title,
+		store.thread(&TEST_FIXTURE, id).await.unwrap().title,
 		"Committed"
 	);
 }
@@ -857,7 +846,7 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 			.0,
 		200
 	);
-	let mut disabled = workspace_policy("acme");
+	let mut disabled = thread_policy("acme");
 	disabled["subjects"]["alice"]["enabled"] = json!(false);
 	assert_eq!(
 		request(
@@ -912,19 +901,19 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
 }
 
 #[rstest::rstest]
-#[case::read("workspace.read", None)]
-#[case::update("workspace.update", Some("workspace.read"))]
+#[case::read("thread.read", None)]
+#[case::update("thread.update", Some("thread.read"))]
 #[tokio::test]
-async fn denied_workspace_permissions_prevent_updates_and_preserve_audit(
+async fn denied_thread_permissions_prevent_updates_and_preserve_audit(
 	#[future] endpoint: EndpointFixture,
 	#[case] denied_action: &str,
 	#[case] earlier_allowed: Option<&str>,
 ) {
-	let (app, store, credential, workspace) = subject_fixture(endpoint.await).await;
-	let mut policy = workspace_policy("acme");
+	let (app, store, credential, thread) = subject_fixture(endpoint.await).await;
+	let mut policy = thread_policy("acme");
 	policy["policies"].as_array_mut().unwrap().push(json!({
-		"id":"workspace-denied","effect":"deny","subjects":{"any":true},
-		"actions":[denied_action],"resources":{"kinds":["workspace"]}
+		"id":"thread-denied","effect":"deny","subjects":{"any":true},
+		"actions":[denied_action],"resources":{"kinds":["thread"]}
 	}));
 	assert_eq!(
 		request(
@@ -937,21 +926,21 @@ async fn denied_workspace_permissions_prevent_updates_and_preserve_audit(
 		.0,
 		200
 	);
-	let id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	let id = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 	let token = credential["token"].as_str().unwrap();
 	assert_eq!(
 		scoped_request(
 			&app,
 			token,
 			"PATCH",
-			&format!("/api/workspaces/{id}"),
+			&format!("/api/threads/{id}"),
 			json!({"revision":0,"title":"Probe"})
 		)
 		.await
 		.0,
 		403
 	);
-	let unchanged = store.workspace(&TEST_FIXTURE, id).await.unwrap();
+	let unchanged = store.thread(&TEST_FIXTURE, id).await.unwrap();
 	assert_eq!(unchanged.revision, 0);
 	assert_ne!(unchanged.title, "Probe");
 	let decisions = app

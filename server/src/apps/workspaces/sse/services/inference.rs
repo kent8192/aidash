@@ -45,19 +45,19 @@ struct RunContext {
 
 impl RunContext {
 	/// The run-scoped event every frame is authorized as, using the same
-	/// workspace rule as the Run's own journal events.
+	/// thread rule as the Run's own journal events.
 	fn probe(&self) -> Event {
 		let node = self.base.f.store.deployment.as_str();
 		Event {
 			sequence: 0,
 			id: Uuid::nil(),
 			node: aidash_domain::nodes::NodeName::parse(&self.run.node).ok(),
-			workspace_id: self.run.is_local(node).then_some(self.run.workspace_id),
+			thread_id: self.run.is_local(node).then_some(self.run.thread_id),
 			kind: "inference.progress".into(),
 			data: json!({
 				"run_id": self.run.id,
 				"task_id": self.run.task_id,
-				"workspace_id": self.run.workspace_id,
+				"thread_id": self.run.thread_id,
 			}),
 			created_at: chrono::Utc::now(),
 		}
@@ -226,8 +226,8 @@ impl Service {
 			target => target?,
 		};
 		// Register before validation and the initial read; marker events wake it.
-		let observation = self.register(Some(target.workspace_id));
-		let scope = Workspaces {
+		let observation = self.register(Some(target.thread_id));
+		let scope = Threads {
 			store: f.store.clone(),
 			identity,
 		};
@@ -237,7 +237,7 @@ impl Service {
 				scope,
 				browser,
 				headers,
-				workspace: None,
+				thread: None,
 				service: self.clone(),
 			},
 			run: Arc::new(target),

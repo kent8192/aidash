@@ -62,7 +62,7 @@ async fn conversation(
 		&app,
 		&token,
 		"POST",
-		"/api/conversations",
+		"/api/threads",
 		json!({"title":"Inference progress","request":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
 	)
 	.await;
@@ -379,12 +379,12 @@ async fn dashboard_projections_omit_inference_markers(
 		.await
 		.unwrap();
 	assert_eq!(c.closures(attempt).await, (1, 1));
-	let workspace = format!("/api/workspaces/{}", c.run.workspace_id);
+	let thread = format!("/api/threads/{}", c.run.thread_id);
 
 	// Act: a Deployment Administrator reads no Tenant projection (#484), so
 	// only the Tenant Subject's projections carry events.
 	let mut projections = Vec::new();
-	for path in ["/api/state", workspace.as_str()] {
+	for path in ["/api/state", thread.as_str()] {
 		let (status, body) = request(&c.app, &c.token, "GET", path, serde_json::Value::Null).await;
 		assert_eq!(status, 200, "{path}: {body}");
 		projections.push((path.to_owned(), body));
@@ -393,7 +393,7 @@ async fn dashboard_projections_omit_inference_markers(
 		&c.app,
 		&c.f.config.api_token,
 		"GET",
-		workspace.as_str(),
+		thread.as_str(),
 		serde_json::Value::Null,
 	)
 	.await;

@@ -19,7 +19,7 @@ struct SourceRepository {
 	races: Arc<AtomicUsize>,
 	saved_unauthorized: bool,
 	hidden_reads: bool,
-	subnode_workspace: bool,
+	subnode_thread: bool,
 }
 struct SourceSession {
 	repository: Repository,
@@ -30,7 +30,7 @@ struct SourceSession {
 	live: bool,
 	races: Arc<AtomicUsize>,
 	hidden_reads: bool,
-	subnode_workspace: bool,
+	subnode_thread: bool,
 }
 impl Drop for SourceSession {
 	fn drop(&mut self) {
@@ -55,7 +55,7 @@ impl SourceRepository {
 			races: Arc::new(AtomicUsize::new(0)),
 			saved_unauthorized: false,
 			hidden_reads: false,
-			subnode_workspace: false,
+			subnode_thread: false,
 		}
 	}
 	fn scope(&self) -> SourceSession {
@@ -69,7 +69,7 @@ impl SourceRepository {
 			live: self.live,
 			races: self.races.clone(),
 			hidden_reads: self.hidden_reads,
-			subnode_workspace: self.subnode_workspace,
+			subnode_thread: self.subnode_thread,
 		}
 	}
 }
@@ -157,8 +157,8 @@ impl HomeScope for SourceSession {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		Ok(self.resource("task", task.id, json!({})))
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Ok(self.resource("workspace", id, json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		Ok(self.resource("thread", id, json!({})))
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
 		self.repository.call(action);
@@ -312,8 +312,8 @@ impl SourceAuthorityScope for SourceSession {
 	async fn generation_home(&mut self, _: &Task, _: &str, _: Option<&Value>) -> Result<()> {
 		Ok(())
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		HomeScope::workspace(self, id).await
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		HomeScope::thread(self, id).await
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		HomeScope::task_resource(self, task).await
@@ -350,8 +350,8 @@ impl GrantScope for SourceSession {
 		self.repository.call("inherit_origin");
 		Ok(())
 	}
-	async fn require_non_subnode_workspace(&mut self, _: Uuid) -> Result<()> {
-		if self.subnode_workspace {
+	async fn require_non_subnode_thread(&mut self, _: Uuid) -> Result<()> {
+		if self.subnode_thread {
 			Err(Error::Forbidden)
 		} else {
 			Ok(())
@@ -471,7 +471,7 @@ async fn preparation_inherits_original_authority_before_checking_assignment() {
 async fn subnode_tasks_cannot_prepare_a_remote_grant() {
 	let mut repository = SourceRepository::new();
 	repository.task.status = TaskStatus::Open;
-	repository.subnode_workspace = true;
+	repository.subnode_thread = true;
 	assert!(matches!(
 		use_case::prepare(&repository, task().id, input()).await,
 		Err(Error::Forbidden)

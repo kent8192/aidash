@@ -1,8 +1,8 @@
 //! Every operation borrows the same current authorization and write transaction.
-use crate::{Result, workspaces::channels::AttachmentUpload};
+use crate::{Result, threads::channels::AttachmentUpload};
 use aidash_domain::{
 	Message,
-	workspaces::channels::{AttachmentState, ChannelAttachment, ChannelCitation, CitedFileVersion},
+	threads::channels::{AttachmentState, ChannelAttachment, ChannelCitation, CitedFileVersion},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -38,36 +38,36 @@ pub trait ChannelScope:
 {
 	fn sender(&self) -> String;
 	fn principal(&self) -> String;
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message>;
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Message>;
 	async fn visible(&mut self, message: &Message) -> Result<bool>;
 	async fn append_message(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: &str,
 	) -> Result<Message>;
 	async fn record_context(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 		digest: &str,
 	) -> Result<MessageContext>;
 	async fn legacy_attachment_positions(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 	) -> Result<Vec<(Uuid, i32)>>;
-	/// Lock attachment records in UUID order, constrained by workspace and principal.
+	/// Lock attachment records in UUID order, constrained by thread and principal.
 	async fn attachment_links(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		ids: &[Uuid],
 		principal: &str,
 	) -> Result<Vec<AttachmentLink>>;
 	async fn bind_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 		id: Uuid,
 		principal: &str,
@@ -75,7 +75,7 @@ pub trait ChannelScope:
 	) -> Result<()>;
 	async fn insert_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		principal: &str,
 		input: &AttachmentUpload<'_>,
 		digest: &str,
@@ -84,41 +84,41 @@ pub trait ChannelScope:
 	/// Replay lookup must hold a row update lock until the scope finishes.
 	async fn existing_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		principal: &str,
 		key: Uuid,
 	) -> Result<AttachmentState>;
-	async fn attachment(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<AttachmentState>>;
+	async fn attachment(&mut self, thread: Uuid, id: Uuid) -> Result<Option<AttachmentState>>;
 	/// Select at most 100 newest rows below the cursor.
 	async fn history_rows(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<HistoryRow>>;
 	async fn message_attachments(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		ids: &[Uuid],
 	) -> Result<HashMap<Uuid, Vec<ChannelAttachment>>>;
 	/// Retain every cited File version for the message and record the citation
 	/// in the same transaction. A quota refusal leaves no message behind.
 	async fn record_citations(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 		citations: &[CitedFileVersion],
 	) -> Result<Vec<ChannelCitation>>;
 	/// The citations of these messages, redacted for the current viewer.
 	async fn message_citations(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		ids: &[Uuid],
 	) -> Result<HashMap<Uuid, Vec<ChannelCitation>>>;
 	/// Replace the Image Description of an attachment its writer posted. The
 	/// words are embedded with the image, so an indexed image is queued again.
 	async fn describe_attachment(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_id: Uuid,
 		_writer: &str,
 		_description: &str,
@@ -127,12 +127,12 @@ pub trait ChannelScope:
 			"Image Descriptions are unavailable".into(),
 		))
 	}
-	/// Enter or refresh posted images in the Workspace index in this same
-	/// transaction, under the current authority. A Workspace without an index,
+	/// Enter or refresh posted images in the Thread index in this same
+	/// transaction, under the current authority. A Thread without an index,
 	/// or an author who may not write to it, leaves the images unindexed.
 	async fn index_attachment_images(
 		&mut self,
-		_workspace: Uuid,
+		_thread: Uuid,
 		_message: Uuid,
 		_attachments: &[ChannelAttachment],
 	) -> Result<()> {

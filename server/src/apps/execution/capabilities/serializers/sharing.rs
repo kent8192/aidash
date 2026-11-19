@@ -9,7 +9,7 @@ pub struct Recipient {
 	pub node_id: String,
 	pub agent_id: String,
 	pub agent_version: String,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

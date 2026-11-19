@@ -80,8 +80,8 @@ pub(crate) async fn expand(
 				let resource =
 					access.resource("node", &input.node_id, json!({"remote_node":input.node_id}));
 				access.require(&resource, "federation.graph.read").await?;
-				if let Some(id) = input.options.scope_workspace {
-					access.require_workspace(id, "workspace.read").await?;
+				if let Some(id) = input.options.scope_thread {
+					access.require_thread(id, "thread.read").await?;
 				}
 				source_peer_lease(
 					&mut access.tx,

@@ -32,7 +32,7 @@ pub struct ApprovalObservation {
 	#[field(null = true)]
 	pub run_id: Option<Uuid>,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub credential_id: Uuid,
 	#[field(field_type = "text")]

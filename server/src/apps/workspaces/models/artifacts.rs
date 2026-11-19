@@ -18,10 +18,10 @@ pub struct Artifact {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "artifacts_workspace_id_fkey",
+		db_constraint = "artifacts_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],

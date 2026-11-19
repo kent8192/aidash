@@ -863,20 +863,20 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 	let retained_source = common::default_node(&remote.store, "acme")
 		.await
 		.to_string();
-	let (status, workspace) = d
+	let (status, thread) = d
 		.as_person(
 			&alice,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			Some(&context),
 			json!({"title":"Retained receiver", "request":"Real atomic obligation", "node":node}),
 		)
 		.await;
-	assert_eq!(status, 200, "{workspace}");
-	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
-	let remote_workspace = remote
+	assert_eq!(status, 200, "{thread}");
+	let thread_id = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
+	let remote_thread = remote
 		.store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"Retained counterpart",
@@ -884,8 +884,8 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 		.await
 		.unwrap();
 	let mut participants = vec![
-		json!({"node_id":local_address,"mutations":[{"kind":"workspace_title","workspace_id":workspace_id,"expected_revision":0,"title":"Committed"}]}),
-		json!({"node_id":retained_source,"mutations":[{"kind":"workspace_title","workspace_id":remote_workspace.id,"expected_revision":0,"title":"Committed"}]}),
+		json!({"node_id":local_address,"mutations":[{"kind":"thread_title","thread_id":thread_id,"expected_revision":0,"title":"Committed"}]}),
+		json!({"node_id":retained_source,"mutations":[{"kind":"thread_title","thread_id":remote_thread.id,"expected_revision":0,"title":"Committed"}]}),
 	];
 	participants.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
 	let manifest: aidash_domain::transactions::Manifest = serde_json::from_value(json!({
@@ -911,7 +911,7 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 	assert_eq!(
 		remote
 			.store
-			.workspace(&TEST_FIXTURE, remote_workspace.id)
+			.thread(&TEST_FIXTURE, remote_thread.id)
 			.await
 			.unwrap()
 			.revision,
@@ -1044,7 +1044,7 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 	}
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM workspaces WHERE id='{workspace_id}'"
+			"SELECT count(*) FROM threads WHERE id='{thread_id}'"
 		))
 		.await,
 		0,

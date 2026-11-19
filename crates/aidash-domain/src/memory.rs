@@ -20,12 +20,12 @@ pub mod recovery;
 #[serde(rename_all = "snake_case")]
 pub enum SharingScope {
 	#[default]
-	Workspace,
+	Thread,
 	TenantAgent,
 }
 impl SharingScope {
-	pub fn permits(self, same_tenant: bool, same_workspace: bool, same_agent: bool) -> bool {
-		same_tenant && (same_workspace || self == Self::TenantAgent && same_agent)
+	pub fn permits(self, same_tenant: bool, same_thread: bool, same_agent: bool) -> bool {
+		same_tenant && (same_thread || self == Self::TenantAgent && same_agent)
 	}
 }
 
@@ -57,7 +57,7 @@ pub struct SourceConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SourceScope {
 	Participant,
-	Workspace,
+	Thread,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -133,15 +133,15 @@ impl RoleModel {
 pub struct Bank {
 	pub home: String,
 	pub tenant: String,
-	pub workspace: Uuid,
-	/// `None` is the explicitly published Workspace bank.
+	pub thread: Uuid,
+	/// `None` is the explicitly published Thread bank.
 	pub participant: Option<Uuid>,
 }
 impl Bank {
 	pub fn validate(&self) -> Result<()> {
 		if self.home.trim().is_empty()
 			|| self.tenant.trim().is_empty()
-			|| self.workspace.is_nil()
+			|| self.thread.is_nil()
 			|| self.participant.is_some_and(|id| id.is_nil())
 		{
 			return Err(Error::Invalid("invalid memory bank identity".into()));

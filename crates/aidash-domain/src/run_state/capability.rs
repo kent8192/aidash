@@ -37,7 +37,7 @@ pub enum PersistedCapability {
 	McpSentRound,
 	/// Authentication waits retain the unexecuted call and once-per-resource history.
 	ConnectionWait,
-	/// A Run can suspend on a durable operation or workspace event.
+	/// A Run can suspend on a durable operation or thread event.
 	EventWait,
 	/// A saved completion names the Unassigned Tasks it abandons (#772).
 	UnassignedAbandonment,
@@ -123,7 +123,7 @@ impl RecoveryState {
 			.into_iter()
 			.chain((!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext))
 			.chain(
-				self.workspace_event_cursor
+				self.thread_event_cursor
 					.map(|_| PersistedCapability::EventWait),
 			)
 			.chain(

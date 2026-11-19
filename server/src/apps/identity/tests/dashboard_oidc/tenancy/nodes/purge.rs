@@ -43,10 +43,10 @@ async fn request_purge(d: &Deployment, tenant: &str, node: &str) -> Uuid {
 	id
 }
 
-async fn object(d: &Deployment, tenant: &str, workspace: Uuid, file: Uuid) {
+async fn object(d: &Deployment, tenant: &str, thread: Uuid, file: Uuid) {
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3,$4)")
-		.bind(area).bind(tenant).bind(workspace).bind(Uuid::new_v4())
+	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3,$4)")
+		.bind(area).bind(tenant).bind(thread).bind(Uuid::new_v4())
 		.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query(
 		"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,'[]')",
@@ -182,12 +182,12 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		(&alice, &context, &tenant, &sibling),
 		(&bob, &foreign_context, &foreign_tenant, &foreign),
 	] {
-		let (status, workspace) = d.workspace_on(person, context, Some(node)).await;
-		assert_eq!(status, 200, "{workspace}");
-		let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+		let (status, thread) = d.thread_on(person, context, Some(node)).await;
+		assert_eq!(status, 200, "{thread}");
+		let thread = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 		let file = Uuid::new_v4();
-		object(&d, tenant, workspace, file).await;
-		work.push((workspace, file));
+		object(&d, tenant, thread, file).await;
+		work.push((thread, file));
 	}
 	let (target_credential, sibling_credential, user) =
 		subjects(&d, &tenant, &target, &sibling).await;
@@ -198,18 +198,18 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			&tenant,
 			CrossNodeOwner {
 				node: &target,
-				workspace: work[0].0,
+				thread: work[0].0,
 				credential: target_credential,
 			},
 			CrossNodeOwner {
 				node: &sibling,
-				workspace: work[1].0,
+				thread: work[1].0,
 				credential: sibling_credential,
 			},
 		)
 		.await;
 	// Observation bodies follow the executing Run, including
-	// when its Workspace belongs to the other Node. Tenant settings survive.
+	// when its Thread belongs to the other Node. Tenant settings survive.
 	use reinhardt::db::orm::execution::convert_values;
 	let mut tx = d
 		.federation
@@ -218,7 +218,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.begin(&aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap())
 		.await
 		.unwrap();
-	for (run, workspace, credential) in [
+	for (run, thread, credential) in [
 		(target_run, work[1].0, target_credential),
 		(sibling_run, work[0].0, sibling_credential),
 	] {
@@ -231,7 +231,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 					"approval",
 					"approval_type",
 					"run_id",
-					"workspace_id",
+					"thread_id",
 					"credential_id",
 					"subject",
 					"frame",
@@ -245,7 +245,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 					run.into(),
 					"capability".into(),
 					run.into(),
-					workspace.into(),
+					thread.into(),
 					credential.into(),
 					"fixture".into(),
 					json!({"body":"private observation"}).into(),
@@ -319,7 +319,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	tx.execute(&sql, convert_values(values)).await.unwrap();
 	tx.commit().await.unwrap();
 
-	// A present sibling Workspace outranks a target Subject on an area.
+	// A present sibling Thread outranks a target Subject on an area.
 	sqlx::query("UPDATE core_areas SET owner='purge-target' WHERE tenant=$1")
 		.bind(&tenant)
 		.execute(d.federation.store.pool.fixture_driver())
@@ -327,7 +327,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.unwrap();
 	let owned_orphan = Uuid::new_v4();
 	object(&d, &tenant, Uuid::new_v4(), owned_orphan).await;
-	sqlx::query("UPDATE core_areas SET owner='purge-target' WHERE tenant=$1 AND workspace_id NOT IN (SELECT id FROM workspaces WHERE tenant=$1)").bind(&tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("UPDATE core_areas SET owner='purge-target' WHERE tenant=$1 AND thread_id NOT IN (SELECT id FROM threads WHERE tenant=$1)").bind(&tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	let user_orphan = Uuid::new_v4();
 	object(&d, &tenant, Uuid::new_v4(), user_orphan).await;
 	sqlx::query(
@@ -352,7 +352,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			.as_person(
 				&alice,
 				"POST",
-				&format!("/api/workspaces/{}/tasks", work[0].0),
+				&format!("/api/threads/{}/tasks", work[0].0),
 				Some(&context),
 				input,
 			)
@@ -372,7 +372,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.as_person(
 			&alice,
 			"POST",
-			&format!("/api/workspaces/{}/tasks", work[0].0),
+			&format!("/api/threads/{}/tasks", work[0].0),
 			Some(&context),
 			json!({"title":"child","description":"child A of B","parent_id":parent}),
 		)
@@ -444,15 +444,25 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	// Separate Entry-only grant: Unit invalidation must not mask leaked text.
 	let entry_grant = Uuid::new_v4();
 	let entry_journal = Uuid::new_v4();
-	sqlx::query("INSERT INTO authorization_remote_grants(id,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) SELECT $1,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic FROM authorization_remote_grants WHERE id=(SELECT grant_id FROM semantic_remote_operations WHERE id=$2)").bind(entry_grant).bind(sibling_journal).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_grants(id,tenant,task_id,task_revision,thread_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) SELECT $1,tenant,task_id,task_revision,thread_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic FROM authorization_remote_grants WHERE id=(SELECT grant_id FROM semantic_remote_operations WHERE id=$2)").bind(entry_grant).bind(sibling_journal).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO semantic_remote_operations(id,tenant,home_node,grant_id,admission_id,digest,binding,state,receipt) SELECT $1,tenant,home_node,$2,$3,'entry-digest','{}','READY','{\"result\":{\"matches\":[{\"text\":\"target source\"}]}}' FROM semantic_remote_operations WHERE id=$4").bind(entry_journal).bind(entry_grant).bind(sibling_run).bind(sibling_journal).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO semantic_remote_reads(grant_id,tenant,admission_id,entry_id,revision,content_digest) VALUES ($1,$2,$3,$4,1,'fixture')").bind(entry_grant).bind(&tenant).bind(sibling_run).bind(source_entry).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO semantic_remote_receipts(operation_id,tenant,run_id,digest,receipt) VALUES ($1,$2,$3,'entry-digest','{\"result\":{\"matches\":[{\"text\":\"target source\"}]}}')").bind(entry_journal).bind(&tenant).bind(sibling_run).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	// Same-Tenant inconsistent incidental metadata is representable in existing
-	// data. Ordinary append(workspace) derives the Workspace's own Node; this
+	// data. Ordinary append(thread) derives the Thread's own Node; this
 	// robustness control must not be mistaken for that normal writer path.
 	let sibling_event = Uuid::new_v4();
-	sqlx::query("INSERT INTO events(id,tenant,node,workspace_id,kind,data) VALUES ($1,$2,$3,$4,'fixture.workspace',$5)").bind(sibling_event).bind(&tenant).bind(&target).bind(work[1].0).bind(json!({"content":"sibling Event body"})).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query(
+		"INSERT INTO events(id,tenant,node,thread_id,kind,data) VALUES ($1,$2,$3,$4,'fixture.thread',$5)",
+	)
+	.bind(sibling_event)
+	.bind(&tenant)
+	.bind(&target)
+	.bind(work[1].0)
+	.bind(json!({"content":"sibling Event body"}))
+	.execute(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	for node in [&target, &sibling] {
 		sqlx::query("INSERT INTO authorization_catalog (tenant,node,entry_id,entry_version,enabled,revision) SELECT tenant,$2,id,version,true,1 FROM registry WHERE tenant=$1 ORDER BY id,version LIMIT 1").bind(&tenant).bind(node).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO authorization_catalog_history (tenant,node,entry_id,entry_version,enabled,revision,actor) SELECT tenant,node,entry_id,entry_version,enabled,revision,'fixture' FROM authorization_catalog WHERE tenant=$1 AND node=$2").bind(&tenant).bind(node).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -547,7 +557,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	assert_eq!(d.count(&format!("SELECT count(*) FROM node_deletions WHERE id='{deletion}' AND purge_step='capability_objects' AND purge_failures=1 AND purge_lease IS NULL AND purge_after>clock_timestamp()+interval '29 days'")).await,1);
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM workspaces WHERE id='{}'",
+			"SELECT count(*) FROM threads WHERE id='{}'",
 			work[0].0
 		))
 		.await,
@@ -566,19 +576,17 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM workspaces WHERE id='{}'",
+			"SELECT count(*) FROM threads WHERE id='{}'",
 			work[0].0
 		))
 		.await,
 		0
 	);
 	assert!(!blob_path(storage.path(), &tenant, work[0].1).exists());
-	for (index, (workspace, file)) in work[1..].iter().enumerate() {
+	for (index, (thread, file)) in work[1..].iter().enumerate() {
 		assert_eq!(
-			d.count(&format!(
-				"SELECT count(*) FROM workspaces WHERE id='{workspace}'"
-			))
-			.await,
+			d.count(&format!("SELECT count(*) FROM threads WHERE id='{thread}'"))
+				.await,
 			1
 		);
 		assert_eq!(
@@ -702,7 +710,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		0
 	);
 	// An Egress request record follows the Run that made it (#738), whichever
-	// Node's Workspace that Run worked in.
+	// Node's Thread that Run worked in.
 	assert_eq!(
 		d.count(&format!(
 			"SELECT count(*) FROM egress_requests WHERE run_id='{target_run}'"
@@ -838,7 +846,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		))
 		.await,
 		1,
-		"Workspace ownership wins over incidental Node evidence"
+		"Thread ownership wins over incidental Node evidence"
 	);
 
 	assert_eq!(
@@ -899,8 +907,8 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			.await;
 		assert_eq!(status, 409, "purged catalog never admits {suffix}: {body}");
 	}
-	let (status, body) = d.workspace_on(&alice, &context, Some(&target)).await;
-	assert_eq!(status, 404, "purged Node refuses fresh Workspace: {body}");
+	let (status, body) = d.thread_on(&alice, &context, Some(&target)).await;
+	assert_eq!(status, 404, "purged Node refuses fresh Thread: {body}");
 	let (status, replacement) = d
 		.create_node(&alice, &context, &tenant, "Replacement")
 		.await;
@@ -997,9 +1005,9 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		1
 	);
 	assert_eq!(
-		d.count(&format!("SELECT count(*) FROM events WHERE id='{sibling_event}' AND tenant='{tenant}' AND workspace_id='{}' AND node='{target}'", work[1].0)).await,
+		d.count(&format!("SELECT count(*) FROM events WHERE id='{sibling_event}' AND tenant='{tenant}' AND thread_id='{}' AND node='{target}'", work[1].0)).await,
 		1,
-		"finite emitter catalog audit preserves the sibling Workspace Event unchanged"
+		"finite emitter catalog audit preserves the sibling Thread Event unchanged"
 	);
 	let body: Value = sqlx::query_scalar("SELECT data FROM events WHERE id=$1")
 		.bind(sibling_event)
@@ -1126,25 +1134,25 @@ async fn sibling_reads(
 	d: &Deployment,
 	(administrator, context): (&Person, &str),
 	tenant: &str,
-	target_workspace: Uuid,
-	sibling_workspace: Uuid,
+	target_thread: Uuid,
+	sibling_thread: Uuid,
 	sibling: &str,
 	credential: Uuid,
 ) -> (Uuid, Uuid, Uuid) {
 	let bank = Uuid::new_v4();
 	let unit = Uuid::new_v4();
 	sqlx::query(
-		"INSERT INTO memory_banks (id,home,tenant,workspace_id,revision) VALUES ($1,$2,$3,$4,1)",
+		"INSERT INTO memory_banks (id,home,tenant,thread_id,revision) VALUES ($1,$2,$3,$4,1)",
 	)
 	.bind(bank)
 	.bind(d.federation.config.deployment.to_string())
 	.bind(tenant)
-	.bind(target_workspace)
+	.bind(target_thread)
 	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	sqlx::query("INSERT INTO memory_units (id,tenant,bank_id,revision,text,kind,learning,verification,entities,evidence,links,learned_at,updated_at,deleted,stale) VALUES ($1,$2,$3,1,'target knowledge','world','fact','supported','[]','[]','[]',clock_timestamp(),clock_timestamp(),false,false)").bind(unit).bind(tenant).bind(bank).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	let path = format!("/api/workspaces/{target_workspace}/semantic");
+	let path = format!("/api/threads/{target_thread}/semantic");
 	let spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256});
 	// Semantic indexes are Tenant content (#484): a Tenant member writes them.
 	let (status, index) = d
@@ -1167,11 +1175,11 @@ async fn sibling_reads(
 			.await
 			.unwrap();
 	let task = Uuid::new_v4();
-	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'reader','sibling Home','OPEN',1,$4)").bind(task).bind(tenant).bind(sibling_workspace).bind(&subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'reader','sibling Home','OPEN',1,$4)").bind(task).bind(tenant).bind(sibling_thread).bind(&subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	let grant = Uuid::new_v4();
 	let admission = Uuid::new_v4();
 	let operation = Uuid::new_v4();
-	sqlx::query("INSERT INTO authorization_remote_grants (id,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,$2,$3,1,$4,$5,'aidash://peer', $6,$7,ARRAY[$7],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(tenant).bind(task).bind(sibling_workspace).bind(sibling).bind(credential).bind(&subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_grants (id,tenant,task_id,task_revision,thread_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,$2,$3,1,$4,$5,'aidash://peer', $6,$7,ARRAY[$7],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(tenant).bind(task).bind(sibling_thread).bind(sibling).bind(credential).bind(&subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	let home = d
 		.federation
 		.config
@@ -1286,7 +1294,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 	let (target_credential, sibling_credential, _) = subjects(&d, &tenant, &target, &sibling).await;
 	let mut work = Vec::new();
 	for node in [&target, &sibling] {
-		let (status, w) = d.workspace_on(&alice, &context, Some(node)).await;
+		let (status, w) = d.thread_on(&alice, &context, Some(node)).await;
 		assert_eq!(status, 200, "{w}");
 		work.push(Uuid::parse_str(w["id"].as_str().unwrap()).unwrap());
 	}
@@ -1372,7 +1380,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			} else {
 				Some("fixture-runner")
 			};
-			sqlx::query("INSERT INTO core_operations (id,area_id,run_id,credential_id,tenant,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,id,$2,$3,tenant,'purge-target','fixture','fixture','shell',$6,1,1,1,1,'[\"purge-target\"]','{}',$4,$7 FROM core_areas WHERE workspace_id=$5").bind(metadata).bind(Uuid::new_v4()).bind(target_credential).bind(result).bind(work[0]).bind(state).bind(runner).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO core_operations (id,area_id,run_id,credential_id,tenant,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,id,$2,$3,tenant,'purge-target','fixture','fixture','shell',$6,1,1,1,1,'[\"purge-target\"]','{}',$4,$7 FROM core_areas WHERE thread_id=$5").bind(metadata).bind(Uuid::new_v4()).bind(target_credential).bind(result).bind(work[0]).bind(state).bind(runner).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"confirmed command termination"
 		}
 		"atomic_digest" | "atomic_owner" | "atomic_trust" => {
@@ -1387,7 +1395,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 				.node(aidash_domain::nodes::NodeName::derived("peer"))
 				.to_string();
 			let mut participants = vec![
-				json!({"node_id":local,"mutations":[{"kind":"workspace_title","workspace_id":work[0],"expected_revision":0,"title":"Committed"}]}),
+				json!({"node_id":local,"mutations":[{"kind":"thread_title","thread_id":work[0],"expected_revision":0,"title":"Committed"}]}),
 				json!({"node_id":remote,"mutations":[]}),
 			];
 			participants.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
@@ -1425,9 +1433,9 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 				.deployment
 				.node(aidash_domain::nodes::NodeName::parse(&target).unwrap())
 				.to_string();
-			sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'preview','preview','COMPLETED',1,'purge-target')").bind(task).bind(&tenant).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-			sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(&tenant).bind(task).bind(work[0]).bind(&target).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-			sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,stop_reason,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at,termination_confirmed,created_at,updated_at) SELECT $1,tenant,$2,id,1,3000,'stopped','run_authority_revoked',600,3600,clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '1 hour',false,clock_timestamp(),clock_timestamp() FROM core_areas WHERE workspace_id=$3").bind(metadata).bind(run).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'preview','preview','COMPLETED',1,'purge-target')").bind(task).bind(&tenant).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(&tenant).bind(task).bind(work[0]).bind(&target).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,stop_reason,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at,termination_confirmed,created_at,updated_at) SELECT $1,tenant,$2,id,1,3000,'stopped','run_authority_revoked',600,3600,clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '1 hour',false,clock_timestamp(),clock_timestamp() FROM core_areas WHERE thread_id=$3").bind(metadata).bind(run).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"Live preview termination proof"
 		}
 		"coordinator" => {
@@ -1477,7 +1485,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 	);
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM workspaces WHERE id='{}'",
+			"SELECT count(*) FROM threads WHERE id='{}'",
 			work[0]
 		))
 		.await,
@@ -1546,12 +1554,12 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 	let (target_credential, sibling_credential, _) = subjects(&d, &tenant, &target, &sibling).await;
 	let mut work = Vec::new();
 	for node in [&target, &sibling, &keeper] {
-		let (status, w) = d.workspace_on(&alice, &context, Some(node)).await;
+		let (status, w) = d.thread_on(&alice, &context, Some(node)).await;
 		assert_eq!(status, 200, "{w}");
-		let workspace = Uuid::parse_str(w["id"].as_str().unwrap()).unwrap();
+		let thread = Uuid::parse_str(w["id"].as_str().unwrap()).unwrap();
 		let file = Uuid::new_v4();
-		object(&d, &tenant, workspace, file).await;
-		work.push((workspace, file));
+		object(&d, &tenant, thread, file).await;
+		work.push((thread, file));
 	}
 	let (sibling_journal, _, target_unit) = sibling_reads(
 		&d,
@@ -1653,7 +1661,7 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 
 struct CrossNodeOwner<'a> {
 	node: &'a str,
-	workspace: Uuid,
+	thread: Uuid,
 	credential: Uuid,
 }
 
@@ -1665,12 +1673,12 @@ async fn cross_node_execution_evidence(
 ) -> (Uuid, Uuid, Uuid, Uuid, Uuid) {
 	let CrossNodeOwner {
 		node: target,
-		workspace: target_workspace,
+		thread: target_thread,
 		credential: target_credential,
 	} = target;
 	let CrossNodeOwner {
 		node: sibling,
-		workspace: sibling_workspace,
+		thread: sibling_thread,
 		credential: sibling_credential,
 	} = sibling;
 	let pending = aidash_domain::run_state::encode(
@@ -1679,15 +1687,10 @@ async fn cross_node_execution_evidence(
 	)
 	.unwrap();
 	let mut result = Vec::new();
-	// Executor and Workspace Home are deliberately different in both directions.
-	for (executor, workspace, credential, subject) in [
-		(
-			target,
-			sibling_workspace,
-			sibling_credential,
-			"purge-sibling",
-		),
-		(sibling, target_workspace, target_credential, "purge-target"),
+	// Executor and Thread Home are deliberately different in both directions.
+	for (executor, thread, credential, subject) in [
+		(target, sibling_thread, sibling_credential, "purge-sibling"),
+		(sibling, target_thread, target_credential, "purge-target"),
 	] {
 		let task = Uuid::new_v4();
 		let run = Uuid::new_v4();
@@ -1697,7 +1700,7 @@ async fn cross_node_execution_evidence(
 			.config
 			.deployment
 			.node(
-				aidash_domain::nodes::NodeName::parse(if workspace == target_workspace {
+				aidash_domain::nodes::NodeName::parse(if thread == target_thread {
 					target
 				} else {
 					sibling
@@ -1705,30 +1708,30 @@ async fn cross_node_execution_evidence(
 				.unwrap(),
 			)
 			.to_string();
-		sqlx::query("UPDATE core_areas SET home_node=$2 WHERE tenant=$1 AND workspace_id=$3")
+		sqlx::query("UPDATE core_areas SET home_node=$2 WHERE tenant=$1 AND thread_id=$3")
 			.bind(tenant)
 			.bind(&home)
-			.bind(workspace)
+			.bind(thread)
 			.execute(d.federation.store.pool.fixture_driver())
 			.await
 			.unwrap();
 
-		sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'execution','execution','COMPLETED',1,$4)").bind(task).bind(tenant).bind(workspace).bind(subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(tenant).bind(task).bind(workspace).bind(executor).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'execution','execution','COMPLETED',1,$4)").bind(task).bind(tenant).bind(thread).bind(subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(tenant).bind(task).bind(thread).bind(executor).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		let (execution_credential, execution_subject) = if executor == target {
 			(target_credential, "purge-target")
 		} else {
 			(sibling_credential, "purge-sibling")
 		};
-		sqlx::query("INSERT INTO authorization_execution(run_id,tenant,task_id,workspace_id,credential_id,root_subject,subject_chain) VALUES ($1,$2,$3,$4,$5,$6,ARRAY[$6,'fixture-agent'])").bind(run).bind(tenant).bind(task).bind(workspace).bind(execution_credential).bind(execution_subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO authorization_run_reads(run_id,tenant,workspace_id,resource_kind,resource_id) VALUES ($1,$2,$3,'task',$4)").bind(run).bind(tenant).bind(workspace).bind(task).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,$2,id,1,true,generation FROM core_areas WHERE tenant=$2 AND workspace_id=$3").bind(run).bind(tenant).bind(workspace).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO core_operations (id,tenant,area_id,run_id,credential_id,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,$2,id,$3,$4,$5,$1::text,'fixture','shell','uncertain',epoch,generation,1,1,'[]','{}','{\"termination_confirmed\":true,\"runner_acknowledged\":true}','fixture-runner' FROM core_areas WHERE tenant=$2 AND workspace_id=$6").bind(operation).bind(tenant).bind(run).bind(credential).bind(subject).bind(workspace).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO authorization_execution(run_id,tenant,task_id,thread_id,credential_id,root_subject,subject_chain) VALUES ($1,$2,$3,$4,$5,$6,ARRAY[$6,'fixture-agent'])").bind(run).bind(tenant).bind(task).bind(thread).bind(execution_credential).bind(execution_subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO authorization_run_reads(run_id,tenant,thread_id,resource_kind,resource_id) VALUES ($1,$2,$3,'task',$4)").bind(run).bind(tenant).bind(thread).bind(task).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,$2,id,1,true,generation FROM core_areas WHERE tenant=$2 AND thread_id=$3").bind(run).bind(tenant).bind(thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO core_operations (id,tenant,area_id,run_id,credential_id,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,$2,id,$3,$4,$5,$1::text,'fixture','shell','uncertain',epoch,generation,1,1,'[]','{}','{\"termination_confirmed\":true,\"runner_acknowledged\":true}','fixture-runner' FROM core_areas WHERE tenant=$2 AND thread_id=$6").bind(operation).bind(tenant).bind(run).bind(credential).bind(subject).bind(thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO egress_requests (id,tenant,run_id,via,service,method,path,query_digest,status,sent_bytes,received_bytes,duration_ms,created_at) VALUES ($1,$2,$3,'pod','fixture','GET','/','digest',200,1,1,1,clock_timestamp())").bind(Uuid::new_v4()).bind(tenant).bind(run).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		result.push((task, run, operation));
 	}
 	let descendant = Uuid::new_v4();
-	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'descendant','descendant','COMPLETED',1,'purge-sibling')").bind(descendant).bind(tenant).bind(sibling_workspace).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'descendant','descendant','COMPLETED',1,'purge-sibling')").bind(descendant).bind(tenant).bind(sibling_thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO authorization_task_origins (task_id,tenant,source_run_id,root_subject,subject_chain) VALUES ($1,$2,$3,'purge-sibling',ARRAY['purge-sibling','fixture-agent'])").bind(descendant).bind(tenant).bind(result[1].1).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO remote_run_message_fences (task_id,tenant,idempotency_key,run_id,content,consumed) VALUES ($1,$2,'retained',$3,'sibling message',true)").bind(descendant).bind(tenant).bind(result[0].1).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	(
@@ -1762,11 +1765,11 @@ async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_
 		let (status, node) = d.create_node(&alice, &context, &tenant, "Delete").await;
 		assert_eq!(status, 201, "{node}");
 		let node = node["name"].as_str().unwrap().to_owned();
-		let (status, workspace) = d.workspace_on(&alice, &context, Some(&node)).await;
-		assert_eq!(status, 200, "{workspace}");
-		let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+		let (status, thread) = d.thread_on(&alice, &context, Some(&node)).await;
+		assert_eq!(status, 200, "{thread}");
+		let thread = Uuid::parse_str(thread["id"].as_str().unwrap()).unwrap();
 		let file = Uuid::new_v4();
-		object(&d, &tenant, workspace, file).await;
+		object(&d, &tenant, thread, file).await;
 		let deletion = request_purge(&d, &tenant, &node).await;
 		let claimed = node_purge::claim(&d.federation.store)
 			.await
@@ -1778,10 +1781,8 @@ async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_
 			.unwrap();
 		assert!(!blob_path(storage.path(), &tenant, file).exists());
 		assert_eq!(
-			d.count(&format!(
-				"SELECT count(*) FROM workspaces WHERE id='{workspace}'"
-			))
-			.await,
+			d.count(&format!("SELECT count(*) FROM threads WHERE id='{thread}'"))
+				.await,
 			0
 		);
 		targets.push((tenant, node, deletion));
@@ -1952,15 +1953,15 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		d: &Deployment,
 		root: &std::path::Path,
 		tenant: &str,
-		workspace: Uuid,
+		thread: Uuid,
 		node: &str,
 		files: &[(&[u8], Uuid)],
 	) -> Uuid {
 		let pool = d.federation.store.pool.fixture_driver();
 		let area = Uuid::new_v4();
 		let home = format!("{}/{node}", d.federation.config.deployment);
-		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,$3,'agent','alice',$4,$5)")
-            .bind(area).bind(tenant).bind(home.to_string()).bind(workspace).bind(Uuid::new_v4()).execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,$2,$3,'agent','alice',$4,$5)")
+            .bind(area).bind(tenant).bind(home.to_string()).bind(thread).bind(Uuid::new_v4()).execute(pool).await.unwrap();
 		let mut manifest = vec![];
 		for (index, (bytes, id)) in files.iter().enumerate() {
 			let digest = aidash_server::capabilities::objects::digest(bytes);
@@ -2022,10 +2023,10 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		.to_owned();
 	let (_, target) = d.create_node(&alice, &context, &tenant, "Delete").await;
 	let target = target["name"].as_str().unwrap().to_owned();
-	let (_, target_workspace) = d.workspace_on(&alice, &context, Some(&target)).await;
-	let (_, sibling_workspace) = d.workspace_on(&alice, &context, Some(&sibling)).await;
-	let target_workspace = Uuid::parse_str(target_workspace["id"].as_str().unwrap()).unwrap();
-	let sibling_workspace = Uuid::parse_str(sibling_workspace["id"].as_str().unwrap()).unwrap();
+	let (_, target_thread) = d.thread_on(&alice, &context, Some(&target)).await;
+	let (_, sibling_thread) = d.thread_on(&alice, &context, Some(&sibling)).await;
+	let target_thread = Uuid::parse_str(target_thread["id"].as_str().unwrap()).unwrap();
+	let sibling_thread = Uuid::parse_str(sibling_thread["id"].as_str().unwrap()).unwrap();
 	let exclusive = b"exclusive bytes";
 	let shared = b"shared bytes";
 	let target_exclusive = Uuid::new_v4();
@@ -2035,7 +2036,7 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		&d,
 		storage.path(),
 		&tenant,
-		target_workspace,
+		target_thread,
 		&target,
 		&[
 			(exclusive.as_slice(), target_exclusive),
@@ -2047,7 +2048,7 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		&d,
 		storage.path(),
 		&tenant,
-		sibling_workspace,
+		sibling_thread,
 		&sibling,
 		&[(shared.as_slice(), sibling_shared)],
 	)

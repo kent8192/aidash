@@ -69,12 +69,12 @@ pub(crate) fn tenant_of(table: &str, column: &str, key: Uuid) -> SimpleExpr {
 	)
 }
 
-/// The Node of a Workspace, as the value of an `INSERT`'s `node` column: a
-/// Task, Run, event or generation request belongs to its Workspace's Node.
-pub(crate) fn workspace_node(workspace: Uuid) -> SimpleExpr {
+/// The Node of a Thread, as the value of an `INSERT`'s `node` column: a
+/// Task, Run, event or generation request belongs to its Thread's Node.
+pub(crate) fn thread_node(thread: Uuid) -> SimpleExpr {
 	SimpleExpr::CustomWithExpr(
-		"(SELECT node FROM workspaces WHERE id = ?)".to_owned(),
-		vec![Expr::value(workspace).into()],
+		"(SELECT node FROM threads WHERE id = ?)".to_owned(),
+		vec![Expr::value(thread).into()],
 	)
 }
 
@@ -127,11 +127,11 @@ pub(crate) async fn parent_tenant(
 		.map_err(reinhardt::core::exception::Error::from)?)
 }
 
-/// The Tenant of an event: its Workspace's, or the transaction scope's when it
-/// concerns no Workspace, such as a Marketplace installation.
-pub(crate) fn event_tenant(workspace: Option<Uuid>) -> SimpleExpr {
-	match workspace {
-		Some(workspace) => tenant_of("workspaces", "id", workspace),
+/// The Tenant of an event: its Thread's, or the transaction scope's when it
+/// concerns no Thread, such as a Marketplace installation.
+pub(crate) fn event_tenant(thread: Option<Uuid>) -> SimpleExpr {
+	match thread {
+		Some(thread) => tenant_of("threads", "id", thread),
 		None => tenant().into(),
 	}
 }

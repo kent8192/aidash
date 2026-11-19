@@ -118,7 +118,7 @@ fn memory_model_attempts() -> String {
 fn generation_embedding_usage() -> String {
 	let mut row = Query::select();
 	row.columns([
-        "request_id", "attempt_id", "run_id", "workspace_id", "entry_id", "purpose",
+        "request_id", "attempt_id", "run_id", "thread_id", "entry_id", "purpose",
         "provider_id", "provider_version", "request_bytes", "reserved_tokens", "reported_tokens", "created_at",
     ].map(Alias::new))
         // Ancestor budget reservations can describe the same physical memory

@@ -105,7 +105,7 @@ impl SemanticPoint {
 
 	pub(crate) async fn cleanup_counts(
 		db: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<CleanupCounts> {
 		let (sql, values) = Query::select()
 			.expr_as(
@@ -143,7 +143,7 @@ impl SemanticPoint {
 				reinhardt::query::SimpleExpr::from(Expr::col(("c", "collection")))
 					.eq(Expr::col(("p", "collection"))),
 			)
-			.and_where(Expr::col(("c", "workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(("c", "thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(("p", "retired")).eq(reinhardt::query::Expr::value(true)))
 			.and_where(Expr::col(("c", "retired")).eq(reinhardt::query::Expr::value(false)))
 			.build(PostgresQueryBuilder);
@@ -223,7 +223,7 @@ impl SemanticCollection {
 
 	pub(crate) async fn cleanup_counts(
 		db: &mut dyn TransactionExecutor,
-		workspace: Uuid,
+		thread: Uuid,
 	) -> Result<CleanupCounts> {
 		let (sql, values) = Query::select()
 			.expr_as(
@@ -249,7 +249,7 @@ impl SemanticCollection {
 				Alias::new("failed"),
 			)
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("retired").eq(reinhardt::query::Expr::value(true)))
 			.build(PostgresQueryBuilder);
 		Ok(serde_json::from_value(
@@ -260,10 +260,10 @@ impl SemanticCollection {
 
 pub(crate) async fn status(
 	db: &mut dyn TransactionExecutor,
-	workspace: Uuid,
+	thread: Uuid,
 ) -> Result<CleanupStatus> {
 	Ok(CleanupStatus {
-		points: SemanticPoint::cleanup_counts(db, workspace).await?,
-		collections: SemanticCollection::cleanup_counts(db, workspace).await?,
+		points: SemanticPoint::cleanup_counts(db, thread).await?,
+		collections: SemanticCollection::cleanup_counts(db, thread).await?,
 	})
 }

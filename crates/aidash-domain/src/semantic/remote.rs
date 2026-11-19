@@ -223,7 +223,7 @@ pub struct Receipt {
 	pub operation_digest: String,
 	pub home_node: String,
 	pub tenant: String,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,
 	pub executor: String,

@@ -50,8 +50,8 @@ impl Drop for Configuration {
 }
 #[async_trait]
 impl SemanticConfigurationSession for Configuration {
-	async fn lock_workspace(&mut self, _: Uuid) -> Result<()> {
-		self.touch("workspace")
+	async fn lock_thread(&mut self, _: Uuid) -> Result<()> {
+		self.touch("thread")
 	}
 	async fn authorize(&mut self, _: Uuid) -> Result<()> {
 		self.touch("authorize")
@@ -70,7 +70,7 @@ impl SemanticConfigurationSession for Configuration {
 	}
 	async fn replace(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		tenant: &str,
 		revision: i64,
 		spec: Value,
@@ -80,7 +80,7 @@ impl SemanticConfigurationSession for Configuration {
 		assert_eq!(tenant, "tenant");
 		assert!(collection.starts_with("aidash_"));
 		let mut index = index();
-		index.workspace_id = workspace;
+		index.thread_id = thread;
 		index.revision = revision;
 		index.spec = spec;
 		index.collection = collection.into();
@@ -142,7 +142,7 @@ async fn configuring_commits_one_complete_immutable_generation() {
 			"begin",
 			"authorize",
 			"validate",
-			"workspace",
+			"thread",
 			"tenant",
 			"index",
 			"counts",
@@ -180,7 +180,7 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 			"begin",
 			"authorize",
 			"validate",
-			"workspace",
+			"thread",
 			"tenant",
 			"index",
 			"commit"
@@ -191,7 +191,7 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 #[case::begin("begin")]
 #[case::authorize("authorize")]
 #[case::validate("validate")]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::tenant("tenant")]
 #[case::index("index")]
 #[case::counts("counts")]
@@ -261,7 +261,7 @@ async fn shared_index_lock_fences_configuration_against_existing_sources(
 			"begin",
 			"authorize",
 			"validate",
-			"workspace",
+			"thread",
 			"tenant",
 			"index",
 			"counts",
@@ -286,7 +286,7 @@ async fn stale_configuration_does_not_replace_another_generation() {
 			"begin",
 			"authorize",
 			"validate",
-			"workspace",
+			"thread",
 			"tenant",
 			"index",
 			"rollback"

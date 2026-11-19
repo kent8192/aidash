@@ -21,17 +21,17 @@ use uuid::Uuid;
 /// authorization, including source constraints; this check only admits the
 /// reference itself.
 async fn authorize(scope: &mut dyn RetentionScope, area: &Area) -> Result<()> {
-	let workspace = scope.workspace(area.workspace_id).await?;
-	scope.set_context(workspace.attributes.clone());
+	let thread = scope.thread(area.thread_id).await?;
+	scope.set_context(thread.attributes.clone());
 	if area.tenant != scope.tenant() || area.owner != scope.principal() {
 		return Err(Error::NotFound("working area unavailable".into()));
 	}
 	let resource = scope.resource(
 		"working_area",
 		area.id,
-		json!({"owner":area.owner,"agent_id":area.agent_id,"workspace_id":area.workspace_id}),
+		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
 	);
-	scope.require(&workspace, "workspace.read").await?;
+	scope.require(&thread, "thread.read").await?;
 	scope
 		.require(&resource, "file.read")
 		.await

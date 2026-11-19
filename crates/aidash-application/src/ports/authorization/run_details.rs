@@ -40,7 +40,7 @@ pub trait RunDetailsScope: Send {
 		}
 		Ok(runs)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	/// State can preload under the exact authority used by these visibility checks.
 	/// Every Run given here is checked under that same authority.

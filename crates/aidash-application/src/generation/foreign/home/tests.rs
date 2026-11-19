@@ -86,7 +86,7 @@ fn repository() -> Repository {
 	let now = DateTime::<Utc>::from_timestamp(1000, 0).unwrap();
 	let task = Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "Task".into(),
 		description: "Work".into(),
 		status: TaskStatus::Open,
@@ -235,14 +235,14 @@ impl ForeignGenerationGuard for Scope {
 		point(&self.world, "lineage").await?;
 		Ok(self.world.lock().unwrap().lineage.clone())
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		Ok(self.resource("workspace", &id.to_string(), json!({})))
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		Ok(self.resource("thread", &id.to_string(), json!({})))
 	}
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		Ok(self.resource(
 			"task",
 			&task.id.to_string(),
-			json!({"workspace_id":task.workspace_id}),
+			json!({"thread_id":task.thread_id}),
 		))
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
@@ -400,7 +400,7 @@ async fn identical_retry_preserves_expiry_and_subject_revision(mut repository: R
 	assert_eq!(w.snapshot.revision, 10);
 }
 #[rstest]
-#[case("workspace.read")]
+#[case("thread.read")]
 #[case("generation.disclose")]
 #[case("task.read")]
 #[case("task.delegate")]

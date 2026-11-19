@@ -15,7 +15,7 @@ async fn mcp_connection_owner_is_only_the_local_runs_chain_root_person(
 ) {
 	let (f, _, _) = fixture.runtime.parts();
 	let (_, token, _) = common::bootstrap(&f, &fixture.application, "http://127.0.0.1:9").await;
-	let (status, created) = common::request(&fixture.application, &token, "POST", "/api/conversations",
+	let (status, created) = common::request(&fixture.application, &token, "POST", "/api/threads",
 		json!({"title":"MCP owner", "request":"Call a personal MCP server", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{created}");
 	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();

@@ -57,6 +57,6 @@ pub(crate) fn default_limit() -> u16 {
 
 use uuid::Uuid;
 
-pub use aidash_domain::workspaces::channels::{
+pub use aidash_domain::threads::channels::{
 	ChannelAttachment, ChannelCitation, ChannelMessage, ChannelMessagePage, CitedFileVersion,
 };

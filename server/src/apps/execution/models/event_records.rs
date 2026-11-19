@@ -1,6 +1,6 @@
 //! Ordered event insertion in a caller-owned native transaction.
 use super::Event;
-use crate::database::scope::workspace_node;
+use crate::database::scope::thread_node;
 use crate::{Result, database::scope::event_tenant};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
@@ -14,15 +14,15 @@ use uuid::Uuid;
 
 pub(crate) async fn append(
 	tx: &mut dyn TransactionExecutor,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
 	insert(
 		tx,
-		workspace,
-		event_tenant(workspace),
-		event_node(workspace),
+		thread,
+		event_tenant(thread),
+		event_node(thread),
 		kind,
 		data,
 	)
@@ -30,7 +30,7 @@ pub(crate) async fn append(
 	Ok(())
 }
 
-/// An event with no Workspace that belongs to `tenant`, for a transaction whose
+/// An event with no Thread that belongs to `tenant`, for a transaction whose
 /// Deployment Scope names no Tenant of its own.
 pub(crate) async fn append_for_tenant(
 	tx: &mut dyn TransactionExecutor,
@@ -50,7 +50,7 @@ pub(crate) async fn append_for_tenant(
 	Ok(())
 }
 
-/// An event with no Workspace that concerns the Run `run`, such as the end of a
+/// An event with no Thread that concerns the Run `run`, such as the end of a
 /// Run whose Home is another Node: it belongs to the Run's Tenant and Node.
 pub(crate) async fn append_for_run(
 	tx: &mut dyn TransactionExecutor,
@@ -74,33 +74,33 @@ pub(crate) async fn append_for_run(
 	Ok(())
 }
 
-/// An event of the Run `run`. `workspace` is the Run's Workspace when the Run
-/// executes where its Workspace lives; otherwise the event has none and belongs
+/// An event of the Run `run`. `thread` is the Run's Thread when the Run
+/// executes where its Thread lives; otherwise the event has none and belongs
 /// to the Run's Tenant and executing Node, whatever scope the transaction holds.
 pub(crate) async fn append_run(
 	tx: &mut dyn TransactionExecutor,
 	run: Uuid,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	kind: &str,
 	data: Value,
 ) -> Result<()> {
-	match workspace {
-		Some(_) => append(tx, workspace, kind, data).await,
+	match thread {
+		Some(_) => append(tx, thread, kind, data).await,
 		None => append_for_run(tx, run, kind, data).await,
 	}
 }
 
 pub(crate) async fn create(
 	tx: &mut AtomicTransaction,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	kind: &str,
 	data: Value,
 ) -> Result<Event> {
 	let id = insert(
 		tx,
-		workspace,
-		event_tenant(workspace),
-		event_node(workspace),
+		thread,
+		event_tenant(thread),
+		event_node(thread),
 		kind,
 		data,
 	)
@@ -111,14 +111,14 @@ pub(crate) async fn create(
 		.await?)
 }
 
-/// The Node of the Workspace an event concerns; a Tenant-level event has none.
-pub(crate) fn event_node(workspace: Option<Uuid>) -> SimpleExpr {
-	workspace.map_or_else(|| Expr::cust("NULL::text").into(), workspace_node)
+/// The Node of the Thread an event concerns; a Tenant-level event has none.
+pub(crate) fn event_node(thread: Option<Uuid>) -> SimpleExpr {
+	thread.map_or_else(|| Expr::cust("NULL::text").into(), thread_node)
 }
 
 async fn insert(
 	tx: &mut dyn TransactionExecutor,
-	workspace: Option<Uuid>,
+	thread: Option<Uuid>,
 	tenant: SimpleExpr,
 	node: SimpleExpr,
 	kind: &str,
@@ -139,7 +139,7 @@ async fn insert(
 		.columns([
 			Alias::new("id"),
 			Alias::new("node"),
-			Alias::new("workspace_id"),
+			Alias::new("thread_id"),
 			Alias::new("kind"),
 			Alias::new("data"),
 			Alias::new("tenant"),
@@ -147,7 +147,7 @@ async fn insert(
 		.values_expr(vec![
 			IntoValue::into_value(id).into(),
 			node,
-			IntoValue::into_value(workspace).into(),
+			IntoValue::into_value(thread).into(),
 			IntoValue::into_value(kind).into(),
 			IntoValue::into_value(data).into(),
 			tenant,

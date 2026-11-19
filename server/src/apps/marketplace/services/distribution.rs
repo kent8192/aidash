@@ -115,7 +115,7 @@ mod tests {
 			},
 			package_id: "package".into(),
 			author: "Publisher".into(),
-			permissions: vec!["workspace.read".into()],
+			permissions: vec!["thread.read".into()],
 			dependencies: vec![EntityRef {
 				id: "dependency".into(),
 				version: "2.0.0".into(),

@@ -14,11 +14,11 @@ async fn full_bank_replacement_uses_the_final_live_count(
 	bounds.max_candidates = 2;
 	bounds.max_results = 2;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -104,12 +104,12 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 	#[case] participant: bool,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let bank = if participant {
 		memory::create_participant(
 			&store,
 			&administrator(&store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -122,7 +122,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		}
 	};
@@ -284,11 +284,11 @@ async fn direct_writes_cannot_create_derived_memory_or_transition_a_base_kind(
 	#[case] correction: bool,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},

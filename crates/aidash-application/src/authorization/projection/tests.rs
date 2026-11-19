@@ -1,17 +1,17 @@
 use super::*;
 use crate::Error;
-use aidash_domain::{Artifact, TaskStatus, Workspace, policy::Resource};
+use aidash_domain::{Artifact, TaskStatus, Thread, policy::Resource};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
 use serde_json::json;
 use std::collections::BTreeMap;
-fn workspace() -> Workspace {
-	Workspace {
+fn thread() -> Thread {
+	Thread {
 		scratch_space_id: uuid::Uuid::nil(),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::from_u128(1),
-		title: "workspace".into(),
+		title: "thread".into(),
 		created_by: "subject".into(),
 		revision: 1,
 		created_at: Utc::now(),
@@ -20,7 +20,7 @@ fn workspace() -> Workspace {
 fn task(id: usize, visible: bool) -> Task {
 	Task {
 		id: Uuid::from_u128(id as u128),
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		title: "task".into(),
 		description: "description".into(),
 		status: TaskStatus::Open,
@@ -36,7 +36,7 @@ fn task(id: usize, visible: bool) -> Task {
 fn message(id: usize, visible: bool) -> Message {
 	Message {
 		id: Uuid::from_u128(id as u128),
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		sender: if visible { "visible" } else { "hidden" }.into(),
 		content: "saved content".into(),
 		idempotency_key: None,
@@ -49,7 +49,7 @@ fn event(sequence: i64, visible: bool) -> Event {
 		sequence,
 		id: Uuid::from_u128(sequence as u128),
 		node: None,
-		workspace_id: Some(Uuid::from_u128(1)),
+		thread_id: Some(Uuid::from_u128(1)),
 		kind: "task.created".into(),
 		data: json!({"visible":visible}),
 		created_at: Utc::now(),
@@ -58,7 +58,7 @@ fn event(sequence: i64, visible: bool) -> Event {
 fn artifact(id: usize, visible: bool) -> Artifact {
 	Artifact {
 		id: Uuid::from_u128(id as u128),
-		workspace_id: Uuid::from_u128(1),
+		thread_id: Uuid::from_u128(1),
 		task_id: Uuid::from_u128(2),
 		kind: "text".into(),
 		name: "artifact".into(),
@@ -83,7 +83,7 @@ struct Scope {
 	second_message_denied: bool,
 	require_allowed: bool,
 	events_allowed: bool,
-	tracked: Vec<WorkspaceSnapshot>,
+	tracked: Vec<ThreadSnapshot>,
 	verdicts_seen: Vec<usize>,
 	fail: Option<&'static str>,
 	/// Tasks, artifacts and messages whose check stops at a silent Node (#770).
@@ -136,20 +136,20 @@ impl Scope {
 	}
 }
 #[async_trait]
-impl WorkspaceProjection for Scope {
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+impl ThreadProjection for Scope {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		assert_eq!(id, Uuid::from_u128(1));
-		self.touch("workspace")?;
+		self.touch("thread")?;
 		Ok(Resource {
 			tenant: "tenant".into(),
-			kind: "workspace".into(),
+			kind: "thread".into(),
 			id: id.to_string(),
 			attributes: json!({"owner":"saved-owner"}),
 		})
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		assert_eq!(resource.attributes["owner"], "saved-owner");
-		assert_eq!(action, "workspace.read");
+		assert_eq!(action, "thread.read");
 		self.touch("require")?;
 		if self.require_allowed {
 			Ok(())
@@ -158,7 +158,7 @@ impl WorkspaceProjection for Scope {
 		}
 	}
 	async fn decide(&mut self, _: &Resource, action: &str) -> Result<bool> {
-		assert_eq!(action, "workspace.events");
+		assert_eq!(action, "thread.events");
 		self.touch("decide")?;
 		Ok(self.events_allowed)
 	}
@@ -206,8 +206,8 @@ impl WorkspaceProjection for Scope {
 		runs.remember(row.id, None, true);
 		Ok(row.data["visible"] == true)
 	}
-	async fn task_rows(&mut self, workspaces: &[Uuid], cursor: u64) -> Result<Vec<Task>> {
-		assert_eq!(workspaces, &[Uuid::from_u128(1)]);
+	async fn task_rows(&mut self, threads: &[Uuid], cursor: u64) -> Result<Vec<Task>> {
+		assert_eq!(threads, &[Uuid::from_u128(1)]);
 		self.touch("task_rows")?;
 		self.task_offsets.push(cursor);
 		Ok(self
@@ -220,12 +220,12 @@ impl WorkspaceProjection for Scope {
 	}
 	async fn event_rows(
 		&mut self,
-		workspaces: &[Uuid],
+		threads: &[Uuid],
 		include_marketplace: bool,
 		cursor: i64,
 		page_size: usize,
 	) -> Result<Vec<Event>> {
-		assert_eq!(workspaces, &[Uuid::from_u128(1)]);
+		assert_eq!(threads, &[Uuid::from_u128(1)]);
 		self.touch("event_rows")?;
 		self.event_pages
 			.push((cursor, page_size, include_marketplace));
@@ -249,22 +249,22 @@ impl WorkspaceProjection for Scope {
 			.cloned()
 			.collect())
 	}
-	async fn workspace_row(&mut self, id: Uuid) -> Result<Workspace> {
+	async fn thread_row(&mut self, id: Uuid) -> Result<Thread> {
 		assert_eq!(id, Uuid::from_u128(1));
-		self.touch("workspace_row")?;
-		Ok(workspace())
+		self.touch("thread_row")?;
+		Ok(thread())
 	}
-	async fn workspace_tasks(&mut self, id: Uuid) -> Result<Vec<Task>> {
+	async fn thread_tasks(&mut self, id: Uuid) -> Result<Vec<Task>> {
 		assert_eq!(id, Uuid::from_u128(1));
-		self.touch("workspace_tasks")?;
+		self.touch("thread_tasks")?;
 		Ok(self.tasks.clone())
 	}
-	async fn workspace_artifacts(&mut self, id: Uuid) -> Result<Vec<Artifact>> {
+	async fn thread_artifacts(&mut self, id: Uuid) -> Result<Vec<Artifact>> {
 		assert_eq!(id, Uuid::from_u128(1));
-		self.touch("workspace_artifacts")?;
+		self.touch("thread_artifacts")?;
 		Ok(self.artifacts.clone())
 	}
-	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()> {
+	async fn track(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
 		self.touch("track")?;
 		self.tracked.push(snapshot.clone());
 		Ok(())
@@ -462,13 +462,13 @@ async fn snapshot_rechecks_message_visibility_and_tracks_only_final_disclosure(m
 	assert_eq!(
 		calls,
 		vec![
-			"workspace",
+			"thread",
 			"require",
 			"decide",
 			"event_rows",
-			"workspace_row",
-			"workspace_tasks",
-			"workspace_artifacts",
+			"thread_row",
+			"thread_tasks",
+			"thread_artifacts",
 			"message_rows"
 		]
 	);
@@ -489,13 +489,13 @@ async fn denied_event_permission_keeps_other_resources_and_does_not_scan_events(
 }
 #[rstest]
 #[tokio::test]
-async fn workspace_read_denial_precedes_any_snapshot_rows_or_membership_write(mut scope: Scope) {
+async fn thread_read_denial_precedes_any_snapshot_rows_or_membership_write(mut scope: Scope) {
 	scope.require_allowed = false;
 	assert!(matches!(
 		snapshot(&mut scope, Uuid::from_u128(1)).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(scope.calls, vec!["workspace", "require"]);
+	assert_eq!(scope.calls, vec!["thread", "require"]);
 	assert!(scope.tracked.is_empty());
 }
 #[rstest]
@@ -573,13 +573,13 @@ async fn fitting_failure_preserves_the_opaque_error_without_tracking(mut scope: 
 	assert!(scope.tracked.is_empty());
 }
 #[rstest]
-#[case::ownership("workspace")]
+#[case::ownership("thread")]
 #[case::read_policy("require")]
 #[case::events_policy("decide")]
 #[case::event_rows("event_rows")]
-#[case::workspace_row("workspace_row")]
-#[case::tasks("workspace_tasks")]
-#[case::artifacts("workspace_artifacts")]
+#[case::thread_row("thread_row")]
+#[case::tasks("thread_tasks")]
+#[case::artifacts("thread_artifacts")]
 #[case::messages("message_rows")]
 #[case::task_visibility("task_visible")]
 #[case::artifact_visibility("artifact_visible")]
@@ -695,7 +695,7 @@ async fn three_unconfirmed_tasks_and_five_refusals_report_three(mut scope: Scope
 		vec![aidash_domain::unconfirmed::Unconfirmed {
 			node: SILENT_NODE.into(),
 			kind: Kind::Task,
-			workspace_id: Uuid::from_u128(1),
+			thread_id: Uuid::from_u128(1),
 			count: 3,
 		}]
 	);

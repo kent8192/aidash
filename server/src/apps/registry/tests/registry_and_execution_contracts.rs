@@ -226,9 +226,9 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 ) {
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let token = tenant_token(&f.store, "acme").await;
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"tree",
@@ -246,7 +246,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		.store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace.id,
+			thread.id,
 			&input,
 			"deployment_administrator",
 			None,
@@ -260,7 +260,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		f.store
 			.create_task(
 				&TEST_FIXTURE,
-				workspace.id,
+				thread.id,
 				&child,
 				"deployment_administrator",
 				None
@@ -273,7 +273,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		.store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace.id,
+			thread.id,
 			&child,
 			"deployment_administrator",
 			None,
@@ -287,7 +287,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		f.store
 			.create_task(
 				&TEST_FIXTURE,
-				workspace.id,
+				thread.id,
 				&grandchild,
 				"deployment_administrator",
 				None
@@ -324,16 +324,11 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	f.store
 		.message(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			"allowed",
 			"older-visible",
 			Some("visible-message-old"),
@@ -346,7 +341,7 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 		f.store
 			.message(
 				&TEST_FIXTURE,
-				workspace,
+				thread,
 				"denied",
 				&denied_content,
 				Some(&format!("denied-message-{index}")),
@@ -378,14 +373,14 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 		.0,
 		200
 	);
-	for path in [format!("/api/workspaces/{workspace}"), "/api/state".into()] {
+	for path in [format!("/api/threads/{thread}"), "/api/state".into()] {
 		let (status, body) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200, "{body}");
 		assert!(
 			body["events"].to_string().contains("older-visible"),
 			"{body}"
 		);
-		if path.contains("workspaces") {
+		if path.contains("threads") {
 			assert!(body["messages"].to_string().contains("older-visible"));
 		}
 		assert!(!body.to_string().contains(&denied_content), "{body}");
@@ -432,7 +427,7 @@ async fn run_message_retries_have_one_durable_effect(
 	}
 	assert_eq!(
 		f.store
-			.snapshot(&TEST_FIXTURE, run.workspace_id)
+			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
 			.messages
@@ -678,7 +673,7 @@ async fn registry_replays_emit_once(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys(
+async fn thread_messages_deduplicate_retries_and_isolate_actor_and_thread_keys(
 	#[future(awt)]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
@@ -686,12 +681,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let workspace = f
-		.store
-		.task(&TEST_FIXTURE, task)
-		.await
-		.unwrap()
-		.workspace_id;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut policy = common::policy(f.config.deployment.as_str());
 	policy["subjects"]["bob"] = json!({"kind":"user"});
 	let authorization = aidash_server::authorization::Authorization {
@@ -712,7 +702,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 		.unwrap()
 		.token;
 	let key = Uuid::new_v4();
-	let path = format!("/api/workspaces/{workspace}/messages");
+	let path = format!("/api/threads/{thread}/messages");
 	for actor in [&token, &bob] {
 		for _ in 0..2 {
 			let (status, body) = common::post(
@@ -736,7 +726,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 			409
 		);
 	}
-	let snapshot = f.store.snapshot(&TEST_FIXTURE, workspace).await.unwrap();
+	let snapshot = f.store.snapshot(&TEST_FIXTURE, thread).await.unwrap();
 	assert_eq!(
 		snapshot
 			.messages
@@ -747,7 +737,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	);
 	assert_eq!(
 		f.store
-			.events(&TEST_FIXTURE, 0, Some(workspace), 500)
+			.events(&TEST_FIXTURE, 0, Some(thread), 500)
 			.await
 			.unwrap()
 			.iter()
@@ -757,7 +747,7 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	);
 	let other = f
 		.store
-		.create_workspace(
+		.create_thread(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
 			"alice",
 			"other",
@@ -768,8 +758,8 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 		common::post(
 			&app,
 			&token,
-			&format!("/api/workspaces/{}/messages", other.id),
-			json!({"content":"another workspace","idempotency_key":key})
+			&format!("/api/threads/{}/messages", other.id),
+			json!({"content":"another thread","idempotency_key":key})
 		)
 		.await
 		.0,
@@ -788,7 +778,7 @@ async fn subject_conversation_returns_the_committed_task_revision(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, response) = common::post(&app, &token, "/api/conversations", json!({"title":"Conversation","request":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status, response) = common::post(&app, &token, "/api/threads", json!({"title":"Conversation","request":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{response}");
 	let task = f
 		.store

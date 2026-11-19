@@ -6,9 +6,7 @@ struct RecoveryFixture {
 	c: CoreFixture,
 	area: Value,
 	cleaned: Value,
-	workspace: Uuid,
-	thread: Value,
-	new_thread: Value,
+	thread: Uuid,
 	bob: String,
 }
 
@@ -19,28 +17,13 @@ fn recovery_fixture(
 	let capability_fixture = Box::pin(capability_fixture);
 	async move {
 		let c = capability_fixture.await;
-		let workspace =
+		let thread =
 			c.f.store
 				.task(&TEST_FIXTURE, c.task)
 				.await
 				.unwrap()
-				.workspace_id;
-		let mut threads = vec![];
-		for content in ["Retain these files", "Authorized restoration destination"] {
-			let root = source(&c, workspace, content).await;
-			let (status, thread) = common::post(
-				&c.app,
-				&c.token,
-				&format!("/api/workspaces/{workspace}/threads"),
-				json!({"root_message_id":root}),
-			)
-			.await;
-			assert_eq!(status, 200, "{thread}");
-			threads.push(thread);
-		}
-		let thread = threads.remove(0);
-		let new_thread = threads.remove(0);
-		let (status, area) = common::post(&c.app, &c.token, &format!("/api/workspaces/{workspace}/threads/{}/agents/research/runs", thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Retained work","description":"Preserve exact bytes"})).await;
+				.thread_id;
+		let (status, area) = common::post(&c.app, &c.token, &format!("/api/threads/{thread}/agents/research/runs"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Retained work","description":"Preserve exact bytes"})).await;
 		assert_eq!(status, 200, "{area}");
 		let (_, session) = common::get(
 			&c.app,
@@ -82,9 +65,7 @@ fn recovery_fixture(
 			c,
 			area,
 			cleaned,
-			workspace,
 			thread,
-			new_thread,
 			bob,
 		}
 	}
@@ -94,11 +75,7 @@ async fn keep(f: &RecoveryFixture, thread_delete: bool) -> Value {
 	let id = f.area["id"].as_str().unwrap();
 	let (path, input) = if thread_delete {
 		(
-			format!(
-				"/api/workspaces/{}/threads/{}/delete",
-				f.workspace,
-				f.thread["id"].as_str().unwrap()
-			),
+			format!("/api/threads/{}/delete", f.thread),
 			json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":id,"expected_revision":f.cleaned["revision"],"choice":"keep"}]}),
 		)
 	} else {
@@ -131,13 +108,6 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	assert_eq!(retained["state"], "retained");
 	assert_eq!(retained["snapshot_id"], f.cleaned["operation_id"]);
 	assert!(retained["recovery_expires_at"].is_null());
-	if !thread_delete {
-		let (status, deleted) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/delete", f.workspace, f.thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.area["id"],"expected_revision":retained["revision"],"choice":"keep"}]})).await;
-		assert_eq!(
-			status, 200,
-			"retaining a snapshot must not block later thread deletion: {deleted}"
-		);
-	}
 	let id: Uuid = serde_json::from_value(f.cleaned["operation_id"].clone()).unwrap();
 	// Even an expiry job selected before Keep must reload the retained record.
 	{
@@ -176,7 +146,19 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	.await;
 	assert_eq!(status, 200, "{reconciled}");
 	assert_eq!(reconciled["state"], "kept");
-	let (status, restored) = common::post(&f.c.app, &f.c.token, &format!("/api/working-areas/{}/restore", f.area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":id,"thread_id":f.new_thread["id"]})).await;
+	let restore = format!(
+		"/api/working-areas/{}/restore",
+		f.area["id"].as_str().unwrap()
+	);
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":retained["revision"],"snapshot_id":id});
+	if thread_delete {
+		// An Area is restored only into its own Thread, which is gone.
+		let (status, refused) = common::post(&f.c.app, &f.c.token, &restore, input).await;
+		assert!(matches!(status, 403 | 404), "{refused}");
+		f.c.close().await;
+		return;
+	}
+	let (status, restored) = common::post(&f.c.app, &f.c.token, &restore, input).await;
 	assert_eq!(status, 200, "{restored}");
 	assert_eq!(
 		restored["manifest"][0]["digest"],
@@ -185,7 +167,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	assert_eq!(restored["owner"], "alice");
 	// A consumed retained snapshot becomes ordinary working storage. Replacing
 	// it permits the unheld old version to be reclaimed.
-	let (status, admitted) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Continue restored work","description":"Replace the saved file"})).await;
+	let (status, admitted) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/research/runs", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Continue restored work","description":"Replace the saved file"})).await;
 	assert_eq!(status, 200, "{admitted}");
 	let (_, session) = common::get(
 		&f.c.app,
@@ -256,6 +238,21 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn a_retained_snapshot_does_not_block_a_later_thread_deletion(
+	#[future] recovery_fixture: RecoveryFixture,
+) {
+	let f = Box::pin(recovery_fixture).await;
+	let retained = keep(&f, false).await;
+	let (status, deleted) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/delete", f.thread), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.area["id"],"expected_revision":retained["revision"],"choice":"keep"}]})).await;
+	assert_eq!(
+		status, 200,
+		"retaining a snapshot must not block later thread deletion: {deleted}"
+	);
+	f.c.close().await;
+}
+
+#[rstest::rstest]
 #[case(false)]
 #[case(true)]
 #[tokio::test]
@@ -273,7 +270,7 @@ async fn restore_rechecks_current_quota_and_administrator_policy(
 		"/api/working-areas/{}/restore",
 		f.area["id"].as_str().unwrap()
 	);
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"snapshot_id":f.cleaned["operation_id"],"thread_id":f.new_thread["id"]});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"snapshot_id":f.cleaned["operation_id"]});
 	let mut profile = (*f.c.f.store.capabilities.0).clone();
 	profile.working_bytes = 1;
 	f.c.f.store.capabilities = Runtime::new(profile.clone()).unwrap();
@@ -311,68 +308,6 @@ async fn restore_rechecks_current_quota_and_administrator_policy(
 	f.c.close().await;
 }
 
-#[rstest::rstest]
-#[tokio::test]
-async fn restoring_into_a_new_thread_rolls_back_message_and_thread_when_restore_fails(
-	#[future] recovery_fixture: RecoveryFixture,
-) {
-	let mut f = Box::pin(recovery_fixture).await;
-	let count = |table: &'static str| {
-		Query::select()
-			.expr(Expr::cust("count(*)"))
-			.from(Alias::new(table))
-			.and_where(
-				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-					.eq(Expr::cust("$1")),
-			)
-			.to_string(PostgresQueryBuilder)
-	};
-	let message_query = count("messages");
-	let thread_query = count("channel_threads");
-	let messages_before: i64 = sqlx::query_scalar(&message_query)
-		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let threads_before: i64 = sqlx::query_scalar(&thread_query)
-		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let mut profile = (*f.c.f.store.capabilities.0).clone();
-	profile.working_bytes = 1;
-	f.c.f.store.capabilities = Runtime::new(profile).unwrap();
-	f.c.app.context.set_singleton(f.c.f.clone());
-	let path = format!(
-		"/api/workspaces/{}/working-areas/{}/restore/new-thread",
-		f.workspace,
-		f.area["id"].as_str().unwrap()
-	);
-	let (status, rejected) = common::post(&f.c.app, &f.c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"],"content":"Restore into a new thread"}))
-	.await;
-	assert_eq!(status, 409, "{rejected}");
-	assert_eq!(rejected["error"]["code"], "WORKING_QUOTA");
-	let messages_after: i64 = sqlx::query_scalar(&message_query)
-		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let threads_after: i64 = sqlx::query_scalar(&thread_query)
-		.bind(f.workspace)
-		.fetch_one(f.c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert_eq!(
-		messages_after, messages_before,
-		"orphan root message was committed"
-	);
-	assert_eq!(
-		threads_after, threads_before,
-		"orphan destination thread was committed"
-	);
-	f.c.close().await;
-}
-
 #[rstest::fixture]
 fn sharing_generation_fixture(
 	#[future] recovery_fixture: RecoveryFixture,
@@ -380,47 +315,67 @@ fn sharing_generation_fixture(
 	let recovery_fixture = Box::pin(recovery_fixture);
 	async move {
 		let mut f = recovery_fixture.await;
-		let (status, restored) = common::post(&f.c.app, &f.c.token, &format!("/api/working-areas/{}/restore", f.area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"],"thread_id":f.new_thread["id"]})).await;
+		let (status, restored) = common::post(&f.c.app, &f.c.token, &format!("/api/working-areas/{}/restore", f.area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"]})).await;
 		assert_eq!(status, 200, "{restored}");
-		let mut newer =
-			f.c.f
-				.registry
-				.get(
-					&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-					"research",
-					"1.1.0",
-				)
-				.await
-				.unwrap();
-		newer.version = "1.2.0".into();
-		newer.binding_normalization = None;
-		let (status, saved) =
-			common::post(&f.c.app, &f.c.token, "/api/registry", json!(newer)).await;
-		assert_eq!(status, 200, "{saved}");
-		let (status, saved) = common::post(&f.c.app, &f.c.token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.2.0"},"expected_revision":0,"enabled":true}))
-		.await;
-		assert_eq!(status, 200, "{saved}");
-		f.c.policy["subjects"][aidash_server::domain::qualified_agent(
-			&aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),
-			"research",
-			"1.2.0",
-		)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
+		// One Area serves each (Thread, Agent, owner), so the sender is another
+		// Agent in the same Thread: research 1.2.0 receives, `sender` shares.
+		for (id, version) in [("research", "1.2.0"), ("sender", "1.1.0")] {
+			let mut entry =
+				f.c.f
+					.registry
+					.get(
+						&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+						"research",
+						"1.1.0",
+					)
+					.await
+					.unwrap();
+			entry.id = id.into();
+			entry.version = version.into();
+			entry.binding_normalization = None;
+			let (status, saved) =
+				common::post(&f.c.app, &f.c.token, "/api/registry", json!(entry)).await;
+			assert_eq!(status, 200, "{saved}");
+			let (status, saved) = common::post(&f.c.app, &f.c.token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":version},"expected_revision":0,"enabled":true}))
+			.await;
+			assert_eq!(status, 200, "{saved}");
+			f.c.policy["subjects"][aidash_server::domain::qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(
+					f.c.f.config.deployment.as_str(),
+					"acme",
+				),
+				id,
+				version,
+			)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
+		}
 		crate::common::replace_policy(&f.c.f.store, "acme", f.c.policy.clone()).await;
-		let (status, area) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.2.0","title":"New generation","description":"Current receiver version"})).await;
+		let (status, area) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/research/runs", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.2.0","title":"New generation","description":"Current receiver version"})).await;
 		assert_eq!(status, 200, "{area}");
 		assert_eq!(area["id"], f.area["id"]);
-		let sender = admit(&f.c).await;
-		let (status, patch) = common::post(&f.c.app, &f.c.token, &path_for_patch(sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"share.txt":null},"patch":"*** Begin Patch\n*** Add File: share.txt\n+new copy\n*** End Patch"})).await;
+		let (status, sender_area) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/sender/runs", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Sender","description":"Share a file"})).await;
+		assert_eq!(status, 200, "{sender_area}");
+		assert_ne!(sender_area["id"], f.area["id"]);
+		let (_, session) = common::get(
+			&f.c.app,
+			&f.c.token,
+			&format!(
+				"/api/working-areas/{}/session",
+				sender_area["id"].as_str().unwrap()
+			),
+		)
+		.await;
+		let sender: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
+		let (status, patch) = common::post(&f.c.app, &f.c.token, &path_for_patch(sender), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":sender_area["revision"],"preconditions":{"share.txt":null},"patch":"*** Begin Patch\n*** Add File: share.txt\n+new copy\n*** End Patch"})).await;
 		assert_eq!(status, 200, "{patch}");
 		let (_, source) = common::get(
 			&f.c.app,
 			&f.c.token,
-			&format!("/api/runs/{}/working-area", sender.id),
+			&format!("/api/runs/{sender}/working-area"),
 		)
 		.await;
 		let file = &source["manifest"][0];
-		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":source["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),"agent_id":"research","agent_version":"1.1.0","thread_id":f.new_thread["id"]}});
-		let path = format!("/api/runs/{}/files/share", sender.id);
+		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":source["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(f.c.f.config.deployment.as_str(), "acme"),"agent_id":"research","agent_version":"1.1.0","thread_id":f.thread}});
+		let path = format!("/api/runs/{sender}/files/share");
 		let (_, session) = common::get(
 			&f.c.app,
 			&f.c.token,
@@ -625,50 +580,6 @@ async fn local_received_files_remain_bound_to_the_exact_recipient_version(
 	assert_eq!(
 		common::get(&f.c.app, &f.c.token, &f.recipient_path).await,
 		(200, area)
-	);
-	f.c.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn occupied_restoration_destination_preserves_both_areas(
-	#[future] recovery_fixture: RecoveryFixture,
-) {
-	let f = Box::pin(recovery_fixture).await;
-	let (status, occupied) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Existing work","description":"Preserve this destination"})).await;
-	assert_eq!(status, 200, "{occupied}");
-	let path = format!(
-		"/api/working-areas/{}/restore",
-		f.area["id"].as_str().unwrap()
-	);
-	let mut input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"],"thread_id":f.new_thread["id"]});
-	let (status, rejected) = common::post(&f.c.app, &f.c.token, &path, input.clone()).await;
-	assert_eq!(status, 409, "{rejected}");
-	assert_eq!(rejected["error"]["code"], "RESTORATION_THREAD_OCCUPIED");
-	let (status, existing) = common::get(
-		&f.c.app,
-		&f.c.token,
-		&format!(
-			"/api/working-areas?thread_id={}",
-			f.new_thread["id"].as_str().unwrap()
-		),
-	)
-	.await;
-	assert_eq!(status, 200, "{existing}");
-	assert_eq!(
-		existing["items"],
-		json!([occupied]),
-		"restoration cannot replace an existing area"
-	);
-	input["thread_id"] = f.thread["id"].clone();
-	let (status, restored) = common::post(&f.c.app, &f.c.token, &path, input).await;
-	assert_eq!(
-		status, 200,
-		"rejected restoration must preserve its snapshot and revision: {restored}"
-	);
-	assert_eq!(
-		restored["manifest"][0]["digest"],
-		f.area["manifest"][0]["digest"]
 	);
 	f.c.close().await;
 }

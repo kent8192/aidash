@@ -21,8 +21,8 @@ fn manifest() -> Manifest {
 		.into_iter()
 		.map(|node| Participant {
 			node_id: node.into(),
-			mutations: vec![Mutation::WorkspaceTitle {
-				workspace_id: Uuid::from_u128(2),
+			mutations: vec![Mutation::ThreadTitle {
+				thread_id: Uuid::from_u128(2),
 				expected_revision: 0,
 				title: "Title".into(),
 			}],

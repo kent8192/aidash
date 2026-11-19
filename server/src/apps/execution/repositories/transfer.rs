@@ -327,10 +327,10 @@ impl TransferScope for Scope<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.authority.get().resource(kind, id, attributes)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		let access = self.authority.get_mut();
 		let node = access.node.clone();
-		let result = access.workspace(id).await;
+		let result = access.thread(id).await;
 		if let Some(node) = node {
 			access.set_node(node);
 		}
@@ -352,8 +352,8 @@ impl TransferScope for Scope<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn sources(&mut self, workspace: Uuid, constraints: &Value) -> Result<()> {
-		sessions::authorize_sources(self.authority.get_mut(), workspace, constraints)
+	async fn sources(&mut self, thread: Uuid, constraints: &Value) -> Result<()> {
+		sessions::authorize_sources(self.authority.get_mut(), thread, constraints)
 			.await
 			.map_err(Into::into)
 	}

@@ -75,18 +75,18 @@ struct RecoveryFence {
 #[case::read(false)]
 #[case::write(true)]
 #[tokio::test]
-async fn native_memory_banks_cannot_spoof_the_workspaces_home_node(
+async fn native_memory_banks_cannot_spoof_the_threads_home_node(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 	#[case] write: bool,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let id = Uuid::now_v7();
@@ -161,7 +161,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 ) {
 	use aidash_server::{database::native, semantic::services::memory_recovery as recovery};
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint_retention(
+	let (store, _, thread) = setup_endpoint_retention(
 		&database,
 		bounds,
 		"http://127.0.0.1:9/v1",
@@ -172,7 +172,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -321,11 +321,11 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 ) {
 	use aidash_server::{database::native, semantic::services::memory_recovery as recovery};
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -341,7 +341,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 			.columns(
 				[
 					"id",
-					"workspace_id",
+					"thread_id",
 					"sender",
 					"content",
 					"idempotency_key",
@@ -353,7 +353,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 			.from_subquery(
 				Query::select()
 					.expr(Expr::value(message))
-					.expr(Expr::value(workspace))
+					.expr(Expr::value(thread))
 					.expr(Expr::value("deployment_administrator"))
 					.expr(Expr::value(body))
 					.expr(Expr::value(format!("primary-{message}")))
@@ -499,11 +499,11 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -594,8 +594,8 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 	native::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(thread)))
 			.lock(reinhardt::query::LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -677,11 +677,11 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 ) {
 	use aidash_server::{database::native, semantic::services::memory_recovery as recovery};
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -944,11 +944,11 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1052,11 +1052,11 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 ) {
 	use aidash_server::semantic::services::memory_recovery as recovery;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1159,12 +1159,12 @@ async fn shared_policy_changes_are_idempotent_and_compare_the_observed_revision(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = Bank {
 		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 			.to_string(),
 		tenant: "acme".into(),
-		workspace,
+		thread,
 		participant: None,
 	};
 	let input = memory::Operation {
@@ -1225,11 +1225,11 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 ) {
 	use aidash_server::database::native;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1407,11 +1407,11 @@ async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1546,11 +1546,11 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1560,7 +1560,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	let clone = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -1667,7 +1667,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 	assert_eq!(visible[0].revision, 2);
 	assert_eq!(visible[0].id, id);
 	let entries =
-		aidash_server::semantic::service::entries(&store, &administrator(&store).await, workspace)
+		aidash_server::semantic::service::entries(&store, &administrator(&store).await, thread)
 			.await
 			.unwrap();
 	let source = entries.iter().find(|entry| entry.id == id).unwrap();
@@ -1788,12 +1788,12 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 			.await
 			.is_err()
 	);
-	let workspace = Uuid::now_v7();
+	let thread = Uuid::now_v7();
 	let other = Uuid::now_v7();
 	let ids: Vec<_> = (0..3).map(|_| Uuid::now_v7()).collect();
 	for (id, ws, vector) in [
-		(ids[0], workspace, vec![1., 0., 0.]),
-		(ids[1], workspace, vec![0., 1., 0.]),
+		(ids[0], thread, vec![1., 0., 0.]),
+		(ids[1], thread, vec![0., 1., 0.]),
 		(ids[2], other, vec![1., 0., 0.]),
 	] {
 		index
@@ -1802,13 +1802,13 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 				"fixture",
 				id,
 				&vector,
-				json!({"workspace_id":ws,"tenant":"acme","entry_id":id,"revision":1,"index_revision":1}),
+				json!({"thread_id":ws,"tenant":"acme","entry_id":id,"revision":1,"index_revision":1}),
 			)
 			.await
 			.unwrap();
 	}
 	let filter = VectorFilter {
-		workspace,
+		thread,
 		tenant: "acme",
 		allowed: &ids,
 	};
@@ -1818,7 +1818,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 		.unwrap();
 	assert_eq!(results.iter().map(|p| p.id).collect::<Vec<_>>(), ids[..2]);
 	let denied = VectorFilter {
-		workspace,
+		thread,
 		tenant: "other",
 		allowed: &ids,
 	};
@@ -1836,7 +1836,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 				"fixture",
 				ids[0],
 				&[1., 0., 0.],
-				json!({"workspace_id":other,"tenant":"acme"})
+				json!({"thread_id":other,"tenant":"acme"})
 			)
 			.await
 			.is_err()
@@ -1848,7 +1848,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 				"fixture",
 				Uuid::now_v7(),
 				&[0., 0., 0.],
-				json!({"workspace_id":workspace,"tenant":"acme"})
+				json!({"thread_id":thread,"tenant":"acme"})
 			)
 			.await
 			.is_err()
@@ -1883,11 +1883,11 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, registry, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, registry, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -2090,11 +2090,11 @@ async fn native_recall_types_vector_and_embedding_outages_as_transient(
 	let server = fixture.server;
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -2276,7 +2276,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let database = database.await;
 	// This scenario tests the journal bound, so both recalled Units must fit
 	// even as the Agent's default tool schemas evolve.
-	let (store, registry, workspace) = setup_endpoint_flags_with_window(
+	let (store, registry, thread) = setup_endpoint_flags_with_window(
 		&database,
 		bounds,
 		&endpoint,
@@ -2356,7 +2356,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.unwrap();
 	}
 	let agent_ref = if shared_source {
-		let mut shared_config = json!({"scope":"workspace","memory":primary,"max_tokens":8192});
+		let mut shared_config = json!({"scope":"thread","memory":primary,"max_tokens":8192});
 		if delivery == "extra_on_demand" {
 			shared_config["context_source"] = on_demand_declaration();
 		}
@@ -2387,7 +2387,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		};
 		memory::operate(
@@ -2527,7 +2527,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let participant = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: agent_ref.clone(),
 		},
@@ -2632,7 +2632,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&NewTask {
 				title: "Tokyo transport".into(),
 				description: "移動方法を確認する".into(),
@@ -2648,7 +2648,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	memory::assign_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		task.id,
 		memory::AssignmentChange {
 			task_revision: task.revision,
@@ -3119,14 +3119,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.unwrap()
 		.message_id
 		.unwrap();
-	let index = aidash_server::semantic::service::get_index(&f.store, &actor, workspace)
+	let index = aidash_server::semantic::service::get_index(&f.store, &actor, thread)
 		.await
 		.unwrap();
 	let configuration = serde_json::from_value(index.spec.clone()).unwrap();
 	aidash_server::semantic::service::configure(
 		&f.store,
 		&administrator(&f.store).await,
-		workspace,
+		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: index.revision,
 			spec: configuration,
@@ -3341,12 +3341,12 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) =
+	let (store, _, thread) =
 		setup_endpoint_flags(&database, bounds, &endpoint, (false, true, true)).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -3620,7 +3620,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	// schema. Admission still fails explicitly if their whole request exceeds
 	// the pinned allowance; do not rely on a truncated journal to make it fit.
 	bounds.max_model_tokens = 32_768;
-	let (store, _, workspace) =
+	let (store, _, thread) =
 		setup_endpoint_flags(&database, bounds, &endpoint, (true, false, false)).await;
 
 	let authorization = aidash_server::authorization::Authorization {
@@ -3657,7 +3657,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -3681,7 +3681,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&aidash_domain::NewTask {
 				title: "Canonical learning".into(),
 				description: "Read complete results".into(),
@@ -3708,7 +3708,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 				[
 					"id",
 					"task_id",
-					"workspace_id",
+					"thread_id",
 					"home_node",
 					"node",
 					"agent_id",
@@ -3724,7 +3724,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 				Query::select()
 					.expr(Expr::value(id))
 					.expr(Expr::value(task.id))
-					.expr(Expr::value(workspace))
+					.expr(Expr::value(thread))
 					.expr(Expr::value(
 						aidash_domain::nodes::NodeAddress::derived(
 							store.deployment.as_str(),
@@ -3879,7 +3879,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let execution = aidash_server::apps::identity::models::AuthorizationExecution::build()
 		.run_id(id)
 		.task_id(task.id)
-		.workspace_id(workspace)
+		.thread_id(thread)
 		.tenant("acme")
 		.credential(credential.credential.id)
 		.root_subject("alice")
@@ -4270,12 +4270,12 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 
 	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
-	let (store, _, workspace) =
+	let (store, _, thread) =
 		setup_endpoint_flags(&database, bounds, &endpoint, (false, true, false)).await;
 	let participant = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -4460,11 +4460,11 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 ) {
 	use aidash_server::apps::registry::models::Definition;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, thread) = setup(&database, bounds).await;
 	let bank = memory::create_participant(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -4543,7 +4543,7 @@ async fn participant_upgrade_to_builtin_preserves_indexed_bank_until_cleared(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
 	let default_agent =
 		json!({"model":reference("m"),"instructions":"Default memory","tools":[],"skills":[]});
 	registry
@@ -4557,7 +4557,7 @@ async fn participant_upgrade_to_builtin_preserves_indexed_bank_until_cleared(
 	let initial = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("default-memory"),
 		},
@@ -4576,7 +4576,7 @@ async fn participant_upgrade_to_builtin_preserves_indexed_bank_until_cleared(
 	let participant = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -5177,7 +5177,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 	// Arrange: a Run of an Agent that has a Memory provider, claimed through the
 	// real admission.
 	let database = database.await;
-	let (store, registry, workspace) = setup_endpoint_flags_with_window(
+	let (store, registry, thread) = setup_endpoint_flags_with_window(
 		&database,
 		bounds,
 		"http://127.0.0.1:1/v1",
@@ -5229,7 +5229,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 	let participant = memory::create_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		memory::CreateParticipant {
 			agent: agent_ref.clone(),
 		},
@@ -5239,7 +5239,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 	let task = store
 		.create_task(
 			&TEST_FIXTURE,
-			workspace,
+			thread,
 			&NewTask {
 				title: "Remember".into(),
 				description: "Remember something".into(),
@@ -5255,7 +5255,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 	memory::assign_participant(
 		&store,
 		&actor,
-		workspace,
+		thread,
 		task.id,
 		memory::AssignmentChange {
 			task_revision: task.revision,

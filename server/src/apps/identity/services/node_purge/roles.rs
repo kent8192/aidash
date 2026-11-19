@@ -47,7 +47,7 @@ struct Usage {
 }
 #[derive(Deserialize)]
 struct Embedding {
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	run_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
@@ -217,24 +217,23 @@ pub(super) async fn resolve(
 				.insert(journal.id, (journal.grant_id, journal.admission_id, owner));
 		}
 	}
-	let workspaces: Vec<Request> = read(tx, owners.tenant, "workspaces", &["id", "node"]).await?;
-	let workspaces: BTreeMap<Uuid, String> =
-		workspaces.into_iter().map(|r| (r.id, r.node)).collect();
+	let threads: Vec<Request> = read(tx, owners.tenant, "threads", &["id", "node"]).await?;
+	let threads: BTreeMap<Uuid, String> = threads.into_iter().map(|r| (r.id, r.node)).collect();
 	let embedding: Vec<Embedding> = read(
 		tx,
 		owners.tenant,
 		"generation_embedding_usage",
-		&["workspace_id", "run_id"],
+		&["thread_id", "run_id"],
 	)
 	.await?;
 	for usage in embedding {
-		if let (Some(workspace), Some(run)) = (
-			workspaces.get(&usage.workspace_id),
+		if let (Some(thread), Some(run)) = (
+			threads.get(&usage.thread_id),
 			usage.run_id.and_then(|id| evidence.runs.get(&id)),
-		) && workspace != &run.node
-			&& (workspace == owners.node || run.node == owners.node)
+		) && thread != &run.node
+			&& (thread == owners.node || run.node == owners.node)
 		{
-			return Err(Error::Conflict("Node purge found conflicting embedding Workspace and Run owners; repair the execution evidence before retrying".into()));
+			return Err(Error::Conflict("Node purge found conflicting embedding Thread and Run owners; repair the execution evidence before retrying".into()));
 		}
 	}
 	let requests: Vec<Request> =

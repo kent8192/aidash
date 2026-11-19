@@ -74,9 +74,9 @@ fn fixture_source_plan(resident: bool, registry: bool, direct: bool) -> Vec<Plan
 	}
 	sources.extend([
 		(
-			"workspace",
+			"thread",
 			ContextSourcePhase::SnapshotData,
-			ContextSourceTarget::Pinned("workspace".into()),
+			ContextSourceTarget::Pinned("thread".into()),
 			ContextSourceCache::None,
 		),
 		(
@@ -113,7 +113,7 @@ struct State {
 	memory_value: Mutex<Value>,
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
-	workspace_events: Mutex<Vec<WorkspaceEvent>>,
+	workspace_events: Mutex<Vec<ThreadEvent>>,
 	/// How many older events the store left out of `workspace_events`.
 	events_dropped: AtomicU64,
 	owned_tasks_pending: AtomicBool,
@@ -157,7 +157,7 @@ struct State {
 	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
 	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
 	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
-	/// Fields the workspace observation carries beside its ID.
+	/// Fields the thread observation carries beside its ID.
 	observation_extra: serde_json::Map<String, Value>,
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
@@ -455,8 +455,8 @@ impl ExecutionStore for Backend {
 			self.0.owned_tasks_pending.load(Ordering::Acquire) || self.0.failed_children,
 		))
 	}
-	async fn workspace_events(&self, _: &Run, after: i64) -> Result<WorkspaceEvents> {
-		Ok(WorkspaceEvents {
+	async fn workspace_events(&self, _: &Run, after: i64) -> Result<ThreadEvents> {
+		Ok(ThreadEvents {
 			events: self
 				.0
 				.workspace_events
@@ -559,7 +559,7 @@ impl ExecutionStore for Backend {
 		outcomes.push(outcome);
 		Ok(())
 	}
-	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
+	async fn emit(&self, thread: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
 		assert!(matches!(kind, "mcp.input_failed" | "run.recovered"));
 		self.0
 			.emitted
@@ -573,7 +573,7 @@ impl ExecutionStore for Backend {
 			sequence: 1,
 			id: Uuid::new_v4(),
 			node: None,
-			workspace_id: workspace,
+			thread_id: thread,
 			kind: kind.into(),
 			data,
 			created_at: chrono::Utc::now(),
@@ -928,7 +928,7 @@ impl ExecutionHome for Backend {
 		}
 		let request = HumanRequest {
 			id: Uuid::new_v4(),
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			run_id: run.id,
 			kind: kind.into(),
 			prompt: prompt.into(),
@@ -995,7 +995,7 @@ impl ExecutionHome for Backend {
 				.expect("delivered run message");
 			return Ok(json!(Message {
 				id,
-				workspace_id: self.task_value().workspace_id,
+				thread_id: self.task_value().thread_id,
 				sender: input.sender.clone(),
 				content: input.content.clone(),
 				idempotency_key: Some(input.idempotency_key.clone()),
@@ -1021,7 +1021,7 @@ impl ExecutionHome for Backend {
 	}
 	async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
 		let _ = (offset, limit);
-		let mut observation = json!({"workspace_id":self.task_value().workspace_id});
+		let mut observation = json!({"thread_id":self.task_value().thread_id});
 		observation
 			.as_object_mut()
 			.expect("observation object")
@@ -1363,7 +1363,7 @@ impl ExecutionEnvironment for Backend {
 			return SemanticContextRead {
 				selections: vec![],
 				contributions: vec![],
-				workspace_retrieved: false,
+				thread_retrieved: false,
 				result: Ok(Some(value.clone())),
 			};
 		}
@@ -1392,7 +1392,7 @@ impl ExecutionEnvironment for Backend {
 				}
 				Ok(Some(json!(text)))
 			}
-			"workspace" => self
+			"thread" => self
 				.home(run)
 				.step_observation(0, context::observation::DEFAULT_LIMIT)
 				.await
@@ -1406,7 +1406,7 @@ impl ExecutionEnvironment for Backend {
 		SemanticContextRead {
 			selections: vec![],
 			contributions: vec![],
-			workspace_retrieved: false,
+			thread_retrieved: false,
 			result,
 		}
 	}
@@ -1809,13 +1809,13 @@ struct Fixture {
 fn fixture() -> Fixture {
 	let now = "2026-10-02T00:00:00Z".parse().unwrap();
 	let token = Uuid::new_v4();
-	let workspace = Uuid::new_v4();
+	let thread = Uuid::new_v4();
 	let task = Uuid::new_v4();
 	let run = Run {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: Uuid::new_v4(),
 		task_id: task,
-		workspace_id: workspace,
+		thread_id: thread,
 		home_node: "aidash://fixture".into(),
 		agent_id: "agent".into(),
 		agent_version: "1.0.0".into(),
@@ -1852,7 +1852,7 @@ fn fixture() -> Fixture {
 		token,
 		task: Mutex::new(Task {
 			id: task,
-			workspace_id: workspace,
+			thread_id: thread,
 			title: "Task".into(),
 			description: "Fixture task".into(),
 			status: TaskStatus::Open,
@@ -2148,7 +2148,7 @@ async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fix
 	state.scoped = true;
 	*state.human.lock().unwrap() = Some(HumanRequest {
 		id,
-		workspace_id: fixture.run.workspace_id,
+		thread_id: fixture.run.thread_id,
 		run_id: fixture.run.id,
 		kind: "QUESTION".into(),
 		prompt: "Continue?".into(),
@@ -2874,7 +2874,7 @@ impl ExecutionTool for RecordReader {
 	fn specification(&self) -> aidash_domain::provider::ToolSpec {
 		aidash_domain::provider::ToolSpec {
 			name: "renamed_reader".into(),
-			description: "Read workspace records".into(),
+			description: "Read thread records".into(),
 			parameters: json!({"type":"object","properties":{}}),
 		}
 	}
@@ -2894,7 +2894,7 @@ impl ExecutionTool for Observer {
 	fn specification(&self) -> aidash_domain::provider::ToolSpec {
 		aidash_domain::provider::ToolSpec {
 			name: "renamed_observer".into(),
-			description: "Observe the workspace".into(),
+			description: "Observe the thread".into(),
 			parameters: json!({"type":"object","properties":{}}),
 		}
 	}
@@ -2932,7 +2932,7 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 }
 
 #[rstest]
-fn only_message_reads_among_workspace_records_are_summarizable() {
+fn only_message_reads_among_thread_records_are_summarizable() {
 	let mut tools = Tools::new();
 	tools.insert("renamed_reader".into(), Arc::new(RecordReader));
 	tools.insert("renamed_observer".into(), Arc::new(Observer));
@@ -2950,7 +2950,7 @@ fn only_message_reads_among_workspace_records_are_summarizable() {
 	assert!(summarizable(&event("renamed_reader", message), &tools));
 	// Each of these records is filtered on its own, and a summary rechecks
 	// only message sources, so the events stay verbatim.
-	for kind in ["task", "artifact", "event", "workspace"] {
+	for kind in ["task", "artifact", "event", "thread"] {
 		let record = json!({"kind":kind,"id":Uuid::from_u128(8)});
 		assert!(
 			!summarizable(&event("renamed_reader", record), &tools),
@@ -4177,7 +4177,7 @@ async fn new_input_mid_stream_discards_the_attempt_and_replans_with_it(fixture: 
 		Step::Offer(InferenceProgress::ToolCall {
 			index: 0,
 			id: Some("call-1".into()),
-			name: Some("workspace_write".into()),
+			name: Some("thread_write".into()),
 			argument_bytes: 12,
 		}),
 		Step::Sleep(FLUSH_INTERVAL * 2),
@@ -4402,7 +4402,7 @@ fn direct_skill(fixture: &mut Fixture) {
 fn run_message(fixture: &mut Fixture) {
 	let id = Uuid::from_u128(0x20);
 	let content = "Also include the rollback steps.";
-	let workspace_id = fixture.run.workspace_id;
+	let thread_id = fixture.run.thread_id;
 	let created_at = fixture.run.updated_at;
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.tools = default_tools();
@@ -4417,7 +4417,7 @@ fn run_message(fixture: &mut Fixture) {
 	}]);
 	state.messages = vec![Message {
 		id,
-		workspace_id,
+		thread_id,
 		sender: "human".into(),
 		content: content.into(),
 		idempotency_key: Some("input-2".into()),
@@ -4449,12 +4449,12 @@ fn run_message_catch_up(fixture: &mut Fixture) {
 )]
 #[case::direct_skill(
 	direct_skill,
-	&["workspace_read", "human_request", "skill_list", "skill_load", "skill_read"],
+	&["thread_read", "human_request", "skill_list", "skill_load", "skill_read"],
 	include_str!("../../../../tests/fixtures/legacy_model_request_direct_skill.json")
 )]
 #[case::run_message_catch_up(
 	run_message_catch_up,
-	&["workspace_read"],
+	&["thread_read"],
 	include_str!("../../../../tests/fixtures/legacy_model_request_run_message_catch_up.json")
 )]
 #[tokio::test]
@@ -4465,15 +4465,15 @@ async fn legacy_thinking_request_matches_byte_baseline(
 	#[case] baseline: &str,
 ) {
 	// Arrange: fixed identities keep the serialized context reproducible.
-	let workspace = Uuid::from_u128(0x10);
+	let thread = Uuid::from_u128(0x10);
 	let task = Uuid::from_u128(0x11);
 	fixture.run.id = Uuid::from_u128(0x12);
-	fixture.run.workspace_id = workspace;
+	fixture.run.thread_id = thread;
 	fixture.run.task_id = task;
 	{
 		let mut home = fixture.backend.0.task.lock().unwrap();
 		home.id = task;
-		home.workspace_id = workspace;
+		home.thread_id = thread;
 	}
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	arrange(&mut fixture);
@@ -4506,7 +4506,7 @@ async fn legacy_thinking_request_matches_byte_baseline(
 
 #[rstest]
 #[tokio::test]
-async fn structured3_advertises_subnode_workspace_reads(mut fixture: Fixture) {
+async fn structured3_advertises_subnode_thread_reads(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.tools = default_tools();
 	state.projection = ProjectionVersion::Native;
@@ -4517,13 +4517,9 @@ async fn structured3_advertises_subnode_workspace_reads(mut fixture: Fixture) {
 	let reader = requests[0]
 		.tools
 		.iter()
-		.find(|tool| tool.name == "workspace_read")
+		.find(|tool| tool.name == "thread_read")
 		.unwrap();
-	assert!(
-		reader.parameters["properties"]
-			.get("workspace_id")
-			.is_some()
-	);
+	assert!(reader.parameters["properties"].get("thread_id").is_some());
 	assert!(reader.description.contains("Subnode"));
 }
 
@@ -4593,7 +4589,7 @@ async fn summarized_subnode_results_remain_data_references(mut fixture: Fixture)
 		let state = step_state(requests.last().unwrap());
 		assert_eq!(state["run_messages"][0]["trust"], "data");
 		assert_eq!(
-			state["run_messages"][0]["content"]["requires_workspace_read"],
+			state["run_messages"][0]["content"]["requires_thread_read"],
 			false
 		);
 		assert!(
@@ -5431,7 +5427,7 @@ async fn a_woken_shell_can_finish_when_poll_is_not_model_visible(mut fixture: Fi
 
 #[rstest]
 #[tokio::test]
-async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut fixture: Fixture) {
+async fn thread_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut fixture: Fixture) {
 	let wait = Scripted::new(
 		ToolSpec {
 			name: "workspace_wait".into(),
@@ -5444,7 +5440,7 @@ async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut f
 	let task = Uuid::new_v4();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.custom.insert("workspace_wait".into(), wait);
-	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+	state.workspace_events.lock().unwrap().push(ThreadEvent {
 		generation: 42,
 		task_id: task,
 		status: "COMPLETED".into(),
@@ -5460,8 +5456,8 @@ async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut f
 	);
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "workspace_event" && result["changes"][0]["task_id"] == json!(task))));
-	assert_eq!(fixture.run.recovery.workspace_event_cursor, Some(42));
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "thread_event" && result["changes"][0]["task_id"] == json!(task))));
+	assert_eq!(fixture.run.recovery.thread_event_cursor, Some(42));
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 
@@ -5469,7 +5465,7 @@ async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut f
 /// result, never as a person's input (#1011).
 #[rstest]
 #[tokio::test]
-async fn workspace_wait_returns_a_booked_duty_event_as_data(mut fixture: Fixture) {
+async fn thread_wait_returns_a_booked_duty_event_as_data(mut fixture: Fixture) {
 	let wait = Scripted::new(
 		ToolSpec {
 			name: "workspace_wait".into(),
@@ -5481,7 +5477,7 @@ async fn workspace_wait_returns_a_booked_duty_event_as_data(mut fixture: Fixture
 	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":3600})].into();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.custom.insert("workspace_wait".into(), wait);
-	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+	state.workspace_events.lock().unwrap().push(ThreadEvent {
 		generation: 7,
 		task_id: Uuid::nil(),
 		status: "duty_event".into(),
@@ -5506,7 +5502,7 @@ async fn workspace_wait_returns_a_booked_duty_event_as_data(mut fixture: Fixture
 			&& result["changes"][0]["kind"] == "duty_event"
 			&& result["changes"][0]["payload"]["conclusion"] == "success")
 	));
-	assert_eq!(fixture.run.recovery.workspace_event_cursor, Some(7));
+	assert_eq!(fixture.run.recovery.thread_event_cursor, Some(7));
 }
 
 #[rstest]
@@ -5516,7 +5512,7 @@ async fn workspace_wait_returns_a_booked_duty_event_as_data(mut fixture: Fixture
 // A Stint sleeps through a long wait, up to 30 days (#1009, #1011).
 #[case::maximum(json!({"seconds":99_999_999}), false, 2_592_000)]
 #[tokio::test]
-async fn workspace_wait_defaults_and_clamps_its_ceiling(
+async fn thread_wait_defaults_and_clamps_its_ceiling(
 	mut fixture: Fixture,
 	#[case] arguments: Value,
 	#[case] pending: bool,
@@ -5553,7 +5549,7 @@ async fn workspace_wait_defaults_and_clamps_its_ceiling(
 
 #[rstest]
 #[tokio::test]
-async fn workspace_wait_defaults_to_an_hour_for_an_unfinished_owned_nonchild_task(
+async fn thread_wait_defaults_to_an_hour_for_an_unfinished_owned_nonchild_task(
 	mut fixture: Fixture,
 ) {
 	let wait = Scripted::new(
@@ -5672,7 +5668,7 @@ async fn a_wake_says_how_many_older_changes_it_left_out(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.custom.insert("workspace_wait".into(), wait);
 	state.events_dropped.store(8, Ordering::Release);
-	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+	state.workspace_events.lock().unwrap().push(ThreadEvent {
 		generation: 42,
 		task_id: task,
 		status: "COMPLETED".into(),
@@ -5685,12 +5681,12 @@ async fn a_wake_says_how_many_older_changes_it_left_out(mut fixture: Fixture) {
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "workspace_event" && result["changes"].as_array().is_some_and(|changes| changes.len() == 1) && result["dropped_changes"] == 8)));
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "thread_event" && result["changes"].as_array().is_some_and(|changes| changes.len() == 1) && result["dropped_changes"] == 8)));
 }
 
 #[rstest]
 #[tokio::test]
-async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: Fixture) {
+async fn remote_thread_poll_stays_asleep_until_a_child_finishes(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
@@ -5731,7 +5727,7 @@ async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut 
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
 	state.custom.insert("workspace_wait".into(), wait);
-	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+	state.workspace_events.lock().unwrap().push(ThreadEvent {
 		generation: 2,
 		task_id: Uuid::new_v4(),
 		status: "COMPLETED".into(),
@@ -5749,7 +5745,7 @@ async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut 
 	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"dropped_changes":0,"open_tasks":0}))));
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"thread_event","changes":[{"kind":"terminal_tasks_changed"}],"dropped_changes":0,"open_tasks":0}))));
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 
@@ -6067,7 +6063,7 @@ async fn replayed_load_and_resumed_run_keep_the_same_exposure(mut fixture: Fixtu
 
 #[rstest]
 #[tokio::test]
-async fn deferred_run_message_catch_up_advertises_only_workspace_read(mut fixture: Fixture) {
+async fn deferred_run_message_catch_up_advertises_only_thread_read(mut fixture: Fixture) {
 	// Arrange
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	run_message_catch_up(&mut fixture);
@@ -6079,7 +6075,7 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(mut fixtur
 	let [request] = requests.as_slice() else {
 		panic!("expected one provider request, got {}", requests.len());
 	};
-	assert_eq!(tool_names(request), ["workspace_read"]);
+	assert_eq!(tool_names(request), ["thread_read"]);
 	// Usage measures only the tool definitions the catch-up request sent.
 	let usage = fixture.run.context.usage.clone().unwrap().exposure.unwrap();
 	assert_eq!(
@@ -6164,7 +6160,7 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 	let (event, saved) = last_write(&fixture);
 	assert_eq!(event, expected);
 	if let RunState::Thinking(thinking) = &saved.state {
-		assert!(thinking.force_workspace_read_compaction);
+		assert!(thinking.force_thread_read_compaction);
 		assert_eq!(thinking.deferred_skill_read.as_ref().unwrap().call, request);
 		assert!(saved.context.history.is_empty());
 	} else {
@@ -6257,7 +6253,7 @@ async fn capability_search_pages_fit_the_remaining_request_budget(
 		let RunState::Thinking(thinking) = &saved.state else {
 			panic!("a deferred search returns to thinking");
 		};
-		assert!(thinking.force_workspace_read_compaction);
+		assert!(thinking.force_thread_read_compaction);
 		assert_eq!(thinking.deferred_skill_read.as_ref().unwrap().call, request);
 		assert!(saved.context.history.is_empty());
 		return;
@@ -6343,12 +6339,12 @@ mod plugins;
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {
 	fixture.run.id = Uuid::from_u128(0x172);
-	fixture.run.workspace_id = Uuid::from_u128(0x2);
+	fixture.run.thread_id = Uuid::from_u128(0x2);
 	fixture.run.task_id = Uuid::from_u128(0x3);
 	{
 		let mut task = fixture.backend.0.task.lock().unwrap();
 		task.id = fixture.run.task_id;
-		task.workspace_id = fixture.run.workspace_id;
+		task.thread_id = fixture.run.thread_id;
 	}
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.conversation_memory = true;
@@ -6669,7 +6665,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	let pinned = json!({
 		"identity":{"node_id":"aidash://fixture","agent_id":"agent","agent_version":"1.0.0"},
 		"task":{"title":"Task","description":"x".repeat(4096)},
-		"workspace":{"workspace_id":Uuid::nil()},
+		"thread":{"thread_id":Uuid::nil()},
 		"agent_state":{"phase":"thinking","step":3},
 		"semantic_memory":{"fact":"observed"},
 	});
@@ -6989,12 +6985,11 @@ impl Backend {
 			.lock()
 			.unwrap()
 			.push(frame.degrade_on_outage);
-		if let Some((workspace_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take()
-		{
+		if let Some((thread_retrieved, reason)) = self.0.semantic_failure.lock().unwrap().take() {
 			return SemanticContextRead {
 				selections: vec![],
 				contributions: vec![],
-				workspace_retrieved,
+				thread_retrieved,
 				result: Err(Error::RemoteSemantic(reason)),
 			};
 		}
@@ -7009,7 +7004,7 @@ impl Backend {
 			Ok(None)
 		}
 		.await;
-		let workspace_retrieved = result.as_ref().is_ok_and(|value| {
+		let thread_retrieved = result.as_ref().is_ok_and(|value| {
 			value
 				.as_ref()
 				.is_some_and(|value| aidash_domain::semantic::degraded::degraded(value).is_none())
@@ -7056,7 +7051,7 @@ impl Backend {
 			} else {
 				vec![]
 			},
-			workspace_retrieved,
+			thread_retrieved,
 			result,
 		}
 	}
@@ -7171,7 +7166,7 @@ async fn current_degraded_source_frame_is_rechecked_before_response_adoption(
 	mut canonical: Fixture,
 	#[case] projection: ProjectionVersion,
 ) {
-	let envelope = json!({"workspace":aidash_domain::semantic::degraded::marker(aidash_domain::semantic::degraded::OutageCause::EmbeddingProvider),"memory":{"banks":[{"recall":{"units":[{"text":"Current shared bank source"}]}}]}});
+	let envelope = json!({"thread":aidash_domain::semantic::degraded::marker(aidash_domain::semantic::degraded::OutageCause::EmbeddingProvider),"memory":{"banks":[{"recall":{"units":[{"text":"Current shared bank source"}]}}]}});
 	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
 	state.projection = projection;
 	state.provider_status = None;

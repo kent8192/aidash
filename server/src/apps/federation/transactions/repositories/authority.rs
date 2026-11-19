@@ -115,7 +115,7 @@ where
 			subject_chain,
 			source_tenant: description.source_tenant,
 			source_subject: description.source_subject,
-			workspace_id: description.task.workspace_id,
+			thread_id: description.task.thread_id,
 			agent_id: description.inspection.agent.id,
 			agent_version: description.inspection.agent.version,
 		}))
@@ -126,8 +126,8 @@ where
 			.map(|run| run.metadata())
 			.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn task(&mut self, id: Uuid) -> Result<Task> {
 		self.access.task_read(id).await.map_err(Into::into)

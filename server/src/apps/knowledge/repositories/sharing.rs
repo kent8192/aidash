@@ -36,7 +36,7 @@ pub(crate) async fn get(
 			serde_json::from_value(serde_json::Value::String(row.try_get("scope")?))?,
 			row.try_get("revision")?,
 		)),
-		None => Ok((SharingScope::Workspace, 0)),
+		None => Ok((SharingScope::Thread, 0)),
 	}
 }
 
@@ -89,7 +89,7 @@ pub(crate) async fn set(
 	Ok(revision)
 }
 
-/// A cross-Workspace Unit belongs to an Agent only if every provenance leaf
+/// A cross-Thread Unit belongs to an Agent only if every provenance leaf
 /// names one of its Runs. Derived observations inherit all source leaves.
 pub(crate) async fn agent_unit(
 	lease: &mut super::access::Lease<'_>,
@@ -165,13 +165,13 @@ mod tests {
 		bounds: Bounds,
 	) {
 		let database = database.await;
-		let (store, _, workspace) = setup(&database, bounds).await;
+		let (store, _, thread) = setup(&database, bounds).await;
 		let mut runs = Vec::new();
 		for agent in ["a", "other-agent"] {
 			let task = store
 				.create_task(
 					&TEST_FIXTURE,
-					workspace,
+					thread,
 					&aidash_domain::NewTask {
 						title: "source".into(),
 						description: "source".into(),
@@ -200,7 +200,7 @@ mod tests {
 						[
 							"id",
 							"task_id",
-							"workspace_id",
+							"thread_id",
 							"home_node",
 							"node",
 							"agent_id",
@@ -216,7 +216,7 @@ mod tests {
 						Query::select()
 							.expr(Expr::value(run))
 							.expr(Expr::value(task.id))
-							.expr(Expr::value(workspace))
+							.expr(Expr::value(thread))
 							.expr(Expr::value(
 								aidash_domain::nodes::NodeAddress::derived(
 									store.deployment.as_str(),
@@ -247,7 +247,7 @@ mod tests {
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		};
 		let mut unit = Unit {
@@ -279,7 +279,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(
 			get(&mut **lease.tx(), "acme").await.unwrap().0,
-			SharingScope::Workspace
+			SharingScope::Thread
 		);
 		assert_eq!(
 			set(&mut **lease.tx(), "acme", SharingScope::TenantAgent, 0)

@@ -109,25 +109,25 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource>;
-	async fn snapshot(&mut self, workspace: Uuid) -> Result<Value>;
+	async fn snapshot(&mut self, thread: Uuid) -> Result<Value>;
 	/// `exclude_run` leaves that Run's own events out of the view (#942).
 	async fn observation(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		offset: usize,
 		limit: usize,
 		exclude_run: Option<Uuid>,
 	) -> Result<Value>;
-	async fn record(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value>;
-	async fn children(&mut self, workspace: Uuid, parent: Uuid) -> Result<Value>;
-	/// The Agents the Node of `workspace` finds for the grant's chain, as the
+	async fn record(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<Value>;
+	async fn children(&mut self, thread: Uuid, parent: Uuid) -> Result<Value>;
+	/// The Agents the Node of `thread` finds for the grant's chain, as the
 	/// cards a model sees (#654): a Remote Grant Run discovers through its
 	/// Home, which is where every Task it hands on is granted from.
 	async fn discover(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		search: &aidash_domain::registry::Search,
 	) -> Result<aidash_domain::federation::DiscoveryCards>;
 	async fn created_by_grant(&mut self, grant: Uuid, child: Uuid) -> Result<bool>;
@@ -135,7 +135,7 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 	async fn record_output(
 		&mut self,
 		grant: Uuid,
-		workspace: Uuid,
+		thread: Uuid,
 		kind: &str,
 		id: Uuid,
 	) -> Result<()>;
@@ -147,7 +147,7 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 	) -> Result<aidash_domain::HumanRequest>;
 	async fn history(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		task: Uuid,
 		node: &str,
 		offset: usize,

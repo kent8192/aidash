@@ -658,7 +658,7 @@ async fn command_cleanup_fixture(
 					"home_node",
 					"agent_id",
 					"owner",
-					"workspace_id",
+					"thread_id",
 					"thread_id",
 					"state",
 				]
@@ -670,7 +670,7 @@ async fn command_cleanup_fixture(
 				run.home_node.clone().into(),
 				run.agent_id.clone().into(),
 				"alice".into(),
-				run.workspace_id.into(),
+				run.thread_id.into(),
 				Uuid::new_v4().into(),
 				"running".into(),
 			])

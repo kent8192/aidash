@@ -189,7 +189,7 @@ async fn deferred_fixture(#[future] scripted_core: Deferred) -> Deferred {
 	}
 	register_approved(
 		&c,
-		json!({"id":"native-semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Native semantic memory"},"description":{"en":"Workspace memory entries only"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}}),
+		json!({"id":"native-semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Native semantic memory"},"description":{"en":"Thread memory entries only"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}}),
 	)
 	.await;
 	for (version, deferred, memory) in [
@@ -301,12 +301,12 @@ impl Deferred {
 			.find(|run| run.task_id == task)
 			.unwrap()
 	}
-	async fn task(&self, workspace: Uuid) -> Uuid {
+	async fn task(&self, thread: Uuid) -> Uuid {
 		let (status, task) = request(
 			&self.c.app,
 			&self.c.token,
 			"POST",
-			&format!("/api/workspaces/{workspace}/tasks"),
+			&format!("/api/threads/{thread}/tasks"),
 			json!({"title":"Second research","description":"Use approved tools"}),
 		)
 		.await;
@@ -582,7 +582,7 @@ async fn native_memory_source_alone_falls_back_to_built_in_memory(
 	d.script(|_, _| Reply::Text("Done."));
 	let legacy = d.delegate(d.c.task, LEGACY).await;
 	completed(&d.drive(legacy.id).await);
-	let second = d.task(legacy.workspace_id).await;
+	let second = d.task(legacy.thread_id).await;
 	let native = d.delegate(second, NATIVE_MEMORY).await;
 	completed(&d.drive(native.id).await);
 	let requests = d.requests().await;
@@ -746,7 +746,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		}
 	});
 	let first = d.delegate(d.c.task, DEFERRED).await;
-	let second = d.task(first.workspace_id).await;
+	let second = d.task(first.thread_id).await;
 	let mut outcomes = vec![];
 	for (revision, (task, version)) in [(d.c.task, DEFERRED), (second, LEGACY)]
 		.into_iter()
@@ -1159,7 +1159,7 @@ async fn deferred_exposure_survives_fresh_harness_instances_without_duplication(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn deferred_run_message_catch_up_advertises_only_workspace_read(
+async fn deferred_run_message_catch_up_advertises_only_thread_read(
 	#[future] deferred_fixture: Deferred,
 ) {
 	let d = Box::pin(deferred_fixture).await;
@@ -1172,7 +1172,7 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(
 			.as_array()
 			.into_iter()
 			.flatten()
-			.filter(|entry| entry["requires_workspace_read"] == true)
+			.filter(|entry| entry["requires_thread_read"] == true)
 			.map(|entry| entry["record"]["id"].clone())
 			.chain(
 				current["deferred_run_message_reads"]

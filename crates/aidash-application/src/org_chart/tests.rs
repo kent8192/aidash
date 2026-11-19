@@ -20,25 +20,25 @@ struct Fixture {
 	rows: Rows,
 	flow_root: Uuid,
 	creating_task: Uuid,
-	/// The Workspace bob's Duty works in.
-	bobs_workspace: Uuid,
+	/// The Thread bob's Duty works in.
+	bobs_thread: Uuid,
 }
 
 /// Two Nodes: `research`, which alice's chain created, with a Duty of alice and
-/// one of bob (each in their own Workspace; bob's names carol his successor)
+/// one of bob (each in their own Thread; bob's names carol his successor)
 /// and a Subnode of each; and `sales`, which a person created.
 fn fixture() -> Fixture {
 	let flow_root = Uuid::new_v4();
 	let creating_task = Uuid::new_v4();
-	let alices_workspace = Uuid::new_v4();
-	let bobs_workspace = Uuid::new_v4();
+	let alices_thread = Uuid::new_v4();
+	let bobs_thread = Uuid::new_v4();
 	let duty = |node: &str, requester: &str, spent: Option<Uuid>| DutyRow {
 		id: spent.unwrap_or_else(Uuid::new_v4),
 		node: node.into(),
-		workspace: if requester == "alice" {
-			alices_workspace
+		thread: if requester == "alice" {
+			alices_thread
 		} else {
-			bobs_workspace
+			bobs_thread
 		},
 		successor: (requester == "bob").then(|| "carol".to_owned()),
 		title: format!("{requester}'s report"),
@@ -92,7 +92,7 @@ fn fixture() -> Fixture {
 		rows,
 		flow_root,
 		creating_task,
-		bobs_workspace,
+		bobs_thread,
 	}
 }
 
@@ -157,22 +157,20 @@ fn node_read_alone_shows_no_work_on_the_node() {
 
 #[rstest]
 #[case::successor("carol", false, false)]
-#[case::workspace_reader("erin", true, false)]
+#[case::thread_reader("erin", true, false)]
 #[case::duty_administrator("erin", false, true)]
 fn a_duty_shows_to_whoever_its_own_page_shows_to(
 	#[case] subject: &str,
-	#[case] reads_workspace: bool,
+	#[case] reads_thread: bool,
 	#[case] duty_administrator: bool,
 ) {
 	// Arrange
 	let Fixture {
-		rows,
-		bobs_workspace,
-		..
+		rows, bobs_thread, ..
 	} = fixture();
 	let mut person = viewer(subject);
-	if reads_workspace {
-		person.workspaces.insert(bobs_workspace);
+	if reads_thread {
+		person.threads.insert(bobs_thread);
 	}
 	person.duty_administrator = duty_administrator;
 	// Act
@@ -214,13 +212,11 @@ fn a_node_administrator_sees_its_subnodes_and_spend_but_not_others_duties() {
 fn a_node_administrator_sees_the_spend_of_the_duties_they_see() {
 	// Arrange
 	let Fixture {
-		rows,
-		bobs_workspace,
-		..
+		rows, bobs_thread, ..
 	} = fixture();
 	let mut dave = viewer("dave");
 	dave.administers.insert("research".into());
-	dave.workspaces.insert(bobs_workspace);
+	dave.threads.insert(bobs_thread);
 	// Act
 	let chart = shape(&dave, rows, since());
 	// Assert: a Duty with no ledger rows spent nothing.

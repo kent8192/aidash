@@ -13,7 +13,7 @@ struct Lease {
 }
 #[fixture]
 fn lease() -> Lease {
-	Lease{snapshot:Snapshot{revision:23,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"delegate":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"revoked":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"enabled":false}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]}}]})).unwrap()},subjects:vec!["reader".into(),"delegate".into()],environment:json!({"transport":"worker","node_id":"aidash://local"}),records:vec![],fail:false}
+	Lease{snapshot:Snapshot{revision:23,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"delegate":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"revoked":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"enabled":false}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["thread"]}}]})).unwrap()},subjects:vec!["reader".into(),"delegate".into()],environment:json!({"transport":"worker","node_id":"aidash://local"}),records:vec![],fail:false}
 }
 #[async_trait]
 impl AuthorizationLease for Lease {
@@ -43,15 +43,11 @@ async fn all_delegated_subjects_are_evaluated_and_audited_at_the_current_revisio
 	let resource = resource(
 		"tenant",
 		&json!({}),
-		"workspace",
+		"thread",
 		"1",
 		json!({"owner":"saved-owner"}),
 	);
-	assert!(
-		decide(&mut lease, &resource, "workspace.read")
-			.await
-			.unwrap()
-	);
+	assert!(decide(&mut lease, &resource, "thread.read").await.unwrap());
 	assert_eq!(
 		lease
 			.records
@@ -76,12 +72,8 @@ async fn one_denied_subject_denies_the_effect_without_omitting_other_audits(
 	#[case] denied: usize,
 ) {
 	lease.subjects[denied] = "revoked".into();
-	let resource = resource("tenant", &json!({}), "workspace", "1", json!({}));
-	assert!(
-		!decide(&mut lease, &resource, "workspace.read")
-			.await
-			.unwrap()
-	);
+	let resource = resource("tenant", &json!({}), "thread", "1", json!({}));
+	assert!(!decide(&mut lease, &resource, "thread.read").await.unwrap());
 	assert_eq!(lease.records.len(), 2);
 	assert!(!lease.records[denied].1.allowed);
 	assert!(lease.records[1 - denied].1.allowed);
@@ -90,8 +82,8 @@ async fn one_denied_subject_denies_the_effect_without_omitting_other_audits(
 #[tokio::test]
 async fn audit_failure_cannot_return_an_allowed_effect(mut lease: Lease) {
 	lease.fail = true;
-	let resource = resource("tenant", &json!({}), "workspace", "1", json!({}));
-	let Error::Port(error) = decide(&mut lease, &resource, "workspace.read")
+	let resource = resource("tenant", &json!({}), "thread", "1", json!({}));
+	let Error::Port(error) = decide(&mut lease, &resource, "thread.read")
 		.await
 		.unwrap_err()
 	else {
@@ -102,7 +94,7 @@ async fn audit_failure_cannot_return_an_allowed_effect(mut lease: Lease) {
 }
 #[rstest]
 fn saved_resource_attributes_override_context_defaults_without_mutating_either_input() {
-	let context = json!({"owner":"request-owner","created_by":"request-author","workspace_id":"current","nested":{"default":true}});
+	let context = json!({"owner":"request-owner","created_by":"request-author","thread_id":"current","nested":{"default":true}});
 	let attributes = json!({"created_by":"saved-author","nested":{"saved":true}});
 	let result = resource(
 		"tenant",
@@ -113,7 +105,7 @@ fn saved_resource_attributes_override_context_defaults_without_mutating_either_i
 	);
 	assert_eq!(
 		result.attributes,
-		json!({"owner":"request-owner","created_by":"saved-author","workspace_id":"current","nested":{"saved":true}})
+		json!({"owner":"request-owner","created_by":"saved-author","thread_id":"current","nested":{"saved":true}})
 	);
 	assert_eq!(result.id, "saved-id");
 	assert_eq!(result.tenant, "tenant");

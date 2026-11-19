@@ -36,8 +36,8 @@ impl AgentConfig {
 			sources: vec![],
 			conversation_memory: false,
 			semantic_memory: false,
-			workspace_context: false,
-			workspace_degrades: false,
+			thread_context: false,
+			thread_degrades: false,
 			schema_version: input.schema_version,
 			bindings: input.bindings,
 			remove_default: input.remove_default,
@@ -112,7 +112,7 @@ impl AgentConfig {
 		result.skills.clear();
 		result.memory = None;
 		result.sources.clear();
-		let mut workspace_policies = vec![];
+		let mut thread_policies = vec![];
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
 				continue;
@@ -169,8 +169,8 @@ impl AgentConfig {
 						NativeSource::ConversationMemory {} => result.conversation_memory = true,
 						NativeSource::SemanticMemory {} => result.semantic_memory = true,
 						NativeSource::WorkspaceRetrieval { on_unavailable } => {
-							result.workspace_context = true;
-							workspace_policies.push(on_unavailable);
+							result.thread_context = true;
+							thread_policies.push(on_unavailable);
 						}
 						NativeSource::PrivateReferences { digest } => {
 							result.knowledge_digest = Some(digest)
@@ -197,11 +197,11 @@ impl AgentConfig {
 				.skill_attachments
 				.extend(plugin.skills.iter().cloned());
 		}
-		// The workspace slot degrades only when every source feeding it opted in.
-		// Semantic memory without a native provider also reads the Workspace
+		// The thread slot degrades only when every source feeding it opted in.
+		// Semantic memory without a native provider also reads the Thread
 		// index and cannot opt in, so it keeps the slot fail-closed (ADR 0059).
-		result.workspace_degrades = !workspace_policies.is_empty()
-			&& workspace_policies
+		result.thread_degrades = !thread_policies.is_empty()
+			&& thread_policies
 				.iter()
 				.all(|policy| *policy == OnUnavailable::Degrade)
 			&& !(result.semantic_memory
@@ -227,12 +227,12 @@ impl AgentConfig {
 			"memory_mutate" => self.allow_memory_write = Some(true),
 			"memory_recall" | "memory_reflect" => self.allow_cross_conversation_memory = Some(true),
 			"outbound_get" => self.core_capabilities.outbound = true,
-			"workspace_read" => self.allow_workspace_retrieval = Some(true),
+			"workspace_read" | "thread_read" => self.allow_workspace_retrieval = Some(true),
 			_ => {}
 		}
 	}
 	pub fn needs_context_authority(&self) -> bool {
-		// Mounted files need area authority. Memory, workspace and private Source
+		// Mounted files need area authority. Memory, thread and private Source
 		// reads retain their own resource authority without requiring a local area.
 		self.core_capabilities.enabled()
 	}
@@ -256,7 +256,10 @@ impl BindingSnapshot {
 				binding.excluded_reason.is_none()
 					&& binding.definition.kind == "tool"
 					&& serde_json::from_value::<ToolDescriptor>(binding.definition.config.clone())
-						.is_ok_and(|descriptor| descriptor.operation == name)
+						// A Thread tool or the Workspace tool it replaces (#1008).
+						.is_ok_and(|descriptor| {
+							crate::tool::thread_tools::is(&descriptor.operation, name)
+						})
 			})
 			.ok_or_else(|| crate::Error::Invalid(format!("Run has no bound operation: {name}")))
 	}

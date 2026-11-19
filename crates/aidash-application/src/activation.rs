@@ -104,7 +104,7 @@ pub async fn due(
 				} else {
 					Some(
 						scope
-							.workspace_event_after(m.id, *cursor)
+							.thread_event_after(m.id, *cursor)
 							.await?
 							.unwrap_or(*wake_at)
 							.min(*wake_at),

@@ -1087,16 +1087,16 @@ async fn set_disabled(f: &Federation, subject: &str, disabled: bool) {
 async fn materialize_plan_run(f: &Federation, run: Uuid) {
 	use reinhardt::db::orm::execution::convert_values;
 	let scope = TenancyScope::tenant("alpha").unwrap();
-	let workspace = f
+	let thread = f
 		.store
-		.create_workspace(&scope, "alice", "Plan Run")
+		.create_thread(&scope, "alice", "Plan Run")
 		.await
 		.unwrap();
 	let task = f
 		.store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&aidash_domain::NewTask {
 				title: "Plan call".into(),
 				description: "Record the named exemption".into(),
@@ -1116,7 +1116,7 @@ async fn materialize_plan_run(f: &Federation, run: Uuid) {
 			[
 				"id",
 				"task_id",
-				"workspace_id",
+				"thread_id",
 				"home_node",
 				"node",
 				"agent_id",
@@ -1130,7 +1130,7 @@ async fn materialize_plan_run(f: &Federation, run: Uuid) {
 			Query::select()
 				.expr(Expr::value(run))
 				.expr(Expr::value(task.id))
-				.expr(Expr::value(workspace.id))
+				.expr(Expr::value(thread.id))
 				.expr(Expr::value(node.to_string()))
 				.expr(Expr::value(node.node.as_str()))
 				.expr(Expr::value("plan-agent"))
@@ -1164,7 +1164,7 @@ async fn admit_alice(
 	let grant = aidash_domain::identity::execution::ExecutionGrant {
 		run_id: run,
 		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		tenant: "alpha".into(),
 		credential_id: Uuid::new_v4(),
 		root_subject: "alice".into(),
@@ -1431,7 +1431,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 	let grant = |run: Uuid, subject: &str| aidash_domain::identity::execution::ExecutionGrant {
 		run_id: run,
 		task_id: Uuid::new_v4(),
-		workspace_id: Uuid::new_v4(),
+		thread_id: Uuid::new_v4(),
 		tenant: "alpha".into(),
 		credential_id: Uuid::new_v4(),
 		root_subject: subject.into(),
@@ -1721,7 +1721,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		// A task materialized as a remote output has the same unknown source
 		// policy, independently of an incoming Run admission receipt.
 		use aidash_server::apps::identity::models::AuthorizationRemoteOutputs;
-		let (task, workspace): (Uuid, Uuid) = {
+		let (task, thread): (Uuid, Uuid) = {
 			let mut tx = f
 				.store
 				.pool
@@ -1732,7 +1732,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				.await
 				.unwrap();
 			let (sql, values) = Query::select()
-				.columns(["task_id", "workspace_id"].map(Alias::new))
+				.columns(["task_id", "thread_id"].map(Alias::new))
 				.from(Alias::new("runs"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.build(PostgresQueryBuilder);
@@ -1741,10 +1741,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				.await
 				.unwrap()
 				.unwrap();
-			let result = (
-				row.get("task_id").unwrap(),
-				row.get("workspace_id").unwrap(),
-			);
+			let result = (row.get("task_id").unwrap(), row.get("thread_id").unwrap());
 			tx.commit().await.unwrap();
 			result
 		};
@@ -1758,7 +1755,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 				let output = AuthorizationRemoteOutputs::build()
 					.grant_id(Uuid::new_v4())
 					.tenant("alpha".to_owned())
-					.workspace_id(workspace)
+					.thread_id(thread)
 					.resource_kind("task".to_owned())
 					.resource_id(task)
 					.finish();

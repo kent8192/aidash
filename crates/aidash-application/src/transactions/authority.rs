@@ -16,9 +16,9 @@ pub fn request(manifest: &Manifest, origin: &Origin, node: &str) -> Result<Prefl
 		.iter()
 		.map(|mutation| {
 			Ok(match mutation {
-				Mutation::WorkspaceTitle { workspace_id, .. } => Target {
-					kind: "workspace".into(),
-					id: *workspace_id,
+				Mutation::ThreadTitle { thread_id, .. } => Target {
+					kind: "thread".into(),
+					id: *thread_id,
 					task_id: None,
 				},
 				Mutation::CompleteTask { task_id, .. } => Target {
@@ -96,18 +96,18 @@ pub async fn checks(
 				}
 				inherit_run(scope, &run, input).await?;
 			}
-			"workspace" => {}
+			"thread" => {}
 			_ => return Err(Error::Invalid("unsupported transaction target".into())),
 		}
 	}
 	scope.require(&transaction, action).await?;
 	for target in &input.targets {
 		let resource = match target.kind.as_str() {
-			"workspace" => {
-				let resource = scope.workspace(target.id).await?;
-				scope.require(&resource, "workspace.read").await?;
+			"thread" => {
+				let resource = scope.thread(target.id).await?;
+				scope.require(&resource, "thread.read").await?;
 				if action != "transaction.read" {
-					scope.require(&resource, "workspace.update").await?;
+					scope.require(&resource, "thread.update").await?;
 				}
 				resource
 			}
@@ -128,7 +128,7 @@ pub async fn checks(
 				let resource = scope.resource(
 					"run",
 					run.id,
-					json!({"task_id":run.task_id,"workspace_id":run.workspace_id,"home_node":run.home_node}),
+					json!({"task_id":run.task_id,"thread_id":run.thread_id,"home_node":run.home_node}),
 				);
 				scope.require(&resource, "run.read").await?;
 				if action != "transaction.read" {

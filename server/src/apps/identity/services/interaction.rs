@@ -24,10 +24,10 @@ impl Access {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn human_reads(&mut self, workspace: Uuid, run: Uuid) -> Result<bool> {
+	pub(crate) async fn human_reads(&mut self, thread: Uuid, run: Uuid) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::human_reads(
 			&mut crate::bootstrap::run_visibility_scope(self),
-			workspace,
+			thread,
 			run,
 		)
 		.await
@@ -35,16 +35,16 @@ impl Access {
 	}
 
 	/// What the Continuation Check knows of a Run: it exists and this authority
-	/// may still reach its Workspace. It never looks at what the Run has read; that
+	/// may still reach its Thread. It never looks at what the Run has read; that
 	/// is the Read Recheck's job, so its cost does not grow with the reads (ADR 0116).
 	pub(crate) async fn run_for_continuation(&mut self, id: Uuid) -> Result<Run> {
 		let mut check = self.rechecking(id);
 		let run = crate::apps::execution::models::Run::read_in(&mut **check.tx, id, None)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		let workspace = check.workspace(run.workspace_id).await?;
-		check.context = workspace.attributes.clone();
-		check.require(&workspace, "workspace.read").await?;
+		let thread = check.thread(run.thread_id).await?;
+		check.context = thread.attributes.clone();
+		check.require(&thread, "thread.read").await?;
 		Ok(run)
 	}
 
@@ -73,7 +73,7 @@ impl Access {
 	}
 
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<Run> {
-		aidash_application::authorization::workspaces::run_for_interaction(
+		aidash_application::authorization::threads::run_for_interaction(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
@@ -124,10 +124,10 @@ impl Access {
 pub async fn conversation(
 	f: &Federation,
 	identity: &SubjectIdentity,
-	input: aidash_application::workspaces::ConversationRequest<'_>,
+	input: aidash_application::threads::ConversationRequest<'_>,
 ) -> Result<ConversationResponse> {
 	let mut access = Access::begin(&f.store, identity).await?;
-	let result = aidash_application::workspaces::conversation(
+	let result = aidash_application::threads::conversation(
 		&mut crate::bootstrap::conversation_scope(f, &mut access),
 		input,
 	)
@@ -165,7 +165,7 @@ pub async fn message_keyed(
 				.await?;
 			access
 				.require(
-					&access.resource("workspace", run.workspace_id, json!({})),
+					&access.resource("thread", run.thread_id, json!({})),
 					"message.create",
 				)
 				.await?;
@@ -274,7 +274,7 @@ pub async fn message_keyed(
 				.await?;
 			access
 				.require(
-					&access.resource("workspace", current.workspace_id, json!({})),
+					&access.resource("thread", current.thread_id, json!({})),
 					"message.create",
 				)
 				.await?;
@@ -365,7 +365,7 @@ pub async fn answer(
 			.await?
 			.ok_or(Error::Forbidden)?;
 		let run = access.run_for_interaction(request.run_id).await?;
-		if request.workspace_id != run.workspace_id {
+		if request.thread_id != run.thread_id {
 			return Err(Error::Forbidden);
 		}
 		let resource = access.human_resource(&request).await?;
@@ -410,9 +410,9 @@ pub async fn abandon(
 			.await?
 		}
 		.ok_or(Error::Forbidden)?;
-		let workspace = access.workspace(task.workspace_id).await?;
-		access.context = workspace.attributes.clone();
-		access.require(&workspace, "workspace.read").await?;
+		let thread = access.thread(task.thread_id).await?;
+		access.context = thread.attributes.clone();
+		access.require(&thread, "thread.read").await?;
 		let resource = access.task_resource(&task).await?;
 		access.require(&resource, "task.read").await?;
 		access.require(&resource, "task.abandon").await?;

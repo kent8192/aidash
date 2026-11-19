@@ -117,8 +117,8 @@ impl Team {
 
 fn simulation(tenant: &str, subject: &str) -> Value {
 	json!({
-		"subject":subject,"action":"workspace.read",
-		"resource":{"tenant":tenant,"kind":"workspace","id":"w","attributes":{}},
+		"subject":subject,"action":"thread.read",
+		"resource":{"tenant":tenant,"kind":"thread","id":"w","attributes":{}},
 		"environment":{}
 	})
 }
@@ -153,7 +153,7 @@ async fn a_tenant_administrator_reads_simulates_and_replaces_its_policy(
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|row| row["action"] != "workspace.read"),
+			.all(|row| row["action"] != "thread.read"),
 		"{decisions}"
 	);
 	let (status, _) = t
@@ -1060,7 +1060,7 @@ async fn memory_scope_is_tenant_admin_only_and_revision_checked(
 		)
 		.await;
 	assert_eq!(status, 200, "{current}");
-	assert_eq!(current, json!({"scope":"workspace","revision":0}));
+	assert_eq!(current, json!({"scope":"thread","revision":0}));
 	let update = json!({"scope":"tenant_agent","expected_revision":0});
 	let (status, denied) = team
 		.d
@@ -1097,11 +1097,11 @@ async fn memory_scope_is_tenant_admin_only_and_revision_checked(
 			"PUT",
 			&path,
 			Some(&team.alice_context),
-			json!({"scope":"workspace","expected_revision":1}),
+			json!({"scope":"thread","expected_revision":1}),
 		)
 		.await;
 	assert_eq!(status, 200, "{restored}");
-	assert_eq!(restored, json!({"scope":"workspace","revision":2}));
+	assert_eq!(restored, json!({"scope":"thread","revision":2}));
 	let (status, _) = team
 		.d
 		.as_person(
@@ -1231,14 +1231,14 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 		.unwrap();
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&t.tenant).unwrap();
 	let store = &t.d.federation.store;
-	let workspace = store
-		.create_workspace(&scope, "alice", "Confidential plan")
+	let thread = store
+		.create_thread(&scope, "alice", "Confidential plan")
 		.await
 		.unwrap();
 	let task = store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&aidash_domain::NewTask {
 				title: "Confidential task".into(),
 				description: "Tenant content".into(),
@@ -1252,23 +1252,19 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 		.await
 		.unwrap();
 	let tenant = &t.tenant;
-	let workspace_path = format!("/api/workspaces/{}", workspace.id);
+	let thread_path = format!("/api/threads/{}", thread.id);
 	let routes: Vec<(&str, String, Value)> = vec![
-		("GET", workspace_path.clone(), Value::Null),
+		("GET", thread_path.clone(), Value::Null),
 		("GET", "/api/tasks".into(), Value::Null),
 		(
 			"POST",
 			format!("/api/tasks/{}/abandon", task.id),
 			json!({"revision":task.revision,"reason":"administrator attempt"}),
 		),
+		("GET", format!("{thread_path}/message-history"), Value::Null),
 		(
 			"GET",
-			format!("{workspace_path}/message-history"),
-			Value::Null,
-		),
-		(
-			"GET",
-			format!("{workspace_path}/attachments/{}", Uuid::new_v4()),
+			format!("{thread_path}/attachments/{}", Uuid::new_v4()),
 			Value::Null,
 		),
 		(
@@ -1403,7 +1399,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 	] {
 		assert_eq!(state.0, 200, "{}", state.1);
 		for collection in [
-			"workspaces",
+			"threads",
 			"tasks",
 			"runs",
 			"events",
@@ -1420,7 +1416,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 	let (status, body, _) =
 		t.d.send(
 			"GET",
-			&workspace_path,
+			&thread_path,
 			Some(&t.alice),
 			Some(&t.alice_context),
 			None,
@@ -1442,7 +1438,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 	let (status, body, _) =
 		t.d.send(
 			"GET",
-			&workspace_path,
+			&thread_path,
 			Some(&dave),
 			Some(&other_context),
 			None,

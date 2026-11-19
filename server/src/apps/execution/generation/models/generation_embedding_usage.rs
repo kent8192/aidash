@@ -19,10 +19,10 @@ pub struct GenerationEmbeddingUsage {
 	#[rel(
 		foreign_key,
 		shared_fields = ["tenant"],
-		db_constraint = "generation_embedding_usage_workspace_id_fkey",
+		db_constraint = "generation_embedding_usage_thread_id_fkey",
 		db_index = false
 	)]
-	pub workspace: ForeignKeyField<crate::apps::workspaces::models::Workspace>,
+	pub thread: ForeignKeyField<crate::apps::workspaces::models::Thread>,
 
 	#[rel(
 		foreign_key,

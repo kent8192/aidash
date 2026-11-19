@@ -77,10 +77,10 @@ pub struct ReadyState {}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThinkingState {
-	pub force_workspace_read_compaction: bool,
-	pub deferred_workspace_read: Option<Box<DeferredRead>>,
+	pub force_thread_read_compaction: bool,
+	pub deferred_thread_read: Option<Box<DeferredRead>>,
 	pub deferred_skill_read: Option<Box<DeferredRead>>,
-	pub deferred_workspace_observation: Option<Box<DeferredRead>>,
+	pub deferred_thread_observation: Option<Box<DeferredRead>>,
 	pub selected_media: Vec<ModelMedia>,
 	pub media_intake_through_seq: Option<i64>,
 	pub deferred_run_message_reads: Vec<Uuid>,
@@ -144,7 +144,7 @@ pub struct ToolCallState {
 	pub run_message_summary_end_seq: i64,
 	pub run_message_summary_limit: usize,
 	pub deferred_reads: ThinkingState,
-	pub workspace_read_plan: Option<ReadPlan>,
+	pub thread_read_plan: Option<ReadPlan>,
 	pub skill_read_plan: Option<ReadPlan>,
 	pub workspace_observation_plan: Option<ReadPlan>,
 	/// Only a Run executing for another Node: Home's answer to the call at `cursor`.
@@ -512,9 +512,9 @@ pub struct RecoveryState {
 	/// Start of the current external-service outage, retained across wake-ups.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub outage: Option<OutageTracking>,
-	/// Last workspace event delivered to this Run.
+	/// Last thread event delivered to this Run.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub workspace_event_cursor: Option<i64>,
+	pub thread_event_cursor: Option<i64>,
 	/// Fingerprint of remote terminal child Tasks observed before inference.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub remote_task_fingerprint: Option<String>,
@@ -642,7 +642,7 @@ impl RecoveryState {
 		self.standing_declines.clear();
 		self
 	}
-	/// Whether this attempt may degrade an unavailable workspace slot: it is
+	/// Whether this attempt may degrade an unavailable thread slot: it is
 	/// the last one of the bounded outage retry, or an earlier step of the Run
 	/// already degraded and no retrieval has succeeded since (ADR 0059).
 	///

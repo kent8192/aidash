@@ -45,8 +45,8 @@ impl SourceAuthorityScope for Scope<'_> {
 			.generation_home(task, node, generation)
 			.await
 	}
-	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.workspace(id).await.map_err(Into::into)
+	async fn source_thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.thread(id).await.map_err(Into::into)
 	}
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)
@@ -66,8 +66,8 @@ impl SemanticBindingScope for Scope<'_> {
 	fn binding_tenant(&self) -> &str {
 		&self.access.identity.tenant
 	}
-	async fn semantic_index(&mut self, workspace: Uuid) -> Result<(Index, IndexingSpec)> {
-		let index = crate::semantic::service::index(&mut self.access.tx, workspace, false).await?;
+	async fn semantic_index(&mut self, thread: Uuid) -> Result<(Index, IndexingSpec)> {
+		let index = crate::semantic::service::index(&mut self.access.tx, thread, false).await?;
 		let spec = index.configuration()?;
 		Ok((index.into(), spec.into()))
 	}
@@ -83,14 +83,14 @@ impl SemanticBindingScope for Scope<'_> {
 	}
 	async fn native_binding(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		request: &aidash_domain::semantic::remote::NativeRequest,
 		generation: Option<&aidash_domain::semantic::remote::NativeOrigin>,
 	) -> Result<aidash_domain::semantic::remote::NativeBinding> {
 		crate::apps::knowledge::services::remote_memory::bind(
 			self.runtime.store.deployment.as_str(),
 			&mut crate::semantic::service::Lease::Inherited(self.access),
-			workspace,
+			thread,
 			request,
 			generation,
 		)

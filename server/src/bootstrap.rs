@@ -1496,12 +1496,12 @@ pub(crate) fn semantic_entries_scope<'a, 'scope>(
 pub(crate) fn semantic_configuration_repository(
 	store: &Store,
 	actor: &crate::authorization::identity::Actor,
-	workspace: uuid::Uuid,
+	thread: uuid::Uuid,
 ) -> crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 	crate::apps::knowledge::repositories::mutations::NativeConfiguration {
 		store: store.clone(),
 		actor: actor.clone(),
-		workspace,
+		thread,
 	}
 }
 
@@ -1610,13 +1610,13 @@ pub(crate) fn registry_verification_scope<'a>(
 }
 
 pub(crate) fn stream_authority_store(
-	workspaces: &crate::apps::identity::services::workspace::Workspaces,
+	threads: &crate::apps::identity::services::thread::Threads,
 ) -> crate::apps::identity::repositories::visibility::stream::Authority<'_> {
-	crate::apps::identity::repositories::visibility::stream::Authority { workspaces }
+	crate::apps::identity::repositories::visibility::stream::Authority { threads }
 }
 
-/// Workspace policies and atomic writes share the caller's existing authority transaction.
-pub(crate) fn workspace_mutations<'a>(
+/// Thread policies and atomic writes share the caller's existing authority transaction.
+pub(crate) fn thread_mutations<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	store: &'a Store,
 ) -> crate::apps::workspaces::repositories::mutations::NativeMutations<'a> {

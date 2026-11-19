@@ -375,14 +375,11 @@ async fn real_server_sigkill_at_durable_cut(
 	let reader_b = b.subject_token.clone();
 	tokio::time::timeout(WallDuration::from_secs(40), async {
 		loop {
-			for (node, workspace, reader) in [(&a, wa, &reader_a), (&b, wb, &reader_b)] {
+			for (node, thread, reader) in [(&a, wa, &reader_a), (&b, wb, &reader_b)] {
 				let response = node
 					.f
 					.client
-					.get(format!(
-						"{}/api/workspaces/{workspace}",
-						node.f.config.endpoint
-					))
+					.get(format!("{}/api/threads/{thread}", node.f.config.endpoint))
 					.bearer_auth(reader)
 					.timeout(WallDuration::from_secs(5))
 					.send()
@@ -391,25 +388,17 @@ async fn real_server_sigkill_at_durable_cut(
 				match response.status().as_u16() {
 					200 => {
 						let value: Value = response.json().await.unwrap();
-						let revision = value["workspace"]["revision"]
+						let revision = value["thread"]["revision"]
 							.as_i64()
-							.expect("workspace snapshot revision");
+							.expect("thread snapshot revision");
 						assert!(matches!(revision, 0 | 1));
 						if revision == 1 {
 							assert_eq!(
-								a.f.store
-									.workspace(&TEST_FIXTURE, wa)
-									.await
-									.unwrap()
-									.revision,
+								a.f.store.thread(&TEST_FIXTURE, wa).await.unwrap().revision,
 								1
 							);
 							assert_eq!(
-								b.f.store
-									.workspace(&TEST_FIXTURE, wb)
-									.await
-									.unwrap()
-									.revision,
+								b.f.store.thread(&TEST_FIXTURE, wb).await.unwrap().revision,
 								1
 							);
 						}
@@ -470,29 +459,26 @@ async fn real_server_sigkill_at_durable_cut(
 		result.decision.as_deref(),
 		Some(if abort { "ABORT" } else { "COMMIT" })
 	);
-	for (node, workspace) in [(&a, wa), (&b, wb)] {
+	for (node, thread) in [(&a, wa), (&b, wb)] {
 		let expected = i64::from(!abort);
 		assert_eq!(
 			node.f
 				.store
-				.workspace(&TEST_FIXTURE, workspace)
+				.thread(&TEST_FIXTURE, thread)
 				.await
 				.unwrap()
 				.revision,
 			expected
 		);
-		assert_eq!(
-			node.get(&format!("/api/workspaces/{workspace}")).await.0,
-			200
-		);
+		assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 		let count: i64 = {
-			let query_bind_1 = workspace;
+			let query_bind_1 = thread;
 			sqlx::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 					.from(reinhardt::query::Alias::new("events"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(workspace_id=? AND kind='workspace.updated')".to_owned(),
+						"(thread_id=? AND kind='thread.updated')".to_owned(),
 						vec![Expr::value(query_bind_1.to_owned()).into()],
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
@@ -573,7 +559,7 @@ async fn cut_fixture(
 ) -> CutFixture {
 	let (mut a, mut b, mut manifest, wa, wb) = isolated_pair;
 	if abort {
-		let aidash_server::transactions::Mutation::WorkspaceTitle {
+		let aidash_server::transactions::Mutation::ThreadTitle {
 			expected_revision, ..
 		} = &mut manifest.participants[1].mutations[0]
 		else {

@@ -1,12 +1,12 @@
 use super::*;
 
 #[test]
-fn full_workspace_context_retains_content_with_minimal_memory_status() {
+fn full_thread_context_retains_content_with_minimal_memory_status() {
 	let budget = 256;
-	let available = workspace_budget(budget).unwrap();
+	let available = thread_budget(budget).unwrap();
 	let semantic = json!("x".repeat(available - 2));
 	assert_eq!(serde_json::to_vec(&semantic).unwrap().len(), available);
-	let reserved = serde_json::to_vec(&json!({"workspace":semantic,"memory":null}))
+	let reserved = serde_json::to_vec(&json!({"thread":semantic,"memory":null}))
 		.unwrap()
 		.len();
 	for status in ["disabled", "no_space"] {
@@ -14,7 +14,7 @@ fn full_workspace_context_retains_content_with_minimal_memory_status() {
 		let combined = combine(Some(semantic.clone()), memory, budget)
 			.unwrap()
 			.unwrap();
-		assert_eq!(combined["workspace"], semantic);
+		assert_eq!(combined["thread"], semantic);
 		assert_eq!(combined["memory"]["status"], status);
 		assert!(serde_json::to_vec(&combined).unwrap().len() <= budget);
 	}
@@ -25,7 +25,7 @@ fn duplicate_source_caps_restrict_private_and_shared_banks_in_any_order() {
 	let private = Bank {
 		home: "aidash://home".into(),
 		tenant: "acme".into(),
-		workspace: uuid::Uuid::now_v7(),
+		thread: uuid::Uuid::now_v7(),
 		participant: Some(uuid::Uuid::now_v7()),
 	};
 	let provider = EntityRef {

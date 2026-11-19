@@ -3,13 +3,13 @@ use super::*;
 #[rstest::rstest]
 #[tokio::test]
 async fn wakeup_survives_read_to_wait_gap_and_scopes_are_reclaimed(service: Service) {
-	let workspace = Uuid::new_v4();
-	let mut selected = service.register(Some(workspace));
+	let thread = Uuid::new_v4();
+	let mut selected = service.register(Some(thread));
 	let mut all = service.register(None);
 	let other = service.register(Some(Uuid::new_v4()));
 	selected.take_changes();
-	service.notify(Some(workspace), false);
-	service.notify(Some(workspace), false);
+	service.notify(Some(thread), false);
+	service.notify(Some(thread), false);
 	tokio::time::timeout(Duration::from_millis(100), selected.receiver.changed())
 		.await
 		.unwrap()
@@ -18,7 +18,7 @@ async fn wakeup_survives_read_to_wait_gap_and_scopes_are_reclaimed(service: Serv
 	assert_eq!(all.take_changes().0, Reasons::NOTIFICATION.0);
 	assert!(!other.receiver.has_changed().unwrap());
 	service.notify(None, true);
-	service.notify(Some(workspace), false);
+	service.notify(Some(thread), false);
 	assert_eq!(
 		selected.take_changes().0,
 		Reasons::RECONNECT.0 | Reasons::NOTIFICATION.0

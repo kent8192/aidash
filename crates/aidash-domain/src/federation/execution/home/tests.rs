@@ -29,7 +29,7 @@ fn home_binding_requires_exact_admission_task_and_initial_snapshot(
 fn task() -> crate::Task {
 	crate::Task {
 		id: Uuid::from_u128(1),
-		workspace_id: Uuid::from_u128(2),
+		thread_id: Uuid::from_u128(2),
 		title: "original title".into(),
 		description: "original intent".into(),
 		status: crate::TaskStatus::Open,
@@ -47,7 +47,7 @@ fn grant() -> Grant {
 		id: Uuid::from_u128(3),
 		task_id: task().id,
 		task_revision: 7,
-		workspace_id: task().workspace_id,
+		thread_id: task().thread_id,
 		node_id: "aidash://receiver".into(),
 		tenant: "tenant".into(),
 		credential_id: Uuid::from_u128(4),
@@ -72,7 +72,7 @@ fn bound() -> HomeBinding {
 #[rstest]
 #[case("task_id")]
 #[case("task_revision")]
-#[case("workspace_id")]
+#[case("thread_id")]
 #[case("node_id")]
 #[case("credential_id")]
 #[case("tenant")]
@@ -87,7 +87,7 @@ fn reused_grant_rejects_each_changed_authority_dimension(#[case] changed: &str) 
 	match changed {
 		"task_id" => actual.task_id = Uuid::from_u128(99),
 		"task_revision" => actual.task_revision += 1,
-		"workspace_id" => actual.workspace_id = Uuid::from_u128(99),
+		"thread_id" => actual.thread_id = Uuid::from_u128(99),
 		"node_id" => actual.node_id = "aidash://other".into(),
 		"credential_id" => actual.credential_id = Uuid::from_u128(99),
 		"tenant" => actual.tenant = "other".into(),
@@ -143,7 +143,7 @@ fn bound_command_retains_original_input_after_journal_revision_advances() {
 #[case("grant")]
 #[case("task")]
 #[case("original_task")]
-#[case("workspace")]
+#[case("thread")]
 #[case("original_revision")]
 #[case("journal_revision")]
 fn bound_description_rejects_replaced_identity_or_revision(#[case] changed: &str) {
@@ -155,7 +155,7 @@ fn bound_description_rejects_replaced_identity_or_revision(#[case] changed: &str
 		"grant" => binding.grant_id = Uuid::from_u128(99),
 		"task" => binding.task_id = Uuid::from_u128(99),
 		"original_task" => binding.initial_task["id"] = json!(Uuid::from_u128(99)),
-		"workspace" => binding.initial_task["workspace_id"] = json!(Uuid::from_u128(99)),
+		"thread" => binding.initial_task["thread_id"] = json!(Uuid::from_u128(99)),
 		"original_revision" => binding.initial_task["revision"] = json!(6),
 		"journal_revision" => current.revision += 1,
 		_ => panic!("unknown dimension"),

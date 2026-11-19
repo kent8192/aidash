@@ -12,12 +12,12 @@ pub struct DutyRecord {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	/// The Duty's own Workspace (#1008, ADR 0140).
+	/// The Duty's own Thread (#1008, ADR 0140).
 	#[field]
-	pub workspace_id: Uuid,
-	/// The Workspace it was registered from; None before #1008.
+	pub thread_id: Uuid,
+	/// The Thread it was registered from; None before #1008.
 	#[field(null = true)]
-	pub origin_workspace_id: Option<Uuid>,
+	pub origin_thread_id: Option<Uuid>,
 	/// The person every Run of the Duty acts as.
 	#[field(field_type = "text")]
 	pub requester: String,
@@ -94,7 +94,7 @@ pub struct DutyTickRecord {
 	#[field]
 	pub duty_id: Uuid,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub scheduled_at: DateTime<Utc>,
 	#[field]
@@ -122,7 +122,7 @@ pub struct DutyTriggerRecord {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub duty_id: Uuid,
 	/// `webhook`, `duty_completed` or `node_event`.
@@ -151,7 +151,7 @@ pub struct DutyEventRecord {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub duty_id: Uuid,
 	#[field]
@@ -186,7 +186,7 @@ pub struct DutyBookingRecord {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	#[field]
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	#[field]
 	pub trigger_id: Uuid,
 	#[field]

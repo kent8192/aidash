@@ -406,14 +406,8 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 	Ok(())
 }
 
-/// A receiving Node keeps one space per home Workspace and mapped person.
-fn remote_space_id(
-	tenant: &str,
-	node: &NodeName,
-	home: &str,
-	workspace: Uuid,
-	person: &str,
-) -> Uuid {
+/// A receiving Node keeps one space per home Thread and mapped person.
+fn remote_space_id(tenant: &str, node: &NodeName, home: &str, thread: Uuid, person: &str) -> Uuid {
 	use sha2::{Digest, Sha256};
 	let mut hash = Sha256::new();
 	hash.update(b"aidash:remote-scratch-space:v1");
@@ -421,7 +415,7 @@ fn remote_space_id(
 		hash.update((value.len() as u64).to_be_bytes());
 		hash.update(value.as_bytes());
 	}
-	hash.update(workspace.as_bytes());
+	hash.update(thread.as_bytes());
 	let digest = hash.finalize();
 	let mut bytes = [0_u8; 16];
 	bytes.copy_from_slice(&digest[..16]);
@@ -809,7 +803,7 @@ impl NativeScratchServices<'_> {
 							.column(Alias::new("id"))
 							.from(Alias::new("runs"))
 							.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-							.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
+							.and_where(Expr::col("thread_id").eq(Expr::value(run.thread_id)))
 							.and_where(
 								Expr::col("home_node").eq(Expr::value(run.home_node.clone())),
 							)
@@ -865,13 +859,8 @@ impl NativeScratchServices<'_> {
 			}
 			// UUIDv8 is domain-separated from user-created UUIDv4 spaces and stable
 			// across retries. Existing spaces need no Node allocation lock.
-			let scratch_id = remote_space_id(
-				&tenant,
-				&run.node,
-				&run.home_node,
-				run.workspace_id,
-				&person,
-			);
+			let scratch_id =
+				remote_space_id(&tenant, &run.node, &run.home_node, run.thread_id, &person);
 			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, false)
 				.await
 				.map_err(aidash_application::Error::from)?
@@ -932,8 +921,8 @@ impl NativeScratchServices<'_> {
 		}
 		let (sql, values) = Query::select()
 			.columns([Alias::new("scratch_space_id"), Alias::new("created_by")])
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(run.thread_id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
 			.and_where(Expr::col("node").eq(Expr::value(run.node.as_str().to_owned())))
 			.build(PostgresQueryBuilder);

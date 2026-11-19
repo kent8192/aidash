@@ -5,7 +5,7 @@ use reinhardt::di::params::{FromRequest, HasInner, ParamContext, ParamResult};
 use serde::de::DeserializeOwned;
 use std::ops::Deref;
 
-/// JSON extraction for Workspace and Conversation creation. Views run the
+/// JSON extraction for Thread and Conversation creation. Views run the
 /// existing field validation after extraction without echoing submitted values.
 pub struct Json<T>(pub T);
 

@@ -3,11 +3,11 @@ use super::*;
 use base64::Engine;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
-async fn post(c: &CoreFixture, workspace: Uuid, content: &str, citations: &Value) -> (u16, Value) {
+async fn post(c: &CoreFixture, thread: Uuid, content: &str, citations: &Value) -> (u16, Value) {
 	common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/workspaces/{workspace}/thread-messages"),
+		&format!("/api/threads/{thread}/channel-messages"),
 		json!({
 			"content": content,
 			"idempotency_key": Uuid::new_v4(),
@@ -17,11 +17,11 @@ async fn post(c: &CoreFixture, workspace: Uuid, content: &str, citations: &Value
 	.await
 }
 
-async fn history(c: &CoreFixture, workspace: Uuid, token: &str) -> Value {
+async fn history(c: &CoreFixture, thread: Uuid, token: &str) -> Value {
 	let (status, value) = common::get(
 		&c.app,
 		token,
-		&format!("/api/workspaces/{workspace}/message-history?limit=100"),
+		&format!("/api/threads/{thread}/message-history?limit=100"),
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
@@ -69,9 +69,9 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
 	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
 	let digest = area["manifest"][0]["digest"].clone();
-	let workspace = run.workspace_id;
+	let thread = run.thread_id;
 	let cit = json!([{"area_id":area_id,"file_id":file}]);
-	let (status, posted) = post(&c, workspace, "Please correct the page", &cit).await;
+	let (status, posted) = post(&c, thread, "Please correct the page", &cit).await;
 	assert_eq!(status, 200, "{posted}");
 	assert_eq!(posted["citations"].as_array().unwrap().len(), 1);
 	assert_eq!(posted["citations"][0]["file_id"], json!(file));
@@ -94,7 +94,7 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 		json!(file),
 		"the overwrite must create a new File version"
 	);
-	let history = history(&c, workspace, &c.token).await;
+	let history = history(&c, thread, &c.token).await;
 	let cited = &message(&history, "Please correct the page")["citations"][0];
 	assert_eq!(cited["file_id"], json!(file));
 	assert_eq!(cited["digest"], digest);
@@ -138,7 +138,7 @@ async fn a_quota_refusal_leaves_no_message_and_no_hold(#[future] capability_fixt
 		.unwrap();
 	let (status, refusal) = post(
 		&c,
-		run.workspace_id,
+		run.thread_id,
 		"Cite beyond the ceiling",
 		&json!([{"area_id":area_id,"file_id":file}]),
 	)
@@ -190,7 +190,7 @@ async fn a_viewer_without_download_authority_sees_no_digest(
 	let file: Uuid = serde_json::from_value(area["manifest"][0]["file_id"].clone()).unwrap();
 	let (status, posted) = post(
 		&c,
-		run.workspace_id,
+		run.thread_id,
 		"Read this but do not download it",
 		&json!([{"area_id":area_id,"file_id":file}]),
 	)
@@ -198,7 +198,7 @@ async fn a_viewer_without_download_authority_sees_no_digest(
 	assert_eq!(status, 200, "{posted}");
 	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
 	let token = bob["token"].as_str().unwrap();
-	let history = history(&c, run.workspace_id, token).await;
+	let history = history(&c, run.thread_id, token).await;
 	let cited = message(&history, "Read this but do not download it")["citations"][0].clone();
 	assert_eq!(cited["available"], false);
 	assert_eq!(cited["path"], "private.html");

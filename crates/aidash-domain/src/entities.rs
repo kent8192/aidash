@@ -172,10 +172,10 @@ impl TaskStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Workspace {
+pub struct Thread {
 	pub id: Uuid,
 	pub scratch_space_id: Uuid,
-	/// The Node of its Tenant that the Workspace, its Tasks and its Runs belong to.
+	/// The Node of its Tenant that the Thread, its Tasks and its Runs belong to.
 	pub node: crate::nodes::NodeName,
 	pub title: String,
 	/// The person (or the Duty's requester) who opened it.
@@ -187,7 +187,7 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Task {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub title: String,
 	pub description: String,
 	pub status: TaskStatus,
@@ -295,7 +295,7 @@ pub struct NewTask {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Artifact {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub task_id: Uuid,
 	pub kind: String,
 	pub name: String,
@@ -339,9 +339,9 @@ impl ArtifactInput {
 pub struct Event {
 	pub sequence: i64,
 	pub id: Uuid,
-	/// The Node of the Workspace or executing Run; none for a Tenant-level event.
+	/// The Node of the Thread or executing Run; none for a Tenant-level event.
 	pub node: Option<crate::nodes::NodeName>,
-	pub workspace_id: Option<Uuid>,
+	pub thread_id: Option<Uuid>,
 	pub kind: String,
 	pub data: Value,
 	pub created_at: DateTime<Utc>,
@@ -359,7 +359,7 @@ impl Event {
 
 	pub fn cloud_event(&self, deployment: &str) -> Value {
 		json!({"specversion":"1.0", "id":self.id, "source":self.source(deployment), "type":self.kind,
-            "subject":self.workspace_id, "time":self.created_at, "datacontenttype":"application/json", "data":self.data, "sequence":self.sequence})
+            "subject":self.thread_id, "time":self.created_at, "datacontenttype":"application/json", "data":self.data, "sequence":self.sequence})
 	}
 }
 
@@ -369,7 +369,7 @@ pub struct Conversation {
 	pub scratch_space_id: Uuid,
 	pub created_by: String,
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub target: String,
 	pub target_kind: String,
 	pub created_at: DateTime<Utc>,
@@ -379,7 +379,7 @@ pub struct Conversation {
 pub struct HumanRequest {
 	pub answered_by: Option<String>,
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub run_id: Uuid,
 	pub kind: String,
 	pub prompt: String,
@@ -397,7 +397,7 @@ pub struct HumanRequest {
 pub struct Run {
 	pub id: Uuid,
 	pub task_id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	/// The Node that executes the Run.
 	pub node: crate::nodes::NodeName,
 	/// The address of the Node that owns the Run's Task; the executing Node's
@@ -427,8 +427,8 @@ pub struct Run {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct WorkspaceSnapshot {
-	pub workspace: Workspace,
+pub struct ThreadSnapshot {
+	pub thread: Thread,
 	pub tasks: Vec<Task>,
 	pub artifacts: Vec<Artifact>,
 	pub events: Vec<Event>,
@@ -439,8 +439,8 @@ pub struct WorkspaceSnapshot {
 	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 }
 
-/// A keyset page of one workspace collection. Pages stay below the peer
-/// response limit even when the complete workspace is much larger.
+/// A keyset page of one thread collection. Pages stay below the peer
+/// response limit even when the complete thread is much larger.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SnapshotPage {
 	pub items: Vec<Value>,
@@ -492,7 +492,7 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Message {
 	pub id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub sender: String,
 	pub content: String,
 	pub idempotency_key: Option<String>,

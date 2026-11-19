@@ -14,12 +14,12 @@ fn definition(title: &str, every_seconds: i64) -> Value {
 	})
 }
 
-async fn register(c: &CoreFixture, workspace: Uuid, body: Value) -> Value {
+async fn register(c: &CoreFixture, thread: Uuid, body: Value) -> Value {
 	let (status, duty) = request(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/duties"),
+		&format!("/api/threads/{thread}/duties"),
 		body,
 	)
 	.await;
@@ -60,12 +60,12 @@ async fn halt(c: &CoreFixture, duty: Uuid) -> Option<String> {
 		.unwrap()
 }
 
-async fn workspace(c: &CoreFixture) -> Uuid {
+async fn thread(c: &CoreFixture) -> Uuid {
 	c.f.store
 		.task(&TEST_FIXTURE, c.task)
 		.await
 		.unwrap()
-		.workspace_id
+		.thread_id
 }
 
 #[rstest::rstest]
@@ -75,8 +75,8 @@ async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 ) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
-	let duty = register(&c, workspace, definition("Hourly digest", 3600)).await;
+	let thread = thread(&c).await;
+	let duty = register(&c, thread, definition("Hourly digest", 3600)).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	assert_eq!(duty["mine"], true);
 	assert_eq!(duty["status"], "active");
@@ -142,8 +142,8 @@ async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 async fn a_duty_stops_when_its_requester_loses_access(#[future] capability_fixture: CoreFixture) {
 	// Arrange: the Requester's credential is revoked, as leaving does.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
-	let duty = register(&c, workspace, definition("Daily digest", 86_400)).await;
+	let thread = thread(&c).await;
+	let duty = register(&c, thread, definition("Daily digest", 86_400)).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	make_due(&c, id).await;
 	sqlx::query(
@@ -169,14 +169,14 @@ async fn any_frequency_and_any_number_of_duties_are_accepted(
 ) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	// Act
 	for (title, every) in [
 		("Every second", 1),
 		("Every minute", 60),
 		("Every hour", 3600),
 	] {
-		register(&c, workspace, definition(title, every)).await;
+		register(&c, thread, definition(title, every)).await;
 	}
 	let (status, limits) =
 		request(&c.app, &c.token, "GET", "/api/duties/limits", Value::Null).await;
@@ -185,7 +185,7 @@ async fn any_frequency_and_any_number_of_duties_are_accepted(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/workspaces/{workspace}/duties"),
+		&format!("/api/threads/{thread}/duties"),
 		Value::Null,
 	)
 	.await;
@@ -195,9 +195,8 @@ async fn any_frequency_and_any_number_of_duties_are_accepted(
 	c.close().await;
 }
 
-/// The Duty's own Thread: its first Task opens it, every later Task works in
-/// it, and deleting it stops the Duty (#1011).
-async fn duty_thread(c: &CoreFixture, duty: Uuid) -> Option<Uuid> {
+/// A Duty's own Thread (#1008, ADR 0140): opened when the Duty is registered.
+async fn duty_thread(c: &CoreFixture, duty: Uuid) -> Uuid {
 	sqlx::query_scalar("SELECT thread_id FROM duties WHERE id = $1")
 		.bind(duty)
 		.fetch_one(c.f.store.pool.fixture_driver())
@@ -219,33 +218,39 @@ async fn finish_task(c: &CoreFixture, task: Uuid) {
 async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	#[future] capability_fixture: CoreFixture,
 ) {
-	// Arrange: a Duty whose first two Tasks ran.
+	// Arrange: a Duty registered from the fixture's Thread, whose first two
+	// Tasks ran.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
-	let duty = register(&c, workspace, definition("Weekly review", 604_800)).await;
+	let origin = thread(&c).await;
+	let duty = register(&c, origin, definition("Weekly review", 604_800)).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
-	assert_eq!(duty["thread_id"], Value::Null);
+	let own = duty_thread(&c, id).await;
+	assert_ne!(own, origin, "a Duty opens a Thread of its own");
+	assert_eq!(duty["thread_id"], json!(own));
+	assert_eq!(duty["origin_thread_id"], json!(origin));
 	make_due(&c, id).await;
 	let first = pass(&c.f, Utc::now()).await.unwrap();
 	assert_eq!(first.started.len(), 1, "{first:?}");
-	let thread = duty_thread(&c, id)
-		.await
-		.expect("the first Task opens the Thread");
 	finish_task(&c, first.started[0]).await;
 	make_due(&c, id).await;
 	let second = pass(&c.f, Utc::now()).await.unwrap();
 	assert_eq!(second.started.len(), 1, "{second:?}");
-	let threads: Vec<Option<Uuid>> =
+	// Every Task the Duty started lives in its own Thread.
+	for task in [first.started[0], second.started[0]] {
+		let task = c.f.store.task(&TEST_FIXTURE, task).await.unwrap();
+		assert_eq!(task.thread_id, own, "{task:?}");
+	}
+	let threads: Vec<Uuid> =
 		sqlx::query_scalar("SELECT thread_id FROM duty_ticks WHERE duty_id = $1")
 			.bind(id)
 			.fetch_all(c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
-	assert_eq!(threads, vec![Some(thread), Some(thread)]);
+	assert_eq!(threads, vec![own, own]);
 	// The Tasks left Working Areas in the Thread; the person keeps them.
 	let areas: Vec<(Uuid, i64)> =
 		sqlx::query_as("SELECT id, revision FROM core_areas WHERE thread_id = $1")
-			.bind(thread)
+			.bind(own)
 			.fetch_all(c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
@@ -260,7 +265,7 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/workspaces/{workspace}/threads/{thread}/delete"),
+		&format!("/api/threads/{own}/delete"),
 		json!({"idempotency_key": Uuid::new_v4(), "files": files}),
 	)
 	.await;
@@ -271,6 +276,16 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 		request(&c.app, &c.token, "GET", "/api/duties/notices", Value::Null).await;
 	assert_eq!(status, 200, "{notices}");
 	assert_eq!(notices["stopped"][0]["halt"], "thread_deleted");
+	// The Thread it was registered from is untouched.
+	let (status, snapshot) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/threads/{origin}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{snapshot}");
 	c.close().await;
 }
 
@@ -290,15 +305,15 @@ async fn a_duty_set_back_to_the_default_mode_clears_its_threads_mode(
 ) {
 	// Arrange: a Duty whose first Task ran in its own mode.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("Standup notes", 86_400);
 	body["approval_mode"] = json!("dont_ask");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	make_due(&c, id).await;
 	let first = pass(&c.f, Utc::now()).await.unwrap();
 	assert_eq!(first.started.len(), 1, "{first:?}");
-	let thread = json!({"id": duty_thread(&c, id).await.unwrap()});
+	let thread = json!({"id": duty_thread(&c, id).await});
 	assert_eq!(thread_mode(&c, &thread).await.as_deref(), Some("dont_ask"));
 	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
 		.bind(first.started[0])
@@ -362,13 +377,13 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 			.unwrap();
 	assert_eq!(registered_by, Some(run.id));
 	assert_eq!(agent, "research");
-	// The person's Duty in another Workspace is out of the Agent's reach.
+	// The person's Duty in another Thread is out of the Agent's reach.
 	let (status, other) = request(
 		&c.app,
 		&c.token,
 		"POST",
-		"/api/workspaces",
-		json!({"title": "Elsewhere", "request": "Another Workspace"}),
+		"/api/threads",
+		json!({"title": "Elsewhere", "request": "Another Thread"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{other}");
@@ -377,7 +392,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 			.clone()
 			.as_str()
 			.map(|id| json!(id))
-			.unwrap_or_else(|| other["workspace"]["id"].clone()),
+			.unwrap_or_else(|| other["thread"]["id"].clone()),
 	)
 	.unwrap();
 	let foreign = register(&c, elsewhere, definition("Elsewhere", 86_400)).await;
@@ -431,8 +446,8 @@ async fn a_refused_start_is_a_failed_tick_with_its_reason_and_is_not_retried(
 	// The Agent itself stays approved, so the tick passes the Duty's own
 	// checks and the Run start refuses it.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
-	let duty = register(&c, workspace, definition("Hourly digest", 3600)).await;
+	let thread = thread(&c).await;
+	let duty = register(&c, thread, definition("Hourly digest", 3600)).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let agent =
 		c.f.registry
@@ -495,10 +510,10 @@ async fn three_failed_runs_in_a_row_pause_a_duty_and_the_bell_says_so(
 ) {
 	// Arrange: a Duty with its own Approval Mode.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("Nightly check", 86_400);
 	body["approval_mode"] = json!("dont_ask");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	for round in 0..3 {
 		// Earlier ticks lie far enough back that the next is not too soon.
@@ -715,10 +730,10 @@ async fn a_signed_webhook_starts_a_duty_task_with_the_event_as_data(
 ) {
 	// Arrange: a Duty that wakes only on its webhook.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("CI watcher", 3600);
 	body.as_object_mut().unwrap().remove("trigger");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
 	let url = trigger["url"].as_str().unwrap().to_owned();
@@ -767,10 +782,10 @@ async fn a_signed_webhook_starts_a_duty_task_with_the_event_as_data(
 async fn events_arriving_together_start_one_task(#[future] capability_fixture: CoreFixture) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("CI watcher", 3600);
 	body.as_object_mut().unwrap().remove("trigger");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
 	let url = trigger["url"].as_str().unwrap().to_owned();
@@ -821,10 +836,10 @@ async fn a_duty_starts_nothing_while_its_budget_is_at_the_hard_limit(
 ) {
 	// Arrange: a Duty Budget whose Hard Limit today's spend has reached.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("CI watcher", 3600);
 	body.as_object_mut().unwrap().remove("trigger");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
 	let url = trigger["url"].as_str().unwrap().to_owned();
@@ -859,12 +874,12 @@ async fn a_duty_starts_nothing_while_its_budget_is_at_the_hard_limit(
 async fn a_duty_wakes_when_another_dutys_task_ends(#[future] capability_fixture: CoreFixture) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
-	let source = register(&c, workspace, definition("Build", 3600)).await;
+	let thread = thread(&c).await;
+	let source = register(&c, thread, definition("Build", 3600)).await;
 	let source: Uuid = serde_json::from_value(source["id"].clone()).unwrap();
 	let mut body = definition("Release notes", 3600);
 	body.as_object_mut().unwrap().remove("trigger");
-	let target = register(&c, workspace, body).await;
+	let target = register(&c, thread, body).await;
 	let target: Uuid = serde_json::from_value(target["id"].clone()).unwrap();
 	let trigger = add_trigger(
 		&c,
@@ -889,17 +904,17 @@ async fn a_duty_wakes_when_another_dutys_task_ends(#[future] capability_fixture:
 }
 
 /// A Task that booked a trigger's next event gets it instead of a new Task:
-/// the event wakes its Run as a Workspace event (#1011, decision B).
+/// the event wakes its Run as a Thread event (#1011, decision B).
 #[rstest::rstest]
 #[tokio::test]
 async fn a_booked_event_wakes_the_run_that_booked_it(#[future] capability_fixture: CoreFixture) {
 	// Arrange: the person's Duty with a webhook, and a Run of theirs that
 	// books its next event.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("CI watcher", 3600);
 	body.as_object_mut().unwrap().remove("trigger");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
 	let trigger_id: Uuid = serde_json::from_value(trigger["id"].clone()).unwrap();
@@ -954,7 +969,7 @@ async fn script_task(c: &CoreFixture, duty: Uuid, role: &str) -> (Uuid, String) 
 /// covered by `aidash-harness`'s duty_script tests.
 async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
 	let driver = c.f.store.pool.fixture_driver();
-	sqlx::query("INSERT INTO artifacts (id, tenant, workspace_id, task_id, kind, name, content, created_by, idempotency_key) SELECT $1, tenant, workspace_id, id, 'text', 'Script result', to_jsonb($2::text), 'test', $1::text FROM tasks WHERE id = $3")
+	sqlx::query("INSERT INTO artifacts (id, tenant, thread_id, task_id, kind, name, content, created_by, idempotency_key) SELECT $1, tenant, thread_id, id, 'text', 'Script result', to_jsonb($2::text), 'test', $1::text FROM tasks WHERE id = $3")
 		.bind(Uuid::new_v4())
 		.bind(stdout)
 		.bind(task)
@@ -984,8 +999,8 @@ fn router_duty(title: &str) -> Value {
 async fn a_router_drops_starts_or_delivers_each_event(#[future] capability_fixture: CoreFixture) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
-	let duty = register(&c, workspace, router_duty("CI router")).await;
+	let thread = thread(&c).await;
+	let duty = register(&c, thread, router_duty("CI router")).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	assert_eq!(duty["router"]["language"], "python");
 	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
@@ -1131,7 +1146,7 @@ async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
 ) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("PR watcher", 3600);
 	let object = body.as_object_mut().unwrap();
 	object.remove("trigger");
@@ -1139,7 +1154,7 @@ async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
 		"watcher".into(),
 		json!({"script": {"language": "shell", "source": "echo '[]'"}, "every_seconds": 300}),
 	);
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	assert!(duty["watcher_next_at"].is_string(), "{duty}");
 	// Act: the pass runs the Watcher once, then not again before its interval.
@@ -1206,7 +1221,7 @@ async fn a_watcher_reports_events_that_are_delivered_like_a_webhooks(
 async fn a_watcher_keeps_32_events_and_is_not_a_trigger(#[future] capability_fixture: CoreFixture) {
 	// Arrange
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("Feed watcher", 3600);
 	let object = body.as_object_mut().unwrap();
 	object.remove("trigger");
@@ -1214,7 +1229,7 @@ async fn a_watcher_keeps_32_events_and_is_not_a_trigger(#[future] capability_fix
 		"watcher".into(),
 		json!({"script": {"language": "python", "source": "print('[]')"}, "every_seconds": 60}),
 	);
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let response = c
 		.app
@@ -1273,10 +1288,10 @@ async fn an_event_from_another_node_of_the_tenant_wakes_a_duty(
 	use aidash_domain::{federation::route::Sender, tenancy::TenantName};
 	// Arrange: a Duty that wakes only on events from other Nodes.
 	let c = capability_fixture.await;
-	let workspace = workspace(&c).await;
+	let thread = thread(&c).await;
 	let mut body = definition("Partner events", 3600);
 	body.as_object_mut().unwrap().remove("trigger");
-	let duty = register(&c, workspace, body).await;
+	let duty = register(&c, thread, body).await;
 	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
 	let requester = duty["requester"].as_str().unwrap().to_owned();
 	let open = add_trigger(&c, id, json!({"kind": "node_event"})).await;

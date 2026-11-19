@@ -534,7 +534,7 @@ use crate::{Error, Result, exposure::ExposureState};
 use serde_json::{Value, json};
 
 // Conservative upper bound for mixed-language text, not a provider tokenizer.
-// The budget includes system instructions, tools, workspace and output reserve.
+// The budget includes system instructions, tools, thread and output reserve.
 pub fn estimated_tokens(value: &str) -> usize {
 	value.len()
 }
@@ -726,13 +726,13 @@ pub const ORDERED_STABLE_KEYS: [&str; 3] = ["identity", "task", "reference_docum
 /// new pinned key can never move into, or reorder, the Stable Prefix.
 const ORDERED_VOLATILE_KEYS: [&str; 11] = [
 	"agent_state",
-	"workspace",
+	"thread",
 	"run_messages",
 	"run_message_read_instruction",
 	"deferred_run_message_reads",
 	"deferred_skill_read",
-	"deferred_workspace_observation",
-	"deferred_workspace_read",
+	"deferred_thread_observation",
+	"deferred_thread_read",
 	"snapshot_truncated",
 	"semantic_memory",
 	"turn_instructions",
@@ -1084,7 +1084,7 @@ pub enum ContextEvent {
 		harness: Option<Value>,
 	},
 	/// Evidence a Native step admitted that history did not hold yet (#942):
-	/// workspace observation entries and Run messages. Like a tool result it
+	/// thread observation entries and Run messages. Like a tool result it
 	/// is appended once and sent at its position; only offloading or
 	/// compaction removes it.
 	Evidence {
@@ -1097,7 +1097,7 @@ pub enum ContextEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceItem {
-	/// The pinned key, such as `workspace` or `run_messages`.
+	/// The pinned key, such as `thread` or `run_messages`.
 	pub key: String,
 	/// The field of the key's object the item belongs to; absent when the key
 	/// holds a list.

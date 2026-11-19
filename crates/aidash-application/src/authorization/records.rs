@@ -1,24 +1,24 @@
 //! Full records and bounded child summaries apply current policy before disclosure.
 use crate::{
 	Error, Result,
-	ports::authorization::records::{ChildSummaryScope, WorkspaceRecordScope},
+	ports::authorization::records::{ChildSummaryScope, ThreadRecordScope},
 };
 use aidash_domain::{
-	ChildTaskSummary, TaskStatus, WorkspaceSnapshot,
+	ChildTaskSummary, TaskStatus, ThreadSnapshot,
 	unassigned::{PendingChild, classify},
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 pub async fn record(
-	scope: &mut dyn WorkspaceRecordScope,
-	workspace_id: Uuid,
+	scope: &mut dyn ThreadRecordScope,
+	thread_id: Uuid,
 	kind: &str,
 	id: Uuid,
 ) -> Result<Value> {
-	let resource = scope.workspace(workspace_id).await?;
-	scope.require(&resource, "workspace.read").await?;
-	let mut snapshot = WorkspaceSnapshot {
-		workspace: scope.workspace_row(workspace_id).await?,
+	let resource = scope.thread(thread_id).await?;
+	scope.require(&resource, "thread.read").await?;
+	let mut snapshot = ThreadSnapshot {
+		thread: scope.thread_row(thread_id).await?,
 		tasks: vec![],
 		artifacts: vec![],
 		events: vec![],
@@ -26,11 +26,11 @@ pub async fn record(
 		unconfirmed: vec![],
 	};
 	let value = match kind {
-		"workspace" if id == workspace_id => json!(snapshot.workspace.clone()),
-		"workspace" => return Err(Error::Forbidden),
+		"thread" if id == thread_id => json!(snapshot.thread.clone()),
+		"thread" => return Err(Error::Forbidden),
 		"task" => {
 			let task = scope
-				.task_record(workspace_id, id)
+				.task_record(thread_id, id)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if !scope.task_visible(&task).await? {
@@ -41,7 +41,7 @@ pub async fn record(
 		}
 		"artifact" => {
 			let artifact = scope
-				.artifact_record(workspace_id, id)
+				.artifact_record(thread_id, id)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if !scope.artifact_visible(&artifact).await? {
@@ -52,13 +52,13 @@ pub async fn record(
 		}
 		"message" => {
 			let message = scope
-				.message_record(workspace_id, id)
+				.message_record(thread_id, id)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if !scope.message_visible(&message).await? {
 				return Err(Error::Forbidden);
 			}
-			let attachments = scope.message_attachments(workspace_id, &[id]).await?;
+			let attachments = scope.message_attachments(thread_id, &[id]).await?;
 			snapshot.messages.push(message.clone());
 			let mut value = json!(message);
 			value["attachments"] = json!(
@@ -72,11 +72,11 @@ pub async fn record(
 		}
 		"attachment" => {
 			let attachment = scope
-				.attachment_record(workspace_id, id)
+				.attachment_record(thread_id, id)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			let message = scope
-				.message_record(workspace_id, attachment.message_id)
+				.message_record(thread_id, attachment.message_id)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if !scope.message_visible(&message).await? {
@@ -86,11 +86,11 @@ pub async fn record(
 			json!({"attachment": attachment.attachment, "message_id": attachment.message_id, "sha256": attachment.sha256})
 		}
 		"event" => {
-			if !scope.decide(&resource, "workspace.events").await? {
+			if !scope.decide(&resource, "thread.events").await? {
 				return Err(Error::Forbidden);
 			}
 			let event = scope
-				.event_record(workspace_id, id)
+				.event_record(thread_id, id)
 				.await?
 				.ok_or(Error::Forbidden)?;
 			if !scope.event_visible(&event).await? {
@@ -99,7 +99,7 @@ pub async fn record(
 			snapshot.events.push(event.clone());
 			json!(event)
 		}
-		_ => return Err(Error::Invalid("unknown workspace record kind".into())),
+		_ => return Err(Error::Invalid("unknown thread record kind".into())),
 	};
 	scope.track(&snapshot).await?;
 	Ok(value)
@@ -107,18 +107,18 @@ pub async fn record(
 /// Recheck that every message is still readable under current authority,
 /// applying the same policy as `record` without disclosing or tracking a read.
 pub async fn messages_readable(
-	scope: &mut dyn WorkspaceRecordScope,
-	workspace_id: Uuid,
+	scope: &mut dyn ThreadRecordScope,
+	thread_id: Uuid,
 	ids: impl IntoIterator<Item = Uuid> + Send,
 ) -> Result<bool> {
-	let resource = scope.workspace(workspace_id).await?;
-	match scope.require(&resource, "workspace.read").await {
+	let resource = scope.thread(thread_id).await?;
+	match scope.require(&resource, "thread.read").await {
 		Ok(()) => {}
 		Err(Error::Forbidden | Error::Unauthorized) => return Ok(false),
 		Err(error) => return Err(error),
 	}
 	for id in ids {
-		let Some(message) = scope.message_record(workspace_id, id).await? else {
+		let Some(message) = scope.message_record(thread_id, id).await? else {
 			return Ok(false);
 		};
 		if !scope.message_visible(&message).await? {
@@ -129,25 +129,25 @@ pub async fn messages_readable(
 }
 pub async fn children(
 	scope: &mut dyn ChildSummaryScope,
-	workspace_id: Uuid,
+	thread_id: Uuid,
 	parent_id: Uuid,
 ) -> Result<ChildTaskSummary> {
-	let resource = scope.workspace(workspace_id).await?;
-	scope.require(&resource, "workspace.read").await?;
+	let resource = scope.thread(thread_id).await?;
+	scope.require(&resource, "thread.read").await?;
 	let mut summary = ChildTaskSummary::default();
 	// Which pending child is unassigned depends on its siblings, which may sit
 	// on a later page: classify once, after the last page.
 	let mut pending = Vec::new();
 	let mut after = None;
 	loop {
-		let rows = scope.children(workspace_id, parent_id, after).await?;
+		let rows = scope.children(thread_id, parent_id, after).await?;
 		let exhausted = rows.len() < 100;
 		let mut visible_ids = Vec::with_capacity(rows.len());
 		for row in rows {
 			after = Some(row.id);
 			scope.begin_row();
 			if !scope
-				.visible(&resource, workspace_id, row.id, &row.created_by)
+				.visible(&resource, thread_id, row.id, &row.created_by)
 				.await?
 			{
 				// A child that cannot be confirmed is not "no pending child": the
@@ -180,7 +180,7 @@ pub async fn children(
 				});
 			}
 		}
-		scope.track_tasks(workspace_id, &visible_ids).await?;
+		scope.track_tasks(thread_id, &visible_ids).await?;
 		if exhausted {
 			summary.unassigned = classify(&pending);
 			return Ok(summary);

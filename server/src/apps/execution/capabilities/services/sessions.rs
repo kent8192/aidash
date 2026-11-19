@@ -55,7 +55,7 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 			.flatten()
 			.filter(|source| source["kind"] == "message")
 			.filter_map(|source| serde_json::from_value(source["id"].clone()).ok())
-			.map(|id| (area.workspace_id, "message".to_owned(), id))
+			.map(|id| (area.thread_id, "message".to_owned(), id))
 			.collect();
 		access.prepare_read_sources(&messages).await?;
 	}
@@ -67,12 +67,12 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 }
 pub(crate) async fn authorize_sources(
 	access: &mut Access,
-	workspace: Uuid,
+	thread: Uuid,
 	constraints: &Value,
 ) -> Result<()> {
 	application::authorize_sources(
 		&mut crate::bootstrap::session_scope(None, access),
-		workspace,
+		thread,
 		constraints,
 	)
 	.await

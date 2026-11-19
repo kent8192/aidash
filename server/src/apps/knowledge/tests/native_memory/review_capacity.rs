@@ -2,12 +2,12 @@
 use super::*;
 use aidash_server::semantic::{service, services::memory_recovery};
 
-async fn bank(store: &Store, workspace: Uuid, participant: bool) -> Bank {
+async fn bank(store: &Store, thread: Uuid, participant: bool) -> Bank {
 	if participant {
 		memory::create_participant(
 			store,
 			&administrator(store).await,
-			workspace,
+			thread,
 			memory::CreateParticipant {
 				agent: reference("a"),
 			},
@@ -20,7 +20,7 @@ async fn bank(store: &Store, workspace: Uuid, participant: bool) -> Bank {
 			home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 				.to_string(),
 			tenant: "acme".into(),
-			workspace,
+			thread,
 			participant: None,
 		};
 		memory::operate(
@@ -72,28 +72,28 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	#[case] populated: bool,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
-	let bank = bank(&store, workspace, participant).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
+	let bank = bank(&store, thread, participant).await;
 	if populated {
 		add(&store, &bank, vec![]).await;
 	}
-	let before = service::get_index(&store, &administrator(&store).await, workspace)
+	let before = service::get_index(&store, &administrator(&store).await, thread)
 		.await
 		.unwrap();
 	let mut disabled = before.configuration().unwrap();
 	disabled.enabled = false;
 	assert!(
-		matches!(service::configure(&store, &administrator(&store).await, workspace, aidash_server::semantic::ConfigureIndex {
+		matches!(service::configure(&store, &administrator(&store).await, thread, aidash_server::semantic::ConfigureIndex {
 		expected_revision: before.revision, spec: disabled }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("remain enabled"))
 	);
 	let mut spec = before.configuration().unwrap();
 	spec.embedding.model = "incompatible-model".into();
 	assert!(
-		matches!(service::configure(&store, &administrator(&store).await, workspace, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
+		matches!(service::configure(&store, &administrator(&store).await, thread, aidash_server::semantic::ConfigureIndex { expected_revision: before.revision, spec }).await,
 		Err(aidash_server::Error::Conflict(message)) if message.contains("pinned memory bank"))
 	);
-	let unchanged = service::get_index(&store, &administrator(&store).await, workspace)
+	let unchanged = service::get_index(&store, &administrator(&store).await, thread)
 		.await
 		.unwrap();
 	assert_eq!(unchanged.revision, before.revision);
@@ -104,7 +104,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	let compatible = service::configure(
 		&store,
 		&administrator(&store).await,
-		workspace,
+		thread,
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: before.revision,
 			spec,
@@ -158,7 +158,7 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 		matches!(memory::operate(&store, &administrator(&store).await, memory::Operation {
 		operation_id: Uuid::now_v7(), provider: reference("different-provider"), bank: shared,
 		action: memory::Action::ConfigureBank { expected_revision: if participant { 0 } else { 1 } },
-	}).await, Err(aidash_server::Error::Conflict(message)) if message.contains("Workspace index"))
+	}).await, Err(aidash_server::Error::Conflict(message)) if message.contains("Thread index"))
 	);
 	assert_eq!(
 		memory::list(
@@ -190,8 +190,8 @@ async fn dependency_admission_keeps_roots_correctable_and_deletable(
 ) {
 	bounds.max_graph_visits = 3;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
-	let bank = bank(&store, workspace, true).await;
+	let (store, _, thread) = setup(&database, bounds).await;
+	let bank = bank(&store, thread, true).await;
 	let root = add(&store, &bank, vec![]).await;
 	let first = add(&store, &bank, vec![root.evidence()]).await;
 	let second = add(
@@ -274,8 +274,8 @@ async fn batched_root_corrections_each_keep_their_bounded_impact(
 ) {
 	bounds.max_graph_visits = 2;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
-	let bank = bank(&store, workspace, true).await;
+	let (store, _, thread) = setup(&database, bounds).await;
+	let bank = bank(&store, thread, true).await;
 	let a = add(&store, &bank, vec![]).await;
 	let b = add(&store, &bank, vec![]).await;
 	add(&store, &bank, vec![a.evidence()]).await;
@@ -325,8 +325,8 @@ async fn policy_replacement_cannot_shrink_below_existing_reverse_impact(
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	let (store, registry, workspace) = setup(&database, bounds).await;
-	let bank = bank(&store, workspace, false).await;
+	let (store, registry, thread) = setup(&database, bounds).await;
+	let bank = bank(&store, thread, false).await;
 	let root = add(&store, &bank, vec![]).await;
 	add(&store, &bank, vec![root.evidence()]).await;
 	add(&store, &bank, vec![root.evidence()]).await;
@@ -393,7 +393,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 
 	let endpoint = format!("{}/v1", _provider.url);
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, _, thread) = setup_endpoint(&database, bounds, &endpoint).await;
 	let directory = database.recovery_directory.path();
 	let metadata = std::fs::read(directory.join("ledger.cbor")).unwrap();
 	let ledger: recovery::Ledger = ciborium::de::from_reader(&metadata[40..]).unwrap();
@@ -409,7 +409,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 				home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
 					.to_string(),
 				tenant: "t".repeat(1024 * 1024),
-				workspace: Uuid::now_v7(),
+				thread: Uuid::now_v7(),
 				participant: None,
 			},
 			revision: 1,
@@ -427,7 +427,7 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 		aggregate += std::fs::metadata(path).unwrap().len();
 	}
 	assert!(aggregate > 64 * 1024 * 1024);
-	let bank = bank(&store, workspace, true).await;
+	let bank = bank(&store, thread, true).await;
 	let admitted = add(&store, &bank, vec![]).await;
 	assert_eq!(
 		std::fs::read(directory.join("ledger.cbor")).unwrap(),

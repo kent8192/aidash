@@ -6,7 +6,7 @@ use crate::{context::Context, entities::RunControl};
 pub struct RunMetadata {
 	pub id: Uuid,
 	pub task_id: Uuid,
-	pub workspace_id: Uuid,
+	pub thread_id: Uuid,
 	pub node: crate::nodes::NodeName,
 	pub home_node: String,
 	pub agent_id: String,
@@ -44,7 +44,7 @@ impl RawRun {
 		Ok(Run {
 			id: m.id,
 			task_id: m.task_id,
-			workspace_id: m.workspace_id,
+			thread_id: m.thread_id,
 			node: m.node.clone(),
 			home_node: m.home_node.clone(),
 			agent_id: m.agent_id.clone(),
@@ -118,7 +118,7 @@ impl Run {
 		RunMetadata {
 			id: self.id,
 			task_id: self.task_id,
-			workspace_id: self.workspace_id,
+			thread_id: self.thread_id,
 			node: self.node.clone(),
 			home_node: self.home_node.clone(),
 			agent_id: self.agent_id.clone(),

@@ -13,8 +13,7 @@ fn escape_html(value: &str) -> String {
 
 pub(crate) use crate::apps::registry::workbench::serializers::trust::ReportQuery;
 pub use crate::apps::registry::workbench::serializers::trust::{
-	Inspection, PermissionContext, PermissionInput, PermissionRow, Report, TestEvidence,
-	WorkspaceUse,
+	Inspection, PermissionContext, PermissionInput, PermissionRow, Report, TestEvidence, ThreadUse,
 };
 
 use reinhardt::Response;

@@ -81,7 +81,7 @@ pub(crate) async fn visible_within_state(
 }
 
 /// [`visible_within_state`] for many Runs at once, each `None` where it is
-/// `Forbidden`. Each Workspace's Runs are read and prepared together.
+/// `Forbidden`. Each Thread's Runs are read and prepared together.
 pub(crate) async fn visible_many_within_state(
 	federation: &Federation,
 	access: &mut Access,
@@ -146,8 +146,8 @@ pub(crate) async fn may_decline_run(
 	};
 	let own =
 		grant.tenant == access.identity.tenant && grant.root_subject == access.identity.subject;
-	let workspace = access.workspace(run.workspace_id).await?;
-	let previous_context = std::mem::replace(&mut access.context, workspace.attributes);
+	let thread = access.thread(run.thread_id).await?;
+	let previous_context = std::mem::replace(&mut access.context, thread.attributes);
 	let resource = access.resource("run", run.id, serde_json::json!({}));
 	let result = access
 		.decide(
@@ -219,8 +219,8 @@ impl RunDetailsScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
-		self.access.get().workspace(id).await.map_err(Into::into)
+	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
+		self.access.get().thread(id).await.map_err(Into::into)
 	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.access

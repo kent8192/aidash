@@ -78,10 +78,10 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.unwrap();
 	let (tenant, context) = d.tenant_of(&alice, "Deleted data").await;
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
-	let workspace = d
+	let thread = d
 		.federation
 		.store
-		.create_workspace(&scope, "alice", "Private workspace")
+		.create_thread(&scope, "alice", "Private thread")
 		.await
 		.unwrap();
 	let task = d
@@ -89,7 +89,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.store
 		.create_task(
 			&scope,
-			workspace.id,
+			thread.id,
 			&aidash_domain::NewTask {
 				title: "Private task".into(),
 				description: "Deleted Tenant data".into(),
@@ -102,7 +102,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		)
 		.await
 		.unwrap();
-	let path = format!("/api/workspaces/{}", workspace.id);
+	let path = format!("/api/threads/{}", thread.id);
 	let tenant_event = d
 		.federation
 		.store
@@ -231,7 +231,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				method,
 				&path,
 				Some(&context),
-				json!({"revision":workspace.revision,"title":"Renamed"}),
+				json!({"revision":thread.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 410, "{method}: {body}");
@@ -240,7 +240,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			.as_deployment_administrator(
 				method,
 				&path,
-				json!({"revision":workspace.revision,"title":"Renamed"}),
+				json!({"revision":thread.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 403, "{method}: {body}");
@@ -250,7 +250,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 				method,
 				&path,
 				Some("deployment_administrator"),
-				json!({"revision":workspace.revision,"title":"Renamed"}),
+				json!({"revision":thread.revision,"title":"Renamed"}),
 			)
 			.await;
 		assert_eq!(status, 403, "browser {method}: {body}");
@@ -273,11 +273,11 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 		.await;
 	assert_eq!(status, 200, "{state}");
 	assert!(
-		state["workspaces"]
+		state["threads"]
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|row| row["id"] != workspace.id.to_string()),
+			.all(|row| row["id"] != thread.id.to_string()),
 		"{state}"
 	);
 	assert!(
@@ -285,7 +285,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|row| row["workspace_id"] != workspace.id.to_string()),
+			.all(|row| row["thread_id"] != thread.id.to_string()),
 		"{state}"
 	);
 	assert!(
@@ -786,22 +786,22 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	let d = Deployment::new(runtime, open_rules()).await;
 	let alice = d.person("alice").await;
 	let (tenant, context) = d.tenant_of(&alice, "Team").await;
-	let (status, workspace) = d
+	let (status, thread) = d
 		.as_person(
 			&alice,
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			Some(&context),
 			json!({"title":"Work","request":"Run something"}),
 		)
 		.await;
-	assert_eq!(status, 200, "{workspace}");
-	let workspace: Uuid = workspace["id"].as_str().unwrap().parse().unwrap();
+	assert_eq!(status, 200, "{thread}");
+	let thread: Uuid = thread["id"].as_str().unwrap().parse().unwrap();
 	let (status, task) = d
 		.as_person(
 			&alice,
 			"POST",
-			&format!("/api/workspaces/{workspace}/tasks"),
+			&format!("/api/threads/{thread}/tasks"),
 			Some(&context),
 			json!({"title":"work","description":"keep working"}),
 		)
@@ -817,23 +817,23 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO runs (id, task_id, workspace_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
-		 VALUES ($1, $2, $3, $4 || '/' || (SELECT node FROM workspaces WHERE id = $3), (SELECT node FROM workspaces WHERE id = $3), 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM workspaces WHERE id = $3))",
+		"INSERT INTO runs (id, task_id, thread_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
+		 VALUES ($1, $2, $3, $4 || '/' || (SELECT node FROM threads WHERE id = $3), (SELECT node FROM threads WHERE id = $3), 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM threads WHERE id = $3))",
 	)
 	.bind(run)
 	.bind(task)
-	.bind(workspace)
+	.bind(thread)
 	.bind(d.federation.config.deployment.as_str())
 	.execute(&mut *tx)
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO authorization_execution (run_id, task_id, workspace_id, tenant, credential_id, root_subject, subject_chain) \
+		"INSERT INTO authorization_execution (run_id, task_id, thread_id, tenant, credential_id, root_subject, subject_chain) \
 		 SELECT $1, $2, $3, $4, credential_id, subject, ARRAY[subject, 'agent'] FROM dashboard_mappings WHERE tenant = $4",
 	)
 	.bind(run)
 	.bind(task)
-	.bind(workspace)
+	.bind(thread)
 	.bind(&tenant)
 	.execute(&mut *tx)
 	.await
@@ -1018,10 +1018,10 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 	let (tenant, context) = d.tenant_of(&alice, "Team").await;
 	let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
 	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
-	let workspace = d
+	let thread = d
 		.federation
 		.store
-		.create_workspace(&scope, "alice", "Reports")
+		.create_thread(&scope, "alice", "Reports")
 		.await
 		.unwrap();
 	let schedule = |registrant: &'static str| {
@@ -1032,12 +1032,12 @@ async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_st
 		async move {
 			let id = Uuid::new_v4();
 			sqlx::query(
-				"INSERT INTO duties (id, tenant, workspace_id, requester, credential_id, title, mission, procedure, agent_id, agent_version, trigger, max_lateness_seconds, pause_after_failures, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
+				"INSERT INTO duties (id, tenant, thread_id, requester, credential_id, title, mission, procedure, agent_id, agent_version, trigger, max_lateness_seconds, pause_after_failures, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
 				 VALUES ($1, $2, $3, $4, $5, 'Weekly', 'Report', '', 'reporter', '1.0.0', '{\"kind\":\"interval\",\"every_seconds\":3600}', 3600, 3, now(), now() + interval '1 hour', now() + interval '1 hour', 0, 0, now(), now())",
 			)
 			.bind(id)
 			.bind(&tenant)
-			.bind(workspace.id)
+			.bind(thread.id)
 			.bind(registrant)
 			.bind(Uuid::new_v4())
 			.execute(&pool)
@@ -1156,26 +1156,26 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 	assert_eq!(status, 200, "{issued}");
 	let token = issued["token"].as_str().unwrap().to_owned();
 	let token_id: Uuid = serde_json::from_value(issued["credential"]["id"].clone()).unwrap();
-	let (status, workspace, _) = d
+	let (status, thread, _) = d
 		.send(
 			"POST",
-			"/api/workspaces",
+			"/api/threads",
 			None,
 			None,
 			Some(&token),
 			json!({"title":"Reports","request":"Weekly reports"}),
 		)
 		.await;
-	assert_eq!(status, 200, "{workspace}");
-	let workspace = workspace["id"]
+	assert_eq!(status, 200, "{thread}");
+	let thread = thread["id"]
 		.as_str()
-		.or(workspace["workspace"]["id"].as_str())
+		.or(thread["thread"]["id"].as_str())
 		.unwrap()
 		.to_owned();
 	let (status, schedule, _) = d
 		.send(
 			"POST",
-			&format!("/api/workspaces/{workspace}/duties"),
+			&format!("/api/threads/{thread}/duties"),
 			None,
 			None,
 			Some(&token),

@@ -70,18 +70,18 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 			.unwrap(),
 		200,
 	);
-	let workspace = app
+	let thread = app
 		.runtime
 		.store
 		.task(&TEST_FIXTURE, fixture.task)
 		.await
 		.unwrap()
-		.workspace_id;
+		.thread_id;
 	let task = assert_json(
 		fixture
 			.subject
 			.post(
-				&format!("/api/workspaces/{workspace}/tasks"),
+				&format!("/api/threads/{thread}/tasks"),
 				&json!({"title":"Generated specialist","description":"Use approved inference",
 			"requirements":{"capability":"generation.fixture"}}),
 				"json",

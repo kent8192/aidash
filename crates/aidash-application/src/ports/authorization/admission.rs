@@ -12,11 +12,8 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	fn node_id(&self) -> &str;
-	/// The address of the Node the Workspace belongs to, which executes its Tasks.
-	async fn workspace_node(
-		&mut self,
-		workspace: Uuid,
-	) -> Result<aidash_domain::nodes::NodeAddress>;
+	/// The address of the Node the Thread belongs to, which executes its Tasks.
+	async fn thread_node(&mut self, thread: Uuid) -> Result<aidash_domain::nodes::NodeAddress>;
 	fn bundle(&self) -> &PolicyBundle;
 	async fn task(&mut self, id: Uuid) -> Result<Option<Task>>;
 	/// Verify Subnode membership and task origin under the membership lock.
@@ -79,5 +76,5 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 		agent: &str,
 	) -> Result<()>;
 	async fn local_delegation(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation>;
-	async fn delegation_event(&mut self, workspace: Uuid, delegation: &Delegation) -> Result<()>;
+	async fn delegation_event(&mut self, thread: Uuid, delegation: &Delegation) -> Result<()>;
 }

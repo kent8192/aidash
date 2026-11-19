@@ -647,11 +647,11 @@ async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 	.await?;
 	// A local saved finalization/failure still owns this exact Home Task. Its
 	// Run job may be retrying transport, so this tick must leave the Task intact.
-	let workspace: aidash_domain::Workspace = crate::database::query_as(
+	let thread: aidash_domain::Thread = crate::database::query_as(
 		&Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(task.workspace_id)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col("id").eq(Expr::value(task.thread_id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -663,10 +663,10 @@ async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("tenant").eq(Expr::value(job.tenant.clone())))
 			.and_where(Expr::col("task_id").eq(Expr::value(task.id)))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(task.workspace_id)))
+			.and_where(Expr::col("thread_id").eq(Expr::value(task.thread_id)))
 			.and_where(Expr::col("home_node").eq(Expr::value(format!(
 				"{}/{}",
-				f.config.deployment, workspace.node
+				f.config.deployment, thread.node
 			))))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.to_string(PostgresQueryBuilder),

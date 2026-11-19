@@ -399,9 +399,9 @@ async fn legacy(
 		"file_read" => {
 			let selection: FileRead =
 				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
-			match (selection.workspace_id, selection.area_id) {
-				(Some(workspace), Some(target)) => {
-					*area = scope.subnode_area(run, workspace, target).await?;
+			match (selection.thread_id, selection.area_id) {
+				(Some(thread), Some(target)) => {
+					*area = scope.subnode_area(run, thread, target).await?;
 					// A member's Reference set is read only inside the member's own Run,
 					// whose Agent version binds it; a copy the member made is readable (ADR 0114).
 					if files(area)?
@@ -414,7 +414,7 @@ async fn legacy(
 				(None, None) => {}
 				_ => {
 					return Err(Error::Invalid(
-						"workspace_id and area_id must be supplied together".into(),
+						"thread_id and area_id must be supplied together".into(),
 					));
 				}
 			}
@@ -900,7 +900,7 @@ pub async fn materialize(
 	let (text, provenance, file_scope) = match input.source {
 		MaterializeSource::File { .. } => unreachable!("file copies are streamed above"),
 		MaterializeSource::Message { message_id } => {
-			let message = scope.message(area.workspace_id, message_id).await?;
+			let message = scope.message(area.thread_id, message_id).await?;
 			(
 				message["content"]
 					.as_str()
@@ -1055,7 +1055,7 @@ pub async fn copy_thread_attachment(
 		size,
 		media_type,
 		scope: FileScope::Working,
-		provenance: json!({"kind":"thread_attachment", "workspace_id":area.workspace_id, "message_id":message_id, "attachment_id":attachment_id}),
+		provenance: json!({"kind":"thread_attachment", "thread_id":area.thread_id, "message_id":message_id, "attachment_id":attachment_id}),
 	};
 	entries.push(file.clone());
 	area.manifest = json!(entries);
@@ -1171,7 +1171,7 @@ pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<(
 	}
 	scope
 		.event(
-			area.workspace_id,
+			area.thread_id,
 			"capability.files_changed",
 			json!({"area_id":area.id,"revision":area.revision,"generation":area.generation}),
 		)

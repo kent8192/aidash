@@ -33,7 +33,7 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 		vec![
 			"lease".to_owned(),
 			"require:builtin:task_create:tool.invoke".to_owned(),
-			format!("require:{}:task.create", run.workspace_id),
+			format!("require:{}:task.create", run.thread_id),
 			"release".to_owned()
 		]
 	);
@@ -263,7 +263,7 @@ fn run() -> RunMetadata {
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		task_id: id(2),
-		workspace_id: id(3),
+		thread_id: id(3),
 		home_node: "aidash://home".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
@@ -503,7 +503,7 @@ impl AgentToolScope for Scope<'_> {
 		}
 		Ok(Task {
 			id: key,
-			workspace_id: id(3),
+			thread_id: id(3),
 			title: "saved".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
@@ -540,18 +540,18 @@ impl AgentToolScope for Scope<'_> {
 		Ok(resource(
 			"memory",
 			&run.agent_id,
-			json!({"workspace":run.workspace_id,"run":run.id}),
+			json!({"thread":run.thread_id,"run":run.id}),
 		))
 	}
 
 	async fn human_request(&mut self, run: &RunMetadata, id: Uuid) -> Result<Option<HumanRequest>> {
 		self.0
-			.record(format!("human:{}:{}:{id}", run.id, run.workspace_id));
+			.record(format!("human:{}:{}:{id}", run.id, run.thread_id));
 		self.0.check("human")?;
 		Ok((!self.0.missing_request).then(|| HumanRequest {
 			id,
 			run_id: run.id,
-			workspace_id: run.workspace_id,
+			thread_id: run.thread_id,
 			kind: "approval".into(),
 			prompt: "saved question".into(),
 			response: None,
@@ -566,7 +566,7 @@ impl AgentToolScope for Scope<'_> {
 		Ok(resource(
 			"human_request",
 			&request.id.to_string(),
-			json!({"run":request.run_id,"workspace":request.workspace_id,"prompt":request.prompt}),
+			json!({"run":request.run_id,"thread":request.thread_id,"prompt":request.prompt}),
 		))
 	}
 }
@@ -815,7 +815,7 @@ async fn a_read_only_registry_tool_refuses_an_explicit_policy_deny(
 
 #[rstest]
 #[tokio::test]
-async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
+async fn an_agent_plugin_requires_target_execution_and_thread_creation(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -831,13 +831,13 @@ async fn an_agent_plugin_requires_target_execution_and_workspace_creation(
 			"lease".into(),
 			"catalog:configured:tool.invoke".into(),
 			"catalog:target:agent.execute".into(),
-			format!("require:{}:task.create", run.workspace_id),
+			format!("require:{}:task.create", run.thread_id),
 			"release".into()
 		]
 	);
 	let decisions = repository.decisions();
 	assert_eq!(decisions[0].0.attributes, json!({}));
-	assert_eq!(decisions[0].0.kind, "workspace");
+	assert_eq!(decisions[0].0.kind, "thread");
 }
 #[rstest]
 #[tokio::test]
@@ -980,8 +980,8 @@ async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	);
 }
 #[rstest]
-#[case::task("task_create", "workspace", "task.create")]
-#[case::message("workspace_message", "workspace", "message.create")]
+#[case::task("task_create", "thread", "task.create")]
+#[case::message("workspace_message", "thread", "message.create")]
 #[case::human("human_request", "run", "human.request")]
 #[case::generation("task_assign", "generation_policy", "generation.request")]
 #[case::memory("memory_mutate", "memory", "memory.write")]
@@ -1008,7 +1008,7 @@ async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	assert_eq!(decisions[1].1, action);
 	assert_eq!(decisions[1].0.kind, kind);
 	let expected = match kind {
-		"workspace" => run.workspace_id.to_string(),
+		"thread" => run.thread_id.to_string(),
 		"run" => run.id.to_string(),
 		"generation_policy" => "saved-policy".into(),
 		"memory" => run.agent_id.clone(),
@@ -1018,7 +1018,7 @@ async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	if kind == "memory" {
 		assert_eq!(
 			decisions[1].0.attributes,
-			json!({"workspace":run.workspace_id,"run":run.id})
+			json!({"thread":run.thread_id,"run":run.id})
 		);
 	} else {
 		assert_eq!(decisions[1].0.attributes, json!({}));
@@ -1342,7 +1342,7 @@ async fn a_remote_grant_run_hands_a_home_task_on_to_any_node_its_home_decides(
 	assert_ne!(decisions[1].0.attributes, repository.context);
 	assert_eq!(
 		decisions[1].0.attributes,
-		json!({"source_workspace_id":run.workspace_id,"source_task_id":id(9),"source_parent_task_id":run.task_id})
+		json!({"source_thread_id":run.thread_id,"source_task_id":id(9),"source_parent_task_id":run.task_id})
 	);
 }
 #[rstest]
@@ -1826,8 +1826,8 @@ async fn cancellation_releases_the_lease_held_during_tool_authorization(
 #[rstest]
 #[case::matching_task("task", 2, true)]
 #[case::foreign_task("task", 9, false)]
-#[case::matching_workspace("workspace", 3, true)]
-#[case::foreign_workspace("workspace", 9, false)]
+#[case::matching_thread("thread", 3, true)]
+#[case::foreign_thread("thread", 9, false)]
 #[case::memory("memory", 1, false)]
 #[case::run("run", 1, true)]
 #[case::foreign_run("run", 9, false)]
@@ -1887,7 +1887,7 @@ async fn invalid_explicit_task_id_is_forbidden_before_reading_a_task(
 }
 #[rstest]
 #[tokio::test]
-async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
+async fn explicit_remote_thread_actions_refresh_and_keep_current_context(
 	mut repository: Repository,
 	run: RunMetadata,
 ) {
@@ -1895,26 +1895,26 @@ async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
 	action(
 		&repository,
 		&run,
-		"workspace.read",
-		"workspace",
-		&run.workspace_id.to_string(),
+		"thread.read",
+		"thread",
+		&run.thread_id.to_string(),
 	)
 	.await
 	.unwrap();
 	let decision = &repository.decisions()[0];
 	assert_eq!(
 		decision.0.id,
-		format!("aidash://home/workspaces/{}", run.workspace_id)
+		format!("aidash://home/threads/{}", run.thread_id)
 	);
 	assert_eq!(decision.0.attributes, repository.context);
-	assert_eq!(decision.1, "workspace.read");
+	assert_eq!(decision.1, "thread.read");
 	assert_eq!(
 		repository.calls()[..5],
 		vec!["lease", "active", "suspend", "replace", "release"]
 	);
 }
 #[rstest]
-#[case::workspace("workspace")]
+#[case::thread("thread")]
 #[case::task("task")]
 #[case::memory("memory")]
 #[case::run("run")]
@@ -1953,7 +1953,7 @@ async fn remote_human_reads_are_denied_before_acquiring_or_refreshing_authority(
 }
 #[rstest]
 #[tokio::test]
-async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
+async fn a_saved_human_request_is_authorized_under_its_run_and_thread(
 	repository: Repository,
 	run: RunMetadata,
 ) {
@@ -1962,7 +1962,7 @@ async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
 		repository.calls(),
 		vec![
 			"lease".into(),
-			format!("human:{}:{}:{}", run.id, run.workspace_id, id(9)),
+			format!("human:{}:{}:{}", run.id, run.thread_id, id(9)),
 			"human_resource".into(),
 			format!("require:{}:human.read", id(9)),
 			"release".into()
@@ -1972,7 +1972,7 @@ async fn a_saved_human_request_is_authorized_under_its_run_and_workspace(
 	assert_eq!(decision.0.kind, "human_request");
 	assert_eq!(
 		decision.0.attributes,
-		json!({"run":run.id,"workspace":run.workspace_id,"prompt":"saved question"})
+		json!({"run":run.id,"thread":run.thread_id,"prompt":"saved question"})
 	);
 	assert_eq!(decision.1, "human.read");
 }

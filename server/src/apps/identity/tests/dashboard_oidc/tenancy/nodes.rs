@@ -290,17 +290,12 @@ async fn a_tenant_cannot_reach_another_tenants_nodes(
 }
 
 impl Deployment {
-	async fn workspace_on(
-		&self,
-		person: &Person,
-		context: &str,
-		node: Option<&str>,
-	) -> (u16, Value) {
+	async fn thread_on(&self, person: &Person, context: &str, node: Option<&str>) -> (u16, Value) {
 		let mut body = json!({"title":"Work","request":"Use a Node"});
 		if let Some(node) = node {
 			body["node"] = json!(node);
 		}
-		self.as_person(person, "POST", "/api/workspaces", Some(context), body)
+		self.as_person(person, "POST", "/api/threads", Some(context), body)
 			.await
 	}
 
@@ -330,7 +325,7 @@ impl Deployment {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_workspace_goes_to_the_node_its_creator_chooses_and_may_use(
+async fn a_thread_goes_to_the_node_its_creator_chooses_and_may_use(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
 	let d = Deployment::new(runtime, open_rules()).await;
@@ -351,33 +346,33 @@ async fn a_workspace_goes_to_the_node_its_creator_chooses_and_may_use(
 		.unwrap()
 		.to_owned();
 
-	let (status, workspace) = d.workspace_on(&bob, &bob_context, None).await;
-	assert_eq!(status, 200, "{workspace}");
-	assert_eq!(workspace["node"], default);
-	let (status, workspace) = d.workspace_on(&bob, &bob_context, Some(&second)).await;
-	assert_eq!(status, 200, "{workspace}");
-	assert_eq!(workspace["node"], second);
+	let (status, thread) = d.thread_on(&bob, &bob_context, None).await;
+	assert_eq!(status, 200, "{thread}");
+	assert_eq!(thread["node"], default);
+	let (status, thread) = d.thread_on(&bob, &bob_context, Some(&second)).await;
+	assert_eq!(status, 200, "{thread}");
+	assert_eq!(thread["node"], second);
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM workspaces WHERE tenant = '{tenant}' AND node = '{second}'"
+			"SELECT count(*) FROM threads WHERE tenant = '{tenant}' AND node = '{second}'"
 		))
 		.await,
 		1
 	);
-	let (status, body) = d.workspace_on(&bob, &bob_context, Some(&foreign)).await;
+	let (status, body) = d.thread_on(&bob, &bob_context, Some(&foreign)).await;
 	assert_eq!(status, 404, "another Tenant's Node is unknown: {body}");
 	let (status, body) = d
-		.workspace_on(&bob, &bob_context, Some("able-oak-00000000"))
+		.thread_on(&bob, &bob_context, Some("able-oak-00000000"))
 		.await;
 	assert_eq!(status, 404, "{body}");
 
 	d.withdraw_node_use(&tenant).await;
 
-	let (status, body) = d.workspace_on(&bob, &bob_context, Some(&second)).await;
+	let (status, body) = d.thread_on(&bob, &bob_context, Some(&second)).await;
 	assert_eq!(status, 403, "a member without node.use: {body}");
-	let (status, body) = d.workspace_on(&bob, &bob_context, None).await;
+	let (status, body) = d.thread_on(&bob, &bob_context, None).await;
 	assert_eq!(status, 403, "{body}");
-	let (status, body) = d.workspace_on(&alice, &context, Some(&second)).await;
+	let (status, body) = d.thread_on(&alice, &context, Some(&second)).await;
 	assert_eq!(status, 200, "an administrator holds every action: {body}");
 	d.finish().await;
 }
@@ -526,10 +521,10 @@ async fn node_lifecycle_releases_capacity_and_keeps_each_deletion_history(
 		.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["default"], true);
-	let (status, target_workspace) = d.workspace_on(&alice, &context, Some(&first)).await;
-	assert_eq!(status, 200, "{target_workspace}");
-	let (status, sibling_workspace) = d.workspace_on(&alice, &context, Some(second)).await;
-	assert_eq!(status, 200, "{sibling_workspace}");
+	let (status, target_thread) = d.thread_on(&alice, &context, Some(&first)).await;
+	assert_eq!(status, 200, "{target_thread}");
+	let (status, sibling_thread) = d.thread_on(&alice, &context, Some(second)).await;
+	assert_eq!(status, 200, "{sibling_thread}");
 	let (status, deleted) = d
 		.as_person(
 			&alice,
@@ -541,20 +536,20 @@ async fn node_lifecycle_releases_capacity_and_keeps_each_deletion_history(
 		.await;
 	assert_eq!(status, 200, "{deleted}");
 	assert_eq!(deleted["state"], "deleted");
-	// Cached browser context and an existing Workspace ID cannot retain deleted Node authority.
-	for (workspace, expected) in [(&target_workspace, 403), (&sibling_workspace, 200)] {
+	// Cached browser context and an existing Thread ID cannot retain deleted Node authority.
+	for (thread, expected) in [(&target_thread, 403), (&sibling_thread, 200)] {
 		let (status, body) = d
 			.as_person(
 				&alice,
 				"GET",
-				&format!("/api/workspaces/{}", workspace["id"].as_str().unwrap()),
+				&format!("/api/threads/{}", thread["id"].as_str().unwrap()),
 				Some(&context),
 				Value::Null,
 			)
 			.await;
 		assert_eq!(status, expected, "{body}");
 	}
-	let (status, body) = d.workspace_on(&alice, &context, Some(&first)).await;
+	let (status, body) = d.thread_on(&alice, &context, Some(&first)).await;
 	assert_eq!(status, 404, "deleted Node cannot create fresh work: {body}");
 
 	let deadline = deleted["deletion"]["purge_after"].clone();

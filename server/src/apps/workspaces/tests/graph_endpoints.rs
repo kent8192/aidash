@@ -1,5 +1,5 @@
 //! Task graph constraints and their HTTP transaction boundary.
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
+use crate::endpoint::{EndpointFixture, assert_json, endpoint, thread};
 use aidash_server::apps::execution::models::Event;
 use aidash_server::apps::workspaces::models::{Task, TaskDependency};
 use reinhardt::db::orm::Model;
@@ -19,14 +19,14 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let home = workspace(&member, "Home").await;
-	let other = workspace(&member, "Other").await;
-	let home_path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
-	let other_path = format!("/api/workspaces/{}/tasks", other["id"].as_str().unwrap());
+	let home = thread(&member, "Home").await;
+	let other = thread(&member, "Other").await;
+	let home_path = format!("/api/threads/{}/tasks", home["id"].as_str().unwrap());
+	let other_path = format!("/api/threads/{}/tasks", other["id"].as_str().unwrap());
 	let foreign = create(
 		&member,
 		&other_path,
-		&json!({"title":"Foreign","description":"Other workspace"}),
+		&json!({"title":"Foreign","description":"Other thread"}),
 	)
 	.await;
 	for (target, status) in [(json!(Uuid::new_v4()), 403), (foreign["id"].clone(), 403)] {
@@ -46,7 +46,7 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 	let home_id = serde_json::from_value::<Uuid>(home["id"].clone()).unwrap();
 	assert!(
 		Task::objects()
-			.filter(Task::field_workspace_id().eq(home_id))
+			.filter(Task::field_thread_id().eq(home_id))
 			.all_with_db(&mut app.database.lease.handle())
 			.await
 			.unwrap()
@@ -62,7 +62,7 @@ async fn missing_and_foreign_task_edges_cannot_create_partial_records(
 	);
 	assert!(
 		Event::objects()
-			.filter(Event::field_workspace_id().eq(Some(home_id)))
+			.filter(Event::field_thread_id().eq(Some(home_id)))
 			.filter(Event::field_kind().eq("task.created".to_owned()))
 			.all_with_db(&mut app.database.lease.handle())
 			.await
@@ -78,8 +78,8 @@ async fn diamond_graph_reachability_is_bounded_and_combined_cycles_are_rejected(
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let home = workspace(&member, "Diamond graph").await;
-	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
+	let home = thread(&member, "Diamond graph").await;
+	let path = format!("/api/threads/{}/tasks", home["id"].as_str().unwrap());
 	let mut levels: Vec<Vec<Value>> = vec![];
 	for depth in 0..20 {
 		let dependencies = levels.last().cloned().unwrap_or_default();
@@ -130,8 +130,8 @@ async fn concurrent_parent_and_dependency_changes_cannot_commit_a_cycle(
 ) {
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let home = workspace(&member, "Concurrent graph").await;
-	let path = format!("/api/workspaces/{}/tasks", home["id"].as_str().unwrap());
+	let home = thread(&member, "Concurrent graph").await;
+	let path = format!("/api/threads/{}/tasks", home["id"].as_str().unwrap());
 	let left = create(
 		&member,
 		&path,

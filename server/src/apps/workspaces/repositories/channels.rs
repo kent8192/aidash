@@ -9,8 +9,8 @@ use crate::{
 	},
 	store::Store,
 };
-use aidash_application::{Result, ports::channels::*, workspaces::channels::AttachmentUpload};
-use aidash_domain::{Message, workspaces::channels::*};
+use aidash_application::{Result, ports::channels::*, threads::channels::AttachmentUpload};
+use aidash_domain::{Message, threads::channels::*};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
@@ -64,13 +64,13 @@ impl LinkRecord {
 	}
 }
 
-/// Where an image attachment stands in its Workspace index, as a status word
+/// Where an image attachment stands in its Thread index, as a status word
 /// only; the entry itself stays under the semantic index's own authority.
 fn index_state() -> SimpleExpr {
 	SimpleExpr::from(Expr::cust(format!(
 		"(SELECT CASE se.state WHEN 'READY' THEN 'indexed' WHEN 'PENDING' THEN 'pending' \
 		 WHEN 'UNSUPPORTED' THEN 'unsupported' ELSE 'failed' END \
-		 FROM semantic_entries se WHERE se.workspace_id = channel_attachments.workspace_id \
+		 FROM semantic_entries se WHERE se.thread_id = channel_attachments.thread_id \
 		 AND {} AND NOT se.deleted)",
 		crate::apps::knowledge::repositories::attachment_images::names_attachment(
 			"se",
@@ -132,15 +132,15 @@ impl ChannelScope for NativeChannels<'_> {
 			None => self.lease.principal(),
 		}
 	}
-	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message> {
-		self.lease.message(workspace, id).await.map_err(Into::into)
+	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Message> {
+		self.lease.message(thread, id).await.map_err(Into::into)
 	}
 	async fn visible(&mut self, message: &Message) -> Result<bool> {
 		self.lease.visible(message).await.map_err(Into::into)
 	}
 	async fn append_message(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		sender: &str,
 		content: &str,
 		key: &str,
@@ -148,7 +148,7 @@ impl ChannelScope for NativeChannels<'_> {
 		if let Some(run) = self.run_id {
 			let message = MessageRecord::append_in(
 				self.lease.tx().as_mut(),
-				workspace,
+				thread,
 				sender,
 				content,
 				key,
@@ -156,31 +156,31 @@ impl ChannelScope for NativeChannels<'_> {
 			)
 			.await?;
 			self.store
-				.record_output_in(self.lease.tx(), Some(run), workspace, "message", message.id)
+				.record_output_in(self.lease.tx(), Some(run), thread, "message", message.id)
 				.await?;
 			return Ok(message);
 		}
 		self.store
-			.message_in_with_attachments(self.lease.tx(), workspace, sender, content, Some(key))
+			.message_in_with_attachments(self.lease.tx(), thread, sender, content, Some(key))
 			.await
 			.map_err(Into::into)
 	}
 	async fn record_context(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 		digest: &str,
 	) -> Result<MessageContext> {
 		{
 			let query_bind_1 = message;
-			let query_bind_2 = workspace;
+			let query_bind_2 = thread;
 			let query_bind_4 = digest;
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("channel_message_context"))
 					.columns([
 						Alias::new("message_id"),
-						Alias::new("workspace_id"),
+						Alias::new("thread_id"),
 						Alias::new("attachment_digest"),
 						Alias::new("tenant"),
 					])
@@ -199,7 +199,7 @@ impl ChannelScope for NativeChannels<'_> {
 								vec![Expr::value(query_bind_4.to_owned()).into()],
 							))
 							.expr(crate::database::scope::tenant_of(
-								"workspaces",
+								"threads",
 								"id",
 								query_bind_2,
 							))
@@ -215,75 +215,75 @@ impl ChannelScope for NativeChannels<'_> {
 			.execute(&mut **self.lease.tx())
 			.await?
 		};
-		let context: ContextRecord = {
-			let query_bind_1 = workspace;
-			let query_bind_2 = message;
-			crate::database::query_as(
-				&Query::select()
-					.column(ColumnRef::Asterisk)
-					.from(Alias::new("channel_message_context"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("message_id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **self.lease.tx())
-			.await?
-		};
+		let context: ContextRecord =
+			{
+				let query_bind_1 = thread;
+				let query_bind_2 = message;
+				crate::database::query_as(
+					&Query::select()
+						.column(ColumnRef::Asterisk)
+						.from(Alias::new("channel_message_context"))
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								)),
+						)
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("message_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_2.to_owned()).into()],
+								)),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(&mut **self.lease.tx())
+				.await?
+			};
 		Ok(MessageContext {
 			attachment_digest: context.attachment_digest,
 		})
 	}
 	async fn legacy_attachment_positions(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 	) -> Result<Vec<(Uuid, i32)>> {
-		let rows: Vec<(Uuid, i32)> = {
-			let query_bind_1 = workspace;
-			let query_bind_2 = message;
-			crate::database::native::query_as(
-				&Query::select()
-					.columns([Alias::new("id"), Alias::new("position")])
-					.from(Alias::new("channel_attachments"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
-							.eq(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							)),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("message_id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.columns(&["id", "position"])
-			.fetch_all(&mut **self.lease.tx())
-			.await?
-		};
+		let rows: Vec<(Uuid, i32)> =
+			{
+				let query_bind_1 = thread;
+				let query_bind_2 = message;
+				crate::database::native::query_as(
+					&Query::select()
+						.columns([Alias::new("id"), Alias::new("position")])
+						.from(Alias::new("channel_attachments"))
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								)),
+						)
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("message_id")))
+								.eq(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_2.to_owned()).into()],
+								)),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.columns(&["id", "position"])
+				.fetch_all(&mut **self.lease.tx())
+				.await?
+			};
 		Ok(rows)
 	}
 	async fn attachment_links(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		ids: &[Uuid],
 		principal: &str,
 	) -> Result<Vec<AttachmentLink>> {
@@ -302,7 +302,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.expr_as(Expr::cust("NULL::text"), Alias::new("index_state"))
 			.from(Alias::new("channel_attachments"))
 			.and_where(
-				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
+				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 					.eq(Expr::cust("$1")),
 			)
 			.and_where(Expr::cust("id = ANY($2)"))
@@ -314,7 +314,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.lock(LockType::Update);
 		let sql = query.to_string(PostgresQueryBuilder);
 		let records: Vec<LinkRecord> = crate::database::native::query_as(&sql)
-			.bind(workspace)
+			.bind(thread)
 			.bind(ids.to_vec())
 			.bind(uploader)
 			.fetch_all(&mut **self.lease.tx())
@@ -329,7 +329,7 @@ impl ChannelScope for NativeChannels<'_> {
 	}
 	async fn bind_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		message: Uuid,
 		id: Uuid,
 		principal: &str,
@@ -341,7 +341,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.value_expr(Alias::new("message_id"), Expr::cust("$1"))
 			.value_expr(Alias::new("position"), Expr::cust("$5"))
 			.and_where(
-				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
+				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 					.eq(Expr::cust("$2")),
 			)
 			.and_where(
@@ -356,7 +356,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.to_string(PostgresQueryBuilder);
 		crate::database::native::query(&update)
 			.bind(message)
-			.bind(workspace)
+			.bind(thread)
 			.bind(id)
 			.bind(uploader)
 			.bind(position)
@@ -366,7 +366,7 @@ impl ChannelScope for NativeChannels<'_> {
 	}
 	async fn insert_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		principal: &str,
 		input: &AttachmentUpload<'_>,
 		digest: &str,
@@ -375,7 +375,7 @@ impl ChannelScope for NativeChannels<'_> {
 		let uploader = principal;
 		// Serialize replays before reserving quota for an object that may already exist.
 		let lock_key = format!(
-			"thread-attachment:{workspace}:{uploader}:{}",
+			"thread-attachment:{thread}:{uploader}:{}",
 			input.idempotency_key
 		);
 		let lock = Query::select()
@@ -393,7 +393,7 @@ impl ChannelScope for NativeChannels<'_> {
 		let query = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new("channel_attachments"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::value(uploader)))
 			.and_where(
 				Expr::col(Alias::new("idempotency_key")).eq(Expr::value(input.idempotency_key)),
@@ -410,14 +410,14 @@ impl ChannelScope for NativeChannels<'_> {
 		let object_id = self.put_object(content, digest).await?;
 		let tenant = Query::select()
 			.column(Alias::new("tenant"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+			.from(Alias::new("threads"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 			.to_owned();
 		let insert = Query::insert()
 			.into_table(Alias::new("channel_attachments"))
 			.columns([
 				Alias::new("id"),
-				Alias::new("workspace_id"),
+				Alias::new("thread_id"),
 				Alias::new("uploaded_by"),
 				Alias::new("idempotency_key"),
 				Alias::new("filename"),
@@ -433,7 +433,7 @@ impl ChannelScope for NativeChannels<'_> {
 			])
 			.values_expr(vec![
 				Expr::value(Uuid::new_v4()).into(),
-				Expr::value(workspace).into(),
+				Expr::value(thread).into(),
 				Expr::value(uploader.to_owned()).into(),
 				Expr::value(input.idempotency_key).into(),
 				Expr::value(input.filename.to_owned()).into(),
@@ -450,7 +450,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.expect("one value per column")
 			.on_conflict(
 				OnConflict::columns([
-					Alias::new("workspace_id"),
+					Alias::new("thread_id"),
 					Alias::new("uploaded_by"),
 					Alias::new("idempotency_key"),
 				])
@@ -473,7 +473,7 @@ impl ChannelScope for NativeChannels<'_> {
 	}
 	async fn existing_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		principal: &str,
 		key: Uuid,
 	) -> Result<AttachmentState> {
@@ -482,7 +482,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("channel_attachments"))
 			.and_where(
-				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
+				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 					.eq(Expr::cust("$1")),
 			)
 			.and_where(
@@ -496,19 +496,19 @@ impl ChannelScope for NativeChannels<'_> {
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder);
 		let existing: AttachmentRecord = crate::database::query_as(&select)
-			.bind(workspace)
+			.bind(thread)
 			.bind(uploader)
 			.bind(key)
 			.fetch_one(&mut **self.lease.tx())
 			.await?;
 		Ok(existing.into())
 	}
-	async fn attachment(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<AttachmentState>> {
+	async fn attachment(&mut self, thread: Uuid, id: Uuid) -> Result<Option<AttachmentState>> {
 		let query = Query::select()
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("channel_attachments"))
 			.and_where(
-				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
+				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 					.eq(Expr::cust("$1")),
 			)
 			.and_where(
@@ -517,7 +517,7 @@ impl ChannelScope for NativeChannels<'_> {
 			)
 			.to_string(PostgresQueryBuilder);
 		let attachment: Option<AttachmentRecord> = crate::database::query_as(&query)
-			.bind(workspace)
+			.bind(thread)
 			.bind(id)
 			.fetch_optional(&mut **self.lease.tx())
 			.await?;
@@ -525,7 +525,7 @@ impl ChannelScope for NativeChannels<'_> {
 	}
 	async fn history_rows(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		cursor: Option<(DateTime<Utc>, Uuid)>,
 	) -> Result<Vec<HistoryRow>> {
 		let mut query = Query::select();
@@ -533,7 +533,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.column(ColumnRef::table_asterisk(Alias::new("m")))
 			.from_as(Alias::new("messages"), Alias::new("m"))
 			.and_where(
-				Expr::col((Alias::new("m"), Alias::new("workspace_id"))).eq(Expr::value(workspace)),
+				Expr::col((Alias::new("m"), Alias::new("thread_id"))).eq(Expr::value(thread)),
 			)
 			.order_by((Alias::new("m"), Alias::new("created_at")), Order::Desc)
 			.order_by((Alias::new("m"), Alias::new("id")), Order::Desc)
@@ -570,7 +570,7 @@ impl ChannelScope for NativeChannels<'_> {
 	}
 	async fn message_attachments(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		ids: &[Uuid],
 	) -> Result<HashMap<Uuid, Vec<ChannelAttachment>>> {
 		let mut grouped = std::collections::HashMap::new();
@@ -590,7 +590,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.expr_as(index_state(), Alias::new("index_state"))
 			.from(Alias::new("channel_attachments"))
 			.and_where(
-				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("workspace_id")))
+				reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 					.eq(Expr::cust("$1")),
 			)
 			.and_where(Expr::cust("message_id = ANY($2)"))
@@ -608,7 +608,7 @@ impl ChannelScope for NativeChannels<'_> {
 				"description",
 				"index_state",
 			])
-			.bind(workspace)
+			.bind(thread)
 			.bind(ids.to_vec())
 			.fetch_all(&mut **self.lease.tx())
 			.await?;
@@ -626,8 +626,8 @@ impl ChannelScope for NativeChannels<'_> {
 		&mut self,
 		_: Uuid,
 		message: Uuid,
-		citations: &[aidash_domain::workspaces::channels::CitedFileVersion],
-	) -> Result<Vec<aidash_domain::workspaces::channels::ChannelCitation>> {
+		citations: &[aidash_domain::threads::channels::CitedFileVersion],
+	) -> Result<Vec<aidash_domain::threads::channels::ChannelCitation>> {
 		super::citations::record(
 			self.store,
 			self.federation,
@@ -649,14 +649,14 @@ impl ChannelScope for NativeChannels<'_> {
 		&mut self,
 		_: Uuid,
 		ids: &[Uuid],
-	) -> Result<HashMap<Uuid, Vec<aidash_domain::workspaces::channels::ChannelCitation>>> {
+	) -> Result<HashMap<Uuid, Vec<aidash_domain::threads::channels::ChannelCitation>>> {
 		super::citations::for_messages(self.store, self.federation, &mut *self.lease, ids)
 			.await
 			.map_err(Into::into)
 	}
 	async fn describe_attachment(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		id: Uuid,
 		writer: &str,
 		description: &str,
@@ -664,7 +664,7 @@ impl ChannelScope for NativeChannels<'_> {
 		let update = Query::update()
 			.table(Alias::new("channel_attachments"))
 			.value(Alias::new("description"), description)
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::value(writer)))
 			.to_string(PostgresQueryBuilder);
@@ -679,7 +679,7 @@ impl ChannelScope for NativeChannels<'_> {
 			crate::apps::knowledge::repositories::access::Lease::Inherited(self.lease.access_mut());
 		crate::apps::knowledge::repositories::attachment_images::enqueue(
 			&mut lease,
-			workspace,
+			thread,
 			&[id],
 			true,
 		)
@@ -689,7 +689,7 @@ impl ChannelScope for NativeChannels<'_> {
 	}
 	async fn index_attachment_images(
 		&mut self,
-		workspace: Uuid,
+		thread: Uuid,
 		_message: Uuid,
 		attachments: &[ChannelAttachment],
 	) -> Result<()> {
@@ -701,7 +701,7 @@ impl ChannelScope for NativeChannels<'_> {
 		let mut lease =
 			crate::apps::knowledge::repositories::access::Lease::Inherited(self.lease.access_mut());
 		crate::apps::knowledge::repositories::attachment_images::enqueue(
-			&mut lease, workspace, &ids, false,
+			&mut lease, thread, &ids, false,
 		)
 		.await
 		.map(|_| ())

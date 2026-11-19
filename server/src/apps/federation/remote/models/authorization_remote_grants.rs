@@ -23,7 +23,7 @@ pub struct AuthorizationRemoteGrant {
 	#[field]
 	pub task_revision: i64,
 	#[field]
-	pub workspace_id: uuid::Uuid,
+	pub thread_id: uuid::Uuid,
 	/// The Home Node that issued the grant.
 	#[field(field_type = "text")]
 	pub node: String,

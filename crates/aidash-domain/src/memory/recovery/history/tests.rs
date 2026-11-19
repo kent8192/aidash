@@ -17,7 +17,7 @@ fn floor(revision: i64, deleted: bool, digest: &str) -> Floor {
 			bank: Bank {
 				home: "aidash://history/node-a".into(),
 				tenant: "tenant".into(),
-				workspace: Uuid::from_u128(20),
+				thread: Uuid::from_u128(20),
 				participant: None,
 			},
 			revision,
