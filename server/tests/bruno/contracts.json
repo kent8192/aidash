@@ -60111,6 +60111,10 @@
               "url": {
                 "description": "Where a webhook trigger receives events.",
                 "type": ["string", "null"]
+              },
+              "node_id": {
+                "description": "Where another Node sends a `node_event` trigger's events: the Duty's\nNode, which a sender names with the trigger's id (#1013).",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -60119,7 +60123,8 @@
               "created_at",
               "created_by",
               "url",
-              "secret"
+              "secret",
+              "node_id"
             ],
             "type": "object"
           }
@@ -60169,6 +60174,10 @@
               "url": {
                 "description": "Where a webhook trigger receives events.",
                 "type": ["string", "null"]
+              },
+              "node_id": {
+                "description": "Where another Node sends a `node_event` trigger's events: the Duty's\nNode, which a sender names with the trigger's id (#1013).",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -60177,7 +60186,8 @@
               "created_at",
               "created_by",
               "url",
-              "secret"
+              "secret",
+              "node_id"
             ],
             "type": "object"
           }
@@ -61131,5 +61141,482 @@
     },
     "source": "server/src/apps/identity/views/budgets.rs",
     "uuid_parameters": ["budget"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "org-chart",
+    "path": "/api/tenants/{tenant}/org-chart",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ChartDuty": {
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "created_by_task": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "flow": {
+                "description": "The Root Task of the flow that set it up, which the stop action takes.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "requester": {
+                "type": "string"
+              },
+              "spend": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Spend"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Shown only to someone who may see this Duty's Budget."
+              },
+              "state": {
+                "description": "`active`, `paused` or `stopped`.",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title", "requester", "agent", "state"],
+            "type": "object"
+          },
+          "ChartNode": {
+            "properties": {
+              "created_by": {
+                "$ref": "#/components/schemas/NodeCreator"
+              },
+              "default": {
+                "type": "boolean"
+              },
+              "duties": {
+                "items": {
+                  "$ref": "#/components/schemas/ChartDuty"
+                },
+                "type": "array"
+              },
+              "flow": {
+                "description": "The Root Task of the flow whose Run created it, if an Agent's did.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "hidden_duties": {
+                "description": "Duties on this Node the person may not see.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hidden_subnodes": {
+                "description": "Active Subnodes on this Node the person may not see.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "spend": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Spend"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Shown only to someone who may see this Node's Budget."
+              },
+              "subnodes": {
+                "items": {
+                  "$ref": "#/components/schemas/ChartSubnode"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "name",
+              "label",
+              "default",
+              "created_by",
+              "duties",
+              "hidden_duties",
+              "subnodes",
+              "hidden_subnodes"
+            ],
+            "type": "object"
+          },
+          "ChartSubnode": {
+            "properties": {
+              "creator_agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "creator_task": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "flow": {
+                "description": "The Root Task of the flow whose Run created it.",
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "members": {
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              },
+              "root_subject": {
+                "type": "string"
+              },
+              "title": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "creator_agent",
+              "creator_task",
+              "root_subject",
+              "members"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "NodeCreator": {
+            "description": "Who created a Node, as the org chart shows it.",
+            "oneOf": [
+              {
+                "description": "A person, through a browser session (or the first Node of their Tenant).",
+                "properties": {
+                  "identity": {
+                    "description": "The External Identity, when one is recorded.",
+                    "format": "uuid",
+                    "type": ["string", "null"]
+                  },
+                  "kind": {
+                    "enum": ["person"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "description": "A Deployment Administrator or Host Access, for a Tenant's first Node.",
+                "properties": {
+                  "kind": {
+                    "enum": ["deployment"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "description": "An Agent's chain, acting as its root person, from a Run of a Task.",
+                "properties": {
+                  "kind": {
+                    "enum": ["agent"],
+                    "type": "string"
+                  },
+                  "root_subject": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "root_subject", "task_id", "run_id"],
+                "type": "object"
+              }
+            ]
+          },
+          "OrgChart": {
+            "description": "`GET /api/tenants/{tenant}/org-chart`.",
+            "properties": {
+              "nodes": {
+                "items": {
+                  "$ref": "#/components/schemas/ChartNode"
+                },
+                "type": "array"
+              },
+              "people": {
+                "description": "Spend per root person: everyone's for a Budget manager, otherwise the\nperson's own.",
+                "items": {
+                  "$ref": "#/components/schemas/PersonSpend"
+                },
+                "type": "array"
+              },
+              "since": {
+                "description": "The first instant of this UTC month, from which spend is counted.",
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": ["since", "nodes", "people"],
+            "type": "object"
+          },
+          "PersonSpend": {
+            "properties": {
+              "spend": {
+                "$ref": "#/components/schemas/Spend"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": ["subject", "spend"],
+            "type": "object"
+          },
+          "Spend": {
+            "description": "Spend in the ledger this month: reported cost and calls without one.",
+            "properties": {
+              "nanocredits": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "unpriced_calls": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": ["nanocredits", "unpriced_calls"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/OrgChart"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/org_chart.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "flow-stop",
+    "path": "/api/tenants/{tenant}/flows/{root_task}/stop",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "FlowNode": {
+            "additionalProperties": false,
+            "description": "A Node the flow created. Stopping a flow leaves Nodes in place: they belong\nto the Tenant, and a Tenant Administrator deletes them if they are unwanted.",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "label"],
+            "type": "object"
+          },
+          "FlowStopped": {
+            "additionalProperties": false,
+            "description": "What `POST /api/tenants/{tenant}/flows/{root_task}/stop` stopped: every open\nRun of the flow is cancelled, its Subnodes end and its Duties pause.",
+            "properties": {
+              "duties": {
+                "items": {
+                  "$ref": "#/components/schemas/StoppedItem"
+                },
+                "type": "array"
+              },
+              "nodes": {
+                "description": "Nodes the flow created, left in place.",
+                "items": {
+                  "$ref": "#/components/schemas/FlowNode"
+                },
+                "type": "array"
+              },
+              "root_task": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/components/schemas/StoppedItem"
+                },
+                "type": "array"
+              },
+              "subnodes": {
+                "items": {
+                  "$ref": "#/components/schemas/StoppedItem"
+                },
+                "type": "array"
+              },
+              "tasks": {
+                "description": "How many Tasks the flow holds.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "root_task",
+              "tasks",
+              "runs",
+              "subnodes",
+              "duties",
+              "nodes"
+            ],
+            "type": "object"
+          },
+          "StopOutcome": {
+            "description": "What happened to one thing a flow made.",
+            "oneOf": [
+              {
+                "description": "Cancelled, ended or paused now.",
+                "enum": ["stopped"],
+                "type": "string"
+              },
+              {
+                "description": "It had already ended, or was already paused.",
+                "enum": ["already_stopped"],
+                "type": "string"
+              },
+              {
+                "description": "Stopping it failed; `error` says why. The rest were still stopped.",
+                "enum": ["failed"],
+                "type": "string"
+              }
+            ]
+          },
+          "StoppedItem": {
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/StopOutcome"
+              }
+            },
+            "required": ["id", "outcome"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/FlowStopped"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/org_chart.rs",
+    "uuid_parameters": ["root_task"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "duty-node-event",
+    "path": "/federation/v0.1/scoped/duty-events",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DutyEventReceipt": {
+            "description": "What a webhook request did (#1011).",
+            "properties": {
+              "event_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/EventOutcome"
+              }
+            },
+            "required": ["event_id", "outcome"],
+            "type": "object"
+          },
+          "EventOutcome": {
+            "description": "What became of one event.",
+            "oneOf": [
+              {
+                "description": "It started a new Task of the Duty.",
+                "enum": ["started"],
+                "type": "string"
+              },
+              {
+                "description": "It woke the Task that booked it.",
+                "enum": ["delivered"],
+                "type": "string"
+              },
+              {
+                "description": "It started nothing; the reason says why.",
+                "enum": ["skipped"],
+                "type": "string"
+              },
+              {
+                "description": "Starting its Task was refused, or its Router failed; the reason says why.",
+                "enum": ["failed"],
+                "type": "string"
+              },
+              {
+                "description": "The Duty's Router is deciding what it does (#1011 D3).",
+                "enum": ["routing"],
+                "type": "string"
+              },
+              {
+                "description": "The Router dropped it, or a Watcher reported more than a run may.",
+                "enum": ["dropped"],
+                "type": "string"
+              },
+              {
+                "description": "The Router did the work itself.",
+                "enum": ["acted"],
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DutyEventReceipt"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/duty_events.rs",
+    "uuid_parameters": []
   }
 ]

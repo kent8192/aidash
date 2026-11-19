@@ -85,6 +85,9 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.response::<_, Vec<DutyEvent>>(document, view::events, 200, json)?;
 		contracts.path(document, view::webhook, &["Uuid"])?;
 		contracts.response::<_, DutyEventReceipt>(document, view::webhook, 200, json)?;
+		// Another Node's event for a `node_event` trigger (#1013).
+		contracts.request::<_, super::duties::NodeEventInput>(document, view::node_event)?;
+		contracts.response::<_, DutyEventReceipt>(document, view::node_event, 200, json)?;
 	}
 	contracts.request::<_, ScratchCreate>(document, views::scratch::create)?;
 	contracts.response::<_, ScratchView>(

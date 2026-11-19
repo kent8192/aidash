@@ -44,6 +44,9 @@ ADDITIONS = {
     ("POST", "/api/tenants/{tenant}/budgets"): ("budgets-create", "budgets"),
     ("PUT", "/api/tenants/{tenant}/budgets/{budget}"): ("budgets-update", "budgets"),
     ("DELETE", "/api/tenants/{tenant}/budgets/{budget}"): ("budgets-delete", "budgets"),
+    ("GET", "/api/tenants/{tenant}/org-chart"): ("org-chart", "org_chart"),
+    ("POST", "/api/tenants/{tenant}/flows/{root_task}/stop"): ("flow-stop", "org_chart"),
+    ("POST", "/federation/v0.1/scoped/duty-events"): ("duty-node-event", "duty_events"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.
