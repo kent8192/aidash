@@ -18,6 +18,7 @@ struct Scope {
 	rows: Vec<(Uuid, String)>,
 	run: Option<Run>,
 	run_visible: bool,
+	admitted: bool,
 	require_allowed: bool,
 	calls: Vec<String>,
 	owner_lookups: Vec<(Uuid, bool)>,
@@ -52,7 +53,7 @@ fn run() -> Run {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"workspace_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None}
+	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"workspace_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,admitted:false,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None}
 }
 impl Scope {
 	fn touch(&mut self, name: &'static str) -> Result<()> {
@@ -146,9 +147,17 @@ impl RunInteractionScope for Scope {
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		assert_eq!(run.id, Uuid::from_u128(9));
-		assert_eq!(self.context["owner"], "stored-owner");
+		// An admitted Run is checked through its admission, with no Workspace context.
+		if !self.admitted {
+			assert_eq!(self.context["owner"], "stored-owner");
+		}
 		self.touch("run_visible")?;
 		Ok(self.run_visible)
+	}
+	async fn admitted_here(&mut self, run: &RunMetadata) -> Result<bool> {
+		assert_eq!(run.id, Uuid::from_u128(9));
+		self.touch("admitted")?;
+		Ok(self.admitted)
 	}
 }
 #[rstest]
@@ -358,6 +367,61 @@ async fn interaction_denial_stops_at_the_original_dependency(
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls, calls);
+}
+#[rstest]
+#[tokio::test]
+async fn a_run_admitted_here_is_checked_through_its_admission_and_never_its_workspace(
+	mut scope: Scope,
+) {
+	scope.admitted = true;
+	// The Home's Workspace is not on this Node: no owner, context or workspace.read.
+	scope.owner = None;
+	scope.require_allowed = false;
+	let result = run_for_action(&mut scope, Uuid::from_u128(9))
+		.await
+		.unwrap();
+	assert_eq!(result.id, Uuid::from_u128(9));
+	assert_eq!(scope.calls, vec!["run", "admitted", "run_visible"]);
+}
+#[rstest]
+#[tokio::test]
+async fn an_admitted_run_whose_chain_no_longer_reads_is_refused(mut scope: Scope) {
+	scope.admitted = true;
+	scope.run_visible = false;
+	assert!(matches!(
+		run_for_action(&mut scope, Uuid::from_u128(9)).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(scope.calls, vec!["run", "admitted", "run_visible"]);
+}
+#[rstest]
+#[tokio::test]
+async fn a_run_without_an_admission_keeps_the_workspace_interaction(mut scope: Scope) {
+	let result = run_for_action(&mut scope, Uuid::from_u128(9))
+		.await
+		.unwrap();
+	assert_eq!(result.id, Uuid::from_u128(9));
+	assert_eq!(
+		scope.calls,
+		vec![
+			"run",
+			"admitted",
+			"owner",
+			"context",
+			"require",
+			"run_visible"
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn an_unknown_run_is_refused_before_any_admission_lookup(mut scope: Scope) {
+	scope.run = None;
+	assert!(matches!(
+		run_for_action(&mut scope, Uuid::from_u128(9)).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(scope.calls, vec!["run"]);
 }
 #[rstest]
 #[case::owner("owner")]

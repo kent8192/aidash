@@ -7420,3 +7420,31 @@ fn starting_instructions_list_each_usable_external_service() {
 		"{section}"
 	);
 }
+
+/// A tool a Run does not have answers a Run executing for another Home in the words a blocked or
+/// Reach never tool answers there, so the Home cannot tell a tool blocked after the tool map was
+/// built from one that never was (ADR 0139, decision 14). A local Run keeps naming the tool.
+#[rstest]
+#[case::local(false, "unavailable tool missing_tool")]
+#[case::remote(true, aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL)]
+#[tokio::test]
+async fn a_missing_tool_answers_a_remote_run_like_a_blocked_one(
+	mut fixture: Fixture,
+	#[case] remote: bool,
+	#[case] expected: &str,
+) {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().remote_home = remote;
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "missing_tool", json!({}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		fixture.run.context.events().any(|event| matches!(
+			event,
+			ContextEvent::Tool { result, .. } if result == &json!({"error":expected})
+		)),
+		"{:?}",
+		fixture.run.context.events().collect::<Vec<_>>()
+	);
+}

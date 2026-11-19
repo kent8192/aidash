@@ -29,10 +29,15 @@ pub async fn execute(
 		node: input.node,
 		agent: input.agent,
 		version: input.version,
+		request: input.request,
 	};
 	if matches!(
 		input.operation,
-		"human_request" | "mcp.connection_call" | "mcp.connection_list"
+		"human_request"
+			| "connection_request"
+			| "outbound_request"
+			| "mcp.connection_call"
+			| "mcp.connection_list"
 	) {
 		let bound = scope
 			.binding(input.grant_id)
@@ -51,7 +56,10 @@ pub async fn execute(
 		scope
 			.require(
 				&resource,
-				if input.operation == "human_request" {
+				if matches!(
+					input.operation,
+					"human_request" | "connection_request" | "outbound_request"
+				) {
 					"human.request"
 				} else {
 					"tool.invoke"
@@ -149,6 +157,147 @@ pub async fn execute(
 				)
 				.await?
 				.value
+		}
+		"connection_request" => {
+			only_fields(data, &["run_id", "key", "prompt"])?;
+			// The Home's person at the root of the chain is the one asked to connect.
+			if scope.connection_owner().is_none() {
+				return Err(Error::Invalid(
+					"connection_request requires a person at the Run's chain root".into(),
+				));
+			}
+			let run = scope.resource(
+				"run",
+				&format!("{}/runs/{}", scope.local_node(), input.admission_id),
+				task_resource.attributes.clone(),
+			);
+			scope.require(&run, "human.request").await?;
+			let prompt = field(data, "prompt")?;
+			require_connection_prompt(prompt)?;
+			scope
+				.apply(
+					context(),
+					Effect::HumanRequest {
+						kind: aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND,
+						prompt,
+					},
+				)
+				.await?
+				.value
+		}
+		"outbound_request" => {
+			only_fields(data, &["run_id", "key", "prompt"])?;
+			// The Home's person at the root of the chain is the one who may allow the fetch.
+			if scope.connection_owner().is_none() {
+				return Err(Error::Invalid(
+					"outbound_get requires a person at the Run's chain root".into(),
+				));
+			}
+			let run = scope.resource(
+				"run",
+				&format!("{}/runs/{}", scope.local_node(), input.admission_id),
+				task_resource.attributes.clone(),
+			);
+			scope.require(&run, "human.request").await?;
+			let prompt = field(data, "prompt")?;
+			aidash_domain::capabilities::approvals::check_outbound_prompt(prompt)?;
+			scope
+				.apply(
+					context(),
+					Effect::HumanRequest {
+						kind: aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND,
+						prompt,
+					},
+				)
+				.await?
+				.value
+		}
+		"outbound_read" => {
+			only_fields(data, &["run_id", "id"])?;
+			let request = scope
+				.human_read(
+					input.grant_id,
+					input.admission_id,
+					serde_json::from_value(data["id"].clone())?,
+				)
+				.await?;
+			// Only the question this tool put to the person can be read through it: an
+			// approval request whose prompt names an outbound GET, never another tool's.
+			if request.kind != aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND
+				|| aidash_domain::capabilities::approvals::check_outbound_prompt(&request.prompt)
+					.is_err()
+			{
+				return Err(Error::Forbidden);
+			}
+			json!(request)
+		}
+		"workspace_search" => {
+			only_fields(data, &["run_id", "input"])?;
+			let resource = scope.workspace(task.workspace_id).await?;
+			scope.require(&resource, "workspace.read").await?;
+			// An image query names a File or a Thread Attachment selection of the
+			// receiving Node's Run, which the Home cannot read.
+			if data["input"]
+				.get("image")
+				.is_some_and(|image| !image.is_null())
+			{
+				return Err(Error::Invalid(
+					"a Run executing for another Home searches this Workspace by text only".into(),
+				));
+			}
+			scope
+				.workspace_search(task.workspace_id, &data["input"])
+				.await?
+		}
+		"task_assign" => {
+			only_fields(data, &["run_id", "key", "task_id", "policy", "reason"])?;
+			let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+			let child = scope.task(id).await?;
+			// Only a child this grant created, as for a delegation. Who may be assigned is
+			// decided by the Home's Generation policy for the delegation chain.
+			if !child_eligible(&task, &child, &owner)
+				|| !scope.created_by_grant(input.grant_id, child.id).await?
+			{
+				return Err(Error::Forbidden);
+			}
+			scope
+				.apply(
+					context(),
+					Effect::Assign {
+						child: child.id,
+						policy: field(data, "policy")?,
+						reason: field(data, "reason")?,
+					},
+				)
+				.await?
+				.value
+		}
+		"memory_recall" | "memory_reflect" => {
+			only_fields(data, &["run_id", "key", "query"])?;
+			let query: aidash_domain::memory::RecallQuery =
+				serde_json::from_value(data["query"].clone())?;
+			scope
+				.memory_recall(
+					input.grant_id,
+					input.admission_id,
+					field(data, "key")?,
+					&query,
+					input.operation == "memory_reflect",
+				)
+				.await?
+		}
+		"memory_mutate" => {
+			only_fields(data, &["run_id", "key", "changes"])?;
+			let changes: Vec<aidash_domain::memory::Change> =
+				serde_json::from_value(data["changes"].clone())?;
+			scope
+				.memory_mutate(
+					input.grant_id,
+					input.admission_id,
+					field(data, "key")?,
+					&changes,
+				)
+				.await?
 		}
 		"human_read" => json!(
 			scope
@@ -468,6 +617,37 @@ fn abandon_list(data: &Value) -> Result<Vec<Uuid>> {
 		None | Some(Value::Null) => Vec::new(),
 		Some(value) => serde_json::from_value(value.clone())?,
 	})
+}
+
+/// A Home-forwarded call carries exactly the fields its tool defines, so nothing in the
+/// request can steer where the Home reads or writes.
+fn only_fields(data: &Value, allowed: &[&str]) -> Result<()> {
+	let Some(object) = data.as_object() else {
+		return Err(Error::Invalid("request data must be an object".into()));
+	};
+	if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+		return Err(Error::Invalid(format!("unknown request field: {unknown}")));
+	}
+	Ok(())
+}
+
+/// The prompt the `connection_request` tool composes, checked again on the Home.
+fn require_connection_prompt(prompt: &str) -> Result<()> {
+	let value: Value = serde_json::from_str(prompt)
+		.map_err(|_| Error::Invalid("invalid connection request".into()))?;
+	if value["tool"] != "connection_request" {
+		return Err(Error::Invalid("invalid connection request".into()));
+	}
+	let resource = value["resource"]
+		.as_str()
+		.ok_or_else(|| Error::Invalid("invalid connection request".into()))?;
+	if aidash_domain::oauth_connections::canonical_resource(resource)? != resource {
+		return Err(Error::Invalid("invalid connection request".into()));
+	}
+	let scopes: Vec<String> =
+		serde_json::from_value(value.get("scopes").cloned().unwrap_or_else(|| json!([])))?;
+	aidash_domain::oauth_connections::admissible_scopes(&scopes, None, None, None)?;
+	Ok(())
 }
 
 /// Abandoning needs `task.abandon` on each Task for the caller's chain, and a

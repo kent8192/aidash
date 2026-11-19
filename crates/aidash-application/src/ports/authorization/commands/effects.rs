@@ -52,6 +52,13 @@ pub enum Effect<'a> {
 		child: Uuid,
 		agent: &'a EntityRef,
 	},
+	/// A `task_assign` forwarded to the Home: the Home's Generation policy decides, and the
+	/// assignee is only an Agent of the Home's own Node.
+	Assign {
+		child: Uuid,
+		policy: &'a str,
+		reason: &'a str,
+	},
 	Message {
 		content: &'a str,
 		through: Option<i64>,
@@ -153,4 +160,32 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 		result: &Value,
 	) -> Result<()>;
 	async fn live(&mut self, grant: Uuid) -> Result<bool>;
+	/// A Workspace search on the Home, text only. The Home authorizes `semantic.search` and
+	/// `semantic.disclose` for the delegation chain. (ADR 0139)
+	async fn workspace_search(&mut self, _workspace: Uuid, _input: &Value) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
+	/// A memory recall or reflection served from the grant's saved Home bindings: the
+	/// published Workspace bank and the Agent's participant bank. The banks come from the
+	/// grant, never from the request. (ADR 0126, 0139)
+	async fn memory_recall(
+		&mut self,
+		_grant: Uuid,
+		_admission: Uuid,
+		_key: &str,
+		_query: &aidash_domain::memory::RecallQuery,
+		_reflect: bool,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
+	/// A memory write. It goes to the Agent's participant bank only. (ADR 0126, 0139)
+	async fn memory_mutate(
+		&mut self,
+		_grant: Uuid,
+		_admission: Uuid,
+		_key: &str,
+		_changes: &[aidash_domain::memory::Change],
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 }

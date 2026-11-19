@@ -1680,13 +1680,8 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
 	let requests = p.requests.lock().await;
 	assert_eq!(requests.len(), 1, "{run:?}");
-	assert!(
-		requests[0]["tools"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.all(|tool| tool["function"]["name"] != "memory_mutate")
-	);
+	// Whether memory_mutate is offered is no longer this test's concern: it is a candidate a
+	// remote Run may be offered, and the Federation tool lists decide each call (ADR 0139).
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
@@ -3263,6 +3258,61 @@ async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
 	p.close().await;
 }
 
+/// A Run executing here for another Home has no Workspace on this Node, so work done on its
+/// behalf is checked through its admission instead (#989): a healthy foreign Run may act, and a
+/// withdrawal on the executing Node stops it, as it did before the Workspace was left out.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_foreign_run_acts_through_its_admission_and_a_withdrawal_stops_it(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let may_act = async || {
+		let aidash_server::authorization::identity::Actor::Subject(identity) =
+			authorization.authenticate(&p.receiver_token).await.unwrap()
+		else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		let run = p.run().await;
+		let chain: Vec<String> = sqlx::query_scalar(
+			"SELECT subject_chain FROM authorization_remote_admissions WHERE task_id = $1",
+		)
+		.bind(run.task_id)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::authorization::services::execution::operation_may_act(
+			&p.b.store, &identity, chain, run.id,
+		)
+		.await
+	};
+	may_act()
+		.await
+		.expect("a healthy foreign Run acts through its admission");
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&EntityRef {
+				id: "research".into(),
+				version: "1.0.0".into(),
+			},
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	assert!(
+		matches!(may_act().await, Err(aidash_server::Error::Forbidden)),
+		"a withdrawal on the executing Node stops a foreign Run's actions"
+	);
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review_receiver_only_executor_activates_required_home(
@@ -3466,9 +3516,10 @@ async fn remote_grant_run_reports_its_one_hop_limit_for_discovery_and_delegation
 			.iter()
 			.find(|binding| binding.definition.config["operation"] == operation)
 			.unwrap();
+		// Reach never: a remote Binding excludes them (ADR 0139); the Home still refuses the hop.
 		assert!(
-			binding.excluded_reason.is_none(),
-			"{operation} must be available to return a one-hop rejection"
+			binding.excluded_reason.is_some(),
+			"{operation} is never offered to a remote Run"
 		);
 	}
 	let home = Home::new(p.b.clone(), run);
@@ -3502,7 +3553,9 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 		.iter()
 		.find(|binding| binding.definition.config["operation"] == "task_delegate")
 		.unwrap();
-	assert!(binding.excluded_reason.is_none());
+	// task_delegate has Reach never, so a remote Binding excludes it (ADR 0139), and a call to
+	// it is refused as unavailable before any target authority below.
+	assert!(binding.excluded_reason.is_some());
 	let target = aidash_domain::nodes::NodeAddress::derived("aidash://third", "acme").to_string();
 	let mut policy = p.receiver_policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-next-hop","effect":"deny","subjects":{"any":true},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target]}}));
@@ -3523,7 +3576,12 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 	let error = first_result(&history)["event"]["result"]["error"]
 		.as_str()
 		.unwrap_or_default();
-	assert!(error.contains("one hop"), "{history}");
+	// Not the deny-next-hop policy's refusal: the call never reached target authority.
+	assert_eq!(
+		error,
+		aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL,
+		"{history}"
+	);
 	p.close().await;
 }
 
@@ -3541,7 +3599,8 @@ async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_
 		.iter()
 		.find(|binding| binding.definition.config["operation"] == "task_delegate")
 		.unwrap();
-	assert!(excluded.excluded_reason.is_none());
+	// task_delegate has Reach never, so a remote Binding excludes it (ADR 0139).
+	assert!(excluded.excluded_reason.is_some());
 	let home = Home::new(p.b.clone(), run);
 	let child = home
 		.create_task(
@@ -3918,6 +3977,7 @@ impl Pair {
 				tool: "task_delegate".into(),
 				tool_call: None,
 				kind: aidash_domain::tool::RefusalKind::OtherNode,
+				ask: None,
 			}),
 			..Default::default()
 		};
@@ -7180,7 +7240,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_substitute(
+async fn remote_memory_mutate_cannot_write_a_receiver_substitute(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -7192,9 +7252,12 @@ async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_subs
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1);
 	let run = p.run().await;
-	assert_eq!(
-		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"],
-		"unavailable tool memory_mutate",
+	// memory_mutate is now a candidate a remote Run is offered (ADR 0139); a write it cannot
+	// make still answers an explicit tool error and leaves no Unit on either Node.
+	assert!(
+		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"]
+			.as_str()
+			.is_some_and(|error| !error.is_empty()),
 		"unsupported remote writes must return an explicit tool error"
 	);
 	for node in [&p.a, &p.b] {

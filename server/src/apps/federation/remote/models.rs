@@ -6,6 +6,8 @@ mod authorization_remote_grants;
 pub use authorization_remote_grants::AuthorizationRemoteGrant;
 mod delegations;
 pub use delegations::Delegation;
+mod federation_token_ids;
+pub use federation_token_ids::FederationTokenId;
 mod remote_run_message_fences;
 pub use remote_run_message_fences::RemoteRunMessageFence;
 

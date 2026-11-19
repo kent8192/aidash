@@ -6,7 +6,7 @@ use crate::apps::identity::models::{AdministrationActor, AdministrationEvent};
 use crate::apps::identity::oidc::BrowserOrigin;
 use crate::apps::identity::repositories::node_registrations as records;
 use crate::apps::identity::serializers::node_registrations::{
-	RegistrationInput, RegistrationRecord, RegistrationRevision,
+	RegistrationInput, RegistrationRecord, RegistrationRevision, ToolListsInput,
 };
 use crate::apps::identity::serializers::peer::{HistoryPage, MappingPage};
 use crate::apps::identity::services::tenant_administration::TenantAdministrations;
@@ -21,6 +21,8 @@ use aidash_domain::nodes::{
 };
 use aidash_integrations::federation::directory::HttpDirectory;
 use serde_json::json;
+
+mod tool_asks;
 
 pub struct NodeRegistrations {
 	runtime: Federation,
@@ -199,6 +201,145 @@ impl NodeRegistrations {
 			})
 			.await?;
 		Ok(stored.into())
+	}
+
+	/// Replaces the Federation Tool Request, Allowance and Block of the registration at
+	/// `node` of `source_node` (ADR 0139). Decided by `node.federation_tools.manage`;
+	/// a stale revision, or a missing registration, answers 409 as `set` does.
+	pub(crate) async fn set_tool_lists(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		node: String,
+		source_node: String,
+		input: ToolListsInput,
+	) -> Result<RegistrationRecord> {
+		let node = NodeName::parse(&node)?;
+		// The address holds `/` and `:`, so a client sends it percent-encoded.
+		let source_node = percent_encoding::percent_decode_str(&source_node)
+			.decode_utf8()
+			.map_err(|_| {
+				Error::Invalid("a Node address is aidash://<deployment>/<node name>".into())
+			})?;
+		let source_node = NodeAddress::parse(&source_node)?;
+		input.checked()?;
+		let f = self.runtime.clone();
+		let stored = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				let decide = async |tx: &mut reinhardt::db::orm::AtomicTransaction| {
+					let snapshot = administrator.lock(tx, false).await?;
+					administrator
+						.require(
+							tx,
+							&snapshot,
+							rules::NODE_FEDERATION_TOOLS_MANAGE,
+							&source_node.to_string(),
+							attributes(node.as_str(), &source_node),
+						)
+						.await
+				};
+				// Like a registration write, hold the visibility lease so the change
+				// waits for pending atomic transactions.
+				let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
+				f.store
+					.pool
+					.atomic(&administrator.scope()?, async |tx| {
+						decide(tx).await?;
+						require_node(tx, &tenant, &node).await?;
+						let stored = records::update_tool_lists(
+							tx,
+							&tenant,
+							node.as_str(),
+							&source_node,
+							(&input.request, &input.allowance, &input.block),
+							&format!("oidc:{}", administrator.identity_id),
+							input.revision,
+						)
+						.await?
+						.ok_or_else(|| {
+							Error::Conflict("node registration revision changed".into())
+						})?;
+						records::append_history(tx, &stored).await?;
+						AdministrationActor::TenantAdministrator(administrator.clone())
+							.record(
+								tx,
+								AdministrationEvent {
+									action: rules::NODE_FEDERATION_TOOLS_MANAGE,
+									identity: None,
+									registration: None,
+									mapping: None,
+									tenant: Some(&tenant),
+									subject: None,
+									invitation: None,
+								},
+							)
+							.await?;
+						Ok(stored)
+					})
+					.await
+			})
+			.await?;
+		Ok(stored.into())
+	}
+
+	/// The tools the registered Node `source_node` offers `node` to request (ADR 0139), asked
+	/// of its `scoped/tools/discover` as the requesting person. Only a holder of
+	/// `node.federation_tools.manage` sees the answer, since it is what a Request is chosen from.
+	pub(crate) async fn remote_tools(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		node: String,
+		source_node: String,
+	) -> Result<aidash_domain::federation::tool_lists::ToolDiscovery> {
+		let node = NodeName::parse(&node)?;
+		let source_node = percent_encoding::percent_decode_str(&source_node)
+			.decode_utf8()
+			.map_err(|_| {
+				Error::Invalid("a Node address is aidash://<deployment>/<node name>".into())
+			})?;
+		let source_node = NodeAddress::parse(&source_node)?;
+		let f = self.runtime.clone();
+		let subject = self
+			.administrations()
+			.run(actor, origin, &tenant, async |administrator| {
+				f.store
+					.pool
+					.atomic(&administrator.scope()?, async |tx| {
+						let snapshot = administrator.lock(tx, false).await?;
+						administrator
+							.require(
+								tx,
+								&snapshot,
+								rules::NODE_FEDERATION_TOOLS_MANAGE,
+								&source_node.to_string(),
+								attributes(node.as_str(), &source_node),
+							)
+							.await?;
+						require_node(tx, &tenant, &node).await?;
+						Ok(())
+					})
+					.await?;
+				Ok(administrator.identity.subject.clone())
+			})
+			.await?;
+		let sender = aidash_domain::federation::route::Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(tenant)?,
+			node: Some(node),
+			subject: Some(subject),
+		};
+		self.runtime
+			.request(
+				&sender,
+				&source_node.to_string(),
+				reqwest::Method::POST,
+				"/scoped/tools/discover",
+				Some(&json!({})),
+			)
+			.await
 	}
 
 	/// What the registration pins: nothing for a Node of this Deployment, the

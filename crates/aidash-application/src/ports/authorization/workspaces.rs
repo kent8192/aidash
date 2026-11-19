@@ -28,4 +28,6 @@ pub trait RunInteractionScope: WorkspaceResourceScope {
 	fn set_context(&mut self, context: Value);
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
+	/// Whether this Node holds an admission for the Run, that is, executes it for another Home.
+	async fn admitted_here(&mut self, run: &RunMetadata) -> Result<bool>;
 }

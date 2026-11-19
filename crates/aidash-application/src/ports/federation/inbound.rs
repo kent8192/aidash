@@ -80,6 +80,19 @@ pub trait InboundRepository: Send + Sync {
 	/// Authentication material only. This read does not establish enabled
 	/// authority; admission must separately check the registration.
 	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>>;
+	/// Records the `jti` of a token from `sender` that verified at `receiver`
+	/// in `tenant`, until `expires_at` (seconds since the epoch). `false` means
+	/// the key `(tenant, receiver, sender, jti)` was already recorded: a replay.
+	/// An error means the record could not be written; admission must refuse.
+	/// Implementations also delete the Node's expired records.
+	async fn record_token(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeName,
+		sender: &DeploymentId,
+		jti: uuid::Uuid,
+		expires_at: u64,
+	) -> Result<bool>;
 	/// Atomically advances only this owner's authentication material and its
 	/// keys revision. Match BOTH revisions, enabled authority and non-quarantine
 	/// under the existing Tenant/Node authority locks, rechecking live Tenant and

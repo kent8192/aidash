@@ -10,6 +10,8 @@ use aidash_application::{
 };
 use aidash_domain::{
 	HumanRequest, Run, RunMetadata, Task,
+	federation::tool_lists::{OwnedRemoteToolLists, ToolList},
+	nodes::{NodeAddress, registration::NodeRegistration},
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };
@@ -46,6 +48,43 @@ impl AgentToolRepository for AgentTools<'_> {
 			access: self.access.clone().write_owned().await,
 			run: self.run,
 		}))
+	}
+}
+impl Scope<'_> {
+	/// What this Node's people allowed this Run to use for this Run only (ADR 0139), kept on
+	/// its admission. A Run without an admission, or one never answered, has none.
+	async fn run_allowance(&mut self) -> NativeResult<ToolList> {
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		};
+		let stored: Option<Value> = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COALESCE(run_tool_allowance, '[]'::jsonb)"))
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(self.run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		Ok(match stored {
+			Some(value) => serde_json::from_value(value)?,
+			None => ToolList::default(),
+		})
+	}
+	/// This Node's own Node Registration of the Run's Home Node, if it has one.
+	async fn home_registration(&mut self) -> Result<Option<NodeRegistration>> {
+		let run = self.run.metadata();
+		let Ok(home) = NodeAddress::parse(&run.home_node) else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let tenant = self.access.identity.tenant.clone();
+		Ok(super::node_registrations::get(
+			self.access.tx.as_mut(),
+			&tenant,
+			run.node.as_str(),
+			&home,
+		)
+		.await?)
 	}
 }
 #[async_trait]
@@ -98,6 +137,42 @@ impl AgentToolScope for Scope<'_> {
 		};
 		*self.access = fresh;
 		Ok(true)
+	}
+	async fn remote_tool_lists(&mut self) -> Result<Option<OwnedRemoteToolLists>> {
+		if self.remote.is_none() {
+			// A Subnode member runs here as a Run of its own, but answers to the lists of the Run
+			// that created its Subnode (ADR 0110), whose admission and Node Registration hold them.
+			use crate::apps::execution::repositories::operations::remote_tools;
+			let bound = remote_tools::bounding_run(self.access.tx.as_mut(), self.run.id).await?;
+			return Ok(remote_tools::lists(self.access.tx.as_mut(), bound).await?);
+		}
+		// Whether the Home is another Tenant's Node is this Node's own knowledge: only then
+		// does it hold a Node Registration of it. A description without a Request never
+		// turns another Tenant's Home into a same-Tenant one; it asks for nothing instead.
+		let request = self.access.home_tool_request.clone();
+		let Some(registration) = self.home_registration().await? else {
+			// A Home of this Tenant needs no registration and sends no Request.
+			return match request {
+				None => Ok(None),
+				// A Home that asks for tools but that no registration names is not accepted.
+				Some(_) => Err(aidash_application::Error::Forbidden),
+			};
+		};
+		Ok(Some(OwnedRemoteToolLists {
+			request: request.map(|request| request.tools).unwrap_or_default(),
+			allowance: registration.tool_allowance,
+			block: registration.tool_block,
+			// The Home's Run-only answers already travel inside its Request; only the
+			// receiving Node's own are read here.
+			run_request: ToolList::default(),
+			run_allowance: self.run_allowance().await?,
+		}))
+	}
+	async fn remote_tool_block(&mut self) -> Result<Option<ToolList>> {
+		Ok(self
+			.home_registration()
+			.await?
+			.map(|registration| registration.tool_block))
 	}
 	fn context(&self) -> &Value {
 		&self.access.context

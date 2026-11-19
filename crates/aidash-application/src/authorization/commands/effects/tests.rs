@@ -21,6 +21,7 @@ struct Scope {
 	output: Option<Uuid>,
 	record: Value,
 	excluded_run: Option<Uuid>,
+	human: Option<aidash_domain::HumanRequest>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -54,6 +55,7 @@ fn scope() -> Scope {
 		output: Some(Uuid::from_u128(9)),
 		record: json!({"visible":true}),
 		excluded_run: None,
+		human: None,
 	}
 }
 impl Scope {
@@ -145,7 +147,7 @@ impl RemoteCommandEffects for Scope {
 		_: Uuid,
 		_: Uuid,
 	) -> Result<aidash_domain::HumanRequest> {
-		Err(Error::Forbidden)
+		self.human.clone().ok_or(Error::Forbidden)
 	}
 	fn local_node(&self) -> &str {
 		"aidash://home"
@@ -240,6 +242,11 @@ impl RemoteCommandEffects for Scope {
 			Effect::Delegate { child, agent } => {
 				json!({"kind":"delegate","child":child,"agent":agent})
 			}
+			Effect::Assign {
+				child,
+				policy,
+				reason,
+			} => json!({"kind":"assign","child":child,"policy":policy,"reason":reason}),
 			Effect::Message { content, through } => {
 				json!({"kind":"message","content":content,"through":through})
 			}
@@ -305,6 +312,38 @@ impl RemoteCommandEffects for Scope {
 		self.call("live")?;
 		Ok(self.live)
 	}
+	async fn workspace_search(&mut self, workspace: Uuid, input: &Value) -> Result<Value> {
+		assert_eq!(workspace, self.task.workspace_id);
+		self.call("workspace_search")?;
+		self.applied.push(json!({"search":input}));
+		Ok(json!({"results":[]}))
+	}
+	async fn memory_recall(
+		&mut self,
+		_: Uuid,
+		admission: Uuid,
+		key: &str,
+		query: &aidash_domain::memory::RecallQuery,
+		reflect: bool,
+	) -> Result<Value> {
+		self.call("memory_recall")?;
+		self.applied.push(
+			json!({"recall":{"admission":admission,"key":key,"text":query.text,"reflect":reflect}}),
+		);
+		Ok(json!({"result":"recall"}))
+	}
+	async fn memory_mutate(
+		&mut self,
+		_: Uuid,
+		admission: Uuid,
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
+	) -> Result<Value> {
+		self.call("memory_mutate")?;
+		self.applied
+			.push(json!({"mutate":{"admission":admission,"key":key,"changes":changes.len()}}));
+		Ok(json!([]))
+	}
 }
 fn input<'a>(operation: &'a str, data: &'a Value) -> Command<'a> {
 	Command {
@@ -315,6 +354,7 @@ fn input<'a>(operation: &'a str, data: &'a Value) -> Command<'a> {
 		node: "aidash://peer",
 		agent: "agent",
 		version: "1",
+		request: None,
 	}
 }
 fn agent() -> Entry {
@@ -873,4 +913,359 @@ async fn current_tool_and_destination_authority_are_checked_before_personal_look
 			.iter()
 			.any(|call| call.starts_with("previous:") || call == "unowned_target")
 	);
+}
+
+fn assign_data() -> Value {
+	json!({"key":"assign","task_id":Uuid::from_u128(5),"policy":"policy","reason":"work"})
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_assignment_needs_the_grants_own_child_and_is_replay_journaled(mut scope: Scope) {
+	let child = scope.child();
+	scope.additional.insert(child.id, child);
+	let data = assign_data();
+	assert_eq!(
+		run(&mut scope, "task_assign", &data).await.unwrap(),
+		json!({"saved":true})
+	);
+	assert!(scope.calls.contains(&"builtin:task_assign".to_string()));
+	assert_eq!(
+		scope.applied[0]["effect"],
+		json!({"kind":"assign","child":Uuid::from_u128(5),"policy":"policy","reason":"work"})
+	);
+	assert_eq!(scope.journal[0]["key"], json!("task_assign:assign"));
+	assert_eq!(scope.calls.last().unwrap(), "live");
+}
+#[rstest]
+#[case::not_created_by_this_grant(false, false)]
+#[case::another_task_of_the_workspace(true, true)]
+#[tokio::test]
+async fn forwarded_assignment_refuses_a_task_the_grant_did_not_create(
+	mut scope: Scope,
+	#[case] created: bool,
+	#[case] foreign_parent: bool,
+) {
+	let mut child = scope.child();
+	if foreign_parent {
+		child.parent_id = Some(Uuid::from_u128(77));
+	}
+	scope.additional.insert(child.id, child);
+	scope.created = created;
+	assert!(matches!(
+		run(&mut scope, "task_assign", &assign_data()).await,
+		Err(Error::Forbidden)
+	));
+	assert!(scope.applied.is_empty());
+	assert!(scope.journal.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_assignment_refuses_fields_it_does_not_define(mut scope: Scope) {
+	let child = scope.child();
+	scope.additional.insert(child.id, child);
+	let mut data = assign_data();
+	data["node_id"] = json!("aidash://elsewhere");
+	assert!(matches!(
+		run(&mut scope, "task_assign", &data).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.applied.is_empty());
+}
+fn connection_prompt() -> String {
+	json!({"resource":"https://mcp.example.com","scopes":["read"],"reason":"needed","tool":"connection_request","message":"Connect"}).to_string()
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_connection_request_asks_the_home_person_under_human_request_authority(
+	mut scope: Scope,
+) {
+	let data = json!({"key":"ask","prompt":connection_prompt()});
+	run(&mut scope, "connection_request", &data).await.unwrap();
+	assert!(
+		scope
+			.calls
+			.contains(&"builtin:connection_request".to_string())
+	);
+	assert!(scope.calls.contains(&"require:human.request".to_string()));
+	assert_eq!(
+		scope.applied[0]["effect"]["request_kind"],
+		aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_connection_request_needs_a_person_at_the_root(mut scope: Scope) {
+	scope.person = false;
+	let data = json!({"key":"ask","prompt":connection_prompt()});
+	assert!(matches!(
+		run(&mut scope, "connection_request", &data).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[case::not_json("not json")]
+#[case::other_tool(r#"{"tool":"human_request","resource":"https://mcp.example.com/"}"#)]
+#[case::not_canonical(r#"{"tool":"connection_request","resource":"HTTPS://MCP.EXAMPLE.COM"}"#)]
+#[tokio::test]
+async fn forwarded_connection_request_rechecks_the_prompt_the_tool_composed(
+	mut scope: Scope,
+	#[case] prompt: &str,
+) {
+	let data = json!({"key":"ask","prompt":prompt});
+	assert!(run(&mut scope, "connection_request", &data).await.is_err());
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_workspace_search_needs_workspace_read_and_refuses_images(mut scope: Scope) {
+	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
+	run(&mut scope, "workspace_search", &data).await.unwrap();
+	assert!(scope.calls.contains(&"require:workspace.read".to_string()));
+	assert_eq!(
+		scope.applied[0],
+		json!({"search":{"query":"notes","limit":3}})
+	);
+	assert!(scope.journal.is_empty(), "a search is a read");
+	scope.applied.clear();
+	let image = json!({"input":{"query":"x","image":{"file_id":"a"}}});
+	assert!(matches!(
+		run(&mut scope, "workspace_search", &image).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[case::recall("memory_recall", false)]
+#[case::reflect("memory_reflect", true)]
+#[tokio::test]
+async fn forwarded_recall_names_only_the_admission_and_a_query(
+	mut scope: Scope,
+	#[case] operation: &str,
+	#[case] reflect: bool,
+) {
+	let data = json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}});
+	run(&mut scope, operation, &data).await.unwrap();
+	assert!(scope.calls.contains(&format!("builtin:{operation}")));
+	assert_eq!(
+		scope.applied[0],
+		json!({"recall":{"admission":Uuid::from_u128(1),"key":"recall","text":"what","reflect":reflect}})
+	);
+	assert!(scope.journal.is_empty());
+	// Neither a bank nor a participant can be named.
+	let steered = json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100},"bank":{"workspace":"x"}});
+	assert!(matches!(
+		run(&mut scope, operation, &steered).await,
+		Err(Error::Invalid(_))
+	));
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_memory_writes_are_replay_journaled_and_cannot_name_a_bank(mut scope: Scope) {
+	let data = json!({"key":"write","changes":[]});
+	run(&mut scope, "memory_mutate", &data).await.unwrap();
+	assert_eq!(scope.journal[0]["key"], json!("memory_mutate:write"));
+	let steered = json!({"key":"write2","changes":[],"bank":{"participant":null}});
+	assert!(matches!(
+		run(&mut scope, "memory_mutate", &steered).await,
+		Err(Error::Invalid(_))
+	));
+	// The task must still be open for the Home to record a write.
+	scope.task.status = TaskStatus::Completed;
+	assert!(matches!(
+		run(
+			&mut scope,
+			"memory_mutate",
+			&json!({"key":"write3","changes":[]})
+		)
+		.await,
+		Err(Error::Conflict(_))
+	));
+}
+
+fn outbound_prompt() -> String {
+	aidash_domain::capabilities::approvals::outbound_prompt(
+		"https://docs.example.com/a.txt",
+		"https://docs.example.com",
+	)
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_outbound_request_asks_the_home_person_under_human_request_authority(
+	mut scope: Scope,
+) {
+	let data = json!({"run_id":Uuid::from_u128(1),"key":"ask","prompt":outbound_prompt()});
+	run(&mut scope, "outbound_request", &data).await.unwrap();
+	assert!(scope.calls.contains(&"builtin:outbound_get".to_string()));
+	assert!(scope.calls.contains(&"require:human.request".to_string()));
+	assert_eq!(
+		scope.applied[0]["effect"]["request_kind"],
+		aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND
+	);
+	assert_eq!(
+		scope.journal.len(),
+		1,
+		"a retried ask finds the same request"
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn forwarded_outbound_request_needs_a_person_at_the_root(mut scope: Scope) {
+	scope.person = false;
+	let data = json!({"key":"ask","prompt":outbound_prompt()});
+	assert!(matches!(
+		run(&mut scope, "outbound_request", &data).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[case::not_json("not json")]
+#[case::other_tool(
+	r#"{"tool":"connection_request","url":"https://a.example/x","origin":"https://a.example"}"#
+)]
+#[case::plain_http(
+	r#"{"tool":"outbound_get","url":"http://a.example/x","origin":"http://a.example"}"#
+)]
+#[tokio::test]
+async fn forwarded_outbound_request_rechecks_the_prompt_the_tool_composed(
+	mut scope: Scope,
+	#[case] prompt: &str,
+) {
+	let data = json!({"key":"ask","prompt":prompt});
+	assert!(run(&mut scope, "outbound_request", &data).await.is_err());
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn an_outbound_read_returns_only_the_question_this_tool_asked(mut scope: Scope) {
+	let request = |kind: &str| aidash_domain::HumanRequest {
+		answered_by: None,
+		id: Uuid::from_u128(77),
+		workspace_id: Uuid::from_u128(3),
+		run_id: Uuid::from_u128(1),
+		kind: kind.into(),
+		prompt: outbound_prompt(),
+		response: None,
+		created_at: chrono::Utc::now(),
+		answer_by: None,
+	};
+	let data = json!({"run_id":Uuid::from_u128(1),"id":Uuid::from_u128(77)});
+	scope.human = Some(request(
+		aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND,
+	));
+	let read = run(&mut scope, "outbound_read", &data).await.unwrap();
+	assert_eq!(read["id"], json!(Uuid::from_u128(77)));
+	assert!(scope.calls.contains(&"builtin:outbound_get".to_string()));
+	assert!(scope.journal.is_empty(), "a read is not a mutation");
+	scope.human = Some(request("MCP_CONNECTION"));
+	assert!(matches!(
+		run(&mut scope, "outbound_read", &data).await,
+		Err(Error::Forbidden)
+	));
+	// Another tool's approval request is an approval request too, but not this tool's.
+	let mut other = request(aidash_domain::capabilities::approvals::OUTBOUND_REQUEST_KIND);
+	other.prompt = "Approve this exact external tool action once? Tool: x".into();
+	scope.human = Some(other);
+	assert!(matches!(
+		run(&mut scope, "outbound_read", &data).await,
+		Err(Error::Forbidden)
+	));
+}
+fn home_request(tools: &[&str]) -> aidash_domain::federation::tool_lists::FederationToolRequest {
+	use aidash_domain::federation::tool_lists::{FederationToolRequest, ToolList, ToolPattern};
+	FederationToolRequest {
+		tools: ToolList::new(tools.iter().map(|tool| ToolPattern::new(*tool).unwrap())).unwrap(),
+		hosts: vec![],
+	}
+}
+async fn run_requested(
+	scope: &mut Scope,
+	operation: &str,
+	data: &Value,
+	request: &aidash_domain::federation::tool_lists::FederationToolRequest,
+) -> Result<Value> {
+	let mut command = input(operation, data);
+	command.request = Some(request);
+	execute(scope, command, &agent()).await
+}
+fn forwarded_calls() -> Vec<(&'static str, Value)> {
+	vec![
+		(
+			"workspace_search",
+			json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}}),
+		),
+		("task_assign", assign_data()),
+		(
+			"memory_recall",
+			json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}}),
+		),
+		(
+			"memory_reflect",
+			json!({"key":"reflect","query":{"text":"what","kinds":[],"max_tokens":100}}),
+		),
+		("memory_mutate", json!({"key":"write","changes":[]})),
+		(
+			"connection_request",
+			json!({"run_id":Uuid::from_u128(1),"key":"ask","prompt":connection_prompt()}),
+		),
+		(
+			"outbound_request",
+			json!({"run_id":Uuid::from_u128(1),"key":"ask","prompt":outbound_prompt()}),
+		),
+	]
+}
+#[rstest]
+#[tokio::test]
+async fn the_home_refuses_a_forwarded_tool_its_own_request_does_not_name(mut scope: Scope) {
+	// The receiving Node skipped its gate: the Home's Request names only the defaults it kept.
+	let request = home_request(&["workspace_message", "human_request"]);
+	for (operation, data) in forwarded_calls() {
+		let refused = run_requested(&mut scope, operation, &data, &request).await;
+		assert!(
+			matches!(&refused, Err(Error::Invalid(message)) if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL),
+			"{operation}: {refused:?}"
+		);
+		assert!(scope.applied.is_empty(), "{operation} took effect");
+		assert!(scope.journal.is_empty(), "{operation} was journaled");
+		assert!(
+			!scope.calls.iter().any(|call| call.starts_with("builtin:")),
+			"{operation} reached the Binding check"
+		);
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn the_home_serves_a_forwarded_tool_its_request_or_a_run_only_answer_names(mut scope: Scope) {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let listed = home_request(&["workspace_search", "memory_*"]);
+	let data = json!({"run_id":Uuid::from_u128(1),"input":{"query":"notes","limit":3}});
+	run_requested(&mut scope, "workspace_search", &data, &listed)
+		.await
+		.unwrap();
+	let recall = json!({"key":"recall","query":{"text":"what","kinds":[],"max_tokens":100}});
+	run_requested(&mut scope, "memory_recall", &recall, &listed)
+		.await
+		.unwrap();
+	// The Home's "this Run only" answer travels inside the Request it describes.
+	let run_only = ToolList::new([ToolPattern::new("task_assign").unwrap()]).unwrap();
+	let answered = home_request(&["workspace_message"])
+		.with_run_tools(&run_only)
+		.unwrap();
+	let child = scope.child();
+	scope.additional.insert(child.id, child);
+	run_requested(&mut scope, "task_assign", &assign_data(), &answered)
+		.await
+		.unwrap();
+}
+#[rstest]
+#[tokio::test]
+async fn older_operations_keep_only_the_binding_check_under_a_request(mut scope: Scope) {
+	// A Run's own traffic (here, a record read for its context) names no list.
+	let request = home_request(&[]);
+	let data = json!({"kind":"message","id":Uuid::from_u128(6)});
+	run_requested(&mut scope, "workspace_record", &data, &request)
+		.await
+		.unwrap();
+	assert!(scope.calls.contains(&"builtin:workspace_read".to_string()));
 }

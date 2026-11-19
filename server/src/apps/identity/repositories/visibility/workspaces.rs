@@ -319,6 +319,17 @@ impl RunInteractionScope for Reads<'_> {
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_visible(run).await.map_err(Into::into)
 	}
+	async fn admitted_here(&mut self, run: &RunMetadata) -> Result<bool> {
+		Ok(
+			crate::apps::federation::peer::repositories::admissions::for_run(
+				self.access.tx.as_mut(),
+				run.id,
+			)
+			.await
+			.map_err(aidash_application::Error::from)?
+			.is_some(),
+		)
+	}
 }
 #[async_trait]
 impl RunInteractionScope for NativeReads<'_> {
@@ -338,5 +349,16 @@ impl RunInteractionScope for NativeReads<'_> {
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_visible(run).await.map_err(Into::into)
+	}
+	async fn admitted_here(&mut self, run: &RunMetadata) -> Result<bool> {
+		Ok(
+			crate::apps::federation::peer::repositories::admissions::for_run(
+				self.access.tx.as_mut(),
+				run.id,
+			)
+			.await
+			.map_err(aidash_application::Error::from)?
+			.is_some(),
+		)
 	}
 }

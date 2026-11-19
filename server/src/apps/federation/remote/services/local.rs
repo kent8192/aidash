@@ -300,6 +300,26 @@ async fn dispatch(
 			let input = checked!(body, remote_execution::commands::Input);
 			respond(boxed(|| remote_execution::commands::handle(f, admitted, input)).await)
 		}
+		("POST", ["scoped", "execution", "deliveries", "prepare"]) => {
+			let input = checked!(body, remote_execution::commands::DeliveryOpen);
+			respond(
+				boxed(|| remote_execution::commands::delivery_prepare(f, admitted, input)).await,
+			)
+		}
+		("POST", ["scoped", "execution", "deliveries", "chunks"]) => {
+			let input = checked!(body, remote_execution::commands::DeliveryChunk);
+			respond(boxed(|| remote_execution::commands::delivery_chunk(f, admitted, input)).await)
+		}
+		("POST", ["scoped", "execution", "deliveries", "commit"]) => {
+			let input = checked!(body, remote_execution::commands::DeliveryOpen);
+			respond(boxed(|| remote_execution::commands::delivery_commit(f, admitted, input)).await)
+		}
+		("POST", ["thread-attachment", "1", "fetch"]) => {
+			let input = checked!(body, remote_execution::commands::AttachmentInput);
+			respond(
+				boxed(|| remote_execution::commands::thread_attachment(f, admitted, input)).await,
+			)
+		}
 		("POST", ["scoped", "execution", "grants", "activation"]) => {
 			let input = input!(body, VerifyInput);
 			respond(boxed(|| remote_execution::activation_binding(f, admitted, input)).await)
@@ -336,6 +356,10 @@ async fn dispatch(
 		("POST", ["scoped", "discover"]) => {
 			let input = input!(body, DiscoveryInput);
 			respond(boxed(|| identity_peer::discover_for(f, admitted, input)).await)
+		}
+		// The view reads no body: the sender is the whole question (ADR 0139).
+		("POST", ["scoped", "tools", "discover"]) => {
+			respond(boxed(|| identity_peer::tools_discover_for(f, admitted)).await)
 		}
 		("POST", ["scoped", "graph"]) => {
 			let input = checked!(body, identity_peer::graph::GraphRequest);

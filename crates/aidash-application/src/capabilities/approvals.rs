@@ -561,6 +561,180 @@ pub async fn prepare(
 		.await?;
 	view(scope, run, &record).await
 }
+/// The state of an outbound read that waits for the Home's person (ADR 0139, decision 22). The
+/// receiving Node's people cannot decide it, and no worker takes it: only the Home's answer
+/// moves it to `approved` or `denied`.
+pub const AWAITING_HOME: &str = "awaiting_home";
+/// What the Home's person is asked about an outbound read of a Run executing for another Home.
+pub struct HomeAsk {
+	pub record: Uuid,
+	/// The Human Request already put to the Home's person, when one was.
+	pub home_request: Option<Uuid>,
+	/// The prompt to put to them when none was.
+	pub prompt: String,
+	/// The command key the Home deduplicates the request under.
+	pub key: String,
+}
+pub enum HomeOutbound {
+	/// The call's result: a repeat of one that was settled, or the view of a waiting record.
+	Settled(Value),
+	/// The Home's person must be asked, or the answer read.
+	Ask(HomeAsk),
+}
+/// What the Home reported about the request put to its person.
+pub enum HomeAnswer {
+	/// The Home created this request.
+	Asked(Uuid),
+	/// The Home's current state of this request.
+	Read {
+		request: Uuid,
+		verdict: aidash_domain::capabilities::approvals::HomeVerdict,
+	},
+}
+/// First step of `outbound_get` for a Run executing for another Home: the receiving Node's own
+/// checks (its allowed origins, its admission, its policy on the request) and a record of the
+/// read that is `awaiting_home`. Asking the Home's person is the caller's, outside the
+/// transaction. A repeat of the call finds its record by key, so a retry never asks twice.
+pub async fn home_begin(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	area: Uuid,
+	input: Outbound,
+) -> Result<HomeOutbound> {
+	let limits = scope.limits()?;
+	let (_, origin) = permitted_origin(&input.url, &limits.origins)?;
+	let digest = aidash_domain::registry::rules::digest(&json!(["outbound_get", run.id, input]));
+	let key = format!("run:{}:outbound:{digest}", run.id);
+	if let Some(previous) = scope.cached(input.idempotency_key, &digest).await? {
+		let id: Uuid = serde_json::from_value(previous["operation_id"].clone())?;
+		let record = scope.load(id, OUTBOUND).await?;
+		if record.state == AWAITING_HOME {
+			return Ok(HomeOutbound::Ask(HomeAsk {
+				record: id,
+				home_request: serde_json::from_value::<Option<Uuid>>(
+					record.data["home_request_id"].clone(),
+				)
+				.ok()
+				.flatten(),
+				prompt: aidash_domain::capabilities::approvals::outbound_prompt(
+					&input.url, &origin,
+				),
+				key,
+			}));
+		}
+		return view(scope, run, &record).await.map(HomeOutbound::Settled);
+	}
+	if !limits.admission {
+		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
+	}
+	if scope.active_run().await? != Some(run.id) || run.phase.is_terminal() {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
+	// The receiving Node's own policy on the request stays: the Home's person adds to it and
+	// never replaces it.
+	let target = resource(scope, &origin, run.id);
+	scope.require(&target, "capability.request").await?;
+	let id = Uuid::new_v4();
+	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),"url":input.url,"targets":[origin],"action":"network.get","digest":digest,"policy_revision":scope.policy_revision(),"approver":Value::Null,"grant_id":Value::Null,"ordinary":false,"approval_mode":aidash_domain::capabilities::approvals::HOME_APPROVAL_MODE});
+	scope
+		.insert(Creation {
+			id,
+			area: Some(area),
+			kind: OUTBOUND,
+			state: AWAITING_HOME,
+			data,
+			expires: Some(Utc::now() + Duration::seconds(limits.approval_seconds as i64)),
+		})
+		.await?;
+	scope
+		.cache(input.idempotency_key, &digest, &json!({"operation_id":id}))
+		.await?;
+	Ok(HomeOutbound::Ask(HomeAsk {
+		record: id,
+		home_request: None,
+		prompt: aidash_domain::capabilities::approvals::outbound_prompt(&input.url, &origin),
+		key,
+	}))
+}
+/// The view of a read that waits for the Home's person looks like one waiting for a person here.
+fn home_waiting(mut view: Value) -> Value {
+	view["status"] = json!("approval_required");
+	view["approval_state"] = json!(AWAITING_HOME);
+	view["approver"] = json!("home");
+	view
+}
+/// Second step: record what the Home answered. An approval makes the record `approved`, which
+/// the outbound worker takes, and which the worker checks against this Node's own authority and
+/// origins as it fetches. A decline, an expiry, or anything that is not an explicit approval
+/// makes it `denied`, the shape a person's denial has here.
+pub async fn home_settle(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	record: Uuid,
+	answer: HomeAnswer,
+) -> Result<Value> {
+	use aidash_domain::capabilities::approvals::HomeVerdict;
+	let mut record = scope.load(record, OUTBOUND).await?;
+	if record.state != AWAITING_HOME {
+		return view(scope, run, &record).await;
+	}
+	if record.data["run_id"] != json!(run.id) {
+		return Err(Error::NotFound("operation unavailable".into()));
+	}
+	let verdict = match answer {
+		HomeAnswer::Asked(request) => {
+			if record.data["home_request_id"].is_null() {
+				record.data["home_request_id"] = json!(request);
+				scope.update(&mut record).await?;
+			}
+			HomeVerdict::Pending
+		}
+		HomeAnswer::Read { request, verdict } => {
+			if record.data["home_request_id"] != json!(request) {
+				return Err(Error::Forbidden);
+			}
+			verdict
+		}
+	};
+	let lapsed = record.expires_at.is_none_or(|at| at <= Utc::now());
+	let verdict = match verdict {
+		HomeVerdict::Pending if lapsed => HomeVerdict::Expired,
+		other => other,
+	};
+	match verdict {
+		HomeVerdict::Pending => {
+			let projected = view(scope, run, &record).await?;
+			return Ok(home_waiting(projected));
+		}
+		HomeVerdict::Approved { by } => {
+			if run.control == RunControl::Cancelled || run.phase.is_terminal() {
+				return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+			}
+			// Origins are the receiving Node's to allow, and can change while the Home thinks.
+			let limits = scope.limits()?;
+			permitted_origin(
+				record.data["url"].as_str().ok_or(Error::Forbidden)?,
+				&limits.origins,
+			)?;
+			record.state = "approved".into();
+			record.data["approver"] = json!(by.as_deref().unwrap_or("home"));
+			record.data["decided_by"] = json!(by.as_deref().unwrap_or("home"));
+		}
+		HomeVerdict::Declined => {
+			record.state = "denied".into();
+			record.data["error"] = json!("OUTBOUND_HOME_DECLINED");
+			record.data["decided_by"] = json!("home");
+		}
+		HomeVerdict::Expired => {
+			record.state = "denied".into();
+			record.data["error"] = json!("OUTBOUND_HOME_EXPIRED");
+			record.data["decided_by"] = json!("home");
+		}
+	}
+	record.data["decided_at"] = json!(Utc::now());
+	scope.update(&mut record).await?;
+	view(scope, run, &record).await
+}
 pub async fn view(scope: &mut dyn ApprovalScope, run: &Run, record: &Record) -> Result<Value> {
 	if record.owner != scope.principal() || record.data["run_id"] != json!(run.id) {
 		return Err(Error::NotFound("operation unavailable".into()));
@@ -887,7 +1061,12 @@ pub async fn authorize(scope: &mut dyn ApprovalScope, record: &Record) -> Result
 	let target = resource(scope, &origin, id);
 	scope.require(&target, "capability.request").await?;
 	let direct = ordinary(scope, &target, "network.get")?;
-	if !direct {
+	// An approval the Home's person gave stands on the Home's authority, which this Node's policy
+	// does not know, so there is no approver to judge here. Everything of this Node's own is still
+	// judged above: its origins, `capability.request` and any explicit deny of `network.get`.
+	let home_approved =
+		record.data["approval_mode"] == aidash_domain::capabilities::approvals::HOME_APPROVAL_MODE;
+	if !direct && !home_approved {
 		if !eligible(
 			scope,
 			record.data["approver"].as_str().ok_or(Error::Forbidden)?,

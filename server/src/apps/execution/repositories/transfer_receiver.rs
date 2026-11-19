@@ -89,7 +89,17 @@ impl ReceiverRepository for Repository<'_> {
 				&receiver.address
 			})
 	}
+	fn delivery(
+		&self,
+	) -> Option<aidash_application::ports::capabilities::transfer::receiver::DeliveryMode> {
+		self.delivery.as_ref().map(|delivery| delivery.mode)
+	}
 	async fn callback(&self, source: &str, path: &str, body: &Value) -> Result<Value> {
+		// The description of a delivery is the Home's own: there is no sender to call back, and
+		// what the receiving Node asked for was bound into it by the input digest.
+		if let Some(delivery) = &self.delivery {
+			return Ok(serde_json::to_value(&delivery.description)?);
+		}
 		let receiver = &self.receiving()?.node;
 		let sender = aidash_domain::federation::route::Sender {
 			tenant: self.federation.node_tenant_of(receiver).await?,
@@ -101,6 +111,24 @@ impl ReceiverRepository for Repository<'_> {
 			.map_err(Into::into)
 	}
 	async fn begin_peer(&self, source: &str, subject: &str) -> Result<Box<dyn ReceiverScope + '_>> {
+		if let Some(delivery) = &self.delivery {
+			// The grant's own authority, rechecked live, instead of a Peer Mapping.
+			let (mut access, _) = crate::apps::identity::services::remote::delivery_lease(
+				self.federation,
+				source,
+				delivery.grant,
+			)
+			.await?;
+			// The Node the sender addressed, which a grant's authority does not know: without it
+			// the Tenant's default Node would answer for the Runs this Node admitted.
+			access.set_node(self.receiving()?.node.clone());
+			return Ok(Box::new(Scope {
+				store: Some(&self.federation.store),
+				authority: Authority::Owned(Box::new(access)),
+				receiving: Some(self.receiving()?.node.clone()),
+				pending: None,
+			}));
+		}
 		let access =
 			peer::mapped_access(self.federation, &self.receiving()?.node, source, subject).await?;
 		Ok(Box::new(Scope {

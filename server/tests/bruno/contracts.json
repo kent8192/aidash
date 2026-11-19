@@ -93,6 +93,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -161,8 +165,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           },
@@ -437,6 +446,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -505,8 +518,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           },
@@ -1479,6 +1497,51 @@
   {
     "json": true,
     "method": "POST",
+    "name": "remotecommands-delivery-prepare",
+    "path": "/federation/v0.1/scoped/execution/deliveries/prepare",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "remotecommands-delivery-chunk",
+    "path": "/federation/v0.1/scoped/execution/deliveries/chunks",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "remotecommands-delivery-commit",
+    "path": "/federation/v0.1/scoped/execution/deliveries/commit",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {},
+        "schema": {}
+      }
+    },
+    "source": "server/src/apps/identity/views/remote_commands.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
     "name": "peerexecutionmanagement-activate",
     "path": "/federation/v0.1/scoped/execution/admissions/{id}/activate",
     "query_parameters": [],
@@ -1579,6 +1642,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -1653,8 +1720,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -1770,6 +1842,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -1844,8 +1920,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -1996,6 +2077,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -2070,8 +2155,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -2160,6 +2250,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -2303,8 +2397,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -2394,6 +2493,10 @@
             "properties": {
               "call": {
                 "type": "string"
+              },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
               },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
@@ -2953,6 +3056,11 @@
                 "type": "string"
               },
               {
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"],
+                "type": "string"
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
                 "enum": ["stale"],
                 "type": "string"
@@ -3129,6 +3237,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -3271,8 +3383,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -4039,6 +4156,13 @@
               },
               "tenant": {
                 "type": "string"
+              },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
+              "parent_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -4049,7 +4173,9 @@
               "expires_at",
               "revoked_at",
               "issued_by",
-              "mapping_id"
+              "mapping_id",
+              "end_reason",
+              "parent_id"
             ],
             "type": "object"
           },
@@ -4115,6 +4241,13 @@
               },
               "tenant": {
                 "type": "string"
+              },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
+              "parent_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -4125,7 +4258,9 @@
               "expires_at",
               "revoked_at",
               "issued_by",
-              "mapping_id"
+              "mapping_id",
+              "end_reason",
+              "parent_id"
             ],
             "type": "object"
           }
@@ -4188,6 +4323,13 @@
               },
               "tenant": {
                 "type": "string"
+              },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
+              "parent_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -4199,6 +4341,8 @@
               "revoked_at",
               "issued_by",
               "mapping_id",
+              "end_reason",
+              "parent_id",
               "pending_transactions"
             ],
             "type": "object"
@@ -4248,6 +4392,13 @@
               },
               "tenant": {
                 "type": "string"
+              },
+              "end_reason": {
+                "type": ["string", "null"]
+              },
+              "parent_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -4259,6 +4410,8 @@
               "revoked_at",
               "issued_by",
               "mapping_id",
+              "end_reason",
+              "parent_id",
               "pending_transactions"
             ],
             "type": "object"
@@ -6060,6 +6213,15 @@
     "method": "POST",
     "name": "peer-mappings-discover",
     "path": "/federation/v0.1/scoped/discover",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/peer_mappings.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "peer-mappings-discover-tools",
+    "path": "/federation/v0.1/scoped/tools/discover",
     "query_parameters": [],
     "source": "server/src/apps/identity/views/peer_mappings.rs",
     "uuid_parameters": []
@@ -8058,6 +8220,10 @@
               },
               "writer_frozen": {
                 "type": "boolean"
+              },
+              "left_running": {
+                "description": "Background process adopted when the foreground command exited.",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -8302,6 +8468,10 @@
               },
               "writer_frozen": {
                 "type": "boolean"
+              },
+              "left_running": {
+                "description": "Background process adopted when the foreground command exited.",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -8492,6 +8662,10 @@
               },
               "writer_frozen": {
                 "type": "boolean"
+              },
+              "left_running": {
+                "description": "Background process adopted when the foreground command exited.",
+                "type": ["string", "null"]
               }
             },
             "required": [
@@ -31690,6 +31864,17 @@
                   }
                 ],
                 "description": "Exact input at the authority check; absent on pauses saved by older workers."
+              },
+              "ask": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolAsk"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool and the sides that lack it, when a Federation tool list stopped the call\n(ADR 0139). The people who hold those lists answer from it."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -31941,30 +32126,14 @@
                 "type": "string"
               },
               {
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
-              },
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
                 "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
                 "enum": ["data_protection"],
                 "type": "string"
+              },
+              {
+                "enum": ["stale"],
+                "type": "string",
+                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing."
               }
             ]
           },
@@ -33313,6 +33482,34 @@
               }
             },
             "required": ["service", "started_at"],
+            "type": "object"
+          },
+          "Lacking": {
+            "description": "Which side lacks a tool a remote Run called.",
+            "properties": {
+              "home": {
+                "type": "boolean"
+              },
+              "receiver": {
+                "type": "boolean"
+              }
+            },
+            "required": ["home", "receiver"],
+            "type": "object"
+          },
+          "ToolAsk": {
+            "additionalProperties": false,
+            "description": "The tool a remote Run's paused call needs and which sides lack it, recorded on the pause so\nthe people who hold the lists can be asked and can answer (ADR 0139).",
+            "properties": {
+              "key": {
+                "description": "The key the lists match, [`list_key`] of the called tool.",
+                "type": "string"
+              },
+              "lacking": {
+                "$ref": "#/components/schemas/Lacking"
+              }
+            },
+            "required": ["key", "lacking"],
             "type": "object"
           }
         },
@@ -34694,6 +34891,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -35772,6 +35973,17 @@
                   }
                 ],
                 "description": "Exact input at the authority check; absent on pauses saved by older workers."
+              },
+              "ask": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolAsk"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool and the sides that lack it, when a Federation tool list stopped the call\n(ADR 0139). The people who hold those lists answer from it."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -36266,29 +36478,13 @@
               },
               {
                 "type": "string",
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
-              },
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
                 "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
-                "enum": ["data_protection"],
-                "type": "string"
+                "enum": ["data_protection"]
+              },
+              {
+                "enum": ["stale"],
+                "type": "string",
+                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing."
               }
             ]
           },
@@ -37992,6 +38188,34 @@
                 "type": "object"
               }
             ]
+          },
+          "Lacking": {
+            "description": "Which side lacks a tool a remote Run called.",
+            "properties": {
+              "home": {
+                "type": "boolean"
+              },
+              "receiver": {
+                "type": "boolean"
+              }
+            },
+            "required": ["home", "receiver"],
+            "type": "object"
+          },
+          "ToolAsk": {
+            "additionalProperties": false,
+            "description": "The tool a remote Run's paused call needs and which sides lack it, recorded on the pause so\nthe people who hold the lists can be asked and can answer (ADR 0139).",
+            "properties": {
+              "key": {
+                "description": "The key the lists match, [`list_key`] of the called tool.",
+                "type": "string"
+              },
+              "lacking": {
+                "$ref": "#/components/schemas/Lacking"
+              }
+            },
+            "required": ["key", "lacking"],
+            "type": "object"
           }
         },
         "schema": {
@@ -38096,6 +38320,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -38153,8 +38381,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           },
@@ -42716,6 +42949,24 @@
     "responses": {
       "200": {
         "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/HostPattern"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools", "hosts"],
+            "type": "object",
+            "additionalProperties": false
+          },
           "RegistrationRecord": {
             "description": "A Node Registration as its Tenant sees it.",
             "properties": {
@@ -42757,6 +43008,18 @@
                 "description": "The registered Node's address.",
                 "type": "string"
               },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -42770,12 +43033,30 @@
               "key_id",
               "atomic_transactions",
               "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
               "revision",
               "actor",
               "created_at",
               "updated_at"
             ],
             "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "$ref": "#/components/schemas/ToolPattern"
+            },
+            "type": "array"
+          },
+          "HostPattern": {
+            "description": "One egress host or `*` host pattern a Home lets its remote Runs' commands reach.",
+            "type": "string"
+          },
+          "ToolPattern": {
+            "description": "One tool name or `*` pattern, such as `file_*` or `registry:github/*`. Matching is\ncase-sensitive: an MCP server's tool name keeps its case in the key (`registry:weather/getWeather`).",
+            "type": "string"
           }
         },
         "schema": {
@@ -42798,6 +43079,24 @@
     "responses": {
       "200": {
         "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/HostPattern"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools", "hosts"],
+            "type": "object",
+            "additionalProperties": false
+          },
           "NodeRegistrationRevision": {
             "description": "A Node Registration as its Tenant sees it.",
             "properties": {
@@ -42843,6 +43142,18 @@
                 "description": "The registered Node's address.",
                 "type": "string"
               },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -42857,12 +43168,30 @@
               "key_id",
               "atomic_transactions",
               "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
               "revision",
               "actor",
               "created_at",
               "updated_at"
             ],
             "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "$ref": "#/components/schemas/ToolPattern"
+            },
+            "type": "array"
+          },
+          "HostPattern": {
+            "description": "One egress host or `*` host pattern a Home lets its remote Runs' commands reach.",
+            "type": "string"
+          },
+          "ToolPattern": {
+            "description": "One tool name or `*` pattern, such as `file_*` or `registry:github/*`. Matching is\ncase-sensitive: an MCP server's tool name keeps its case in the key (`registry:weather/getWeather`).",
+            "type": "string"
           }
         },
         "schema": {
@@ -42885,6 +43214,24 @@
     "responses": {
       "200": {
         "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/HostPattern"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools", "hosts"],
+            "type": "object",
+            "additionalProperties": false
+          },
           "RegistrationRecord": {
             "description": "A Node Registration as its Tenant sees it.",
             "properties": {
@@ -42926,6 +43273,18 @@
                 "description": "The registered Node's address.",
                 "type": "string"
               },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -42939,12 +43298,30 @@
               "key_id",
               "atomic_transactions",
               "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
               "revision",
               "actor",
               "created_at",
               "updated_at"
             ],
             "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "$ref": "#/components/schemas/ToolPattern"
+            },
+            "type": "array"
+          },
+          "HostPattern": {
+            "description": "One egress host or `*` host pattern a Home lets its remote Runs' commands reach.",
+            "type": "string"
+          },
+          "ToolPattern": {
+            "description": "One tool name or `*` pattern, such as `file_*` or `registry:github/*`. Matching is\ncase-sensitive: an MCP server's tool name keeps its case in the key (`registry:weather/getWeather`).",
+            "type": "string"
           }
         },
         "schema": {
@@ -42954,6 +43331,160 @@
     },
     "source": "server/src/apps/identity/views/node_registrations.rs",
     "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "tenant-node-registration-tool-lists",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-lists",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "FederationToolRequest": {
+            "description": "The tools and egress hosts one Node asks another Node to let its remote Runs use.",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/HostPattern"
+                },
+                "type": "array"
+              },
+              "tools": {
+                "$ref": "#/components/schemas/ToolList"
+              }
+            },
+            "required": ["tools", "hosts"],
+            "type": "object",
+            "additionalProperties": false
+          },
+          "RegistrationRecord": {
+            "description": "A Node Registration as its Tenant sees it.",
+            "properties": {
+              "actor": {
+                "description": "`oidc:<identity>` or `deployment_administrator`.",
+                "type": "string"
+              },
+              "atomic_transactions": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "dashboard_origin": {
+                "description": "Pinned dashboard origin used to validate remote Preview frame ancestors.",
+                "type": ["string", "null"]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "endpoint": {
+                "description": "Where the other Deployment answers; absent for a Node of this one.",
+                "type": ["string", "null"]
+              },
+              "key_id": {
+                "description": "The pinned Deployment Key's key ID; absent for a Node of this Deployment.",
+                "type": ["string", "null"]
+              },
+              "node": {
+                "description": "The owning Node's name.",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "source_node": {
+                "description": "The registered Node's address.",
+                "type": "string"
+              },
+              "tool_allowance": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node lets the registered Node's remote Runs use."
+              },
+              "tool_block": {
+                "$ref": "#/components/schemas/ToolList",
+                "description": "What this Node never lets them use."
+              },
+              "tool_request": {
+                "$ref": "#/components/schemas/FederationToolRequest",
+                "description": "What this Node asks the registered Node to let its remote Runs use."
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "node",
+              "source_node",
+              "endpoint",
+              "dashboard_origin",
+              "key_id",
+              "atomic_transactions",
+              "enabled",
+              "tool_request",
+              "tool_allowance",
+              "tool_block",
+              "revision",
+              "actor",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "ToolList": {
+            "description": "A Federation Tool Request, Allowance or Block: sorted, without duplicates.",
+            "items": {
+              "$ref": "#/components/schemas/ToolPattern"
+            },
+            "type": "array"
+          },
+          "HostPattern": {
+            "description": "One egress host or `*` host pattern a Home lets its remote Runs' commands reach.",
+            "type": "string"
+          },
+          "ToolPattern": {
+            "description": "One tool name or `*` pattern, such as `file_*` or `registry:github/*`. Matching is\ncase-sensitive: an MCP server's tool name keeps its case in the key (`registry:weather/getWeather`).",
+            "type": "string"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/RegistrationRecord"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-node-registration-tools",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tools",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-node-registration-tool-asks",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "tenant-node-registration-tool-ask-answer",
+    "path": "/api/tenants/{tenant}/nodes/{node}/registrations/{source_node}/tool-asks/{id}/answer",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/node_registrations.rs",
+    "uuid_parameters": ["id"]
   },
   {
     "json": true,
@@ -50129,6 +50660,17 @@
                   }
                 ],
                 "description": "Exact input at the authority check; absent on pauses saved by older workers."
+              },
+              "ask": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolAsk"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool and the sides that lack it, when a Federation tool list stopped the call\n(ADR 0139). The people who hold those lists answer from it."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -50364,30 +50906,14 @@
                 "type": "string"
               },
               {
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
-              },
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
                 "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
                 "enum": ["data_protection"],
                 "type": "string"
+              },
+              {
+                "enum": ["stale"],
+                "type": "string",
+                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing."
               }
             ]
           },
@@ -51518,6 +52044,34 @@
               }
             },
             "required": ["service", "started_at"],
+            "type": "object"
+          },
+          "Lacking": {
+            "description": "Which side lacks a tool a remote Run called.",
+            "properties": {
+              "home": {
+                "type": "boolean"
+              },
+              "receiver": {
+                "type": "boolean"
+              }
+            },
+            "required": ["home", "receiver"],
+            "type": "object"
+          },
+          "ToolAsk": {
+            "additionalProperties": false,
+            "description": "The tool a remote Run's paused call needs and which sides lack it, recorded on the pause so\nthe people who hold the lists can be asked and can answer (ADR 0139).",
+            "properties": {
+              "key": {
+                "description": "The key the lists match, [`list_key`] of the called tool.",
+                "type": "string"
+              },
+              "lacking": {
+                "$ref": "#/components/schemas/Lacking"
+              }
+            },
+            "required": ["key", "lacking"],
             "type": "object"
           }
         },
@@ -56080,6 +56634,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -56137,8 +56695,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           },
@@ -56323,6 +56886,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -56465,8 +57032,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -56582,6 +57154,10 @@
               "call": {
                 "type": "string"
               },
+              "home_list_key": {
+                "description": "The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.\nThe Home learns nothing about what the receiving Node's lists hold.",
+                "type": ["string", "null"]
+              },
               "kind": {
                 "$ref": "#/components/schemas/RefusalKind"
               },
@@ -56672,8 +57248,13 @@
               },
               {
                 "type": "string",
+                "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
+                "enum": ["data_protection"]
+              },
+              {
                 "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"]
+                "enum": ["stale"],
+                "type": "string"
               }
             ]
           }
@@ -57496,6 +58077,17 @@
                   }
                 ],
                 "description": "Exact input at the authority check; absent on pauses saved by older workers."
+              },
+              "ask": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolAsk"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool and the sides that lack it, when a Federation tool list stopped the call\n(ADR 0139). The people who hold those lists answer from it."
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
@@ -57731,30 +58323,14 @@
                 "type": "string"
               },
               {
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
-              },
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
                 "description": "No route of the embedding model meets the Tenant's Data Protection\nLevel. Waiting does not change that; switch the embedding model (#963).",
                 "enum": ["data_protection"],
                 "type": "string"
+              },
+              {
+                "enum": ["stale"],
+                "type": "string",
+                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing."
               }
             ]
           },
@@ -58885,6 +59461,34 @@
               }
             },
             "required": ["service", "started_at"],
+            "type": "object"
+          },
+          "Lacking": {
+            "description": "Which side lacks a tool a remote Run called.",
+            "properties": {
+              "home": {
+                "type": "boolean"
+              },
+              "receiver": {
+                "type": "boolean"
+              }
+            },
+            "required": ["home", "receiver"],
+            "type": "object"
+          },
+          "ToolAsk": {
+            "additionalProperties": false,
+            "description": "The tool a remote Run's paused call needs and which sides lack it, recorded on the pause so\nthe people who hold the lists can be asked and can answer (ADR 0139).",
+            "properties": {
+              "key": {
+                "description": "The key the lists match, [`list_key`] of the called tool.",
+                "type": "string"
+              },
+              "lacking": {
+                "$ref": "#/components/schemas/Lacking"
+              }
+            },
+            "required": ["key", "lacking"],
             "type": "object"
           }
         },

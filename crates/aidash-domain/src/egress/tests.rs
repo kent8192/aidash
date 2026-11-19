@@ -89,6 +89,7 @@ fn scratch_scope_host_allowlist_respects_dns_label_boundaries() {
 	let hosts = AllowedHosts {
 		hosts: vec!["registry.npmjs.org".into(), "*.example.com".into()],
 		allow_all: false,
+		home_ceiling: None,
 	};
 	for host in ["REGISTRY.NPMJS.ORG", "a.example.com", "a.b.example.com"] {
 		assert!(hosts.permits(host, false), "{host}");
@@ -99,9 +100,46 @@ fn scratch_scope_host_allowlist_respects_dns_label_boundaries() {
 	let all = AllowedHosts {
 		hosts: vec![],
 		allow_all: true,
+		home_ceiling: None,
 	};
 	assert!(!all.permits("other.example", false));
 	assert!(all.permits("other.example", true));
+}
+
+#[test]
+fn a_remote_runs_hosts_must_pass_both_the_space_and_the_homes_request() {
+	use crate::federation::tool_lists::HostPattern;
+	let pattern = |text: &str| HostPattern::new(text).unwrap();
+	let both = |hosts: &[&str], allow_all: bool, ceiling: Option<Vec<HostPattern>>| AllowedHosts {
+		hosts: hosts.iter().map(|host| (*host).to_owned()).collect(),
+		allow_all,
+		home_ceiling: ceiling,
+	};
+	let space = both(
+		&["registry.npmjs.org", "*.example.com"],
+		false,
+		Some(vec![pattern("registry.npmjs.org"), pattern("api.*.com")]),
+	);
+	// In the Space and named by the Home.
+	assert!(space.permits("registry.npmjs.org", false));
+	// Named by the Home but not in the Space.
+	assert!(!space.permits("api.other.com", false));
+	// In the Space but not named by the Home.
+	assert!(!space.permits("a.example.com", false));
+	// In both through a pattern on each side.
+	let wide = both(
+		&["*.example.com"],
+		false,
+		Some(vec![pattern("*.example.com")]),
+	);
+	assert!(wide.permits("a.example.com", false));
+	// A Space open to every host is still cut down to the Home's hosts.
+	let open = both(&[], true, Some(vec![pattern("pypi.org")]));
+	assert!(open.permits("pypi.org", true));
+	assert!(!open.permits("other.example", true));
+	// A Home that names no host leaves nothing reachable, and no Home leaves the Space alone.
+	assert!(!both(&["pypi.org"], false, Some(Vec::new())).permits("pypi.org", false));
+	assert!(both(&["pypi.org"], false, None).permits("pypi.org", false));
 }
 
 #[test]

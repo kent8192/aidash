@@ -211,7 +211,26 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 			.revision,
 		1
 	);
-	assert_eq!(post(&app, &raw, &body).await.0, 200); // duplicate does not advance again
+	// The same token again is a replay and is refused (#989). A fresh token
+	// carrying the same rollover proof is a duplicate request: it is answered
+	// and does not advance the keys again.
+	assert_eq!(post(&app, &raw, &body).await.0, 401);
+	let duplicate = token(
+		&next,
+		&sender.to_string(),
+		&receiver.to_string(),
+		"source-subject",
+		&RequestDigest {
+			method: "POST",
+			path: "/scoped/graph",
+			body: body.to_string().as_bytes(),
+		},
+		Some(proof.clone()),
+		now,
+	)
+	.await;
+	let (status, page) = post(&app, &duplicate, &body).await;
+	assert_eq!(status, 200, "{page}");
 	assert_eq!(f.receiving_keys(&owner).await.unwrap().unwrap(), learned);
 	let history: i64 =
 		sqlx::query_scalar("SELECT count(*) FROM node_registration_history WHERE tenant='acme'")

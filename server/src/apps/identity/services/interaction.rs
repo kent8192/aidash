@@ -42,6 +42,18 @@ impl Access {
 		let run = crate::apps::execution::models::Run::read_in(&mut **check.tx, id, None)
 			.await?
 			.ok_or(Error::Forbidden)?;
+		// A Run this Node executes for another Home has no Workspace here: its admission
+		// answers for it (#989).
+		if crate::apps::federation::peer::repositories::admissions::for_run(check.tx.as_mut(), id)
+			.await?
+			.is_some()
+		{
+			return if check.run_visible(&run).await? {
+				Ok(run)
+			} else {
+				Err(Error::Forbidden)
+			};
+		}
 		let workspace = check.workspace(run.workspace_id).await?;
 		check.context = workspace.attributes.clone();
 		check.require(&workspace, "workspace.read").await?;
@@ -68,8 +80,23 @@ impl Access {
 
 	/// The Read Recheck, in full. Every allow repeats the same question for this
 	/// Run, so a repeat adds no Authorization Decision.
+	///
+	/// A Run this Node executes for another Home has no Workspace here, so it is checked through
+	/// its admission instead (#904, #989).
 	pub(crate) async fn recheck_run_reads(&mut self, id: Uuid) -> Result<Run> {
-		self.rechecking(id).run_for_interaction(id).await
+		self.rechecking(id).run_for_reads(id).await
+	}
+
+	/// [`Self::run_for_interaction`], except that a Run this Node executes for another Home is
+	/// checked through its admission (expiry, Peer Mapping, the chain's read policies and what
+	/// the Run has read) instead of through a Workspace this Node does not hold.
+	pub(crate) async fn run_for_reads(&mut self, id: Uuid) -> Result<Run> {
+		aidash_application::authorization::workspaces::run_for_action(
+			&mut crate::bootstrap::run_visibility_scope(self),
+			id,
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<Run> {
@@ -84,8 +111,11 @@ impl Access {
 	/// [`Self::run_for_interaction`] for work done on the Run's behalf: its tools, running
 	/// commands and operations. It also refuses once the Run may no longer use its Agent or
 	/// anything its Binding names (the Use Recheck), which a read of the Run does not.
+	///
+	/// A Run this Node executes for another Home has no Workspace here, so its visibility is
+	/// its admission's (#989); see [`aidash_application::authorization::workspaces::run_for_action`].
 	pub(crate) async fn run_for_action(&mut self, id: Uuid) -> Result<Run> {
-		let run = self.run_for_interaction(id).await?;
+		let run = self.run_for_reads(id).await?;
 		if crate::apps::identity::repositories::execution::guard::use_block(
 			self,
 			&run.metadata(),

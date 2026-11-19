@@ -130,6 +130,11 @@ pub struct Description {
 		skip_serializing_if = "crate::semantic::remote::Binding::disabled"
 	)]
 	pub semantic: crate::semantic::remote::Binding,
+	/// What the Home asks the receiving Node to let this grant's Runs use (ADR 0139),
+	/// as one RFC 9396 entry. Empty when the lists do not apply, as for a receiver of
+	/// the Home's own Tenant.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub authorization_details: Vec<super::tool_lists::ToolAuthorizationDetail>,
 }
 
 /// The Home's reply to a describe request: the Description a receiver pins at

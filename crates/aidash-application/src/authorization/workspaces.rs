@@ -120,6 +120,23 @@ pub async fn event_workspaces(
 }
 pub async fn run_for_interaction(scope: &mut dyn RunInteractionScope, id: Uuid) -> Result<Run> {
 	let run = scope.run(id).await?.ok_or(Error::Forbidden)?;
+	interaction_of(scope, run).await
+}
+/// [`run_for_interaction`] for work done on the Run's behalf. A Run this Node executes for
+/// another Home has no Workspace here, so its visibility is its admission's: expiry, Peer
+/// Mapping, the chain's read policies and then what the Run has read, as a Live preview's
+/// recheck asks it (#904, #989). Every other Run goes through its Workspace as before.
+pub async fn run_for_action(scope: &mut dyn RunInteractionScope, id: Uuid) -> Result<Run> {
+	let run = scope.run(id).await?.ok_or(Error::Forbidden)?;
+	if scope.admitted_here(&(&run).into()).await? {
+		if !scope.run_visible(&(&run).into()).await? {
+			return Err(Error::Forbidden);
+		}
+		return Ok(run);
+	}
+	interaction_of(scope, run).await
+}
+async fn interaction_of(scope: &mut dyn RunInteractionScope, run: Run) -> Result<Run> {
 	let workspace = resource(scope, run.workspace_id).await?;
 	scope.set_context(workspace.attributes.clone());
 	scope.require(&workspace, "workspace.read").await?;

@@ -175,10 +175,12 @@ impl ScratchAuthority {
 			HostAllowlist::All => AllowedHosts {
 				hosts: Vec::new(),
 				allow_all: true,
+				home_ceiling: None,
 			},
 			HostAllowlist::Hosts(hosts) => AllowedHosts {
 				hosts: hosts.into_iter().collect(),
 				allow_all: false,
+				home_ceiling: None,
 			},
 		};
 		Ok(Some(ScopeSettings {
@@ -209,6 +211,7 @@ impl ScopeAuthority for ScratchAuthority {
 		else {
 			return Err(aidash_application::Error::Unauthorized);
 		};
+		let mut home_ceiling = None;
 		if !preparation {
 			use crate::apps::execution::capabilities::models::egress::RunRevocation;
 			use reinhardt::db::orm::Model;
@@ -224,16 +227,28 @@ impl ScopeAuthority for ScratchAuthority {
 				.await
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
+			// A Run another Home started reaches only the hosts that Home's Request names as
+			// well (ADR 0139, decision 21). A preparation credential belongs to no Run, so
+			// it is not narrowed: it prepares the Space before any Run's command.
+			let ceiling =
+				crate::apps::execution::repositories::operations::remote_tools::home_hosts(
+					&mut *tx,
+					self.store.deployment.as_str(),
+					run,
+				)
+				.await;
 			tx.commit().await?;
 			if !revoked.is_empty() {
 				return Err(aidash_application::Error::Forbidden);
 			}
+			home_ceiling = ceiling.map_err(aidash_application::Error::from)?;
 		}
 		let mut settings = self
 			.settings(&tenant, space)
 			.await?
 			.ok_or(aidash_application::Error::Unauthorized)?;
 		settings.run_id = if preparation { None } else { Some(run) };
+		settings.allowed_hosts.home_ceiling = home_ceiling;
 		Ok(settings)
 	}
 

@@ -225,6 +225,7 @@ fn scope(run: RunMetadata) -> Scope {
 	)
 	.unwrap();
 	let description = Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::from_u128(4),
 		source_node: run.home_node.clone(),
 		target_node: "aidash://local/brave-otter-k3m9q2xa".into(),

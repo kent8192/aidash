@@ -952,11 +952,12 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	let actions = overview["actions"].as_array().unwrap();
 	// The administrator and Registry actions, tenant update/delete and the
 	// caller's credential creation include both Node deletion and Subnode limits.
-	assert_eq!(actions.len(), 37, "{overview}");
+	assert_eq!(actions.len(), 38, "{overview}");
 	for action in [
 		"node.create",
 		"node.update",
 		"node.delete",
+		"node.federation_tools.manage",
 		"subnode.limits.update",
 		"approval.read",
 		"connection.scopes.update",

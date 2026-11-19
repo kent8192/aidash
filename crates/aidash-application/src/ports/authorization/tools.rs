@@ -3,6 +3,7 @@ use crate::Result;
 use aidash_domain::{
 	HumanRequest, RunMetadata, Task,
 	agent_plugin::PluginTools,
+	federation::tool_lists::{OwnedRemoteToolLists, ToolList},
 	policy::Resource,
 	registry::{EntityRef, Entry, bindings::BindingSnapshot},
 };
@@ -27,6 +28,14 @@ pub trait AgentToolScope: Send {
 	async fn suspend(&mut self) -> Result<()>;
 	/// Replace the retained authority without releasing this scope's lease.
 	async fn replace_remote_authority(&mut self) -> Result<bool>;
+	/// The Federation tool lists of a remote Run, from the Home's Request that the last
+	/// [`Self::replace_remote_authority`] read from its fresh description (no further network
+	/// call) and the receiving Node's own Node Registration of the Home. `None` when the Home
+	/// shares the receiver's Tenant, so the lists do not apply.
+	async fn remote_tool_lists(&mut self) -> Result<Option<OwnedRemoteToolLists>>;
+	/// The receiving Node's Federation Tool Block for the Home of a remote Run, read from its
+	/// own Node Registration alone. `None` when it registers no such Node.
+	async fn remote_tool_block(&mut self) -> Result<Option<ToolList>>;
 	fn context(&self) -> &Value;
 	fn subjects(&self) -> &[String];
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;

@@ -32,6 +32,15 @@ pub struct NodeRegistrationHistory {
 	pub atomic_transactions: bool,
 	#[field]
 	pub enabled: bool,
+	/// A Federation Tool Request; absent means the default one (ADR 0139).
+	#[field]
+	pub tool_request: Option<reinhardt::db::orm::Json<serde_json::Value>>,
+	/// A Federation Tool Allowance; absent means the default list.
+	#[field]
+	pub tool_allowance: Option<reinhardt::db::orm::Json<serde_json::Value>>,
+	/// A Federation Tool Block; empty by default.
+	#[field]
+	pub tool_block: reinhardt::db::orm::Json<serde_json::Value>,
 	#[field]
 	pub revision: i64,
 	#[field(field_type = "text")]

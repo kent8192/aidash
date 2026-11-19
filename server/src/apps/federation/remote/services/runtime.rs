@@ -354,6 +354,11 @@ pub struct Home {
 	included_input_seq: i64,
 	execution: Option<Run>,
 	pub(crate) authority: Option<crate::authorization::execution::WorkerAuthority>,
+	/// The authority a Run executing for another Home holds on this Node (ADR 0139): its mapped
+	/// subject within the Remote Grant. It acts only on this Node's own tables, so core tools and
+	/// Subnodes use it; every call that would act on the Home's Workspace still goes to the Home
+	/// as a command, so it never fills `authority`.
+	pub(crate) receiver: Option<crate::authorization::execution::WorkerAuthority>,
 }
 
 impl Home {
@@ -368,6 +373,26 @@ impl Home {
 	pub async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
 		let scope = self.tenancy().await?;
 		if self.local() {
+			// A member of a remote Run's Subnode cannot ask the Home's person, and asking a
+			// person of this Tenant instead would put the question to the wrong one.
+			let remote_member = self
+				.federation
+				.store
+				.pool
+				.atomic(&scope, async |tx| {
+					crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+						tx,
+						self.run.id,
+					)
+					.await
+				})
+				.await?;
+			if remote_member {
+				return Err(Error::Refused(
+					"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+						.into(),
+				));
+			}
 			let run = self.execution.as_ref().ok_or(Error::Forbidden)?;
 			self.federation
 				.store
@@ -438,6 +463,7 @@ impl Home {
 			run: run.metadata(),
 			execution: Some(run),
 			authority: None,
+			receiver: None,
 		}
 	}
 	pub(crate) fn with_authority(
@@ -446,6 +472,21 @@ impl Home {
 	) -> Self {
 		self.authority = authority;
 		self
+	}
+	/// Carry the receiving Node's authority of a Run executing for another Home.
+	pub(crate) fn with_receiver_authority(
+		mut self,
+		receiver: Option<crate::authorization::execution::WorkerAuthority>,
+	) -> Self {
+		self.receiver = receiver;
+		self
+	}
+	/// The authority core tools and Subnode operations run under: the local Run's own, or the
+	/// receiver authority of a Run executing for another Home.
+	pub(crate) fn tool_authority(
+		&self,
+	) -> Option<&crate::authorization::execution::WorkerAuthority> {
+		self.authority.as_ref().or(self.receiver.as_ref())
 	}
 	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
 		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
@@ -472,7 +513,7 @@ impl Home {
 	}
 	/// The Node at which this remote Run executes, as the Home's callbacks are
 	/// sent from it. A callback acts as the Node and names no subject.
-	async fn admitted_sender(&self, operation: &str, data: &Value) -> Result<Sender> {
+	pub(crate) async fn admitted_sender(&self, operation: &str, data: &Value) -> Result<Sender> {
 		let scope = self.tenancy().await?;
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.clone();
 		let node: String = self
@@ -807,7 +848,8 @@ impl Home {
 		let id = id
 			.parse::<Uuid>()
 			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
-		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		// The creating Run, remote or not, reads its own Subnode's Workspace on this Node.
+		let authority = self.tool_authority().ok_or(Error::Forbidden)?;
 		let record = authority
 			.subnode_workspace_record(self.execution_run()?, workspace, kind, id)
 			.await?;
@@ -1026,7 +1068,9 @@ impl Home {
 		key: &str,
 		command: &aidash_application::subnodes::Command,
 	) -> Result<Value> {
-		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		// The Subnode, its Workspace and its members live on this Node, so a remote creator acts
+		// under its receiver authority, never the Home's (ADR 0110, ADR 0139).
+		let authority = self.tool_authority().ok_or(Error::Forbidden)?;
 		authority
 			.subnode_command(&self.federation, self.execution_run()?, key, command)
 			.await
@@ -1036,7 +1080,7 @@ impl Home {
 		key: &str,
 		input: &aidash_application::subnodes::Create,
 	) -> Result<aidash_domain::subnodes::Subnode> {
-		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		let authority = self.tool_authority().ok_or(Error::Forbidden)?;
 		authority
 			.create_subnode(&self.federation, self.execution_run()?, key, input)
 			.await
@@ -1327,6 +1371,7 @@ impl Home {
 			run,
 			execution: None,
 			authority: None,
+			receiver: None,
 		}
 	}
 }

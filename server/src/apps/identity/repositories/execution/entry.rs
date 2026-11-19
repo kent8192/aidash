@@ -48,6 +48,22 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 		.await;
 		initialization.finish(result).await.map_err(Into::into)
 	}
+	async fn initialize_remote(
+		&self,
+		scope: &Access,
+		run: &Run,
+		agent: &AgentConfig,
+	) -> Result<()> {
+		let mut initialization = Access::under_lease(scope).await?;
+		let result = crate::capabilities::sessions::initialize_remote(
+			&self.federation.store,
+			&mut initialization,
+			run,
+			agent,
+		)
+		.await;
+		initialization.finish(result).await.map_err(Into::into)
+	}
 }
 
 /// Resolve a Run's Scratch Space in its own short transaction. The space,

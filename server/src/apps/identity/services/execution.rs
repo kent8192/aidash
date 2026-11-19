@@ -4,7 +4,7 @@ use crate::{
 	Error, Result,
 	apps::execution::serializers::runs::RunDetails,
 	domain::*,
-	federation::{Delegation, Discovery, Federation},
+	federation::{Delegation, Discovery, Federation, Home},
 	provider::ToolCall,
 	registry::{AgentConfig, EntityRef, Search},
 	store::Store,
@@ -32,6 +32,26 @@ fn authority_gone_after_effect(error: Error) -> Error {
 			}))
 		}
 		error => after_effect(error),
+	}
+}
+
+/// What a core tool that the Run's own authority or the Run's state refuses answers: the
+/// operation, blocked, with the error as an Agent reads it. Anything else is the call's failure.
+fn blocked(key: &str, error: Error) -> Result<Value> {
+	match error {
+		error
+		@ (Error::Invalid(_) | Error::Conflict(_) | Error::NotFound(_) | Error::Forbidden) => {
+			let status = match &error {
+				Error::Invalid(_) => 400,
+				Error::Conflict(_) => 409,
+				Error::NotFound(_) => 404,
+				_ => 403,
+			};
+			Ok(
+				json!({"operation_id":key,"status":"blocked","error":crate::capabilities::errors::CapabilityError::message(status,&error.to_string())}),
+			)
+		}
+		error => Err(error),
 	}
 }
 
@@ -678,6 +698,320 @@ impl WorkerAuthority {
 		)
 	}
 
+	/// The Envelope an Agent reads for a call whose effect needed no transaction of its own.
+	async fn shaped(
+		&self,
+		store: &Store,
+		run: &Run,
+		area: &aidash_domain::capabilities::sessions::Area,
+		key: &str,
+		result: Value,
+	) -> Result<Value> {
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let shaped = aidash_application::capabilities::files::envelope(
+			&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+			area,
+			key,
+			result,
+		)
+		.map_err(Error::from);
+		access.finish(shaped).await.map(|envelope| {
+			// The wire Envelope flattens the result beside its own fields.
+			let mut wire = match envelope.result {
+				Value::Object(fields) => fields,
+				_ => Default::default(),
+			};
+			wire.insert("operation_id".into(), json!(envelope.operation_id));
+			wire.insert("status".into(), json!(envelope.status));
+			wire.insert("policy_revision".into(), json!(envelope.policy_revision));
+			wire.insert("area_id".into(), json!(envelope.area_id));
+			wire.insert("generation".into(), json!(envelope.generation));
+			wire.insert("revision".into(), json!(envelope.revision));
+			Value::Object(wire)
+		})
+	}
+
+	/// `file_share` by a Run executing here for another Home, to that Home (ADR 0139, decision
+	/// 20). The Run's own checks and the snapshot run in its transaction; sending to the Home is
+	/// not, so no transaction or lock is held across the Federation requests; the result is
+	/// recorded under the call's key in a last transaction. A Home that already holds the
+	/// delivery answers from it, so a call that is repeated after a crash delivers once.
+	pub(crate) async fn share_to_home(
+		&self,
+		store: &Store,
+		run: &Run,
+		home: &Home,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		use aidash_application::capabilities::sharing::{HomeShare, home_prepare, home_result};
+		use aidash_application::ports::capabilities::files::FileScopePort as _;
+		let metadata = run.metadata();
+		let prepared = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result: Result<_> = async {
+				crate::apps::execution::repositories::subnodes::require_writable(
+					access.tx.native_mut(),
+					run.workspace_id,
+				)
+				.await?;
+				let mut scope = crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
+				let input = aidash_application::capabilities::files::admit_tool(
+					&mut scope,
+					&metadata,
+					"file_share",
+					input,
+				)
+				.await?;
+				let share: aidash_domain::capabilities::sharing::Share =
+					serde_json::from_value(input)
+						.map_err(|error| aidash_application::Error::Invalid(error.to_string()))?;
+				let area = scope.for_run(&metadata).await?;
+				aidash_domain::capabilities::operations::available(&area.state)?;
+				let prepared = home_prepare(&mut scope, &metadata, &area, &share).await?;
+				Ok((area, share, prepared))
+			}
+			.await;
+			access.finish(result).await
+		};
+		let (area, share, prepared) = match prepared {
+			Ok(prepared) => prepared,
+			Err(error) => return blocked(key, error),
+		};
+		let delivery = match prepared {
+			HomeShare::Replay(previous) => {
+				return self.shaped(store, run, &area, key, previous).await;
+			}
+			HomeShare::Deliver(delivery) => delivery,
+		};
+		let delivery_key = format!("share:{}", share.idempotency_key);
+		let receipt = match home
+			.deliver(
+				&delivery_key,
+				&aidash_domain::federation::delivery::Purpose::FileShare,
+				&delivery.files,
+			)
+			.await
+		{
+			Ok(receipt) => receipt,
+			Err(error) => return blocked(key, after_effect(error)),
+		};
+		let id = aidash_domain::federation::delivery::delivery_id(run.id, &delivery_key);
+		let result = home_result(
+			id,
+			&area,
+			&share,
+			receipt["manifest_digest"].as_str().unwrap_or_default(),
+			receipt["receipt"].clone(),
+		);
+		{
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let cached = crate::apps::execution::capabilities::sessions::cache(
+				&mut access,
+				share.idempotency_key,
+				&delivery.digest,
+				&result,
+			)
+			.await;
+			access.finish(cached).await?;
+		}
+		self.shaped(store, run, &area, key, result).await
+	}
+
+	/// `outbound_get` by a Run executing here for another Home (ADR 0139, decision 22). The
+	/// Home's person at the root of the chain is asked first; only an explicit approval makes
+	/// the read `approved` here, where the existing worker fetches it under this Node's own
+	/// origins and authority. A repeat of the call (the same key) reads the Home's answer.
+	pub(crate) async fn outbound_to_home(
+		&self,
+		store: &Store,
+		run: &Run,
+		home: &Home,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		use aidash_application::capabilities::approvals::{
+			HomeAnswer, HomeOutbound, home_begin, home_settle,
+		};
+		use aidash_application::ports::capabilities::files::FileScopePort as _;
+		let metadata = run.metadata();
+		let begun = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result: Result<_> = async {
+				crate::apps::execution::repositories::subnodes::require_writable(
+					access.tx.native_mut(),
+					run.workspace_id,
+				)
+				.await?;
+				let (input, area) = {
+					let mut scope =
+						crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
+					let input = aidash_application::capabilities::files::admit_tool(
+						&mut scope,
+						&metadata,
+						"outbound_get",
+						input,
+					)
+					.await?;
+					let area = scope.for_run(&metadata).await?;
+					aidash_domain::capabilities::operations::available(&area.state)?;
+					(input, area)
+				};
+				let outbound: aidash_domain::capabilities::approvals::Outbound =
+					serde_json::from_value(input)
+						.map_err(|error| aidash_application::Error::Invalid(error.to_string()))?;
+				let native: crate::apps::execution::capabilities::contracts::Area =
+					area.clone().into();
+				let mut scope =
+					crate::bootstrap::approval_scope(Some(store), &mut access, Some(&native));
+				scope.run = Some(Box::new(run.clone()));
+				let begun = home_begin(&mut scope, &metadata, area.id, outbound).await?;
+				Ok((area, begun))
+			}
+			.await;
+			access.finish(result).await
+		};
+		let (area, begun) = match begun {
+			Ok(begun) => begun,
+			Err(error) => return blocked(key, error),
+		};
+		let ask = match begun {
+			HomeOutbound::Settled(view) => return self.shaped(store, run, &area, key, view).await,
+			HomeOutbound::Ask(ask) => ask,
+		};
+		// The Home's person is asked outside any transaction of this Node.
+		let answer = match ask.home_request {
+			None => match home.forward_outbound_request(&ask.prompt, &ask.key).await {
+				Ok(request) => HomeAnswer::Asked(request.id),
+				Err(error) => return blocked(key, error),
+			},
+			Some(id) => match home.forward_outbound_read(id).await {
+				Ok(request) => HomeAnswer::Read {
+					request: id,
+					verdict: aidash_domain::capabilities::approvals::home_verdict(
+						request.response.as_ref(),
+						request.answered_by.as_deref(),
+					),
+				},
+				Err(error) => return blocked(key, error),
+			},
+		};
+		let settled = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let native: crate::apps::execution::capabilities::contracts::Area = area.clone().into();
+			let mut scope =
+				crate::bootstrap::approval_scope(Some(store), &mut access, Some(&native));
+			scope.run = Some(Box::new(run.clone()));
+			let result = home_settle(&mut scope, &metadata, ask.record, answer)
+				.await
+				.map_err(Error::from);
+			access.finish(result).await
+		};
+		match settled {
+			Ok(view) => self.shaped(store, run, &area, key, view).await,
+			Err(error) => blocked(key, error),
+		}
+	}
+
+	/// `workspace_message` with files by a Run executing here for another Home (ADR 0139,
+	/// decision 20): the Run's files are snapshotted here as a local message's are, and the
+	/// Home stores them as Thread Attachments of the message it posts for the Agent. No
+	/// transaction is held while the Home takes them; the receipt is cached under the call's key
+	/// after, so a repeat sends nothing twice.
+	#[allow(clippy::too_many_arguments)]
+	pub(crate) async fn message_files_to_home(
+		&self,
+		store: &Store,
+		run: &Run,
+		home: &Home,
+		key: &str,
+		content: &str,
+		paths: &[String],
+		descriptions: &std::collections::BTreeMap<String, String>,
+	) -> Result<()> {
+		use sha2::{Digest, Sha256};
+		let receipt_key = {
+			let mut hash = Sha256::new();
+			hash.update(run.id.as_bytes());
+			hash.update(key.as_bytes());
+			hash.update(9_u64.to_be_bytes());
+			let digest = hash.finalize();
+			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
+		};
+		let receipt_digest = crate::registry::digest(&json!([
+			"workspace_message_files",
+			run.id,
+			content,
+			paths,
+			descriptions
+		]));
+		let snapshots = {
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result: Result<_> = async {
+				crate::apps::execution::repositories::subnodes::require_writable(
+					access.tx.native_mut(),
+					run.workspace_id,
+				)
+				.await?;
+				aidash_application::capabilities::files::snapshot_message_files_once(
+					&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+					&run.metadata(),
+					receipt_key,
+					&receipt_digest,
+					false,
+					paths,
+				)
+				.await
+				.map_err(Into::into)
+			}
+			.await;
+			access.finish(result).await?
+		};
+		// A cached receipt means the message was already sent.
+		let Some(snapshots) = snapshots else {
+			return Ok(());
+		};
+		if let Some((file, _)) = snapshots.iter().find(|(file, _)| {
+			file.media_type.starts_with("image/") && !descriptions.contains_key(&file.path)
+		}) {
+			return Err(Error::Invalid(format!(
+				"{} is an image: give it an Image Description in image_descriptions",
+				file.path
+			)));
+		}
+		let attached = descriptions
+			.iter()
+			.filter(|(path, _)| paths.contains(*path))
+			.map(|(path, text)| (path.clone(), text.clone()))
+			.collect();
+		home.deliver(
+			&format!("message:{key}"),
+			&aidash_domain::federation::delivery::Purpose::Message {
+				content: content.to_owned(),
+				descriptions: attached,
+			},
+			&snapshots,
+		)
+		.await
+		.map_err(after_effect)?;
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let cached = crate::apps::execution::capabilities::sessions::cache(
+			&mut access,
+			receipt_key,
+			&receipt_digest,
+			&json!({"sent":true}),
+		)
+		.await;
+		access.finish(cached).await
+	}
+
 	pub(crate) async fn message_with_files(
 		&self,
 		store: &Store,
@@ -891,6 +1225,57 @@ impl WorkerAuthority {
 		.await;
 		lease.finish(result).await
 	}
+	/// `attachment_copy` for a Run executing here for another Home (ADR 0139, decision 20): the
+	/// receiver pulled the Home's attachment, so there is no Workspace record to read here. The
+	/// copy lands where `copy_thread_attachment` puts it for any Run, in the Scratch Space its
+	/// commands read, or in its receiving Working Area when the Node runs no Pods.
+	pub(crate) async fn copy_pulled_thread_attachment(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+		message_id: Uuid,
+		media_type: String,
+		content: &[u8],
+	) -> Result<Value> {
+		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
+			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
+		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
+			.map_err(|_| Error::Invalid("invalid idempotency key".into()))?;
+		let revision = input["expected_revision"]
+			.as_i64()
+			.ok_or_else(|| Error::Invalid("missing expected_revision".into()))?;
+		let path = input["path"]
+			.as_str()
+			.ok_or_else(|| Error::Invalid("missing path".into()))?
+			.to_owned();
+		let digest = crate::apps::execution::repositories::capability_objects::digest(content);
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result: Result<Value> = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
+			aidash_application::capabilities::files::copy_thread_attachment(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				key,
+				revision,
+				path,
+				message_id,
+				attachment_id,
+				media_type,
+				digest,
+				content,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		access.finish(result).await
+	}
 	/// The scope of every transaction this authority's Run opens.
 	pub(crate) async fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
 		self.access.read().await.tenancy()
@@ -926,23 +1311,7 @@ impl WorkerAuthority {
 		.await;
 		match access.finish(result).await {
 			Ok(result) => Ok(json!(result)),
-			Err(
-				error @ (Error::Invalid(_)
-				| Error::Conflict(_)
-				| Error::NotFound(_)
-				| Error::Forbidden),
-			) => {
-				let status = match &error {
-					Error::Invalid(_) => 400,
-					Error::Conflict(_) => 409,
-					Error::NotFound(_) => 404,
-					_ => 403,
-				};
-				Ok(
-					json!({"operation_id":key,"status":"blocked","error":crate::capabilities::errors::CapabilityError::message(status,&error.to_string())}),
-				)
-			}
-			Err(error) => Err(error),
+			Err(error) => blocked(key, error),
 		}
 	}
 
@@ -1230,6 +1599,18 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			if crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+				access.tx.as_mut(),
+				run.id,
+			)
+			.await?
+			{
+				// The Home's person answers only the creating Run's own requests (ADR 0110).
+				return Err(Error::Refused(
+					"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+						.into(),
+				));
+			}
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
 				run.workspace_id,
@@ -1267,6 +1648,18 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			if crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+				access.tx.as_mut(),
+				run.id,
+			)
+			.await?
+			{
+				// The Home's person answers only the creating Run's own requests (ADR 0110).
+				return Err(Error::Refused(
+					"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+						.into(),
+				));
+			}
 			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
 				run.workspace_id,
@@ -1579,12 +1972,9 @@ impl WorkerAuthority {
 		input: &aidash_application::subnodes::Create,
 	) -> Result<aidash_domain::subnodes::Subnode> {
 		use crate::apps::identity::repositories::subnodes::{
-			Creation, binding_authority, check_member_bindings, creator_can_use_binding,
+			Creation, binding_authority, check_member_bindings, check_member_lists,
+			creator_can_use_binding,
 		};
-		let remote =
-			crate::apps::identity::services::peer::admission::run_grant(&f.store, &run.metadata())
-				.await?
-				.is_some();
 		let mut lease = self.access.write().await;
 		let node_address = format!("{}/{}", lease.node_id, run.node);
 		let creator =
@@ -1683,6 +2073,8 @@ impl WorkerAuthority {
 			}
 			let config = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
 			check_member_bindings(&usable, &snapshot, &config)?;
+			// A creator that a Remote Grant started passes on only what both Nodes' lists give it.
+			check_member_lists(&mut lease, run.id, &snapshot, &config).await?;
 			members.insert(
 				format!("{}@{}", agent.id, agent.version),
 				binding_authority(&snapshot, &config)?,
@@ -1694,7 +2086,6 @@ impl WorkerAuthority {
 				access: &mut access,
 				federation: f,
 				node_address,
-				remote,
 				creator_authority,
 				members,
 			},
@@ -1716,7 +2107,8 @@ impl WorkerAuthority {
 	) -> Result<Value> {
 		use crate::apps::execution::models::subnodes::{SubnodeOperationReceipt, SubnodeRecord};
 		use crate::apps::identity::repositories::subnodes::{
-			Management, binding_authority, check_member_bindings, creator_binding_authority,
+			Management, binding_authority, check_member_bindings, check_member_lists,
+			creator_binding_authority,
 		};
 		use aidash_application::ports::subnodes::ManageScope as _;
 		use aidash_application::subnodes::{self, Command};
@@ -1804,6 +2196,9 @@ impl WorkerAuthority {
 				&snapshot,
 				&config,
 			)?;
+			// The creating Run's lists bound a member added or tasked later too, as they may
+			// have narrowed since the Subnode was created.
+			check_member_lists(&mut lease, creator.id, &snapshot, &config).await?;
 			let required = binding_authority(&snapshot, &config)?;
 			aidash_domain::subnodes::member_fits(&required, &subnode.allowance)
 				.map_err(|error| Error::Refused(error.to_string()))?;
@@ -2177,7 +2572,9 @@ impl Step {
 
 	/// The Run's Home carrying the step's authority, as the worker's tools see it.
 	pub fn home(&self, f: Federation) -> crate::federation::Home {
-		crate::federation::Home::new(f, self.0.run.clone()).with_authority(self.0.local_authority())
+		crate::federation::Home::new(f, self.0.run.clone())
+			.with_authority(self.0.local_authority())
+			.with_receiver_authority(self.0.receiver_authority())
 	}
 
 	/// Commits what the step wrote, as the worker does when it waits.
@@ -2320,6 +2717,13 @@ impl Guard {
 
 	pub fn local_authority(&self) -> Option<WorkerAuthority> {
 		self.remote.is_none().then(|| self.authority())
+	}
+	/// The authority of a Run executing for another Home, on this Node: the Peer Mapping's
+	/// mapped subject within the Remote Grant (ADR 0139). `None` for a local Run, whose authority
+	/// [`Self::local_authority`] already gives. Only core tools and Subnode operations take it;
+	/// whatever acts on the Home's own Workspace stays a Home command.
+	pub fn receiver_authority(&self) -> Option<WorkerAuthority> {
+		self.remote.is_some().then(|| self.authority())
 	}
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()
@@ -2757,6 +3161,20 @@ impl Guard {
 		tools: &mut aidash_application::ports::execution::Tools,
 	) -> Result<bool> {
 		aidash_application::authorization::tools::filter_subnode(
+			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
+			tools,
+			|tool| tool.contract(),
+		)
+		.await
+		.map_err(Into::into)
+	}
+
+	/// Drop the tools a remote Run may never see (ADR 0139); a Run of this Tenant keeps its tools.
+	pub(crate) async fn remote_tool_filter(
+		&self,
+		tools: &mut aidash_application::ports::execution::Tools,
+	) -> Result<()> {
+		aidash_application::authorization::tools::filter_remote(
 			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
 			tools,
 			|tool| tool.contract(),

@@ -4,7 +4,7 @@ use aidash_domain::{
 	RunMetadata, Task,
 	capabilities::{
 		operations::available,
-		sessions::{Area, SessionStatus, received_scope_matches, reusable_context},
+		sessions::{Area, REMOTE_HOME, SessionStatus, received_scope_matches, reusable_context},
 	},
 	registry::AgentConfig,
 };
@@ -22,6 +22,9 @@ pub async fn load(scope: &mut dyn SessionScope, id: Uuid) -> Result<Area> {
 	Ok(area)
 }
 pub async fn authorize(scope: &mut dyn SessionScope, area: &Area, action: &str) -> Result<()> {
+	if area.is_remote_home() {
+		return authorize_remote(scope, area, action).await;
+	}
 	let workspace = scope.workspace(area.workspace_id).await?;
 	scope.set_context(workspace.attributes.clone());
 	if area.tenant != scope.tenant() || area.owner != scope.principal() {
@@ -33,6 +36,27 @@ pub async fn authorize(scope: &mut dyn SessionScope, area: &Area, action: &str) 
 		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
 	);
 	scope.require(&workspace, "workspace.read").await?;
+	scope
+		.require(&resource, action)
+		.await
+		.map_err(|_| Error::NotFound("working area unavailable".into()))?;
+	authorize_sources(scope, area.workspace_id, &area.constraints).await
+}
+/// An Area this Node keeps for Runs executing here for another Home. The Home's Workspace is
+/// not on this Node, so there is no `workspace.read` to ask: the Run's admission, which every
+/// worker lease and recheck has just checked (the Home's `workspace.read` and `task.execute`,
+/// the Peer Mapping, the grant's expiry), stands in for it. What remains is the Area's own:
+/// its Tenant, its owner (the Home person, who must be on the caller's chain) and the
+/// Tenant's policy on the Area. Another person's Run, or a local Run, never reaches it.
+async fn authorize_remote(scope: &mut dyn SessionScope, area: &Area, action: &str) -> Result<()> {
+	if area.tenant != scope.tenant() || !scope.subjects().contains(&area.owner) {
+		return Err(Error::NotFound("working area unavailable".into()));
+	}
+	let resource = scope.resource(
+		"working_area",
+		area.id,
+		json!({"owner":area.owner,"agent_id":area.agent_id,"thread_id":area.thread_id}),
+	);
 	scope
 		.require(&resource, action)
 		.await
@@ -62,6 +86,8 @@ pub async fn authorize_sources(
 			}
 			// An Area given a Reference file holds nothing of it until it copies it.
 			Some("reference_bound") => {}
+			// Which Home the Area serves is a fact of its key, not a source to authorize.
+			Some(REMOTE_HOME) => {}
 			Some("reference") => references.push(serde_json::from_value(source["id"].clone())?),
 			Some("received_scope") => {
 				let owner = source["owner"].as_str().ok_or(Error::Forbidden)?;
@@ -222,6 +248,42 @@ pub async fn initialize(
 	}
 	scope.pin(run.id, &mut area, config).await?;
 	scope.mark_initialized(run.id).await
+}
+/// A receiving Node's Working Area for a Run executing here for another Home (ADR 0139): the Area
+/// per Home Workspace, `thread`, Agent and Home person, kept for follow-up Runs, with the Agent
+/// version's Reference set pinned into it as for a local Run. The Run is queued behind the Runs
+/// that preceded it in the Area, exactly as a local Run is; a Run entered again finds itself
+/// initialized and does nothing.
+pub async fn initialize_remote(
+	scope: &mut dyn SessionScope,
+	run: &RunMetadata,
+	thread: Uuid,
+	owner: &str,
+	config: &AgentConfig,
+) -> Result<()> {
+	match scope.initialized(run.id).await? {
+		Some(true) => return Ok(()),
+		Some(false) => {}
+		None => {
+			let mut area = scope.ensure_remote_area(run, thread, owner).await?;
+			authorize(scope, &area, "file.read").await?;
+			if !matches!(area.state.as_str(), "active" | "running") {
+				return Err(Error::Conflict(
+					"AREA_UNAVAILABLE: restore or recreate the area before starting work".into(),
+				));
+			}
+			let queue = status(scope, &area).await?.queue;
+			if queue.len() >= 100 {
+				return Err(Error::Conflict("QUEUE_LIMIT".into()));
+			}
+			let initialized = area.state == "active" && queue.is_empty();
+			if initialized {
+				scope.pin(run.id, &mut area, config).await?;
+			}
+			scope.enqueue(run.id, &area, initialized).await?;
+		}
+	}
+	initialize(scope, run, config).await
 }
 pub async fn status(scope: &mut dyn SessionScope, area: &Area) -> Result<SessionStatus> {
 	let rows = scope.queue(area).await?;

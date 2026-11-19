@@ -226,6 +226,7 @@ impl World {
 				tool: "task_delegate".into(),
 				tool_call: None,
 				kind: RefusalKind::Policy,
+				ask: None,
 			}),
 			..Default::default()
 		};

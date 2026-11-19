@@ -89,6 +89,23 @@ pub trait PeerAdmissionScope: PeerInspectionScope + Sized {
 	/// Keep the Home's Workspace corpus digest from the describe reply that
 	/// refreshed this worker authority, for the Run's Retrieval Key (#191).
 	fn corpus_digest(&mut self, digest: Option<String>);
+	/// Keep the tools the Home's Description requests for this Run, so the Run's tool calls
+	/// read them without describing the grant again (ADR 0139). `None` when it carries none.
+	fn tool_request(
+		&mut self,
+		request: Option<aidash_domain::federation::tool_lists::FederationToolRequest>,
+	);
+	/// Save the Request of `description`, which the Home has just described, on the admission
+	/// `id`, for the checks that read it without a Home connection: Read Recheck withdrawals,
+	/// Live previews, Subnode members and egress (ADR 0139, decision 12). Only when the
+	/// admission still binds this scope's authority to `description`
+	/// ([`Record::matches`]) and stores another Request.
+	///
+	/// It writes in a short transaction of its own that never waits for the admission row: a
+	/// lease of the same Run, this scope's included once it reads the record, holds a share of
+	/// that row while its transaction stays open, and waiting for it could wait forever. A
+	/// row another transaction holds is left for the Run's next worker boundary.
+	async fn save_tool_request(&mut self, id: Uuid, description: &Description) -> Result<()>;
 	async fn activation_record(&mut self, id: Uuid) -> Result<Option<Record>>;
 	async fn lock_activation(&mut self, source: &str, description: &Description) -> Result<()>;
 	async fn insert_run(&mut self, source: &str, id: Uuid, description: &Description)

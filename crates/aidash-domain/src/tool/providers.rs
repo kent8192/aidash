@@ -1,7 +1,7 @@
 //! Provider-owned operation facts. Descriptors select and constrain these facts.
 use super::{
 	AuthorizationRequirement, Concurrency, Continuation, DisclosureBoundary, ToolAuthorization,
-	ToolBehavior, ToolConfig, ToolContract, ToolEffect, ToolIdentity, builtin_contract,
+	ToolBehavior, ToolConfig, ToolContract, ToolEffect, ToolIdentity, ToolReach, builtin_contract,
 };
 use crate::{
 	Error, Result,
@@ -165,7 +165,8 @@ pub fn research_contract(_operation: ResearchOperation) -> ToolContract {
 			exposure_update: false,
 		},
 		disclosure: DisclosureBoundary::External,
-		remote_exposure: false,
+		// Page reading is a Research operation: never offered to a remote Run (ADR 0139).
+		reach: ToolReach::Never,
 	}
 }
 pub fn requires_runner(operation: &str) -> bool {
@@ -301,9 +302,6 @@ impl ToolDescriptor {
 			// Availability is resolved by Bindings, independently of target-resource authority.
 			contract.authorization.flag = None;
 			contract.authorization.core = None;
-			if self.operation == "human_request" {
-				contract.remote_exposure = true;
-			}
 			contract
 		} else if let Some(tool) = super::provider_tools::declaration(&self.provider) {
 			if self.tier != ToolTier::Provider
@@ -432,7 +430,8 @@ pub fn remote_exclusion(
 	origin: crate::registry::bindings::BindingOrigin,
 	contract: &ToolContract,
 ) -> Result<Option<String>> {
-	if contract.remote_exposure {
+	// Listable Reaches stay candidates; whether a call may run is decided per call.
+	if contract.reach != ToolReach::Never {
 		return Ok(None);
 	}
 	if origin == crate::registry::bindings::BindingOrigin::Default {

@@ -7,6 +7,10 @@ use crate::{
 use aidash_domain::{
 	RunMetadata,
 	exposure::{self, CapabilityIdentity},
+	federation::tool_lists::{
+		OwnedRemoteToolLists, ToolVerdict, UNAVAILABLE_TOOL, call_keys, list_key,
+		registry_operation,
+	},
 	provider::ToolCall,
 	registry::{
 		AgentConfig, EntityRef,
@@ -14,7 +18,7 @@ use aidash_domain::{
 	},
 	tool::{
 		AuthorityRefusal, AuthorizationRequirement, CorePermission, RefusalCheck, ResourceTarget,
-		ToolConfig, ToolContract, ToolIdentity,
+		ToolConfig, ToolContract, ToolIdentity, ToolReach,
 	},
 };
 use serde_json::json;
@@ -45,7 +49,8 @@ fn task_not_found(id: &str) -> Error {
 
 /// Foreign execution can address only its admitted Task and Workspace.
 pub fn remote_identifier(run: &RunMetadata, kind: &str, id: &str) -> Result<String> {
-	if matches!(kind, "memory" | "generation_policy") || kind == "run" && id != run.id.to_string() {
+	// `memory` is no longer refused: a remote Run's memory tools are served by its Home (ADR 0126).
+	if kind == "run" && id != run.id.to_string() {
 		return Err(Error::Forbidden);
 	}
 	if (kind == "task" && id != run.task_id.to_string())
@@ -86,6 +91,72 @@ fn refused(call: &ToolCall, check: RefusalCheck, action: Option<&str>) -> Error 
 		subject: None,
 		call: None,
 	}))
+}
+
+/// What the Federation tool lists decide for a remote Run's call (ADR 0139). Without lists
+/// (the Home shares the receiver's Tenant) only Reach never refuses, which `authorize` did
+/// already. A tool that is blocked or Reach never answers the same words as a tool that does
+/// not exist; one that a side merely lacks stops the Run so that side's people can answer.
+///
+/// `member` is a Subnode member of a Run that a Remote Grant started: it answers to the lists of
+/// that creating Run (ADR 0110), except for the coordination tools, which act only inside the
+/// Subnode. Nobody can be asked on a member's behalf, so a tool a side merely lacks is refused.
+fn federation_gate(
+	call: &ToolCall,
+	lists: Option<&OwnedRemoteToolLists>,
+	contract: &ToolContract,
+	operation: &str,
+	member: bool,
+) -> Result<()> {
+	let Some(lists) = lists else {
+		return Ok(());
+	};
+	let key = list_key(contract, operation);
+	if member && aidash_domain::subnodes::COORDINATION_TOOLS.contains(&key.as_str()) {
+		return Ok(());
+	}
+	// A message that sends files needs its own key as well as the plain one (decision 6).
+	for key in call_keys(key, &call.arguments) {
+		match lists.lists().decide(contract.reach, &key) {
+			ToolVerdict::Usable => {}
+			ToolVerdict::Unavailable => return Err(Error::Invalid(UNAVAILABLE_TOOL.into())),
+			ToolVerdict::Ask(_) if member => {
+				return Err(Error::Refused(
+					"this tool is not available to Subnode members of this Run".into(),
+				));
+			}
+			// The key the lists matched travels as the refusal's action, so the pause can say
+			// which pattern its answer adds without resolving the tool again.
+			ToolVerdict::Ask(lacking) => {
+				return Err(refused(
+					call,
+					RefusalCheck::FederationTools {
+						home: lacking.home,
+						receiver: lacking.receiver,
+					},
+					Some(&key),
+				));
+			}
+		}
+	}
+	Ok(())
+}
+
+/// Whether work a remote Run started with the builtin tool `tool`, a running command, a Live
+/// preview or a Subnode member's call, must now stop: the tool is no longer usable under both
+/// Nodes' lists (ADR 0139, decision 12). A Block added, an Allowance or a Request that no
+/// longer names it, or a Reach that never answers all withdraw it, as a list change acts like a
+/// withdrawal of authority. Without lists (the Home shares the receiver's Tenant) the Tenant's
+/// policy decides and nothing is withdrawn here. A tool the table does not know withdraws too,
+/// so a new tool must be classified before work depends on it.
+pub fn tool_withdrawn(lists: Option<&OwnedRemoteToolLists>, tool: &str) -> bool {
+	let Some(lists) = lists else {
+		return false;
+	};
+	let Some(reach) = aidash_domain::tool::builtin_reach(tool) else {
+		return true;
+	};
+	!matches!(lists.lists().decide(reach, tool), ToolVerdict::Usable)
 }
 
 /// Name the check behind a plain refusal (`Forbidden` or `Unauthorized`); every other outcome,
@@ -184,6 +255,10 @@ pub async fn authorize(
 		RefusalCheck::RemoteAuthority,
 		None,
 	)?;
+	// Reach never needs no list; the answer is the one a blocked or unknown tool gets.
+	if repository.is_remote() && contract.reach == ToolReach::Never {
+		return Err(Error::Invalid(UNAVAILABLE_TOOL.into()));
+	}
 	if contract
 		.authorization
 		.flag
@@ -193,11 +268,21 @@ pub async fn authorize(
 	}
 	// Taking the lease only waits for the Access guard; it refuses nothing.
 	let mut scope = repository.lease().await?;
-	if let Some(allowance) = scope.subnode_allowance().await?
-		&& !allowed_in_subnode(repository, contract, &allowance)?
+	let allowance = scope.subnode_allowance().await?;
+	if let Some(allowance) = &allowance
+		&& !allowed_in_subnode(repository, contract, allowance)?
 	{
 		return Err(refused(call, RefusalCheck::Policy, None));
 	}
+	// The refresh above read the Home's current Request; the receiver's lists are its own rows.
+	// A Subnode member is local, but answers to the lists of the Run that created its Subnode,
+	// which the repository finds; it has none when that Run is not a remote one.
+	let member = !repository.is_remote() && allowance.is_some();
+	let lists = if repository.is_remote() || member {
+		scope.remote_tool_lists().await?
+	} else {
+		None
+	};
 	let mut current;
 	let mut operation = None;
 	let authorization = match &contract.identity {
@@ -232,6 +317,13 @@ pub async fn authorize(
 					"a Run started by a Remote Grant is limited to one hop and cannot discover agents or delegate tasks".into(),
 				));
 			}
+			federation_gate(
+				call,
+				lists.as_ref(),
+				contract,
+				&descriptor.operation,
+				member,
+			)?;
 			operation = Some(descriptor.operation);
 			&current.authorization
 		}
@@ -249,10 +341,18 @@ pub async fn authorize(
 				Some("tool.invoke"),
 			)?;
 			let config: ToolConfig = serde_json::from_value(entry.config)?;
+			federation_gate(
+				call,
+				lists.as_ref(),
+				contract,
+				registry_operation(&config),
+				member,
+			)?;
 			current = ToolContract::registry(reference.clone(), &config);
 			&current.authorization
 		}
 		ToolIdentity::Builtin(grant) => {
+			federation_gate(call, lists.as_ref(), contract, "", member)?;
 			let resource = scope.resource("tool", grant, json!({}));
 			named(
 				scope.require(&resource, "tool.invoke").await,
@@ -587,6 +687,64 @@ pub async fn filter_subnode<T: Send>(
 	Ok(true)
 }
 
+/// The operation `list_key` needs for a tool, read from the Run's pinned Binding snapshot the
+/// way `authorize` reads it from the Catalog entry; `None` when the snapshot does not name it.
+fn pinned_operation(
+	repository: &dyn AgentToolRepository,
+	contract: &ToolContract,
+) -> Option<String> {
+	let snapshot = repository.binding_snapshot();
+	match &contract.identity {
+		ToolIdentity::Builtin(_) => Some(String::new()),
+		ToolIdentity::Registry(reference) => {
+			let binding = snapshot?.bindings.iter().find(|binding| {
+				binding.identity.local() == *reference
+					&& binding.definition.kind == "tool"
+					&& binding.excluded_reason.is_none()
+			})?;
+			let config: ToolConfig =
+				serde_json::from_value(binding.definition.config.clone()).ok()?;
+			Some(registry_operation(&config).to_owned())
+		}
+		ToolIdentity::Descriptor(reference) => {
+			let binding = snapshot?.bindings.iter().find(|binding| {
+				binding.identity == *reference && binding.excluded_reason.is_none()
+			})?;
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(binding.definition.config.clone()).ok()?;
+			Some(descriptor.operation)
+		}
+		ToolIdentity::AgentPlugin(_) => None,
+	}
+}
+
+/// Take from a remote Run's tool map what it may never call: tools of Reach never, and tools the
+/// receiving Node blocks for the Home. Every other candidate stays, even one a side has yet to
+/// list, since calling it asks that side. A Block names only listable tools: a tool of Reach Run
+/// stays whatever the Block says, as `RemoteToolLists::decide` lets it run (ADR 0139).
+pub async fn filter_remote<T: Send>(
+	repository: &dyn AgentToolRepository,
+	tools: &mut BTreeMap<String, T>,
+	contract: impl Fn(&T) -> ToolContract,
+) -> Result<()> {
+	if !repository.is_remote() {
+		return Ok(());
+	}
+	let block = repository.lease().await?.remote_tool_block().await?;
+	for name in tools.keys().cloned().collect::<Vec<_>>() {
+		let declaration = contract(&tools[&name]);
+		let blocked = declaration.reach.listable()
+			&& block.as_ref().is_some_and(|block| {
+				pinned_operation(repository, &declaration)
+					.is_some_and(|operation| block.matches(&list_key(&declaration, &operation)))
+			});
+		if declaration.reach == ToolReach::Never || blocked {
+			tools.remove(&name);
+		}
+	}
+	Ok(())
+}
+
 /// Apply removals immediately so a later adapter failure retains earlier filtering.
 pub async fn filter<T: Send>(
 	repository: &dyn AgentToolRepository,
@@ -594,9 +752,6 @@ pub async fn filter<T: Send>(
 	tools: &mut BTreeMap<String, T>,
 	contract: impl Fn(&T) -> ToolContract,
 ) -> Result<()> {
-	if repository.is_remote() {
-		tools.retain(|_, tool| contract(tool).remote_exposure);
-	}
 	let mut scope = repository.lease().await?;
 	if let Some(allowance) = scope.subnode_allowance().await? {
 		for name in tools.keys().cloned().collect::<Vec<_>>() {

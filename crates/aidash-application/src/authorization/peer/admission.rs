@@ -257,13 +257,9 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 	let Some(grant) = run_grant(repository, run).await? else {
 		return Ok(None);
 	};
-	let record_node = repository
-		.record(run.id)
-		.await?
-		.ok_or(Error::Forbidden)?
-		.node;
+	let stored = repository.record(run.id).await?.ok_or(Error::Forbidden)?;
 	let (mut scope, description, corpus_digest) =
-		match described_lease(repository, &record_node, &run.home_node, grant).await {
+		match described_lease(repository, &stored.node, &run.home_node, grant).await {
 			Ok(value) => value,
 			Err(error) => {
 				let description: Description =
@@ -282,6 +278,12 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 			}
 		};
 	let result = async {
+		// The Home's Request may have changed since the admission saved one; the checks that
+		// hold no Home connection read it there. Saved before this transaction shares the
+		// admission row, as the save cannot wait for a share (see `save_tool_request`).
+		if stored.with_tool_request(&description)?.is_some() {
+			scope.save_tool_request(run.id, &description).await?;
+		}
 		let record = scope.required_record(run.id).await?;
 		if !record.matches(&scope.identity(), scope.subjects(), &description)? {
 			return Err(Error::Forbidden);
@@ -290,6 +292,7 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		scope.worker(true);
 		scope.corpus_digest(corpus_digest);
+		scope.tool_request(super::tool_request::requested_tools(&description)?);
 		Ok(agent)
 	}
 	.await;

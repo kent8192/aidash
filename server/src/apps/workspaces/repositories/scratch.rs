@@ -406,10 +406,110 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 	Ok(())
 }
 
+/// The Home person a Run executing here for another Home acts for: the credential's subject, or
+/// for a Node of the Run's own Tenant the root of the chain its admission recorded (#751). It
+/// keys the Delegated Run Scratch Space and the receiving Working Area, so both belong to one
+/// person. Only this Run's own admission can name it, and the person must be on the caller's
+/// chain.
+pub(crate) async fn remote_person(
+	access: &mut Access,
+	run: &aidash_domain::RunMetadata,
+) -> aidash_application::Result<String> {
+	// A receiver may only allocate for its own already-admitted Run.
+	// A shared lock keeps the admission from changing meanwhile without
+	// blocking activation, which shares it too; the Node lock below
+	// serializes first allocation.
+	let tenant = access.identity.tenant.clone();
+	let (sql, values) = Query::select()
+		.column(Alias::new("credential_id"))
+		.expr_as(
+			Expr::cust("COALESCE(subject_chain[1], '')"),
+			Alias::new("root_subject"),
+		)
+		.from(Alias::new("authorization_remote_admissions"))
+		.and_where(Expr::col("id").eq(Expr::value(run.id)))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
+		.and_where(Expr::col("node").eq(Expr::value(run.node.as_str().to_owned())))
+		.and_where(Expr::col("task_id").eq(Expr::value(run.task_id)))
+		.and_where(Expr::col("source_node").eq(Expr::value(run.home_node.clone())))
+		.and_where(
+			Expr::col("id").in_subquery(
+				Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
+					.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
+					.and_where(Expr::col("home_node").eq(Expr::value(run.home_node.clone())))
+					.to_owned(),
+			),
+		)
+		.lock(LockType::Share)
+		.build(PostgresQueryBuilder);
+	let admission = access
+		.tx
+		.fetch_optional(&sql, convert_values(values))
+		.await
+		.map_err(crate::Error::from)?
+		.ok_or(aidash_application::Error::Forbidden)?;
+	let credential: Uuid = admission
+		.get("credential_id")
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(crate::Error::from)?;
+	let person: String = if credential.is_nil() {
+		// A Node of the Run's own Tenant acts for a subject of that Tenant
+		// without a credential (ADR 0064), so the person who started the
+		// work is the root of the chain the admission recorded (#751).
+		let root: String = admission
+			.get("root_subject")
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		if root.is_empty() {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		root
+	} else {
+		let (sql, values) = Query::select()
+			.column(Alias::new("subject"))
+			.from(Alias::new("authorization_credentials"))
+			.and_where(Expr::col("id").eq(Expr::value(credential)))
+			.and_where(Expr::col("tenant").eq(tenant.clone()))
+			.and_where(Expr::col("revoked_at").is_null())
+			.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
+			.lock(LockType::Share)
+			.build(PostgresQueryBuilder);
+		let row = access
+			.tx
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		row.get("subject")
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?
+	};
+	if !access.subjects.contains(&person) {
+		return Err(aidash_application::Error::Forbidden);
+	}
+	Ok(person)
+}
+
 /// A receiving Node keeps one space per home Workspace and mapped person.
-fn remote_space_id(
+pub(crate) fn remote_space_id(
 	tenant: &str,
 	node: &NodeName,
+	home: &str,
+	workspace: Uuid,
+	person: &str,
+) -> Uuid {
+	remote_space_key(tenant, node.as_str(), home, workspace, person)
+}
+
+/// [`remote_space_id`] for a caller that holds the Node as text, such as a Run's row. The
+/// identity must be resolvable after authorization has been revoked, without a new admission,
+/// so every caller derives it through this one function.
+pub(crate) fn remote_space_key(
+	tenant: &str,
+	node: &str,
 	home: &str,
 	workspace: Uuid,
 	person: &str,
@@ -417,7 +517,7 @@ fn remote_space_id(
 	use sha2::{Digest, Sha256};
 	let mut hash = Sha256::new();
 	hash.update(b"aidash:remote-scratch-space:v1");
-	for value in [tenant, node.as_str(), home, person] {
+	for value in [tenant, node, home, person] {
 		hash.update((value.len() as u64).to_be_bytes());
 		hash.update(value.as_bytes());
 	}
@@ -786,83 +886,8 @@ impl NativeScratchServices<'_> {
 		run: &aidash_domain::RunMetadata,
 	) -> aidash_application::Result<(Uuid, String)> {
 		if !run.is_local(&access.node_id) {
-			// A receiver may only allocate for its own already-admitted Run.
-			// A shared lock keeps the admission from changing meanwhile without
-			// blocking activation, which shares it too; the Node lock below
-			// serializes first allocation.
 			let tenant = access.identity.tenant.clone();
-			let (sql, values) = Query::select()
-				.column(Alias::new("credential_id"))
-				.expr_as(
-					Expr::cust("COALESCE(subject_chain[1], '')"),
-					Alias::new("root_subject"),
-				)
-				.from(Alias::new("authorization_remote_admissions"))
-				.and_where(Expr::col("id").eq(Expr::value(run.id)))
-				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-				.and_where(Expr::col("node").eq(Expr::value(run.node.as_str().to_owned())))
-				.and_where(Expr::col("task_id").eq(Expr::value(run.task_id)))
-				.and_where(Expr::col("source_node").eq(Expr::value(run.home_node.clone())))
-				.and_where(
-					Expr::col("id").in_subquery(
-						Query::select()
-							.column(Alias::new("id"))
-							.from(Alias::new("runs"))
-							.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-							.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
-							.and_where(
-								Expr::col("home_node").eq(Expr::value(run.home_node.clone())),
-							)
-							.to_owned(),
-					),
-				)
-				.lock(LockType::Share)
-				.build(PostgresQueryBuilder);
-			let admission = access
-				.tx
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let credential: Uuid = admission
-				.get("credential_id")
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(crate::Error::from)?;
-			let person: String = if credential.is_nil() {
-				// A Node of the Run's own Tenant acts for a subject of that Tenant
-				// without a credential (ADR 0064), so the person who started the
-				// work is the root of the chain the admission recorded (#751).
-				let root: String = admission
-					.get("root_subject")
-					.map_err(reinhardt::core::exception::Error::from)
-					.map_err(crate::Error::from)?;
-				if root.is_empty() {
-					return Err(aidash_application::Error::Forbidden);
-				}
-				root
-			} else {
-				let (sql, values) = Query::select()
-					.column(Alias::new("subject"))
-					.from(Alias::new("authorization_credentials"))
-					.and_where(Expr::col("id").eq(Expr::value(credential)))
-					.and_where(Expr::col("tenant").eq(tenant.clone()))
-					.and_where(Expr::col("revoked_at").is_null())
-					.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
-					.lock(LockType::Share)
-					.build(PostgresQueryBuilder);
-				let row = access
-					.tx
-					.fetch_optional(&sql, convert_values(values))
-					.await
-					.map_err(crate::Error::from)?
-					.ok_or(aidash_application::Error::Forbidden)?;
-				row.get("subject")
-					.map_err(reinhardt::core::exception::Error::from)
-					.map_err(crate::Error::from)?
-			};
-			if !access.subjects.contains(&person) {
-				return Err(aidash_application::Error::Forbidden);
-			}
+			let person = remote_person(access, run).await?;
 			// UUIDv8 is domain-separated from user-created UUIDv4 spaces and stable
 			// across retries. Existing spaces need no Node allocation lock.
 			let scratch_id = remote_space_id(

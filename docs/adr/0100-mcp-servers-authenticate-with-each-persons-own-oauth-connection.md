@@ -38,3 +38,7 @@ Home records remote personal calls in the identity-owned `remote_connection_call
 ## Amendment (2026-11-16, #954)
 
 When a server refuses a pasted secret, shared or personal, with a `401` or a `403` with `insufficient_scope`, the call fails with `secret_rejected`. That is an ordinary failure, not a connection cause: no connection could fix it, so nothing waits for one and the agent sees the failure at once. The same failure skips a server at Run start and is the reason an attach-time listing gives. A refused OAuth Connection still asks the person to connect again, as above.
+
+## Amendment (2026-11-17)
+
+A Run that a Remote Grant started uses a Registry tool only when the Home's Federation Tool Request and the receiving Node's Federation Tool Allowance both list it, as `registry:<definition>/<tool>` or a pattern (ADR 0139). Registry tools are no longer offered to such Runs by default. Agent Plugin tools stay unavailable to them.

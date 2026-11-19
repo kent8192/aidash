@@ -14,4 +14,7 @@ pub trait WorkerEntryRepository<S: Send>: Send + Sync {
 	) -> Result<AgentConfig>;
 	async fn scratch_space(&self, scope: &mut S, run: &Run) -> Result<uuid::Uuid>;
 	async fn initialize(&self, scope: &S, run: &Run, agent: &AgentConfig) -> Result<()>;
+	/// The same for a Run executing here for another Home: bind its receiving Working Area and
+	/// pin the Agent version's Reference set into it (ADR 0139).
+	async fn initialize_remote(&self, scope: &S, run: &Run, agent: &AgentConfig) -> Result<()>;
 }

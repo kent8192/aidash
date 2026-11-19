@@ -116,6 +116,7 @@ fn grant(required: bool) -> Grant {
 }
 fn description() -> Description {
 	Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::from_u128(4),
 		source_node: "aidash://home/airy-hawk-2lu4as22".into(),
 		target_node: "aidash://receiver".into(),
@@ -1081,6 +1082,53 @@ async fn someone_else_declines_under_run_decline_call_alone() {
 	assert!(!calls.contains(&"task.delegate".into()));
 	assert!(!calls.contains(&"run.control".into()));
 	assert!(calls.contains(&"task.read".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_tool_ask_is_declined_by_a_list_holder_without_the_runs_own_rights() {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		// Neither the requester nor a holder of `run.decline_call`: only the caller's list
+		// permission, checked before this function, stands for the right.
+		state.grant_root = Some("other");
+		state.replies = vec![declined_reply()];
+	}
+	decline_tool_ask(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	for held in ["run.decline_call", "run.control", "task.delegate"] {
+		assert!(!calls.contains(&held.into()), "{held}: {calls:?}");
+	}
+	assert!(calls.iter().any(|c| c.ends_with("/declined-calls")));
+	let state = repository.state.lock().unwrap();
+	assert_eq!(state.declined[0]["call"], "run:7:0");
+	assert_eq!(state.declined[0]["tool_ask"], true);
+}
+#[rstest]
+#[tokio::test]
+async fn an_answer_that_allows_the_tool_resumes_the_remote_run_without_the_runs_own_rights() {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.grant_root = Some("other");
+		state.replies = vec![activation()];
+	}
+	resume_after_tool_answer(&repository, task().id, Uuid::from_u128(4))
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	assert!(calls.iter().any(|c| c.ends_with("/control")), "{calls:?}");
+	assert!(!calls.contains(&"run.control".into()));
+	let state = repository.state.lock().unwrap();
+	let request = &state
+		.requests
+		.iter()
+		.find(|(path, _)| path.ends_with("/control"))
+		.unwrap()
+		.1;
+	assert_eq!(request["action"], "resume");
 }
 #[rstest]
 #[case::requester_without_run_control(None, "run.control")]

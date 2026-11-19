@@ -63,13 +63,18 @@ pub async fn execution<S: Send>(
 			.await
 			.map_err(scratch_refusal)?,
 	);
-	if !entry.remote
-		&& entry.agent.core_capabilities.enabled()
-		&& run.control != RunControl::Cancelled
-	{
-		repository
-			.initialize(&entry.scope, run, &entry.agent)
-			.await?;
+	if entry.agent.core_capabilities.enabled() && run.control != RunControl::Cancelled {
+		// A Run executing for another Home gets the receiving Node's Working Area (ADR 0139);
+		// a local Run, the Area its Workspace's thread keeps.
+		if entry.remote {
+			repository
+				.initialize_remote(&entry.scope, run, &entry.agent)
+				.await?;
+		} else {
+			repository
+				.initialize(&entry.scope, run, &entry.agent)
+				.await?;
+		}
 	}
 	Ok(entry)
 }

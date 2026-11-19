@@ -100,6 +100,8 @@ pub struct PeerError {
 	pub error: String,
 }
 
+pub mod delivery;
+
 pub mod dependencies;
 
 pub mod execution;
@@ -113,6 +115,8 @@ pub mod preview;
 pub mod registry_reads;
 
 pub mod route;
+
+pub mod tool_lists;
 
 #[cfg(test)]
 mod tests;

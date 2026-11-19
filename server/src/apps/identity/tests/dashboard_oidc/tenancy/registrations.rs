@@ -479,6 +479,213 @@ async fn only_a_tenant_administrator_reads_or_writes_registrations(
 	d.finish().await;
 }
 
+/// `PUT .../registrations/{source}/tool-lists`; the address is percent-encoded.
+impl Deployment {
+	async fn set_tool_lists(
+		&self,
+		person: &Person,
+		context: &str,
+		tenant: &str,
+		node: &str,
+		source: &str,
+		body: Value,
+	) -> (u16, Value) {
+		let source = source.replace(':', "%3A").replace('/', "%2F");
+		self.as_person(
+			person,
+			"PUT",
+			&format!("/api/tenants/{tenant}/nodes/{node}/registrations/{source}/tool-lists"),
+			Some(context),
+			body,
+		)
+		.await
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn federation_tool_lists_default_then_round_trip_with_revision_and_permission(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let carol = d.person("carol").await;
+	let (tenant, context) = d.node_tenant(&alice, "Team").await;
+	let (other_tenant, other_context) = d.node_tenant(&carol, "Carol").await;
+	let member = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
+	let node = d.default_node(&alice, &context, &tenant).await;
+	let source = d.address_of(&carol, &other_context, &other_tenant).await;
+
+	// A fresh registration holds the defaults, and an empty Block.
+	let (status, created) = d
+		.register(
+			&alice,
+			&context,
+			&tenant,
+			&node,
+			json!({"source_node":source,"atomic_transactions":false,"enabled":true,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 200, "{created}");
+	let defaults = aidash_domain::federation::tool_lists::DEFAULT_TOOLS;
+	assert_eq!(
+		created["tool_request"]["tools"].as_array().unwrap().len(),
+		defaults.len()
+	);
+	assert_eq!(created["tool_request"]["hosts"], json!([]));
+	assert_eq!(
+		created["tool_allowance"].as_array().unwrap().len(),
+		defaults.len()
+	);
+	assert_eq!(created["tool_block"], json!([]));
+
+	let lists = |revision: i64| {
+		json!({
+			"revision": revision,
+			"request": {"tools": ["registry:github/*", "file_read"], "hosts": ["*.example.com"]},
+			"allowance": ["file_*"],
+			"block": ["file_delete"],
+		})
+	};
+	// Round trip: sorted lists, a bumped revision and a history row.
+	let (status, updated) = d
+		.set_tool_lists(&alice, &context, &tenant, &node, &source, lists(1))
+		.await;
+	assert_eq!(status, 200, "{updated}");
+	assert_eq!(updated["revision"], 2);
+	assert_eq!(
+		updated["tool_request"]["tools"],
+		json!(["file_read", "registry:github/*"])
+	);
+	assert_eq!(updated["tool_request"]["hosts"], json!(["*.example.com"]));
+	assert_eq!(updated["tool_allowance"], json!(["file_*"]));
+	assert_eq!(updated["tool_block"], json!(["file_delete"]));
+	let (status, listed) = d
+		.registrations(&alice, &context, &tenant, &node, "registrations")
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed[0]["tool_block"], json!(["file_delete"]));
+	let (_, history) = d
+		.registrations(&alice, &context, &tenant, &node, "registration-history")
+		.await;
+	assert_eq!(history.as_array().unwrap().len(), 2, "{history}");
+
+	// A stale revision conflicts; an invalid pattern is unprocessable.
+	let (status, stale) = d
+		.set_tool_lists(&alice, &context, &tenant, &node, &source, lists(1))
+		.await;
+	assert_eq!(status, 409, "{stale}");
+	let mut invalid = lists(2);
+	invalid["allowance"] = json!(["No Spaces Or Capitals"]);
+	let (status, refused) = d
+		.set_tool_lists(&alice, &context, &tenant, &node, &source, invalid)
+		.await;
+	assert_eq!(status, 422, "{refused}");
+	let mut missing = lists(2);
+	missing.as_object_mut().unwrap().remove("block");
+	let (status, refused) = d
+		.set_tool_lists(&alice, &context, &tenant, &node, &source, missing)
+		.await;
+	assert_eq!(status, 422, "all three lists are required: {refused}");
+
+	// A member lacks `node.federation_tools.manage`.
+	let (status, refused) = d
+		.set_tool_lists(&bob, &member, &tenant, &node, &source, lists(2))
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn waiting_tool_asks_are_listed_and_answered_only_by_list_holders(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let carol = d.person("carol").await;
+	let (tenant, context) = d.node_tenant(&alice, "Team").await;
+	let (other_tenant, other_context) = d.node_tenant(&carol, "Carol").await;
+	let member = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
+	let node = d.default_node(&alice, &context, &tenant).await;
+	let source = d.address_of(&carol, &other_context, &other_tenant).await;
+	let (status, created) = d
+		.register(
+			&alice,
+			&context,
+			&tenant,
+			&node,
+			json!({"source_node":source,"atomic_transactions":false,"enabled":true,"expected_revision":0}),
+		)
+		.await;
+	assert_eq!(status, 200, "{created}");
+	let encoded = source.replace(':', "%3A").replace('/', "%2F");
+	let asks = format!("/api/tenants/{tenant}/nodes/{node}/registrations/{encoded}/tool-asks");
+
+	// Nothing waits, so both sides list nothing.
+	let (status, listed) = d
+		.as_person(&alice, "GET", &asks, Some(&context), Value::Null)
+		.await;
+	assert_eq!(status, 200, "{listed}");
+	assert_eq!(listed, json!({"asks": []}));
+
+	// A call that is not waiting cannot be answered, whichever side it names.
+	let answer = format!("{asks}/{}/answer", uuid::Uuid::new_v4());
+	let (status, refused) = d
+		.as_person(
+			&alice,
+			"POST",
+			&answer,
+			Some(&context),
+			json!({"choice": "run_only", "key": "shell", "call": "call-1"}),
+		)
+		.await;
+	assert_eq!(status, 404, "{refused}");
+	let (status, refused) = d
+		.as_person(
+			&alice,
+			"POST",
+			&answer,
+			Some(&context),
+			json!({"choice": "always", "key": "shell", "call": "call-1"}),
+		)
+		.await;
+	assert_eq!(status, 422, "an unknown choice is unprocessable: {refused}");
+	// An answer names the call and key the page showed, so it never lands on a later call.
+	let (status, refused) = d
+		.as_person(
+			&alice,
+			"POST",
+			&answer,
+			Some(&context),
+			json!({"choice": "run_only"}),
+		)
+		.await;
+	assert_eq!(
+		status, 422,
+		"an answer without its call is unprocessable: {refused}"
+	);
+
+	// A member lacks `node.federation_tools.manage`, for the list and for an answer.
+	let (status, refused) = d
+		.as_person(&bob, "GET", &asks, Some(&member), Value::Null)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	let (status, refused) = d
+		.as_person(
+			&bob,
+			"POST",
+			&answer,
+			Some(&member),
+			json!({"choice": "decline", "key": "shell", "call": "call-1"}),
+		)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	d.finish().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(

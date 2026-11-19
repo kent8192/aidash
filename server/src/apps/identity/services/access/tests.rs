@@ -186,6 +186,7 @@ fn access() -> Access {
 	};
 	let environment = json!({"node_id":"aidash://home", "transport":"federation", "source_node":"aidash://reader-peer", "request_id":"reader-request"});
 	Access {
+		home_tool_request: None,
 		node: None,
 		node_address: None,
 		marketplace_audit: None,

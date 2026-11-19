@@ -158,7 +158,7 @@ async fn descriptor_authorization_accepts_only_lowered_concurrency(
 
 #[rstest]
 #[tokio::test]
-async fn remote_visibility_uses_contracts_after_aliases_change(
+async fn filter_leaves_remote_tools_to_the_federation_tool_lists(
 	mut repository: Repository,
 	agent: AgentConfig,
 ) {
@@ -186,9 +186,10 @@ async fn remote_visibility_uses_contracts_after_aliases_change(
 	super::filter(&repository, &agent, &mut tools, Clone::clone)
 		.await
 		.unwrap();
+	// Remote use is decided per call from Tool Reach and the lists (ADR 0139).
 	assert_eq!(
 		tools.keys().map(String::as_str).collect::<Vec<_>>(),
-		["create_alias", "registered_alias"]
+		["create_alias", "external_alias", "registered_alias"]
 	);
 }
 
@@ -353,6 +354,8 @@ struct Repository {
 	snapshot: Option<BindingSnapshot>,
 	plugin_tools: Option<aidash_domain::agent_plugin::PluginTools>,
 	subnode_allowance: Option<aidash_domain::subnodes::Allowance>,
+	/// What a remote Run's lists are; `None` is a Home of the receiver's own Tenant.
+	lists: Option<aidash_domain::federation::tool_lists::OwnedRemoteToolLists>,
 }
 #[fixture]
 fn repository() -> Repository {
@@ -373,6 +376,7 @@ fn repository() -> Repository {
 		snapshot: None,
 		plugin_tools: None,
 		subnode_allowance: None,
+		lists: None,
 	}
 }
 impl Repository {
@@ -435,6 +439,16 @@ impl AgentToolScope for Scope<'_> {
 		self.0.record("replace");
 		self.0.check("replace")?;
 		Ok(self.0.replace)
+	}
+	async fn remote_tool_lists(
+		&mut self,
+	) -> Result<Option<aidash_domain::federation::tool_lists::OwnedRemoteToolLists>> {
+		Ok(self.0.lists.clone())
+	}
+	async fn remote_tool_block(
+		&mut self,
+	) -> Result<Option<aidash_domain::federation::tool_lists::ToolList>> {
+		Ok(self.0.lists.as_ref().map(|lists| lists.block.clone()))
 	}
 	fn context(&self) -> &Value {
 		&self.0.context
@@ -1275,7 +1289,8 @@ async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
 #[case::memory("memory_mutate")]
 #[case::generation("task_assign")]
 #[tokio::test]
-async fn remote_execution_rejects_local_only_resources_after_invoke(
+/// Memory and Generation name Home resources a remote Run's tools are forwarded to (ADR 0139).
+async fn remote_execution_names_home_resources_for_forwarded_tools(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1290,9 +1305,8 @@ async fn remote_execution_rejects_local_only_resources_after_invoke(
 			&call(name, json!({"policy_id":"saved"}))
 		)
 		.await,
-		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::RemoteAuthority
+		Ok(())
 	));
-	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
 #[tokio::test]
@@ -1596,7 +1610,7 @@ async fn filtering_removes_denied_tools_immediately_before_a_later_adapter_fault
 }
 #[rstest]
 #[tokio::test]
-async fn remote_filtering_happens_before_lease_failure_and_does_not_refresh(
+async fn filter_keeps_remote_candidates_before_lease_failure_and_does_not_refresh(
 	mut repository: Repository,
 	agent: AgentConfig,
 ) {
@@ -1617,10 +1631,12 @@ async fn remote_filtering_happens_before_lease_failure_and_does_not_refresh(
 	assert_eq!(
 		tools,
 		BTreeMap::from([
+			("memory_mutate".into(), 1),
 			("task_create".into(), 2),
 			("task_delegate".into(), 3),
 			("plugin_bad".into(), 4),
-			("skill_read".into(), 5)
+			("skill_read".into(), 5),
+			("human_request".into(), 6),
 		])
 	);
 	assert_eq!(repository.calls(), vec!["lease"]);
@@ -1648,10 +1664,10 @@ async fn cancellation_releases_the_lease_held_during_tool_authorization(
 #[case::foreign_task("task", 9, false)]
 #[case::matching_workspace("workspace", 3, true)]
 #[case::foreign_workspace("workspace", 9, false)]
-#[case::memory("memory", 1, false)]
+#[case::memory("memory", 1, true)]
 #[case::run("run", 1, true)]
 #[case::foreign_run("run", 9, false)]
-#[case::generation("generation_policy", 1, false)]
+#[case::generation("generation_policy", 1, true)]
 fn remote_identifiers_enforce_the_admitted_scope(
 	run: RunMetadata,
 	#[case] kind: &str,
@@ -1736,9 +1752,7 @@ async fn explicit_remote_workspace_actions_refresh_and_keep_current_context(
 #[rstest]
 #[case::workspace("workspace")]
 #[case::task("task")]
-#[case::memory("memory")]
 #[case::run("run")]
-#[case::generation("generation_policy")]
 #[tokio::test]
 async fn explicit_remote_actions_cannot_escape_the_admitted_resource(
 	mut repository: Repository,
@@ -2265,4 +2279,329 @@ async fn subnode_enforces_pinned_tool_and_secret_even_with_a_renamed_alias(
 		super::authorize(&repository, &run, &agent, &call, &contract).await,
 		Err(Error::AuthorityRefused(_))
 	));
+}
+
+fn lists(
+	request: &[&str],
+	allowance: &[&str],
+	block: &[&str],
+) -> aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
+	use aidash_domain::federation::tool_lists::{OwnedRemoteToolLists, ToolList, ToolPattern};
+	let list = |names: &[&str]| {
+		ToolList::new(names.iter().map(|name| ToolPattern::new(*name).unwrap())).unwrap()
+	};
+	OwnedRemoteToolLists {
+		request: list(request),
+		allowance: list(allowance),
+		block: list(block),
+		..Default::default()
+	}
+}
+
+#[rstest]
+#[case::both_list_it(lists(&["shell"], &["shell"], &[]), "shell", false)]
+#[case::block_added(lists(&["shell"], &["shell"], &["shell"]), "shell", true)]
+#[case::allowance_removed(lists(&["shell"], &[], &[]), "shell", true)]
+#[case::request_no_longer_names_it(lists(&[], &["shell"], &[]), "shell", true)]
+#[case::pattern_still_covers(lists(&["*"], &["shell*"], &[]), "shell_poll", false)]
+#[case::block_pattern_wins(lists(&["*"], &["*"], &["live_*"]), "live_preview_start", true)]
+#[case::run_reach_needs_no_list(lists(&[], &[], &[]), "journal_read", false)]
+#[case::never_reach(lists(&["*"], &["*"], &[]), "schedule_list", true)]
+#[case::unknown_tool_fails_closed(lists(&["*"], &["*"], &[]), "no_such_tool", true)]
+fn a_list_change_withdraws_the_work_that_depends_on_the_tool(
+	#[case] lists: aidash_domain::federation::tool_lists::OwnedRemoteToolLists,
+	#[case] tool: &str,
+	#[case] withdrawn: bool,
+) {
+	assert_eq!(tool_withdrawn(Some(&lists), tool), withdrawn);
+}
+
+#[test]
+fn a_run_without_lists_is_never_withdrawn_by_them() {
+	assert!(!tool_withdrawn(None, "shell"));
+}
+
+#[test]
+fn a_run_only_answer_keeps_the_work_until_it_is_gone() {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let only = |name: &str| ToolList::new([ToolPattern::new(name).unwrap()]).unwrap();
+	let mut owned = lists(&[], &[], &[]);
+	owned.run_request = only("shell");
+	owned.run_allowance = only("shell");
+	assert!(!tool_withdrawn(Some(&owned), "shell"));
+	owned.run_allowance = ToolList::default();
+	assert!(tool_withdrawn(Some(&owned), "shell"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_block_pattern_leaves_run_reach_tools_in_the_remote_tool_map(mut repository: Repository) {
+	// A Block of `*` names every listable tool, but a tool of Reach Run is usable whatever the
+	// lists say (`RemoteToolLists::decide`), so the tool map must keep it as well.
+	repository.remote = true;
+	repository.lists = Some(lists(&["*"], &["*"], &["*"]));
+	let mut tools: BTreeMap<String, ToolContract> =
+		["journal_read", "workspace_read", "schedule_list"]
+			.into_iter()
+			.map(|name| {
+				(
+					name.to_owned(),
+					aidash_domain::tool::builtin_contract(name).unwrap(),
+				)
+			})
+			.collect();
+	super::filter_remote(&repository, &mut tools, Clone::clone)
+		.await
+		.unwrap();
+	assert_eq!(
+		tools.keys().map(String::as_str).collect::<Vec<_>>(),
+		["journal_read"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_listed_tool_runs_in_a_remote_run(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.remote = true;
+	repository.lists = Some(lists(&["workspace_read"], &["workspace_*"], &[]));
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_subnode_member_answers_to_the_lists_of_its_remote_creating_run(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// The member is a local Run, so the repository finds the creating Run's lists for it.
+	repository.subnode_allowance = Some(aidash_domain::subnodes::Allowance {
+		tools: ["workspace_read".to_owned(), "workspace_search".to_owned()].into(),
+		secrets: Default::default(),
+	});
+	repository.lists = Some(lists(
+		&["workspace_read", "workspace_search"],
+		&["workspace_read"],
+		&[],
+	));
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+	// The allowance names the tool but the receiver's list does not: refused, never a pause
+	// nobody could answer for the member.
+	assert!(matches!(
+		authorize(
+			&repository,
+			&run,
+			&agent,
+			&call("workspace_search", json!({})),
+		)
+		.await,
+		Err(Error::Refused(_))
+	));
+	// A Subnode member of a Run of the receiver's own Tenant has no lists.
+	repository.lists = None;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+}
+
+#[rstest]
+#[case::blocked("workspace_read", lists(&["workspace_read"], &["workspace_read"], &["workspace_*"]))]
+#[case::never_reach("schedule_list", lists(&["*"], &["*"], &[]))]
+#[tokio::test]
+async fn a_blocked_or_never_tool_answers_with_the_shared_text(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] name: &str,
+	#[case] owned: aidash_domain::federation::tool_lists::OwnedRemoteToolLists,
+) {
+	repository.remote = true;
+	repository.lists = Some(owned);
+	let result = authorize(&repository, &run, &agent, &call(name, json!({}))).await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message))
+			if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[case::home_lacks(lists(&[], &["workspace_read"], &[]), true, false)]
+#[case::receiver_lacks(lists(&["workspace_read"], &[], &[]), false, true)]
+#[case::both_lack(lists(&[], &[], &[]), true, true)]
+#[tokio::test]
+async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] owned: aidash_domain::federation::tool_lists::OwnedRemoteToolLists,
+	#[case] home: bool,
+	#[case] receiver: bool,
+) {
+	repository.remote = true;
+	repository.lists = Some(owned);
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await;
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected an authority pause, got {result:?}");
+	};
+	assert_eq!(
+		refusal.check,
+		RefusalCheck::FederationTools { home, receiver }
+	);
+	// The pause is answered by the key the lists matched.
+	assert_eq!(refusal.action.as_deref(), Some("workspace_read"));
+}
+
+/// The defaults hold `workspace_message` without files (decision 6): a message that sends files
+/// is decided, and asked about, on its own key, and is never more permitted than a plain one.
+#[rstest]
+#[tokio::test]
+async fn a_message_with_files_is_decided_on_its_own_key(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	use aidash_domain::federation::tool_lists::{DEFAULT_TOOLS, WORKSPACE_MESSAGE_FILES};
+	repository.remote = true;
+	repository.lists = Some(lists(DEFAULT_TOOLS, DEFAULT_TOOLS, &[]));
+	let plain = call("workspace_message", json!({"content":"done"}));
+	authorize(&repository, &run, &agent, &plain).await.unwrap();
+	let empty = call("workspace_message", json!({"content":"done","files":[]}));
+	authorize(&repository, &run, &agent, &empty).await.unwrap();
+	let with_files = call(
+		"workspace_message",
+		json!({"content":"done","files":["out/report.pdf"]}),
+	);
+	let result = authorize(&repository, &run, &agent, &with_files).await;
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected an authority pause, got {result:?}");
+	};
+	assert_eq!(
+		refusal.check,
+		RefusalCheck::FederationTools {
+			home: true,
+			receiver: true
+		}
+	);
+	assert_eq!(refusal.action.as_deref(), Some(WORKSPACE_MESSAGE_FILES));
+	// `workspace_message*` names both forms.
+	repository.lists = Some(lists(&["workspace_message*"], &["workspace_message*"], &[]));
+	authorize(&repository, &run, &agent, &with_files)
+		.await
+		.unwrap();
+	let unavailable = |result: Result<()>| {
+		matches!(result, Err(Error::Invalid(message))
+			if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL)
+	};
+	// A Block of the files form stops only messages with files.
+	repository.lists = Some(lists(
+		&["workspace_message*"],
+		&["workspace_message*"],
+		&[WORKSPACE_MESSAGE_FILES],
+	));
+	authorize(&repository, &run, &agent, &plain).await.unwrap();
+	assert!(unavailable(
+		authorize(&repository, &run, &agent, &with_files).await
+	));
+	// A Block of the plain message stops both: files never make a message more permitted.
+	repository.lists = Some(lists(
+		&["workspace_message*"],
+		&["workspace_message*"],
+		&["workspace_message"],
+	));
+	assert!(unavailable(
+		authorize(&repository, &run, &agent, &with_files).await
+	));
+	// Lacking the plain message, the pause asks about it first.
+	repository.lists = Some(lists(
+		&[WORKSPACE_MESSAGE_FILES],
+		&[WORKSPACE_MESSAGE_FILES],
+		&[],
+	));
+	let Err(Error::AuthorityRefused(refusal)) =
+		authorize(&repository, &run, &agent, &with_files).await
+	else {
+		panic!("expected an authority pause");
+	};
+	assert_eq!(refusal.action.as_deref(), Some("workspace_message"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_only_answer_of_each_side_lets_the_call_through(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	let only = ToolList::new([ToolPattern::new("workspace_read").unwrap()]).unwrap();
+	repository.remote = true;
+	repository.lists = Some(
+		aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
+			run_request: only.clone(),
+			run_allowance: only,
+			..Default::default()
+		},
+	);
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn without_lists_only_reach_never_is_refused(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.remote = true;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("workspace_read", json!({})),
+	)
+	.await
+	.unwrap();
+	let result = authorize(&repository, &run, &agent, &call("schedule_list", json!({}))).await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message))
+			if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL),
+		"{result:?}"
+	);
 }

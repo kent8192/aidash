@@ -2,6 +2,8 @@
 //! Receiver admissions never enter the legacy offer/workspace authority path.
 #[path = "execution/commands.rs"]
 pub(crate) mod commands;
+#[path = "execution/deliveries.rs"]
+pub(crate) mod deliveries;
 use super::*;
 pub(crate) use crate::apps::identity::repositories::remote_grants::HomeBinding;
 pub use aidash_domain::federation::execution::home::FollowUpInput;

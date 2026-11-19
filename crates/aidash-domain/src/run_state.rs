@@ -557,6 +557,10 @@ pub struct PausedCall {
 	/// Exact input at the authority check; absent on pauses saved by older workers.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub tool_call: Option<crate::tool::RefusedToolCall>,
+	/// The tool and the sides that lack it, when a Federation tool list stopped the call
+	/// (ADR 0139). The people who hold those lists answer from it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ask: Option<crate::federation::tool_lists::ToolAsk>,
 }
 /// What a person is offered to decline: the call by its key, the tool, and the kind of refusal.
 /// Never the action, the subject or the receiver's own sentence.
@@ -566,6 +570,10 @@ pub struct DeclinableCall {
 	pub call: String,
 	pub tool: String,
 	pub kind: crate::tool::RefusalKind,
+	/// The key the Home's Federation Tool Request lacks, set only when the pause asks the Home.
+	/// The Home learns nothing about what the receiving Node's lists hold.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub home_list_key: Option<String>,
 }
 impl PausedCall {
 	pub fn declinable(&self) -> DeclinableCall {
@@ -573,6 +581,11 @@ impl PausedCall {
 			call: self.key.clone(),
 			tool: self.tool.clone(),
 			kind: self.kind,
+			home_list_key: self
+				.ask
+				.as_ref()
+				.filter(|ask| ask.lacking.home)
+				.map(|ask| ask.key.clone()),
 		}
 	}
 }

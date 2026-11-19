@@ -2,6 +2,7 @@
 //! statement runs in the Tenant's scope; only `name_tenant` reads the
 //! Deployment-wide `node_names`.
 use crate::{Error, Result};
+use aidash_domain::federation::tool_lists::{FederationToolRequest, ToolList};
 use aidash_domain::nodes::{
 	NodeAddress, NodeName,
 	registration::{Counterpart, NodeRegistration},
@@ -14,7 +15,7 @@ use reinhardt::query::{
 	QueryStatementBuilder,
 };
 
-const COLUMNS: [&str; 13] = [
+const COLUMNS: [&str; 16] = [
 	"tenant",
 	"node",
 	"source_node",
@@ -24,6 +25,9 @@ const COLUMNS: [&str; 13] = [
 	"source_key_id",
 	"atomic_transactions",
 	"enabled",
+	"tool_request",
+	"tool_allowance",
+	"tool_block",
 	"revision",
 	"actor",
 	"created_at",
@@ -37,6 +41,22 @@ fn optional_text(row: &Row, column: &str) -> Result<Option<String>> {
 		Some(value) => String::try_from(value.clone())
 			.map(Some)
 			.map_err(|error| reinhardt::core::exception::Error::from(error).into()),
+	}
+}
+
+/// A nullable `jsonb` column read as `T`; SQL NULL is `None`.
+pub(crate) fn optional_json<T: serde::de::DeserializeOwned>(
+	row: &Row,
+	column: &str,
+) -> Result<Option<T>> {
+	match row.data.get(column) {
+		None | Some(QueryValue::Null) | Some(QueryValue::Json(None)) => Ok(None),
+		Some(QueryValue::Json(Some(value))) => Ok(Some(serde_json::from_value((**value).clone())?)),
+		Some(value) => {
+			let text =
+				String::try_from(value.clone()).map_err(reinhardt::core::exception::Error::from)?;
+			Ok(Some(serde_json::from_str(&text)?))
+		}
 	}
 }
 
@@ -57,6 +77,12 @@ fn registration_of(row: &Row) -> Result<NodeRegistration> {
 		dashboard_origin: optional_text(row, "source_dashboard_origin")?,
 		atomic_transactions: row.get("atomic_transactions").map_err(failed)?,
 		enabled: row.get("enabled").map_err(failed)?,
+		// NULL request and allowance are the defaults, so a fresh registration
+		// and one never edited behave the same (ADR 0139).
+		tool_request: optional_json(row, "tool_request")?
+			.unwrap_or_else(FederationToolRequest::defaults),
+		tool_allowance: optional_json(row, "tool_allowance")?.unwrap_or_else(ToolList::defaults),
+		tool_block: optional_json(row, "tool_block")?.unwrap_or_default(),
 		revision: row.get("revision").map_err(failed)?,
 		actor: row.get("actor").map_err(failed)?,
 		created_at: row.get("created_at").map_err(failed)?,
@@ -296,6 +322,39 @@ pub(crate) async fn update(
 		.and_where(Expr::col("tenant").eq(Expr::value(write.tenant)))
 		.and_where(Expr::col("node").eq(Expr::value(write.node)))
 		.and_where(Expr::col("source_node").eq(Expr::value(write.source_node.to_string())))
+		.and_where(Expr::col("revision").eq(Expr::value(expected_revision)))
+		.returning(COLUMNS.map(Alias::new))
+		.build(PostgresQueryBuilder);
+	tx.fetch_optional(&sql, convert_values(values))
+		.await?
+		.as_ref()
+		.map(registration_of)
+		.transpose()
+}
+
+/// Replaces the three Federation tool lists when the registration is still at
+/// `expected_revision`, bumping the revision. `None` when it is not (or does not
+/// exist), so a stale writer answers 409.
+pub(crate) async fn update_tool_lists(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	node: &str,
+	source: &NodeAddress,
+	lists: (&FederationToolRequest, &ToolList, &ToolList),
+	actor: &str,
+	expected_revision: i64,
+) -> Result<Option<NodeRegistration>> {
+	let (sql, values) = Query::update()
+		.table(Alias::new("node_registrations"))
+		.value(Alias::new("tool_request"), serde_json::to_value(lists.0)?)
+		.value(Alias::new("tool_allowance"), serde_json::to_value(lists.1)?)
+		.value(Alias::new("tool_block"), serde_json::to_value(lists.2)?)
+		.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
+		.value(Alias::new("actor"), Expr::value(actor.to_owned()))
+		.value_expr(Alias::new("updated_at"), Expr::cust("clock_timestamp()"))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+		.and_where(Expr::col("node").eq(Expr::value(node)))
+		.and_where(Expr::col("source_node").eq(Expr::value(source.to_string())))
 		.and_where(Expr::col("revision").eq(Expr::value(expected_revision)))
 		.returning(COLUMNS.map(Alias::new))
 		.build(PostgresQueryBuilder);

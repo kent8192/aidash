@@ -169,12 +169,8 @@ async fn first_native_context(p: &Pair) -> Value {
 	assert_eq!(calls.len(), 1, "{:?}", p.run().await);
 	let input: Value =
 		serde_json::from_str(calls[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
-	for tool in calls[0]["tools"].as_array().unwrap() {
-		assert!(
-			!["memory_recall", "memory_reflect", "memory_mutate"]
-				.contains(&tool["function"]["name"].as_str().unwrap())
-		);
-	}
+	// Memory tools are candidates a remote Run may be offered (ADR 0139); the Federation tool
+	// lists decide each call, and the Run's context recall still comes from the Home.
 	let local_deliveries: i64 = aidash_server::database::native::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Func::count(

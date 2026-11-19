@@ -28,3 +28,7 @@ The grant records the Run's delegation chain followed by the selected receiver's
 - The `task_delegate` description finally matches its behaviour (#572).
 - Policy and Catalog Approval refusals record a decision, as do unreachable targets and incompatible executor subjects. The asking Node receives a limited reason from the receiver.
 - A Tenant that wants to keep its agents from delegating across Nodes denies `federation.execute` to them in its policy.
+
+## Amendment (2026-11-17)
+
+A Remote Grant now carries the Home's Federation Tool Request as an RFC 9396 `authorization_details` entry, and the receiving Node reads the current Request each time it describes the grant (ADR 0139). The grant still lasts one hour, but the Home renews it every hour while its Run lives and the delegation chain still holds, so a Run that waits for an answer or works for long is not cut off at the hour. `task_assign` from such a Run is served by the Home and assigns only the Home Node's own or generated Agents, so it never adds a hop.

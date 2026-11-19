@@ -85,6 +85,7 @@ fn input(data: &Value) -> Command<'_> {
 		node: "aidash://peer",
 		agent: "agent",
 		version: "1",
+		request: None,
 	}
 }
 #[rstest]

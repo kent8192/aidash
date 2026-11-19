@@ -34,6 +34,29 @@ pub struct SessionStatus {
 	pub active_run_id: Option<Uuid>,
 	pub queue: Vec<SessionRun>,
 }
+/// The constraint kind of a Working Area a receiving Node keeps for Runs executing for another
+/// Home (ADR 0139). It records the Home, whose Workspace this Node does not hold, so reads of
+/// the Area are authorized by the Run's admission and the Area's owner instead.
+pub const REMOTE_HOME: &str = "remote_home";
+pub fn remote_home_constraint(home_node: &str) -> Value {
+	serde_json::json!({"kind": REMOTE_HOME, "home_node": home_node})
+}
+impl Area {
+	/// Whether this Area belongs to Runs executing here for another Home.
+	pub fn is_remote_home(&self) -> bool {
+		self.constraints
+			.as_array()
+			.is_some_and(|sources| sources.iter().any(|source| source["kind"] == REMOTE_HOME))
+	}
+	/// Whether this Area's files may leave for `recipient_node`, a Node address. An Area that
+	/// belongs to Runs executing here for another Home, with or without a Reference set, sends
+	/// files to that Home only (ADR 0114 amendment, ADR 0139): the receiving Tenant consented to
+	/// that by listing the tool, and to no other destination. Any other Area is not decided
+	/// here; the caller's own checks apply, which refuse a Reference set.
+	pub fn may_send_to(&self, recipient_node: &str) -> bool {
+		!self.is_remote_home() || recipient_node == self.home_node
+	}
+}
 pub fn received_scope_matches(subjects: &[String], owner: &str, agent: &str) -> bool {
 	subjects.first().map(String::as_str) == Some(owner)
 		&& subjects.last().map(String::as_str) == Some(agent)

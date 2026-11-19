@@ -2,6 +2,7 @@
 use crate::{Error, Result, ports::authorization::commands::RemoteCommandScope};
 use aidash_domain::{
 	Task, TaskStatus,
+	federation::tool_lists::FederationToolRequest,
 	identity::commands::{self, Metadata},
 	policy::Resource,
 };
@@ -26,6 +27,10 @@ pub struct Command<'a> {
 	pub node: &'a str,
 	pub agent: &'a str,
 	pub version: &'a str,
+	/// The Home's current Federation Tool Request for the receiving Node, with this grant's
+	/// Run-only answers, as the Description rebuilt for this command carries it. `None` for a
+	/// receiver of the Home's own Tenant, where no lists apply (ADR 0139).
+	pub request: Option<&'a FederationToolRequest>,
 }
 pub async fn prepare(scope: &mut dyn RemoteCommandScope, input: Command<'_>) -> Result<Admission> {
 	let bound = scope
@@ -44,6 +49,11 @@ pub async fn prepare(scope: &mut dyn RemoteCommandScope, input: Command<'_>) -> 
 	let owner = aidash_domain::agent_subject(input.node, input.agent, input.version);
 	let metadata = commands::prepare(input.operation, input.data)?;
 	if let Some(tool) = commands::builtin(input.operation) {
+		// A Home-forwarded tool runs here, so the Home holds its own key to it: a receiving Node
+		// that skipped its gate is refused as for a tool that does not exist (ADR 0139).
+		if commands::requested(input.operation) {
+			crate::authorization::peer::tool_request::require_requested(input.request, tool)?;
+		}
 		scope.require_builtin(tool).await?;
 	}
 	if metadata.mutation {

@@ -101,8 +101,25 @@ impl Owners<'_> {
 							.to_owned(),
 					)
 					.into();
+				// A receiving Working Area (ADR 0139) is owned by a Home person and keyed by a
+				// Workspace this Node does not hold, so neither edge above reaches it. It lasts
+				// as long as the Node whose Runs use it.
+				let received: SimpleExpr = Expr::cust(format!(
+					"\"{table}\".\"constraints\" @> '[{{\"kind\":\"remote_home\"}}]'::jsonb"
+				))
+				.into();
+				let used_here: SimpleExpr = Expr::from(col(table, "id"))
+					.in_subquery(
+						Query::select()
+							.column(Alias::new("area_id"))
+							.from(Alias::new("core_runs"))
+							.and_where(self.root("core_runs", "run_id", Root::Run)?)
+							.to_owned(),
+					)
+					.into();
 				self.root(table, "workspace_id", Root::Workspace)?
 					.or(exists.not().and(self.subject(table, "owner")))
+					.or(received.and(used_here))
 			}
 			Records => self
 				.root(table, "area_id", Root::Area)?

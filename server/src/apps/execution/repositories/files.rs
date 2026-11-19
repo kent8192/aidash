@@ -362,6 +362,26 @@ impl FileScopePort for Scope<'_> {
 		let result: NativeResult<Value> = async {
 			Ok(match action {
 				Action::Outbound => {
+					// A Run executing for another Home asks its Home's person through
+					// `outbound_to_home`, before any record is made here (ADR 0139, decision 22).
+					// This scope never approves for them, so a call that reached it is refused.
+					if !run.is_local(store.deployment.as_str()) {
+						return Err(NativeError::Forbidden);
+					}
+					// A Subnode member of such a Run is a Run of this Node, but asking this
+					// Tenant's approvers would bypass the Home's person, and the member cannot
+					// ask that person either (ADR 0110 as amended by ADR 0139, decision 27).
+					if crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+						self.access.tx.as_mut(),
+						run.id,
+					)
+					.await?
+					{
+						return Err(NativeError::Refused(
+							"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+								.into(),
+						));
+					}
 					approvals::prepare(
 						store,
 						self.access,
@@ -691,9 +711,14 @@ impl FileScopePort for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()> {
-		self.store
-			.ok_or_else(missing)?
-			.event(&mut self.access.tx, Some(workspace), kind, data)
+		let store = self.store.ok_or_else(missing)?;
+		store
+			.event(
+				&mut self.access.tx,
+				store.event_workspace(self.run, workspace),
+				kind,
+				data,
+			)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

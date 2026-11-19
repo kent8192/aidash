@@ -16,6 +16,8 @@ use serde_json::json;
 
 use uuid::Uuid;
 
+use crate::apps::identity::services::remote_renewal as renewal;
+
 // A receiver may describe only the requested Agent's exact direct dependencies.
 // Never use peer-provided node IDs or arbitrary resource lists as authority.
 
@@ -39,6 +41,21 @@ pub(crate) async fn description_lease(
 	.await
 	.map(|(scope, description)| (scope.into_access(), description))
 	.map_err(Into::into)
+}
+/// The Home's lease for one request of a delivery from a Run executing for another Home (ADR
+/// 0139): the live grant's own authority, rechecked exactly as a Home command rechecks it, with
+/// the command lock so deliveries and commands of one grant do not interleave.
+pub(crate) async fn delivery_lease(
+	f: &Federation,
+	node: &str,
+	id: Uuid,
+) -> Result<(Access, Description)> {
+	let mut revision_race = false;
+	let (mut access, description) =
+		description_lease_mode(f, node, id, true, &mut revision_race).await?;
+	access.worker();
+	access.read_grant = Some(id);
+	Ok((access, description))
 }
 async fn description_lease_mode(
 	f: &Federation,
@@ -152,6 +169,15 @@ impl RemoteGrants {
 		let (access, description) =
 			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
 		let description = access.finish(Ok(description)).await?;
+		// The chain was just re-evaluated, so a grant near its hour is renewed
+		// while its Run lives (ADR 0109); never fails the description.
+		renewal::after_use(
+			&f,
+			&description.source_tenant,
+			&admitted.sender.to_string(),
+			description.grant_id,
+		)
+		.await;
 		let corpus_digest = corpus_digest(&f.store, &description).await?;
 		Ok(Described {
 			description,
@@ -160,9 +186,11 @@ impl RemoteGrants {
 	}
 	pub(crate) async fn verify(&self, admitted: Admitted, input: VerifyInput) -> Result<bool> {
 		let f = self.runtime.clone();
-		let (access, _) =
-			description_lease(&f, &admitted.sender.to_string(), input.grant_id).await?;
-		access.finish(Ok(true)).await
+		let node = admitted.sender.to_string();
+		let (access, description) = description_lease(&f, &node, input.grant_id).await?;
+		let verified = access.finish(Ok(true)).await?;
+		renewal::after_use(&f, &description.source_tenant, &node, description.grant_id).await;
+		Ok(verified)
 	}
 	pub(crate) async fn snapshot(
 		&self,

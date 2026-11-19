@@ -1,4 +1,5 @@
 //! Preparation, description and revocation share the original Source transaction boundaries.
+use crate::authorization::peer::tool_request::authorization_details;
 use crate::{
 	Error, Result,
 	ports::authorization::{
@@ -327,6 +328,18 @@ pub async fn description_mode<R: GrantRepository>(
 		if rebound? != semantic {
 			return Err(Error::RemoteSemantic(Failure::Configuration));
 		}
+		// Read now, on every describe, so a list change reaches the receiver at its
+		// next describe (ADR 0139).
+		let request = match scope.registered_tool_request(&current.node_id).await? {
+			// Tools the Home's people allowed for this Run only travel inside the Request, so
+			// the receiver reads one list.
+			Some(request) => {
+				let run_only = scope.run_only_tool_request(current.id).await?;
+				Some(request.with_run_tools(&run_only)?)
+			}
+			None => None,
+		};
+		let authorization_details = authorization_details(request.as_ref());
 		Ok(Description {
 			grant_id: current.id,
 			source_node: scope.home_address(),
@@ -337,6 +350,7 @@ pub async fn description_mode<R: GrantRepository>(
 			inspection,
 			expires_at: current.expires_at,
 			semantic,
+			authorization_details,
 		})
 	}
 	.await;

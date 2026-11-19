@@ -258,6 +258,21 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 					views::node_registrations::set,
 					&["String", "String"],
 				)?;
+				contracts.request::<_, r::ToolListsInput>(
+					document,
+					views::node_registrations::set_tool_lists,
+				)?;
+				contracts.response::<_, r::RegistrationRecord>(
+					document,
+					views::node_registrations::set_tool_lists,
+					200,
+					"application/json",
+				)?;
+				contracts.path(
+					document,
+					views::node_registrations::set_tool_lists,
+					&["String", "String", "String"],
+				)?;
 			}
 		}
 		contracts.response::<_, t::CreatedTenant>(
@@ -890,6 +905,39 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.path(document, views::policies::credentials, &["String"])?;
 	contracts
 		.query::<_, super::policies::CredentialPage>(document, views::policies::credentials)?;
+	contracts.response::<_, serde_json::Value>(
+		document,
+		views::remote_commands::delivery_prepare,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::DeliveryOpen>(
+			document,
+			views::remote_commands::delivery_prepare,
+		)?;
+	contracts.response::<_, serde_json::Value>(
+		document,
+		views::remote_commands::delivery_commit,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::DeliveryOpen>(
+			document,
+			views::remote_commands::delivery_commit,
+		)?;
+	contracts.response::<_, serde_json::Value>(
+		document,
+		views::remote_commands::delivery_chunk,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::DeliveryChunk>(
+			document,
+			views::remote_commands::delivery_chunk,
+		)?;
 	contracts.response::<_, super::policies::CredentialRevocation>(
 		document,
 		views::policies::revoke_credential,

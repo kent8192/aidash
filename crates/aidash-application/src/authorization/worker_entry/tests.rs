@@ -129,6 +129,18 @@ impl WorkerEntryRepository<Scope> for Repository {
 		assert_eq!(self.0.lock().unwrap().alive, 1);
 		self.step("initialize").await
 	}
+	async fn initialize_remote(
+		&self,
+		scope: &Scope,
+		run: &Run,
+		config: &AgentConfig,
+	) -> Result<()> {
+		assert!(scope.remote);
+		assert_eq!(run.revision, 7);
+		assert!(config.core_capabilities.enabled());
+		assert_eq!(self.0.lock().unwrap().alive, 1);
+		self.step("initialize_remote").await
+	}
 	async fn scratch_space(&self, _: &mut Scope, _: &Run) -> Result<Uuid> {
 		self.step("scratch").await?;
 		Ok(Uuid::from_u128(42))
@@ -183,10 +195,51 @@ async fn scoped_receivers_keep_their_agent_without_entering_the_local_path(
 	let expected = if delivery_only {
 		vec!["receiver"]
 	} else {
-		vec!["receiver", "scratch"]
+		vec!["receiver", "scratch", "initialize_remote"]
 	};
 	assert_eq!(repository.0.lock().unwrap().calls, expected);
 	drop(entry);
+	assert_eq!(repository.0.lock().unwrap().alive, 0);
+}
+#[rstest]
+#[case::disabled(false, RunControl::Active)]
+#[case::cancelled(true, RunControl::Cancelled)]
+#[tokio::test]
+async fn a_receiving_area_is_bound_only_for_a_run_that_may_still_use_files(
+	repository: Repository,
+	mut run: Run,
+	#[case] files: bool,
+	#[case] control: RunControl,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.remote = true;
+		state.files = files;
+	}
+	run.control = control;
+	let entry = execution(&repository, &run).await.unwrap();
+	assert!(entry.remote);
+	assert_eq!(
+		repository.0.lock().unwrap().calls,
+		vec!["receiver", "scratch"]
+	);
+	drop(entry);
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_receiving_area_stops_the_remote_run_before_it_works(
+	repository: Repository,
+	run: Run,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.remote = true;
+		state.failure = Some("initialize_remote");
+	}
+	assert!(matches!(
+		execution(&repository, &run).await,
+		Err(Error::Forbidden)
+	));
 	assert_eq!(repository.0.lock().unwrap().alive, 0);
 }
 #[rstest]
