@@ -593,6 +593,28 @@ async fn deleted_thread_retains_kept_files_and_refuses_to_restore_them(
 	.await;
 	assert!(matches!(status, 403 | 404), "{history}");
 	assert!(!history.to_string().contains(marker));
+	// Every other read and write of it refuses too: its snapshot, a new message, a new Task
+	// and the Runs of a Task it held (#1008).
+	for (method, path, body) in [
+		("GET", format!("/api/threads/{thread}"), Value::Null),
+		(
+			"POST",
+			format!("/api/threads/{thread}/channel-messages"),
+			json!({"content":"after deletion","idempotency_key":Uuid::new_v4()}),
+		),
+		(
+			"POST",
+			format!("/api/threads/{thread}/tasks"),
+			json!({"title":"After deletion","description":"Must be refused"}),
+		),
+		("GET", format!("/api/tasks/{}/runs", c.task), Value::Null),
+	] {
+		let (status, body) = request(&c.app, &c.token, method, &path, body).await;
+		assert!(
+			matches!(status, 403 | 404),
+			"{method} {path}: {status} {body}"
+		);
+	}
 	// Kept files stay in the owner's settings.
 	let (status, inventory) =
 		request(&c.app, &c.token, "GET", "/api/working-files", Value::Null).await;
