@@ -13,8 +13,7 @@ const key = (node: string, kind: string, id: string) =>
 const entity = (node: string, kind: string, id: string, version: string) =>
   JSON.stringify(["entity", node, kind, id, version]);
 const timestamp = new Date().toISOString();
-const goal =
-  "Full authorized Goal body.\nSecond paragraph with a unique search phrase.";
+// A peer projects a Thread with its title and no goal (#1008).
 const projected = {
   node_id: firstPeer,
   generation: `sha256:${"a".repeat(64)}`,
@@ -30,18 +29,6 @@ const projected = {
       thread_id: thread,
       status: null,
       goal_body: null,
-      at: timestamp,
-    },
-    {
-      id: key(firstPeer, "goal", thread),
-      node_id: firstPeer,
-      kind: "goal",
-      name: { en: "Full authorized Goal body." },
-      resource_id: thread,
-      version: null,
-      thread_id: thread,
-      status: null,
-      goal_body: goal,
       at: timestamp,
     },
     {
@@ -84,12 +71,6 @@ const projected = {
   edges: [
     {
       source: key(firstPeer, "thread", thread),
-      target: key(firstPeer, "goal", thread),
-      relation: "goal",
-      layer: "configuration",
-    },
-    {
-      source: key(firstPeer, "goal", thread),
       target: key(firstPeer, "task", task),
       relation: "contains",
       layer: "activity",
@@ -280,16 +261,14 @@ test("subject expands only direct authorized peers and clears remote details on 
   await page.getByRole("button", { name: "Relationship list" }).click();
   const list = page.getByRole("table", { name: "Relationship list" });
   await expect(list).toContainText("B Thread");
-  await list
-    .getByRole("button", { name: "Full authorized Goal body." })
-    .click();
+  await list.getByRole("button", { name: "B Thread" }).click();
   const inspector = page.getByRole("complementary", { name: "Node details" });
-  await expect(inspector).toContainText(goal);
+  await expect(inspector).toContainText("B Thread");
   const search = page.getByRole("searchbox", {
     name: "Search nodes, tasks, agents, or artifacts…",
   });
-  await search.fill("unique search phrase");
-  await expect(list).toContainText("Full authorized Goal body.");
+  await search.fill("B Thread");
+  await expect(list).toContainText("B Thread");
   await search.fill("");
   await list.getByRole("button", { name: "B Task" }).click();
   await expect(inspector).not.toContainText("LOCAL-ONLY-DESCRIPTION");

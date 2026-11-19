@@ -1047,15 +1047,20 @@ test("preparing a channel does not invoke agent execution", async ({
   await dialog
     .getByRole("textbox", { name: "Title", exact: true })
     .fill("Draft research");
-  await dialog
-    .getByRole("textbox", { name: "Goal", exact: true })
-    .fill("Discuss sources before starting");
+  // A Thread has no goal and the form sends no request (#1008), so no Root
+  // Task or Run starts.
+  await expect(dialog.getByRole("textbox")).toHaveCount(1);
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page).toHaveURL(/channel=prepared/);
   await expect(
     page.getByRole("heading", { name: "# Draft research", exact: true }),
   ).toBeVisible();
-  expect(submissions.map((item) => item.path)).toEqual(["/api/threads"]);
+  expect(submissions).toEqual([
+    {
+      path: "/api/threads",
+      body: { title: "Draft research", node: defaultNode.name },
+    },
+  ]);
   expect(errors).toEqual([]);
 });
 
@@ -1637,43 +1642,36 @@ test("mobile conversation and channel switching do not require horizontal scroll
   expect(errors).toEqual([]);
 });
 
-test("thread replies persist separately and channel drafts survive thread navigation", async ({
+test("a Thread's messages persist flat and its draft survives switching its tabs", async ({
   page,
 }) => {
   const { submissions, errors } = await setup(page);
   await page.goto("/collaboration?channel=thread-one");
+  const feed = page.getByRole("region", { name: "Conversation", exact: true });
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await composer.fill("Here is the supporting source.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    feed.getByText("Here is the supporting source.", { exact: true }),
+  ).toBeVisible();
+  await expect(composer).toHaveValue("");
+  // An unsent draft stays while the person looks at the Thread's other tabs.
   await composer.fill("Unsent channel note");
-  await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
-    .click();
-  await expect(
-    page.getByRole("heading", { name: "Thread", exact: true }),
-  ).toBeVisible();
-  await expect(composer).toHaveValue("Unsent channel note");
-  const reply = page.getByRole("textbox", { name: "Reply", exact: true });
-  await expect(reply).toHaveValue("");
-  await reply.fill("Here is the supporting source.");
-  await page.getByRole("button", { name: "Send reply", exact: true }).click();
-  await expect(
-    page.getByText("Here is the supporting source.", { exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Back to channel", exact: true })
-    .click();
+  await page.getByRole("tab", { name: /^Tasks/ }).click();
+  await expect(composer).toBeHidden();
+  await page.getByRole("tab", { name: /^Results/ }).click();
+  await page.getByRole("tab", { name: /^Conversation/ }).click();
   await expect(composer).toHaveValue("Unsent channel note");
   await expect(
-    page.getByText("Here is the supporting source.", { exact: true }),
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "Open thread", exact: true }).click();
-  await expect(
-    page.getByText("Here is the supporting source.", { exact: true }),
+    feed.getByText("Here is the supporting source.", { exact: true }),
   ).toBeVisible();
+  // There are no reply threads (#1008): a message belongs to the Thread alone.
   const posts = submissions.filter((item) =>
     item.path.endsWith("/channel-messages"),
   );
   expect(posts).toHaveLength(1);
-  expect(posts[0].body.thread_id).toBe("thread-message-one");
+  expect(posts[0].path).toBe("/api/threads/thread-one/channel-messages");
+  expect(posts[0].body).not.toHaveProperty("thread_id");
   expect(errors).toEqual([]);
 });
 
@@ -2039,30 +2037,28 @@ for (const action of ["task", "participant", "new task"] as const) {
   });
 }
 
-test("revoking a thread read hides cached replies without exposing another conversation", async ({
+test("revoking a Thread read hides its cached messages and composer without opening another Thread", async ({
   page,
 }) => {
-  const { revokeThreads } = await setup(page);
+  const { revokeHistory } = await setup(page);
   await page.goto("/collaboration?channel=thread-one");
-  await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
-    .click();
-  const threadPanel = page.getByRole("complementary", {
-    name: "Thread",
-    exact: true,
-  });
   await expect(
-    threadPanel.getByText("Evidence is ready to review.", { exact: true }),
+    page.getByText("Evidence is ready to review.", { exact: true }),
   ).toBeVisible();
-  revokeThreads();
+  revokeHistory();
   await expect(page.getByRole("alert")).toContainText("unavailable");
-  await expect(threadPanel.getByRole("article")).toHaveCount(0);
-  await expect(
-    threadPanel.getByRole("textbox", { name: "Reply", exact: true }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("article")).toHaveCount(0);
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
+  ).toHaveCount(0);
+  // The Thread stays selected; another Thread's conversation is not shown in
+  // its place.
+  await expect(
+    page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "# Planning", exact: true }),
+  ).toHaveCount(0);
 });
 
 test("attachment retries preserve uploads, files and message identity", async ({
@@ -2224,13 +2220,14 @@ test("search, notifications, thread navigation and persisted theme work", async 
     page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
   await page.keyboard.press("ControlOrMeta+K");
-  await page
-    .getByRole("searchbox", { name: "Search history" })
-    .fill("next release");
+  // The history matches Thread titles; a Thread has no goal (#1008).
+  await page.getByRole("searchbox", { name: "Search history" }).fill("plan");
   await expect(page.getByRole("link", { name: "# Research" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "# Planning" })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search history" }).fill("");
-  await page.keyboard.press("Escape");
+  await page.getByRole("link", { name: "# Planning" }).click();
+  await expect(page).toHaveURL(/channel=thread-two/);
+  await expect(
+    page.getByRole("heading", { name: "# Planning", exact: true }),
+  ).toBeVisible();
   await page
     .getByRole("button", { name: "Notifications", exact: true })
     .click();
@@ -2265,15 +2262,6 @@ test("search, notifications, thread navigation and persisted theme work", async 
     "system",
   );
   await page.keyboard.press("Escape");
-  await page
-    .getByRole("button", { name: "Request actions", exact: true })
-    .click();
-  await page
-    .getByRole("menuitem", { name: "Threads in this channel", exact: true })
-    .click();
-  await expect(
-    page.getByText("No threads in the loaded history."),
-  ).toBeVisible();
   await page
     .getByRole("button", { name: "Show channel status", exact: true })
     .click();
@@ -2386,17 +2374,16 @@ test("thread reference renders light, dark and thread layouts", async ({
     path: testInfo.outputPath("thread-light.png"),
     animations: "disabled",
   });
-  await page
-    .locator("#message-message-one")
-    .getByRole("button", { name: "スレッドで返信" })
-    .click();
+  // The Thread's Agent work sits in its Results tab (#1008: there are no
+  // reply threads to open beside the conversation).
+  await page.getByRole("tab", { name: /^成果物/ }).click();
   await expect(
-    page.getByRole("textbox", { name: "返信", exact: true }),
+    page.getByRole("heading", { name: "Agent の作業", exact: true }),
   ).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("thread-thread.png") });
+  await page.screenshot({ path: testInfo.outputPath("thread-results.png") });
   await page.setViewportSize({ width: 1280, height: 960 });
   await page.screenshot({
-    path: testInfo.outputPath("thread-thread-tall.png"),
+    path: testInfo.outputPath("thread-results-tall.png"),
   });
   expect(errors).toEqual([]);
 });

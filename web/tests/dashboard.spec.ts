@@ -160,14 +160,11 @@ test("creates a thread and task and receives live assignment changes", async ({
   await page.goto("/collaboration");
   await page.getByRole("button", { name: "設定", exact: true }).click();
   await page.getByRole("button", { name: "準備用チャンネル" }).click();
+  // A prepared channel is a Thread with a title alone (#1008).
   await page
     .getByRole("dialog")
     .getByLabel("タイトル", { exact: true })
     .fill(name);
-  await page
-    .getByRole("dialog")
-    .getByLabel("ゴール", { exact: true })
-    .fill("Verify a browser-created task");
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "作成", exact: true })
@@ -258,7 +255,15 @@ test("preserves a draft after a failed message request and clears it after succe
     tenant: subject.tenant,
     name: subject.name,
   });
-  await page.goto("/collaboration");
+  // The draft needs a Thread of its own: an empty Tenant opens the Thread
+  // dashboard, which has no composer.
+  const opened = await page.request.post("/api/threads", {
+    headers: { authorization: `Bearer ${subject.token}` },
+    data: { title: `Draft ${Date.now()}` },
+  });
+  expect(opened.status(), await opened.text()).toBe(200);
+  const thread = await opened.json();
+  await page.goto(`/collaboration?channel=${encodeURIComponent(thread.id)}`);
   const input = page
     .getByRole("textbox", { name: "メッセージ", exact: true })
     .first();
@@ -292,12 +297,13 @@ test("creates task dependencies and a parent through the dashboard", async ({
   });
   const headers = { authorization: `Bearer ${subject.token}` };
   const name = `Relationships ${Date.now()}`;
-  const thread = await (
-    await page.request.post("/api/threads", {
-      headers,
-      data: { title: name, goal: "Task relationships" },
-    })
-  ).json();
+  // A Thread opened without a target takes a title alone (#1008).
+  const opened = await page.request.post("/api/threads", {
+    headers,
+    data: { title: name },
+  });
+  expect(opened.status(), await opened.text()).toBe(200);
+  const thread = await opened.json();
   const tasks = [];
   for (const title of ["Parent", "Prerequisite"]) {
     const response = await page.request.post(

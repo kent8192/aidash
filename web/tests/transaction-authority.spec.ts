@@ -375,6 +375,8 @@ test("subjects submit from their selected Node with explicit remote participant 
     .click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Thread", { exact: true }).selectOption("thread-one");
+  // A Thread's title is the only attribute a transaction changes (#1008).
+  await dialog.getByLabel("Title", { exact: true }).fill("Research notes");
   await dialog
     .getByRole("button", { name: "Add participant", exact: true })
     .click();
@@ -394,4 +396,12 @@ test("subjects submit from their selected Node with explicit remote participant 
   expect(
     submitted?.participants.map((participant) => participant.node_id),
   ).toEqual([`aidash://home/${defaultNode.name}`, "aidash://remote/lab"]);
+  expect(submitted?.participants[0].mutations).toEqual([
+    {
+      kind: "thread_title",
+      thread_id: "thread-one",
+      expected_revision: 1,
+      title: "Research notes",
+    },
+  ]);
 });

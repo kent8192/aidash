@@ -5,7 +5,7 @@ import { ThreadScratchSpace } from "../scratch-spaces";
 import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { uniqueById } from "../window-pages";
 import {
   ChevronRight,
@@ -302,6 +302,7 @@ export function Channel({
   const words = threadCopy[locale];
   const view = requestCopy[locale];
   const navigate = useNavigate();
+  const client = useQueryClient();
   const desktop = useDesktop();
   const [tab, setTab] = useState<
     "conversation" | "canvas" | "tasks" | "results" | "schedules"
@@ -629,10 +630,15 @@ export function Channel({
           thread={thread.id}
           data={data}
           onDeleted={() =>
-            void navigate({
-              to: "/$section",
-              params: { section: "collaboration" },
-            })
+            // The section opens the first listed Thread, so the list is read
+            // again first: the cached one still names the deleted Thread.
+            void client.invalidateQueries({ queryKey: ["state"] }).finally(
+              () =>
+                void navigate({
+                  to: "/$section",
+                  params: { section: "collaboration" },
+                }),
+            )
           }
         />
       )}

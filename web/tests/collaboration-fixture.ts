@@ -514,44 +514,32 @@ export async function setup(
   >();
   const messageFiles = new Map<string, string[]>();
   let uploadFailures = options.failFirstUpload ? 1 : 0;
-  const threads = new Map<
-    string,
-    { id: string; thread_id: string; root_message_id: string }
-  >();
-  const replies = new Map<string, string>();
   const submissions: { path: string; body: Record<string, unknown> }[] = [];
   const errors: string[] = [];
   let denyHistory = false;
-  let denyThreads = false;
   let failures = options.failFirstMessage ? 1 : 0;
   let historyRequests = 0;
-  const envelope = (message: Message) => {
-    const root = [...threads.values()].find(
-      (thread) => thread.root_message_id === message.id,
-    );
-    return {
-      message,
-      attachments:
-        (options.messageAttachment || options.referenceLayout) &&
-        message.id === "message-one"
-          ? [
-              {
-                id: "attachment-one",
-                filename: options.referenceLayout
-                  ? "release-checklist.md"
-                  : "evidence.txt",
-                media_type: "text/plain",
-                size_bytes: 15,
-              },
-            ]
-          : (messageFiles.get(message.id) ?? []).flatMap((id) => {
-              const file = [...uploads.values()].find((file) => file.id === id);
-              return file ? [file] : [];
-            }),
-      thread_id: replies.get(message.id) ?? root?.id ?? null,
-      is_thread_root: Boolean(root),
-    };
-  };
+  // A Thread's messages are flat (#1008): an envelope names no reply thread.
+  const envelope = (message: Message) => ({
+    message,
+    attachments:
+      (options.messageAttachment || options.referenceLayout) &&
+      message.id === "message-one"
+        ? [
+            {
+              id: "attachment-one",
+              filename: options.referenceLayout
+                ? "release-checklist.md"
+                : "evidence.txt",
+              media_type: "text/plain",
+              size_bytes: 15,
+            },
+          ]
+        : (messageFiles.get(message.id) ?? []).flatMap((id) => {
+            const file = [...uploads.values()].find((file) => file.id === id);
+            return file ? [file] : [];
+          }),
+  });
   page.on("pageerror", (error) => errors.push(error.message));
   // A subject works through a Mapping: a Deployment Administrator context
   // shows no Tenant content (ADR 0102).
@@ -709,16 +697,9 @@ export async function setup(
           };
         }
       }
-      const threadId = url.searchParams.get("thread_id");
-      if (denyHistory || (denyThreads && threadId))
+      if (denyHistory)
         return route.fulfill({ status: 403, json: { error: "unavailable" } });
-      const thread = threadId ? threads.get(threadId) : undefined;
-      let selected = (messages[id] ?? []).filter((message) =>
-        threadId
-          ? message.id === thread?.root_message_id ||
-            replies.get(message.id) === threadId
-          : !replies.has(message.id),
-      );
+      let selected = messages[id] ?? [];
       const before = url.searchParams.get("before");
       if (before)
         selected = selected.slice(
@@ -779,24 +760,13 @@ export async function setup(
           ...data.threads[0],
           id: "prepared",
           title: body.title,
-          goal: body.goal,
         };
         data.threads.push(thread);
         messages.prepared = [];
-        return route.fulfill({ json: thread });
-      }
-      if (/^\/api\/threads\/[^/]+\/threads$/.test(path)) {
-        const id = path.split("/")[3];
-        const previous = [...threads.values()].find(
-          (thread) => thread.root_message_id === body.root_message_id,
-        );
-        const thread = previous ?? {
-          id: `thread-${body.root_message_id}`,
-          thread_id: id,
-          root_message_id: body.root_message_id,
-        };
-        threads.set(thread.id, thread);
-        return route.fulfill({ json: thread });
+        // A Thread opened without a target has no Root Task (#1008).
+        return route.fulfill({
+          json: { ...thread, conversation: null, task: null, delegation: null },
+        });
       }
       if (/^\/api\/threads\/[^/]+\/channel-messages$/.test(path)) {
         if (failures-- > 0)
@@ -819,7 +789,6 @@ export async function setup(
           };
           messages[id].push(message);
           messageFiles.set(message.id, body.attachment_ids ?? []);
-          if (body.thread_id) replies.set(message.id, body.thread_id);
         }
         return route.fulfill({ json: envelope(message) });
       }
@@ -921,8 +890,15 @@ export async function setup(
     revokeHistory: () => {
       denyHistory = true;
     },
-    revokeThreads: () => {
-      denyThreads = true;
+    /** The Thread `id` is deleted: `/api/state` no longer lists it or its
+     *  records (#1008). */
+    deleteThread: (id: string) => {
+      data.threads = data.threads.filter((thread) => thread.id !== id);
+      data.tasks = data.tasks.filter((task) => task.thread_id !== id);
+      data.runs = data.runs.filter((run) => run.thread_id !== id);
+      data.human_requests = data.human_requests.filter(
+        (request) => request.thread_id !== id,
+      );
     },
     revokeAgents: () => {
       data = { ...data, registry: [] };

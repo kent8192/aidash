@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { NodeRecord } from "../src/generated/models";
 import { installBearerDashboard } from "./auth-fixture";
+import { defaultThreadApprovalMode, emptyOrgChart } from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 const deployment = "aidash://home";
@@ -332,6 +333,12 @@ async function setup(
         json: thread("w-new", body.title, body.node ?? "first"),
       });
     }
+    // Every Thread composer shows the person's Approval Mode (#1008), and the
+    // Thread dashboard shows the org chart (#1012).
+    if (/^\/api\/threads\/[^/]+\/approval-mode$/.test(path))
+      return route.fulfill({ json: defaultThreadApprovalMode });
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   return { posts, errors, registrations, queries };
@@ -419,16 +426,14 @@ test("a new Thread is created in the Node chosen in its form", async ({
   await dialog
     .getByRole("textbox", { name: "Title", exact: true })
     .fill("Draft");
-  await dialog
-    .getByRole("textbox", { name: "Goal", exact: true })
-    .fill("Notes");
   await dialog.getByLabel("Node", { exact: true }).selectOption("second");
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page).toHaveURL(/channel=w-new/);
+  // A Thread has a title and no goal (#1008).
   expect(posts).toEqual([
     {
       path: "/api/threads",
-      body: { title: "Draft", goal: "Notes", node: "second" },
+      body: { title: "Draft", node: "second" },
     },
   ]);
   await openAccountMenu(page);

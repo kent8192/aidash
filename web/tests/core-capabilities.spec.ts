@@ -13,7 +13,6 @@ async function core(page: Page) {
   const area = {
     id: "area-one",
     thread_id: "thread-one",
-    thread_id: "thread-message-one",
     agent_id: "researcher",
     owner: "alice",
     state: "active",
@@ -175,6 +174,16 @@ async function core(page: Page) {
         path.includes("/capability-configuration"))
     ) {
       calls.push({ path, body });
+      // A deleted Thread leaves the State, as the server tombstones it.
+      const deleted = /^\/api\/threads\/([^/]+)\/delete$/.exec(path)?.[1];
+      if (deleted) {
+        fixture.deleteThread(deleted);
+        return send({
+          thread_id: deleted,
+          state: "deleted",
+          file_operations: [],
+        });
+      }
       if (path.endsWith("/python")) {
         pythonCalls++;
         return send(
@@ -536,12 +545,11 @@ test("failed-extraction originals stay private and downloadable", async ({
   expect(errors).toEqual([]);
 });
 
+/** Opens the Agent work of the Thread `thread-one`, which #1008 moved from
+ *  the reply-thread pane to the Thread's Results tab. */
 async function openThread(page: Page) {
   await page.goto("/collaboration?channel=thread-one");
-  await page
-    .getByRole("button", { name: "Reply in thread", exact: true })
-    .first()
-    .click();
+  await page.getByRole("tab", { name: /^Results/ }).click();
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
 }
 
@@ -1012,7 +1020,6 @@ test("thread deletion waits for every working-area page before submitting choice
   const areas = Array.from({ length: 51 }, (_, i) => ({
     id: `area-${i}`,
     thread_id: "thread-one",
-    thread_id: "thread-message-one",
     agent_id: `agent-${i}`,
     owner: "alice",
     state: "active",
@@ -1111,15 +1118,13 @@ test("thread run retries reuse an ambiguous idempotency key and changed prompts 
   await page.route("**/api/working-areas*", (route) =>
     route.fulfill({ json: { items: [], next_cursor: null } }),
   );
-  await page.route(
-    "**/api/threads/*/threads/*/agents/*/runs",
-    async (route) => {
-      if (route.request().method() !== "POST") return route.fallback();
-      requests.push(route.request().postDataJSON());
-      if (requests.length === 1) return route.abort("failed");
-      return route.fulfill({ json: { id: "new-area" } });
-    },
-  );
+  // An Agent runs in the Thread itself (#1008).
+  await page.route("**/api/threads/*/agents/*/runs", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    requests.push(route.request().postDataJSON());
+    if (requests.length === 1) return route.abort("failed");
+    return route.fulfill({ json: { id: "new-area" } });
+  });
   await openThread(page);
   await page.getByLabel("Agent to run").selectOption("researcher@1.0.0");
   const prompt = page.getByLabel("Next instruction");

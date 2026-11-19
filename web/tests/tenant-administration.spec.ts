@@ -1,7 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { setup } from "./collaboration-fixture";
-import { builtInApprovalDecider, defaultNode } from "./registry-fixture";
+import {
+  builtInApprovalDecider,
+  defaultNode,
+  emptyOrgChart,
+} from "./registry-fixture";
 
 const access = { kind: "subject", tenant: "alpha", subject: "alice" };
 // A `policy.read` holder's Trust page also loads the Data Protection Level.
@@ -141,6 +145,8 @@ test("a Tenant Administrator is not offered controls the server marks as its own
           mapping("carol-mapping", "identity-carol", "carol"),
         ],
       });
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   // `/authorization` would reach Vite's `/auth` proxy instead of the dashboard.
@@ -255,6 +261,8 @@ test("an approval submits only the proposed groups that are still assignable", a
       approvals.push(request.postDataJSON());
       return route.fulfill({ json: {} });
     }
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/trust?view=authorization");
@@ -510,6 +518,8 @@ test("deleting the Tenant needs its name typed, and leaving asks to confirm", as
         },
       });
     }
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/trust?view=authorization");
@@ -752,6 +762,8 @@ test("a member issues its own API token, and a policy reader simulates without r
       expect(url.searchParams.get("mine")).toBe("true");
       return route.fulfill({ json: [] });
     }
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/trust?view=authorization");
@@ -859,6 +871,8 @@ test("a policy reader allowed to issue credentials but not to list them can stil
       if (url.searchParams.get("mine") !== "true") listed.push(url.search);
       return route.fulfill({ json: [] });
     }
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/trust?view=authorization");
@@ -951,6 +965,8 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
             ];
       return route.fulfill({ json: items[0] ?? {} });
     }
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/trust?view=authorization");

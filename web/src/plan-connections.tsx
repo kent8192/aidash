@@ -65,8 +65,8 @@ function guidance(status: PlanConnectionStatus, ja: boolean) {
       : "Plan usage is disabled on this deployment.";
   if (status.connection?.state === "ineligible")
     return ja
-      ? "ChatGPT のプラン・スレッド、または現在の Aidash ID / Mapping が利用条件を満たしていません。プランと現在の ID / Mapping を確認してください。"
-      : "Your ChatGPT plan, thread, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.";
+      ? "ChatGPT のプラン・ワークスペース、または現在の Aidash ID / Mapping が利用条件を満たしていません。プランと現在の ID / Mapping を確認してください。"
+      : "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.";
   if (status.connection?.state === "needs_reconnection")
     return ja
       ? "ChatGPT Plan の再接続が必要です。個人設定で再接続してください。"

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { setup as collaborationSetup } from "./collaboration-fixture";
 import { installBearerDashboard } from "./auth-fixture";
+import { emptyOrgChart } from "./registry-fixture";
 
 const callback =
   "http://127.0.0.1:1457/auth/callback?code=private-code&state=private-state";
@@ -170,6 +171,8 @@ async function setup(
         json: { enabled: options.enabled ?? true, connection },
       });
     }
+    if (path.endsWith("/org-chart"))
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/settings?view=planConnections");
@@ -252,7 +255,7 @@ test("reconnection and ineligibility have distinct persistent guidance", async (
   await expect(
     page
       .getByText(
-        "Your ChatGPT plan, thread, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
+        "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
       )
       .first(),
   ).toBeVisible();
@@ -265,7 +268,7 @@ test("reconnection and ineligibility have distinct persistent guidance", async (
   await page.goto("/collaboration");
   await expect(
     page.getByText(
-      "Your ChatGPT plan, thread, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
+      "Your ChatGPT plan, workspace, or current Aidash identity/Mapping is not eligible. Check your plan and current identity/Mapping.",
     ),
   ).toBeVisible();
   await expect(

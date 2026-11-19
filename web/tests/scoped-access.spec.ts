@@ -206,14 +206,13 @@ test("subject dashboard completes a conversation and clears expired access", asy
     await page.goto("/collaboration");
     await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
     const dialog = page.getByRole("dialog");
+    // The request becomes the description of the Thread's Root Task (#1008).
     await dialog.getByLabel("タイトル", { exact: true }).fill(id);
     await dialog
-      .getByLabel("ゴール", { exact: true })
+      .getByLabel("依頼", { exact: true })
       .fill("Complete a tenant conversation");
     await dialog.getByLabel("コーディネーター").selectOption(`${id}@1.0.0`);
-    await dialog
-      .getByRole("button", { name: "新しいゴール", exact: true })
-      .click();
+    await dialog.getByRole("button", { name: "依頼する", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await page
       .locator(".request-card")

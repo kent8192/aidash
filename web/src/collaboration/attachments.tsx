@@ -300,8 +300,8 @@ export function ChannelFiles({ thread }: { thread: string }) {
         <>
           <p className="text-xs text-muted-foreground">
             {locale === "ja-JP"
-              ? "読み込んだチャンネル履歴の添付ファイルです。返信の添付は各スレッドで確認できます。"
-              : "Attachments in loaded channel history. Reply attachments are available in their threads."}
+              ? "読み込んだチャンネル履歴の添付ファイルです。"
+              : "Attachments in loaded channel history."}
           </p>
           <ul className="grid gap-1.5">
             {files.map((file) => (

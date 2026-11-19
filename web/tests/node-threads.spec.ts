@@ -75,11 +75,8 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   const store = async (node: string, content: Buffer) => {
     const created = await request.post("/api/threads", {
       headers: subject,
-      data: {
-        title: `Lifecycle ${node}`,
-        goal: "Retain and recover evidence",
-        node,
-      },
+      // A Thread opened without a target takes no goal or request (#1008).
+      data: { title: `Lifecycle ${node}`, node },
     });
     expect(created.status()).toBe(200);
     const thread: { id: string; node: string } = await created.json();
@@ -248,10 +245,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   ).toBe(404);
   const fallback = await request.post("/api/threads", {
     headers: subject,
-    data: {
-      title: "Live default fallback",
-      goal: "Never select the deleted Node",
-    },
+    data: { title: "Live default fallback" },
   });
   expect(fallback.status()).toBe(200);
   expect((await fallback.json()).node).toBe(fixture.sibling);
@@ -405,9 +399,6 @@ test.fixme(
       second.name,
     );
     await dialog.getByLabel("Title", { exact: true }).fill(title);
-    await dialog
-      .getByLabel("Goal", { exact: true })
-      .fill("Live in the Lab Node");
     const previousChannel = new URL(page.url()).searchParams.get("channel");
     await dialog.getByRole("button", { name: "Create", exact: true }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 30000 });

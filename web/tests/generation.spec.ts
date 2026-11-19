@@ -365,10 +365,8 @@ async function createGenerationScenario(
     await page
       .getByRole("button", { name: "準備用チャンネル", exact: true })
       .click();
+    // A prepared channel is a Thread with a title alone (#1008).
     await dialog.getByLabel("タイトル", { exact: true }).fill(id);
-    await dialog
-      .getByLabel("ゴール", { exact: true })
-      .fill("Complete work with a missing specialist");
     await dialog.getByRole("button", { name: "作成", exact: true }).click();
     // The dialog closes once the refreshed state lists the new channel (#404).
     await expect(dialog).toHaveCount(0, { timeout: 30000 });

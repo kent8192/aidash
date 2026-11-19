@@ -4,6 +4,7 @@ import { setup } from "./collaboration-fixture";
 import {
   builtInApprovalDecider,
   defaultNode,
+  emptyOrgChart,
   registryVersion,
   routeRegistryVersions,
 } from "./registry-fixture";
@@ -188,31 +189,28 @@ async function approvals(
     state.rules = state.rules.filter((value) => value.id !== id);
     return route.fulfill({ status: 204 });
   });
-  await page.route(
-    "**/api/threads/thread-one/threads/*/approval-mode",
-    (route) => {
-      const request = route.request();
-      if (request.method() === "PUT") {
-        const body = request.postDataJSON();
-        calls.thread.push(body);
-        if (options.failThreadWrite)
-          return route.fulfill({
-            status: 400,
-            json: {
-              error: "accept the risk of Bypass in your preferences first",
-            },
-          });
-        state.thread = body.mode;
-      }
-      return route.fulfill({
-        json: {
-          mode: state.thread,
-          default_mode: state.default_mode,
-          modes: choices(),
-        },
-      });
-    },
-  );
+  await page.route("**/api/threads/thread-one/approval-mode", (route) => {
+    const request = route.request();
+    if (request.method() === "PUT") {
+      const body = request.postDataJSON();
+      calls.thread.push(body);
+      if (options.failThreadWrite)
+        return route.fulfill({
+          status: 400,
+          json: {
+            error: "accept the risk of Bypass in your preferences first",
+          },
+        });
+      state.thread = body.mode;
+    }
+    return route.fulfill({
+      json: {
+        mode: state.thread,
+        default_mode: state.default_mode,
+        modes: choices(),
+      },
+    });
+  });
   return { state, calls };
 }
 
@@ -591,20 +589,12 @@ test("a Deployment Administrator has no Approvals section", async ({
   ).toHaveCount(0);
 });
 
+/** Opens the Thread `thread-one`. Its composer carries the person's Approval
+ *  Mode switcher for the Thread (#1008: there are no reply threads). */
 async function openThread(page: Page, ja = false) {
   await page.goto("/collaboration?channel=thread-one");
-  await page
-    .getByRole("button", {
-      name: ja ? "スレッドで返信" : "Reply in thread",
-      exact: true,
-    })
-    .first()
-    .click();
   await expect(
-    page.getByRole("heading", {
-      name: ja ? "スレッド" : "Thread",
-      exact: true,
-    }),
+    page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
   return page.getByRole("combobox", {
     name: ja ? "この Thread の Approval Mode" : "Approval Mode for this Thread",
@@ -674,7 +664,7 @@ test("a Deployment Administrator cannot open a Tenant Thread", async ({
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Reply in thread", exact: true }),
+    page.getByRole("textbox", { name: "Message", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "Approval Mode for this Thread" }),
@@ -694,7 +684,7 @@ test("the Thread switcher keeps a narrow composer free of horizontal scrolling",
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
-  const send = page.getByRole("button", { name: "Send reply", exact: true });
+  const send = page.getByRole("button", { name: "Send", exact: true });
   const [select, button] = await Promise.all([
     mode.boundingBox(),
     send.boundingBox(),
@@ -849,7 +839,6 @@ async function runApprovals(page: Page, items: unknown[], ja = false) {
   const area = {
     id: "area-one",
     thread_id: "thread-one",
-    thread_id: "thread-message-one",
     agent_id: "researcher",
     owner: "alice",
     state: "active",
@@ -887,6 +876,7 @@ async function runApprovals(page: Page, items: unknown[], ja = false) {
     return route.fulfill({ json: { items, next_cursor: null } });
   });
   await openThread(page, ja);
+  await page.getByRole("tab", { name: ja ? /^成果物/ : /^Results/ }).click();
   await expect(
     page.getByRole("heading", { name: ja ? "Agent の作業" : "Agent work" }),
   ).toBeVisible();
@@ -1094,6 +1084,8 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
         },
       });
     }
+    if (path === "/api/tenants/alpha/org-chart")
+      return route.fulfill({ json: emptyOrgChart });
     return route.fulfill({ json: [] });
   });
   await page.goto("/trust?view=authorization");

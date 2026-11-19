@@ -31,7 +31,7 @@ test("transaction dashboard aborts a stale change safely and displays committed 
   const session = await api("/api/session");
   const created = await request.post("/api/threads", {
     headers,
-    data: { title: "Atomic dashboard", goal: "Commit or abort together" },
+    data: { title: "Atomic dashboard" },
   });
   expect(created.status(), await created.text()).toBe(200);
   const thread = await created.json();
@@ -53,11 +53,13 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       {
         node_id: nodeId,
         mutations: [
+          // A Thread's title is the only attribute a transaction changes
+          // (#1008).
           {
-            kind: "thread_state",
+            kind: "thread_title",
             thread_id: thread.id,
             expected_revision,
-            state: { result: "committed" },
+            title: "Atomic dashboard committed",
           },
         ],
       },
@@ -74,9 +76,7 @@ test("transaction dashboard aborts a stale change safely and displays committed 
     );
     await expect(dialog.getByLabel("Node", { exact: true })).toBeDisabled();
     await dialog.getByLabel("Thread", { exact: true }).selectOption(thread.id);
-    await dialog
-      .getByLabel("Thread state", { exact: true })
-      .fill(JSON.stringify(mutation.state));
+    await dialog.getByLabel("Title", { exact: true }).fill(mutation.title);
     await dialog
       .getByLabel("Revision", { exact: true })
       .fill(String(mutation.expected_revision));
@@ -119,9 +119,9 @@ test("transaction dashboard aborts a stale change safely and displays committed 
       exact: true,
     }),
   ).toHaveCount(0);
-  expect((await api(`/api/threads/${thread.id}`)).thread.state).toEqual({
-    result: "committed",
-  });
+  expect((await api(`/api/threads/${thread.id}`)).thread.title).toBe(
+    "Atomic dashboard committed",
+  );
   await page.screenshot({
     path: "../private/dashboard-transactions-desktop.png",
     fullPage: true,

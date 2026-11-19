@@ -37,10 +37,8 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   });
   const serverOrigin = await serveKeyless(server, KeylessFixture.semantic);
   const endpoint = `${serverOrigin}/v1`;
-  const thread = await api("/api/threads", {
-    title: "Semantic dashboard",
-    goal: "Retrieve authorized context",
-  });
+  // A Thread opened without a target takes a title alone (#1008).
+  const thread = await api("/api/threads", { title: "Semantic dashboard" });
   const root = `/api/threads/${thread.id}/semantic`;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
