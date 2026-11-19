@@ -338,6 +338,8 @@ struct Live {
 	now: DateTime<Utc>,
 	calls: Vec<String>,
 	fail: bool,
+	/// The person at the root of the checked chain: another person by default.
+	root: Option<&'static str>,
 }
 #[fixture]
 fn live() -> Live {
@@ -347,6 +349,7 @@ fn live() -> Live {
 		now: DateTime::from_timestamp(999, 0).unwrap(),
 		calls: vec![],
 		fail: false,
+		root: Some("bob"),
 	}
 }
 #[async_trait]
@@ -356,6 +359,9 @@ impl GenerationLive for Live {
 	}
 	fn now(&self) -> DateTime<Utc> {
 		self.now
+	}
+	fn root_subject(&self) -> Option<&str> {
+		self.root
 	}
 	async fn jobs(&mut self, node: &str, agent: &EntityRef) -> Result<Vec<Request>> {
 		assert_eq!(node, "aidash://local");
@@ -450,4 +456,35 @@ async fn policy_storage_failure_stops_before_execution(mut live: Live) {
 	live.fail = true;
 	assert!(matches!(check(&mut live).await, Err(Error::External(_))));
 	assert_eq!(live.calls.len(), 2);
+}
+
+#[rstest]
+#[case::same_person_other_task(Some("alice"), 9, false, true)]
+#[case::same_person_original_task(Some("alice"), 2, false, true)]
+#[case::other_person_other_task(Some("bob"), 9, false, false)]
+#[case::other_person_original_task(Some("bob"), 2, false, true)]
+#[case::no_root_other_task(None, 9, false, false)]
+#[case::same_person_foreign_request(Some("alice"), 9, true, false)]
+#[tokio::test]
+async fn a_generated_agent_works_in_any_chain_of_the_person_whose_chain_generated_it(
+	mut live: Live,
+	#[case] root: Option<&'static str>,
+	#[case] generated_for: u128,
+	#[case] foreign: bool,
+	#[case] allowed: bool,
+) {
+	// Arrange: alice's chain generated the agent for Task `generated_for`;
+	// the check is for Task 2 in a chain whose root is `root`.
+	let mut job = test_support::request(1);
+	job.task_id = Uuid::from_u128(generated_for);
+	if foreign {
+		job.home_node = "aidash://home".into();
+		job.foreign_intent = Some(serde_json::json!({}));
+	}
+	live.jobs.push(job);
+	live.root = root;
+	// Act
+	let result = check(&mut live).await;
+	// Assert
+	assert_eq!(result.is_ok(), allowed, "{result:?}");
 }

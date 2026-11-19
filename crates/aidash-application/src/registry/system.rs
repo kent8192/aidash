@@ -27,7 +27,14 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain([SKILL_ASSET_READ, TASK_ASSIGN])
 		.chain(SUBNODE_TOOLS.iter().copied())
 		.chain(JOURNAL_TOOLS.iter().copied())
+		.chain(NODE_TOOLS.iter().copied())
 }
+
+/// The `core.nodes@1` operations (#1012, ADR 0143). An Agent definition binds
+/// them explicitly, like the Subnode tools: they are not default tools, so
+/// they cost no request bytes for the many Agents whose root person cannot
+/// create Nodes.
+pub const NODE_TOOLS: &[&str] = &["node_create", "node_delete"];
 
 /// Journal retrieval is seeded for later exposure after offloading.
 pub const JOURNAL_TOOLS: &[&str] = aidash_domain::context::journal_query::TOOLS;

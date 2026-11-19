@@ -200,3 +200,9 @@ Duties too (#1012): only the root person's authority and Budget bound what a
 chain creates. A Run that arrived through Federation and a Run whose chain
 starts at no person cannot set up or change Duties. A retried tool call
 returns the Duty its first call set up.
+
+A Duty an Agent sets up records the Task whose Run set it up, so the
+[org chart](org-chart.md) shows the flow that made it, and stopping that flow
+pauses it; only its Requester resumes it. A Duty may be staffed with a
+generated agent only by the person whose request generated it, and the agent
+stays live while such a Duty names it (see [generation](../generation.md)).

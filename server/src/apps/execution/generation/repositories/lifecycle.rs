@@ -141,10 +141,6 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 				Expr::value(job.node.as_str().to_owned()),
 			))
 			.and_where(reinhardt::query::ExprTrait::eq(
-				Expr::col("task_id"),
-				Expr::value(job.task_id),
-			))
-			.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("home_node"),
 				Expr::value(job.home_node.clone()),
 			))
@@ -160,6 +156,15 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			.and_where(Expr::col("control").ne("CANCELLED"))
 			.lock(LockType::Update)
 			.to_owned();
+		// A local generated agent may work on any Task of its root person's
+		// chains (#1012 decision 49), so stopping it reaches every one of
+		// them; a foreign one works only on the Task it was prepared for.
+		if !job.is_local() {
+			query.and_where(reinhardt::query::ExprTrait::eq(
+				Expr::col("task_id"),
+				Expr::value(job.task_id),
+			));
+		}
 		if let Some(id) = job.admission_id {
 			query.and_where(reinhardt::query::ExprTrait::eq(
 				Expr::col("id"),

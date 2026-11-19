@@ -177,6 +177,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::remove, &["String", "Uuid"])?;
 	}
 	{
+		use super::flows::FlowStopped;
+		use aidash_application::org_chart::OrgChart;
+		use views::org_chart as view;
+		contracts.response::<_, OrgChart>(document, view::chart, 200, "application/json")?;
+		contracts.path(document, view::chart, &["String"])?;
+		contracts.response::<_, FlowStopped>(document, view::stop_flow, 200, "application/json")?;
+		contracts.path(document, view::stop_flow, &["String", "Uuid"])?;
+	}
+	{
 		use super::data_protection::{Impact, Settings};
 		use aidash_domain::data_protection::DataProtection;
 		use views::data_protection as view;

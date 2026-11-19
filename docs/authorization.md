@@ -88,7 +88,7 @@ A Tenant Administrator approves Registration Requests, manages Mappings, and rea
 | `peer_mapping.update`           | `peer_mapping`      | Create, update and disable a Peer Mapping                                                                                       |
 | `node.read`                     | `node`              | List the Tenant's Nodes (members hold it)                                                                                       |
 | `node.use`                      | `node`              | Work in a Node, such as creating a Workspace there (members hold it)                                                            |
-| `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"                                                                                         |
+| `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"; an Agent creates one only through its root person's (`node_create`, #1012)             |
 | `node.update`                   | `node`              | Change a Node's label or make it the default                                                                                    |
 | `node.delete`                   | `node`              | Manage deleted Nodes, soft-delete and restore them under current authority                                                      |
 | `node.administer`               | `node`              | Write the Node Instructions of that Node (#1010); Agents never hold it through a Subject Credential                             |
@@ -219,6 +219,58 @@ Administrator. Retained files remain in the active Tenant's storage meter until
 physical purge, subject to the Offering and the existing Tenant-deletion
 exemption. See [Node deletion and recovery](protocol.md#node-deletion-and-recovery)
 for durable cleanup and retention. Creations are audited as `node.create`.
+
+**Agents create and delete Nodes** (#1012, ADR 0143) with the `core.nodes@1`
+built-in tools `node_create {label}` and `node_delete {node}`. An Agent
+definition binds them explicitly (`aidash.node_create`, `aidash.node_delete`);
+they are not default tools. Both are Tool call approvals of the person at the
+root of the Run's chain, decided by their Approval Mode and Approval Rules,
+and both act as that person: a Run that arrived through Federation and a Run
+whose chain starts at no person are refused. `node_create` needs that person's
+`node.create` (Tenant Administrators hold it through `*`; a policy may grant it
+to members), stays within "Nodes per Tenant" and the Tier's limit, and copies
+the Tenant's Catalog Approvals to the new Node exactly as a person's creation
+does. The Node records its creator as kind `agent` with the root person, the
+creating Run and Task (database-only columns of `identity/0109`); a retried
+call returns the Node its first call created. `node_delete` performs the
+ordinary recoverable deletion, never a purge: it deletes a Node that a chain of
+the same root person created, or any Node when that person holds
+`node.delete`. The default and last live Node are never deleted, and a Run
+cannot delete the Node it runs on. The deletion records `deleted_by_kind`
+`agent`, and a Tenant Administrator restores it as any deletion. Both calls
+are Authority Changes (ADR 0121): the Run releases its own authority lease
+while the call runs, so the exclusive policy lock never waits on the Run that
+asked for it; a busy Tenant answers the call with the usual policy-busy
+refusal. Refusals come back to the model as tool errors and are recorded in
+the decision log. Administration history records the events with actor kind
+`agent` and the root person as the concerned subject.
+
+`GET /api/tenants/{tenant}/org-chart` shows, for each Node the caller may read
+(`node.read`), its label, who created it (a person, the Tenant's creation, or
+an Agent with its root person and creating Task), its Duties (title,
+Requester, Agent, state), its active Subnodes (creating Agent, root person,
+members) and the Root Task of the flow that made each Agent-created item.
+`node.read` alone shows none of the work on a Node: a Duty shows to its
+Requester, its named successor, readers of its Workspace (`workspace.read`) and
+`duty.administer`, as on its own page; an active Subnode to its root person and
+the Node's administrators (`node.administer`). The rest are only counted
+(`hidden_duties`, `hidden_subnodes`). This month's spend from the Budget ledger shows only to someone who may set
+that scope's Budget: `budget.manage` sees every spend, a
+Node's administrator that Node's and its Duties', a Duty's Requester that
+Duty's, and a person their own. A browser session is required, as for Budgets.
+See [the org chart](features/org-chart.md).
+
+`POST /api/tenants/{tenant}/flows/{root_task}/stop` stops a flow: the Root Task
+and everything created under it (its Task tree, the Tasks its Runs created or
+delegated, the Duties those Runs set up and the Tasks those Duties started).
+It cancels every open Run of the flow, ends its active Subnodes (`dissolved`),
+pauses its Duties (only their Requester resumes them) and lists the Nodes the
+flow created, which stay. Each item is stopped in its own transaction and the
+answer reports each one as `stopped`, `already_stopped` or `failed` with the
+error. It needs a browser session and either `run.control` on a Run of the
+Root Task (with `workspace.read`) or `node.administer` on the Root Task's Node,
+which Tenant Administrators hold through `*`; a Subject Credential is refused,
+so no Agent stops a flow. A Task created under another answers 400.
 
 A Node Registration is a Tenant Administrator's decision that one of its Nodes accepts one named Node of another Tenant, and addresses outbound exchange to it. `POST /api/tenants/{tenant}/nodes/{node}/registrations` takes `{source_node, endpoint?, key_id?, atomic_transactions, enabled, expected_revision}` under `node_registration.update` and answers the registration. `expected_revision` is 0 to create and the revision being replaced otherwise; a stale revision, or creating one that exists, answers 409. For a Node of this Deployment, `endpoint` and `key_id` must be absent and `source_node` must hold a name some Tenant holds; a Node of the owning Tenant answers 422, because the Tenant's policy decides within the Tenant. For a Node of another Deployment, both are required: the server fetches `{endpoint}/.well-known/aidash` with a 5 second timeout and requires its `id` to be the Node's Deployment, its `protocol_version` to be `0.4`, and its `key.id` to be the key ID typed, and the PEM to hash to that key ID. Anything else answers 422 with the reason. The registration stores the fetched public key as its initial trust anchor; the key ID the administrator types establishes that trust, not the endpoint. Planned rollover can advance its receiving keyset after the complete request and predecessor-signed transition verify, without replacing its authorization. See [Deployment Key rollover](protocol.md#deployment-key-rollover). Disabling needs no answer from the other Deployment and keeps what the registration pinned. `GET` on the same path lists the Node's registrations (`offset`, `limit` as for Peer Mappings), and `GET /api/tenants/{tenant}/nodes/{node}/registration-history?after=0&limit=100` lists every revision in order, under `node_registration.read`. Every administrator registration update is appended to `dashboard_administration_history` as `node_registration.update`; cryptographic advancement does not create an authorization revision.
 

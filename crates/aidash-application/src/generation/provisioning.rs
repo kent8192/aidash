@@ -129,6 +129,16 @@ pub async fn terminal(
 				Some("CANCELLED") => Some("STOPPED"),
 				_ => None,
 			};
+			// A generated agent outlives the Run it was generated for while
+			// another chain of the same root person uses it, a Duty included;
+			// its lifetime, when one is set, still ends it (#1012 decision 49).
+			if terminal.is_some()
+				&& status != "EXPIRED"
+				&& job.status == "ACTIVE"
+				&& scope.in_use(&job).await?
+			{
+				return Ok(());
+			}
 			let (status, reason) = if let Some(status) = terminal {
 				(status, "run reached terminal state")
 			} else {

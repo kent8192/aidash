@@ -104,6 +104,9 @@ impl GenerationLive for NativeEmbeddingAuthority<'_> {
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
+	fn root_subject(&self) -> Option<&str> {
+		Some(&self.catalog.0.identity.subject)
+	}
 	async fn jobs(&mut self, node: &str, agent: &EntityRef) -> Result<Vec<Request>> {
 		super::publication::NativeLive {
 			access: &mut *self.catalog.0,

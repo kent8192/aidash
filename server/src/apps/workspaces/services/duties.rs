@@ -106,6 +106,34 @@ impl DutyScope for Adapter<'_> {
 	async fn require_agent(&mut self, agent: &EntityRef) -> aidash_application::Result<()> {
 		crate::apps::identity::services::catalog::entry(self.access, agent, "agent.execute")
 			.await?;
+		use reinhardt::query::QueryStatementBuilder as _;
+		// A generated agent staffs only the Duties of the person whose chain
+		// generated it, while it is live (#1012 decision 49); anyone else
+		// needs a person's Catalog Approval of an agent of their own.
+		let (tenant, subject) = (tenant(self.access), self.subject().to_owned());
+		let refused: bool = crate::database::native::query_scalar(
+			&reinhardt::query::Query::select()
+				.expr(reinhardt::query::SimpleExpr::CustomWithExpr(
+					"(EXISTS (SELECT 1 FROM generation_requests WHERE tenant = ? AND agent_id = ? AND agent_version = ?) AND NOT EXISTS (SELECT 1 FROM generation_requests WHERE tenant = ? AND agent_id = ? AND agent_version = ? AND root_subject = ? AND status = 'ACTIVE' AND expires_at > CLOCK_TIMESTAMP() AND foreign_intent IS NULL))".to_owned(),
+					vec![
+						reinhardt::query::Expr::value(tenant.clone()).into(),
+						reinhardt::query::Expr::value(agent.id.clone()).into(),
+						reinhardt::query::Expr::value(agent.version.clone()).into(),
+						reinhardt::query::Expr::value(tenant).into(),
+						reinhardt::query::Expr::value(agent.id.clone()).into(),
+						reinhardt::query::Expr::value(agent.version.clone()).into(),
+						reinhardt::query::Expr::value(subject).into(),
+					],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.access.tx)
+		.await?;
+		if refused {
+			return Err(aidash_application::Error::Invalid(
+				"a generated agent works only for the person whose request generated it, while it is live".into(),
+			));
+		}
 		Ok(())
 	}
 	async fn newer_agent_version(

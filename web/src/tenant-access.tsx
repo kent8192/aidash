@@ -1,6 +1,7 @@
 import { DataProtectionSettings } from "./data-protection";
 import { StandingInstructionsSettings } from "./standing-instructions";
 import { BudgetSettings } from "./budgets";
+import { OrgChartPanel } from "./org-chart";
 import { ExecutionSettings } from "./execution-settings";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
@@ -71,6 +72,7 @@ export function TenantAccess({
         tenant={tenant}
         subject={subject}
       />
+      <OrgChartPanel key={`org-chart-${tenant}`} tenant={tenant} />
       <ExecutionSettings
         key={`execution-${tenant}`}
         tenant={tenant}

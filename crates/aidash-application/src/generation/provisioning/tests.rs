@@ -74,6 +74,8 @@ struct State {
 	subjects: Vec<String>,
 	phase: Option<String>,
 	completion_ready: bool,
+	/// Another chain of the root person still uses the generated agent.
+	in_use: bool,
 	fail: Option<(&'static str, Failure)>,
 	pause: Option<&'static str>,
 	calls: Vec<String>,
@@ -111,6 +113,7 @@ fn repository() -> Repository {
 		subjects: vec![],
 		phase: None,
 		completion_ready: true,
+		in_use: false,
 		fail: None,
 		pause: None,
 		calls: vec![],
@@ -431,6 +434,10 @@ impl GenerationTerminalSession for Session {
 	async fn run_phase(&mut self, _: &Request) -> Result<Option<String>> {
 		point(&self.state, "run_phase").await?;
 		Ok(self.state.lock().unwrap().phase.clone())
+	}
+	async fn in_use(&mut self, _: &Request) -> Result<bool> {
+		point(&self.state, "in_use").await?;
+		Ok(self.state.lock().unwrap().in_use)
 	}
 	async fn transition(
 		&mut self,
@@ -879,4 +886,35 @@ async fn a_silent_node_leaves_the_job_queued_and_the_tick_goes_on_to_the_next_jo
 		1
 	);
 	assert_eq!(state.job.status, "ACTIVE");
+}
+
+#[rstest]
+#[case::still_used("FAILED", true, "ACTIVE")]
+#[case::unused("FAILED", false, "COMPLETED")]
+#[case::lifetime_ends_it_anyway("EXPIRED", true, "COMPLETED")]
+#[tokio::test]
+async fn a_generated_agent_another_chain_of_its_person_uses_stays_live(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] in_use: bool,
+	#[case] expected: &str,
+) {
+	// Arrange: the Run it was generated for completed; another Task or Duty
+	// of the same person may still use it.
+	let job = {
+		let mut state = repository.0.lock().unwrap();
+		state.job.status = "ACTIVE".into();
+		state.phase = Some("COMPLETED".into());
+		state.in_use = in_use;
+		if status == "EXPIRED" {
+			state.now = state.job.expires_at;
+		}
+		state.job.clone()
+	};
+	// Act
+	terminal(&repository, &job, status, "run reached terminal state")
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(repository.0.lock().unwrap().job.status, expected);
 }

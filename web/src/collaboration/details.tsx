@@ -15,6 +15,7 @@ import { ApiError, apiFetch } from "../transport";
 import { DeclineCall } from "./decline-call";
 import { offeredDecline } from "./decline-call-model";
 import { RemoteExecutions } from "./remote-executions";
+import { FlowStopButton } from "../org-chart";
 import { ReferenceName } from "../record-view";
 import {
   Alert,
@@ -431,6 +432,13 @@ export function OperationsDialog({
                   </div>
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
+                  )}
+                  {data.access.kind === "subject" && !task.parent_id && (
+                    // A Root Task: one action stops everything its flow made (#1012).
+                    <FlowStopButton
+                      tenant={data.access.tenant}
+                      rootTask={task.id}
+                    />
                   )}
                   {abandonable(
                     task,

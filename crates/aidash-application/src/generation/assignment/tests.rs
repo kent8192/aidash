@@ -55,6 +55,8 @@ struct Scope {
 	run: Option<(String, String, Vec<String>)>,
 	catalog: Vec<Entry>,
 	generated: BTreeSet<String>,
+	/// Generated agents a chain of this scope's root person generated.
+	reusable: BTreeSet<String>,
 	depth: Option<i32>,
 	active: i64,
 	visible: bool,
@@ -104,6 +106,7 @@ impl Scope {
 			run: None,
 			catalog: vec![],
 			generated: BTreeSet::new(),
+			reusable: BTreeSet::new(),
 			depth: None,
 			active: 0,
 			visible: true,
@@ -428,6 +431,10 @@ impl GenerationAssignmentScope for Scope {
 		self.point(format!("generated:{}", entry.id)).await?;
 		Ok(self.generated.contains(&entry.id))
 	}
+	async fn reusable(&mut self, entry: &Entry) -> Result<bool> {
+		self.point(format!("reusable:{}", entry.id)).await?;
+		Ok(self.reusable.contains(&entry.id))
+	}
 	async fn delegate(&mut self, task_id: Uuid, agent: &EntityRef) -> Result<Delegation> {
 		self.point("delegate").await?;
 		assert_eq!(self.chain, ["alice"]);
@@ -742,6 +749,40 @@ async fn ordinary_agent_reuse_skips_generated_disabled_and_wrong_kind_candidates
 	assert_eq!(delegation.agent_id, "ordinary");
 	assert_eq!(scope.chain, ["alice"]);
 	assert_eq!(scope.effects, ["delegate"]);
+	assert!(!scope.calls().iter().any(|c| c == "insert"));
+}
+#[rstest]
+#[case::same_person(true, "generated")]
+#[case::another_person(false, "ordinary")]
+#[tokio::test]
+async fn a_generated_agent_is_reused_only_in_its_root_persons_chains(
+	validation: DefinitionValidation,
+	#[case] same_person: bool,
+	#[case] expected: &str,
+) {
+	// Arrange: a generated agent matches before an ordinary one does.
+	let mut scope = Scope::new();
+	scope.ordinary("generated", true, SubjectKind::Agent);
+	scope.generated.insert("generated".into());
+	if same_person {
+		scope.reusable.insert("generated".into());
+	}
+	scope.ordinary("ordinary", true, SubjectKind::Agent);
+	// Act
+	let Assignment::Existing { delegation } = assign_in(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+	)
+	.await
+	.unwrap() else {
+		panic!("existing")
+	};
+	// Assert: no new generation request is made either way.
+	assert_eq!(delegation.agent_id, expected);
+	assert!(scope.calls().iter().any(|c| c == "reusable:generated"));
 	assert!(!scope.calls().iter().any(|c| c == "insert"));
 }
 #[rstest]

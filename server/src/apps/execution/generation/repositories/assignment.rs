@@ -679,6 +679,34 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 		Ok(generated)
 	}
 
+	/// A live, local generated agent that a chain of this root person
+	/// generated (#1012 decision 49). Its request row stays share-locked until
+	/// this transaction ends, so retirement, which locks it for update, waits
+	/// for the assignment and then sees the new Run using the agent.
+	async fn reusable(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		let access = &mut *self.access;
+		let found: Option<Uuid> = crate::database::native::query_scalar(
+			&reinhardt::query::Query::select()
+				.column(reinhardt::query::Alias::new("id"))
+				.from(reinhardt::query::Alias::new("generation_requests"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(tenant = ? AND agent_id = ? AND agent_version = ? AND root_subject = ? AND status = 'ACTIVE' AND expires_at > CLOCK_TIMESTAMP() AND foreign_intent IS NULL)".to_owned(),
+					vec![
+						Expr::value(access.identity.tenant.clone()).into(),
+						Expr::value(entry.id.clone()).into(),
+						Expr::value(entry.version.clone()).into(),
+						Expr::value(access.identity.subject.clone()).into(),
+					],
+				))
+				.limit(1)
+				.lock(reinhardt::query::LockType::Share)
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **access.tx)
+		.await?;
+		Ok(found.is_some())
+	}
+
 	async fn delegate(
 		&mut self,
 		task_id: Uuid,
@@ -884,6 +912,9 @@ impl GenerationAssignmentScope for Session {
 	}
 	async fn generated(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
 		self.scope().generated(entry).await
+	}
+	async fn reusable(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		self.scope().reusable(entry).await
 	}
 	async fn delegate(
 		&mut self,

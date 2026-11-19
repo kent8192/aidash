@@ -856,6 +856,7 @@ impl Builtin {
 			"duty_create" | "duty_list" | "duty_update" | "duty_delete" => {
 				ctx.operations.duty(key, self.name, input).await
 			}
+			"node_create" | "node_delete" => ctx.operations.node(key, self.name, input).await,
 			_ => Err(Error::Invalid("unknown tool".into())),
 		}
 	}
@@ -1070,6 +1071,20 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Delete, or with action \"pause\" pause, a Duty that acts as the person who started this conversation. The person is asked to approve this call unless their Approval Mode or Approval Rules decide it.",
 			schema: json!(schemars::schema_for!(crate::duties::tool::Delete)),
+		},
+		Builtin {
+			name: "node_create",
+			contract: aidash_domain::tool::builtin_contract("node_create")
+				.expect("declared builtin"),
+			description: "Create a Node of this Tenant: a lasting department with its own address, Duties and Node Instructions. It is created for the person who started this conversation and only when their Tenant role lets them create Nodes; it belongs to the Tenant and survives this conversation. Returns its name and address. A retried call returns the Node its first call created. The person is asked to approve this call unless their Approval Mode or Approval Rules decide it.",
+			schema: json!(schemars::schema_for!(crate::nodes::tool::Create)),
+		},
+		Builtin {
+			name: "node_delete",
+			contract: aidash_domain::tool::builtin_contract("node_delete")
+				.expect("declared builtin"),
+			description: "Delete a Node that a conversation of the person who started this one created, or any Node when their Tenant role lets them delete Nodes. The Node can be restored by a Tenant Administrator until its grace period ends; its open Runs are cancelled. The default Node and the last Node are never deleted. The person is asked to approve this call unless their Approval Mode or Approval Rules decide it.",
+			schema: json!(schemars::schema_for!(crate::nodes::tool::Delete)),
 		},
 		Builtin {
 			name: "connection_request",

@@ -58,6 +58,14 @@ pub async fn publish(
 	scope.approve(job, &entry).await?;
 	scope.catalog_history(job, &entry, &approver).await
 }
+/// Whether the generated agent of `job` may work on `task` in a chain whose
+/// root is `root`: on the Task it was generated for, or, for a local request,
+/// on any Task of a chain of the same root person, Duties included (#1012
+/// decision 49). Anyone else needs a person's Catalog Approval of their own.
+pub fn reusable_by(job: &Request, task: Uuid, root: Option<&str>) -> bool {
+	job.is_local() && (job.task_id == task || root == Some(job.root_subject.as_str()))
+}
+
 /// Every ancestor is checked using the current policy under the inherited lease.
 pub async fn require_live(
 	scope: &mut dyn GenerationLive,
@@ -74,7 +82,7 @@ pub async fn require_live(
 			|| !enabled
 			|| (job.agent_id == agent.id
 				&& job.agent_version == agent.version
-				&& (job.task_id != task || !job.is_local()))
+				&& !reusable_by(&job, task, scope.root_subject()))
 		{
 			return Err(Error::Forbidden);
 		}

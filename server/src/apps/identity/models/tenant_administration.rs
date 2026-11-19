@@ -55,6 +55,12 @@ pub(crate) enum AdministrationActor {
 	Subject {
 		subject: String,
 	},
+	/// An Agent's chain acting as the person at its root, such as creating or
+	/// deleting a Node (#1012, ADR 0143). The person is recorded as the event's
+	/// concerned subject, as for [`Self::Subject`].
+	Agent {
+		subject: String,
+	},
 }
 
 /// The fields of one administration history row other than its actor.
@@ -81,6 +87,7 @@ impl AdministrationActor {
 			Self::DemoData => "demo-data".into(),
 			Self::HostAccess => "host_access".into(),
 			Self::Subject { subject } => subject.clone(),
+			Self::Agent { subject } => format!("agent:{subject}"),
 		}
 	}
 
@@ -106,6 +113,7 @@ impl AdministrationActor {
 			Self::DemoData => ("demo_data", None, None),
 			Self::HostAccess => ("host_access", None, None),
 			Self::Subject { .. } => ("subject", None, None),
+			Self::Agent { .. } => ("agent", None, None),
 		}
 	}
 

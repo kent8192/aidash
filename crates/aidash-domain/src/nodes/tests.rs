@@ -203,3 +203,27 @@ fn node_deletion_preserves_the_default_and_last_live_node(
 		allowed
 	);
 }
+
+#[test]
+fn a_tenant_administrator_restores_a_node_an_agent_deleted() {
+	use super::deletion::{self, Actor, Deletion};
+	use chrono::{Duration, TimeZone, Utc};
+	// Arrange
+	let now = Utc.with_ymd_and_hms(2026, 11, 19, 0, 0, 0).unwrap();
+	let deletion = Deletion {
+		deleted_by: Actor::Agent,
+		purge_after: deletion::purge_after(now, 30).unwrap(),
+		restored: false,
+		purged: false,
+	};
+	// Act
+	let restored = deletion::check_restore(
+		&deletion,
+		Actor::TenantAdministrator,
+		now + Duration::days(1),
+	);
+	// Assert
+	assert!(restored.is_ok());
+	assert_eq!(Actor::parse("agent").unwrap(), Actor::Agent);
+	assert_eq!(Actor::Agent.as_str(), "agent");
+}

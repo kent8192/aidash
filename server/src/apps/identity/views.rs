@@ -51,6 +51,7 @@ pub(crate) mod execution_settings;
 pub(crate) mod manual_keys;
 pub(crate) mod memory_scope;
 pub mod oauth_clients;
+pub(crate) mod org_chart;
 pub(crate) mod standing_instructions;
 
 pub mod oauth_connections;

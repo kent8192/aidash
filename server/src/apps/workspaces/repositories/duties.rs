@@ -172,7 +172,87 @@ pub(crate) async fn insert(
 		.insert_with_executor(tx, &row)
 		.await
 		.map_err(framework)?;
+	creating_task(tx, tenant, duty).await
+}
+
+/// Records, or clears, the Task whose Run set the Duty up (#1012; see
+/// workspaces 0047): a flow's stop pauses the Duties its Runs set up. A
+/// successor taking the Duty over clears the creating Run, and with it this.
+async fn creating_task(tx: &mut dyn TransactionExecutor, tenant: &str, duty: &Duty) -> Result<()> {
+	let task = match duty.created_by_run_id {
+		Some(run) => {
+			let mut task = Query::select();
+			task.column(Alias::new("task_id"))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+				.and_where(Expr::col("id").eq(Expr::value(run)));
+			reinhardt::query::SimpleExpr::SubQuery(None, Box::new(task.to_owned()))
+		}
+		None => Expr::value(Option::<Uuid>::None).into(),
+	};
+	native::query(
+		&Query::update()
+			.table(Alias::new("duties"))
+			.value_expr(Alias::new("created_by_task_id"), task)
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(duty.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
 	Ok(())
+}
+
+/// The Duties Runs of `tasks` set up, or Runs of `runs` before workspaces
+/// 0047 recorded the creating Task (#1012): what a flow's stop pauses.
+pub(crate) async fn created_by_flow(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	tasks: &[Uuid],
+	runs: &[Uuid],
+) -> Result<Vec<Uuid>> {
+	if tasks.is_empty() && runs.is_empty() {
+		return Ok(vec![]);
+	}
+	let mut by = Condition::any();
+	if !tasks.is_empty() {
+		by = by.add(
+			Expr::col("created_by_task_id").is_in(tasks.iter().map(|task| Expr::value(*task))),
+		);
+	}
+	if !runs.is_empty() {
+		by = by.add(Expr::col("created_by_run_id").is_in(runs.iter().map(|run| Expr::value(*run))));
+	}
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("duties"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.cond_where(by)
+			.order_by(Alias::new("id"), Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&mut *tx)
+	.await
+}
+
+/// The Task whose Run set up each of the Tenant's Duties, when one did.
+pub(crate) async fn creating_tasks(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> Result<std::collections::BTreeMap<Uuid, Uuid>> {
+	let rows: Vec<(Uuid, Uuid)> = native::query_as(
+		&Query::select()
+			.columns([Alias::new("id"), Alias::new("created_by_task_id")])
+			.from(Alias::new("duties"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("created_by_task_id").is_not_null())
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["id", "created_by_task_id"])
+	.fetch_all(&mut *tx)
+	.await?;
+	Ok(rows.into_iter().collect())
 }
 
 async fn record(
@@ -213,12 +293,16 @@ pub(crate) async fn save(
 	if row.revision != duty.revision {
 		return Err(Error::Conflict("duty revision changed".into()));
 	}
+	let taken_over = row.created_by_run_id.is_some() && duty.created_by_run_id.is_none();
 	write(&mut row, duty)?;
 	row.revision += 1;
 	DutyRecord::objects()
 		.save_with_executor(tx, &row)
 		.await
 		.map_err(framework)?;
+	if taken_over {
+		creating_task(tx, tenant, duty).await?;
+	}
 	domain(row)
 }
 
@@ -648,6 +732,9 @@ pub(crate) async fn claim(
 pub(crate) enum Stop<'a> {
 	/// Their Requester left the Tenant or lost access.
 	Requester(&'a str),
+	/// A person stopped the flow whose Runs set them up (#1012); they pause,
+	/// and only their Requester resumes them.
+	Flow(&'a [Uuid]),
 	/// Their fixed Thread was deleted.
 	Thread(Uuid),
 	/// The Tenant was deleted.
@@ -674,6 +761,10 @@ pub(crate) async fn stop(
 			Halt::ThreadDeleted,
 		),
 		Stop::Tenant => (query, Halt::TenantDeleted),
+		Stop::Flow(ids) => (
+			query.filter(DutyRecord::field_id().is_in(ids.to_vec())),
+			Halt::Paused,
+		),
 	};
 	// Deleting a Thread holds its channel row, and a tick holds its Duty
 	// while it reads that row: waiting here could deadlock. A Duty a tick
@@ -697,7 +788,7 @@ pub(crate) async fn stop(
 			}
 			query.filter(DutyRecord::field_id().is_in(held))
 		}
-		Stop::Requester(_) | Stop::Tenant => query,
+		Stop::Requester(_) | Stop::Tenant | Stop::Flow(_) => query,
 	};
 	let rows = query
 		.select_for_update()

@@ -175,6 +175,13 @@ pub struct ToolBehavior {
 	/// The output's `"exposure_update"` changes the Run's Exposure set.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub exposure_update: bool,
+	/// The call may change the Tenant's policy, an Authority Change (ADR 0121),
+	/// such as creating a Node, which copies Agent subjects into the policy. The
+	/// Run releases its own authority lease while the call runs, so the change
+	/// never waits on the Run that asked for it (#1012). Omitted when false so
+	/// pinned contracts keep their digest.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub authority_change: bool,
 }
 impl ToolBehavior {
 	/// A call of a Tenant's HTTP or MCP tool, whose result is external data: it
@@ -412,6 +419,7 @@ fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavi
 		read_only_operation: false,
 		concurrency: Concurrency::Sequential,
 		exposure_update: false,
+		authority_change: false,
 	}
 }
 
@@ -439,6 +447,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
+			authority_change: false,
 		},
 		disclosure: DisclosureBoundary::Home,
 		remote_exposure: false,
@@ -667,6 +676,17 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		"duty_list" => {
 			behavior.effect = ToolEffect::ReadOnly;
 		}
+		// An Agent creates and deletes Nodes as the person at the root of its
+		// Run's chain, who must hold `node.create` (#1012, ADR 0143). A call
+		// passes that person's Approval Mode and Approval Rules as a Tool call
+		// approval. Creating a Node copies the Tenant's Catalog Approvals and
+		// their Agent subjects into the policy, and deleting one fences its
+		// admissions, so both are Authority Changes the Run must not block.
+		"node_create" | "node_delete" => {
+			behavior.effect = ToolEffect::Unsafe;
+			behavior.tool_call_approval = true;
+			behavior.authority_change = true;
+		}
 		_ => return None,
 	}
 	Some(contract)
@@ -743,6 +763,28 @@ mod tests {
 				Some("core.duties@1")
 			);
 		}
+	}
+	#[test]
+	fn node_tools_need_a_tool_call_approval_and_release_the_run_lease() {
+		for name in ["node_create", "node_delete"] {
+			// Act
+			let contract = builtin_contract(name).unwrap();
+			// Assert
+			assert!(contract.behavior.tool_call_approval, "{name}");
+			assert!(contract.behavior.authority_change, "{name}");
+			assert_eq!(contract.behavior.effect, ToolEffect::Unsafe, "{name}");
+			assert!(!contract.remote_exposure, "{name}");
+			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
+			assert_eq!(
+				crate::tool::providers::core_provider(name),
+				Some("core.nodes@1")
+			);
+			let encoded = serde_json::to_value(&contract).unwrap();
+			assert_eq!(encoded["behavior"]["authority_change"], true, "{name}");
+		}
+		// Every other contract keeps its pinned digest: the flag is omitted.
+		let encoded = serde_json::to_value(builtin_contract("duty_create").unwrap()).unwrap();
+		assert!(encoded["behavior"].get("authority_change").is_none());
 	}
 	#[test]
 	fn modes_and_remote_exposure_are_explicit_sets() {

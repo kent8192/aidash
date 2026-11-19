@@ -585,6 +585,180 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	cleanup(f, &url, &schema).await;
 }
 
+/// A generated agent is reused in another chain of the person whose chain
+/// generated it, refused to another person, and stays live while either chain
+/// uses it (#1012 decision 49).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_it(
+	#[future(awt)]
+	#[from(provider_1)]
+	fixture: Provider1Fixture,
+) {
+	// Arrange: alice's request generated an agent for her first Task.
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	common::replace_policy(&f.store, "acme", policy).await;
+	let bob = common::subject_credential(&f.store, "acme", "bob").await;
+	let mut spec = definition(&app, &token).await;
+	spec["approval_required"] = json!(false);
+	spec["limits"]["lifetime_seconds"] = Value::Null;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			"/api/generation/acme/policies/research",
+			json!({"expected_revision":0,"spec":spec})
+		)
+		.await
+		.0,
+		200
+	);
+	let first = missing_task(&app, &token).await;
+	let (status, generated) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{first}/assign"),
+		json!({"policy_id":"research","reason":"specialist missing"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{generated}");
+	assert_eq!(generated["kind"], "generated");
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+	assert_eq!(runs.len(), 1);
+	let agent = json!({"id": runs[0].agent_id, "version": runs[0].agent_version});
+	// Act: alice's second Task finds the generated agent; bob's may not use it.
+	let second = missing_task(&app, &token).await;
+	let (status, reused) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{second}/assign"),
+		json!({"policy_id":"research","reason":"same specialist"}),
+	)
+	.await;
+	let bobs = missing_task(&app, &bob).await;
+	let (bob_status, refused) = request(
+		&app,
+		&bob,
+		"POST",
+		&format!("/api/tasks/{bobs}/delegate"),
+		json!({"node_id": f.config.deployment, "agent": agent}),
+	)
+	.await;
+	// Assert: no second generation request; bob's delegation is refused.
+	assert_eq!(status, 200, "{reused}");
+	assert_eq!(reused["kind"], "existing", "{reused}");
+	assert_eq!(reused["delegation"]["agent_id"], agent["id"]);
+	let (_, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
+	assert_ne!(bob_status, 200, "{refused}");
+	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
+	assert_eq!(runs.len(), 2);
+	// The Run it was generated for ends: the other chain still uses it.
+	let original = runs
+		.iter()
+		.find(|run| run.task_id.to_string() == first)
+		.unwrap()
+		.id;
+	let other = runs
+		.iter()
+		.find(|run| run.task_id.to_string() == second)
+		.unwrap()
+		.id;
+	let complete = |run: uuid::Uuid| {
+		let pool = f.store.pool.fixture_driver().clone();
+		async move {
+			sqlx::query(
+				"UPDATE runs SET phase = 'COMPLETED', lease_owner = NULL, lease_until = NULL WHERE id = $1",
+			)
+			.bind(run)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+	};
+	complete(original).await;
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let (_, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(jobs[0]["status"], "ACTIVE", "{jobs}");
+	// The reused Run makes its model calls under the generated agent and
+	// finishes its own Task.
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..12 {
+		if f.store
+			.run(&TEST_FIXTURE, other)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
+			break;
+		}
+		worker.worker_once().await.unwrap();
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, other)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, second.parse().unwrap())
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"COMPLETED"
+	);
+	// Once no chain uses it, it retires as before.
+	aidash_server::generation::provision::reconcile(&f)
+		.await
+		.unwrap();
+	let (_, jobs) = request(
+		&app,
+		&token,
+		"GET",
+		"/api/generation/acme/requests",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(jobs[0]["status"], "COMPLETED", "{jobs}");
+	drop(server);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn concurrent_requests_obey_quota_and_denial_releases_it_once(

@@ -3522,7 +3522,20 @@ connection: None,
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
+					// An Authority Change (such as creating a Node) takes the Tenant's
+					// policy exclusively; this Run's own shared lease would make it wait
+					// on itself, so the Run releases its locks while the call runs.
+					let releases_authority = contract.behavior.authority_change && guard.is_some();
+					if releases_authority && let Some(guard) = guard {
+						guard.suspend().await?;
+						visibility.suspend().await?;
+					}
 					let (invoked, note) = refusal_note::scoped(tool.invoke(run, call.arguments.clone(), &key)).await;
+					if releases_authority && let Some(guard) = guard {
+						let resumed = visibility.resume().await;
+						guard.resume().await?;
+						resumed?;
+					}
 					match invoked {
                         Ok(output) => {
                             if contract.behavior.tenant_tool_call() {
