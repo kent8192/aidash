@@ -221,7 +221,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     let control = "PAUSED";
     let semanticReason = "invalidated";
     const actions: unknown[] = [];
-    await page.route("**/api/runs/run-0**", async (route) => {
+    await page.route("**/api/executions/run-0**", async (route) => {
       if (new URL(route.request().url()).pathname.endsWith("/management")) {
         if (route.request().method() === "POST") {
           actions.push(route.request().postDataJSON());
@@ -306,7 +306,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
   }) => {
     const ja = locale === "ja-JP";
     const { errors } = await setup(page, { subject: true, locale });
-    await page.route("**/api/runs/run-0**", (route) => {
+    await page.route("**/api/executions/run-0**", (route) => {
       if (new URL(route.request().url()).pathname.endsWith("/management"))
         return route.fulfill({
           json: {
@@ -1734,7 +1734,7 @@ test("run message attachments stay fixed while an upload is pending", async ({
     await uploadGate;
     await route.fallback();
   });
-  await page.route("**/api/runs/run-0/message", (route) =>
+  await page.route("**/api/executions/run-0/message", (route) =>
     route.fulfill({ json: { id: "run-message-one" } }),
   );
   await page.goto("/collaboration?channel=thread-one");
@@ -2165,7 +2165,7 @@ test("channel controls scope run changes and persist approval responses", async 
     submissions
       .filter((item) => item.path.endsWith("/control"))
       .map((item) => item.path),
-  ).toEqual(["/api/runs/run-0/control"]);
+  ).toEqual(["/api/executions/run-0/control"]);
   await page
     .getByRole("button", { name: "Resume runs in this channel" })
     .click();
@@ -2198,7 +2198,7 @@ test("channel can resume a paused run outside the state window", async ({
       },
     }),
   );
-  await page.route("**/api/threads/thread-one/runs?**", (route) =>
+  await page.route("**/api/threads/thread-one/executions?**", (route) =>
     route.fulfill({
       json: {
         items: [{ ...data.runs[0], control: "PAUSED" }],
@@ -2721,7 +2721,7 @@ test("channel controls resume a validated failure delivery with an invalid Conte
       () =>
         submissions.filter(
           (item) =>
-            item.path === "/api/runs/run-0/control" &&
+            item.path === "/api/executions/run-0/control" &&
             item.body.action === "resume",
         ).length,
     )
@@ -3262,15 +3262,19 @@ for (const failDecline of [false, true]) {
         submissions
           .filter(
             (item) =>
-              item.path === "/api/runs/run-0/message" ||
-              item.path === "/api/runs/run-0/declined-calls",
+              item.path === "/api/executions/run-0/message" ||
+              item.path === "/api/executions/run-0/declined-calls",
           )
           .map((item) => item.path),
       )
-      .toEqual(["/api/runs/run-0/message", "/api/runs/run-0/declined-calls"]);
+      .toEqual([
+        "/api/executions/run-0/message",
+        "/api/executions/run-0/declined-calls",
+      ]);
     expect(
-      submissions.find((item) => item.path === "/api/runs/run-0/declined-calls")
-        ?.body,
+      submissions.find(
+        (item) => item.path === "/api/executions/run-0/declined-calls",
+      )?.body,
     ).toEqual({ call: "run-0:3:0", rest_of_run: true });
     if (failDecline) {
       // The message stays sent, the Run stays paused and the form is still open to retry.
@@ -3285,12 +3289,14 @@ for (const failDecline of [false, true]) {
         .poll(
           () =>
             submissions.filter(
-              (item) => item.path === "/api/runs/run-0/declined-calls",
+              (item) => item.path === "/api/executions/run-0/declined-calls",
             ).length,
         )
         .toBe(2);
       expect(
-        submissions.filter((item) => item.path === "/api/runs/run-0/message"),
+        submissions.filter(
+          (item) => item.path === "/api/executions/run-0/message",
+        ),
       ).toHaveLength(1);
     } else {
       await expect(
@@ -3329,7 +3335,7 @@ test("a hidden Run offers declining a paused call without a sentence field", asy
   const { errors } = await setup(page, { subject: true });
   const declined: Record<string, unknown>[] = [];
   let control = "PAUSED";
-  await page.route("**/api/runs/run-0**", (route) => {
+  await page.route("**/api/executions/run-0**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/declined-calls")) {
       declined.push(route.request().postDataJSON());

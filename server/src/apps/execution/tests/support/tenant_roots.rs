@@ -256,7 +256,7 @@ pub async fn remote_run_in(
 	tenant_root_in(store.pool.fixture_driver(), tenant).await;
 	let id = uuid::Uuid::new_v4();
 	let sql = Query::insert()
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(
 			[
 				"id",

@@ -125,7 +125,7 @@ pub(super) async fn process_one(runtime: &Federation) -> Result<bool> {
 				&Query::select()
 					.column(Alias::new("node"))
 					.from(Alias::new(if row.run_id.is_some() {
-						"runs"
+						"task_executions"
 					} else {
 						"generation_requests"
 					}))

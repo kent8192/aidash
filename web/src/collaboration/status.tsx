@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { Alert } from "../components/patterns";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Circle, Pause, Play } from "lucide-react";
-import { runControl } from "../generated/aidash";
+import { executionControl } from "../generated/aidash";
 import type { Task, Thread, State, Discovery } from "../types";
 import type { Selection } from "./details";
 import { Badge, useI18n, useAgentLabel } from "../ui";
@@ -48,7 +48,7 @@ export function useRunControl(runs: LocatedRun[], localNode: string) {
         continue;
       try {
         const action = paused ? "resume" : "pause";
-        await runControl(run.id, { action });
+        await executionControl(run.id, { action });
       } catch {
         failed = true;
       }

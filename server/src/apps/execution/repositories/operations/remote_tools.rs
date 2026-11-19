@@ -42,7 +42,7 @@ pub(crate) async fn bounding_run(
 				Expr::col("thread_id").in_subquery(
 					Query::select()
 						.column(Alias::new("thread_id"))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(Expr::col("id").eq(Expr::value(current)))
 						.to_owned(),
 				),

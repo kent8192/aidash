@@ -212,7 +212,7 @@ async fn fence(tx: &mut native::Transaction, boundary: &Boundary) -> Result<()> 
 	let fenced = native::query(
 		&Query::select()
 			.columns(["revision", "observed_input_seq"].map(Alias::new))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(boundary.run)))
 			.and_where(Expr::col("lease_owner").eq(Expr::value(boundary.worker)))
 			.and_where(Expr::col("lease_until").gt(Expr::current_timestamp()))
@@ -238,7 +238,7 @@ async fn lease_held_now(tx: &mut native::Transaction, boundary: &Boundary) -> Re
 	native::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(boundary.run)))
 			.and_where(Expr::col("lease_owner").eq(Expr::value(boundary.worker)))
 			.and_where(Expr::col("lease_until").gt(SimpleExpr::FunctionCall(
@@ -532,7 +532,7 @@ impl<'a> RunDecisionJournal<'a> {
 					Expr::value(label(&record.mode)?).into(),
 					Expr::value(serde_json::to_value(&owner_receipts)?).into(),
 					Expr::value(PENDING).into(),
-					crate::database::scope::tenant_of("runs", "id", record.boundary.run),
+					crate::database::scope::tenant_of("task_executions", "id", record.boundary.run),
 				])
 				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),
@@ -816,7 +816,7 @@ impl<'a> RunDecisionJournal<'a> {
 					Expr::value(label(&evidence.outcome())?).into(),
 					Expr::value(evidence.reason()).into(),
 					Expr::value(serde_json::to_value(evidence)?).into(),
-					crate::database::scope::tenant_of("runs", "id", self.run.id),
+					crate::database::scope::tenant_of("task_executions", "id", self.run.id),
 				])
 				.expect("one value per column")
 				.to_string(PostgresQueryBuilder),

@@ -279,7 +279,7 @@ async fn orm_work_on_a_tenant_owned_table_stays_in_its_tenant(#[future] database
 /// parents; what the test asks is how the policy treats the row.
 #[rstest]
 #[case::runs(
-	"runs",
+	"task_executions",
 	"id, tenant, task_id, thread_id, home_node, node, agent_id, agent_version",
 	"gen_random_uuid(), $1, gen_random_uuid(), gen_random_uuid(), 'n', 'n', 'a', '1'"
 )]

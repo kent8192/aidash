@@ -894,7 +894,7 @@ export function eventReferences(event: MeshEvent): {
         : undefined),
     run_id:
       text(data.run_id) ??
-      (event.kind.startsWith("run.") ? text(data.id) : undefined),
+      (event.kind.startsWith("execution.") ? text(data.id) : undefined),
     artifact_id:
       text(data.artifact_id) ??
       (event.kind === "task.completed"

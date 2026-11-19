@@ -20,8 +20,8 @@ import {
 } from "@tanstack/react-query";
 import {
   session as getSession,
-  suspendedRuns,
-  suspendedRunsResume,
+  suspendedExecutions,
+  suspendedExecutionsResume,
   threadGet,
 } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
@@ -267,8 +267,8 @@ function SuspendedRunsPrompt() {
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState("");
   const listed = useQuery({
-    queryKey: ["suspended-runs"],
-    queryFn: () => suspendedRuns(),
+    queryKey: ["suspended-executions"],
+    queryFn: () => suspendedExecutions(),
     refetchInterval: 60_000,
   });
   const paused = listed.data?.runs ?? [];
@@ -277,7 +277,7 @@ function SuspendedRunsPrompt() {
     setBusy(true);
     setOutcome("");
     try {
-      const { runs: results } = await suspendedRunsResume();
+      const { runs: results } = await suspendedExecutionsResume();
       const resumed = results.filter(
         (result) => result.outcome === "resumed",
       ).length;
@@ -291,7 +291,7 @@ function SuspendedRunsPrompt() {
       setOutcome(reason instanceof Error ? reason.message : String(reason));
     } finally {
       await Promise.all([
-        client.invalidateQueries({ queryKey: ["suspended-runs"] }),
+        client.invalidateQueries({ queryKey: ["suspended-executions"] }),
         client.invalidateQueries({ queryKey: ["state"] }),
       ]);
       setBusy(false);
@@ -309,7 +309,7 @@ function SuspendedRunsPrompt() {
         disabled={busy}
         onClick={() => void resume()}
       >
-        {t("suspendedRunsResume")}
+        {t("suspendedExecutionsResume")}
       </Button>
     </div>
   );

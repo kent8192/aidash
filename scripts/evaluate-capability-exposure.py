@@ -117,20 +117,20 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
         deadline = time.monotonic() + timeout
         run_id = None
         while run_id is None:
-            run_id = next((run["id"] for run in api(f"/api/tasks/{task}/runs")["items"]), None)
+            run_id = next((run["id"] for run in api(f"/api/tasks/{task}/executions")["items"]), None)
             if run_id is None:
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"no Run appeared for task {task}")
                 time.sleep(interval)
         answers, timed_out = [], False
         while True:
-            run = api(f"/api/runs/{run_id}")["run"]
+            run = api(f"/api/executions/{run_id}")["run"]
             if run["phase"] in TERMINAL:
                 break
             if time.monotonic() > deadline:
-                api(f"/api/runs/{run_id}/control", {"action": "cancel"})
+                api(f"/api/executions/{run_id}/control", {"action": "cancel"})
                 timed_out = True
-                run = api(f"/api/runs/{run_id}")["run"]
+                run = api(f"/api/executions/{run_id}")["run"]
                 break
             if run["phase"] == "WAITING":
                 for request in human_requests(run_id):

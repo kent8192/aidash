@@ -118,7 +118,7 @@ async fn task_run_list_returns_the_claimed_run_and_forbids_missing_tasks(
 	let page = assert_json(
 		execution
 			.subject
-			.get(&format!("/api/tasks/{}/runs", execution.task))
+			.get(&format!("/api/tasks/{}/executions", execution.task))
 			.await
 			.unwrap(),
 		200,
@@ -129,7 +129,7 @@ async fn task_run_list_returns_the_claimed_run_and_forbids_missing_tasks(
 	assert_json(
 		execution
 			.subject
-			.get(&format!("/api/tasks/{}/runs", Uuid::new_v4()))
+			.get(&format!("/api/tasks/{}/executions", Uuid::new_v4()))
 			.await
 			.unwrap(),
 		403,
@@ -138,7 +138,7 @@ async fn task_run_list_returns_the_claimed_run_and_forbids_missing_tasks(
 		execution
 			.app
 			.deployment_administrator
-			.get(&format!("/api/tasks/{}/runs", execution.task))
+			.get(&format!("/api/tasks/{}/executions", execution.task))
 			.await
 			.unwrap(),
 		403,
@@ -195,7 +195,7 @@ async fn bounded_lists_enforce_current_thread_task_and_run_visibility(
 			.unwrap(),
 		200,
 	);
-	let task_path = format!("/api/tasks/{}/runs", execution.task);
+	let task_path = format!("/api/tasks/{}/executions", execution.task);
 	let runs = assert_json(execution.subject.get(&task_path).await.unwrap(), 200);
 	assert!(runs["items"].as_array().unwrap().is_empty());
 	let requests = assert_json(
@@ -474,7 +474,7 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 	let execution = Box::pin(execution).await;
 	let app = &execution.app;
 	let run = claim(&execution).await;
-	let url = format!("/api/runs/{}/control", run.id);
+	let url = format!("/api/executions/{}/control", run.id);
 	assert_json_rejection(
 		execution
 			.subject
@@ -561,7 +561,7 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 		.unwrap();
 	let actions: Vec<_> = events
 		.iter()
-		.filter(|event| event.kind == "run.control")
+		.filter(|event| event.kind == "execution.control")
 		.map(|event| event.data["action"].as_str().unwrap())
 		.collect();
 	assert_eq!(actions, ["pause", "resume", "cancel"]);

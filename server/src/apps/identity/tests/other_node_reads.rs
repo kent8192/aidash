@@ -572,8 +572,8 @@ async fn outputs_of_a_run_that_discovered_an_agent_on_another_node_are_readable(
 	);
 	let child = world.handed_over().await;
 	for path in [
-		format!("/api/tasks/{}/runs", child.id),
-		format!("/api/runs/{}", coordinator.id),
+		format!("/api/tasks/{}/executions", child.id),
+		format!("/api/executions/{}", coordinator.id),
 	] {
 		let (status, body) = world.get(&path).await;
 		assert_eq!(status, 200, "{path}: {body}");
@@ -583,7 +583,9 @@ async fn outputs_of_a_run_that_discovered_an_agent_on_another_node_are_readable(
 	assert_eq!(status, 200, "{tasks}");
 	assert!(listed(&tasks, child.id), "{tasks}");
 	// The Task Alice created herself has no such producer.
-	let (status, body) = world.get(&format!("/api/tasks/{}/runs", world.task)).await;
+	let (status, body) = world
+		.get(&format!("/api/tasks/{}/executions", world.task))
+		.await;
 	assert_eq!(status, 200, "{body}");
 	world.close().await;
 }
@@ -597,8 +599,8 @@ async fn a_withdrawn_approval_on_the_other_node_hides_nothing(#[future(awt)] pro
 	let world = world(provider).await;
 	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	let path = format!("/api/tasks/{}/runs", child.id);
-	let run = format!("/api/runs/{}", coordinator.id);
+	let path = format!("/api/tasks/{}/executions", child.id);
+	let run = format!("/api/executions/{}", coordinator.id);
 	let (status, body) = world.get(&path).await;
 	assert_eq!(status, 200, "{body}");
 	let authorization = aidash_server::authorization::Authorization {
@@ -675,7 +677,9 @@ async fn an_agent_delegates_to_the_node_it_discovered_the_agent_on(
 ) {
 	let world = world(provider).await;
 	let coordinator = world.run_coordinator(WITH_DELEGATION).await;
-	let (status, details) = world.get(&format!("/api/runs/{}", coordinator.id)).await;
+	let (status, details) = world
+		.get(&format!("/api/executions/{}", coordinator.id))
+		.await;
 	assert_eq!(status, 200, "{details}");
 	let delegation = details["invocations"]
 		.as_array()
@@ -693,8 +697,8 @@ async fn an_agent_delegates_to_the_node_it_discovered_the_agent_on(
 	// The Run that delegated, and what it produced, read the same way at Home.
 	let child = world.handed_over().await;
 	for path in [
-		format!("/api/tasks/{}/runs", child.id),
-		format!("/api/runs/{}", coordinator.id),
+		format!("/api/tasks/{}/executions", child.id),
+		format!("/api/executions/{}", coordinator.id),
 	] {
 		let (status, body) = world.get(&path).await;
 		assert_eq!(status, 200, "{path}: {body}");
@@ -702,7 +706,7 @@ async fn an_agent_delegates_to_the_node_it_discovered_the_agent_on(
 	// The Run on the other Node is a remote admission of the Home's grant. Its
 	// own view is a separate question from the outputs of the Run that
 	// delegated: the person is refused it today, with no Node blamed.
-	let (status, body) = world.get(&format!("/api/runs/{}", receiver.id)).await;
+	let (status, body) = world.get(&format!("/api/executions/{}", receiver.id)).await;
 	assert_eq!(status, 403, "{body}");
 	assert_ne!(body["code"], "node_unreachable", "{body}");
 	world.close().await;
@@ -760,7 +764,7 @@ async fn a_silent_node_of_the_tenant_leaves_the_read_decided_here(
 	let child = world.handed_over().await;
 	add_policies(&world, &["bob"], vec![bob_cannot_discover()]).await;
 	let bob = subject_credential(&world.f.store, "acme", "bob").await;
-	let single = format!("/api/tasks/{}/runs", child.id);
+	let single = format!("/api/tasks/{}/executions", child.id);
 
 	let original = limit_pool(&mut world, 1).await;
 	let (status, body) = world.get(&single).await;
@@ -813,7 +817,7 @@ async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider:
 		},
 	)
 	.await;
-	let path = format!("/api/tasks/{}/runs", child.id);
+	let path = format!("/api/tasks/{}/executions", child.id);
 	let started = std::time::Instant::now();
 	let answers = tokio::time::timeout(
 		Duration::from_secs(60),
@@ -858,7 +862,7 @@ async fn deleting_the_discovered_node_hides_nothing(#[future(awt)] provider: Pro
 	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	let path = format!("/api/tasks/{}/runs", child.id);
+	let path = format!("/api/tasks/{}/executions", child.id);
 	let (status, body) = world.get(&path).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = administer_node(
@@ -896,7 +900,7 @@ async fn opening_a_run_stream_while_a_node_is_silent_opens_and_a_refusal_stays(
 	.await;
 	let bob = subject_credential(&world.f.store, "acme", "bob").await;
 	let carol = subject_credential(&world.f.store, "acme", "carol").await;
-	let path = format!("/api/runs/{}/inference/stream", coordinator.id);
+	let path = format!("/api/executions/{}/inference/stream", coordinator.id);
 	let original = limit_pool(&mut world, 1).await;
 	let response = world
 		.app
@@ -1011,7 +1015,9 @@ async fn establish_delegated_read(world: &World, created: usize) -> Task {
 		.child_completed
 		.store(true, std::sync::atomic::Ordering::SeqCst);
 	let coordinator = world.advance_coordinator(created + 6).await;
-	let (status, details) = world.get(&format!("/api/runs/{}", coordinator.id)).await;
+	let (status, details) = world
+		.get(&format!("/api/executions/{}", coordinator.id))
+		.await;
 	assert_eq!(status, 200, "{details}");
 	let read = details["invocations"]
 		.as_array()
@@ -1165,7 +1171,7 @@ async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_no
 		!graph.to_string().contains(&world.sibling.to_string()),
 		"{graph}"
 	);
-	let single = format!("/api/tasks/{}/runs", hidden[0].id);
+	let single = format!("/api/tasks/{}/executions", hidden[0].id);
 	// The same Node is named in the state and the Thread.
 	let (status, state) = world.get("/api/state").await;
 	assert_eq!(status, 200, "{state}");
@@ -1667,7 +1673,7 @@ async fn a_read_decided_here_does_not_wait_for_a_silent_node(#[future(awt)] prov
 	let mut world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	let path = format!("/api/tasks/{}/runs", child.id);
+	let path = format!("/api/tasks/{}/executions", child.id);
 	let original = limit_pool_waiting(&mut world, 1, Duration::from_secs(60)).await;
 	let started = std::time::Instant::now();
 	let (status, body) = world.get(&path).await;
@@ -1696,8 +1702,8 @@ async fn deleting_the_delegated_node_hides_nothing_the_home_decides(
 	stops_at_data_protection(&receiver);
 	let child = world.handed_over().await;
 	let paths = [
-		format!("/api/tasks/{}/runs", child.id),
-		format!("/api/runs/{}", coordinator.id),
+		format!("/api/tasks/{}/executions", child.id),
+		format!("/api/executions/{}", coordinator.id),
 	];
 	let (status, body) = administer_node(
 		&world.f,
@@ -1711,7 +1717,7 @@ async fn deleting_the_delegated_node_hides_nothing_the_home_decides(
 		let (status, body) = world.get(path).await;
 		assert_eq!(status, 200, "{path}: {body}");
 	}
-	let (status, body) = world.get(&format!("/api/runs/{}", receiver.id)).await;
+	let (status, body) = world.get(&format!("/api/executions/{}", receiver.id)).await;
 	assert_eq!(status, 403, "{body}");
 	assert_ne!(body["code"], "node_unreachable", "{body}");
 	world.close().await;
@@ -1725,7 +1731,7 @@ async fn resuming_while_a_node_is_silent_resumes(#[future(awt)] provider: Provid
 	*provider.script.delegate.lock().unwrap() = false;
 	let mut world = world(provider).await;
 	let run = world.run_coordinator(WITHOUT_DELEGATION).await;
-	let control = format!("/api/runs/{}/control", run.id);
+	let control = format!("/api/executions/{}/control", run.id);
 	let (status, body) = world_post(&world, &control, json!({"action":"pause"})).await;
 	assert_eq!(status, 200, "{body}");
 	let original = limit_pool(&mut world, 1).await;
@@ -1753,7 +1759,7 @@ async fn a_read_does_not_wait_for_a_writer_holding_the_distribution_lock(
 	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	let path = format!("/api/tasks/{}/runs", child.id);
+	let path = format!("/api/tasks/{}/executions", child.id);
 	let driver = world.f.store.pool.fixture_driver().clone();
 	// The key is the one `marketplace::services::storage::lock` takes.
 	let mut writer = driver.begin().await.unwrap();
@@ -1800,7 +1806,7 @@ async fn a_denied_registry_read_hides_a_run_that_found_the_agent_on_another_node
 	*provider.script.delegate.lock().unwrap() = false;
 	let world = world(provider).await;
 	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
-	let run = format!("/api/runs/{}", coordinator.id);
+	let run = format!("/api/executions/{}", coordinator.id);
 	let (status, body) = world.get(&run).await;
 	assert_eq!(status, 200, "{body}");
 
@@ -1821,7 +1827,7 @@ async fn a_remote_node_condition_hides_only_what_was_found_on_that_node(
 	*provider.script.delegate.lock().unwrap() = false;
 	let world = world(provider).await;
 	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
-	let run = format!("/api/runs/{}", coordinator.id);
+	let run = format!("/api/executions/{}", coordinator.id);
 
 	let elsewhere = world
 		.f

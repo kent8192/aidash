@@ -34,7 +34,7 @@ fn shared_thread(
 		let mut areas = vec![];
 		let mut runs = vec![];
 		for (owner, token) in [("alice", &c.token), ("bob", &bob)] {
-			let (status, area) = common::post(&c.app, token, &format!("/api/threads/{thread}/agents/research/runs"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Private work","description":"One owner's files"})).await;
+			let (status, area) = common::post(&c.app, token, &format!("/api/threads/{thread}/agents/research/executions"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Private work","description":"One owner's files"})).await;
 			assert_eq!(status, 200, "{owner}: {area}");
 			let (_, session) = common::get(
 				&c.app,
@@ -48,8 +48,12 @@ fn shared_thread(
 			let run: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
 			let (status, patch) = common::post(&c.app, token, &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"private.txt":null},"patch":format!("*** Begin Patch\n*** Add File: private.txt\n+{owner}-only\n*** End Patch")})).await;
 			assert_eq!(status, 200, "{patch}");
-			let (_, area) =
-				common::get(&c.app, token, &format!("/api/runs/{run}/working-area")).await;
+			let (_, area) = common::get(
+				&c.app,
+				token,
+				&format!("/api/executions/{run}/working-area"),
+			)
+			.await;
 			areas.push(area);
 			runs.push(run);
 		}
@@ -71,7 +75,7 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let f = Box::pin(shared_thread).await;
 	assert_ne!(f.areas[0]["id"], f.areas[1]["id"]);
 	assert_ne!(f.runs[0], f.runs[1]);
-	let run_path = format!("/api/runs/{}", f.runs[0]);
+	let run_path = format!("/api/executions/{}", f.runs[0]);
 	assert_eq!(common::get(&f.c.app, &f.c.token, &run_path).await.0, 200);
 	let (status, denied) = common::get(&f.c.app, &f.bob, &run_path).await;
 	assert!(
@@ -83,13 +87,13 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let hidden = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/runs/{}/working-area", f.runs[0]),
+		&format!("/api/executions/{}/working-area", f.runs[0]),
 	)
 	.await;
 	let absent = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/runs/{}/working-area", Uuid::new_v4()),
+		&format!("/api/executions/{}/working-area", Uuid::new_v4()),
 	)
 	.await;
 	assert_eq!(hidden.0, 403);
@@ -143,7 +147,7 @@ fn successor_fixture(
 	let shared_thread = Box::pin(shared_thread);
 	async move {
 		let f = shared_thread.await;
-		let (_, queued) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/research/runs", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
+		let (_, queued) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/research/executions", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
 		assert_eq!(queued["id"], f.areas[0]["id"]);
 		// Model the predecessor's committed terminal transition, before the
 		// next Worker executes. The endpoint must honor the live queue owner.
@@ -151,7 +155,7 @@ fn successor_fixture(
 			let query_bind_1 = f.runs[0];
 			sqlx::query(
 				&Query::update()
-					.table(Alias::new("runs"))
+					.table(Alias::new("task_executions"))
 					.value(Alias::new("phase"), "COMPLETED")
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 					.to_string(PostgresQueryBuilder),
@@ -185,7 +189,7 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	let (status, rejected) = common::post(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/runs/{}/files/materialize", f.runs[0]),
+		&format!("/api/executions/{}/files/materialize", f.runs[0]),
 		input.clone(),
 	)
 	.await;
@@ -194,7 +198,7 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	let (_, before) = common::get(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/runs/{successor}/working-area"),
+		&format!("/api/executions/{successor}/working-area"),
 	)
 	.await;
 	assert_eq!(before["manifest"], f.areas[0]["manifest"]);
@@ -202,7 +206,7 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	let (status, copied) = common::post(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/runs/{successor}/files/materialize"),
+		&format!("/api/executions/{successor}/files/materialize"),
 		input,
 	)
 	.await;

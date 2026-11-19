@@ -125,14 +125,14 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 
 impl World {
 	async fn get(&self, token: &str, run: Uuid) -> (u16, Value) {
-		common::get(&self.app, token, &format!("/api/runs/{run}")).await
+		common::get(&self.app, token, &format!("/api/executions/{run}")).await
 	}
 
 	async fn control(&self, token: &str, run: Uuid, action: &str) -> (u16, Value) {
 		common::post(
 			&self.app,
 			token,
-			&format!("/api/runs/{run}/control"),
+			&format!("/api/executions/{run}/control"),
 			json!({"action":action}),
 		)
 		.await
@@ -406,7 +406,8 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 			.unwrap()
 			.iter()
 			.filter(|event| {
-				event.kind == "run.authorization_blocked" && event.data["run_id"] == json!(run.id)
+				event.kind == "execution.authorization_blocked"
+					&& event.data["run_id"] == json!(run.id)
 			})
 			.count()
 	};
@@ -416,7 +417,7 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 	let (status, body) = common::post(
 		&app,
 		&token,
-		&format!("/api/runs/{}/control", run.id),
+		&format!("/api/executions/{}/control", run.id),
 		json!({"action":"resume"}),
 	)
 	.await;
@@ -441,7 +442,7 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 	let (status, body) = common::post(
 		&app,
 		&token,
-		&format!("/api/runs/{}/control", run.id),
+		&format!("/api/executions/{}/control", run.id),
 		json!({"action":"resume"}),
 	)
 	.await;
@@ -714,7 +715,7 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 		let (status, paused) = common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{run}/control"),
+			&format!("/api/executions/{run}/control"),
 			json!({"action":"pause"}),
 		)
 		.await;
@@ -722,7 +723,7 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{run}/control"),
+			&format!("/api/executions/{run}/control"),
 			json!({"action":"resume"}),
 		)
 		.await
@@ -834,7 +835,8 @@ async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_it
 		events
 			.iter()
 			.filter(|event| {
-				event.kind == "run.authorization_blocked" && event.data["run_id"] == json!(run)
+				event.kind == "execution.authorization_blocked"
+					&& event.data["run_id"] == json!(run)
 			})
 			.count()
 	};

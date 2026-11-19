@@ -303,7 +303,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	let (_, area) = common::get(
 		&j.c.app,
 		&j.c.token,
-		&format!("/api/runs/{}/working-area", j.run.id),
+		&format!("/api/executions/{}/working-area", j.run.id),
 	)
 	.await;
 	let answer = area["manifest"]
@@ -315,7 +315,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	let (status, read) = common::post(
 		&j.c.app,
 		&j.c.token,
-		&format!("/api/runs/{}/files/read", j.run.id),
+		&format!("/api/executions/{}/files/read", j.run.id),
 		json!({"file_id":answer["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -333,7 +333,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	let (_, received) = common::get(
 		&j.peer.app,
 		&j.peer.token,
-		&format!("/api/runs/{}/working-area", j.receiver.id),
+		&format!("/api/executions/{}/working-area", j.receiver.id),
 	)
 	.await;
 	let copy = &received["manifest"][0];
@@ -342,7 +342,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	let (status, read) = common::post(
 		&j.peer.app,
 		&j.peer.token,
-		&format!("/api/runs/{}/files/read", j.receiver.id),
+		&format!("/api/executions/{}/files/read", j.receiver.id),
 		json!({"file_id":copy["file_id"],"representation":"text"}),
 	)
 	.await;
@@ -371,7 +371,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	let (_, read_after) = common::post(
 		&j.peer.app,
 		&j.peer.token,
-		&format!("/api/runs/{}/files/read", j.receiver.id),
+		&format!("/api/executions/{}/files/read", j.receiver.id),
 		json!({"file_id":copy["file_id"],"representation":"text"}),
 	)
 	.await;

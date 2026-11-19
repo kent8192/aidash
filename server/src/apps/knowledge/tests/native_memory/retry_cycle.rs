@@ -386,7 +386,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 	let cycle: i32 = aidash_server::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("semantic_retry_cycle"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)

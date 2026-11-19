@@ -13,7 +13,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[model_config(app_label = "execution", table_name = "runs")]
+#[model_config(app_label = "execution", table_name = "task_executions")]
 pub struct Run {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,

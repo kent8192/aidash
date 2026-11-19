@@ -233,7 +233,7 @@ impl Models {
 			let record: aidash_domain::Run = crate::database::query_as(
 				&Query::select()
 					.column(reinhardt::query::ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
@@ -351,7 +351,7 @@ impl Models {
 		let record: aidash_domain::Run = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)

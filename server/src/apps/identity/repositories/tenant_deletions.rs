@@ -303,7 +303,7 @@ async fn control_plane(tx: &mut dyn TransactionExecutor) -> Result<()> {
 async fn stop_runs(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()> {
 	control_plane(tx).await?;
 	let (sql, values) = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value_expr(Alias::new("control"), Expr::value("PAUSED"))
 		.value_expr(Alias::new("error"), Expr::value(RUN_REASON))
 		.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
@@ -326,7 +326,7 @@ async fn stop_runs(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()>
 async fn cancel_stopped_runs(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<()> {
 	control_plane(tx).await?;
 	let (sql, values) = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value_expr(Alias::new("control"), Expr::value("CANCELLED"))
 		.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
 		.value_expr(Alias::new("updated_at"), Expr::cust("CURRENT_TIMESTAMP"))

@@ -25,7 +25,7 @@ async fn approve(c: &CoreFixture, run: Uuid, url: &str, reusable: bool) -> (Valu
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{run}/outbound"),
+		&format!("/api/executions/{run}/outbound"),
 		input.clone(),
 	)
 	.await;
@@ -58,7 +58,7 @@ async fn outcome(c: &CoreFixture, run: Uuid, input: &Value, state: &str) -> Valu
 			&c.app,
 			&c.token,
 			"POST",
-			&format!("/api/runs/{run}/outbound"),
+			&format!("/api/executions/{run}/outbound"),
 			input.clone(),
 		)
 		.await;
@@ -149,7 +149,7 @@ async fn real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied(
 			&c.app,
 			&c.token,
 			"POST",
-			&format!("/api/runs/{}/outbound", run.id),
+			&format!("/api/executions/{}/outbound", run.id),
 			json!({"idempotency_key":Uuid::new_v4(),"url":"https://sentinel-secret@httpbingo.org/get"})
 		)
 		.await
@@ -180,7 +180,7 @@ async fn revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_i
 			&c.app,
 			&c.token,
 			"POST",
-			&format!("/api/runs/{}/outbound", run.id),
+			&format!("/api/executions/{}/outbound", run.id),
 			input.clone(),
 		)
 		.await;
@@ -216,7 +216,7 @@ async fn revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_i
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		input.clone(),
 	)
 	.await;
@@ -228,7 +228,7 @@ async fn revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_i
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{}/outbound", run.id),
+		&format!("/api/executions/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://httpbingo.org/get"}),
 	)
 	.await;

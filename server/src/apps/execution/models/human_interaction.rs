@@ -20,7 +20,7 @@ impl HumanRequest {
 		use reinhardt::query::LockType;
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run)))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.and_where(Expr::col("control").ne("CANCELLED"))
@@ -122,7 +122,7 @@ impl HumanRequest {
 				IntoValue::into_value(prompt).into(),
 				IntoValue::into_value(key).into(),
 				IntoValue::into_value(request.created_at).into(),
-				crate::database::scope::tenant_of("runs", "id", run),
+				crate::database::scope::tenant_of("task_executions", "id", run),
 			])
 			.expect("one value per column")
 			.on_conflict(OnConflict::columns(["request_key"]).do_nothing())

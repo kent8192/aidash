@@ -152,7 +152,7 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		let run: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+		let run: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 			.bind(task)
 			.fetch_one(db)
 			.await
@@ -176,7 +176,7 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 					resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
 				}));
 			let pending = aidash_domain::run_state::encode(&state, &Default::default()).unwrap();
-			sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1 WHERE id = $2")
+			sqlx::query("UPDATE task_executions SET phase = 'WAITING', pending = $1 WHERE id = $2")
 				.bind(pending)
 				.bind(run)
 				.execute(db)
@@ -284,7 +284,7 @@ async fn state_statement_count_does_not_grow_with_runs_waiting_on_a_person(
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		let run: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+		let run: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 			.bind(task)
 			.fetch_one(db)
 			.await
@@ -300,7 +300,7 @@ async fn state_statement_count_does_not_grow_with_runs_waiting_on_a_person(
 				resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
 			}));
 		let pending = aidash_domain::run_state::encode(&state, &Default::default()).unwrap();
-		sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1 WHERE id = $2")
+		sqlx::query("UPDATE task_executions SET phase = 'WAITING', pending = $1 WHERE id = $2")
 			.bind(pending)
 			.bind(run)
 			.execute(db)

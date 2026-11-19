@@ -2,8 +2,8 @@
 use uuid::Uuid;
 
 #[reinhardt::get(
-	"/api/runs/{id}/semantic",
-	name = "remote-semantic-run-provenance",
+	"/api/executions/{id}/semantic",
+	name = "remote-semantic-execution-provenance",
 	auth = "protected"
 )]
 pub async fn run_receipt(

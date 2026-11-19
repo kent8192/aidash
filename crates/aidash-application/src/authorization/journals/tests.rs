@@ -277,7 +277,7 @@ async fn conflicting_local_and_remote_membership_denies_before_any_journal_io(mu
 #[case::conversation("conversation.started", "conversation")]
 #[case::conversation_end("conversation.completed", "conversation")]
 #[case::generation("generation.started", "generation")]
-#[case::run_created("run.created", "run")]
+#[case::run_created("execution.created", "run")]
 #[case::unknown("extension.created", "run")]
 #[tokio::test]
 async fn event_membership_keeps_the_original_source_selector(
@@ -316,8 +316,8 @@ async fn only_the_current_local_run_is_excluded_from_recursive_membership(
 	}
 	let mut snapshot = snapshot();
 	snapshot.events = vec![
-		event("run.created", json!({"id":Uuid::from_u128(42)})),
-		event("run.phase", json!({"run_id":Uuid::from_u128(43)})),
+		event("execution.created", json!({"id":Uuid::from_u128(42)})),
+		event("execution.phase", json!({"run_id":Uuid::from_u128(43)})),
 	];
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
 	assert_eq!(

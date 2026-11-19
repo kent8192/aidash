@@ -207,8 +207,14 @@ impl ExecutionStore for RunStore {
 		Ok(ThreadEvents { events, dropped })
 	}
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		*run =
-			Store::save_run(&self.store, &self.scope, run, token, "run.sources_observed").await?;
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"execution.sources_observed",
+		)
+		.await?;
 		Ok(())
 	}
 	async fn degrade_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -217,7 +223,7 @@ impl ExecutionStore for RunStore {
 			&self.scope,
 			run,
 			token,
-			"run.semantic_degraded",
+			"execution.semantic_degraded",
 		)
 		.await?;
 		Ok(())
@@ -228,13 +234,20 @@ impl ExecutionStore for RunStore {
 			&self.scope,
 			run,
 			token,
-			"run.semantic_recovered",
+			"execution.semantic_recovered",
 		)
 		.await?;
 		Ok(())
 	}
 	async fn pin_estimate(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		*run = Store::save_run(&self.store, &self.scope, run, token, "run.estimate_pinned").await?;
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"execution.estimate_pinned",
+		)
+		.await?;
 		Ok(())
 	}
 	async fn pin_plugin_tools(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -243,13 +256,20 @@ impl ExecutionStore for RunStore {
 			&self.scope,
 			run,
 			token,
-			"run.plugin_tools_pinned",
+			"execution.plugin_tools_pinned",
 		)
 		.await?;
 		Ok(())
 	}
 	async fn checkpoint_mcp(&self, run: &mut Run, token: Uuid) -> Result<()> {
-		*run = Store::save_run(&self.store, &self.scope, run, token, "run.mcp_checkpoint").await?;
+		*run = Store::save_run(
+			&self.store,
+			&self.scope,
+			run,
+			token,
+			"execution.mcp_checkpoint",
+		)
+		.await?;
 		Ok(())
 	}
 	async fn finish_sampling(

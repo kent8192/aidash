@@ -15,7 +15,7 @@ fn storage_fixture(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 			Value::Null,
 		)
 		.await;
@@ -53,7 +53,7 @@ async fn unchanged_exports_reuse_objects_and_sweep_reclaims_superseded_bytes(
 			&c.app,
 			&c.token,
 			"POST",
-			&format!("/api/runs/{run}/shell"),
+			&format!("/api/executions/{run}/shell"),
 			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"command":command}),
 		)
 		.await;
@@ -65,7 +65,7 @@ async fn unchanged_exports_reuse_objects_and_sweep_reclaims_superseded_bytes(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/runs/{run}/working-area"),
+			&format!("/api/executions/{run}/working-area"),
 			Value::Null,
 		)
 		.await;
@@ -196,7 +196,7 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 		&c.app,
 		&c.token,
 		"POST",
-		&format!("/api/runs/{run}/shell"),
+		&format!("/api/executions/{run}/shell"),
 		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":initial["revision"],"command":":"}),
 	)
 	.await;

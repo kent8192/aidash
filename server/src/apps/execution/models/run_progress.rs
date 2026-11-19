@@ -213,14 +213,14 @@ impl Run {
 			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
 			.and_where(
 				crate::apps::execution::repositories::node_cancellations::run_open_condition(
-					Expr::col((Alias::new("runs"), Alias::new("id"))).into(),
-					Expr::col((Alias::new("runs"), Alias::new("tenant"))).into(),
+					Expr::col((Alias::new("task_executions"), Alias::new("id"))).into(),
+					Expr::col((Alias::new("task_executions"), Alias::new("tenant"))).into(),
 				),
 			)
 			.and_where(
 				crate::apps::identity::repositories::nodes::live_node_condition(
-					Expr::col((Alias::new("runs"), Alias::new("tenant"))).into(),
-					Expr::col((Alias::new("runs"), Alias::new("node"))).into(),
+					Expr::col((Alias::new("task_executions"), Alias::new("tenant"))).into(),
+					Expr::col((Alias::new("task_executions"), Alias::new("node"))).into(),
 				),
 			)
 			.build(PostgresQueryBuilder);

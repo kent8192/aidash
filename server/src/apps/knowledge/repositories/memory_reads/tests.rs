@@ -92,7 +92,7 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let mut rows = vec![
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",
@@ -543,7 +543,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",
@@ -575,7 +575,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			],
 		),
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",

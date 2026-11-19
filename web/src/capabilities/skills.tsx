@@ -34,7 +34,7 @@ export function SkillFiles({ run }: { run: string }) {
     retry: false,
     queryFn: ({ pageParam }) =>
       post<{ skills: Skill[]; next_cursor: number | null }>(
-        `/runs/${run}/skills/list`,
+        `/executions/${run}/skills/list`,
         { cursor: pageParam },
       ),
     getNextPageParam: (page) => page.next_cursor ?? undefined,
@@ -43,7 +43,7 @@ export function SkillFiles({ run }: { run: string }) {
     setError("");
     try {
       const result = await post<Read>(
-        `/runs/${run}/skills/${path ? "read" : "load"}`,
+        `/executions/${run}/skills/${path ? "read" : "load"}`,
         path
           ? { skill_id: skill.skill_id, digest: skill.digest, path, offset }
           : { skill_id: skill.skill_id, expected_digest: skill.digest },

@@ -102,7 +102,8 @@ impl AuthorizationRunRead {
 		run: Uuid,
 		thread: Uuid,
 	) -> Result<String> {
-		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
 		let (sql, values) = Query::select()
 			.column(Alias::new("thread_id"))
 			.from(Alias::new("authorization_threads"))
@@ -218,7 +219,7 @@ impl AuthorizationRunOutput {
 				IntoValue::into_value(thread).into(),
 				IntoValue::into_value(kind).into(),
 				IntoValue::into_value(id).into(),
-				crate::database::scope::tenant_of("runs", "id", run),
+				crate::database::scope::tenant_of("task_executions", "id", run),
 			])
 			.expect("one value per column")
 			.on_conflict(

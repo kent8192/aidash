@@ -1,4 +1,4 @@
-//! `GET /api/runs/{run}/inference/stream` delivery, replay and closure.
+//! `GET /api/executions/{run}/inference/stream` delivery, replay and closure.
 use super::{Conversation, common};
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::provider::progress::{InterruptionReason, ProgressOutcome};
@@ -38,7 +38,7 @@ impl Stream {
 		after: Option<i64>,
 		header: Option<i64>,
 	) -> reinhardt::Response {
-		let mut path = format!("/api/runs/{run}/inference/stream");
+		let mut path = format!("/api/executions/{run}/inference/stream");
 		if let Some(after) = after {
 			path.push_str(&format!("?after={after}"));
 		}
@@ -456,7 +456,7 @@ async fn deployment_administrators_cannot_open_or_resume_the_inference_stream(
 	let attempt = c.start(worker).await;
 	c.text(worker, attempt, "private progress").await;
 	let administrator = common::BrowserAdministrator::new(&c.f).await;
-	let run_stream = format!("/api/runs/{}/inference/stream", c.run.id);
+	let run_stream = format!("/api/executions/{}/inference/stream", c.run.id);
 	let thread = c.run.thread_id;
 
 	// Act and Assert: every cursor of the Run stream is refused.

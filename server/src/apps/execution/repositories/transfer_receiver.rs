@@ -43,7 +43,10 @@ fn runs_on(node: &aidash_domain::nodes::NodeName) -> SimpleExpr {
 			.from_as(Alias::new("core_runs"), Alias::new("q"))
 			.join(
 				reinhardt::query::JoinType::InnerJoin,
-				reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("r")),
+				reinhardt::query::TableRef::table_alias(
+					Alias::new("task_executions"),
+					Alias::new("r"),
+				),
 				Expr::col((Alias::new("r"), Alias::new("id")))
 					.equals((Alias::new("q"), Alias::new("run_id"))),
 			)
@@ -265,7 +268,7 @@ impl ReceiverScope for Scope<'_> {
 				crate::database::native::query_scalar(
 					&Query::select()
 						.column((Alias::new("r"), Alias::new("id")))
-						.from_as(Alias::new("runs"), Alias::new("r"))
+						.from_as(Alias::new("task_executions"), Alias::new("r"))
 						.and_where(
 							Expr::col((Alias::new("r"), Alias::new("node"))).eq(node.as_str()),
 						)
@@ -349,7 +352,7 @@ impl ReceiverScope for Scope<'_> {
 					&Query::select()
 						.distinct()
 						.column((Alias::new("r"), Alias::new("agent_version")))
-						.from_as(Alias::new("runs"), Alias::new("r"))
+						.from_as(Alias::new("task_executions"), Alias::new("r"))
 						.and_where(
 							Expr::col((Alias::new("r"), Alias::new("node"))).eq(node.as_str()),
 						)

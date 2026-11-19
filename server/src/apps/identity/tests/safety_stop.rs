@@ -99,7 +99,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{run}/management{query}"),
+			&format!("/api/executions/{run}/management{query}"),
 			Value::Null,
 		)
 		.await
@@ -111,7 +111,7 @@ impl World {
 			.api_http
 			.request(
 				"POST".parse().unwrap(),
-				&format!("/api/runs/{run}/management"),
+				&format!("/api/executions/{run}/management"),
 			)
 			.header("Authorization", format!("Bearer {token}"))
 			.json(&body);
@@ -270,7 +270,7 @@ async fn a_stop_pauses_replays_and_never_resumes(
 		&w.app,
 		&w.subject,
 		"POST",
-		&format!("/api/runs/{}/control", w.run),
+		&format!("/api/executions/{}/control", w.run),
 		json!({"action":"resume"}),
 	)
 	.await;
@@ -293,12 +293,13 @@ async fn a_stop_pauses_replays_and_never_resumes(
 	assert_eq!(w.count("SELECT count(*) FROM run_safety_stops").await, 1);
 
 	// Worker progress does not make a stop stale.
-	w.execute("UPDATE runs SET revision = revision + 5").await;
+	w.execute("UPDATE task_executions SET revision = revision + 5")
+		.await;
 	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 2).await;
 	assert_eq!(status, 200, "{body}");
 	// Pausing a Run the Tenant paused is accepted; the source changes.
 	w.execute(
-		"UPDATE runs SET control = 'PAUSED', control_revision = 10, control_source = 'tenant'",
+		"UPDATE task_executions SET control = 'PAUSED', control_revision = 10, control_source = 'tenant'",
 	)
 	.await;
 	let (status, body) = w.stop(w.run, Uuid::new_v4(), "pause", 10).await;
@@ -331,7 +332,7 @@ async fn a_stop_pauses_replays_and_never_resumes(
 	);
 	assert_eq!(w.facts(w.run).await["control"], "CANCELLED");
 	let recorded = w
-		.count("SELECT count(*) FROM events WHERE kind = 'run.control' AND data->>'source' = 'deployment_administrator'")
+		.count("SELECT count(*) FROM events WHERE kind = 'execution.control' AND data->>'source' = 'deployment_administrator'")
 		.await;
 	assert_eq!(
 		recorded, 4,
@@ -359,7 +360,7 @@ async fn ordinary_control_refuses_every_administrator_action(
 			&w.app,
 			w.administrator(),
 			"POST",
-			&format!("/api/runs/{}/control", w.run),
+			&format!("/api/executions/{}/control", w.run),
 			json!({"action":action}),
 		)
 		.await;
@@ -420,25 +421,27 @@ async fn an_identity_outage_pause_is_not_left_for_automatic_recovery(
 ) {
 	let w = world(fixture).await;
 	w.execute(
-		"UPDATE runs SET control = 'PAUSED', error = 'identity status unavailable' WHERE id IN (SELECT id FROM runs ORDER BY id LIMIT 1)",
+		"UPDATE task_executions SET control = 'PAUSED', error = 'identity status unavailable' WHERE id IN (SELECT id FROM task_executions ORDER BY id LIMIT 1)",
 	)
 	.await;
-	let paused: Uuid =
-		sqlx::query_scalar("SELECT id FROM runs WHERE error = 'identity status unavailable'")
-			.fetch_one(w.f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+	let paused: Uuid = sqlx::query_scalar(
+		"SELECT id FROM task_executions WHERE error = 'identity status unavailable'",
+	)
+	.fetch_one(w.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	// An unaware writer of `control` still moves the revision, as the system.
 	let facts = w.facts(paused).await;
 	assert_eq!(facts["control_revision"], 1);
 	assert_eq!(facts["control_source"], "system");
 	let (status, body) = w.stop(paused, Uuid::new_v4(), "pause", 1).await;
 	assert_eq!(status, 200, "{body}");
-	let marker: Option<String> = sqlx::query_scalar("SELECT error FROM runs WHERE id = $1")
-		.bind(paused)
-		.fetch_one(w.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+	let marker: Option<String> =
+		sqlx::query_scalar("SELECT error FROM task_executions WHERE id = $1")
+			.bind(paused)
+			.fetch_one(w.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
 	assert_eq!(
 		marker, None,
 		"recovery resumes only rows that carry the outage marker"
@@ -529,7 +532,7 @@ async fn a_stop_does_not_wait_for_the_workers_own_run_references(
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(w.run)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),

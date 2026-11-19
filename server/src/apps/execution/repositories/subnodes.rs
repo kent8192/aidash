@@ -47,7 +47,7 @@ pub(crate) async fn lock_for_end(
 	use reinhardt::db::orm::execution::convert_values;
 	let (sql, values) = Query::select()
 		.column(Alias::new("id"))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("id").eq(Expr::value(creator)))
 		.lock(LockType::NoKeyUpdate)
 		.build(PostgresQueryBuilder);
@@ -115,7 +115,7 @@ impl EndScope for Cascade<'_> {
 			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 					.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 					.and_where(Expr::col("control").ne("CANCELLED"))
@@ -203,7 +203,7 @@ impl EndScope for NativeCascade<'_> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.and_where(Expr::col("control").ne("CANCELLED"))
@@ -234,7 +234,7 @@ impl EndScope for NativeCascade<'_> {
 		// This is the cancellation-only branch of Store's control path. It is
 		// needed for native multi-party transaction executors, and preserves
 		// the same control revision, Safety Stop provenance, preview shutdown,
-		// input-ledger fence and run.control event.
+		// input-ledger fence and execution.control event.
 		if action != RunControlAction::Cancel {
 			return Err(aidash_application::Error::Invalid(
 				"native terminal cascade only cancels".into(),
@@ -242,7 +242,7 @@ impl EndScope for NativeCascade<'_> {
 		}
 		crate::apps::execution::models::Run::worker_context(self.tx).await?;
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("control"), "CANCELLED")
 			.value(Alias::new("control_source"), source.as_str())
 			.value_expr(
@@ -281,7 +281,7 @@ impl EndScope for NativeCascade<'_> {
 			self.tx,
 			run,
 			Some(thread),
-			"run.control",
+			"execution.control",
 			json!({"run_id":run,"action":action,"source":source}),
 		)
 		.await?;

@@ -1378,7 +1378,9 @@ fn thread_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::ThreadSna
 		),
 		event(2, "thread.updated", json!({})),
 	];
-	events.extend((0..own_events).map(|n| event(3 + n, "run.thinking", json!({"run_id": own}))));
+	events.extend(
+		(0..own_events).map(|n| event(3 + n, "execution.thinking", json!({"run_id": own}))),
+	);
 	crate::ThreadSnapshot {
 		thread: crate::Thread {
 			scratch_space_id: uuid::Uuid::nil(),
@@ -1431,7 +1433,9 @@ fn a_runs_own_workspace_events_never_become_evidence() {
 	// its volatile tail matches the first step's.
 	let recorded = evidence(&run).concat();
 	assert!(
-		recorded.iter().all(|item| item["kind"] != "run.thinking"),
+		recorded
+			.iter()
+			.all(|item| item["kind"] != "execution.thinking"),
 		"{recorded:?}"
 	);
 	assert_eq!(appended, 0);

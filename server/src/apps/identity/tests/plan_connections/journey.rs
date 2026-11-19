@@ -324,7 +324,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 	fixture
 		.f
 		.store
-		.save_run(&TEST_FIXTURE, &leased, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &leased, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	drop(leased);

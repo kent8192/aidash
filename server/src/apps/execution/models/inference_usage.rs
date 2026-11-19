@@ -122,7 +122,8 @@ impl InferenceUsage {
 		dispatch: &UsageDispatch,
 	) -> Result<()> {
 		Self::abandon(tx, run, None, Some(dispatch.purpose.as_str())).await?;
-		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
 		let record = Self::build()
 			.tenant(tenant)
 			.attempt_id(dispatch.attempt)

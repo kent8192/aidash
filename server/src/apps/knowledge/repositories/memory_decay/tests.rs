@@ -36,7 +36,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, columns, values) in [
 		(
-			"runs",
+			"task_executions",
 			vec![
 				"id",
 				"task_id",

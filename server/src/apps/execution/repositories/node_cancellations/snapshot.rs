@@ -81,7 +81,7 @@ fn capability(table: &str, node: &str, address: &str) -> SimpleExpr {
 	area(table, node, address).or(Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "tenant").eq(column(table, "tenant")))
 			.and_where(column("r", "node").eq(Expr::value(node)))
 			.and_where(binding)
@@ -95,7 +95,7 @@ pub(super) fn live_previews(node: &str, address: &str) -> SimpleExpr {
 	area(table, node, address).or(Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "id").eq(column(table, "run_id")))
 			.and_where(column("r", "tenant").eq(column(table, "tenant")))
 			.and_where(column("r", "node").eq(Expr::value(node)))
@@ -110,13 +110,13 @@ pub(super) fn selectors(
 ) -> Vec<(&'static str, &'static str, SimpleExpr, SimpleExpr)> {
 	let run = Expr::col("node")
 		.eq(Expr::value(node))
-		.or(thread("runs", node).and(Expr::col("home_node").eq(Expr::value(address))))
+		.or(thread("task_executions", node).and(Expr::col("home_node").eq(Expr::value(address))))
 		.or(Expr::exists(
 			Query::select()
 				.expr(Expr::value(1_i32))
 				.from_as(Alias::new("core_runs"), Alias::new("cr"))
-				.and_where(column("cr", "run_id").eq(column("runs", "id")))
-				.and_where(column("cr", "tenant").eq(column("runs", "tenant")))
+				.and_where(column("cr", "run_id").eq(column("task_executions", "id")))
+				.and_where(column("cr", "tenant").eq(column("task_executions", "tenant")))
 				.and_where(area("cr", node, address))
 				.to_owned(),
 		));
@@ -156,7 +156,7 @@ pub(super) fn selectors(
 	let local_task = Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("runs"), Alias::new("r"))
+			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "task_id").eq(column("tasks", "id")))
 			.and_where(column("r", "thread_id").eq(column("tasks", "thread_id")))
 			.and_where(column("r", "tenant").eq(column("tasks", "tenant")))
@@ -190,7 +190,7 @@ pub(super) fn selectors(
 	vec![
 		(
 			"run",
-			"runs",
+			"task_executions",
 			run,
 			Expr::col("phase")
 				.is_not_in(["COMPLETED", "FAILED", "CANCELLED"])

@@ -23,10 +23,10 @@ export const resumableRun = (
  */
 export const abandonable = (
   task: { status: string },
-  taskRuns: readonly unknown[],
+  taskExecutions: readonly unknown[],
 ) =>
   ["FAILED", "BLOCKED", "CANCELLED"].includes(task.status) ||
-  (task.status === "OPEN" && taskRuns.length === 0);
+  (task.status === "OPEN" && taskExecutions.length === 0);
 export function channelAgents(runs: LocatedRun[]) {
   const agents = new Map<string, LocatedRun>();
   for (const item of [...runs].sort((a, b) =>

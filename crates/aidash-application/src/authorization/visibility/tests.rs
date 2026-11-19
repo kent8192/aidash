@@ -535,8 +535,8 @@ impl EventVisibilityScope for Events {
 
 #[rstest]
 #[case("marketplace.installed",Some(false),vec!["marketplace"],true)]
-#[case("run.created",Some(false),vec!["resource"],false)]
-#[case("run.created",Some(true),vec!["resource"],true)]
+#[case("execution.created",Some(false),vec!["resource"],false)]
+#[case("execution.created",Some(true),vec!["resource"],true)]
 #[tokio::test]
 async fn explicit_event_readers_take_precedence_over_generic_run_lookup(
 	#[case] kind: &str,
@@ -559,9 +559,9 @@ async fn explicit_event_readers_take_precedence_over_generic_run_lookup(
 #[case("thread.created",json!({}),true)]
 #[case("thread.updated",json!({}),true)]
 #[case("new.family",json!({}),false)]
-#[case("run.updated",json!({"id":Uuid::from_u128(1)}),false)]
-#[case("run.created",json!({"id":Uuid::from_u128(1),"run_id":null}),false)]
-#[case("run.created",json!({"id":Uuid::from_u128(1),"run_id":"bad"}),false)]
+#[case("execution.updated",json!({"id":Uuid::from_u128(1)}),false)]
+#[case("execution.created",json!({"id":Uuid::from_u128(1),"run_id":null}),false)]
+#[case("execution.created",json!({"id":Uuid::from_u128(1),"run_id":"bad"}),false)]
 #[case("generation.created",json!({"id":false}),false)]
 #[case("conversation.created",json!({}),false)]
 #[case("human.created",json!({"id":"bad"}),false)]
@@ -580,8 +580,8 @@ async fn malformed_identifiers_and_unregistered_event_families_cannot_disclose_c
 }
 
 #[rstest]
-#[case("run.created", "id")]
-#[case("run.updated", "run_id")]
+#[case("execution.created", "id")]
+#[case("execution.updated", "run_id")]
 #[case("new.family", "run_id")]
 #[tokio::test]
 async fn generic_event_disclosure_uses_the_exact_thread_and_run_reader(
@@ -665,7 +665,7 @@ async fn a_visible_human_record_without_a_run_reference_still_does_not_disclose_
 }
 
 #[rstest]
-#[case("resource", "run.created")]
+#[case("resource", "execution.created")]
 #[case("marketplace", "marketplace.installed")]
 #[case("generation", "generation.created")]
 #[case("generation_visible", "generation.created")]
@@ -674,8 +674,8 @@ async fn a_visible_human_record_without_a_run_reference_still_does_not_disclose_
 #[case("conversation.read", "conversation.created")]
 #[case("human", "human.created")]
 #[case("human_visible", "human.created")]
-#[case("run", "run.created")]
-#[case("run_visible", "run.created")]
+#[case("run", "execution.created")]
+#[case("run_visible", "execution.created")]
 #[tokio::test]
 async fn event_read_failures_preserve_their_error_and_stop_following_lookups(
 	#[case] boundary: &'static str,
@@ -728,7 +728,7 @@ fn generation(id: u128) -> aidash_domain::generation::requests::Request {
 }
 
 fn run_update() -> Event {
-	event("run.updated", json!({"run_id":Uuid::from_u128(1)}))
+	event("execution.updated", json!({"run_id":Uuid::from_u128(1)}))
 }
 
 #[rstest]

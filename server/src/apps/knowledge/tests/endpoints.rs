@@ -211,7 +211,7 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 	let node = aidash_domain::nodes::NodeName::derived("endpoint");
 	let home = app.runtime.store.deployment.node(node.clone());
 	let sql = Query::insert()
-		.into_table(Alias::new("runs"))
+		.into_table(Alias::new("task_executions"))
 		.columns(
 			[
 				"id",

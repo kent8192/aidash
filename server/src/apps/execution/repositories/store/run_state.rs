@@ -75,13 +75,16 @@ pub(crate) fn run_unblocked() -> Condition {
 		)
 		.join(
 			JoinType::InnerJoin,
-			reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("previous")),
+			reinhardt::query::TableRef::table_alias(
+				Alias::new("task_executions"),
+				Alias::new("previous"),
+			),
 			Expr::col((Alias::new("earlier"), Alias::new("run_id")))
 				.equals((Alias::new("previous"), Alias::new("id"))),
 		)
 		.and_where(
 			Expr::col((Alias::new("mine"), Alias::new("run_id")))
-				.equals((Alias::new("runs"), Alias::new("id"))),
+				.equals((Alias::new("task_executions"), Alias::new("id"))),
 		)
 		.and_where(
 			Expr::col((Alias::new("previous"), Alias::new("phase"))).is_not_in([
@@ -102,7 +105,7 @@ pub(crate) fn run_unblocked() -> Condition {
 		)
 		.and_where(
 			Expr::col((Alias::new("q"), Alias::new("run_id")))
-				.equals((Alias::new("runs"), Alias::new("id"))),
+				.equals((Alias::new("task_executions"), Alias::new("id"))),
 		)
 		.and_where(
 			Expr::col((Alias::new("q"), Alias::new("initialized")))
@@ -140,7 +143,7 @@ impl Store {
 		let mut cursor = self.recovery_cursors.delivery.lock().await;
 		let mut query = Query::select()
 			.column(reinhardt::query::ColumnRef::Asterisk)
-			.from(a("runs"))
+			.from(a("task_executions"))
 			.and_where(Expr::col(a("phase")).eq(reinhardt::query::Expr::value("WAITING")))
 			.and_where(Expr::col(a("control")).ne(reinhardt::query::Expr::value("PAUSED")))
 			.and_where(Expr::col(a("revision")).lt(reinhardt::query::Expr::value(i64::MAX - 2)))
@@ -190,7 +193,7 @@ impl Store {
 			// stops new execution; it cannot replace an undelivered failure.
 			let metadata: Option<RunMetadata> = aidash_server::database::query_as(
 				&Query::update()
-					.table(a("runs"))
+					.table(a("task_executions"))
 					.value(a("lease_owner"), worker)
 					.value_expr(a("lease_until"), crate::database::lease_deadline(seconds))
 					.value_expr(
@@ -232,11 +235,11 @@ impl Store {
 			Ok(status) => {
 				let (state, kind) = match status {
 					TaskStatus::Completed => {
-						(RunState::Completed(TerminalState {}), "run.completed")
+						(RunState::Completed(TerminalState {}), "execution.completed")
 					}
-					TaskStatus::Failed => (RunState::Failed(TerminalState {}), "run.failed"),
+					TaskStatus::Failed => (RunState::Failed(TerminalState {}), "execution.failed"),
 					TaskStatus::Cancelled | TaskStatus::Abandoned => {
-						(RunState::Cancelled(TerminalState {}), "run.cancelled")
+						(RunState::Cancelled(TerminalState {}), "execution.cancelled")
 					}
 					TaskStatus::Open
 					| TaskStatus::Claimed
@@ -258,14 +261,14 @@ impl Store {
 						last_delivery_error: Some(text.clone()),
 					})),
 					Some(text),
-					"run.failure_pending",
+					"execution.failure_pending",
 				)
 			}
 		};
 		let m = &delivery.metadata;
 		let mut tx = self.pool.begin(scope).await?;
 		let query = Query::update()
-			.table(a("runs"))
+			.table(a("task_executions"))
 			.value(a("phase"), state.phase().as_str())
 			.value_expr(a("pending"), Expr::value(crate::domain::run_state::encode(&state, &RecoveryState::default())?))
 			.value_expr(a("revision"), Expr::col(a("revision")).add(Expr::value(1)))
@@ -332,7 +335,7 @@ impl Store {
 		let raw: RawRun = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(a("runs"))
+				.from(a("task_executions"))
 				.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -345,7 +348,7 @@ impl Store {
 		let rows: Vec<RawRun> = aidash_server::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(a("runs"))
+				.from(a("task_executions"))
 				.order_by(a("updated_at"), reinhardt::query::Order::Desc)
 				.limit(500)
 				.to_string(PostgresQueryBuilder),

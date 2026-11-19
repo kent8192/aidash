@@ -31,7 +31,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -92,7 +92,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	}
 	.unwrap();
 	assert_eq!(sender, "alice");
-	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM threads), (SELECT COUNT(*) FROM authorization_threads), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM threads), (SELECT COUNT(*) FROM authorization_threads), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM task_executions), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
 	assert_eq!(
 		common::post(
@@ -111,7 +111,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 			.0,
 		403
 	);
-	let after:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM threads), (SELECT COUNT(*) FROM authorization_threads), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	let after:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM threads), (SELECT COUNT(*) FROM authorization_threads), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM task_executions), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
 	assert_eq!(
 		before, after,
 		"a late admission denial must roll back the entire conversation"
@@ -211,7 +211,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(thread_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -251,7 +251,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	let foreign = credential["token"].as_str().unwrap();
 	for (path, body) in [
 		(
-			format!("/api/runs/{}/message", run.id),
+			format!("/api/executions/{}/message", run.id),
 			json!({"content":"foreign message"}),
 		),
 		(
@@ -269,7 +269,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", Uuid::new_v4()),
+			&format!("/api/executions/{}/message", Uuid::new_v4()),
 			json!({"content":"hidden run"})
 		)
 		.await
@@ -286,7 +286,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 			common::post(
 				&app,
 				&token,
-				&format!("/api/runs/{run_id}/message"),
+				&format!("/api/executions/{run_id}/message"),
 				json!({"content":format!("parallel scoped message {index}"),"idempotency_key":Uuid::new_v4()}),
 			)
 			.await
@@ -307,7 +307,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"authorized message","idempotency_key":replay_key})
 		)
 		.await
@@ -318,7 +318,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"authorized message","idempotency_key":replay_key})
 		)
 		.await
@@ -330,7 +330,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"changed content","idempotency_key":replay_key})
 		)
 		.await
@@ -442,7 +442,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({"content":"forbidden message"})
 		)
 		.await
@@ -499,9 +499,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	);
 	// A journal can contain copied human prompts. Denying the source also hides
 	// that run's aggregate data instead of exposing it through its context.
-	{ let query_bind_1 = run.id; let query_bind_2 = common::pending(aidash_server::domain::RunState::Waiting(Box::new(aidash_server::domain::WaitingState::Human { request_id: human.id, answer_by: None, resume: aidash_server::domain::ResumeState::Thinking(Default::default()) }))); let query_bind_3 = common::context(json!({"history":[{"seq":1,"event":{"kind":"human","request":"private approval prompt","request_kind":"APPROVAL","response":null}}],"journal":{"head":1,"imported_through":0,"inferred_through":0}})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'WAITING'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(f.store.pool.fixture_driver()).await }.unwrap();
+	{ let query_bind_1 = run.id; let query_bind_2 = common::pending(aidash_server::domain::RunState::Waiting(Box::new(aidash_server::domain::WaitingState::Human { request_id: human.id, answer_by: None, resume: aidash_server::domain::ResumeState::Thinking(Default::default()) }))); let query_bind_3 = common::context(json!({"history":[{"seq":1,"event":{"kind":"human","request":"private approval prompt","request_kind":"APPROVAL","response":null}}],"journal":{"head":1,"imported_through":0,"inferred_through":0}})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'WAITING'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(f.store.pool.fixture_driver()).await }.unwrap();
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		403

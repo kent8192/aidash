@@ -330,7 +330,7 @@ pub(crate) async fn outcome(
 	let error: Option<Option<String>> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("error"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("task_id").eq(Expr::value(task)))
 			.order_by(Alias::new("updated_at"), Order::Desc)
 			.limit(1)
@@ -394,7 +394,7 @@ pub(crate) async fn active_run(
 	native::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("task_id").eq(Expr::value(task)))
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.order_by(Alias::new("updated_at"), Order::Desc)

@@ -89,7 +89,7 @@ pub(crate) async fn blocked(
 	}
 	let receiver = Query::select()
 		.column((Alias::new("r"), Alias::new("thread_id")))
-		.from_as(Alias::new("runs"), Alias::new("r"))
+		.from_as(Alias::new("task_executions"), Alias::new("r"))
 		.join(
 			JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(

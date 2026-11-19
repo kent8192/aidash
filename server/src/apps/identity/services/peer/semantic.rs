@@ -149,7 +149,8 @@ pub(crate) async fn persist_reply_in(
 ) -> Result<Value> {
 	use crate::database::native;
 	use reinhardt::query::{ExprTrait, LockType};
-	let tenant = crate::database::scope::parent_tenant(&mut **tx, "runs", "id", run).await?;
+	let tenant =
+		crate::database::scope::parent_tenant(&mut **tx, "task_executions", "id", run).await?;
 	let digest = operation.digest()?;
 	if receipt.operation_id != operation.id
 		|| receipt.operation_digest != digest

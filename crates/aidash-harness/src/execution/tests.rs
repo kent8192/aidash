@@ -145,7 +145,7 @@ impl ExecutionRecoveryStore for Scope {
 			"authority failures must pause"
 		);
 		assert_eq!(run.recovery.lease_recoveries, 0);
-		assert_eq!(event, "run.retrying");
+		assert_eq!(event, "execution.retrying");
 		self.trace.lock().unwrap().push("save");
 		Ok(())
 	}
@@ -167,7 +167,7 @@ impl ExecutionRecoveryStore for Scope {
 			reason.ends_with(": an authority check refused this step"),
 			"{reason}"
 		);
-		assert_eq!(event, "run.authorization_blocked");
+		assert_eq!(event, "execution.authorization_blocked");
 		self.trace.lock().unwrap().push("pause");
 		Ok(())
 	}

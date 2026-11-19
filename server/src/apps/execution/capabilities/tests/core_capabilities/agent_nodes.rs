@@ -259,7 +259,7 @@ async fn stopping_a_flow_cancels_its_runs_ends_its_subnodes_and_pauses_its_dutie
 		json!([{"id": duty, "outcome": "stopped"}])
 	);
 	assert_eq!(stopped["nodes"][0]["name"], json!(node));
-	let control: String = sqlx::query_scalar("SELECT control FROM runs WHERE id = $1")
+	let control: String = sqlx::query_scalar("SELECT control FROM task_executions WHERE id = $1")
 		.bind(run.id)
 		.fetch_one(c.f.store.pool.fixture_driver())
 		.await

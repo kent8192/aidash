@@ -637,7 +637,7 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 					.join(
 						reinhardt::query::JoinType::InnerJoin,
 						reinhardt::query::TableRef::table_alias(
-							reinhardt::query::Alias::new("runs"),
+							reinhardt::query::Alias::new("task_executions"),
 							reinhardt::query::Alias::new("r"),
 						),
 						reinhardt::query::Expr::cust("r.id = e.run_id"),

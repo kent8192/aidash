@@ -162,7 +162,7 @@ impl Executor<'_> {
 		}));
 		self.environment
 			.store()
-			.save_run(run, token, "run.connection_waiting")
+			.save_run(run, token, "execution.connection_waiting")
 			.await?;
 		Ok(None)
 	}
@@ -211,7 +211,7 @@ impl Executor<'_> {
 		}));
 		self.environment
 			.store()
-			.save_run(run, token, "run.connection_waiting")
+			.save_run(run, token, "execution.connection_waiting")
 			.await
 	}
 

@@ -223,8 +223,8 @@ class NativeMemory(RemoteMemory):
         record["recovered"] = self.snapshot(task, run)
         self.mutate(workspace, source["bank"], [{"operation": "delete", "id": source["id"], "expected_revision": source["revision"]}])
         assert self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/semantic")[0] == 403
-        assert self.user(1, f"/api/runs/{run}/semantic")[0] == 403
-        control = self.ok(self.user(1, f"/api/runs/{run}/management"))
+        assert self.user(1, f"/api/executions/{run}/semantic")[0] == 403
+        control = self.ok(self.user(1, f"/api/executions/{run}/management"))
         assert not {"context", "pending", "error"}.intersection(control), control
         assert control["memory_cleanup"]["state"] == "purged" and control["memory_cleanup"]["invalidated"], control
         record["content_free_control"] = control

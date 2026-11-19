@@ -81,7 +81,7 @@ impl NativeFlowGraph<'_> {
 		native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("tenant").eq(self.tenant.clone()))
 				.and_where(Expr::col("id").is_in(ids(runs)))
 				.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
@@ -127,7 +127,9 @@ impl FlowGraph for NativeFlowGraph<'_> {
 		Ok(self.column("tasks", "id", "parent_id", tasks).await?)
 	}
 	async fn runs(&mut self, tasks: &[Uuid]) -> aidash_application::Result<Vec<Uuid>> {
-		Ok(self.column("runs", "id", "task_id", tasks).await?)
+		Ok(self
+			.column("task_executions", "id", "task_id", tasks)
+			.await?)
 	}
 	async fn created_by_runs(&mut self, runs: &[Uuid]) -> aidash_application::Result<Vec<Uuid>> {
 		Ok(self
@@ -190,7 +192,7 @@ impl FlowGraph for NativeFlowGraph<'_> {
 			.from_as(Alias::new("authorization_task_origins"), o.clone())
 			.join(
 				JoinType::InnerJoin,
-				TableRef::table_alias(Alias::new("runs"), r.clone()),
+				TableRef::table_alias(Alias::new("task_executions"), r.clone()),
 				Expr::col((r.clone(), Alias::new("id")))
 					.equals((o.clone(), Alias::new("source_run_id")))
 					.and(

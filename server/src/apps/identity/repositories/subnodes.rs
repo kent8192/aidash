@@ -217,7 +217,7 @@ impl CreateScope for Creation<'_> {
 		// Lock the creator first, fencing terminal transition and parallel creates.
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
 			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
@@ -382,7 +382,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		};
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(record.creator_run_id)))
 			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
@@ -433,7 +433,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 	) -> Result<bool> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("thread_id").eq(Expr::value(subnode.thread_id)))
 			.and_where(Expr::col("agent_id").eq(agent.id.clone()))
 			.and_where(Expr::col("agent_version").eq(agent.version.clone()))
@@ -903,7 +903,7 @@ pub(crate) async fn require_admission(
 	}
 	let (sql, values) = Query::select()
 		.columns(["agent_id", "agent_version", "thread_id"].map(Alias::new))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("id").eq(Expr::value(source)))
 		.build(PostgresQueryBuilder);
 	let Some(row) = access

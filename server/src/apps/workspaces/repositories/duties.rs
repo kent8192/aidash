@@ -183,7 +183,7 @@ async fn creating_task(tx: &mut dyn TransactionExecutor, tenant: &str, duty: &Du
 		Some(run) => {
 			let mut task = Query::select();
 			task.column(Alias::new("task_id"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 				.and_where(Expr::col("id").eq(Expr::value(run)));
 			reinhardt::query::SimpleExpr::SubQuery(None, Box::new(task.to_owned()))

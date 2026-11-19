@@ -444,7 +444,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 		let query_bind_1 = run.id;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("lease_until"),
 					reinhardt::query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
@@ -830,7 +830,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 		federation: federation.clone(),
 	};
 	let outage_pause = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value(Alias::new("control"), "PAUSED")
 		.value(Alias::new("error"), "identity status unavailable")
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
@@ -910,7 +910,7 @@ async fn human_requests_controls_and_cancellation_keep_decisions_durable(
 	let response = http_client
 		.request(
 			Method::POST,
-			router.url(format!("/api/runs/{}/message", run.id)),
+			router.url(format!("/api/executions/{}/message", run.id)),
 		)
 		.header("Authorization", format!("Bearer {token}"))
 		.header("content-type", "application/json")
@@ -1058,7 +1058,7 @@ async fn final_response(store: &Store, task: Uuid) {
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1125,7 +1125,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 			let query_bind_1 = child.id;
 			sqlx::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value_expr(
 						reinhardt::query::Alias::new("control"),
 						reinhardt::query::Expr::cust("'PAUSED'"),
@@ -1154,7 +1154,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(task_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -1297,7 +1297,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		};
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1332,7 +1332,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(task_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -1450,7 +1450,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 			.await
 			.unwrap()
 			.iter()
-			.any(|event| event.kind == "run.retrying")
+			.any(|event| event.kind == "execution.retrying")
 	);
 	drop(server);
 	cleanup(store, &database_url, &schema).await;
@@ -1536,7 +1536,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 			.await
 			.unwrap()
 			.iter()
-			.any(|event| event.kind == "run.retrying"),
+			.any(|event| event.kind == "execution.retrying"),
 		"the Run waited instead of failing"
 	);
 	assert_eq!(
@@ -1678,7 +1678,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 		);
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1750,7 +1750,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1783,7 +1783,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
 				))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(task_id = ?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
@@ -1847,7 +1847,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		);
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2159,7 +2159,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2192,7 +2192,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		let query_bind_1 = run.id;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("lease_until"),
 					reinhardt::query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
@@ -2312,7 +2312,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2367,7 +2367,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from_as(reinhardt::query::Alias::new("runs"), reinhardt::query::Alias::new("r"))
+				.from_as(reinhardt::query::Alias::new("task_executions"), reinhardt::query::Alias::new("r"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(r.task_id IN (SELECT id FROM tasks WHERE parent_id = ?) AND r.agent_id = 'research')"
 						.to_owned(),

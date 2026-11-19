@@ -1065,7 +1065,7 @@ async fn trust_run_backlog(
 				.await
 				.unwrap();
 		let query = Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",

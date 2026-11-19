@@ -1184,12 +1184,12 @@ class FakeNode:
             return 200, {"id": "task-uuid", "revision": 0}
         if path.endswith("/claim"):
             return 200, {}
-        if path == "/api/tasks/task-uuid/runs":
+        if path == "/api/tasks/task-uuid/executions":
             return 200, {"items": [{"id": "run-1", "task_id": "task-uuid"}], "next_cursor": None}
         if path == "/api/human-requests?run=run-1":
             requests = [self.human] if self.human and not self.answers else []
             return 200, {"items": requests, "next_cursor": None}
-        if path == "/api/runs/run-1":
+        if path == "/api/executions/run-1":
             phase = self.phases.pop(0) if len(self.phases) > 1 else self.phases[0]
             return 200, {"run": {"id": "run-1", "task_id": "task-uuid", "phase": phase, "step": 3,
                                  "context": {"compactions": 0, "history": [
@@ -1332,7 +1332,7 @@ class RunnerTest(unittest.TestCase):
         failed = []
 
         def failing_once(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1" and not failed:
+            if method == "GET" and path == "/api/executions/run-1" and not failed:
                 failed.append(path)
                 return 500, {"error": "internal"}
             return node.call(method, path, body, token)
@@ -1372,7 +1372,7 @@ class RunnerTest(unittest.TestCase):
                 def late(method, path, body, token, timeout=None, node=node, reads=reads, appears=appears):
                     if path.endswith("/claim"):
                         return 504, {"error": "gateway timeout"}  # It may still have committed.
-                    if path == "/api/tasks/task-uuid/runs":
+                    if path == "/api/tasks/task-uuid/executions":
                         reads.append(path)
                         if not appears or len(reads) < 3:
                             return 200, {"items": [], "next_cursor": None}
@@ -1403,7 +1403,7 @@ class RunnerTest(unittest.TestCase):
 
         def blocked(method, path, body, token, timeout=None):
             status, payload = node.call(method, path, body, token)
-            if method == "GET" and path == "/api/runs/run-1" and payload["run"]["phase"] == active_phase:
+            if method == "GET" and path == "/api/executions/run-1" and payload["run"]["phase"] == active_phase:
                 payload["run"]["recovery"] = {"context_reason": context_reason}
                 if reason:
                     payload["run"]["state_error"] = reason
@@ -1442,7 +1442,7 @@ class RunnerTest(unittest.TestCase):
 
                 def plain(method, path, body, token, timeout=None, node=node, recovery=recovery):
                     status, payload = node.call(method, path, body, token)
-                    if method == "GET" and path == "/api/runs/run-1" and recovery is not None:
+                    if method == "GET" and path == "/api/executions/run-1" and recovery is not None:
                         payload["run"]["recovery"] = recovery
                     return status, payload
 
@@ -1507,7 +1507,7 @@ class RunnerTest(unittest.TestCase):
         failed, controls = [], []
 
         def subject_cannot_cancel(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1" and not failed:
+            if method == "GET" and path == "/api/executions/run-1" and not failed:
                 failed.append(path)
                 return 500, {"error": "internal"}
             if path.endswith("/control"):
@@ -2125,7 +2125,7 @@ class LiveGuardTest(unittest.TestCase):
 
                 def interrupting(method, path, body, token, timeout=None, call=call, controls=controls,
                                  raised=raised, stop=stop):
-                    if path == "/api/runs/run-1" and not raised:
+                    if path == "/api/executions/run-1" and not raised:
                         raised.append(path)
                         raise stop()
                     if path.endswith("/control"):
@@ -2187,7 +2187,7 @@ class LiveGuardTest(unittest.TestCase):
 
         def compacting(method, path, body, token, timeout=None):
             status, value = call(method, path, body, token)
-            if path == "/api/runs/run-1":
+            if path == "/api/executions/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
         status, result = self.run_live(compacting, ceiling="700000")
@@ -2317,11 +2317,11 @@ class LiveGuardTest(unittest.TestCase):
         failed = []
 
         def failing_then_compacted(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1" and not failed:
+            if method == "GET" and path == "/api/executions/run-1" and not failed:
                 failed.append(path)
                 return 500, {"error": "internal"}
             status, value = call(method, path, body, token)
-            if path == "/api/runs/run-1":
+            if path == "/api/executions/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
         status, result = self.run_live(failing_then_compacted, ceiling="700000")
@@ -2336,7 +2336,7 @@ class LiveGuardTest(unittest.TestCase):
         controls = []
 
         def unreachable(method, path, body, token, timeout=None):
-            if method == "GET" and path == "/api/runs/run-1":
+            if method == "GET" and path == "/api/executions/run-1":
                 return 500, {"error": "internal"}
             if path.endswith("/control"):
                 controls.append(token)
@@ -3121,7 +3121,7 @@ class DeadlineTest(unittest.TestCase):
         stalled = []
 
         def stalling(method, path, body, token, timeout=None):
-            if path == "/api/runs/run-1" and not stalled:
+            if path == "/api/executions/run-1" and not stalled:
                 stalled.append(timeout)
                 clock.now += timeout  # the transport times out exactly at the deadline
                 raise TimeoutError("timed out")

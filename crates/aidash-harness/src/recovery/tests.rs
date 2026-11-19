@@ -169,7 +169,7 @@ async fn pending_semantic_operations_do_not_consume_retry_allowance(
 	assert_eq!(run.revision, 9);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.semantic_retrying".into())]
+		[Write::Save("execution.semantic_retrying".into())]
 	);
 }
 #[rstest]
@@ -203,7 +203,7 @@ async fn a_repeated_pending_replay_backs_off_without_consuming_retry_allowance(
 	assert_eq!(retry.at, now + chrono::Duration::seconds(30));
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.semantic_retrying".into())]
+		[Write::Save("execution.semantic_retrying".into())]
 	);
 }
 #[rstest]
@@ -227,7 +227,7 @@ async fn exhausted_semantic_retries_enter_outage_wait(repository: Repository, no
 	.unwrap();
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.outage_waiting".into())]
+		[Write::Save("execution.outage_waiting".into())]
 	);
 	assert!(
 		matches!(repository.run.lock().unwrap().as_ref().unwrap().state,
@@ -401,12 +401,12 @@ async fn lost_authority_pauses_instead_of_replaying_work(
 	match (&failure_kind, writes.as_slice()) {
 		(true, [Write::Refused(actual, event, refusal)]) => {
 			assert_eq!(actual, reason);
-			assert_eq!(event, "run.authorization_blocked");
+			assert_eq!(event, "execution.authorization_blocked");
 			assert_eq!(refusal.check, RefusalCheck::Unnamed);
 		}
 		(false, [Write::Pause(actual, event)]) => {
 			assert_eq!(actual, reason);
-			assert_eq!(event, "run.authorization_blocked");
+			assert_eq!(event, "execution.authorization_blocked");
 		}
 		other => panic!("unexpected writes {other:?}"),
 	}
@@ -437,7 +437,7 @@ async fn an_unnamed_refusal_takes_its_check_from_the_note_of_the_step(
 		*repository.writes.lock().unwrap(),
 		[Write::Refused(
 			"model call: Catalog Approval refused catalog.use".into(),
-			"run.authorization_blocked".into(),
+			"execution.authorization_blocked".into(),
 			AuthorityRefusal {
 				tool: "model call".into(),
 				check: RefusalCheck::Catalog,
@@ -475,7 +475,7 @@ async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
 		*repository.writes.lock().unwrap(),
 		[Write::Refused(
 			"task_delegate: task.delegate was denied".into(),
-			"run.authorization_blocked".into(),
+			"execution.authorization_blocked".into(),
 			refusal,
 		)]
 	);
@@ -511,7 +511,7 @@ async fn unacknowledged_terminal_delivery_remains_durable(
 	);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.failure_pending".into())]
+		[Write::Save("execution.failure_pending".into())]
 	);
 }
 #[rstest]
@@ -567,7 +567,7 @@ async fn a_stale_reused_retrieval_is_dropped_and_retrieved_again(
 	assert!(!retry);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.semantic_retrying".into())]
+		[Write::Save("execution.semantic_retrying".into())]
 	);
 	let run = repository.run.lock().unwrap();
 	let run = run.as_ref().unwrap();
@@ -695,9 +695,9 @@ async fn a_decider_outage_retries_as_new_decisions_then_waits(
 	assert!(
 		writes[..5]
 			.iter()
-			.all(|write| *write == Write::Save("run.decider_retrying".into()))
+			.all(|write| *write == Write::Save("execution.decider_retrying".into()))
 	);
-	assert_eq!(writes[5], Write::Save("run.outage_waiting".into()));
+	assert_eq!(writes[5], Write::Save("execution.outage_waiting".into()));
 	let run = repository.run.lock().unwrap();
 	assert_eq!(
 		run.as_ref().unwrap().recovery.context_reason,
@@ -812,10 +812,10 @@ async fn a_node_that_did_not_answer_is_retried_then_waits_naming_it(
 	assert!(
 		writes[..5]
 			.iter()
-			.all(|write| *write == Write::Save("run.node_retrying".into()))
+			.all(|write| *write == Write::Save("execution.node_retrying".into()))
 	);
 	// Not answering is not a refusal: the Run waits and names the Node (ADR 0129).
-	assert_eq!(writes[5], Write::Save("run.outage_waiting".into()));
+	assert_eq!(writes[5], Write::Save("execution.outage_waiting".into()));
 	let run = repository.run.lock().unwrap();
 	assert!(matches!(
 		&run.as_ref().unwrap().state,
@@ -845,7 +845,7 @@ async fn a_node_that_did_not_answer_after_a_tools_effect_is_retried_like_any_oth
 	// Taking the step up again reconciles the STARTED call; it does not repeat it.
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.node_retrying".into())]
+		[Write::Save("execution.node_retrying".into())]
 	);
 }
 
@@ -880,7 +880,7 @@ async fn a_node_outage_pauses_once_its_wait_reaches_the_bound(
 		panic!("the bound pauses: {writes:?}")
 	};
 	assert!(reason.contains("aidash://other/sibling"), "{reason}");
-	assert_eq!(event, "run.node_unreachable");
+	assert_eq!(event, "execution.node_unreachable");
 }
 
 #[rstest]
@@ -895,7 +895,7 @@ async fn a_reached_plan_usage_limit_waits_an_hour_instead_of_failing(
 		.unwrap();
 	{
 		let writes = repository.writes.lock().unwrap();
-		assert_eq!(*writes, [Write::Save("run.outage_waiting".into())]);
+		assert_eq!(*writes, [Write::Save("execution.outage_waiting".into())]);
 		let run = repository.run.lock().unwrap();
 		assert!(matches!(
 			&run.as_ref().unwrap().state,
@@ -925,7 +925,7 @@ async fn a_reached_plan_usage_limit_waits_an_hour_instead_of_failing(
 	.unwrap();
 	let writes = repository.writes.lock().unwrap();
 	assert!(
-		matches!(writes.last(), Some(Write::Pause(_, event)) if event == "run.plan_allowance_exhausted"),
+		matches!(writes.last(), Some(Write::Pause(_, event)) if event == "execution.plan_allowance_exhausted"),
 		"{writes:?}"
 	);
 }
@@ -948,7 +948,7 @@ async fn a_budget_at_its_hard_limit_stops_or_sleeps_without_spending_an_attempt(
 	{
 		let writes = repository.writes.lock().unwrap();
 		assert!(
-			matches!(writes.last(), Some(Write::Pause(_, event)) if event == "run.budget_exhausted"),
+			matches!(writes.last(), Some(Write::Pause(_, event)) if event == "execution.budget_exhausted"),
 			"{writes:?}"
 		);
 		assert!(
@@ -976,7 +976,7 @@ async fn a_budget_at_its_hard_limit_stops_or_sleeps_without_spending_an_attempt(
 	let writes = repository.writes.lock().unwrap();
 	assert_eq!(
 		writes.last(),
-		Some(&Write::Save("run.outage_waiting".into()))
+		Some(&Write::Save("execution.outage_waiting".into()))
 	);
 	let run = repository.run.lock().unwrap();
 	let run = run.as_ref().unwrap();
@@ -1016,9 +1016,9 @@ async fn closed_native_memory_is_retried_then_waited_out(
 	assert!(
 		writes[..5]
 			.iter()
-			.all(|write| *write == Write::Save("run.retrying".into()))
+			.all(|write| *write == Write::Save("execution.retrying".into()))
 	);
-	assert_eq!(writes[5], Write::Save("run.outage_waiting".into()));
+	assert_eq!(writes[5], Write::Save("execution.outage_waiting".into()));
 	let run = repository.run.lock().unwrap();
 	assert!(matches!(
 		&run.as_ref().unwrap().state,
@@ -1070,7 +1070,7 @@ async fn a_service_outage_after_its_wake_waits_again_without_more_short_retries(
 	);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.outage_waiting".into())]
+		[Write::Save("execution.outage_waiting".into())]
 	);
 	let run = repository.run.lock().unwrap();
 	assert!(matches!(
@@ -1149,7 +1149,7 @@ async fn an_outage_found_as_its_outage_wait_wakes_moves_the_next_check(
 	}
 	assert_eq!(
 		repository.writes.lock().unwrap().last(),
-		Some(&Write::Save("run.outage_waiting".into()))
+		Some(&Write::Save("execution.outage_waiting".into()))
 	);
 	// Another service failing at that wake-up is the one the wait now names.
 	let decider = wake + chrono::Duration::minutes(5);
@@ -1224,7 +1224,7 @@ async fn an_outage_found_as_another_wait_wakes_keeps_that_wait(
 	.unwrap();
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.outage_waiting".into())]
+		[Write::Save("execution.outage_waiting".into())]
 	);
 	let run = repository.run.lock().unwrap();
 	let run = run.as_ref().unwrap();
@@ -1262,7 +1262,7 @@ async fn transport_failures_still_retry(repository: Repository, now: DateTime<Ut
 	assert!(retry);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Save("run.retrying".into())]
+		[Write::Save("execution.retrying".into())]
 	);
 	let run = repository.run.lock().unwrap();
 	let run = run.as_ref().unwrap();
@@ -1335,7 +1335,9 @@ async fn failure_defers_for_an_unsatisfied_connection_once_per_resource(
 		);
 		assert_eq!(
 			*repository.writes.lock().unwrap(),
-			[Write::Save("run.failure_deferred_for_connection".into())]
+			[Write::Save(
+				"execution.failure_deferred_for_connection".into()
+			)]
 		);
 	} else {
 		assert!(run.state.failure_delivery());

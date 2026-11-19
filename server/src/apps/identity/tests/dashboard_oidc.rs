@@ -834,7 +834,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			.unwrap());
 	}
 	let run = common::local_run(&federation.store, &acme, &task, &agent.unwrap()).await;
-	let run_management = format!("/api/runs/{}/management", run.id);
+	let run_management = format!("/api/executions/{}/management", run.id);
 	assert_eq!(
 		call(
 			&app,
@@ -866,7 +866,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			call(
 				&app,
 				"POST",
-				&format!("/api/runs/{}/control", run.id),
+				&format!("/api/executions/{}/control", run.id),
 				true,
 				true,
 				Some("deployment_administrator"),

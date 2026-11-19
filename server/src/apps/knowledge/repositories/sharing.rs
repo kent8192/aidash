@@ -116,7 +116,7 @@ pub(crate) async fn agent_unit(
 				let owner: Option<String> = native::query_scalar(
 					&Query::select()
 						.column(Alias::new("agent_id"))
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(Expr::col("id").eq(Expr::value(run_id)))
 						.to_string(PostgresQueryBuilder),
 				)
@@ -195,7 +195,7 @@ mod tests {
 			let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 			native::query(
 				&Query::insert()
-					.into_table(Alias::new("runs"))
+					.into_table(Alias::new("task_executions"))
 					.columns(
 						[
 							"id",

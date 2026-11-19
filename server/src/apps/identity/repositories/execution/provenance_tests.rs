@@ -115,7 +115,7 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 		&aidash_domain::run_state::RecoveryState::default(),
 	)
 	.unwrap();
-	sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,'aidash://origin-fixture','fixture','1.0.0','COMPLETED',$5,1)").bind(source).bind(parent).bind(thread).bind(&sibling).bind(pending).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,'aidash://origin-fixture','fixture','1.0.0','COMPLETED',$5,1)").bind(source).bind(parent).bind(thread).bind(&sibling).bind(pending).execute(driver).await.unwrap();
 	let grant_record = ExecutionGrant {
 		run_id: source,
 		task_id: parent,
@@ -225,7 +225,7 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 					.execute(driver)
 					.await
 					.unwrap();
-				sqlx::query("DELETE FROM runs WHERE id=$1")
+				sqlx::query("DELETE FROM task_executions WHERE id=$1")
 					.bind(source)
 					.execute(driver)
 					.await

@@ -481,7 +481,7 @@ async fn missing_or_malformed_required_event_ids_fail_closed_without_loading_rec
 
 #[rstest]
 #[case("human.created")]
-#[case("run.created")]
+#[case("execution.created")]
 #[case("message.updated")]
 #[case("new.family")]
 #[tokio::test]

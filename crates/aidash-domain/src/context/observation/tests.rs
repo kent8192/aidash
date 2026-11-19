@@ -149,7 +149,7 @@ fn a_step_view_leaves_out_the_observing_runs_own_events() {
 	let own = Uuid::from_u128(1);
 	let mut snapshot = snapshot(0);
 	snapshot.events = vec![
-		event(1, "run.thinking", json!({"run_id": own})),
+		event(1, "execution.thinking", json!({"run_id": own})),
 		event(2, "task.created", json!({"run_id": Uuid::from_u128(2)})),
 		event(3, "tool.completed", json!({"run_id": own.to_string()})),
 		event(4, "thread.updated", json!({})),

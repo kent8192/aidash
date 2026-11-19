@@ -19,7 +19,7 @@ import {
   Play,
   Plus,
 } from "lucide-react";
-import { threadGet, threadRuns } from "../generated/aidash";
+import { threadGet, threadExecutions } from "../generated/aidash";
 import type {
   Artifact,
   Discovery,
@@ -119,12 +119,12 @@ const requestCopy = {
       "task.delegated": "タスクを委任しました",
       "task.completed": "タスクを完了しました",
       "task.abandoned": "タスクを中止しました",
-      "run.created": "実行を開始しました",
-      "run.plan_connection_used":
+      "execution.created": "実行を開始しました",
+      "execution.plan_connection_used":
         "ChatGPT サブスクリプション（Plan Connection）で内容を送りました",
-      "run.cancelled": "実行を中止しました",
-      "run.semantic_degraded": "Degraded contextで続行しました",
-      "run.plugin_tools_pinned": "Agent Plugin のツールを確定しました",
+      "execution.cancelled": "実行を中止しました",
+      "execution.semantic_degraded": "Degraded contextで続行しました",
+      "execution.plugin_tools_pinned": "Agent Plugin のツールを確定しました",
     } as Record<string, string>,
     skippedServers: "使えなかったサーバー",
   },
@@ -154,12 +154,12 @@ const requestCopy = {
       "task.delegated": "Task delegated",
       "task.completed": "Task completed",
       "task.abandoned": "Task abandoned",
-      "run.created": "Run started",
-      "run.plan_connection_used":
+      "execution.created": "Run started",
+      "execution.plan_connection_used":
         "Sent content through a ChatGPT subscription (Plan Connection)",
-      "run.cancelled": "Run cancelled",
-      "run.semantic_degraded": "Continued with Degraded context",
-      "run.plugin_tools_pinned": "Pinned Agent Plugin tools",
+      "execution.cancelled": "Run cancelled",
+      "execution.semantic_degraded": "Continued with Degraded context",
+      "execution.plugin_tools_pinned": "Pinned Agent Plugin tools",
     } as Record<string, string>,
     skippedServers: "unavailable servers",
   },
@@ -372,7 +372,7 @@ export function Channel({
       const items: Run[] = [];
       let cursor: string | null = null;
       do {
-        const page = await threadRuns(
+        const page = await threadExecutions(
           thread.id,
           { live: true, cursor: cursor ?? undefined },
           { signal },
@@ -444,7 +444,7 @@ export function Channel({
     if (!label) return [];
     const task = eventTask(event, tasks);
     const skipped =
-      event.kind === "run.plugin_tools_pinned"
+      event.kind === "execution.plugin_tools_pinned"
         ? skippedServers(event.data)
         : [];
     const text = task ? `${label}: ${task.title}` : label;

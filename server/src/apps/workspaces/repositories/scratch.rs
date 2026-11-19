@@ -436,7 +436,7 @@ pub(crate) async fn remote_person(
 			Expr::col("id").in_subquery(
 				Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
 					.and_where(Expr::col("thread_id").eq(Expr::value(run.thread_id)))
 					.and_where(Expr::col("home_node").eq(Expr::value(run.home_node.clone())))

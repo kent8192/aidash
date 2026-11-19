@@ -38,7 +38,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let old_worker = Uuid::new_v4();
 	let old_lease = reinhardt::query::Query::update()
-		.table(reinhardt::query::Alias::new("runs"))
+		.table(reinhardt::query::Alias::new("task_executions"))
 		.value_expr(
 			reinhardt::query::Alias::new("lease_owner"),
 			reinhardt::query::Expr::cust("$2"),
@@ -161,7 +161,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 			let query_bind_1 = run.id;
 			sqlx::query(
 				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("runs"))
+					.table(reinhardt::query::Alias::new("task_executions"))
 					.value_expr(
 						reinhardt::query::Alias::new("lease_until"),
 						reinhardt::query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '60 seconds'"),
@@ -189,7 +189,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		let query_bind_2 = stale_worker;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("ledger_worker_ready"),
 					reinhardt::query::Expr::value(false),
@@ -217,7 +217,12 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	stale.state = aidash_server::domain::RunState::Thinking(Default::default());
 	let error = f
 		.store
-		.save_run(&TEST_FIXTURE, &stale, stale_worker, "run.message_received")
+		.save_run(
+			&TEST_FIXTURE,
+			&stale,
+			stale_worker,
+			"execution.message_received",
+		)
 		.await
 		.unwrap_err();
 	assert!(error.to_string().contains("requires an upgraded worker"));
@@ -292,7 +297,7 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 		let query_bind_2 = old_worker;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("lease_owner"),
 					SimpleExpr::CustomWithExpr(
@@ -322,7 +327,7 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'pause before continuing', $2)",
+		"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM task_executions WHERE id = $1), 'human', 'pause before continuing', $2)",
 	)
 	.bind(run.id)
 	.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
@@ -368,7 +373,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 		let query_bind_2 = &pending;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -396,7 +401,7 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 		let query_bind_2 = old_worker;
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("lease_owner"),
 					SimpleExpr::CustomWithExpr(
@@ -525,7 +530,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	assert!(!run.ledger_worker_ready);
 	let old_worker = Uuid::new_v4();
 	sqlx::query(
-		"UPDATE runs SET lease_owner = $2, lease_until = CURRENT_TIMESTAMP + INTERVAL '30 seconds' WHERE id = $1",
+		"UPDATE task_executions SET lease_owner = $2, lease_until = CURRENT_TIMESTAMP + INTERVAL '30 seconds' WHERE id = $1",
 	)
 	.bind(run.id)
 	.bind(old_worker)
@@ -540,7 +545,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	.await
 	.unwrap();
 	sqlx::query(
-		"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM runs WHERE id = $1), 'human', 'backfilled correction', $2)",
+		"INSERT INTO run_inputs (run_id, tenant, sender, content, idempotency_key) VALUES ($1, (SELECT tenant FROM task_executions WHERE id = $1), 'human', 'backfilled correction', $2)",
 	)
 	.bind(run.id)
 	.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
@@ -549,7 +554,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	.unwrap();
 	tx.commit().await.unwrap();
 	sqlx::query(
-		"UPDATE runs SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1",
+		"UPDATE task_executions SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1",
 	)
 	.bind(run.id)
 	.execute(f.store.pool.fixture_driver())
@@ -610,7 +615,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		.await
 		.expect("provider did not receive first inference");
 	let first_key = Uuid::new_v4();
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let (status, body) = common::post(
 		&app,
 		&token,
@@ -1225,7 +1230,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	let (status, body) = common::post(
 		&app,
 		&token,
-		&format!("/api/runs/{}/message", run.id),
+		&format!("/api/executions/{}/message", run.id),
 		json!({"content":"new correction"}),
 	)
 	.await;
@@ -1787,7 +1792,7 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	let large = "x".repeat(32_768);
 	let (status, body) = common::post(
 		&app,
@@ -1841,7 +1846,7 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 		federation: f.clone(),
 	};
 	assert!(worker.worker_once().await.unwrap());
-	let path = format!("/api/runs/{}/message", run.id);
+	let path = format!("/api/executions/{}/message", run.id);
 	assert_eq!(
 		common::post(&app, &token, &path, json!({"content":"private correction"}))
 			.await
@@ -1917,7 +1922,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 				let query_bind_1 = run.id;
 				sqlx::query(
 					&reinhardt::query::Query::update()
-						.table(reinhardt::query::Alias::new("runs"))
+						.table(reinhardt::query::Alias::new("task_executions"))
 						.value(reinhardt::query::Alias::new("phase"), "WAITING")
 						.value_expr(
 							reinhardt::query::Alias::new("pending"),
@@ -1945,7 +1950,7 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 		let (status, body) = common::post(
 			&app,
 			&token,
-			&format!("/api/runs/{}/message", run.id),
+			&format!("/api/executions/{}/message", run.id),
 			json!({
 				"content":format!("late {index}"),"idempotency_key":Uuid::new_v4()
 			}),
@@ -1989,7 +1994,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	let worker = Uuid::new_v4();
 	{ let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = common::tool_pending(json!({"response":{"text":"answer","tool_calls":[],"input_tokens":1,"output_tokens":1},"cursor":0})); sqlx::query(&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("phase"),
 				reinhardt::query::Expr::cust("'TOOL_CALL'"),

@@ -169,7 +169,7 @@ impl ThreadScope for Scope<'_> {
 				let query_bind_1 = area.id;
 				crate::database::native::query(
 					&Query::update()
-						.table(Alias::new("runs"))
+						.table(Alias::new("task_executions"))
 						.value(Alias::new("control"), "CANCELLED")
 						.and_where(
 							Expr::col(Alias::new("id")).in_subquery(

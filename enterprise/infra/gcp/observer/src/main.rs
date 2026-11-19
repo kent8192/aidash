@@ -210,7 +210,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 			Alias::new("pending"),
 			Alias::new("control"),
 		])
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col(Alias::new("phase")).is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 		.build(PostgresQueryBuilder);
 	let mut busy = BTreeMap::new();
@@ -241,7 +241,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 			active_runs += 1;
 		}
 	}
-	busy.insert("runs", active_runs);
+	busy.insert("task_executions", active_runs);
 	for (name, table, column, states) in [
 		(
 			"verification",
@@ -306,7 +306,7 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 		"leases",
 		count(
 			&mut tx,
-			"runs",
+			"task_executions",
 			Expr::col(Alias::new("lease_until")).gt(call("clock_timestamp", vec![])),
 		)
 		.await?,
@@ -337,7 +337,11 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 	// actual completion time so that it still receives a full idle interval.
 	let mut last_work_completed = 0.0_f64;
 	for (table, column, terminal) in [
-		("runs", "phase", vec!["COMPLETED", "FAILED", "CANCELLED"]),
+		(
+			"task_executions",
+			"phase",
+			vec!["COMPLETED", "FAILED", "CANCELLED"],
+		),
 		(
 			"core_operations",
 			"state",

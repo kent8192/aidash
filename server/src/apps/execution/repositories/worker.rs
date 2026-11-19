@@ -307,7 +307,7 @@ impl FailureScope for Failure {
 				&self.record.metadata,
 				self.token,
 				&failure.reason(),
-				"run.authorization_blocked",
+				"execution.authorization_blocked",
 				failure.refusal(),
 			)
 			.await

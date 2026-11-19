@@ -162,7 +162,7 @@ impl ClaimScope for scheduling::Scope<Box<dyn TransactionExecutor>> {
 	async fn read_run(&mut self, id: Uuid) -> aidash_application::Result<RawRun> {
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.build(PostgresQueryBuilder);
 		scheduling::raw(
@@ -176,7 +176,7 @@ impl ClaimScope for scheduling::Scope<Box<dyn TransactionExecutor>> {
 	async fn lock_run(&mut self, id: Uuid) -> aidash_application::Result<Option<RawRun>> {
 		let (sql, values) = Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.lock(LockType::Update)
 			.lock_behavior(LockBehavior::Nowait)

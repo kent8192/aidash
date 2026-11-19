@@ -43,7 +43,7 @@ export function OutboundFiles({
     initialPageParam: "",
     queryFn: ({ pageParam, signal }) =>
       apiFetch<{ items: FetchResult[]; next_cursor: string | null }>(
-        `/api/runs/${run}/outbound${pageParam ? `?cursor=${pageParam}` : ""}`,
+        `/api/executions/${run}/outbound${pageParam ? `?cursor=${pageParam}` : ""}`,
         { signal },
       ),
     getNextPageParam: (p) => p.next_cursor ?? undefined,
@@ -93,7 +93,7 @@ export function OutboundFiles({
           void act(async () => {
             if (request.current?.url !== url)
               request.current = { url, key: crypto.randomUUID() };
-            await post(`/runs/${run}/outbound`, {
+            await post(`/executions/${run}/outbound`, {
               url,
               idempotency_key: request.current.key,
             });
@@ -149,7 +149,7 @@ export function OutboundFiles({
                   disabled={busy}
                   onClick={() =>
                     void act(() =>
-                      post(`/runs/${run}/files/materialize`, {
+                      post(`/executions/${run}/files/materialize`, {
                         idempotency_key: crypto.randomUUID(),
                         expected_revision: revision,
                         path:

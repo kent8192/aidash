@@ -306,7 +306,7 @@ impl RunInteractionScope for Reads<'_> {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(

@@ -23,7 +23,7 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 	let c = Box::pin(lowered_content_fixture).await;
 	let run = admit(&c).await;
 	let message = source(&c, run.thread_id, &"東京の資料\n".repeat(8)).await;
-	let base = format!("/api/runs/{}", run.id);
+	let base = format!("/api/executions/{}", run.id);
 	let (status, created) = common::post(&c.app, &c.token, &format!("{base}/files/materialize"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"notes.txt","source":{"kind":"message","message_id":message}})).await;
 	assert_eq!(status, 200, "{created}");
 	let file = &created["file"];
@@ -110,12 +110,12 @@ fn search_boundary_fixture(
 		let c = lowered_content_fixture.await;
 		let run = admit(&c).await;
 		let message = source(&c, run.thread_id, &"matched text ".repeat(60)).await;
-		let (status, large) = common::post(&c.app, &c.token, &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"a".repeat(1000),"source":{"kind":"message","message_id":message}})).await;
+		let (status, large) = common::post(&c.app, &c.token, &format!("/api/executions/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"a".repeat(1000),"source":{"kind":"message","message_id":message}})).await;
 		assert_eq!(status, 200, "{large}");
 		let (_, area) = common::get(
 			&c.app,
 			&c.token,
-			&format!("/api/runs/{}/working-area", run.id),
+			&format!("/api/executions/{}/working-area", run.id),
 		)
 		.await;
 		// A committed binary working object is valid input, but has no UTF-8
@@ -170,7 +170,7 @@ async fn oversized_search_matches_fail_explicitly_instead_of_repeating_an_empty_
 	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/runs/{run}/files/search"),
+		&format!("/api/executions/{run}/files/search"),
 		json!({"query":"matched","mode":"literal","scope":"working","path":"a".repeat(1000)}),
 	)
 	.await;
@@ -189,7 +189,7 @@ async fn binary_search_reports_unavailable_text_while_path_search_remains_usable
 	#[case] mode: &str,
 ) {
 	let (c, run) = Box::pin(search_boundary_fixture).await;
-	let path = format!("/api/runs/{run}/files/search");
+	let path = format!("/api/executions/{run}/files/search");
 	let (status, result) = common::post(
 		&c.app,
 		&c.token,

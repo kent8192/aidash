@@ -354,7 +354,7 @@ impl StatusRecovery for Recovery {
 					Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 				};
 				let update = Query::update()
-					.table(Alias::new("runs"))
+					.table(Alias::new("task_executions"))
 					.value(Alias::new("error"), "external identity disabled")
 					.and_where(Expr::col("id").eq(Expr::value(run)))
 					.and_where(Expr::col("control").eq(Expr::value("PAUSED")))

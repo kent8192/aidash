@@ -34,7 +34,7 @@ export function RemoteRunManagement({
   const [error, setError] = useState("");
   const query = useQuery({
     queryKey: ["run-management", id],
-    queryFn: () => apiFetch<RunManagement>(`/api/runs/${id}/management`),
+    queryFn: () => apiFetch<RunManagement>(`/api/executions/${id}/management`),
     retry: false,
     refetchInterval: 2000,
   });
@@ -46,7 +46,7 @@ export function RemoteRunManagement({
   const act = (action: "pause" | "cancel") => {
     setBusy(true);
     setError("");
-    void apiFetch(`/api/runs/${id}/management`, {
+    void apiFetch(`/api/executions/${id}/management`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action }),
@@ -124,7 +124,7 @@ export function RemoteRunManagement({
           submit={submit}
           withSentence={false}
           decline={(call, rest_of_run) =>
-            apiFetch(`/api/runs/${id}/declined-calls`, {
+            apiFetch(`/api/executions/${id}/declined-calls`, {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({

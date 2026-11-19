@@ -108,7 +108,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{}", self.run),
+			&format!("/api/executions/{}", self.run),
 			Value::Null,
 		)
 		.await
@@ -119,7 +119,7 @@ impl World {
 			&self.app,
 			token,
 			"POST",
-			&format!("/api/runs/{}/control", self.run),
+			&format!("/api/executions/{}/control", self.run),
 			json!({"action":action}),
 		)
 		.await
@@ -130,7 +130,7 @@ impl World {
 			&self.app,
 			token,
 			"GET",
-			&format!("/api/runs/{}/management", self.run),
+			&format!("/api/executions/{}/management", self.run),
 			Value::Null,
 		)
 		.await
@@ -232,7 +232,7 @@ impl World {
 		};
 		let phase = serde_json::to_value(state.phase()).unwrap();
 		sqlx::query(
-			"UPDATE runs SET pending = $1, phase = $2, control = 'PAUSED', error = $3 WHERE id = $4",
+			"UPDATE task_executions SET pending = $1, phase = $2, control = 'PAUSED', error = $3 WHERE id = $4",
 		)
 		.bind(encode(&state, &recovery).unwrap())
 		.bind(phase.as_str().unwrap())
@@ -262,7 +262,7 @@ impl World {
 			&self.app,
 			token,
 			"POST",
-			&format!("/api/runs/{}/declined-calls", self.run),
+			&format!("/api/executions/{}/declined-calls", self.run),
 			json!({"call": call}),
 		)
 		.await
@@ -335,7 +335,7 @@ impl World {
 			response_epoch: epoch,
 			..Default::default()
 		}));
-		sqlx::query("UPDATE runs SET pending = $1, phase = 'TOOL_CALL', control = 'ACTIVE', lease_owner = NULL, lease_until = NULL WHERE id = $2")
+		sqlx::query("UPDATE task_executions SET pending = $1, phase = 'TOOL_CALL', control = 'ACTIVE', lease_owner = NULL, lease_until = NULL WHERE id = $2")
             .bind(encode(&state, &recovery).unwrap()).bind(run_id)
             .execute(self.f.store.pool.fixture_driver()).await.unwrap();
 		format!("{run_id}:{epoch}:0")
@@ -380,7 +380,7 @@ async fn a_person_can_decline_the_same_refusal_for_the_rest_of_the_run(
 		&w.app,
 		&w.alice,
 		"POST",
-		&format!("/api/runs/{}/declined-calls", w.run),
+		&format!("/api/executions/{}/declined-calls", w.run),
 		json!({"call": w.key(), "rest_of_run": true}),
 	)
 	.await;
@@ -388,7 +388,7 @@ async fn a_person_can_decline_the_same_refusal_for_the_rest_of_the_run(
 	let events = w.events().await;
 	let event = events
 		.iter()
-		.find(|(kind, _)| kind == "run.call_declined")
+		.find(|(kind, _)| kind == "execution.call_declined")
 		.unwrap();
 	assert_eq!(event.1["rest_of_run"], true);
 	assert_eq!(w.row().await.unwrap().0, "COMPLETED");
@@ -418,7 +418,7 @@ async fn a_person_can_decline_the_same_refusal_for_the_rest_of_the_run(
 		w.events()
 			.await
 			.iter()
-			.any(|(kind, data)| kind == "run.call_declined"
+			.any(|(kind, data)| kind == "execution.call_declined"
 				&& data["standing_decline"] == true
 				&& data["call"] == key)
 	);
@@ -437,7 +437,7 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 		&w.app,
 		&w.alice,
 		"POST",
-		&format!("/api/runs/{}/declined-calls", w.run),
+		&format!("/api/executions/{}/declined-calls", w.run),
 		json!({"call":w.key(),"rest_of_run":true}),
 	)
 	.await;
@@ -482,7 +482,7 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 			.find(|run| run.task_id == child.id)
 			.expect("parent delegation admitted the child Run");
 	assert!(child_run.recovery.standing_declines.is_empty());
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(w.run)
 		.execute(w.f.store.pool.fixture_driver())
 		.await
@@ -547,12 +547,12 @@ async fn the_runs_person_declines_the_call_and_the_run_goes_on(
 	assert_eq!(result, Some(json!({"error": sentence()})));
 	let events = w.events().await;
 	let kinds: Vec<&str> = events.iter().map(|(kind, _)| kind.as_str()).collect();
-	assert!(kinds.contains(&"run.call_declined"), "{kinds:?}");
+	assert!(kinds.contains(&"execution.call_declined"), "{kinds:?}");
 	assert!(kinds.contains(&"tool.completed"), "{kinds:?}");
 	assert!(!kinds.contains(&"tool.started"), "{kinds:?}");
 	let (_, event) = events
 		.iter()
-		.find(|(kind, _)| kind == "run.call_declined")
+		.find(|(kind, _)| kind == "execution.call_declined")
 		.unwrap();
 	assert_eq!(event["by"], "alice");
 	assert_eq!(event["tool"], "task_delegate");
@@ -630,7 +630,7 @@ async fn a_stale_call_key_answers_conflict_and_changes_nothing(
 		.api_http
 		.request(
 			"POST".parse().unwrap(),
-			&format!("/api/runs/{}/declined-calls", w.run),
+			&format!("/api/executions/{}/declined-calls", w.run),
 		)
 		.header("Authorization", format!("Bearer {alice}"))
 		.json(&json!({"call": w.key(), "action": "resume"}))
@@ -679,7 +679,7 @@ async fn a_sentence_sent_first_is_an_ordinary_run_message_to_a_paused_run(
 		&w.app,
 		&alice,
 		"POST",
-		&format!("/api/runs/{}/message", w.run),
+		&format!("/api/executions/{}/message", w.run),
 		json!({"content": "Use the shared notes instead.", "idempotency_key": Uuid::new_v4().to_string()}),
 	)
 	.await;
@@ -780,7 +780,7 @@ async fn another_administrator_declines_and_the_runs_credential_is_left_alone(
 	let events = w.events().await;
 	let (_, event) = events
 		.iter()
-		.find(|(kind, _)| kind == "run.call_declined")
+		.find(|(kind, _)| kind == "execution.call_declined")
 		.unwrap();
 	assert_eq!(event["by"], "erin");
 }
@@ -863,7 +863,7 @@ async fn an_administrator_declines_a_run_with_a_working_area_though_they_cannot_
 		&w.app,
 		&erin,
 		"POST",
-		&format!("/api/runs/{}/management", w.run),
+		&format!("/api/executions/{}/management", w.run),
 		json!({"action":"cancel"}),
 	)
 	.await;
@@ -885,7 +885,7 @@ async fn an_administrator_declines_a_run_with_a_working_area_though_they_cannot_
 	let events = w.events().await;
 	let (_, event) = events
 		.iter()
-		.find(|(kind, _)| kind == "run.call_declined")
+		.find(|(kind, _)| kind == "execution.call_declined")
 		.unwrap();
 	assert_eq!(event["by"], "erin");
 	// Once the Run goes on, nothing is offered.

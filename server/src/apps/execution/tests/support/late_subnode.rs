@@ -22,7 +22,7 @@ pub async fn seed_subnode(f: &Federation, run: Uuid, allowance: &[String]) -> Uu
 		  allowance, thread_id, title, state, created_at, creation_key, creation_fingerprint) \
 		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
 		  $2, thread_id, 'Late writes', 'active', now(), 'late', 'late' \
-		 FROM runs WHERE id = $3",
+		 FROM task_executions WHERE id = $3",
 	)
 	.bind(subnode)
 	.bind(json!({"tools":allowance,"secrets":[]}))
@@ -33,7 +33,7 @@ pub async fn seed_subnode(f: &Federation, run: Uuid, allowance: &[String]) -> Uu
 	sqlx::query(
 		"INSERT INTO subnode_members (subnode_id, agent_id, tenant, agent_version, \
 		  added_by_run_id, added_at) \
-		 SELECT $1, agent_id, tenant, agent_version, id, now() FROM runs WHERE id = $2",
+		 SELECT $1, agent_id, tenant, agent_version, id, now() FROM task_executions WHERE id = $2",
 	)
 	.bind(subnode)
 	.bind(run)
@@ -63,7 +63,7 @@ pub async fn stage(f: &Federation, run: Uuid, name: &str, arguments: Value, call
 		"data": json!(aidash_server::domain::RunState::ToolCall(Box::new(state)))["data"],
 		"recovery": {"retry": null},
 	});
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(run)
 		.execute(f.store.pool.fixture_driver())
@@ -139,7 +139,7 @@ impl EndFirst {
 	/// Cancel the Run in the same transaction, as the end does, and commit.
 	#[allow(dead_code)]
 	pub async fn commit(mut self) {
-		sqlx::query("UPDATE runs SET control = 'CANCELLED' WHERE id = $1")
+		sqlx::query("UPDATE task_executions SET control = 'CANCELLED' WHERE id = $1")
 			.bind(self.run)
 			.execute(&mut *self.tx)
 			.await

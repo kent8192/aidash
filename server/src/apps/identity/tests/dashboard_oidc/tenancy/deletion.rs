@@ -817,7 +817,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO runs (id, task_id, thread_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
+		"INSERT INTO task_executions (id, task_id, thread_id, home_node, node, agent_id, agent_version, phase, control, context, pending, tenant) \
 		 VALUES ($1, $2, $3, $4 || '/' || (SELECT node FROM threads WHERE id = $3), (SELECT node FROM threads WHERE id = $3), 'agent', '1.0.0', 'THINKING', 'ACTIVE', '{}'::jsonb, '{}'::jsonb, (SELECT tenant FROM threads WHERE id = $3))",
 	)
 	.bind(run)
@@ -843,9 +843,9 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	// A blocked mutation must keep deletion's policy fence until its effect commits.
 	for (table, id, endpoint, input) in [
 		(
-			"runs",
+			"task_executions",
 			run,
-			format!("/api/runs/{run}/management"),
+			format!("/api/executions/{run}/management"),
 			json!({"tenant":tenant,"action":"pause","expected_control_revision":0,"reason":"Deployment Administrator cleanup"}),
 		),
 		(
@@ -938,7 +938,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 	}
 	let state = || async {
 		sqlx::query_as::<_, (String, Option<String>)>(
-			"SELECT control, error FROM runs WHERE id = $1",
+			"SELECT control, error FROM task_executions WHERE id = $1",
 		)
 		.bind(run)
 		.fetch_one(pool)

@@ -177,7 +177,7 @@ impl ThreadStateScope for StateReads<'_> {
 	}
 	async fn run_candidates(&mut self, node: Option<&str>) -> Result<Vec<RawRun>> {
 		let q = self
-			.candidates("runs", node, "updated_at")
+			.candidates("task_executions", node, "updated_at")
 			.to_string(PostgresQueryBuilder);
 		aidash_server::database::query_as(&q)
 			.fetch_all(&mut **self.access.tx)

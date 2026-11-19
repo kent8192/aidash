@@ -198,7 +198,7 @@ def wait_for(fn, timeout=120, label="condition"):
 def reconcile_uncertain_http(base, run_id, effects, token):
     """Confirm a lost HTTP result from the fixture's recorded external receipt."""
     def uncertain():
-        run = api_request(base, f"/api/runs/{run_id}", token=token)["run"]
+        run = api_request(base, f"/api/executions/{run_id}", token=token)["run"]
         if run["phase"] == "WAITING" and run["state"]["data"]["reason"] == "reconciliation":
             return run["state"]["data"]
         return None
@@ -234,11 +234,11 @@ def page_items(base, path, token):
 
 
 def latest_task_run(base, task, token):
-    return next(iter(api_request(base, f"/api/tasks/{task}/runs", token=token)["items"]), None)
+    return next(iter(api_request(base, f"/api/tasks/{task}/executions", token=token)["items"]), None)
 
 
 def completed_run(base, run_id, token):
-    run = api_request(base, f"/api/runs/{run_id}", token=token)["run"]
+    run = api_request(base, f"/api/executions/{run_id}", token=token)["run"]
     return run if run["phase"] == "COMPLETED" else None
 
 
@@ -274,7 +274,7 @@ def diagnose(base, token, tenant, workspace, database):
 
     # The database answers even when the API is too slow to (#386).
     for label, query in [
-        ("runs", "SELECT id, agent_id, phase, control, step, coalesce(error, ''), pending_human_request_id FROM runs ORDER BY updated_at"),
+        ("runs", "SELECT id, agent_id, phase, control, step, coalesce(error, ''), pending_human_request_id FROM task_executions ORDER BY updated_at"),
         ("human requests", "SELECT run_id, kind, left(prompt, 160), response IS NOT NULL, coalesce(answered_by, ''), to_char(created_at, 'HH24:MI:SS') FROM human_requests ORDER BY created_at"),
         ("decision count", "SELECT count(*) FROM authorization_decisions"),
         ("decisions by action", "SELECT action, count(*) FROM authorization_decisions GROUP BY action ORDER BY 2 DESC LIMIT 15"),
@@ -294,8 +294,8 @@ def diagnose(base, token, tenant, workspace, database):
         requests = page_items(base, "/api/human-requests?state=all", token)
         show("api human requests", [[request["run_id"], request["kind"], request.get("response") is not None] for request in requests])
         for task in tasks:
-            for run in page_items(base, f"/api/tasks/{task}/runs", token):
-                detail = api_request(base, f"/api/runs/{run['id']}", token=token)["run"]
+            for run in page_items(base, f"/api/tasks/{task}/executions", token):
+                detail = api_request(base, f"/api/executions/{run['id']}", token=token)["run"]
                 response = ((detail.get("state") or {}).get("data") or {}).get("response") or {}
                 show(f"run {run['id']}", {**{key: detail.get(key) for key in ("agent_id", "phase", "control", "step", "error")}, "tool_calls": response.get("tool_calls")})
         show("policy", api_request(base, f"/api/authorization/{tenant}", token=token))
@@ -1012,7 +1012,7 @@ def main():
         snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
         recovered = wait_for(lambda: completed_run(base_a, before["id"], tokens[base_a]), label="same durable research run")
         assert recovered["id"] == before["id"]
-        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a])["events"])
+        assert any(e["kind"] == "execution.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a])["events"])
         assert len(snapshot["artifacts"]) == 4
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"

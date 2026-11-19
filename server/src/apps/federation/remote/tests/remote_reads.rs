@@ -119,7 +119,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	.unwrap();
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	let run = a.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let path = format!("/api/runs/{}", run.id);
+	let path = format!("/api/executions/{}", run.id);
 	assert_eq!(
 		request(&a_app, &token, "GET", &path, Value::Null).await.0,
 		200

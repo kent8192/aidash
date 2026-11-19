@@ -142,7 +142,7 @@ async fn require_subnode_writable(
 	} else {
 		let table = match kind {
 			"task" => "tasks",
-			"run" => "runs",
+			"run" => "task_executions",
 			_ => return Err(aidash_application::Error::Forbidden),
 		};
 		let target = Query::select()
@@ -186,7 +186,7 @@ pub(super) async fn require_target_node(
 	let table = match kind {
 		"thread" => "threads",
 		"task" => "tasks",
-		"run" => "runs",
+		"run" => "task_executions",
 		_ => {
 			return Err(aidash_application::Error::Invalid(
 				"unsupported transaction target".into(),

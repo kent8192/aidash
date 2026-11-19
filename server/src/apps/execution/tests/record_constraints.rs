@@ -170,7 +170,7 @@ async fn update_run_state(
 		let query_bind_3 = run_id;
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(
 					Alias::new("phase"),
 					SimpleExpr::CustomWithExpr(
@@ -574,7 +574,7 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	check_rejected(
 		update(
 			f.store.pool.fixture_driver(),
-			"runs",
+			"task_executions",
 			"step",
 			Expr::value(-1),
 		)
@@ -584,7 +584,7 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	check_rejected(
 		update(
 			f.store.pool.fixture_driver(),
-			"runs",
+			"task_executions",
 			"lease_owner",
 			Expr::cust("gen_random_uuid()"),
 		)
@@ -1269,7 +1269,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		for invalid in [Value::Null, json!([]), json!(7), json!("text"), json!({})] {
 			update(
 				f.store.pool.fixture_driver(),
-				"runs",
+				"task_executions",
 				column,
 				Expr::value(invalid),
 			)
@@ -1287,7 +1287,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		}
 		update(
 			f.store.pool.fixture_driver(),
-			"runs",
+			"task_executions",
 			column,
 			Expr::value(if column == "context" {
 				common::context(json!({}))
@@ -1315,7 +1315,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			human(uuid::Uuid::new_v4()),
 		)
 		.await,
-		"runs_human_request_ref",
+		"task_executions_human_request_ref",
 	);
 	let request = f
 		.store
@@ -1338,7 +1338,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			uuid_expr(uuid::Uuid::new_v4()),
 		)
 		.await,
-		"runs_human_request_ref",
+		"task_executions_human_request_ref",
 	);
 	let other_task = f
 		.store
@@ -1373,7 +1373,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			uuid_expr(other_run.id),
 		)
 		.await,
-		"runs_human_request_ref",
+		"task_executions_human_request_ref",
 	);
 	let delete_request = Query::delete()
 		.from_table(Alias::new("human_requests"))
@@ -1385,7 +1385,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			.execute(f.store.pool.fixture_driver())
 			.await
 			.map(|_| ()),
-		"runs_human_request_ref",
+		"task_executions_human_request_ref",
 	);
 	update_run_state(
 		f.store.pool.fixture_driver(),
@@ -1440,7 +1440,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	check_rejected(
 		update(
 			f.store.pool.fixture_driver(),
-			"runs",
+			"task_executions",
 			"revision",
 			Expr::value(i64::MAX),
 		)
@@ -1473,7 +1473,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	)
 	.await;
 	let max_safe_revision = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value_expr(Alias::new("revision"), Expr::cust("$1"))
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
 		.to_string(PostgresQueryBuilder);
@@ -1531,7 +1531,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	] {
 		update(
 			f.store.pool.fixture_driver(),
-			"runs",
+			"task_executions",
 			"context",
 			Expr::value(malformed),
 		)
@@ -1548,7 +1548,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	}
 	update(
 		f.store.pool.fixture_driver(),
-		"runs",
+		"task_executions",
 		"context",
 		Expr::value(common::context(json!({}))),
 	)
@@ -1556,7 +1556,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	.unwrap();
 	let lease_deadline_update = |deadline: &str| {
 		Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value_expr(Alias::new("lease_owner"), Expr::cust("gen_random_uuid()"))
 			.value_expr(
 				Alias::new("lease_until"),

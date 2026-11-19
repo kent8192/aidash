@@ -165,7 +165,8 @@ impl GenerationUsage {
 		run: Uuid,
 		amount: i64,
 	) -> Result<()> {
-		let tenant = crate::database::scope::parent_tenant(tx, "runs", "id", run).await?;
+		let tenant =
+			crate::database::scope::parent_tenant(tx, "task_executions", "id", run).await?;
 		let record = Self::build()
 			.tenant(tenant)
 			.request_id(request)

@@ -104,7 +104,7 @@ async fn a_thread_success_is_durable_before_memory_failure_reloads_the_run(
 		"past degradation evidence is retained"
 	);
 	assert!(
-		saved(&canonical, "run.sources_observed").is_empty(),
+		saved(&canonical, "execution.sources_observed").is_empty(),
 		"partial retrieval is never cached"
 	);
 
@@ -145,7 +145,7 @@ async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
 	*canonical.backend.0.memory_value.lock().unwrap() = degraded_envelope();
 	assert!(advance_sources(&mut canonical).await.is_err());
 
-	let degraded = saved(&canonical, "run.semantic_degraded");
+	let degraded = saved(&canonical, "execution.semantic_degraded");
 	assert_eq!(degraded.len(), 1);
 	assert_eq!(
 		degraded[0].recovery.degraded.recent,
@@ -156,7 +156,7 @@ async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
 	);
 	assert!(degraded[0].recovery.degraded.outage);
 	// Never cached: no observation was saved for the degraded step.
-	assert!(saved(&canonical, "run.sources_observed").is_empty());
+	assert!(saved(&canonical, "execution.sources_observed").is_empty());
 	assert!(degraded[0].context.source_observation.is_none());
 
 	// The provider recovers. The next step retrieves again, even under the same
@@ -165,7 +165,7 @@ async fn degraded_context_is_recorded_and_retrieved_again_by_the_next_step(
 	canonical.run.step += 1;
 	assert!(advance_sources(&mut canonical).await.is_err());
 	assert_eq!(count(&canonical, "source.memory"), 2);
-	let observed = saved(&canonical, "run.sources_observed");
+	let observed = saved(&canonical, "execution.sources_observed");
 	assert_eq!(observed.len(), 1);
 	assert!(!observed[0].recovery.degraded.outage);
 	assert_eq!(observed[0].recovery.degraded.count, 1);
@@ -192,12 +192,12 @@ async fn a_step_that_degrades_again_saves_one_degradation_and_no_observation(
 	// The same step is entered again, as after a worker crash.
 	assert!(advance_sources(&mut canonical).await.is_err());
 
-	let degraded = saved(&canonical, "run.semantic_degraded");
+	let degraded = saved(&canonical, "execution.semantic_degraded");
 	assert_eq!(degraded.len(), 1);
 	assert_eq!(degraded[0].recovery.degraded.count, 1);
 	assert!(degraded[0].recovery.degraded.outage);
 	// The replay observed no source, so it reports none.
-	assert!(saved(&canonical, "run.sources_observed").is_empty());
+	assert!(saved(&canonical, "execution.sources_observed").is_empty());
 }
 
 #[rstest]

@@ -387,17 +387,14 @@ pub(crate) async fn take_booking(
 			.and_where(Expr::exists(
 				Query::select()
 					.expr(Expr::value(1_i32))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(
-						Expr::col((Alias::new("runs"), Alias::new("id")))
+						Expr::col((Alias::new("task_executions"), Alias::new("id")))
 							.equals((Alias::new("duty_bookings"), Alias::new("run_id"))),
 					)
 					.and_where(
-						Expr::col((Alias::new("runs"), Alias::new("phase"))).is_not_in([
-							"COMPLETED",
-							"FAILED",
-							"CANCELLED",
-						]),
+						Expr::col((Alias::new("task_executions"), Alias::new("phase")))
+							.is_not_in(["COMPLETED", "FAILED", "CANCELLED"]),
 					)
 					.to_owned(),
 			))

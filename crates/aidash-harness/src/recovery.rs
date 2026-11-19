@@ -94,7 +94,7 @@ async fn wait_outage(
 		})?;
 		run.recovery.retry = spent;
 	}
-	store.save(run, token, "run.outage_waiting").await?;
+	store.save(run, token, "execution.outage_waiting").await?;
 	Ok(true)
 }
 
@@ -157,7 +157,9 @@ pub async fn recover(
 				at: now + chrono::Duration::seconds(1),
 			});
 			current.error = Some(reason.to_string());
-			store.save(&current, token, "run.semantic_retrying").await?;
+			store
+				.save(&current, token, "execution.semantic_retrying")
+				.await?;
 		} else if reason == SemanticFailure::Pending
 			|| (reason.transient() && attempts <= OUTAGE_RETRIES)
 		{
@@ -186,7 +188,9 @@ pub async fn recover(
 				at: now + chrono::Duration::seconds(delay),
 			});
 			current.error = Some(reason.to_string());
-			store.save(&current, token, "run.semantic_retrying").await?;
+			store
+				.save(&current, token, "execution.semantic_retrying")
+				.await?;
 		} else if reason == SemanticFailure::Unavailable {
 			// The Run still retries by itself, so it stays `Unavailable` with a
 			// scheduled retry and management offers only `wait`: nobody is told
@@ -230,7 +234,9 @@ pub async fn recover(
 				at: now + chrono::Duration::seconds(2_i64.pow(retries)),
 			});
 			current.error = Some(failure.message());
-			store.save(&current, token, "run.decider_retrying").await?;
+			store
+				.save(&current, token, "execution.decider_retrying")
+				.await?;
 		} else {
 			current.recovery.decider_retry = retries;
 			let reason = aidash_domain::context::recovery::Failure::DeciderUnavailable;
@@ -265,7 +271,9 @@ pub async fn recover(
 				at: now + chrono::Duration::seconds(2_i64.pow(retries)),
 			});
 			current.error = Some(failure.message());
-			store.save(&current, token, "run.node_retrying").await?;
+			store
+				.save(&current, token, "execution.node_retrying")
+				.await?;
 		} else if wait_outage(
 			store,
 			&mut current,
@@ -284,7 +292,7 @@ pub async fn recover(
 					&current,
 					token,
 					&failure.message(),
-					"run.node_unreachable",
+					"execution.node_unreachable",
 					None,
 				)
 				.await?;
@@ -292,7 +300,7 @@ pub async fn recover(
 	} else if let ExecutionFailure::Context(reason) = failure {
 		// Final for this step and never a transport retry. Local and remote-hosted
 		// Runs share this path: the store records the typed reason, pauses, and
-		// emits `run.context_blocked`, like every other execution pause.
+		// emits `execution.context_blocked`, like every other execution pause.
 		current.recovery.context_reason = Some(reason);
 		store.pause_context(&current, token, reason).await?;
 	} else if let ExecutionFailure::Authority(authority) = failure {
@@ -304,7 +312,7 @@ pub async fn recover(
 				&current,
 				token,
 				&authority.reason(),
-				"run.authorization_blocked",
+				"execution.authorization_blocked",
 				authority.refusal(),
 			)
 			.await?;
@@ -318,7 +326,7 @@ pub async fn recover(
 				count: attempts,
 				at: now + chrono::Duration::seconds(2_i64.pow(attempts)),
 			});
-			store.save(&current, token, "run.retrying").await?;
+			store.save(&current, token, "execution.retrying").await?;
 			return Ok(true);
 		}
 		if !wait_outage(
@@ -337,7 +345,7 @@ pub async fn recover(
 					&current,
 					token,
 					&failure.message(),
-					"run.service_unavailable",
+					"execution.service_unavailable",
 					None,
 				)
 				.await?;
@@ -360,7 +368,7 @@ pub async fn recover(
 			.await?
 		{
 			store
-				.pause(&current, token, message, "run.budget_exhausted", None)
+				.pause(&current, token, message, "execution.budget_exhausted", None)
 				.await?;
 		}
 	} else if let ExecutionFailure::PlanAllowance(ref message) = failure {
@@ -383,14 +391,20 @@ pub async fn recover(
 					&current,
 					token,
 					message,
-					"run.plan_allowance_exhausted",
+					"execution.plan_allowance_exhausted",
 					None,
 				)
 				.await?;
 		}
 	} else if let ExecutionFailure::MediaRoute(ref message) = failure {
 		store
-			.pause(&current, token, message, "run.media_route_blocked", None)
+			.pause(
+				&current,
+				token,
+				message,
+				"execution.media_route_blocked",
+				None,
+			)
 			.await?;
 	} else if let ExecutionFailure::ToolRetry {
 		count,
@@ -411,7 +425,7 @@ pub async fn recover(
 			at: now + chrono::Duration::seconds(delay.as_secs() as i64),
 		});
 		current.error = Some(message.clone());
-		store.save(&current, token, "run.retrying").await?;
+		store.save(&current, token, "execution.retrying").await?;
 		return Ok(true);
 	} else if matches!(
 		failure,
@@ -427,7 +441,7 @@ pub async fn recover(
 			// Say what the Run waits for instead of showing the error of an earlier step.
 			current.error = Some(failure.message());
 		}
-		store.save(&current, token, "run.retrying").await?;
+		store.save(&current, token, "execution.retrying").await?;
 		return Ok(true);
 	} else if current.state.failure_delivery() {
 		if let RunState::Waiting(wait) = &mut current.state
@@ -440,14 +454,16 @@ pub async fn recover(
 			*last_delivery_error = Some(failure.message());
 			*wake_at = now + chrono::Duration::seconds(5);
 		}
-		store.save(&current, token, "run.failure_pending").await?;
+		store
+			.save(&current, token, "execution.failure_pending")
+			.await?;
 	} else if failure.retryable() && attempts <= 5 && current.control != RunControl::Cancelled {
 		current.recovery.retry = Some(RetryState {
 			count: attempts,
 			at: now + chrono::Duration::seconds(2_i64.pow(attempts)),
 		});
 		current.error = Some(failure.message());
-		store.save(&current, token, "run.retrying").await?;
+		store.save(&current, token, "execution.retrying").await?;
 		return Ok(true);
 	} else if current.control != RunControl::Cancelled
 		&& let Some(need) = aidash_application::connection_wait::failure_need(&current)
@@ -481,7 +497,7 @@ pub async fn recover(
 		}));
 		current.error = Some(failure.message());
 		store
-			.save(&current, token, "run.failure_deferred_for_connection")
+			.save(&current, token, "execution.failure_deferred_for_connection")
 			.await?;
 	} else {
 		let target = if current.control == RunControl::Cancelled {
@@ -495,7 +511,9 @@ pub async fn recover(
 			last_delivery_error: None,
 		}));
 		current.error = Some(failure.message());
-		store.save(&current, token, "run.failure_pending").await?;
+		store
+			.save(&current, token, "execution.failure_pending")
+			.await?;
 	}
 	Ok(false)
 }

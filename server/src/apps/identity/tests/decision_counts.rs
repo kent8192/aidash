@@ -45,13 +45,13 @@ async fn thread_live_runs_continue_to_an_older_paused_run(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let old: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	let old: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	sqlx::query(
-		"UPDATE runs SET control = 'PAUSED', updated_at = now() - interval '30 days' WHERE id = $1",
+		"UPDATE task_executions SET control = 'PAUSED', updated_at = now() - interval '30 days' WHERE id = $1",
 	)
 	.bind(old)
 	.execute(f.store.pool.fixture_driver())
@@ -81,7 +81,7 @@ async fn thread_live_runs_continue_to_an_older_paused_run(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/threads/{thread}/runs?live=true"),
+		&format!("/api/threads/{thread}/executions?live=true"),
 		Value::Null,
 	)
 	.await;
@@ -92,7 +92,7 @@ async fn thread_live_runs_continue_to_an_older_paused_run(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/threads/{thread}/runs?live=true&cursor={cursor}"),
+		&format!("/api/threads/{thread}/executions?live=true&cursor={cursor}"),
 		Value::Null,
 	)
 	.await;
@@ -169,7 +169,7 @@ async fn a_walk_over_two_runs_with_one_binding_decides_each_definition_once(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/runs/{reader}"),
+		&format!("/api/executions/{reader}"),
 		Value::Null,
 	)
 	.await;
@@ -270,7 +270,7 @@ async fn state_decisions_stay_bounded_when_threads_and_runs_double(
 	.await;
 	assert_eq!(status, 200, "{first_run}");
 
-	let run_id: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+	let run_id: Uuid = sqlx::query_scalar("SELECT id FROM task_executions WHERE task_id = $1")
 		.bind(first_task)
 		.fetch_one(f.store.pool.fixture_driver())
 		.await
@@ -290,7 +290,7 @@ async fn state_decisions_stay_bounded_when_threads_and_runs_double(
 		resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
 	}));
 	let pending = aidash_domain::run_state::encode(&waiting, &Default::default()).unwrap();
-	sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1, created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'WAITING', pending = $1, created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $2")
 		.bind(pending).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let count = || async {
 		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM authorization_decisions")
@@ -346,7 +346,7 @@ async fn state_decisions_stay_bounded_when_threads_and_runs_double(
 		// Threads the windows happen to reference between the measurements.
 		sqlx::query("UPDATE tasks SET created_at = threads.created_at FROM threads WHERE tasks.thread_id = threads.id AND tasks.tenant = 'acme'")
 			.execute(f.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("UPDATE runs SET updated_at = tasks.created_at FROM tasks WHERE runs.task_id = tasks.id AND runs.tenant = 'acme' AND runs.id <> $1")
+		sqlx::query("UPDATE task_executions SET updated_at = tasks.created_at FROM tasks WHERE task_executions.task_id = tasks.id AND task_executions.tenant = 'acme' AND task_executions.id <> $1")
 			.bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 		// Hold the independent event projection constant while changing the sizes
 		// of the Thread and Run collections.

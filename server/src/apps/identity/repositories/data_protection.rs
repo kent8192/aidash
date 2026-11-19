@@ -78,7 +78,7 @@ pub(crate) async fn current(store: &Store, context: &Context) -> Result<DataProt
 			}
 			let (sql, values) = Query::select()
 				.columns(["tenant", "task_id"].map(Alias::new))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("id").eq(Expr::value(run)))
 				.build(PostgresQueryBuilder);
 			let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
@@ -403,7 +403,7 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 	// Serialize concurrent calls of the same Run so the disclosure is recorded once.
 	let (sql, values) = Query::select()
 		.columns(["id", "task_id", "thread_id", "home_node", "node"].map(Alias::new))
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("id").eq(Expr::value(run)))
 		.lock(reinhardt::query::LockType::Update)
 		.build(PostgresQueryBuilder);
@@ -427,7 +427,7 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 	let (sql, values) = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("events"))
-		.and_where(Expr::col("kind").eq(Expr::value("run.plan_connection_used")))
+		.and_where(Expr::col("kind").eq(Expr::value("execution.plan_connection_used")))
 		.and_where(
 			Expr::col("data")
 				.binary(
@@ -447,7 +447,7 @@ pub(crate) async fn record_plan_connection(store: &Store, context: &Context) -> 
 			tx.as_mut(),
 			run,
 			local.then_some(thread),
-			"run.plan_connection_used",
+			"execution.plan_connection_used",
 			serde_json::json!({"run_id":run,"task_id":task}),
 		)
 		.await?;

@@ -308,7 +308,7 @@ pub fn build_edges(
 pub fn event_reference(event: &Event, node: &str) -> Option<String> {
 	let id = |value: &serde_json::Value| value.as_str().and_then(|text| text.parse::<Uuid>().ok());
 	let data = &event.data;
-	if event.kind.starts_with("run.") {
+	if event.kind.starts_with("execution.") {
 		return id(&data["run_id"])
 			.or_else(|| id(&data["id"]))
 			.map(|id| resource_key(node, "run", id));

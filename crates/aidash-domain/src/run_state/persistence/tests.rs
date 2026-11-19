@@ -14,7 +14,7 @@ fn outage_tracking_survives_wake_and_is_cleared_after_progress(mut run: Run) {
 		started_at: start,
 	});
 	run.recovery.decider_retry = 6;
-	let resumed = run.worker_snapshot("run.outage_resumed").unwrap();
+	let resumed = run.worker_snapshot("execution.outage_resumed").unwrap();
 	assert_eq!(resumed.pending["recovery"]["outage"]["service"], "Decider");
 	assert_eq!(resumed.pending["recovery"]["decider_retry"], 6);
 	let completed = run.worker_snapshot("model.completed").unwrap();
@@ -32,16 +32,16 @@ fn run() -> Run {
     })).unwrap().decode().unwrap()
 }
 #[rstest]
-#[case::retry("run.retrying", true, true)]
-#[case::semantic_retry("run.semantic_retrying", true, true)]
-#[case::decider_retry("run.decider_retrying", true, true)]
-#[case::node_retry("run.node_retrying", true, true)]
-#[case::failure_delivery("run.failure_pending", true, true)]
-#[case::failed("run.failed", false, true)]
+#[case::retry("execution.retrying", true, true)]
+#[case::semantic_retry("execution.semantic_retrying", true, true)]
+#[case::decider_retry("execution.decider_retrying", true, true)]
+#[case::node_retry("execution.node_retrying", true, true)]
+#[case::failure_delivery("execution.failure_pending", true, true)]
+#[case::failed("execution.failed", false, true)]
 #[case::model_completed("model.completed", false, false)]
-#[case::run_completed("run.completed", false, false)]
-#[case::cancelled("run.cancelled", false, false)]
-#[case::unknown("run.future", false, false)]
+#[case::run_completed("execution.completed", false, false)]
+#[case::cancelled("execution.cancelled", false, false)]
+#[case::unknown("execution.future", false, false)]
 fn worker_save_keeps_only_the_event_specific_retry_and_error_disposition(
 	run: Run,
 	#[case] event: &str,
@@ -68,12 +68,12 @@ fn worker_save_keeps_only_the_event_specific_retry_and_error_disposition(
 	);
 }
 #[rstest]
-#[case::sources("run.sources_observed")]
-#[case::degraded("run.semantic_degraded")]
-#[case::estimate("run.estimate_pinned")]
-#[case::mcp("run.mcp_checkpoint")]
+#[case::sources("execution.sources_observed")]
+#[case::degraded("execution.semantic_degraded")]
+#[case::estimate("execution.estimate_pinned")]
+#[case::mcp("execution.mcp_checkpoint")]
 #[case::summary_revoked("context.summary_revoked")]
-#[case::early_abandonment("run.unassigned_tasks_abandoned")]
+#[case::early_abandonment("execution.unassigned_tasks_abandoned")]
 fn lease_retaining_checkpoints_keep_the_lease_recovery_count(run: Run, #[case] event: &str) {
 	assert!(retains_lease(event));
 	let snapshot = run.worker_snapshot(event).unwrap();
@@ -82,10 +82,14 @@ fn lease_retaining_checkpoints_keep_the_lease_recovery_count(run: Run, #[case] e
 #[rstest]
 fn only_a_scheduled_decider_retry_carries_its_count_to_the_next_lease(mut run: Run) {
 	run.recovery.decider_retry = 2;
-	let scheduled = run.worker_snapshot("run.decider_retrying").unwrap();
+	let scheduled = run.worker_snapshot("execution.decider_retrying").unwrap();
 	assert_eq!(scheduled.pending["recovery"]["decider_retry"], 2);
 	// Any other save, a generic retry included, starts the count again.
-	for event in ["run.retrying", "run.semantic_retrying", "model.completed"] {
+	for event in [
+		"execution.retrying",
+		"execution.semantic_retrying",
+		"model.completed",
+	] {
 		let snapshot = run.worker_snapshot(event).unwrap();
 		assert_eq!(
 			snapshot.pending["recovery"]["decider_retry"],
@@ -97,12 +101,12 @@ fn only_a_scheduled_decider_retry_carries_its_count_to_the_next_lease(mut run: R
 #[rstest]
 fn only_a_scheduled_node_retry_carries_its_count_to_the_next_lease(mut run: Run) {
 	run.recovery.node_retry = 3;
-	let scheduled = run.worker_snapshot("run.node_retrying").unwrap();
+	let scheduled = run.worker_snapshot("execution.node_retrying").unwrap();
 	assert_eq!(scheduled.pending["recovery"]["node_retry"], 3);
 	for event in [
-		"run.retrying",
-		"run.decider_retrying",
-		"run.node_unreachable",
+		"execution.retrying",
+		"execution.decider_retrying",
+		"execution.node_unreachable",
 		"model.completed",
 	] {
 		let snapshot = run.worker_snapshot(event).unwrap();
@@ -118,7 +122,7 @@ fn absent_diagnostics_and_retries_remain_absent_for_retry_events(mut run: Run) {
 	run.error = None;
 	run.recovery.retry = None;
 	run.recovery.lease_recoveries = 0;
-	let snapshot = run.worker_snapshot("run.retrying").unwrap();
+	let snapshot = run.worker_snapshot("execution.retrying").unwrap();
 	assert_eq!(snapshot.error, None);
 	assert_eq!(snapshot.pending["recovery"]["retry"], Value::Null);
 	assert_eq!(snapshot.pending, run.stored_pending().unwrap());

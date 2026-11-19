@@ -190,7 +190,7 @@ impl ReadProvenanceScope for Reads<'_> {
 					crate::database::native::query_scalar(
 						&Query::select()
 							.expr(Expr::cust("context -> 'binding_snapshot'"))
-							.from(Alias::new("runs"))
+							.from(Alias::new("task_executions"))
 							.and_where(Expr::col("id").eq(Expr::value(run)))
 							.to_string(PostgresQueryBuilder),
 					)
@@ -405,7 +405,7 @@ impl ReadProvenanceScope for Reads<'_> {
 				aidash_server::database::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
-						.from(Alias::new("runs"))
+						.from(Alias::new("task_executions"))
 						.and_where(
 							Condition::all()
 								.add(

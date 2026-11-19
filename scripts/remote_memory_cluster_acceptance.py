@@ -361,11 +361,11 @@ class RemoteMemory(Cluster):
         record["completed"] = final
         self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries/{source['id']}", {"expected_revision": source["revision"]}, "DELETE"))
         assert self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/semantic")[0] == 403
-        assert self.user(1, f"/api/runs/{run}")[0] == 403
-        control = self.ok(self.user(1, f"/api/runs/{run}/management"))
+        assert self.user(1, f"/api/executions/{run}")[0] == 403
+        control = self.ok(self.user(1, f"/api/executions/{run}/management"))
         assert not {"context", "pending", "error"}.intersection(control), control
         assert control["id"] == run and control["phase"] == "COMPLETED", control
-        assert self.user(1, f"/api/runs/{run}/management", {"action": "cancel"})[0] == 409
+        assert self.user(1, f"/api/executions/{run}/management", {"action": "cancel"})[0] == 409
         record["content_free_control"] = control
         record["result"] = "passed"
 

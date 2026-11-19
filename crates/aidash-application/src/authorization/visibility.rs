@@ -267,7 +267,7 @@ pub async fn event_visible_in(
 		}
 	}
 	let candidate = event.data.get("run_id").or_else(|| {
-		(event.kind == "run.created")
+		(event.kind == "execution.created")
 			.then(|| event.data.get("id"))
 			.flatten()
 	});

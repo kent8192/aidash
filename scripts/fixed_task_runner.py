@@ -345,7 +345,7 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
     grace_deadline = clock() + CANCEL_GRACE
     grace = api.until(grace_deadline, clock, sleep)
     while run_id is None:
-        runs = [] if token is None else grace.get(f"/api/tasks/{task_uuid}/runs", token)["items"]
+        runs = [] if token is None else grace.get(f"/api/tasks/{task_uuid}/executions", token)["items"]
         run_id = next((run["id"] for run in runs), None)
         if run_id is not None:
             break
@@ -355,12 +355,12 @@ def cancel_run(api, token, task_uuid, run_id, clock, sleep, claim_uncertain=Fals
             raise RuntimeError(f"a claim of Task {task_uuid} may have admitted a Run that did not appear within "
                                f"{CANCEL_GRACE}s, so it could not be cancelled")
         sleep(min(1.0, max(0.0, grace_deadline - clock())))
-    run = grace.get(f"/api/runs/{run_id}", token)["run"]
+    run = grace.get(f"/api/executions/{run_id}", token)["run"]
     if run["phase"] in TERMINAL:
         return run
-    grace.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
+    grace.post(f"/api/executions/{run_id}/control", {"action": "cancel"}, token)
     while True:
-        run = grace.get(f"/api/runs/{run_id}", token)["run"]
+        run = grace.get(f"/api/executions/{run_id}", token)["run"]
         if run["phase"] in TERMINAL:
             return run
         if clock() >= grace_deadline:
@@ -458,11 +458,11 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                         raise DeadlineExceeded(f"retrying the claim of Task {task_uuid} would pass the deadline") \
                             from error
                     sleep(delay)
-                    if bounded.get(f"/api/tasks/{task_uuid}/runs", token)["items"]:
+                    if bounded.get(f"/api/tasks/{task_uuid}/executions", token)["items"]:
                         break
             run_id = None
             while run_id is None:
-                run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task_uuid}/runs", token)["items"]), None)
+                run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task_uuid}/executions", token)["items"]), None)
                 if run_id is None:
                     if clock() > deadline:
                         raise RuntimeError(f"no Run appeared for Task {task_uuid}")
@@ -472,7 +472,7 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             if after_claim is not None:
                 after_claim(bounded)
             while True:
-                run = bounded.get(f"/api/runs/{run_id}", token)["run"]
+                run = bounded.get(f"/api/executions/{run_id}", token)["run"]
                 if run["phase"] in TERMINAL:
                     break
                 if clock() > deadline:

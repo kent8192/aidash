@@ -502,7 +502,7 @@ impl Middleware for Gateway {
 		let path = request.uri.path().to_owned();
 		let private = private_route(&path);
 		let sse = path == "/api/events/stream"
-			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
+			|| (path.starts_with("/api/executions/") && path.ends_with("/inference/stream"));
 		let limit = request_body_limit(&request.method, &path);
 		let response = if request.body().len() > limit {
 			Response::new(StatusCode::PAYLOAD_TOO_LARGE)

@@ -21,9 +21,9 @@ pub(crate) async fn claimed(
 	let run: Option<aidash_domain::Run> = crate::database::query_as(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(crate::database::scope::local_home(
-				"runs",
+				"task_executions",
 				store.deployment.as_str(),
 			))
 			.and_where(Expr::col("task_id").eq(Expr::value(task)))
@@ -342,7 +342,11 @@ pub(crate) async fn admit(
 					.expr(Expr::value(&binding.provider.id))
 					.expr(Expr::value(&binding.provider.version))
 					.expr(Expr::value(revision))
-					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						run.id,
+					))
 					.to_owned(),
 			)
 			.to_string(PostgresQueryBuilder),

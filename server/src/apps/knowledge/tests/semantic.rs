@@ -646,7 +646,7 @@ async fn add_pending_thread_entry(fixture: &ControlledContext) {
 async fn advance_retry(fixture: &ControlledContext, run: Uuid) {
 	sqlx::query(
 		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("pending"),
 				Expr::cust(
@@ -669,7 +669,7 @@ async fn advance_retry(fixture: &ControlledContext, run: Uuid) {
 async fn advance_outage_wake(fixture: &ControlledContext, run: Uuid) {
 	sqlx::query(
 		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("pending"),
 				Expr::cust("JSONB_SET(pending, '{data,wake_at}', TO_JSONB(CLOCK_TIMESTAMP()))"),
@@ -781,7 +781,7 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 		let (status, body) = common::post(
 			&fixture._fixture.application,
 			&fixture.token,
-			&format!("/api/runs/{}/message", run().await.id),
+			&format!("/api/executions/{}/message", run().await.id),
 			json!({"content":"Also cover vehicle maintenance."}),
 		)
 		.await;
@@ -861,7 +861,7 @@ async fn local_ordered_run_keeps_reusing_its_retrieval_through_an_embedding_outa
 
 /// Issue #234 (ADR 0059): an opted-in thread source degrades after the
 /// bounded retry. The step reaches inference with the typed marker, records the
-/// degraded step and emits `run.semantic_degraded`. Missing vector points need
+/// degraded step and emits `execution.semantic_degraded`. Missing vector points need
 /// repair, so they still pause even with the opt-in.
 #[rstest::rstest]
 #[case::embedding_outage(true)]
@@ -951,8 +951,8 @@ async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 			.unwrap();
 		let degraded = events
 			.iter()
-			.find(|event| event.kind == "run.semantic_degraded")
-			.expect("run.semantic_degraded");
+			.find(|event| event.kind == "execution.semantic_degraded")
+			.expect("execution.semantic_degraded");
 		assert_eq!(degraded.data["cause"], "embedding_provider");
 		assert_eq!(degraded.data["run_id"], json!(run.id));
 	}
@@ -991,7 +991,7 @@ async fn a_skipped_thread_read_keeps_the_durable_outage(
 	fixture
 		.f
 		.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.semantic_degraded")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.semantic_degraded")
 		.await
 		.unwrap();
 	fixture
@@ -1684,7 +1684,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 			&app,
 			&token,
 			"GET",
-			&format!("/api/runs/{}", run.id),
+			&format!("/api/executions/{}", run.id),
 			json!(null)
 		)
 		.await

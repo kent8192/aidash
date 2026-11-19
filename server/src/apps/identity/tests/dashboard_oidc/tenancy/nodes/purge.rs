@@ -645,14 +645,14 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	);
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM runs WHERE id='{target_run}'"
+			"SELECT count(*) FROM task_executions WHERE id='{target_run}'"
 		))
 		.await,
 		0
 	);
 	assert_eq!(
 		d.count(&format!(
-			"SELECT count(*) FROM runs WHERE id='{sibling_run}'"
+			"SELECT count(*) FROM task_executions WHERE id='{sibling_run}'"
 		))
 		.await,
 		1
@@ -1434,7 +1434,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 				.node(aidash_domain::nodes::NodeName::parse(&target).unwrap())
 				.to_string();
 			sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'preview','preview','COMPLETED',1,'purge-target')").bind(task).bind(&tenant).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-			sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(&tenant).bind(task).bind(work[0]).bind(&target).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(&tenant).bind(task).bind(work[0]).bind(&target).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,stop_reason,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at,termination_confirmed,created_at,updated_at) SELECT $1,tenant,$2,id,1,3000,'stopped','run_authority_revoked',600,3600,clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '1 hour',false,clock_timestamp(),clock_timestamp() FROM core_areas WHERE thread_id=$3").bind(metadata).bind(run).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"Live preview termination proof"
 		}
@@ -1717,7 +1717,7 @@ async fn cross_node_execution_evidence(
 			.unwrap();
 
 		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'execution','execution','COMPLETED',1,$4)").bind(task).bind(tenant).bind(thread).bind(subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO runs (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(tenant).bind(task).bind(thread).bind(executor).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(tenant).bind(task).bind(thread).bind(executor).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		let (execution_credential, execution_subject) = if executor == target {
 			(target_credential, "purge-target")
 		} else {

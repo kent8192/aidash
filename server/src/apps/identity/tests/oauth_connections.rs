@@ -99,7 +99,7 @@ async fn oauth_connections_answer_only_unanswered_requests_of_the_resource_and_c
 			resume: aidash_domain::ResumeState::Thinking(Default::default()),
 		}));
 	let (sql, values) = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value(Alias::new("phase"), "WAITING")
 		.value(Alias::new("pending"), waiting_run.stored_pending().unwrap())
 		.and_where(reinhardt::query::ExprTrait::eq(

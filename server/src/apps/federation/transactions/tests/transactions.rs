@@ -53,7 +53,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		.unwrap();
 	// The provider has returned a final answer; no external tool or worker lease
 	// remains. The production claim above wrote the actual execution authority.
-	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("runs"))
+	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"Atomic answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&Query::update().table(Alias::new("task_executions"))
 		.value(Alias::new("phase"), "TOOL_CALL")
 		.value_expr(Alias::new("pending"), Expr::value(query_bind_2.to_owned()))
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".into(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))

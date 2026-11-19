@@ -254,7 +254,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			let source_row = crate::database::native::query(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(source)))
 					.and_where(
 						Expr::col("tenant")

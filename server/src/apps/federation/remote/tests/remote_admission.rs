@@ -316,7 +316,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(home_node = ? AND task_id = ?)".to_owned(),
 					vec![
@@ -357,7 +357,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		let count: i64 = sqlx::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from(reinhardt::query::Alias::new("runs"))
+				.from(reinhardt::query::Alias::new("task_executions"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.fetch_one(f.store.pool.fixture_driver())

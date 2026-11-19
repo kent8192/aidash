@@ -172,6 +172,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0050_threads_state"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
+	("execution", "0150_task_executions"),
+	("execution", "0151_task_executions_state"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -220,6 +222,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0050_threads_state"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
+	("execution", "0150_task_executions"),
+	("execution", "0151_task_executions_state"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
@@ -269,7 +273,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(registry[0].name, "0081_thread_tools");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
-	assert_eq!(execution[0].name, "0149_threads_state");
+	assert_eq!(execution[0].name, "0151_task_executions_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0058_threads");
@@ -284,7 +288,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		133
+		134
 	);
 	let tables = migrations
 		.iter()
@@ -550,12 +554,15 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0150_policy_probe")
+		.get_migration("execution", "0152_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0149_threads_state".to_owned())]
+		vec![(
+			"execution".to_owned(),
+			"0151_task_executions_state".to_owned()
+		)]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -635,6 +642,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0050_threads_state"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -714,16 +723,17 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 	fixture.connection.execute(&insert, vec![]).await.unwrap();
 	fixture.migrate().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
+	// The full history renamed the table (#1009).
 	let select = Query::select()
 		.columns([Alias::new("created_at"), Alias::new("updated_at")])
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run_id)))
 		.to_string(PostgresQueryBuilder);
 	let (created, updated): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
 		sqlx::query_as(&select).fetch_one(&pool).await.unwrap();
 	assert_eq!((created, updated), (old_time, old_time));
 	let update = Query::update()
-		.table(Alias::new("runs"))
+		.table(Alias::new("task_executions"))
 		.value(
 			Alias::new("updated_at"),
 			old_time + chrono::Duration::days(1),
@@ -1121,7 +1131,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		133
+		134
 	);
 }
 
@@ -2262,6 +2272,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0050_threads_state"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -3716,11 +3728,8 @@ async fn harness_contract_rollback_refuses_stored_packages_and_snapshots(
 		.execute(&pool)
 		.await
 		.unwrap();
-	// Isolate the Run snapshot guard from the unrelated Run lifecycle constraints.
-	sqlx::query("DROP TABLE public.runs CASCADE")
-		.execute(&pool)
-		.await
-		.unwrap();
+	// The guard reads the table under its name before #1009; a stand-in holds
+	// the Run snapshots, apart from the Task executions' lifecycle constraints.
 	sqlx::query("CREATE TABLE public.runs (context jsonb NOT NULL)")
 		.execute(&pool)
 		.await
@@ -3936,11 +3945,8 @@ async fn removed_harness_contracts_refuse_the_upgrade_while_still_stored(
 		.execute(&pool)
 		.await
 		.unwrap();
-	// Isolate the Run snapshot guard from the unrelated Run lifecycle constraints.
-	sqlx::query("DROP TABLE public.runs CASCADE")
-		.execute(&pool)
-		.await
-		.unwrap();
+	// The guard reads the table under its name before #1009; a stand-in holds
+	// the Run snapshots, apart from the Task executions' lifecycle constraints.
 	sqlx::query("CREATE TABLE public.runs (context jsonb NOT NULL)")
 		.execute(&pool)
 		.await
@@ -5474,6 +5480,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0050_threads_state"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5556,6 +5564,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0050_threads_state"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -5646,6 +5656,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0050_threads_state"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
@@ -6157,7 +6169,11 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 	// Arrange: a stored bundle from before #1008, with a custom condition.
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[("identity", "0111_thread_member_policy")])
+		.migrate_excluding(&[
+			("identity", "0111_thread_member_policy"),
+			("execution", "0150_task_executions"),
+			("execution", "0151_task_executions_state"),
+		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
 	let before = json!({

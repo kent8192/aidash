@@ -43,7 +43,7 @@ async fn default_estimator_uses_bytes_below_calibration_threshold(mut fixture: F
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	advance_sources(&mut fixture).await.unwrap();
 	assert_eq!(count(&fixture, "calibration.samples"), 1);
-	assert!(events(&fixture).contains(&"run.estimate_pinned".to_owned()));
+	assert!(events(&fixture).contains(&"execution.estimate_pinned".to_owned()));
 	let [dispatch] = dispatches(&fixture).try_into().unwrap();
 	let request = fixture.backend.0.requests.lock().unwrap()[0].clone();
 	assert_eq!(dispatch.estimate, request.request_estimate());
@@ -65,7 +65,7 @@ async fn a_calibrated_model_pins_its_snapshot_before_the_step_relies_on_it(mut f
 	// Assert: the snapshot is durable before the attempt is dispatched.
 	let calls = calls(&fixture);
 	assert!(position(&calls, "calibration.samples") < position(&calls, "save"));
-	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	assert_eq!(events(&fixture)[0], "execution.estimate_pinned");
 	assert!(position(&calls, "save") < position(&calls, "usage.dispatch"));
 	let snapshot = EstimateSnapshot::calibrated(0, 250_000, 20);
 	assert_eq!(fixture.run.context.estimate.snapshot, Some(snapshot));
@@ -96,7 +96,7 @@ async fn a_resumed_step_reuses_its_snapshot_after_calibration_changed(mut fixtur
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert
 	assert_eq!(count(&fixture, "calibration.samples"), 0);
-	assert!(!events(&fixture).contains(&"run.estimate_pinned".to_owned()));
+	assert!(!events(&fixture).contains(&"execution.estimate_pinned".to_owned()));
 	assert_eq!(
 		fixture.backend.0.requests.lock().unwrap()[0].estimate,
 		pinned
@@ -119,7 +119,7 @@ async fn a_cold_key_pins_the_conservative_snapshot(mut fixture: Fixture) {
 		fixture.run.context.estimate.snapshot,
 		Some(EstimateSnapshot::conservative(0))
 	);
-	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	assert_eq!(events(&fixture)[0], "execution.estimate_pinned");
 	let [dispatch] = dispatches(&fixture).try_into().unwrap();
 	assert_eq!(dispatch.estimate.estimator, "bytes");
 }
@@ -143,7 +143,10 @@ async fn an_overflow_after_a_scaled_estimate_demotes_the_run(
 	advance_sources(&mut fixture).await.unwrap();
 	// Assert: the step is demoted in the same save as the recovery state, and
 	// the overflow is measured in bytes so a later one compares like with like.
-	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	assert_eq!(
+		events(&fixture).last().unwrap(),
+		"execution.context_overflow"
+	);
 	assert_eq!(
 		fixture.run.context.estimate,
 		EstimateState {
@@ -194,7 +197,7 @@ async fn a_paused_overflow_keeps_the_demotion_for_the_resumed_step(mut fixture: 
 	));
 	let writes = fixture.backend.0.writes.lock().unwrap().clone();
 	let (event, saved) = writes.last().unwrap();
-	assert_eq!(event, "run.estimate_pinned");
+	assert_eq!(event, "execution.estimate_pinned");
 	assert!(saved.context.estimate.demoted);
 	// Act: a person resumes the same step from the saved Run.
 	fixture.run = saved.clone();
@@ -259,7 +262,7 @@ async fn a_tokenized_model_counts_its_request_and_calibrates_only_its_quotas(mut
 	// Assert: the encoding and the quota ratio are pinned before dispatch.
 	let calls = calls(&fixture);
 	assert!(position(&calls, "calibration.samples") < position(&calls, "save"));
-	assert_eq!(events(&fixture)[0], "run.estimate_pinned");
+	assert_eq!(events(&fixture)[0], "execution.estimate_pinned");
 	let snapshot = EstimateSnapshot::tokenized(
 		0,
 		TokenEncoding::O200kBase,

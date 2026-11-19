@@ -146,7 +146,7 @@ async function setup(page: Page, locale = "en-US") {
               }
             : path === "/api/discover"
               ? { agents: [], errors: [] }
-              : path.startsWith("/api/runs/")
+              : path.startsWith("/api/executions/")
                 ? { run: data.runs[0], invocations: [], memory: [] }
                 : path === "/api/threads/thread-1"
                   ? {

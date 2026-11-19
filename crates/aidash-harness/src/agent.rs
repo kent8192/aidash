@@ -257,7 +257,9 @@ impl<'a> Executor<'a> {
 			context.compactions = context.compactions.saturating_add(1);
 			run.context = context;
 		}
-		store.save_run(run, token, "run.tool_recorded").await?;
+		store
+			.save_run(run, token, "execution.tool_recorded")
+			.await?;
 		if !batch.ranges.is_empty() {
 			aidash_application::context::record_stage("offload", "applied");
 			store.results_offloaded(run, &batch.ranges).await?;
@@ -653,7 +655,7 @@ impl<'a> Executor<'a> {
 			run.step += 1;
 			run.state = RunState::Thinking(ThinkingState::default());
 			store
-				.save_run(run, token, "run.unassigned_tasks_told")
+				.save_run(run, token, "execution.unassigned_tasks_told")
 				.await?;
 			return Ok(());
 		}
@@ -681,7 +683,7 @@ impl<'a> Executor<'a> {
 				}
 			}
 			store
-				.save_run(run, token, "run.unassigned_tasks_abandoned")
+				.save_run(run, token, "execution.unassigned_tasks_abandoned")
 				.await?;
 		}
 		if !answer.delivered {
@@ -731,7 +733,7 @@ impl<'a> Executor<'a> {
 		{
 			run.step += 1;
 		}
-		store.save_run(run, token, "run.waiting").await?;
+		store.save_run(run, token, "execution.waiting").await?;
 		Ok(())
 	}
 	async fn publish_model_text(
@@ -800,7 +802,7 @@ impl<'a> Executor<'a> {
 		run.context.recovery = recovery;
 		self.environment
 			.store()
-			.save_run(run, token, "run.context_overflow")
+			.save_run(run, token, "execution.context_overflow")
 			.await
 	}
 	/// Run one Summary Stage merge. Adoption saves the Run atomically and keeps
@@ -1403,9 +1405,9 @@ impl<'a> Executor<'a> {
 				}
 			};
 			let kind = if run.phase() == RunPhase::Failed {
-				"run.failed"
+				"execution.failed"
 			} else {
-				"run.reconciled"
+				"execution.reconciled"
 			};
 			run.recovery.lease_recoveries = 0;
 			store.save_run(run, token, kind).await?;
@@ -1425,9 +1427,9 @@ impl<'a> Executor<'a> {
 					run,
 					token,
 					if target == FailureTarget::Failed {
-						"run.failed"
+						"execution.failed"
 					} else {
-						"run.cancelled"
+						"execution.cancelled"
 					},
 				)
 				.await?;
@@ -1447,7 +1449,7 @@ impl<'a> Executor<'a> {
 			store
 				.emit(
 					home.local().then_some(run.thread_id),
-					"run.recovered",
+					"execution.recovered",
 					data.clone(),
 				)
 				.await?;
@@ -1463,7 +1465,7 @@ impl<'a> Executor<'a> {
 				.transition_terminal_run_messages(run, TaskStatus::Cancelled)
 				.await?;
 			run.state = RunState::Cancelled(TerminalState {});
-			store.save_run(run, token, "run.cancelled").await?;
+			store.save_run(run, token, "execution.cancelled").await?;
 			return Ok(());
 		}
 		let entry = self
@@ -1500,7 +1502,7 @@ impl<'a> Executor<'a> {
 							wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
 							resume: ReadyState {},
 						}));
-						store.save_run(run, token, "run.waiting").await?;
+						store.save_run(run, token, "execution.waiting").await?;
 						return Ok(());
 					}
 				}
@@ -1530,7 +1532,7 @@ impl<'a> Executor<'a> {
 				}
 				self.pin_plugin_tools(run, token, guard, visibility).await?;
 				run.state = RunState::Thinking(ThinkingState::default());
-				store.save_run(run, token, "run.started").await?;
+				store.save_run(run, token, "execution.started").await?;
 			}
 			RunState::Thinking(thinking) => Box::pin(async {
 				// A Duty script Run never asks a model, whatever led it here (#1011).
@@ -1574,7 +1576,7 @@ impl<'a> Executor<'a> {
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
-					store.save_run(run, token, "run.recovered").await?;
+					store.save_run(run, token, "execution.recovered").await?;
 					return Ok(());
 				}
 				let inputs = store.run_inputs(run.id).await?;
@@ -2612,7 +2614,7 @@ impl<'a> Executor<'a> {
 								.clone(),
 							..next_pending
 						});
-						store.save_run(run, token, "run.message_received").await?;
+						store.save_run(run, token, "execution.message_received").await?;
 						return Ok(());
 					}
 					Inference::Interrupted(reason, error) => {
@@ -2837,7 +2839,7 @@ connection: None,
 					run.context = context.clone();
 
 					run.state = RunState::Thinking(next_pending);
-					store.save_run(run, token, "run.message_received").await?;
+					store.save_run(run, token, "execution.message_received").await?;
 					return Ok(());
 				}
 				let mut result = run.state.tool()?.response.clone();
@@ -2854,7 +2856,7 @@ connection: None,
 						run.step += 1;
 						run.state = RunState::Thinking(next_pending);
 						store
-							.save_run(run, token, "run.media_observation_required")
+							.save_run(run, token, "execution.media_observation_required")
 							.await?;
 						return Ok(());
 					}
@@ -2878,7 +2880,7 @@ connection: None,
 						deferred_run_message_reads: pending.required_run_message_reads.clone(),
 						..Default::default()
 					});
-					store.save_run(run, token, "run.media_deferred").await?;
+					store.save_run(run, token, "execution.media_deferred").await?;
 					return Ok(());
 				}
 				let tools = self.environment.binding_resolver().tools(run).await?;
@@ -2922,7 +2924,7 @@ connection: None,
 					));
 					run.context = context.clone();
 					store
-						.save_run(run, token, "run.message_read_required")
+						.save_run(run, token, "execution.message_read_required")
 						.await?;
 					return Ok(());
 				}
@@ -2939,7 +2941,7 @@ connection: None,
 					));
 					run.context = context.clone();
 					store
-						.save_run(run, token, "run.message_read_required")
+						.save_run(run, token, "execution.message_read_required")
 						.await?;
 					return Ok(());
 				}
@@ -2960,7 +2962,7 @@ connection: None,
 						));
 						run.context = context.clone();
 						store
-							.save_run(run, token, "run.message_summary_required")
+							.save_run(run, token, "execution.message_summary_required")
 							.await?;
 						return Ok(());
 					}
@@ -2980,7 +2982,7 @@ connection: None,
 						));
 						run.context = context.clone();
 						store
-							.save_run(run, token, "run.message_summary_required")
+							.save_run(run, token, "execution.message_summary_required")
 							.await?;
 						return Ok(());
 					}
@@ -3021,7 +3023,7 @@ connection: None,
 						selected_media: pending_selected_media(run.state.tool()?),
 						..Default::default()
 					});
-					store.save_run(run, token, "run.message_summarized").await?;
+					store.save_run(run, token, "execution.message_summarized").await?;
 					return Ok(());
 				}
 				if !run_message_catchup && !result.tool_calls.is_empty() && informed_response {
@@ -3056,7 +3058,7 @@ connection: None,
 								selected_media: run.state.tool()?.deferred_selected_media.clone(),
 								..Default::default()
 							});
-							store.save_run(run, token, "run.media_deferred").await?;
+							store.save_run(run, token, "execution.media_deferred").await?;
 							return Ok(());
 						}
 						let children = home.child_summary(run.task_id).await?;
@@ -3129,7 +3131,7 @@ connection: None,
 							run.context.completion.basis = None;
 							run.state = RunState::Thinking(ThinkingState::default());
 
-							store.save_run(run, token, "run.message_received").await?;
+							store.save_run(run, token, "execution.message_received").await?;
 							return Ok(());
 						}
 						// The final answer is a Model Turn without calls.
@@ -3185,13 +3187,13 @@ connection: None,
 						}
 						run.state = RunState::Completed(TerminalState {});
 
-						store.save_run(run, token, "run.completed").await?;
+						store.save_run(run, token, "execution.completed").await?;
 					} else {
 						run.step += 1;
 						let mut next = run.state.tool()?.deferred_reads.clone();
 						next.selected_media = pending_selected_media(run.state.tool()?);
 						run.state = RunState::Thinking(next);
-						store.save_run(run, token, "run.thinking").await?;
+						store.save_run(run, token, "execution.thinking").await?;
 					}
 					return Ok(());
 				}
@@ -3422,7 +3424,7 @@ connection: None,
 									resume: Box::new(run.state.tool()?.clone()),
 								}));
 								store
-									.save_run(run, token, "run.waiting_for_tool_approval")
+									.save_run(run, token, "execution.waiting_for_tool_approval")
 									.await?;
 								return Ok(());
 							}
@@ -3478,7 +3480,7 @@ connection: None,
 							resume: Box::new(run.state.tool()?.clone()),
 						}));
 						store
-							.save_run(run, token, "run.waiting_for_tool_approval")
+							.save_run(run, token, "execution.waiting_for_tool_approval")
 							.await?;
 						return Ok(());
 					}
@@ -3517,7 +3519,7 @@ connection: None,
                         let request = home.human_request(run, "CONFIRMATION", &prompt, &format!("{key}:reconcile")).await?;
                         run.state = RunState::Waiting(Box::new(WaitingState::Reconciliation { request_id: request.id, key: key.clone(), resume: Box::new(run.state.tool()?.clone()) }));
                     }
-					store.save_run(run, token, "run.waiting").await?;
+					store.save_run(run, token, "execution.waiting").await?;
 					return Ok(());
 				}
 				let unfinished_key = (invocation.status != "COMPLETED").then_some(key.as_str());
@@ -3681,7 +3683,7 @@ connection: None,
 						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
 						resume: Box::new(run.state.tool()?.clone()),
 					}));
-					store.save_run(run, token, "run.waiting_for_operation").await?;
+					store.save_run(run, token, "execution.waiting_for_operation").await?;
 					return Ok(());
 				}
 				if let FrameworkResult::Wait(seconds) = framework && !resumed_operation {
@@ -3698,7 +3700,7 @@ connection: None,
 						cursor: run.recovery.thread_event_cursor.unwrap_or(0),
 						resume: ResumeState::ToolCall(Box::new(run.state.tool()?.clone())),
 					}));
-					store.save_run(run, token, "run.waiting_for_thread").await?;
+					store.save_run(run, token, "execution.waiting_for_thread").await?;
 					return Ok(());
 				}
                 if contract.behavior.connection_request && let FrameworkResult::Human(request) = framework {
@@ -3713,7 +3715,7 @@ connection: None,
 							// The call runs again at once under the approval's own key.
 							approval::Judged::Allowed => {
 								run.state.tool_mut()?.approval = Some(approval_id);
-								store.save_run(run, token, "run.approved_by_auto").await?;
+								store.save_run(run, token, "execution.approved_by_auto").await?;
 								return Ok(());
 							}
 							approval::Judged::Blocked(reason) => {
@@ -3728,7 +3730,7 @@ connection: None,
 						approval: ApprovalRef::Capability { approval_id },
 						resume: Box::new(resume),
 					}));
-					store.save_run(run, token, "run.waiting_for_approval").await?;
+					store.save_run(run, token, "execution.waiting_for_approval").await?;
 					return Ok(());
 				}
 				// Load/Unload results are staged with the same save that records
@@ -3810,7 +3812,7 @@ connection: None,
 					if !home.local() && h.response.is_none() {
 						// A remote scheduler polls Home; an unanswered continuation
 						// remains waiting and advances the next polling deadline.
-						store.save_run(run, token, "run.waiting").await?;
+						store.save_run(run, token, "execution.waiting").await?;
 						return Ok(());
 					}
 					if h.response.is_none()
@@ -3818,7 +3820,7 @@ connection: None,
 					{
 						if *answer_by > chrono::Utc::now() {
 							// Woken by a clock that runs ahead of this one.
-							store.save_run(run, token, "run.waiting").await?;
+							store.save_run(run, token, "execution.waiting").await?;
 							return Ok(());
 						}
 						h = if h.kind == aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND {
@@ -3899,7 +3901,7 @@ connection: None,
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
 							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 							run.state = RunState::Waiting(Box::new(WaitingState::TaskWait { wake_at, cursor, resume }));
-							store.save_run(run, token, "run.waiting_for_thread").await?;
+							store.save_run(run, token, "execution.waiting_for_thread").await?;
 							return Ok(());
 						}
 						// One read of the children serves the ceiling check and the wake result.
@@ -3921,7 +3923,7 @@ connection: None,
 									cursor,
 									resume,
 								}));
-								store.save_run(run, token, "run.waiting_for_thread").await?;
+								store.save_run(run, token, "execution.waiting_for_thread").await?;
 								return Ok(());
 							}
 						}
@@ -4005,7 +4007,7 @@ connection: None,
 						));
 					}
 				};
-				store.save_run(run, token, if outage_resume { "run.outage_resumed" } else { "run.resumed" }).await?;
+				store.save_run(run, token, if outage_resume { "execution.outage_resumed" } else { "execution.resumed" }).await?;
 			}
 			RunState::Completed(_) | RunState::Failed(_) | RunState::Cancelled(_) => {
 				return Err(Error::Conflict("run is not executable".into()));
@@ -4692,7 +4694,7 @@ impl OrderedSemantic {
 }
 
 /// Record a step that ran with Degraded context. Only the step's first
-/// degradation is saved, with `run.semantic_degraded`. A re-entry of the same
+/// degradation is saved, with `execution.semantic_degraded`. A re-entry of the same
 /// step saves nothing here: the degradation is already durable, and the
 /// refreshed cause rides on the step's next save.
 /// Recovery reloads the durable Run. Save an independently recovered

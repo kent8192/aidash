@@ -131,11 +131,11 @@ class ClaimTest(unittest.TestCase):
             if path == "/api/tasks/task/claim":
                 state["runs"] = [{"id": "run", "task_id": "task"}]
                 return 504, "gateway timeout"  # The claim committed, but its answer was lost.
-            if path == "/api/tasks/task/runs":
+            if path == "/api/tasks/task/executions":
                 return 200, {"items": state["runs"], "next_cursor": None}
-            if path == "/api/runs/run":
+            if path == "/api/executions/run":
                 return 200, {"run": {"id": "run", "phase": state["phase"]}}
-            if path == "/api/runs/run/control":
+            if path == "/api/executions/run/control":
                 state["phase"] = "CANCELLED"
                 return 200, {}
             raise AssertionError(path)
@@ -155,11 +155,11 @@ class ClaimTest(unittest.TestCase):
         def call(method, path, body, token, timeout):
             requests.append((path, clock.now + timeout))
             clock.now += min(timeout, 4.0)  # A slow Node: every request takes up to 4 s.
-            if path == "/api/tasks/task/runs":
+            if path == "/api/tasks/task/executions":
                 return 200, {"items": [{"id": "run", "task_id": "task"}], "next_cursor": None}
-            if path == "/api/runs/run":
+            if path == "/api/executions/run":
                 return 200, {"run": {"id": "run", "phase": state["phase"]}}
-            if path == "/api/runs/run/control":
+            if path == "/api/executions/run/control":
                 state["phase"] = "CANCELLED"
             return 200, {}
 
@@ -167,7 +167,7 @@ class ClaimTest(unittest.TestCase):
         record = {}
         with self.assertRaises(supply.runner.DeadlineExceeded):
             selected.claim_and_wait("task", {"revision": 0}, record, clock, clock.sleep)
-        cancel = next(index for index, (path, _) in enumerate(requests) if path == "/api/runs/run/control")
+        cancel = next(index for index, (path, _) in enumerate(requests) if path == "/api/executions/run/control")
         # Every request of the wait ends by the 10 s run timeout; stopping (its read of the Run, then the
         # cancel) gets its own grace period.
         self.assertTrue(all(ends <= 10.0 for _, ends in requests[:cancel - 1]), requests)

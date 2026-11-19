@@ -20,7 +20,11 @@ use crate::apps::execution::serializers::management::{HumanListQuery, RunListQue
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
-#[get("/api/threads/{id}/runs", name = "thread-runs", auth = "protected")]
+#[get(
+	"/api/threads/{id}/executions",
+	name = "thread-executions",
+	auth = "protected"
+)]
 pub async fn thread_runs(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -34,7 +38,11 @@ pub async fn thread_runs(
 /// The opaque cursor currently contains the last scanned Run ID, restricted to
 /// a Task and Thread the subject may read; individual Runs may be hidden.
 /// Run visibility retains its dependent checks, including all Human Requests.
-#[get("/api/tasks/{id}/runs", name = "task-runs", auth = "protected")]
+#[get(
+	"/api/tasks/{id}/executions",
+	name = "task-executions",
+	auth = "protected"
+)]
 pub async fn task_runs(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -88,7 +96,7 @@ pub async fn task_claim(
 	crate::http::json(service.task_claim(actor, id, input).await)
 }
 
-#[get("/api/runs/{id}", name = "run-get", auth = "protected")]
+#[get("/api/executions/{id}", name = "execution-get", auth = "protected")]
 pub async fn run_get(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -98,7 +106,11 @@ pub async fn run_get(
 	crate::http::json(service.run_get(actor, id, page).await)
 }
 
-#[get("/api/runs/{id}/subnodes", name = "run-subnodes", auth = "protected")]
+#[get(
+	"/api/executions/{id}/subnodes",
+	name = "execution-subnodes",
+	auth = "protected"
+)]
 pub async fn run_subnodes(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -119,7 +131,11 @@ pub async fn subnode_dissolve(
 	crate::http::json(service.dissolve_subnode(actor, id).await)
 }
 
-#[post("/api/runs/{id}/control", name = "run-control", auth = "protected")]
+#[post(
+	"/api/executions/{id}/control",
+	name = "execution-control",
+	auth = "protected"
+)]
 pub async fn run_control(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -130,8 +146,12 @@ pub async fn run_control(
 }
 
 /// The caller's Runs that an Account suspension paused, which
-/// `/api/suspended-runs/resume` would resume (#876).
-#[get("/api/suspended-runs", name = "suspended-runs", auth = "protected")]
+/// `/api/suspended-executions/resume` would resume (#876).
+#[get(
+	"/api/suspended-executions",
+	name = "suspended-executions",
+	auth = "protected"
+)]
 pub async fn suspended_runs(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -143,8 +163,8 @@ pub async fn suspended_runs(
 /// Each Run gets the checks of a resume through `/control`; the answer lists
 /// each Run's outcome (#876).
 #[post(
-	"/api/suspended-runs/resume",
-	name = "suspended-runs-resume",
+	"/api/suspended-executions/resume",
+	name = "suspended-executions-resume",
 	auth = "protected"
 )]
 pub async fn suspended_runs_resume(
@@ -156,8 +176,8 @@ pub async fn suspended_runs_resume(
 
 /// A person answers the tool call a paused Run stopped on, so the Run goes on without it.
 #[post(
-	"/api/runs/{id}/declined-calls",
-	name = "run-decline-call",
+	"/api/executions/{id}/declined-calls",
+	name = "execution-decline-call",
 	auth = "protected"
 )]
 pub async fn run_decline_call(
@@ -169,7 +189,11 @@ pub async fn run_decline_call(
 	crate::http::json(service.run_decline_call(actor, id, input).await)
 }
 
-#[post("/api/runs/{id}/message", name = "run-message", auth = "protected")]
+#[post(
+	"/api/executions/{id}/message",
+	name = "execution-message",
+	auth = "protected"
+)]
 pub async fn run_message(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
@@ -229,8 +253,8 @@ pub async fn stream(
 }
 
 #[get(
-	"/api/runs/{id}/inference/stream",
-	name = "run-inference-stream",
+	"/api/executions/{id}/inference/stream",
+	name = "execution-inference-stream",
 	auth = "protected"
 )]
 pub async fn run_inference_stream(

@@ -736,34 +736,34 @@ pub fn defer_result(
 	let event = match fitting {
 		ResultFitting::ThreadRecord => {
 			state.deferred_thread_read = Some(deferred_thread_read(call));
-			"run.read_deferred"
+			"execution.read_deferred"
 		}
 		ResultFitting::SkillText => {
 			state.deferred_skill_read = Some(deferred_skill_read(call));
-			"run.skill_read_deferred"
+			"execution.skill_read_deferred"
 		}
 		ResultFitting::JournalText | ResultFitting::JournalSearch => {
 			state.deferred_skill_read = Some(Box::new(DeferredRead {
 				message: "Retry this Journal read after reducing the retained context; its result envelope did not fit.".into(),
 				call: call.clone(),
 			}));
-			"run.journal_read_deferred"
+			"execution.journal_read_deferred"
 		}
 		ResultFitting::SkillAsset => {
 			state.deferred_skill_read = Some(deferred_skill_asset_read(call));
-			"run.skill_read_deferred"
+			"execution.skill_read_deferred"
 		}
 		ResultFitting::CapabilityDescription => {
 			state.deferred_skill_read = Some(deferred_capability_description(call));
-			"run.description_deferred"
+			"execution.description_deferred"
 		}
 		ResultFitting::CapabilitySearch => {
 			state.deferred_skill_read = Some(deferred_capability_search(call));
-			"run.search_deferred"
+			"execution.search_deferred"
 		}
 		ResultFitting::Observation => {
 			state.deferred_thread_observation = Some(deferred_thread_observation(call));
-			"run.observation_deferred"
+			"execution.observation_deferred"
 		}
 	};
 	(state, event)

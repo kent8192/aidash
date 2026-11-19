@@ -271,7 +271,7 @@ async fn leased(f: &Federation, app: &TestApplication, token: &str) -> (Run, Uui
 	}
 	let run = f
 		.store
-		.save_run(&TEST_FIXTURE, &run, worker, "run.sources_observed")
+		.save_run(&TEST_FIXTURE, &run, worker, "execution.sources_observed")
 		.await
 		.unwrap();
 	(run, worker)

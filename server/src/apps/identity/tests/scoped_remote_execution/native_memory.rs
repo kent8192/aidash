@@ -274,7 +274,7 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}", p.admission),
+		&format!("/api/executions/{}", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -475,7 +475,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}/management", p.admission),
+		&format!("/api/executions/{}/management", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -514,7 +514,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}/management", p.admission),
+		&format!("/api/executions/{}/management", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -531,7 +531,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}/semantic", p.admission),
+		&format!("/api/executions/{}/semantic", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -608,7 +608,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}", p.admission),
+		&format!("/api/executions/{}", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -635,7 +635,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}/semantic", p.admission),
+		&format!("/api/executions/{}/semantic", p.admission),
 		Value::Null,
 	)
 	.await;
@@ -645,7 +645,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 		&p.ba,
 		&p.receiver_token,
 		"GET",
-		&format!("/api/runs/{}/management", p.admission),
+		&format!("/api/executions/{}/management", p.admission),
 		Value::Null,
 	)
 	.await;

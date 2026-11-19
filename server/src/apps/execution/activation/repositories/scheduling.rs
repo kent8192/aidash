@@ -107,7 +107,7 @@ fn selectable_by(capabilities: &[PersistedCapability]) -> Condition {
 /// Runs no live lease holds that are runnable now, before the capability filter.
 fn leasable() -> SelectStatement {
 	Query::select()
-		.from(Alias::new("runs"))
+		.from(Alias::new("task_executions"))
 		.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 		.and_where(Expr::col("control").ne(Expr::value("PAUSED")))
 		.and_where(Expr::col("revision").lt(Expr::value(i64::MAX - 2)))
@@ -150,7 +150,7 @@ impl<E: Executor> Scope<E> {
 		error: Option<&str>,
 	) -> Result<()> {
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("phase"), "WAITING")
 			.value(
 				Alias::new("pending"),
@@ -247,13 +247,15 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		let settings = Alias::new("tenant_execution_settings");
 		let query = Query::select()
 			.column((settings.clone(), Alias::new("lease_recovery_limit")))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.inner_join(
 				settings.clone(),
 				Expr::col((settings, Alias::new("tenant")))
-					.equals((Alias::new("runs"), Alias::new("tenant"))),
+					.equals((Alias::new("task_executions"), Alias::new("tenant"))),
 			)
-			.and_where(Expr::col((Alias::new("runs"), Alias::new("id"))).eq(Expr::value(run)))
+			.and_where(
+				Expr::col((Alias::new("task_executions"), Alias::new("id"))).eq(Expr::value(run)),
+			)
 			.to_owned();
 		let (sql, values) = query.build(PostgresQueryBuilder);
 		let row = self
@@ -276,7 +278,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 	async fn unblocked(&mut self, id: Uuid) -> aidash_application::Result<bool> {
 		let candidate = Query::select()
 			.expr(Expr::value(1_i64))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(run_unblocked())
 			.to_owned();
@@ -420,7 +422,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		node: &str,
 	) -> aidash_application::Result<Option<Run>> {
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("pending"), run.stored_pending()?)
 			.value(Alias::new("lease_owner"), token)
 			.value_expr(
@@ -458,9 +460,9 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.expr(Expr::value(Uuid::new_v4()))
 					.expr(Expr::value(run.is_local(node).then(|| run.node.to_string())))
 					.expr(Expr::value(run.is_local(node).then_some(run.thread_id)))
-					.expr(Expr::value("run.lease_recovery_claimed"))
+					.expr(Expr::value("execution.lease_recovery_claimed"))
 					.expr(Expr::value(json!({"run_id": run.id, "task_id": run.task_id, "lease_recoveries": run.recovery.lease_recoveries, "isolated": true})))
-					.expr(crate::database::scope::tenant_of("runs", "id", run.id))
+					.expr(crate::database::scope::tenant_of("task_executions", "id", run.id))
 					.to_owned())
 				.build(PostgresQueryBuilder);
 			self.tx
@@ -487,7 +489,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		seconds: i32,
 	) -> aidash_application::Result<Option<RunMetadata>> {
 		let (sql, values) = Query::update()
-			.table(Alias::new("runs"))
+			.table(Alias::new("task_executions"))
 			.value(Alias::new("lease_owner"), token)
 			.value_expr(
 				Alias::new("lease_until"),
@@ -550,11 +552,15 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 						owned.is_local(node).then(|| owned.node.to_string()),
 					))
 					.expr(Expr::value(owned.is_local(node).then_some(owned.thread_id)))
-					.expr(Expr::value("run.invalid_state"))
+					.expr(Expr::value("execution.invalid_state"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"category":reason}),
 					))
-					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						owned.id,
+					))
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);
@@ -594,11 +600,15 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 						owned.is_local(node).then(|| owned.node.to_string()),
 					))
 					.expr(Expr::value(owned.is_local(node).then_some(owned.thread_id)))
-					.expr(Expr::value("run.crash_loop"))
+					.expr(Expr::value("execution.crash_loop"))
 					.expr(Expr::value(
 						json!({"run_id":owned.id,"task_id":owned.task_id,"lease_recoveries":lease_recoveries}),
 					))
-					.expr(crate::database::scope::tenant_of("runs", "id", owned.id))
+					.expr(crate::database::scope::tenant_of(
+						"task_executions",
+						"id",
+						owned.id,
+					))
 					.to_owned(),
 			)
 			.build(PostgresQueryBuilder);

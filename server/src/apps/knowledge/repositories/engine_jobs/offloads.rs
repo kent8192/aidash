@@ -37,7 +37,7 @@ impl BackgroundExtraction for OffloadQueue {
 			let run: aidash_domain::Run = crate::database::query_as(
 				&Query::select()
 					.column(ColumnRef::Asterisk)
-					.from(Alias::new("runs"))
+					.from(Alias::new("task_executions"))
 					.and_where(Expr::col("id").eq(Expr::value(range.run)))
 					.to_string(PostgresQueryBuilder),
 			)

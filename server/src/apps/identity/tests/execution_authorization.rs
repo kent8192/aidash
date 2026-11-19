@@ -142,7 +142,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 	let pending = common::tool_pending(
 		json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}),
 	);
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(run.id)
 		.execute(f.store.pool.fixture_driver())
@@ -382,7 +382,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 		);
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -519,7 +519,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -559,7 +559,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -810,7 +810,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		let query_bind_2 = json!({"private":"unreadable-run-journal"});
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("context"),
 					SimpleExpr::CustomWithExpr(
@@ -939,7 +939,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			&app,
 			&token,
 			"GET",
-			&format!("/api/runs/{}", run.id),
+			&format!("/api/executions/{}", run.id),
 			Value::Null
 		)
 		.await
@@ -1000,7 +1000,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		&app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/control", run.id),
+		&format!("/api/executions/{}/control", run.id),
 		json!({"action":"pause"}),
 	)
 	.await;
@@ -1049,7 +1049,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.into_iter()
 		.find(|r| r.task_id == second_id)
 		.unwrap();
-	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
+	{ let query_bind_1 = observer.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("task_executions")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
         .execute(f.store.pool.fixture_driver()).await }.unwrap();
 	Harness {
 		federation: f.clone(),
@@ -1228,7 +1228,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1374,7 +1374,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", parent_run.id),
+			&format!("/api/executions/{}/control", parent_run.id),
 			json!({"action":"pause"})
 		)
 		.await
@@ -1388,7 +1388,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1470,7 +1470,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			&app,
 			fresh["token"].as_str().unwrap(),
 			"POST",
-			&format!("/api/runs/{}/control", child_run.id),
+			&format!("/api/executions/{}/control", child_run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -1513,7 +1513,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		&app,
 		&f.config.api_token,
 		"GET",
-		&format!("/api/runs/{}/management?tenant=acme", child_run.id),
+		&format!("/api/executions/{}/management?tenant=acme", child_run.id),
 		Value::Null,
 	)
 	.await;
@@ -1522,7 +1522,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		.api_http
 		.request(
 			"POST".parse().unwrap(),
-			&format!("/api/runs/{}/management", child_run.id),
+			&format!("/api/executions/{}/management", child_run.id),
 		)
 		.header("Authorization", format!("Bearer {}", f.config.api_token))
 		.header("Idempotency-Key", Uuid::new_v4().to_string())
@@ -1637,7 +1637,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -1927,7 +1927,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 	{
 		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
 		let mut insert = Query::insert();
-		insert.into_table(Alias::new("runs")).columns(
+		insert.into_table(Alias::new("task_executions")).columns(
 			[
 				"id",
 				"task_id",
@@ -1996,7 +1996,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 		&app,
 		&token,
 		"GET",
-		&format!("/api/tasks/{task}/runs"),
+		&format!("/api/tasks/{task}/executions"),
 		Value::Null,
 	)
 	.await;
@@ -2016,7 +2016,7 @@ async fn the_state_run_window_stops_at_denied_runs_and_stream_cursor_skips_denie
 		.emit(
 			&TEST_FIXTURE,
 			Some(visible.thread_id),
-			"run.tool_recorded",
+			"execution.tool_recorded",
 			json!({"run_id":denied[0]}),
 		)
 		.await
@@ -2081,7 +2081,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2157,7 +2157,7 @@ async fn run_with_pending_call(
 	};
 	let mut update = reinhardt::query::Query::update();
 	update
-		.table(reinhardt::query::Alias::new("runs"))
+		.table(reinhardt::query::Alias::new("task_executions"))
 		.value_expr(
 			reinhardt::query::Alias::new("phase"),
 			reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -2369,7 +2369,7 @@ async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
 			&app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"resume"})
 		)
 		.await
@@ -2440,7 +2440,7 @@ async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check
 	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
 	let blocked: Vec<_> = events
 		.iter()
-		.filter(|event| event.kind == "run.authorization_blocked")
+		.filter(|event| event.kind == "execution.authorization_blocked")
 		.collect();
 	assert_eq!(blocked.len(), 1, "{events:?}");
 	assert_eq!(
@@ -3374,7 +3374,7 @@ async fn allow_for_this_run_covers_the_next_call_of_the_tool_after_new_user_inpu
 		app,
 		&token,
 		"POST",
-		&format!("/api/runs/{}/message", run.id),
+		&format!("/api/executions/{}/message", run.id),
 		json!({"content":"Call it once more"}),
 	)
 	.await;
@@ -3669,7 +3669,7 @@ async fn a_pending_tool_call_approval_closes_when_its_run_ends(
 			app,
 			&token,
 			"POST",
-			&format!("/api/runs/{}/control", run.id),
+			&format!("/api/executions/{}/control", run.id),
 			json!({"action":"cancel"})
 		)
 		.await
@@ -4097,7 +4097,7 @@ mod approval_modes {
 		execute(
 			f,
 			Query::update()
-				.table(Alias::new("runs"))
+				.table(Alias::new("task_executions"))
 				.value_expr(
 					Alias::new("pending"),
 					Expr::cust(
@@ -5915,7 +5915,7 @@ async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then
 		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs"))
+				.table(reinhardt::query::Alias::new("task_executions"))
 				.value_expr(
 					reinhardt::query::Alias::new("phase"),
 					reinhardt::query::Expr::cust("'TOOL_CALL'"),
@@ -7410,7 +7410,7 @@ impl SubnodeRig {
 			json!({"response":response,"response_epoch":self.epoch.get(),"included_input_seq":included_input_seq,"cursor":0,"request_window":120000,"request_tokens":0}),
 		);
 		let sql = reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("runs"))
+			.table(reinhardt::query::Alias::new("task_executions"))
 			.value_expr(
 				reinhardt::query::Alias::new("phase"),
 				Expr::value("TOOL_CALL"),
@@ -7451,7 +7451,7 @@ impl SubnodeRig {
 	}
 
 	async fn set_run_control(&self, run: Uuid, control: &str) {
-		sqlx::query("UPDATE runs SET control = $1 WHERE id = $2")
+		sqlx::query("UPDATE task_executions SET control = $1 WHERE id = $2")
 			.bind(control)
 			.bind(run)
 			.execute(self.f.store.pool.fixture_driver())
@@ -7754,7 +7754,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.expect("leader Run admitted");
 	assert_eq!(child.thread_id, thread);
 	// Select the creator for its thread read before exercising the member.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7769,13 +7769,13 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		read.to_string().contains("Investigate"),
 		"creator read: {read}"
 	);
-	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	// Fence the creator in this fixture so worker_once selects the member Run.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7783,7 +7783,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	let pending = common::tool_pending(
 		json!({"response":{"text":"","tool_calls":[{"id":"message-creator","name":"subnode_message","arguments":{"content":"Investigation complete"}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0}),
 	);
-	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+	sqlx::query("UPDATE task_executions SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
@@ -7798,7 +7798,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(creator_run)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),
@@ -7858,12 +7858,12 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{}", child.id),
+		&format!("/api/executions/{}", child.id),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "member Run: {body}");
-	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 		.bind(creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7871,7 +7871,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	// The creator now writes to its Thread and observes it, events included. The
 	// member's message event names a Run of the Subnode's Thread, which the
 	// creator's recorded reads must not treat as a vanished source.
-	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'PAUSED' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7889,7 +7889,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 			&& observed.to_string().contains("Investigation complete"),
 		"creator observation: {observed}"
 	);
-	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'ACTIVE' WHERE id = $1")
 		.bind(child.id)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -7898,7 +7898,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{creator_run}"),
+		&format!("/api/executions/{creator_run}"),
 		Value::Null,
 	)
 	.await;
@@ -7930,7 +7930,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{}/subnodes", creator_run),
+		&format!("/api/executions/{}/subnodes", creator_run),
 		Value::Null,
 	)
 	.await;
@@ -7942,7 +7942,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(child.id)))
 			.lock(LockType::KeyShare)
 			.to_string(PostgresQueryBuilder),
@@ -7956,7 +7956,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 			app,
 			token,
 			"POST",
-			&format!("/api/runs/{}/control", creator_run),
+			&format!("/api/executions/{}/control", creator_run),
 			json!({"action":"cancel"}),
 		),
 	)
@@ -7970,7 +7970,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		app,
 		token,
 		"GET",
-		&format!("/api/runs/{}/subnodes", creator_run),
+		&format!("/api/executions/{}/subnodes", creator_run),
 		Value::Null,
 	)
 	.await;
@@ -8266,7 +8266,7 @@ async fn end_subnode(rig: &SubnodeRig) -> (u16, Value) {
 		&rig.app,
 		&rig.token,
 		"POST",
-		&format!("/api/runs/{}/control", rig.creator_run),
+		&format!("/api/executions/{}/control", rig.creator_run),
 		json!({"action":"cancel"}),
 	)
 	.await
@@ -8286,7 +8286,7 @@ impl LateFiles {
 			&rig.app,
 			&rig.token,
 			"GET",
-			&format!("/api/runs/{}/working-area", late.member.id),
+			&format!("/api/executions/{}/working-area", late.member.id),
 			Value::Null,
 		)
 		.await;
@@ -8486,7 +8486,7 @@ fn start_end(
 					&app,
 					&token,
 					"POST",
-					&format!("/api/runs/{creator}/control"),
+					&format!("/api/executions/{creator}/control"),
 					json!({"action":"cancel"}),
 				)
 				.await
@@ -8654,7 +8654,7 @@ async fn a_call_after_the_end_is_refused(fixture: common::ApplicationFixture, ca
 			.all(|query| query.contains("subnodes") && query.contains("FOR SHARE")),
 		"the call must wait at the Subnode check: {waiting:?}"
 	);
-	sqlx::query("UPDATE runs SET control = 'CANCELLED' WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET control = 'CANCELLED' WHERE id = $1")
 		.bind(files.late.member.id)
 		.execute(&mut *ending)
 		.await
@@ -8725,7 +8725,7 @@ async fn node_deletion_waits_for_a_subnode_write_before_publishing_run_controls(
 	let node = rig.node.node.to_string();
 	let browser = common::BrowserMapping::new(&f, "acme", "alice").await;
 	// Put the creating Run after its member in the physical scan of pending Runs.
-	sqlx::query("UPDATE runs SET revision = revision WHERE id = $1")
+	sqlx::query("UPDATE task_executions SET revision = revision WHERE id = $1")
 		.bind(rig.creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
@@ -10180,7 +10180,7 @@ async fn stints_follow_waking_and_sleeping(
 			None => "pending".to_owned(),
 		};
 		sqlx::query(&format!(
-			"UPDATE runs SET phase = '{phase}', pending = {pending} WHERE id = '{}'",
+			"UPDATE task_executions SET phase = '{phase}', pending = {pending} WHERE id = '{}'",
 			run.id
 		))
 		.execute(driver)

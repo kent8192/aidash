@@ -160,7 +160,7 @@ pub(crate) async fn readable(
 		aidash_server::database::query_as(
 			&Query::select()
 				.column(Asterisk)
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id=?)".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],

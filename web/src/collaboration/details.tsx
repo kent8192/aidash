@@ -28,14 +28,14 @@ import { useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
   threadGet,
-  runGet,
-  runControl,
-  runMessage,
+  executionGet,
+  executionControl,
+  executionMessage,
   channelAttachmentUpload,
   humanAnswer,
   humanRequests,
   taskAbandon,
-  taskRuns as taskRunPage,
+  taskExecutions as taskRunPage,
 } from "../generated/aidash";
 import type {
   Artifact,
@@ -172,7 +172,7 @@ export function OperationsDialog({
   const execution = ["thread", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
-  const taskRuns = task
+  const taskExecutions = task
     ? data.runs.filter(
         (run) => run.task_id === task.id && isLocalRun(run, data),
       )
@@ -475,10 +475,10 @@ export function OperationsDialog({
                         : "Older runs exist"}
                     </p>
                   )}
-                  {taskRuns.length > 0 && (
+                  {taskExecutions.length > 0 && (
                     <Panel title={t("execution")}>
                       <ul className="grid min-w-0 divide-y divide-border border-y border-border">
-                        {taskRuns.map((run) => (
+                        {taskExecutions.map((run) => (
                           <li key={run.id}>
                             <button
                               type="button"
@@ -596,7 +596,7 @@ function RunPanel({
   const query = useInfiniteQuery({
     queryKey: ["run", node, id],
     initialPageParam: 0,
-    queryFn: ({ pageParam }) => runGet(id, { offset: pageParam }),
+    queryFn: ({ pageParam }) => executionGet(id, { offset: pageParam }),
     getNextPageParam: (last, pages) =>
       last.invocations.length === 100 ||
       last.egress_requests?.length === 100 ||
@@ -644,7 +644,7 @@ function RunPanel({
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
   const control = (action: "pause" | "resume" | "cancel") => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
-    void submit(() => runControl(id, { action }));
+    void submit(() => executionControl(id, { action }));
   };
   const invocations =
     query.data?.pages.flatMap((page) => page.invocations) ?? [];
@@ -709,14 +709,14 @@ function RunPanel({
                   call={declinable}
                   submit={submit}
                   send={(content, idempotency_key) =>
-                    runMessage(id, {
+                    executionMessage(id, {
                       content,
                       idempotency_key,
                       attachment_ids: [],
                     })
                   }
                   decline={(call, rest_of_run) =>
-                    apiFetch(`/api/runs/${id}/declined-calls`, {
+                    apiFetch(`/api/executions/${id}/declined-calls`, {
                       method: "POST",
                       headers: { "content-type": "application/json" },
                       body: JSON.stringify({
@@ -763,7 +763,9 @@ function RunPanel({
         <InferenceProgress run={id} node={node} active={!terminal} />
       )}
       {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
-      {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
+      {managed && (
+        <RemoteMemoryProvenance url={`/api/executions/${id}/semantic`} />
+      )}
       {managed && <RemoteRunManagement id={id} />}
       {controllable && (
         <form
@@ -790,7 +792,7 @@ function RunPanel({
               try {
                 const attachments: string[] = [];
                 if (files.length > 0) {
-                  const current = await runGet(id, { offset: 0 });
+                  const current = await executionGet(id, { offset: 0 });
                   if (
                     !validRunMediaRoute(
                       files.map((entry) => entry.file),
@@ -834,7 +836,7 @@ function RunPanel({
                 }
                 const idempotency_key = request.current.key;
                 const ok = await submit(() =>
-                  runMessage(id, {
+                  executionMessage(id, {
                     content,
                     idempotency_key,
                     attachment_ids: attachments,

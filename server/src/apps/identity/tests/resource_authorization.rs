@@ -216,7 +216,7 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	}
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		403
@@ -438,7 +438,7 @@ async fn retained_snapshot_revocation(
 		"buffered raw journals must be rechecked"
 	);
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		403
@@ -717,7 +717,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 			.emit(
 				&TEST_FIXTURE,
 				Some(thread),
-				"run.updated",
+				"execution.updated",
 				json!({"run_id":runs[index % 2].id}),
 			)
 			.await
@@ -743,7 +743,7 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		assert_eq!(
 			tokio::time::timeout(
 				std::time::Duration::from_secs(3),
-				common::get(&app, &token, &format!("/api/runs/{}", run.id))
+				common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			)
 			.await
 			.unwrap()
@@ -771,11 +771,11 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|event| event["kind"] == "run.updated")
+			.any(|event| event["kind"] == "execution.updated")
 	);
 	for run in &runs {
 		assert_eq!(
-			common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			common::get(&app, &token, &format!("/api/executions/{}", run.id))
 				.await
 				.0,
 			403
@@ -870,7 +870,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	assert_eq!(run.phase().as_str(), "COMPLETED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	assert_eq!(
-		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
 			.await
 			.0,
 		200
@@ -935,7 +935,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 			200
 		);
 		assert_eq!(
-			common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			common::get(&app, &token, &format!("/api/executions/{}", run.id))
 				.await
 				.0,
 			403
@@ -1212,7 +1212,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	}
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
 	assert_eq!(run.phase().as_str(), "COMPLETED");
-	let path = format!("/api/runs/{}", run.id);
+	let path = format!("/api/executions/{}", run.id);
 	let (status, journal) = common::get(&app, &token, &path).await;
 	assert_eq!(status, 200);
 	assert!(journal.to_string().contains("discovered-private-metadata"));

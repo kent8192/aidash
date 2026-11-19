@@ -24,7 +24,7 @@ pub async fn remote_ticket(
 ) -> Result<Url, String> {
 	let run = uuid::Uuid::parse_str(run).map_err(|_| "Invalid Run identifier")?;
 	let mut response = client
-		.post(format!("{origin}/api/runs/{run}/preview-tickets"))
+		.post(format!("{origin}/api/executions/{run}/preview-tickets"))
 		.bearer_auth(token)
 		.json(target)
 		.send()

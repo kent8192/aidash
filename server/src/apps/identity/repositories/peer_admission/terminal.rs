@@ -204,7 +204,7 @@ async fn project(
 	let raw: Option<aidash_domain::run_state::RawRun> = crate::database::query_as(
 		&Query::select()
 			.column(Asterisk)
-			.from(Alias::new("runs"))
+			.from(Alias::new("task_executions"))
 			.and_where(Expr::col("id").eq(Expr::value(record.id)))
 			.and_where(Expr::col("tenant").eq(record.tenant.clone()))
 			.lock(LockType::Update)

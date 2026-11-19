@@ -80,7 +80,7 @@ impl ReadJournalScope for Reads<'_> {
 		let result: NativeResult<Vec<Uuid>> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
-				.from(Alias::new("runs"))
+				.from(Alias::new("task_executions"))
 				.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
 				.and_where(Expr::col("id").is_in(runs.iter().copied().map(Expr::value)))
 				.to_string(PostgresQueryBuilder),

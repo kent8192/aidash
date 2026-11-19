@@ -88,7 +88,7 @@ function OperationCard({
     queryKey: ["core-operation", run, operation.operation_id, offset],
     queryFn: () =>
       post<Operation>(
-        `/runs/${run}/${operation.kind === "code_interpreter" ? "python" : operation.kind}/poll`,
+        `/executions/${run}/${operation.kind === "code_interpreter" ? "python" : operation.kind}/poll`,
         {
           operation_id: operation.operation_id,
           offset,
@@ -148,7 +148,7 @@ function OperationCard({
             onClick={async () => {
               try {
                 await post(
-                  `/runs/${run}/${operation.kind === "code_interpreter" ? "python" : operation.kind}/cancel`,
+                  `/executions/${run}/${operation.kind === "code_interpreter" ? "python" : operation.kind}/cancel`,
                   {
                     operation_id: operation.operation_id,
                   },
@@ -295,7 +295,7 @@ function FileOperations({
     initialPageParam: "",
     queryFn: ({ pageParam, signal }) =>
       apiFetch<{ items: Operation[]; next_cursor: string | null }>(
-        `/api/runs/${run}/core-operations${pageParam ? `?cursor=${pageParam}` : ""}`,
+        `/api/executions/${run}/core-operations${pageParam ? `?cursor=${pageParam}` : ""}`,
         { signal },
       ),
     getNextPageParam: (p) => p.next_cursor ?? undefined,
@@ -333,7 +333,7 @@ function FileOperations({
   const files = area.manifest;
   const readFile = async (file: CoreFile, offset = 0) => {
     const result = await post<{ content: string; next_offset?: number }>(
-      `/runs/${run}/files/read`,
+      `/executions/${run}/files/read`,
       {
         file_id: file.file_id,
         representation: "text",
@@ -344,7 +344,7 @@ function FileOperations({
     setRead({ ...result, file });
   };
   const runCode = async (expected_session_id?: string) => {
-    const result = await mutate<Operation>(`/runs/${run}/${kind}`, {
+    const result = await mutate<Operation>(`/executions/${run}/${kind}`, {
       expected_revision: area.revision,
       ...(kind === "python"
         ? { code, expected_session_id: expected_session_id ?? session ?? null }
@@ -395,7 +395,7 @@ function FileOperations({
             onClick={() =>
               void act(async () =>
                 setSearch(
-                  await post(`/runs/${run}/files/search`, {
+                  await post(`/executions/${run}/files/search`, {
                     query,
                     mode,
                     scope,
@@ -432,7 +432,7 @@ function FileOperations({
                 onClick={() =>
                   void act(async () =>
                     setSearch(
-                      await post(`/runs/${run}/files/search`, {
+                      await post(`/executions/${run}/files/search`, {
                         query,
                         mode,
                         scope,
@@ -544,7 +544,7 @@ function FileOperations({
                         type="button"
                         onClick={() =>
                           void act(() =>
-                            mutate(`/runs/${run}/files/materialize`, {
+                            mutate(`/executions/${run}/files/materialize`, {
                               expected_revision: area.revision,
                               path: `copies/${f.path}`,
                               source: {
@@ -659,7 +659,7 @@ function FileOperations({
               onClick={() =>
                 void act(async () =>
                   setTransfer(
-                    await mutate(`/runs/${run}/files/share`, {
+                    await mutate(`/executions/${run}/files/share`, {
                       expected_revision: area.revision,
                       files: files
                         .filter((f) => selected.includes(f.file_id))
@@ -842,7 +842,7 @@ function FileOperations({
               disabled={busy || patchPreview.revision !== area.revision}
               onClick={() =>
                 void act(() =>
-                  mutate(`/runs/${run}/patch`, {
+                  mutate(`/executions/${run}/patch`, {
                     expected_revision: patchPreview.revision,
                     preconditions: patchPreview.preconditions,
                     patch,
@@ -999,7 +999,7 @@ export function ThreadCapabilities({
     queryKey: ["run-agent", active],
     // The Run details carry the inspection under `run`.
     queryFn: async ({ signal }) => {
-      const details = await apiFetch<RunDetails>(`/api/runs/${active}`, {
+      const details = await apiFetch<RunDetails>(`/api/executions/${active}`, {
         signal,
       });
       return {
@@ -1124,7 +1124,7 @@ export function ThreadCapabilities({
                 });
               } else if (target)
                 await enqueueRun(
-                  `/threads/${thread}/agents/${encodeURIComponent(target.id)}/runs`,
+                  `/threads/${thread}/agents/${encodeURIComponent(target.id)}/executions`,
                   {
                     agent_version: target.version,
                     title: prompt.slice(0, 80),
@@ -1185,7 +1185,7 @@ export function ThreadCapabilities({
               type="button"
               onClick={() =>
                 void act(() =>
-                  post(`/runs/${session.data!.active_run_id}/control`, {
+                  post(`/executions/${session.data!.active_run_id}/control`, {
                     action: "cancel",
                   }),
                 )

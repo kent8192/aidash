@@ -44,14 +44,14 @@ const kindMark: Record<Kind, string> = {
   error: "rounded-[1px] bg-destructive",
 };
 
-/** Server event kinds are dotted words (`task.completed`, `run.phase`, `tool.invoke`). */
+/** Server event kinds are dotted words (`task.completed`, `execution.phase`, `tool.invoke`). */
 function eventKind(kind: string): Kind {
   if (/fail|error|invalid|abandon|cancel/.test(kind)) return "error";
   if (/human|approval|request/.test(kind)) return "request";
   if (kind.startsWith("tool.") || kind.includes("tool_")) return "tool";
   if (kind.startsWith("artifact.")) return "artifact";
   if (kind.startsWith("peer.") || kind.includes("remote")) return "peer";
-  if (kind.startsWith("run.")) return "run";
+  if (kind.startsWith("execution.")) return "run";
   return "task";
 }
 

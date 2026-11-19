@@ -299,7 +299,7 @@ impl DashboardIdentity {
 				.from_as(Alias::new("dashboard_execution_origins"), Alias::new("o"))
 				.join(
 					JoinType::InnerJoin,
-					TableRef::table_alias(Alias::new("runs"), Alias::new("r")),
+					TableRef::table_alias(Alias::new("task_executions"), Alias::new("r")),
 					Expr::col((Alias::new("o"), Alias::new("run_id")))
 						.equals((Alias::new("r"), Alias::new("id"))),
 				)

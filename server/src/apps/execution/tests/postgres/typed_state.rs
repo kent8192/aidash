@@ -16,7 +16,7 @@ async fn damage(store: &Store, id: Uuid, phase: RunPhase, pending: Value, contex
 		let query_bind_3 = context;
 		sqlx::query(
 			&Query::update()
-				.table(a("runs"))
+				.table(a("task_executions"))
 				.value(a("phase"), phase.as_str())
 				.value_expr(
 					a("pending"),
@@ -399,7 +399,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 	let context: Value = sqlx::query_scalar(
 		&Query::select()
 			.column(a("context"))
-			.from(a("runs"))
+			.from(a("task_executions"))
 			.and_where(Expr::col(a("id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)

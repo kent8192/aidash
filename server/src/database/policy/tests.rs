@@ -59,12 +59,14 @@ const RETIRED: &[&str] = &[
 ];
 
 /// Tables renamed after their policy migration ran: Schedules became Duties
-/// (#1011), and the Workspace became the Thread (#1008).
+/// (#1011), the Workspace became the Thread (#1008), and the Run became the
+/// Task's execution record (#1009).
 const RENAMED: &[(&str, &str)] = &[
 	("schedules", "duties"),
 	("schedule_ticks", "duty_ticks"),
 	("workspaces", "threads"),
 	("authorization_workspaces", "authorization_threads"),
+	("runs", "task_executions"),
 ];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced
@@ -83,6 +85,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0090_run_created_at forward",
 	"execution.0141_remove_research forward",
 	"execution.0148_threads forward",
+	"execution.0150_task_executions backward",
+	"execution.0150_task_executions forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
 	"identity.0067_scratch_member_policy forward",

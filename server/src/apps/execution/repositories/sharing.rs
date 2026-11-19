@@ -188,8 +188,8 @@ impl SharingScope for Scope<'_> {
 					let query_bind_2 = version;
 					crate::database::native::query_scalar(
 						&Query::select()
-							.column((Alias::new("runs"), Alias::new("id")))
-							.from(Alias::new("runs"))
+							.column((Alias::new("task_executions"), Alias::new("id")))
+							.from(Alias::new("task_executions"))
 							.and_where(
 								Expr::col(Alias::new("agent_version"))
 									.eq(Expr::value(query_bind_2.to_owned())),

@@ -3703,7 +3703,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	native::query(
 		&Query::insert()
-			.into_table(Alias::new("runs"))
+			.into_table(Alias::new("task_executions"))
 			.columns(
 				[
 					"id",
@@ -4907,7 +4907,7 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 					} else {
 						aidash_server::database::native::query(
 							&Query::update()
-								.table(Alias::new("runs"))
+								.table(Alias::new("task_executions"))
 								.value(
 									Alias::new("lease_until"),
 									chrono::Utc::now() - chrono::Duration::seconds(1),

@@ -482,7 +482,7 @@ async fn another_reader(store: &Store, thread: Uuid, run: Uuid) -> Uuid {
 	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	for (table, key, fixed, columns) in [
 		(
-			"runs",
+			"task_executions",
 			"id",
 			Some(("task_id", task.id)),
 			&[
