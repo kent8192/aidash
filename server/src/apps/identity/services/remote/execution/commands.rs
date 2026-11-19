@@ -30,9 +30,20 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 		let checked = effects::onward(&mut command_scope, command)
 			.await
 			.map_err(Into::into);
+		let checked = match checked {
+			Ok(onward) => {
+				crate::apps::identity::repositories::remote_grants::persistence::subject_chain(
+					&mut access,
+					input.grant_id,
+				)
+				.await
+				.map(|chain| (onward, chain))
+			}
+			Err(error) => Err(error),
+		};
 		let identity = access.identity.clone();
-		let onward = access.finish(checked).await?;
-		return hand_on(&f, identity, onward).await;
+		let (onward, chain) = access.finish(checked).await?;
+		return hand_on(&f, identity, chain, onward).await;
 	}
 	let result = effects::execute(&mut command_scope, command, agent)
 		.await
@@ -44,19 +55,42 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 }
 
 /// Hands a child Task of a Remote Grant Run on to another Node through a
-/// Remote Grant of this Home (#654, ADR 0109). It acts as the grant's root
-/// subject: the grant it prepares inherits the child's delegation chain, this
-/// Node's policy judges that chain and the target Node, and the target decides
-/// by its own consent. A retry reuses the grant the first call prepared.
+/// Remote Grant of this Home (#654, ADR 0109). It acts under the grant's whole
+/// chain, never as its root person alone: every subject of the chain, the
+/// receiver's executor included, must be allowed `task.delegate` on the child
+/// and `federation.execute` on the target Node by this Node's policy; the
+/// grant it prepares carries that chain, a prepared grant is reused only for
+/// exactly that chain, and the target decides by its own consent.
 async fn hand_on(
 	f: &Federation,
 	identity: crate::authorization::identity::SubjectIdentity,
+	chain: Vec<String>,
 	onward: effects::Onward,
 ) -> Result<Value> {
+	if chain.len() < 2 || chain.first() != Some(&identity.subject) {
+		return Err(crate::Error::Forbidden);
+	}
+	// The executor that asks must itself be allowed to hand the Task there.
+	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
+	access.subjects = chain.clone();
+	let checked = async {
+		let task = access.task_read(onward.child).await?;
+		let resource = access.task_resource(&task).await?;
+		access.require(&resource, "task.delegate").await?;
+		let node = access.resource(
+			"node",
+			&onward.node,
+			serde_json::json!({"remote_node": onward.node}),
+		);
+		access.require(&node, "federation.execute").await
+	}
+	.await;
+	access.finish(checked).await?;
 	let repository = crate::apps::identity::repositories::home_execution::Repository {
 		runtime: f.clone(),
 		actor: Some(crate::authorization::identity::Actor::Subject(identity)),
 		worker: None,
+		chain: Some(chain),
 	};
 	let delegation = aidash_application::authorization::home::delegate(
 		&repository,

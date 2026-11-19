@@ -59,6 +59,18 @@ impl TriggerKind {
 		Ok(())
 	}
 
+	/// Whether a `node_event` trigger names `sender` as the one Node it takes
+	/// events from. Only such a trigger takes events from another Tenant's
+	/// Node, and it spares a sender of the same Tenant the Duty read check.
+	pub fn names(&self, sender: &crate::nodes::NodeAddress) -> bool {
+		match self {
+			Self::NodeEvent {
+				from_node: Some(node),
+			} => crate::nodes::NodeAddress::parse(node).is_ok_and(|node| node == *sender),
+			_ => false,
+		}
+	}
+
 	/// Whether a `node_event` trigger takes an event from `sender`. Every
 	/// other kind takes none from a Node.
 	pub fn admits(&self, sender: &crate::nodes::NodeAddress) -> bool {

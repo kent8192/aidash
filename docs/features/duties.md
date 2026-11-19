@@ -87,11 +87,14 @@ Besides its time trigger, a Duty wakes on the triggers its Requester adds with
   status.
 - `{"kind":"node_event"}` takes events another Node sends (#1013). The
   response names the Duty's Node (`node_id`); the Requester gives that and
-  the trigger's id to whoever should send. A Node of the same Tenant may send
-  when the Tenant's policy lets its sender use the Duty's Node (`node.use`); a
-  Node of another Tenant only when this Tenant's administrator registered it
-  (a Node Registration, and a Peer Mapping when it sends as a named subject).
-  `"from_node":"aidash://…"` admits that Node alone. The event is recorded as
+  the trigger's id to whoever should send. Every sender needs the Tenant's
+  trust in its Node: within the Tenant, the policy lets its subject use the
+  Duty's Node (`node.use`); from another Tenant, this Tenant's administrator
+  registered the Node (and a Peer Mapping when it sends as a named subject).
+  `"from_node":"aidash://…"` admits that Node alone and takes its events.
+  An open trigger takes only a sender of the same Tenant whose subject may
+  read the Duty, and never another Tenant's Node: name the partner's Node
+  with `from_node` to take its events. The event is recorded as
   `{"from_node": <the sending Node>, "data": <what it sent>}`, at most 256 KiB;
   the sending Node is the one its Federation token proved, never a field of
   the body. An unknown trigger, one of another Node and one that names another

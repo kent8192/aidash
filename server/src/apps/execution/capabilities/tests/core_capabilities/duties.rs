@@ -1377,3 +1377,66 @@ async fn an_event_from_another_node_of_the_tenant_wakes_a_duty(
 	assert_eq!(sent["outcome"], "skipped", "{sent}");
 	c.close().await;
 }
+
+/// A sender of the same Tenant reaches an open `node_event` trigger only when
+/// its subject may read the Duty; a trigger that names the sending Node takes
+/// its events regardless (#1013).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_same_tenant_sender_must_read_the_duty_unless_the_trigger_names_its_node(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use aidash_domain::{federation::route::Sender, tenancy::TenantName};
+	// Arrange: a Duty with an open trigger and one that names the sibling Node.
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let mut body = definition("Sibling events", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let open = add_trigger(&c, id, json!({"kind": "node_event"})).await;
+	let open: Uuid = serde_json::from_value(open["id"].clone()).unwrap();
+	let sibling = common::second_node_in(c.f.store.pool.fixture_driver(), "acme").await;
+	let sending = c.f.config.deployment.node(sibling.clone()).to_string();
+	let named = add_trigger(&c, id, json!({"kind": "node_event", "from_node": sending})).await;
+	let duty_node = named["node_id"].as_str().unwrap().to_owned();
+	let named: Uuid = serde_json::from_value(named["id"].clone()).unwrap();
+	// Bob is a member who may use the Node but may not read the Workspace.
+	let authorization = aidash_server::authorization::Authorization {
+		pool: c.f.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	bundle["subjects"]["bob"] = json!({"kind": "user", "groups": ["members"]});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-reads-no-workspace","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["workspace.read"],"resources":{"kinds":["workspace"]}
+	}));
+	common::replace_policy(&c.f.store, "acme", bundle).await;
+	let send = |trigger: Uuid| {
+		let sender = Sender {
+			tenant: TenantName::new("acme").unwrap(),
+			node: Some(sibling.clone()),
+			subject: Some("bob".into()),
+		};
+		let f = c.f.clone();
+		let duty_node = duty_node.clone();
+		async move {
+			f.request::<Value>(
+				&sender,
+				&duty_node,
+				reqwest::Method::POST,
+				"/scoped/duty-events",
+				Some(&json!({"trigger_id": trigger, "payload": {"note": "from bob"}})),
+			)
+			.await
+		}
+	};
+	// Act / Assert: the open trigger refuses a subject who cannot read the Duty.
+	assert!(send(open).await.is_err());
+	assert!(events_of(&c, id).await.is_empty());
+	// The trigger that names the sibling Node takes the same sender's event.
+	let receipt = send(named).await.unwrap();
+	assert_eq!(receipt["outcome"], "started", "{receipt}");
+	c.close().await;
+}

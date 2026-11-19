@@ -41,6 +41,10 @@ pub(crate) struct Repository {
 	pub(crate) actor: Option<Actor>,
 	/// A worker revalidates its complete execution chain at every source boundary.
 	pub(crate) worker: Option<aidash_domain::RunMetadata>,
+	/// The delegation chain of a Remote Grant whose Run hands a Task on (#654):
+	/// the actor is the chain's root person, and every check and the grant this
+	/// Home prepares see the whole chain, never the person alone.
+	pub(crate) chain: Option<Vec<String>>,
 }
 impl Repository {
 	/// The Node a Workspace of the acting subject's Tenant belongs to.
@@ -73,6 +77,8 @@ impl Repository {
 pub(crate) struct Scope {
 	pub(crate) runtime: Federation,
 	pub(crate) access: Box<Access>,
+	/// The Remote Grant chain this scope acts under, if any (#654).
+	pub(crate) chain: Option<Vec<String>>,
 }
 pub(crate) async fn binding(access: &mut Access, grant: Uuid) -> NativeResult<Option<BindingRow>> {
 	Ok({
@@ -398,7 +404,13 @@ impl HomeScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>> {
-		let worker_subjects = self.access.read_run.map(|_| self.access.subjects.clone());
+		// A worker's, or an onward hop's (#654), prepared grant is reused only
+		// for exactly its own chain followed by the receiver's executor.
+		let worker_subjects = self
+			.access
+			.read_run
+			.map(|_| self.access.subjects.clone())
+			.or_else(|| self.chain.clone());
 		let result: NativeResult<Vec<GrantRow>> = async {
 			let identity = self.access.identity.clone();
 			let access = &mut *self.access;
@@ -772,11 +784,24 @@ impl HomeRepository for Repository {
 			.await?
 			.ok_or(NativeError::Forbidden)?
 		} else {
-			Access::begin(&self.runtime.store, identity).await?
+			let mut access = Access::begin(&self.runtime.store, identity).await?;
+			if let Some(chain) = &self.chain {
+				// An onward hop acts under the grant's whole chain (#654), which
+				// starts at the person this access authenticates.
+				if chain.len() < 2 || chain.first() != Some(&identity.subject) {
+					return access
+						.finish::<Scope>(Err(NativeError::Forbidden))
+						.await
+						.map_err(Into::into);
+				}
+				access.subjects = chain.clone();
+			}
+			access
 		};
 		Ok(Scope {
 			runtime: self.runtime.clone(),
 			access: Box::new(access),
+			chain: self.chain.clone(),
 		})
 	}
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Scope, Description)> {
@@ -786,6 +811,7 @@ impl HomeRepository for Repository {
 			Scope {
 				runtime: self.runtime.clone(),
 				access: Box::new(access),
+				chain: None,
 			},
 			description,
 		))

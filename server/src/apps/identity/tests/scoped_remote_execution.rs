@@ -3683,6 +3683,147 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 	p.close().await;
 }
 
+/// An onward hop acts under the grant's whole chain (#654): the receiver's
+/// executor itself must be allowed `task.delegate` by the Home's policy, even
+/// though the chain's root person holds it.
+#[rstest::rstest]
+#[tokio::test]
+async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let third =
+		p.a.config
+			.deployment
+			.node(common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let research =
+		p.a.registry
+			.get(&tenant, "research", "1.0.0")
+			.await
+			.unwrap();
+	common::approve_agent_on(&p.a, "acme", &research, &third).await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let child = home
+		.create_task(
+			"chain-child",
+			&NewTask {
+				title: "Chain child".into(),
+				description: "Handed on".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	// Alice may delegate; the receiver's executor may not.
+	let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"executor-may-not-delegate","effect":"deny","subjects":{"ids":[executor]},
+		"actions":["task.delegate"],"resources":{"kinds":["task"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	assert!(
+		home.delegate_with_key("chain-hop", child.id, &third.to_string(), &agent)
+			.await
+			.is_err()
+	);
+	let grants: i64 =
+		sqlx::query_scalar("SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1")
+			.bind(child.id)
+			.fetch_one(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(grants, 0);
+	p.close().await;
+}
+
+/// Another Tenant's Node reaches only a `node_event` trigger that names it
+/// (#1013): an open trigger refuses it, as an unknown one does.
+#[rstest::rstest]
+#[tokio::test]
+async fn another_tenants_node_wakes_only_a_trigger_that_names_it(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let (status, duty) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/duties"),
+		json!({"title":"Partner events","mission":"Read what the partner sent.","agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{duty}");
+	let id = duty["id"].as_str().unwrap().to_owned();
+	let mut triggers = vec![];
+	for body in [
+		json!({"kind":"node_event"}),
+		json!({"kind":"node_event","from_node":node_of(&p.b)}),
+	] {
+		let (status, trigger) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/duties/{id}/triggers"),
+			body,
+		)
+		.await;
+		assert_eq!(status, 200, "{trigger}");
+		triggers.push(trigger["id"].as_str().unwrap().to_owned());
+	}
+	// The receiver's Node sends as itself, as `duty_notify` does across Tenants.
+	let sender = aidash_domain::federation::route::Sender {
+		tenant: aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+		node: Some(aidash_domain::nodes::NodeName::derived("acme")),
+		subject: None,
+	};
+	let send = |trigger: String| {
+		let f = p.b.clone();
+		let sender = sender.clone();
+		let target = node_of(&p.a);
+		async move {
+			f.request::<Value>(
+				&sender,
+				&target,
+				reqwest::Method::POST,
+				"/scoped/duty-events",
+				Some(&json!({"trigger_id": trigger, "payload": {"note": "from the partner"}})),
+			)
+			.await
+		}
+	};
+	assert!(send(triggers[0].clone()).await.is_err());
+	let receipt = send(triggers[1].clone()).await.unwrap();
+	assert!(receipt["event_id"].is_string(), "{receipt}");
+	let (status, events) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/duties/{id}/events"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{events}");
+	assert_eq!(events.as_array().unwrap().len(), 1, "{events}");
+	assert_eq!(events[0]["payload"]["from_node"], node_of(&p.b));
+	p.close().await;
+}
+
 /// A Remote Grant Run may hand a child back to its Home's own Node (#654).
 #[rstest::rstest]
 #[tokio::test]
