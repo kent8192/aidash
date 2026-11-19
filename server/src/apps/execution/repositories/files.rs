@@ -368,6 +368,20 @@ impl FileScopePort for Scope<'_> {
 					if !run.is_local(store.deployment.as_str()) {
 						return Err(NativeError::Forbidden);
 					}
+					// A Subnode member of such a Run is a Run of this Node, but asking this
+					// Tenant's approvers would bypass the Home's person, and the member cannot
+					// ask that person either (ADR 0110 as amended by ADR 0139, decision 27).
+					if crate::apps::execution::repositories::operations::remote_tools::is_remote_member(
+						self.access.tx.as_mut(),
+						run.id,
+					)
+					.await?
+					{
+						return Err(NativeError::Refused(
+							"a Subnode member of a Run started by a Remote Grant cannot ask a person"
+								.into(),
+						));
+					}
 					approvals::prepare(
 						store,
 						self.access,
