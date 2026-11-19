@@ -1050,14 +1050,18 @@ pub(crate) async fn reference_download(
 	access.finish(result).await
 }
 /// The Working Area a file is downloaded from. One its owner kept when its
-/// Thread was deleted stays theirs to download (#1008, ADR 0140); every other
-/// refusal of the live-Thread check stands.
+/// Thread was deleted stays theirs, and only theirs, to download (#1008, ADR
+/// 0140): a file administrator manages such an Area but never reads it. Every
+/// other refusal of the live-Thread check stands.
 async fn downloadable(access: &mut Access, id: Uuid) -> Result<Area> {
 	match sessions::load(access, id).await {
 		Err(refused @ (Error::Forbidden | Error::NotFound(_))) => {
 			let Ok(area) = super::cleanup::load(access, id, "file.read").await else {
 				return Err(refused);
 			};
+			if area.owner != access.identity.subject {
+				return Err(refused);
+			}
 			let deleted: Option<i32> = crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(Expr::value(1_i32))

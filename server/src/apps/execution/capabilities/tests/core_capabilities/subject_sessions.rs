@@ -133,6 +133,23 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 			.unwrap(),
 		b"bob-only\n"
 	);
+	// The Thread is deleted now. Bob still downloads from his Area; a file
+	// administrator manages another person's Area but never reads it.
+	let download = |area: &Value| {
+		format!(
+			"/api/working-areas/{}/files/{}/download",
+			area["id"].as_str().unwrap(),
+			area["manifest"][0]["file_id"].as_str().unwrap()
+		)
+	};
+	let mut policy = f.c.policy.clone();
+	policy["subjects"]["alice"]["attributes"] = json!({"file_administrator": true});
+	common::replace_policy(&f.c.f.store, "acme", policy).await;
+	let (status, foreign) = common::get(&f.c.app, &f.c.token, &download(&f.areas[1])).await;
+	assert!(matches!(status, 403 | 404), "{foreign}");
+	assert!(!foreign.to_string().contains("bob-only"));
+	let (status, _) = common::get(&f.c.app, &f.bob, &download(&f.areas[1])).await;
+	assert_eq!(status, 200);
 	f.c.close().await;
 }
 
