@@ -557,8 +557,8 @@ async fn the_decision_page_names_the_run(#[future] database: DatabaseFixture) {
 async fn running_targets(fixture: &Fixture) -> (Uuid, Uuid) {
 	let driver = fixture.driver();
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,$4,'running')")
-		.bind(area).bind(DEPLOYMENT).bind(fixture.thread).bind(Uuid::new_v4())
+	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,'running')")
+		.bind(area).bind(DEPLOYMENT).bind(fixture.thread)
 		.execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')")
 		.bind(area)

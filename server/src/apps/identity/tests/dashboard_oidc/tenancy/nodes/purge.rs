@@ -45,8 +45,8 @@ async fn request_purge(d: &Deployment, tenant: &str, node: &str) -> Uuid {
 
 async fn object(d: &Deployment, tenant: &str, thread: Uuid, file: Uuid) {
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3,$4)")
-		.bind(area).bind(tenant).bind(thread).bind(Uuid::new_v4())
+	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3)")
+		.bind(area).bind(tenant).bind(thread)
 		.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query(
 		"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,'[]')",
@@ -1960,8 +1960,8 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		let pool = d.federation.store.pool.fixture_driver();
 		let area = Uuid::new_v4();
 		let home = format!("{}/{node}", d.federation.config.deployment);
-		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,$2,$3,'agent','alice',$4,$5)")
-            .bind(area).bind(tenant).bind(home.to_string()).bind(thread).bind(Uuid::new_v4()).execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,$3,'agent','alice',$4)")
+            .bind(area).bind(tenant).bind(home.to_string()).bind(thread).execute(pool).await.unwrap();
 		let mut manifest = vec![];
 		for (index, (bytes, id)) in files.iter().enumerate() {
 			let digest = aidash_server::capabilities::objects::digest(bytes);

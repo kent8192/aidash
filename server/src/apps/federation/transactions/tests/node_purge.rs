@@ -103,8 +103,8 @@ async fn file(node: &Node, thread: Uuid) -> Uuid {
 	let area = Uuid::new_v4();
 	let id = Uuid::new_v4();
 	let driver = node.f.store.pool.fixture_driver();
-	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
-        .bind(area).bind(&node.address).bind(thread).bind(Uuid::new_v4()).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3)")
+        .bind(area).bind(&node.address).bind(thread).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')").bind(area).execute(driver).await.unwrap();
 	let bytes = fixture_bytes(id);
 	let digest = aidash_server::capabilities::objects::digest(&bytes);
