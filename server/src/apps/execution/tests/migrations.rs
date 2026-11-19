@@ -230,6 +230,20 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0030_threads"),
 ];
 
+/// Reverses the rename of `runs` (#1009), as a dependency-ordered rollback
+/// would, so an earlier migration that names the table can be rolled back
+/// alone on a full history.
+async fn reverse_task_executions(
+	executor: &mut reinhardt::db::migrations::DatabaseMigrationExecutor,
+	source: &FilesystemSource,
+) {
+	let mut renamed = Vec::new();
+	for name in ["0150_task_executions", "0151_task_executions_state"] {
+		renamed.push(source.get_migration("execution", name).await.unwrap());
+	}
+	executor.rollback_migrations(&renamed).await.unwrap();
+}
+
 async fn history_size() -> usize {
 	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 		.all_migrations()
@@ -2158,6 +2172,8 @@ async fn compaction_storage_cutover_preserves_approval_tables_and_reverses(
 		.unwrap();
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
 		.with_migration_history(source.all_migrations().await.unwrap());
+	// Their reversals recreate foreign keys to `runs`.
+	reverse_task_executions(&mut executor, &source).await;
 	executor
 		.rollback_migrations(&[database, state, generated_database, generated_state])
 		.await
@@ -2224,6 +2240,8 @@ async fn generated_summary_storage_cutover_reverses(#[future] fresh_database: Mi
 		.unwrap();
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
 		.with_migration_history(source.all_migrations().await.unwrap());
+	// Its reversal recreates a foreign key to `runs`.
+	reverse_task_executions(&mut executor, &source).await;
 	executor
 		.rollback_migrations(&[database, state])
 		.await
@@ -5000,6 +5018,8 @@ async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_prov
 	);
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
 	executor.apply_migrations(&migrations).await.unwrap();
+	// identity 0062 restores a foreign key to `runs` when reversed.
+	reverse_task_executions(&mut executor, &source).await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for (pass, restored) in [false, true, false].into_iter().enumerate() {
 		let actual: Vec<String> = sqlx::query_scalar(
