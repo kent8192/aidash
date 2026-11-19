@@ -205,15 +205,6 @@ impl TenantAdministrations {
 						viewer.administers.insert(name.to_owned());
 					}
 				}
-				viewer.duty_administrator = administrator
-					.allowed(
-						tx,
-						&snapshot,
-						aidash_domain::duties::ADMINISTER,
-						&tenant,
-						json!({}),
-					)
-					.await?;
 				viewer.budget_manager = administrator
 					.allowed(tx, &snapshot, BUDGET_MANAGE, &tenant, json!({}))
 					.await?;

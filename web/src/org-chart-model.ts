@@ -38,9 +38,7 @@ export type ChartNode = {
   created_by: NodeCreator;
   flow?: string;
   duties: ChartDuty[];
-  hidden_duties: number;
   subnodes: ChartSubnode[];
-  hidden_subnodes: number;
   spend?: Spend;
 };
 
@@ -106,9 +104,4 @@ export function stopSummary(result: FlowStopped): {
     failed: items.filter((item) => item.outcome === "failed").length,
     nodes: result.nodes.length,
   };
-}
-
-/** A Node with nothing hidden, or the count of what the person may not see. */
-export function hiddenCount(node: ChartNode): number {
-  return node.hidden_duties + node.hidden_subnodes;
 }

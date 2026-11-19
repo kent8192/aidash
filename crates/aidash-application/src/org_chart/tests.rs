@@ -97,7 +97,7 @@ fn since() -> chrono::DateTime<Utc> {
 }
 
 #[test]
-fn a_member_sees_nodes_and_only_their_own_duties_subnodes_and_spend() {
+fn a_member_sees_every_duty_and_subnode_of_a_node_but_only_their_own_spend() {
 	// Arrange
 	let Fixture {
 		rows,
@@ -112,16 +112,14 @@ fn a_member_sees_nodes_and_only_their_own_duties_subnodes_and_spend() {
 	assert_eq!(research.name, "research");
 	assert_eq!(research.flow, Some(flow_root));
 	assert_eq!(research.created_by.root_subject(), Some("alice"));
-	assert_eq!(research.duties.len(), 1);
+	assert_eq!(research.duties.len(), 2);
 	assert_eq!(research.duties[0].requester, "alice");
 	assert_eq!(research.duties[0].created_by_task, Some(creating_task));
 	assert_eq!(research.duties[0].flow, Some(flow_root));
+	assert_eq!(research.subnodes.len(), 2);
+	// Spend: her own Duty's and her own as a person; no Node's, not bob's Duty.
 	assert_eq!(research.duties[0].spend, Some(spend(100)));
-	assert_eq!(research.hidden_duties, 1);
-	assert_eq!(research.subnodes.len(), 1);
-	assert_eq!(research.subnodes[0].root_subject, "alice");
-	assert_eq!(research.hidden_subnodes, 1);
-	// A member sees no Node's spend, and only their own as a person.
+	assert_eq!(research.duties[1].spend, None);
 	assert_eq!(research.spend, None);
 	assert_eq!(chart.people.len(), 1);
 	assert_eq!(chart.people[0].subject, "alice");
@@ -129,7 +127,7 @@ fn a_member_sees_nodes_and_only_their_own_duties_subnodes_and_spend() {
 }
 
 #[test]
-fn a_node_administrator_sees_all_of_their_node() {
+fn a_node_administrator_sees_the_spend_of_their_node_and_its_duties() {
 	// Arrange
 	let Fixture { rows, .. } = fixture();
 	let mut carol = viewer("carol");
@@ -138,10 +136,8 @@ fn a_node_administrator_sees_all_of_their_node() {
 	let chart = shape(&carol, rows, since());
 	// Assert
 	let research = &chart.nodes[0];
-	assert_eq!(research.duties.len(), 2);
-	assert_eq!(research.hidden_duties, 0);
-	assert_eq!(research.subnodes.len(), 2);
 	assert_eq!(research.spend, Some(spend(300)));
+	assert_eq!(research.duties[0].spend, Some(spend(100)));
 	// A Duty with no ledger rows spent nothing.
 	assert_eq!(research.duties[1].spend, Some(Spend::default()));
 	let sales = &chart.nodes[1];
@@ -160,9 +156,8 @@ fn a_budget_manager_sees_every_spend() {
 	// Assert
 	assert_eq!(chart.nodes[0].spend, Some(spend(300)));
 	assert_eq!(chart.nodes[1].spend, Some(spend(5)));
+	assert_eq!(chart.nodes[0].duties[1].spend, Some(Spend::default()));
 	assert_eq!(chart.people.len(), 2);
-	// Spend alone shows no Duty the manager may not otherwise see.
-	assert_eq!(chart.nodes[0].hidden_duties, 2);
 }
 
 #[test]
@@ -174,7 +169,7 @@ fn a_node_without_node_read_is_left_out() {
 	erin.administers.insert("research".into());
 	// Act
 	let chart = shape(&erin, rows, since());
-	// Assert
+	// Assert: neither the Node nor its Duties and Subnodes show anywhere.
 	assert_eq!(
 		chart
 			.nodes
@@ -183,25 +178,7 @@ fn a_node_without_node_read_is_left_out() {
 			.collect::<Vec<_>>(),
 		["sales"]
 	);
-}
-
-#[test]
-fn a_duty_administrator_sees_every_duty_but_no_subnode() {
-	// Arrange
-	let Fixture { rows, .. } = fixture();
-	let mut frank = viewer("frank");
-	frank.duty_administrator = true;
-	// Act
-	let chart = shape(&frank, rows, since());
-	// Assert
-	assert_eq!(chart.nodes[0].duties.len(), 2);
-	assert!(
-		chart.nodes[0]
-			.duties
-			.iter()
-			.all(|duty| duty.spend.is_none())
-	);
-	assert_eq!(chart.nodes[0].hidden_subnodes, 2);
+	assert!(chart.nodes[0].duties.is_empty() && chart.nodes[0].subnodes.is_empty());
 }
 
 #[test]

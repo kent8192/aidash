@@ -5,7 +5,6 @@ import { Alert, Hint, Loading } from "./components/patterns";
 import { apiFetch } from "./transport";
 import {
   flowStopPath,
-  hiddenCount,
   nodeFlows,
   orgChartPath,
   spendText,
@@ -113,7 +112,6 @@ function NodeBranch({
   refresh: () => void;
 }) {
   const { t } = useI18n();
-  const hidden = hiddenCount(node);
   return (
     <li className="grid min-w-0 gap-2 rounded border p-3">
       <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
@@ -167,9 +165,6 @@ function NodeBranch({
             ))}
           </ul>
         </div>
-      )}
-      {hidden > 0 && (
-        <Hint>{t("orgChartHidden").replace("{count}", String(hidden))}</Hint>
       )}
       {nodeFlows(node).map((flow) => (
         <div key={flow} className="grid gap-1 border-t pt-2">

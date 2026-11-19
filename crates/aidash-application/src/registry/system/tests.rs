@@ -189,6 +189,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			+ EXPOSURE_TOOLS.len()
 			+ SUBNODE_TOOLS.len()
 			+ JOURNAL_TOOLS.len()
+			+ NODE_TOOLS.len()
 			+ 2
 	);
 	let specifications = validation.node_specifications();

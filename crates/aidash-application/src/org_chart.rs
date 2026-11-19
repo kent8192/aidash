@@ -15,10 +15,8 @@ pub struct Viewer {
 	pub subject: String,
 	/// Nodes the person holds `node.read` on; only these are shown.
 	pub reads: BTreeSet<String>,
-	/// Nodes the person administers (`node.administer`): they see all of it.
+	/// Nodes the person administers (`node.administer`): they see its spend.
 	pub administers: BTreeSet<String>,
-	/// `duty.administer`: every Duty in full.
-	pub duty_administrator: bool,
 	/// `budget.manage`: every spend.
 	pub budget_manager: bool,
 }
@@ -121,11 +119,7 @@ pub struct ChartNode {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub flow: Option<Uuid>,
 	pub duties: Vec<ChartDuty>,
-	/// Duties on this Node the person may not see.
-	pub hidden_duties: usize,
 	pub subnodes: Vec<ChartSubnode>,
-	/// Active Subnodes on this Node the person may not see.
-	pub hidden_subnodes: usize,
 	/// Shown only to someone who may see this Node's Budget.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub spend: Option<Spend>,
@@ -174,11 +168,10 @@ impl Rows {
 	}
 }
 
-/// What `viewer` may see of the Tenant. A Node shows only with `node.read`.
-/// Its Duties and Subnodes show in full to its administrators, to
-/// `duty.administer` for Duties, and to the person they act for; the rest are
-/// counted. Spend shows to whoever may set that scope's Budget: `budget.manage`,
-/// a Node's administrator, a Duty's Requester and a person for themself.
+/// What `viewer` may see of the Tenant. A Node shows, with its Duties and
+/// active Subnodes, to whoever holds `node.read` on it. Spend shows only to
+/// whoever may set that scope's Budget: `budget.manage`, a Node's
+/// administrator, a Duty's Requester and a person for themself.
 pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) -> OrgChart {
 	let root = |task: Option<Uuid>| task.map(|task| rows.roots.get(&task).copied().unwrap_or(task));
 	let mut nodes = vec![];
@@ -197,9 +190,7 @@ pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) 
 				_ => None,
 			},
 			duties: vec![],
-			hidden_duties: 0,
 			subnodes: vec![],
-			hidden_subnodes: 0,
 			spend: (viewer.budget_manager || administers).then(|| {
 				rows.ledger
 					.nodes
@@ -210,10 +201,6 @@ pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) 
 		};
 		for duty in rows.duties.iter().filter(|duty| duty.node == node.name) {
 			let own = duty.requester == viewer.subject;
-			if !(administers || viewer.duty_administrator || own) {
-				chart.hidden_duties += 1;
-				continue;
-			}
 			chart.duties.push(ChartDuty {
 				id: duty.id,
 				title: duty.title.clone(),
@@ -236,10 +223,6 @@ pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) 
 			.iter()
 			.filter(|subnode| subnode.node == node.name)
 		{
-			if !(administers || subnode.root_subject == viewer.subject) {
-				chart.hidden_subnodes += 1;
-				continue;
-			}
 			chart.subnodes.push(ChartSubnode {
 				id: subnode.id,
 				title: subnode.title.clone(),

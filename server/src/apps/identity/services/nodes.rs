@@ -702,6 +702,24 @@ pub async fn agent_tool(
 	operation: &str,
 	input: serde_json::Value,
 ) -> Result<serde_json::Value> {
+	match agent_call(f, run, key, operation, input).await {
+		// A busy Tenant refuses an Authority Change before it changes
+		// anything (ADR 0121); the Agent is told to call again, as a person
+		// is, instead of the call being left uncertain.
+		Err(Error::PolicyBusy { retry_after }) => Err(Error::Invalid(format!(
+			"the Tenant's policy is busy with another change; call again in {retry_after} seconds"
+		))),
+		result => result,
+	}
+}
+
+async fn agent_call(
+	f: &Federation,
+	run: &aidash_domain::Run,
+	key: &str,
+	operation: &str,
+	input: serde_json::Value,
+) -> Result<serde_json::Value> {
 	use aidash_application::nodes::tool;
 	let caller = agent_caller(f, run).await?;
 	// Persist a removed Tenant Binding's disablement before any lease.

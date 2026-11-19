@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   flowStopPath,
-  hiddenCount,
   nodeFlows,
   orgChartPath,
   spendText,
@@ -21,9 +20,7 @@ const node = (overrides = {}) => ({
   },
   flow: "root-1",
   duties: [],
-  hidden_duties: 0,
   subnodes: [],
-  hidden_subnodes: 0,
   ...overrides,
 });
 
@@ -71,8 +68,4 @@ test("a stop counts what it stopped, what was already stopped and failures", () 
     nodes: [{ name: "research", label: "Research" }],
   });
   assert.deepEqual(summary, { stopped: 2, already: 1, failed: 1, nodes: 1 });
-});
-
-test("hidden Duties and Subnodes are counted together", () => {
-  assert.equal(hiddenCount(node({ hidden_duties: 2, hidden_subnodes: 1 })), 3);
 });

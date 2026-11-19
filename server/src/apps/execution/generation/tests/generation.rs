@@ -707,8 +707,42 @@ async fn a_generated_agent_serves_its_persons_chains_and_retires_when_none_uses_
 	)
 	.await;
 	assert_eq!(jobs[0]["status"], "ACTIVE", "{jobs}");
+	// The reused Run makes its model calls under the generated agent and
+	// finishes its own Task.
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..12 {
+		if f.store
+			.run(&TEST_FIXTURE, other)
+			.await
+			.unwrap()
+			.phase()
+			.as_str() == "COMPLETED"
+		{
+			break;
+		}
+		worker.worker_once().await.unwrap();
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, other)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, second.parse().unwrap())
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"COMPLETED"
+	);
 	// Once no chain uses it, it retires as before.
-	complete(other).await;
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();

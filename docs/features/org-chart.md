@@ -33,14 +33,15 @@ Settings → Tenant → **Org chart**, or
 - the Root Task of the flow that made each Agent-created item;
 - this month's spend (UTC), from the Budget ledger.
 
-What the person sees follows the Budget rules:
+Everyone holding `node.read` on a Node sees it with its Duties and Subnodes.
+Spend follows the Budget rules: it shows only to whoever may set that scope's
+Budget.
 
-| Viewer                                                            | Duties and Subnodes                                                     | Spend                                       |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
-| A Node's administrator (`node.administer`, Tenant Administrators) | all of that Node                                                        | that Node's and its Duties'                 |
-| `duty.administer`                                                 | every Duty                                                              | none beyond their own                       |
-| `budget.manage`                                                   | as any other viewer                                                     | every Node, Duty and person                 |
-| anyone else                                                       | Duties they request, Subnodes of their own chains; the rest are counted | their own Duties' and their own as a person |
+| Viewer                                                            | Spend                                       |
+| ----------------------------------------------------------------- | ------------------------------------------- |
+| `budget.manage`                                                   | every Node, Duty and person                 |
+| A Node's administrator (`node.administer`, Tenant Administrators) | that Node's and its Duties'                 |
+| anyone else                                                       | their own Duties' and their own as a person |
 
 A browser session is required, as for Budgets.
 
