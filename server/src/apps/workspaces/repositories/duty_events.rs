@@ -19,9 +19,12 @@ fn framework(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 }
 
 fn trigger_of(row: DutyTriggerRecord) -> Result<DutyTrigger> {
-	let kind = match (row.kind.as_str(), row.source_duty_id) {
-		("webhook", None) => TriggerKind::Webhook,
-		("duty_completed", Some(source_duty_id)) => TriggerKind::DutyCompleted { source_duty_id },
+	let kind = match (row.kind.as_str(), row.source_duty_id, row.from_node) {
+		("webhook", None, None) => TriggerKind::Webhook,
+		("duty_completed", Some(source_duty_id), None) => {
+			TriggerKind::DutyCompleted { source_duty_id }
+		}
+		("node_event", None, from_node) => TriggerKind::NodeEvent { from_node },
 		_ => return Err(Error::Invalid("invalid Duty Trigger row".into())),
 	};
 	Ok(DutyTrigger {
@@ -52,9 +55,10 @@ pub(crate) async fn insert_trigger(
 	workspace: Uuid,
 	trigger: &DutyTrigger,
 ) -> Result<()> {
-	let source = match &trigger.kind {
-		TriggerKind::Webhook => None,
-		TriggerKind::DutyCompleted { source_duty_id } => Some(*source_duty_id),
+	let (source, from_node) = match &trigger.kind {
+		TriggerKind::Webhook => (None, None),
+		TriggerKind::DutyCompleted { source_duty_id } => (Some(*source_duty_id), None),
+		TriggerKind::NodeEvent { from_node } => (None, from_node.clone()),
 	};
 	let row = DutyTriggerRecord::build()
 		.id(trigger.id)
@@ -63,6 +67,7 @@ pub(crate) async fn insert_trigger(
 		.duty_id(trigger.duty_id)
 		.kind(trigger.kind.as_str().to_owned())
 		.source_duty_id(source)
+		.from_node(from_node)
 		.created_at(trigger.created_at)
 		.created_by(trigger.created_by.clone())
 		.finish();

@@ -39,6 +39,9 @@ pub fn url_patterns() -> UnifiedRouter {
 			// A webhook authenticates by the signature of its body (#1011).
 			.endpoint(duty_events::webhook)
 			.with_route_middleware(AccessBoundary::public())
+			// Another Node authenticates with its Federation token (#1013).
+			.endpoint(duty_events::node_event)
+			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(scratch::create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::list)

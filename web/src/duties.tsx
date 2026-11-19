@@ -459,10 +459,14 @@ function DutyHistory({
 
 type DutyTrigger = {
   id: string;
-  kind: "webhook" | "duty_completed";
+  kind: "webhook" | "duty_completed" | "node_event";
   source_duty_id?: string;
+  /** The only Node a `node_event` trigger takes events from, if any. */
+  from_node?: string;
   url: string | null;
   secret: string | null;
+  /** Where another Node sends a `node_event` trigger's events (#1013). */
+  node_id?: string | null;
 };
 type DutyEvent = {
   id: string;
@@ -487,6 +491,7 @@ function DutyTriggers({
   const client = useQueryClient();
   const [created, setCreated] = useState<DutyTrigger | null>(null);
   const [source, setSource] = useState("");
+  const [fromNode, setFromNode] = useState("");
   const [error, setError] = useState("");
   const triggers = useQuery({
     queryKey: ["duty-triggers", duty],
@@ -516,6 +521,11 @@ function DutyTriggers({
         addWebhook: "webhook を追加",
         addCompleted: "追加",
         source: "元の職務の ID",
+        nodeEvent: "別のノードからのイベント",
+        addNodeEvent: "ノードからのイベントを追加",
+        fromNode: "送信元ノード（省略可）",
+        nodeEventHint:
+          "送信側には、このノードのアドレスと起動条件の ID を伝えてください。イベントはデータとして読まれ、依頼者にはなりません。",
         secretOnce:
           "署名用の秘密の値です。この画面を閉じると二度と表示されません。送信側で HMAC-SHA256 の署名（X-Hub-Signature-256: sha256=…）に使ってください。",
         remove: "削除",
@@ -528,6 +538,11 @@ function DutyTriggers({
         addWebhook: "Add a webhook",
         addCompleted: "Add",
         source: "Source Duty ID",
+        nodeEvent: "Event from another Node",
+        addNodeEvent: "Add a Node event trigger",
+        fromNode: "Sending Node (optional)",
+        nodeEventHint:
+          "Give the sender this Node's address and the trigger's ID. Its events are read as data and never become the requester.",
         secretOnce:
           "The signing secret, shown only now. Sign each request body with HMAC-SHA256 and send it as X-Hub-Signature-256: sha256=…",
         remove: "Delete",
@@ -541,10 +556,16 @@ function DutyTriggers({
         {(triggers.data ?? []).map((trigger) => (
           <li key={trigger.id} className="flex flex-wrap items-center gap-2">
             <Badge>
-              {trigger.kind === "webhook" ? words.webhook : words.completed}
+              {trigger.kind === "webhook"
+                ? words.webhook
+                : trigger.kind === "node_event"
+                  ? words.nodeEvent
+                  : words.completed}
             </Badge>
             <span className="min-w-0 break-all font-mono">
-              {trigger.url ?? trigger.source_duty_id}
+              {trigger.kind === "node_event"
+                ? `${trigger.node_id ?? ""} · ${trigger.id}${trigger.from_node ? ` ← ${trigger.from_node}` : ""}`
+                : (trigger.url ?? trigger.source_duty_id)}
             </span>
             {canEdit && (
               <Button
@@ -611,8 +632,37 @@ function DutyTriggers({
           >
             {words.addCompleted}
           </Button>
+          <Field label={`${words.nodeEvent} · ${words.fromNode}`}>
+            <Input
+              className="font-mono"
+              value={fromNode}
+              placeholder="aidash://…"
+              onChange={(event) => setFromNode(event.target.value)}
+            />
+          </Field>
+          <Button
+            size="sm"
+            onClick={() =>
+              void change(() =>
+                apiFetch(
+                  `/api/duties/${duty}/triggers`,
+                  json(
+                    fromNode.trim()
+                      ? { kind: "node_event", from_node: fromNode.trim() }
+                      : { kind: "node_event" },
+                  ),
+                ),
+              )
+            }
+          >
+            {words.addNodeEvent}
+          </Button>
         </div>
       )}
+      {canEdit &&
+        (triggers.data ?? []).some(
+          (trigger) => trigger.kind === "node_event",
+        ) && <Hint>{words.nodeEventHint}</Hint>}
       <h4 className="text-xs font-medium text-faint">{words.events}</h4>
       <ul className="grid gap-1 text-xs">
         {(events.data ?? []).map((event) => (

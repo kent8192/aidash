@@ -158,6 +158,17 @@ impl ToolOperations for Operations {
 	}
 
 	async fn duty(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
+		if operation == "duty_notify" {
+			// An event leaves for another Node's Duty (#1013); it needs the
+			// Federation transport, not a Duty of this Node.
+			return crate::apps::workspaces::services::duty_events::notify(
+				&self.0.home.federation,
+				&self.0.run,
+				input,
+			)
+			.await
+			.map_err(Into::into);
+		}
 		crate::apps::workspaces::services::duties::agent_tool(
 			&self.0.store,
 			&self.0.run,

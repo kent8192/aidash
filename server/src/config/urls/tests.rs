@@ -98,6 +98,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		("GET", "/federation/v0.1/transactions/{id}/decision"),
 		("POST", "/federation/v0.1/scoped/dependencies/verify"),
 		("POST", "/federation/v0.1/scoped/discover"),
+		("POST", "/federation/v0.1/scoped/duty-events"),
 		("POST", "/federation/v0.1/scoped/execution/admissions"),
 		(
 			"POST",
