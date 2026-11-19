@@ -251,7 +251,7 @@ async fn an_approval_awaiting_the_home_is_polled_not_rerun_at_once(
 			approval: ApprovalRef::Capability {
 				approval_id: Uuid::from_u128(9),
 			},
-			resume: Box::new(Default::default()),
+			resume: Box::default(),
 		})),
 		&Default::default(),
 	)

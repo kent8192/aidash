@@ -229,7 +229,9 @@ pub struct Parties {
 	pub subject: String,
 	/// The Agent version executing the remote Run.
 	pub agent: EntityRef,
-	/// The Working Area of the Run that delegated, on the Home.
+	/// Where the Home stages the files: the Working Area of the Run that delegated for a file
+	/// share; the executing Agent version and the grant's Task for a message, which the Home posts
+	/// in the grant's Workspace.
 	pub target: Recipient,
 }
 /// The description the receiving-side `file-transfer/1` code stores for a staged delivery.
