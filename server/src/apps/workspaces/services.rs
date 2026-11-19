@@ -14,6 +14,7 @@ pub use core::*;
 pub(crate) mod validation;
 
 pub mod duties;
+pub mod duty_events;
 pub(crate) mod duty_halt_backfill;
 pub mod migration_backfill;
 pub(crate) mod scratch;

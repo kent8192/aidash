@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod cron;
+pub mod events;
 
 /// Registering Duties, and changing, pausing and deleting your own. Judged
 /// on the Workspace the Duty belongs to. Members hold it by default.

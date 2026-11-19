@@ -67,6 +67,25 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, views::duties::remove, &["Uuid"])?;
 		contracts.response::<_, DeletedView>(document, views::duties::remove, 200, json)?;
 	}
+	// Duty Triggers and events (#1011).
+	{
+		use super::duties::{DeletedView, DutyEventReceipt};
+		use crate::apps::workspaces::services::duty_events::TriggerView;
+		use aidash_domain::duties::events::{DutyEvent, TriggerKind};
+		use views::duty_events as view;
+		let json = "application/json";
+		contracts.path(document, view::list, &["Uuid"])?;
+		contracts.response::<_, Vec<TriggerView>>(document, view::list, 200, json)?;
+		contracts.path(document, view::create, &["Uuid"])?;
+		contracts.request::<_, TriggerKind>(document, view::create)?;
+		contracts.response::<_, TriggerView>(document, view::create, 200, json)?;
+		contracts.path(document, view::remove, &["Uuid", "Uuid"])?;
+		contracts.response::<_, DeletedView>(document, view::remove, 200, json)?;
+		contracts.path(document, view::events, &["Uuid"])?;
+		contracts.response::<_, Vec<DutyEvent>>(document, view::events, 200, json)?;
+		contracts.path(document, view::webhook, &["Uuid"])?;
+		contracts.response::<_, DutyEventReceipt>(document, view::webhook, 200, json)?;
+	}
 	contracts.request::<_, ScratchCreate>(document, views::scratch::create)?;
 	contracts.response::<_, ScratchView>(
 		document,

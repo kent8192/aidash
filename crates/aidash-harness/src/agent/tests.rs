@@ -5439,6 +5439,7 @@ async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut f
 		generation: 42,
 		task_id: task,
 		status: "COMPLETED".into(),
+		duty_event: None,
 	});
 	respond(
 		&mut fixture.run,
@@ -5455,10 +5456,56 @@ async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut f
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 
+/// A booked Duty event wakes the wait, and its content comes as data in the
+/// result, never as a person's input (#1011).
+#[rstest]
+#[tokio::test]
+async fn workspace_wait_returns_a_booked_duty_event_as_data(mut fixture: Fixture) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":3600})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("workspace_wait".into(), wait);
+	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+		generation: 7,
+		task_id: Uuid::nil(),
+		status: "duty_event".into(),
+		duty_event: Some(
+			json!({"kind":"duty_event","trigger":"webhook","payload":{"conclusion":"success"}}),
+		),
+	});
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-1",
+			"workspace_wait",
+			json!({"on_trigger": Uuid::nil()}),
+		)],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(
+		|event| matches!(event, ContextEvent::Tool { result, .. }
+		if result["reason"] == "duty_event"
+			&& result["changes"][0]["kind"] == "duty_event"
+			&& result["changes"][0]["payload"]["conclusion"] == "success")
+	));
+	assert_eq!(fixture.run.recovery.workspace_event_cursor, Some(7));
+}
+
 #[rstest]
 #[case::default_no_children(json!({}), false, 300)]
 #[case::default_pending_children(json!({}), true, 3600)]
-#[case::maximum(json!({"seconds":9999}), false, 3600)]
+#[case::hours(json!({"seconds":9999}), false, 9999)]
+// A Stint sleeps through a long wait, up to 30 days (#1009, #1011).
+#[case::maximum(json!({"seconds":99_999_999}), false, 2_592_000)]
 #[tokio::test]
 async fn workspace_wait_defaults_and_clamps_its_ceiling(
 	mut fixture: Fixture,
@@ -5620,6 +5667,7 @@ async fn a_wake_says_how_many_older_changes_it_left_out(mut fixture: Fixture) {
 		generation: 42,
 		task_id: task,
 		status: "COMPLETED".into(),
+		duty_event: None,
 	});
 	respond(
 		&mut fixture.run,
@@ -5678,6 +5726,7 @@ async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut 
 		generation: 2,
 		task_id: Uuid::new_v4(),
 		status: "COMPLETED".into(),
+		duty_event: None,
 	});
 	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
 	fixture.run.recovery.remote_task_fingerprint = Some(ChildTaskSummary::default().fingerprint());

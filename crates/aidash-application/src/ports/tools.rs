@@ -328,6 +328,13 @@ pub trait ToolOperations: Send + Sync {
 	async fn workspace_search(&self, _input: Value) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
+	/// Books the next event of a Duty Trigger for this Run (#1011, decision
+	/// B): the event then wakes this Run instead of starting a new Task.
+	async fn book_trigger(&self, _trigger: Uuid) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"Duty events are unavailable to this Run".into(),
+		))
+	}
 	/// A Duty tool call (#1011, ADR 0134). The Home acts for the person at the
 	/// root of the Run's chain and refuses a federated Run and a Run whose
 	/// chain starts at no person.

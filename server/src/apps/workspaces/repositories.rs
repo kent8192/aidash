@@ -10,4 +10,5 @@ pub mod mutations;
 pub(crate) mod media;
 
 pub(crate) mod duties;
+pub(crate) mod duty_events;
 pub(crate) mod scratch;

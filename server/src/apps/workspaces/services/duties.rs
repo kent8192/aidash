@@ -325,6 +325,18 @@ async fn start(
 	duty: &Duty,
 	key: (DateTime<Utc>, &str),
 ) -> Result<(Uuid, Uuid)> {
+	let description = duty.definition.mission.clone();
+	start_with(f, lease, duty, key, description).await
+}
+
+/// [`start`] with the Task description an event writes (#1011).
+pub(crate) async fn start_with(
+	f: &Federation,
+	lease: &mut Lease,
+	duty: &Duty,
+	key: (DateTime<Utc>, &str),
+	description: String,
+) -> Result<(Uuid, Uuid)> {
 	let workspace = duty.workspace_id;
 	let definition = &duty.definition;
 	let thread = match duty.thread_id {
@@ -391,7 +403,7 @@ async fn start(
 			idempotency_key: tick_key(duty.id, key.0, &format!("{}:run", key.1)),
 			agent_version: definition.agent.version.clone(),
 			title: definition.title.clone(),
-			description: definition.mission.clone(),
+			description,
 			read_pages: vec![],
 		},
 	)
@@ -472,7 +484,21 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 	let mut report = Pass::default();
 	for ended in repository::ended(&f.store.pool, 256).await? {
 		match settle(f, &ended, now).await {
-			Ok(true) => report.settled += 1,
+			Ok(true) => {
+				report.settled += 1;
+				// Another Duty may wake on this one's Task ending (#1011).
+				if let Err(error) = super::duty_events::completed(
+					f,
+					&ended.tenant,
+					ended.duty,
+					ended.task,
+					ended.status,
+				)
+				.await
+				{
+					tracing::warn!(%error, duty = %ended.duty, "Duty completion triggers could not run");
+				}
+			}
 			Ok(false) => {}
 			Err(error) => {
 				tracing::warn!(%error, tick = %ended.tick, "a Duty tick could not be settled");

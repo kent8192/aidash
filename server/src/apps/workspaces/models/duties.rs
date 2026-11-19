@@ -103,3 +103,80 @@ pub struct DutyTickRecord {
 	#[field(null = true)]
 	pub settled_at: Option<DateTime<Utc>>,
 }
+
+/// A Duty Trigger other than the clock (#1011): a webhook, or another Duty's
+/// Task ending.
+#[model(app_label = "workspaces", table_name = "duty_triggers")]
+#[derive(Serialize, Deserialize)]
+pub struct DutyTriggerRecord {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub workspace_id: Uuid,
+	#[field]
+	pub duty_id: Uuid,
+	/// `webhook` or `duty_completed`.
+	#[field(field_type = "text")]
+	pub kind: String,
+	/// The Duty whose Tasks ending wakes this one, for `duty_completed`.
+	#[field(null = true)]
+	pub source_duty_id: Option<Uuid>,
+	#[field]
+	pub created_at: DateTime<Utc>,
+	#[field(field_type = "text")]
+	pub created_by: String,
+}
+
+/// One event a Duty received (#1011). Its payload is data of the Duty's
+/// Thread and goes with the Duty.
+#[model(app_label = "workspaces", table_name = "duty_events")]
+#[derive(Serialize, Deserialize)]
+pub struct DutyEventRecord {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub workspace_id: Uuid,
+	#[field]
+	pub duty_id: Uuid,
+	#[field]
+	pub trigger_id: Uuid,
+	#[field]
+	pub received_at: DateTime<Utc>,
+	#[field]
+	pub payload: Json<Value>,
+	/// `started`, `delivered`, `skipped` or `failed`.
+	#[field(field_type = "text")]
+	pub outcome: String,
+	#[field(field_type = "text", null = true)]
+	pub reason: Option<String>,
+	#[field(null = true)]
+	pub task_id: Option<Uuid>,
+	/// The Run a delivered event woke.
+	#[field(null = true)]
+	pub run_id: Option<Uuid>,
+}
+
+/// A Task's booking of the next event of a trigger (#1011): the event wakes
+/// that Task's Run instead of starting a new Task.
+#[model(app_label = "workspaces", table_name = "duty_bookings")]
+#[derive(Serialize, Deserialize)]
+pub struct DutyBookingRecord {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub workspace_id: Uuid,
+	#[field]
+	pub trigger_id: Uuid,
+	#[field]
+	pub task_id: Uuid,
+	#[field]
+	pub run_id: Uuid,
+	#[field]
+	pub created_at: DateTime<Utc>,
+}

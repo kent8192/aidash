@@ -268,7 +268,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		126
+		127
 	);
 	let tables = migrations
 		.iter()
@@ -788,12 +788,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0035_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0038_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0034_duties_state".to_owned())]
+		vec![(
+			"workspaces".to_owned(),
+			"0037_duty_triggers_state".to_owned()
+		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -1083,7 +1086,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		126
+		127
 	);
 }
 
@@ -5409,6 +5412,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0032_duties"),
 			("workspaces", "0033_duty_checks"),
 			("workspaces", "0034_duties_state"),
+			("workspaces", "0035_duty_triggers"),
+			("workspaces", "0036_duty_triggers_row_level_security"),
+			("workspaces", "0037_duty_triggers_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5473,6 +5479,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0032_duties"),
 			("workspaces", "0033_duty_checks"),
 			("workspaces", "0034_duties_state"),
+			("workspaces", "0035_duty_triggers"),
+			("workspaces", "0036_duty_triggers_row_level_security"),
+			("workspaces", "0037_duty_triggers_state"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5545,6 +5554,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0032_duties"),
 			("workspaces", "0033_duty_checks"),
 			("workspaces", "0034_duties_state"),
+			("workspaces", "0035_duty_triggers"),
+			("workspaces", "0036_duty_triggers_row_level_security"),
+			("workspaces", "0037_duty_triggers_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

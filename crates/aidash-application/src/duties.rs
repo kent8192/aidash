@@ -236,6 +236,13 @@ pub async fn update(scope: &mut dyn DutyScope, id: Uuid, patch: Patch) -> Result
 	Ok(duty)
 }
 
+/// A Duty its Requester may change: for adding or removing its triggers.
+pub async fn editable(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
+	let duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::Edit).await?;
+	Ok(duty)
+}
+
 pub async fn pause(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
 	let mut duty = visible(scope, id, true).await?;
 	permitted(scope, &duty, Change::Pause).await?;

@@ -411,6 +411,7 @@ fn tick_tasks() -> reinhardt::query::SelectStatement {
 		.column((Alias::new("k"), Alias::new("duty_id")))
 		.column((Alias::new("t"), Alias::new("status")))
 		.column((Alias::new("k"), Alias::new("started_by")))
+		.column((Alias::new("k"), Alias::new("task_id")))
 		.from_as(Alias::new("duty_ticks"), Alias::new("k"))
 		.join(
 			JoinType::InnerJoin,
@@ -423,8 +424,8 @@ fn tick_tasks() -> reinhardt::query::SelectStatement {
 		.to_owned()
 }
 
-type TickTask = (String, Uuid, Uuid, String, Option<String>);
-const TICK_TASK: [&str; 5] = ["tenant", "id", "duty_id", "status", "started_by"];
+type TickTask = (String, Uuid, Uuid, String, Option<String>, Uuid);
+const TICK_TASK: [&str; 6] = ["tenant", "id", "duty_id", "status", "started_by", "task_id"];
 
 fn task_status(status: &str) -> Option<TaskStatus> {
 	serde_json::from_value(Value::String(status.to_owned())).ok()
@@ -448,7 +449,7 @@ pub(crate) async fn running(
 	.await?;
 	Ok(open
 		.iter()
-		.any(|(_, _, _, status, _)| task_status(status).and_then(TickStatus::of_task).is_none()))
+		.any(|(_, _, _, status, _, _)| task_status(status).and_then(TickStatus::of_task).is_none()))
 }
 
 /// A started tick whose Task ended, to be settled in its Tenant's scope.
@@ -457,6 +458,7 @@ pub(crate) struct Ended {
 	pub tenant: String,
 	pub tick: Uuid,
 	pub duty: Uuid,
+	pub task: Uuid,
 	pub status: TickStatus,
 	/// A "Run now" tick never counts toward the Duty's failures.
 	pub manual: bool,
@@ -480,11 +482,12 @@ pub(crate) async fn ended(pool: &Pool, limit: u64) -> Result<Vec<Ended>> {
 	.await?;
 	Ok(rows
 		.into_iter()
-		.filter_map(|(tenant, tick, duty, status, started_by)| {
+		.filter_map(|(tenant, tick, duty, status, started_by, task)| {
 			Some(Ended {
 				tenant,
 				tick,
 				duty,
+				task,
 				status: TickStatus::of_task(task_status(&status)?)?,
 				manual: started_by.is_some(),
 			})

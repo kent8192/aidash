@@ -70,6 +70,37 @@ with the title and mission as its first message, and the Duty records it.
 The Requester talks to the Duty there, and its Tasks report there. Deleting
 the Thread stops the Duty.
 
+## Other Duty Triggers
+
+Besides its time trigger, a Duty wakes on the triggers its Requester adds with
+`POST /api/duties/{id}/triggers`:
+
+- `{"kind":"webhook"}` returns a URL under `/hooks/duties/{trigger}` and its
+  signing secret, shown only in that response. A request is accepted only when
+  `X-Hub-Signature-256` (as GitHub sends it) or `X-Aidash-Signature` carries
+  `sha256=<hex HMAC-SHA256 of the body>`; an unknown trigger and a wrong
+  signature are refused alike with 404. The body, at most 256 KiB of JSON or
+  UTF-8 text, is the event. The secret is derived from the Deployment's API
+  token, so replacing the token replaces every webhook secret.
+- `{"kind":"duty_completed","source_duty_id":…}` wakes the Duty whenever a
+  Task of that other Duty ends; the event names the Duty, the Task and its
+  status.
+
+An event is input, never a requester (ADR 0142). It goes to the Task that
+booked it, if one did; otherwise it starts a new Task in the Duty's Thread
+whose description is the mission followed by the event inside
+`<event trust="data">`, marked as data that never directs the Agent. While
+the Duty's previous Task is open, an event is skipped (`overlap`), the default
+a Router may later replace. `GET /api/duties/{id}/events` lists what each
+event did: `started`, `delivered`, `skipped` or `failed` with the reason.
+Events are data of the Duty's Thread and go with the Duty.
+
+A Run books the next event of a trigger of its root person's Duty by calling
+`workspace_wait` with `on_trigger`. It sleeps until the event comes, for up to
+30 days, and the event then wakes it: the wait's result carries the event as
+`{"kind":"duty_event", …, "payload": …}`, data like every tool result. A Run
+that arrived through Federation books none.
+
 ## Ticks
 
 Every replica looks for Duties whose time trigger is due every

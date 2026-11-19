@@ -59453,5 +59453,292 @@
     },
     "source": "server/src/apps/identity/views/execution_settings.rs",
     "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "duty-triggers",
+    "path": "/api/duties/{id}/triggers",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "TriggerView": {
+            "description": "A Duty Trigger as its Duty's page shows it.",
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "duty_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "secret": {
+                "description": "The webhook's signing secret, shown once when it is created.",
+                "type": ["string", "null"]
+              },
+              "url": {
+                "description": "Where a webhook trigger receives events.",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "duty_id",
+              "created_at",
+              "created_by",
+              "url",
+              "secret"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/TriggerView"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/duty_events.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "duty-trigger-create",
+    "path": "/api/duties/{id}/triggers",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "TriggerView": {
+            "description": "A Duty Trigger as its Duty's page shows it.",
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "duty_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "secret": {
+                "description": "The webhook's signing secret, shown once when it is created.",
+                "type": ["string", "null"]
+              },
+              "url": {
+                "description": "Where a webhook trigger receives events.",
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "id",
+              "duty_id",
+              "created_at",
+              "created_by",
+              "url",
+              "secret"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/TriggerView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/duty_events.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "DELETE",
+    "name": "duty-trigger-delete",
+    "path": "/api/duties/{id}/triggers/{trigger}",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DeletedView": {
+            "properties": {
+              "deleted": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["deleted"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DeletedView"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/duty_events.rs",
+    "uuid_parameters": ["id", "trigger"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "duty-events",
+    "path": "/api/duties/{id}/events",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DutyEvent": {
+            "description": "One event a Duty received.",
+            "properties": {
+              "duty_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/EventOutcome"
+              },
+              "payload": {},
+              "reason": {
+                "type": ["string", "null"]
+              },
+              "received_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "trigger_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "duty_id",
+              "trigger_id",
+              "received_at",
+              "payload",
+              "outcome",
+              "reason",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          "EventOutcome": {
+            "description": "What became of one event.",
+            "oneOf": [
+              {
+                "description": "It started a new Task of the Duty.",
+                "enum": ["started"],
+                "type": "string"
+              },
+              {
+                "description": "It woke the Task that booked it.",
+                "enum": ["delivered"],
+                "type": "string"
+              },
+              {
+                "description": "It started nothing; the reason says why.",
+                "enum": ["skipped"],
+                "type": "string"
+              },
+              {
+                "description": "Starting its Task was refused; the reason says why.",
+                "enum": ["failed"],
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/DutyEvent"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/duty_events.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "POST",
+    "name": "duty-webhook",
+    "path": "/hooks/duties/{trigger}",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DutyEventReceipt": {
+            "description": "What a webhook request did (#1011).",
+            "properties": {
+              "event_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/EventOutcome"
+              }
+            },
+            "required": ["event_id", "outcome"],
+            "type": "object"
+          },
+          "EventOutcome": {
+            "description": "What became of one event.",
+            "oneOf": [
+              {
+                "description": "It started a new Task of the Duty.",
+                "enum": ["started"],
+                "type": "string"
+              },
+              {
+                "description": "It woke the Task that booked it.",
+                "enum": ["delivered"],
+                "type": "string"
+              },
+              {
+                "description": "It started nothing; the reason says why.",
+                "enum": ["skipped"],
+                "type": "string"
+              },
+              {
+                "description": "Starting its Task was refused; the reason says why.",
+                "enum": ["failed"],
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DutyEventReceipt"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/duty_events.rs",
+    "uuid_parameters": ["trigger"]
   }
 ]

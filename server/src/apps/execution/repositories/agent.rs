@@ -83,7 +83,11 @@ impl ExecutionStore for RunStore {
 			.from(Alias::new("run_activations"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 			.and_where(Expr::col("generation").gt(Expr::value(after)))
-			.and_where(Expr::col("reason").like("workspace_task:%"))
+			.cond_where(
+				reinhardt::query::Condition::any()
+					.add(Expr::col("reason").like("workspace_task:%"))
+					.add(Expr::col("reason").like("duty_event:%")),
+			)
 			.order_by(Alias::new("generation"), Order::Desc)
 			.limit(WORKSPACE_EVENT_WINDOW)
 			.build(PostgresQueryBuilder);
@@ -102,6 +106,30 @@ impl ExecutionStore for RunStore {
 				.get("reason")
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
+			if let Some(event) =
+				crate::apps::workspaces::repositories::duty_events::event_of_activation(&reason)
+			{
+				let delivered = crate::apps::workspaces::repositories::duty_events::event(
+					&mut *tx, run.id, event,
+				)
+				.await?;
+				if let Some((event, kind)) = delivered {
+					events.push(WorkspaceEvent {
+						generation,
+						task_id: Uuid::nil(),
+						status: "duty_event".into(),
+						duty_event: Some(serde_json::json!({
+							"kind": "duty_event",
+							"event_id": event.id,
+							"trigger_id": event.trigger_id,
+							"trigger": kind,
+							"received_at": event.received_at,
+							"payload": event.payload,
+						})),
+					});
+				}
+				continue;
+			}
 			let (id, status) = reason
 				.strip_prefix("workspace_task:")
 				.and_then(|value| value.split_once(':'))
@@ -114,6 +142,7 @@ impl ExecutionStore for RunStore {
 				generation,
 				task_id,
 				status: status.to_owned(),
+				duty_event: None,
 			});
 		}
 		events.reverse();
@@ -134,7 +163,11 @@ impl ExecutionStore for RunStore {
 				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
 				.and_where(Expr::col("generation").gt(Expr::value(after)))
 				.and_where(Expr::col("generation").lt(Expr::value(oldest.generation)))
-				.and_where(Expr::col("reason").like("workspace_task:%"))
+				.cond_where(
+					reinhardt::query::Condition::any()
+						.add(Expr::col("reason").like("workspace_task:%"))
+						.add(Expr::col("reason").like("duty_event:%")),
+				)
 				.build(PostgresQueryBuilder);
 			let row = tx
 				.fetch_one(&sql, convert_values(values))

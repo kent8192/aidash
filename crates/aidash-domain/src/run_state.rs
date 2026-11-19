@@ -493,6 +493,9 @@ impl RunState {
 /// widened from 3 to 5 (#1009), unless the Tenant sets a limit within
 /// [`LEASE_RECOVERY_LIMITS`].
 pub const LEASE_RECOVERY_LIMIT: u32 = 5;
+/// The longest a Run may wait in one `workspace_wait`: 30 days, since its
+/// Stint sleeps meanwhile (#1009, #1011 decision B).
+pub const MAX_WAIT_SECONDS: u64 = 30 * 86_400;
 /// The Lease Recovery limits a Tenant may set (#1009).
 pub const LEASE_RECOVERY_LIMITS: std::ops::RangeInclusive<u32> = 1..=20;
 

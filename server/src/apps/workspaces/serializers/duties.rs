@@ -196,3 +196,10 @@ pub(crate) struct RunNowView {
 pub(crate) struct DeletedView {
 	pub deleted: Uuid,
 }
+
+/// What a webhook request did (#1011).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub(crate) struct DutyEventReceipt {
+	pub event_id: Uuid,
+	pub outcome: aidash_domain::duties::events::EventOutcome,
+}

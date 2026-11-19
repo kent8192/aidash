@@ -1,5 +1,5 @@
 //! Application endpoint registration and access policies.
-use super::views::{channels, duties, management, scratch};
+use super::views::{channels, duties, duty_events, management, scratch};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 
@@ -28,6 +28,17 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::remove)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_events::list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_events::create)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_events::remove)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(duty_events::events)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			// A webhook authenticates by the signature of its body (#1011).
+			.endpoint(duty_events::webhook)
+			.with_route_middleware(AccessBoundary::public())
 			.endpoint(scratch::create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::list)

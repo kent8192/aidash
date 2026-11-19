@@ -330,7 +330,11 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.from(Alias::new("run_activations"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("generation").gt(Expr::value(cursor)))
-			.and_where(Expr::col("reason").like("workspace_task:%"))
+			.cond_where(
+				Condition::any()
+					.add(Expr::col("reason").like("workspace_task:%"))
+					.add(Expr::col("reason").like("duty_event:%")),
+			)
 			.order_by(Alias::new("generation"), Order::Asc)
 			.limit(1)
 			.build(PostgresQueryBuilder);

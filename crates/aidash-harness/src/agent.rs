@@ -3637,7 +3637,7 @@ connection: None,
 							children.open_tasks > children.unassigned.len() as u64
 						};
 						if pending { 3600 } else { 300 }
-					} else { seconds.clamp(1, 3600) };
+					} else { seconds.clamp(1, aidash_domain::run_state::MAX_WAIT_SECONDS as i64) };
 					run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
 						cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
@@ -3871,10 +3871,11 @@ connection: None,
 							}
 						}
 						if let Some(last) = events.last() { run.recovery.workspace_event_cursor = Some(last.generation); }
-						let mut changes = if home.local() { events.iter().map(|event| json!({"task_id":event.task_id,"status":event.status})).collect::<Vec<_>>() } else { Vec::new() };
+						// A booked Duty event comes as data, like every tool result (#1011).
+						let mut changes = if home.local() { events.iter().map(|event| event.duty_event.clone().unwrap_or_else(|| json!({"task_id":event.task_id,"status":event.status}))).collect::<Vec<_>>() } else { Vec::new() };
 						if remote_changed { changes.push(json!({"kind":"terminal_tasks_changed"})); }
 						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
-						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
+						let reason = if input { "input" } else if events.iter().any(|event| event.duty_event.is_some()) { "duty_event" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
 						// Open work somebody is on: the local count leaves out Unassigned Tasks, so the remote one does too.
 						let open_tasks = if let Some(summary) = &remote { summary.open_tasks.saturating_sub(summary.unassigned.len() as u64) } else { store.unfinished_owned_tasks(run).await? };
 						let unassigned_tasks = if matches!(resume, ResumeState::ToolCall(_)) {

@@ -31,4 +31,6 @@ mod scratch_spaces;
 pub use scratch_spaces::{ScratchSpace, ScratchSpaceMember, ScratchSpaceSettings};
 
 mod duties;
-pub use duties::{DutyRecord, DutyTickRecord};
+pub use duties::{
+	DutyBookingRecord, DutyEventRecord, DutyRecord, DutyTickRecord, DutyTriggerRecord,
+};

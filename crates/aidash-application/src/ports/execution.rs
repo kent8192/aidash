@@ -21,6 +21,9 @@ pub struct WorkspaceEvent {
 	pub generation: i64,
 	pub task_id: Uuid,
 	pub status: String,
+	/// A Duty event delivered to this Run, which booked it (#1011): its
+	/// trigger and content, given to the model as data.
+	pub duty_event: Option<serde_json::Value>,
 }
 
 /// The Workspace task changes a waiting Run is told about.
