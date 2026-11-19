@@ -419,7 +419,7 @@ with socket.socket() as listener:
         self.cluster.forward = Mock(return_value="http://127.0.0.1:1")
         with patch("transaction_cluster_acceptance.urllib.request.urlopen", side_effect=ConnectionResetError) as request:
             with self.assertRaises(ConnectionResetError):
-                self.cluster.api(0, "/api/workspaces", {"title": "create once"})
+                self.cluster.api(0, "/api/threads", {"title": "create once"})
         self.assertEqual(request.call_count, 1)
         self.assertEqual(request.call_args.args[0].get_method(), "POST")
 
@@ -486,14 +486,14 @@ class TransactionMemberTests(unittest.TestCase):
 class VisibilityOracleTests(unittest.TestCase):
     def cluster(self, responses):
         cluster = object.__new__(Cluster)
-        # A Deployment Administrator cannot read Workspaces; the member does (#832).
+        # A Deployment Administrator cannot read Threads; the member does (#832).
         cluster.member = Mock(side_effect=responses)
         cluster.inspect = Mock(return_value=[{"revision": 1}])
         return cluster
 
     @staticmethod
     def response(revision):
-        return 200, {"workspace": {"revision": revision}}
+        return 200, {"thread": {"revision": revision}}
 
     def test_rejects_old_response_after_new_on_another_node(self):
         cluster = self.cluster([self.response(1), self.response(0)])
@@ -526,7 +526,7 @@ class VisibilityOracleTests(unittest.TestCase):
 class NativeEvaluationOracleTests(unittest.TestCase):
     def evaluate(self, useful_recall):
         cluster = object.__new__(NativeMemory)
-        cluster.workspace = Mock(return_value=("workspace", None))
+        cluster.thread = Mock(return_value=("thread", None))
         cluster.scale = Mock()
         cluster.entries = [{"research": {"id": "research", "version": "1.0.0"}, "native-memory": {}}]
         cluster.args = Mock(image="test-image")

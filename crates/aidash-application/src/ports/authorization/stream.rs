@@ -10,6 +10,8 @@ pub struct AuthorityRecord {
 	pub revision: i64,
 	pub document: Value,
 	pub owner_subject: Option<String>,
+	/// The Duty whose own Thread the selected Thread is, read with its owner.
+	pub duty_id: Option<Uuid>,
 	pub mapping_id: Option<Uuid>,
 	pub mapping_enabled: Option<bool>,
 	pub issuer: Option<String>,

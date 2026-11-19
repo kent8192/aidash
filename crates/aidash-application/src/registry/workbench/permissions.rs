@@ -95,7 +95,7 @@ pub async fn inspect(
                     tenant: input.tenant.clone(),
                     kind: "thread".into(),
                     id: thread_id.to_string(),
-                    attributes: json!({"owner":owner,"thread_id":thread_id}),
+                    attributes: crate::authorization::threads::attributes(thread_id, &owner),
                 },
                 environment: json!({"thread_id":thread_id,"node_id":repository.node_id(),"transport":"worker"}),
             }).await?;

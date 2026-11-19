@@ -34,15 +34,24 @@ impl AuthorizationThread {
 			.map_err(FrameworkError::from)?)
 	}
 
+	/// The live Thread's owner and, for a Duty's own Thread, its Duty, from one
+	/// statement (#1008). A shared lock covers the authority row only.
 	pub(crate) async fn owner_in(
 		tx: &mut dyn TransactionExecutor,
 		thread: Uuid,
 		tenant: &str,
 		lock: bool,
-	) -> Result<Option<String>> {
+	) -> Result<Option<aidash_application::ports::authorization::threads::ThreadOwner>> {
 		let mut query = Query::select();
 		query
 			.column(Alias::new("owner_subject"))
+			.expr_as(
+				crate::apps::workspaces::repositories::duties::own_duty(
+					Expr::col((Alias::new(Self::table_name()), Alias::new("thread_id"))).into(),
+					Expr::col((Alias::new(Self::table_name()), Alias::new("tenant"))).into(),
+				),
+				Alias::new("duty_id"),
+			)
 			.from(Alias::new(Self::table_name()))
 			.and_where(
 				crate::apps::identity::repositories::nodes::live_thread_condition(
@@ -56,12 +65,15 @@ impl AuthorizationThread {
 			query.lock(LockType::Share);
 		}
 		let (sql, values) = query.build(PostgresQueryBuilder);
-		Ok(tx
-			.fetch_optional(&sql, convert_values(values))
-			.await?
-			.map(|row| row.get("owner_subject"))
-			.transpose()
-			.map_err(FrameworkError::from)?)
+		let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+			return Ok(None);
+		};
+		let owner: String = row.get("owner_subject").map_err(FrameworkError::from)?;
+		// A Thread that is no Duty's own selects NULL here.
+		let duty_id = QueryRow::from_backend_row(row).get::<Uuid>("duty_id");
+		Ok(Some(
+			aidash_application::ports::authorization::threads::ThreadOwner { owner, duty_id },
+		))
 	}
 }
 

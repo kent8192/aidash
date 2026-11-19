@@ -110,3 +110,21 @@ pub trait EndScope: Send {
 		source: aidash_domain::ControlSource,
 	) -> Result<()>;
 }
+
+/// One creating Run's Subnodes, in the one transaction that may end them
+/// because its Agent was disabled or its approval withdrawn (#1012).
+#[async_trait]
+pub trait CreatorRemovalScope: EndScope {
+	/// Locks the Tenant's policy for reading, then the creating Run, its
+	/// active Subnodes and their active Runs (the order an end takes them),
+	/// and returns the creating Agent and the Node address its Subnodes are
+	/// on. `None` when the Run has no active Subnode left.
+	async fn lock_creator(&mut self, creator: Uuid) -> Result<Option<(EntityRef, String)>>;
+	/// The Agent version's Catalog Approval on the Node at `node` (a Node
+	/// address), read under a shared lock: `Some(enabled)`, or `None` when
+	/// the Node has none for it.
+	async fn catalog_enabled(&mut self, node: &str, agent: &EntityRef) -> Result<Option<bool>>;
+	/// Whether the Tenant's policy, as locked by `lock_creator`, names
+	/// `subject` and enables it: `None` when it does not name it.
+	async fn subject_enabled(&mut self, subject: &str) -> Result<Option<bool>>;
+}

@@ -170,8 +170,8 @@ def main():
 
         approval_thread = threading.Thread(target=approve_calls, daemon=True)
         approval_thread.start()
-        goal = api_request(base_a, "/api/conversations", {"title": "Cluster recovery acceptance", "request": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=token)
-        workspace = goal["workspace"]["id"]
+        goal = api_request(base_a, "/api/threads", {"title": "Cluster recovery acceptance", "request": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=token)
+        thread = goal["id"]
         # Poll the fixture independently of subject state reads: those can take
         # longer than the held HTTP result, so kill before looking up the Run.
         wait_for(lambda: api_request(fixture_url, "/status")["remote_effect_started"], timeout=300, label="Actix external effect")
@@ -181,14 +181,14 @@ def main():
         kube("scale", "deployment/ops-a-aidash-worker", "--replicas=3")
         kube("scale", "deployment/ops-a-aidash-server", "--replicas=2")
         print("Killed Node A worker after effect; scaled workers to three and servers to two", flush=True)
-        tasks = api_request(base_a, f"/api/workspaces/{workspace}", token=token)["tasks"]
+        tasks = api_request(base_a, f"/api/threads/{thread}", token=token)["tasks"]
         actix = next(task for task in tasks if task["title"] == "Actix")
         before = latest_task_run(base_a, actix["id"], token)
         assert before is not None, "The Actix task must have a Run"
         reconciled_key = reconcile_uncertain_http(base_a, before["id"], lambda: api_request(fixture_url, "/status")["effects"], token)
 
         def complete():
-            value = api_request(base_a, f"/api/workspaces/{workspace}", token=token)
+            value = api_request(base_a, f"/api/threads/{thread}", token=token)
             return value if len(value["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in value["tasks"]) else False
 
         snapshot = wait_for(complete, timeout=600, label="cluster golden path")
@@ -210,7 +210,7 @@ def main():
         for node, base in zip(["a", "b"], bases):
             identity = wait_for(lambda base=base: api_request(base, "/health"), label="rolled server")
             assert identity["deployment"] == f"aidash://ops-{node}"
-        after = api_request(base_a, f"/api/workspaces/{workspace}", token=token)
+        after = api_request(base_a, f"/api/threads/{thread}", token=token)
         assert {t["id"] for t in after["tasks"]} == {t["id"] for t in snapshot["tasks"]}
         assert {a["id"] for a in after["artifacts"]} == {a["id"] for a in snapshot["artifacts"]}
         observation = api_request(base_a, "/api/deployment")
@@ -231,7 +231,7 @@ def main():
             server_log = kube("logs", f"deployment/ops-{node}-aidash-server", "--all-pods=true")
             assert "activation lease committed" not in server_log, "server role consumed activation"
         image_ids = sorted({c["imageID"] for pod in json.loads(kube("get", "pods", "-o", "json"))["items"] for c in pod.get("status", {}).get("containerStatuses", [])})
-        report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "frontend_image": args.frontend_image, "workspace": workspace, "recovered_run": recovered["id"], "tasks": 4, "artifacts": 4, "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
+        report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "frontend_image": args.frontend_image, "thread": thread, "recovered_run": recovered["id"], "tasks": 4, "artifacts": 4, "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
         report.update({"activation_scopes": activation_scopes, "activation_consumer_survived_replacement": True, "server_did_not_claim": True, "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(), "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "image_ids": image_ids})
         source_manifest = os.environ.get("AIDASH_CLUSTER_SOURCE_MANIFEST")
         if source_manifest:

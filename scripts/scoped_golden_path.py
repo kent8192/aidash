@@ -177,8 +177,8 @@ class Providers:
                         with fixture.lock:
                             fixture.model_calls[scenario] += 1
                         tools = {item.get("call", {}).get("name") for item in context.get("history", []) if item.get("kind") == "tool"}
-                        if "workspace_message" not in tools:
-                            name, arguments = "workspace_message", {"content": "Scoped progress: " + scenario}
+                        if "thread_message" not in tools:
+                            name, arguments = "thread_message", {"content": "Scoped progress: " + scenario}
                         elif "scoped_effect" not in tools:
                             name, arguments = "scoped_effect", {"scenario": scenario}
                         else:
@@ -289,9 +289,9 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             catalog({"id": entry["id"], "version": entry["version"]}, True, 0)
 
         def create_task(title):
-            workspace = api_request(base_a, "/api/workspaces", {"title": title, "request": "Verify scoped remote process recovery"}, token=token)
-            task = api_request(base_a, f"/api/workspaces/{workspace['id']}/tasks", {"title": title, "description": "Use the admitted remote Agent"}, token=token)
-            return workspace, task
+            thread = api_request(base_a, "/api/threads", {"title": title}, token=token)
+            task = api_request(base_a, f"/api/threads/{thread['id']}/tasks", {"title": title, "description": "Use the admitted remote Agent"}, token=token)
+            return thread, task
 
         threading.Thread(target=approve_fixture_calls, daemon=True).start()
 
@@ -304,7 +304,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         assert counts() == initial_counts, "Denied execution created a binding/admission"
 
         for scenario, operation in [("home-message-recovery", "message"), ("home-completion-recovery", "run_message_complete"), ("peer-outage-recovery", "message"), ("revoked-during-worker-stop", "message")]:
-            workspace, task = create_task(scenario)
+            thread, task = create_task(scenario)
             path = f"/api/tasks/{task['id']}/remote-grants"
             grant = str(uuid.uuid4())
             # The grant must outlive both recovery waits and the setup between them.
@@ -325,7 +325,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             # POST with 405.
             peer_headers = {"x-aidash-protocol": "0.5"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, codes=(401, 403, 404, 405), token="not-a-federation-token", headers=peer_headers)
-            denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, codes=(401, 403, 404), token="not-a-federation-token", headers=peer_headers)
+            denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "thread_record", "data": {"kind": "task", "id": rejected_task["id"]}}, codes=(401, 403, 404), token="not-a-federation-token", headers=peer_headers)
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}", token=mapped["token"])["run"]
 
@@ -363,12 +363,12 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 wait_for(lambda: run()["control"] == "PAUSED", timeout=90, label="restarted Worker rejects revoked grant")
                 assert fixture.model_calls[scenario] == before_calls
                 assert not any(effect["scenario"] == scenario for effect in fixture.effects.values())
-                stopped = api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)
+                stopped = api_request(base_a, f"/api/threads/{thread['id']}", token=token)
                 assert not stopped["artifacts"] and stopped["tasks"][0]["status"] != "COMPLETED"
                 denied(base_a, f"{path}/{grant}/control", {"action": "resume"}, token=token)
                 api_request(base_a, f"{path}/{grant}/control", {"action": "cancel"}, token=token)
                 wait_for(lambda: run()["phase"] == "CANCELLED", label="revoked remote run cancellation")
-                assert api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)["tasks"][0]["status"] == "CANCELLED"
+                assert api_request(base_a, f"/api/threads/{thread['id']}", token=token)["tasks"][0]["status"] == "CANCELLED"
             else:
                 try:
                     wait_for(lambda: run()["phase"] == "COMPLETED", timeout=RECOVERY_BUDGET_SECONDS, label=scenario)
@@ -380,7 +380,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                     # A committed message leaves only the tool request and final
                     # response, including when recovery first meets a peer outage.
                     assert fixture.model_calls[scenario] == before_calls + 2, "Message recovery must perform exactly two remaining inferences"
-                snapshot = api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)
+                snapshot = api_request(base_a, f"/api/threads/{thread['id']}", token=token)
                 assert snapshot["tasks"][0]["status"] == "COMPLETED"
                 assert len(snapshot["artifacts"]) == 1 and snapshot["artifacts"][0]["content"] == "Scoped result: " + scenario
                 assert sum(message["content"] == "Scoped progress: " + scenario for message in snapshot["messages"]) == 1
@@ -390,7 +390,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
                 # completion command. Any actual retry must retain its input.
                 assert receipts and len(set(receipts)) == 1, "Recovery changed a committed Home command"
                 assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
-            # The receiver holds no row for the source-owned workspace, so a
+            # The receiver holds no row for the source-owned Thread, so a
             # receiver subject's state never lists this Run, and a Deployment
             # Administrator holds no Tenant content (#484): read the admitted
             # Run by id as the receiver's mapped subject. The admission and Home
@@ -404,7 +404,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
             # Terminal scenarios no longer need an approval poller. Keep the
             # fixture workload bounded to the one execution under observation.
             owned_grants.remove((task["id"], grant))
-            scenarios.append({"scenario": scenario, "task_id": task["id"], "workspace_id": workspace["id"], "grant_id": grant, "admission_id": activated["admission_id"], "run_id": run_id, "worker_pid_before": old_pid, "worker_pid_after": worker.pid, "exit_signal": "SIGKILL", "phase": run()["phase"], "home_command_attempts": len(home.commands[(grant, operation)]), "passed": True})
+            scenarios.append({"scenario": scenario, "task_id": task["id"], "thread_id": thread["id"], "grant_id": grant, "admission_id": activated["admission_id"], "run_id": run_id, "worker_pid_before": old_pid, "worker_pid_after": worker.pid, "exit_signal": "SIGKILL", "phase": run()["phase"], "home_command_attempts": len(home.commands[(grant, operation)]), "passed": True})
             print(f"Scoped Golden Path passed: {scenario} (same Run {run_id}, Worker {old_pid} -> {worker.pid})", flush=True)
 
         final_counts = counts()
@@ -412,7 +412,7 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         assert not home.errors and not receiver.errors and not fixture.errors, (home.errors, receiver.errors, fixture.errors)
         assert not any("/offers" in path for proxy in (home, receiver) for path in proxy.paths), "Scoped work fell back to legacy admission"
         assert receiver.paths["/federation/v0.1/scoped/execution/admissions"] > 0
-        return {"passed": True, "source_tenant": source_tenant, "receiver_tenant": receiver_tenant, "scenarios": scenarios, "admissions": final_counts["admissions"] - initial_counts["admissions"], "home_bindings": final_counts["bindings"] - initial_counts["bindings"], "negative_checks": ["cross_tenant", "cross_workspace", "receiver_dependency_approval", "disabled_agent", "legacy_admission", "revoked_resume"], "subject_credentials_not_forwarded": True}
+        return {"passed": True, "source_tenant": source_tenant, "receiver_tenant": receiver_tenant, "scenarios": scenarios, "admissions": final_counts["admissions"] - initial_counts["admissions"], "home_bindings": final_counts["bindings"] - initial_counts["bindings"], "negative_checks": ["cross_tenant", "cross_thread", "receiver_dependency_approval", "disabled_agent", "legacy_admission", "revoked_resume"], "subject_credentials_not_forwarded": True}
     finally:
         approval_stop.set()
         home.release.set()

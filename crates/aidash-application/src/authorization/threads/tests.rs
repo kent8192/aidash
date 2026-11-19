@@ -15,6 +15,8 @@ struct Scope {
 	inherited: bool,
 	rechecking: Vec<Uuid>,
 	owner: Option<String>,
+	/// The Duty whose own Thread each listed or read Thread is.
+	duties: std::collections::BTreeMap<Uuid, Uuid>,
 	rows: Vec<(Uuid, String)>,
 	run: Option<Run>,
 	run_visible: bool,
@@ -55,7 +57,7 @@ fn run() -> Run {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"thread_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,admitted:false,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None,node:"home-node".into()}
+	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["thread.read"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"thread_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),duties:Default::default(),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,admitted:false,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None,node:"home-node".into()}
 }
 impl Scope {
 	fn touch(&mut self, name: &'static str) -> Result<()> {
@@ -98,31 +100,49 @@ impl ThreadResourceScope for Scope {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		super::super::lease::resource("tenant", &self.context, kind, id, attributes)
 	}
-	async fn owner(&mut self, id: Uuid, lock: bool) -> Result<Option<String>> {
+	async fn owner(&mut self, id: Uuid, lock: bool) -> Result<Option<ThreadOwner>> {
 		self.touch("owner")?;
 		self.owner_lookups.push((id, lock));
-		Ok(self.owner.clone())
+		Ok(self.owner.clone().map(|owner| ThreadOwner {
+			owner,
+			duty_id: self.duties.get(&id).copied(),
+		}))
+	}
+}
+impl Scope {
+	fn owned_rows(&self) -> Vec<(Uuid, ThreadOwner)> {
+		self.rows
+			.iter()
+			.map(|(id, owner)| {
+				(
+					*id,
+					ThreadOwner {
+						owner: owner.clone(),
+						duty_id: self.duties.get(id).copied(),
+					},
+				)
+			})
+			.collect()
 	}
 }
 #[async_trait]
 impl ThreadAuthorityScope for Scope {
-	async fn locked_owner(&mut self, id: Uuid) -> Result<Option<String>> {
+	async fn locked_owner(&mut self, id: Uuid) -> Result<Option<ThreadOwner>> {
 		self.owner(id, true).await
 	}
 	fn identity(&self) -> (&str, &str) {
 		("tenant", "reader")
 	}
-	async fn all_owners(&mut self) -> Result<Vec<(Uuid, String)>> {
+	async fn all_owners(&mut self) -> Result<Vec<(Uuid, ThreadOwner)>> {
 		self.touch("all_owners")?;
-		Ok(self.rows.clone())
+		Ok(self.owned_rows())
 	}
-	async fn event_owners(&mut self, selected: Option<Uuid>) -> Result<Vec<(Uuid, String)>> {
+	async fn event_owners(&mut self, selected: Option<Uuid>) -> Result<Vec<(Uuid, ThreadOwner)>> {
 		self.touch("event_owners")?;
 		Ok(self
-			.rows
-			.iter()
+			.owned_rows()
+			.into_iter()
 			.filter(|(id, _)| selected.is_none_or(|selected| selected == *id))
-			.cloned()
 			.collect())
 	}
 	async fn thread_node(&mut self, _id: Uuid) -> Result<String> {
@@ -518,4 +538,97 @@ async fn a_node_administrator_reads_every_thread_of_their_node(mut scope: Scope)
 		"subjects":{"any":true},"actions":["thread.read"],
 		"resources":{"kinds":["thread"],"ids":[thread]}}]));
 	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());
+}
+
+/// A policy that admits one Duty's Thread by `/duty_id`.
+fn duty_policy(effect: &str, duty: Uuid) -> Value {
+	json!({"id":format!("duty-{effect}"),"effect":effect,"subjects":{"any":true},
+		"actions":["thread.read","thread.events"],"resources":{"kinds":["thread"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/duty_id"},
+			"right":{"source":"literal","value":duty}}})
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_duty_thread_carries_its_duty_and_other_threads_carry_none(mut scope: Scope) {
+	let (duty_thread, duty) = (Uuid::from_u128(1), Uuid::from_u128(70));
+	scope.duties.insert(duty_thread, duty);
+	let read = resource(&mut scope, duty_thread).await.unwrap();
+	assert_eq!(
+		read.attributes,
+		json!({"owner":"stored-owner","thread_id":duty_thread,"duty_id":duty,"created_by":"lease-default"})
+	);
+	// The lease context of a Run in a Duty's Thread never lends that Duty to
+	// another Thread the Run reads.
+	scope.context = json!({"thread_id":duty_thread,"duty_id":duty});
+	let other = resource(&mut scope, Uuid::from_u128(2)).await.unwrap();
+	assert_eq!(
+		other.attributes,
+		json!({"owner":"stored-owner","thread_id":Uuid::from_u128(2)})
+	);
+	assert_eq!(
+		super::attributes(Uuid::from_u128(2), &ThreadOwner::person("someone")),
+		json!({"owner":"someone","thread_id":Uuid::from_u128(2)})
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_duty_condition_answers_the_same_on_a_read_a_list_and_events(mut scope: Scope) {
+	// Arrange: Threads 1 and 3 are Duty 70's and Duty 71's own Threads; the
+	// policy admits Duty 70 only.
+	let (wanted, other) = (Uuid::from_u128(70), Uuid::from_u128(71));
+	scope.duties.insert(Uuid::from_u128(1), wanted);
+	scope.duties.insert(Uuid::from_u128(3), other);
+	scope.snapshot.bundle = bundle(json!([duty_policy("allow", wanted)]));
+	// A Tenant may save such a policy.
+	scope.snapshot.bundle.validate().unwrap();
+	// Act: a list, the event stream's Threads and single reads.
+	let listed = visible(&mut scope, "thread.read").await.unwrap();
+	let streamed = event_threads(&mut scope, None).await.unwrap();
+	let mut read = vec![];
+	for id in [1, 2, 3, 4].map(Uuid::from_u128) {
+		scope.owner = scope
+			.rows
+			.iter()
+			.find(|(row, _)| *row == id)
+			.map(|(_, owner)| owner.clone());
+		if allowed(&mut scope, id, "thread.read").await.unwrap() {
+			read.push(id);
+		}
+	}
+	// Assert: every path admits exactly Duty 70's Thread.
+	assert_eq!(listed, vec![Uuid::from_u128(1)]);
+	assert_eq!(streamed, vec![Uuid::from_u128(1)]);
+	assert_eq!(read, vec![Uuid::from_u128(1)]);
+	// Every recorded thread evaluation carried the Thread's own Duty.
+	for (input, _) in scope
+		.records
+		.iter()
+		.filter(|(input, _)| input.resource.kind == "thread")
+	{
+		let id: Uuid = input.resource.id.parse().unwrap();
+		assert_eq!(
+			input.resource.attributes.get("duty_id"),
+			scope.duties.get(&id).map(|duty| json!(duty)).as_ref(),
+			"{input:?}"
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_policy_denying_a_duty_thread_stops_its_node_administrator(mut scope: Scope) {
+	// Arrange: the reader administers the Node; a policy denies Duty 70's Thread.
+	let (thread, duty) = (Uuid::from_u128(4), Uuid::from_u128(70));
+	scope.duties.insert(thread, duty);
+	let administer = json!({"id":"administer","effect":"allow","subjects":{"ids":["reader"]},
+		"actions":["node.administer"],"resources":{"kinds":["node"],"ids":["home-node"]}});
+	scope.snapshot.bundle = bundle(json!([administer.clone()]));
+	assert!(allowed(&mut scope, thread, "thread.read").await.unwrap());
+	// Act + Assert: the Duty-wide deny wins over the Node, on a read and in a list.
+	scope.snapshot.bundle = bundle(json!([administer, duty_policy("deny", duty)]));
+	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());
+	scope.rows = vec![(thread, "stored-owner".into())];
+	assert!(visible(&mut scope, "thread.read").await.unwrap().is_empty());
 }

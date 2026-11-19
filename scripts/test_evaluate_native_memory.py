@@ -28,6 +28,7 @@ class Home:
         self.banks, self.extracted, self.operations, self.groups, self.admitted = 0, {}, {}, {}, []
 
     def __call__(self, path, body):
+        assert path.startswith("/api/threads/thread/"), path
         if path.endswith("/memory/participants"):
             self.banks += 1
             return 200, {"bank": {"participant": self.banks}}
@@ -73,7 +74,7 @@ class EvaluateNativeMemoryTest(unittest.TestCase):
     def evaluate(self, **options):
         fixture = __import__("tomllib").loads((ROOT / "tests/fixtures/native_memory_evaluation.toml").read_text())
         home = Home(fixture)
-        return MODULE.evaluate(home, "workspace", AGENT, PROVIDER, {"kind": "test"}, **options)
+        return MODULE.evaluate(home, "thread", AGENT, PROVIDER, {"kind": "test"}, **options)
 
     def test_baseline_report_keeps_its_shape_and_gains_delivery_metrics(self):
         report = self.evaluate()
@@ -111,7 +112,7 @@ class EvaluateNativeMemoryTest(unittest.TestCase):
     def test_paired_arms_admit_ids_with_the_same_relative_order_so_score_ties_break_identically(self):
         fixture = __import__("tomllib").loads((ROOT / "tests/fixtures/native_memory_evaluation.toml").read_text())
         home = Home(fixture)
-        MODULE.evaluate(home, "workspace", AGENT, PROVIDER, {"kind": "test"},
+        MODULE.evaluate(home, "thread", AGENT, PROVIDER, {"kind": "test"},
                         diversity={"agent": DIVERSE_AGENT, "provider": DIVERSE_PROVIDER, "profile": {"kind": "diverse"}})
         arms = {provider: [ids for owner, ids in home.admitted if owner == provider] for provider in ("memory", "memory-diverse")}
         self.assertEqual(len(arms["memory"]), len(fixture["diversity_cases"]))

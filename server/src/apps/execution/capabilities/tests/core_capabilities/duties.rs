@@ -289,6 +289,79 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	c.close().await;
 }
 
+/// The `thread` resource names the Duty whose own Thread it is (#1008, ADR
+/// 0140), and every path that reads Threads evaluates the same `duty_id`: a
+/// policy that hides one Duty's Thread by `/duty_id` hides it from a single
+/// read, the Thread list, `/api/state` and the event stream alike, even from
+/// someone who administers its Node; the Thread it was registered from and
+/// another Duty's Thread stay visible.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_policy_on_a_duty_id_answers_the_same_on_a_read_and_in_lists(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: two Duties registered from the fixture's Thread, each with its
+	// own Thread; a policy denies alice, who holds every action (including
+	// `node.administer`), the first Duty's Thread by its `duty_id`.
+	let c = capability_fixture.await;
+	let origin = thread(&c).await;
+	let hidden = register(&c, origin, definition("Hidden digest", 604_800)).await;
+	let hidden: Uuid = serde_json::from_value(hidden["id"].clone()).unwrap();
+	let shown = register(&c, origin, definition("Shown digest", 604_800)).await;
+	let shown: Uuid = serde_json::from_value(shown["id"].clone()).unwrap();
+	let (hidden_thread, shown_thread) =
+		(duty_thread(&c, hidden).await, duty_thread(&c, shown).await);
+	let mut policy = c.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id": "hide-one-duty",
+		"effect": "deny",
+		"subjects": {"ids": ["alice"]},
+		"actions": ["thread.read", "thread.events"],
+		"resources": {"kinds": ["thread"]},
+		"condition": {"op": "eq",
+			"left": {"source": "resource", "path": "/duty_id"},
+			"right": {"source": "literal", "value": hidden}},
+	}));
+	common::replace_policy(&c.f.store, "acme", policy).await;
+	let get = async |path: String| request(&c.app, &c.token, "GET", &path, Value::Null).await;
+	// Act + Assert: a single read.
+	let (status, refused) = get(format!("/api/threads/{hidden_thread}")).await;
+	assert!(status == 403 || status == 404, "{status} {refused}");
+	for visible in [origin, shown_thread] {
+		let (status, snapshot) = get(format!("/api/threads/{visible}")).await;
+		assert_eq!(status, 200, "{snapshot}");
+	}
+	// The Thread list.
+	let (status, page) = get("/api/threads".into()).await;
+	assert_eq!(status, 200, "{page}");
+	let listed: Vec<Value> = page["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|thread| thread["id"].clone())
+		.collect();
+	assert!(!listed.contains(&json!(hidden_thread)), "{page}");
+	assert!(listed.contains(&json!(shown_thread)), "{page}");
+	assert!(listed.contains(&json!(origin)), "{page}");
+	// `/api/state`, whose owner preload reads the Duty in the same statement.
+	let (status, state) = get("/api/state".into()).await;
+	assert_eq!(status, 200, "{state}");
+	let threads: Vec<Value> = state["threads"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|thread| thread["id"].clone())
+		.collect();
+	assert!(!threads.contains(&json!(hidden_thread)), "{state}");
+	assert!(threads.contains(&json!(shown_thread)), "{state}");
+	// The events of the hidden Thread.
+	let (status, events) = get(format!("/api/events?thread_id={hidden_thread}&after=0")).await;
+	assert!(status == 403 || status == 404, "{status} {events}");
+	let (status, events) = get(format!("/api/events?thread_id={shown_thread}&after=0")).await;
+	assert_eq!(status, 200, "{events}");
+	c.close().await;
+}
+
 /// The mode a Duty's Thread holds for the fixture's person, if any.
 async fn thread_mode(c: &CoreFixture, thread: &Value) -> Option<String> {
 	sqlx::query_scalar("SELECT mode FROM identity_thread_approval_modes WHERE thread_id = $1")

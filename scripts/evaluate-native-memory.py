@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluate frozen bilingual labels through the real authorized native memory API.
 
-Creates fresh participants in an explicitly selected fixture Workspace. Input is
+Creates fresh participants in an explicitly selected fixture Thread. Input is
 synthetic; no existing participant is changed. Results contain raw claims, exact
 profile references, request timings and durable charged usage. Regex labels are
 an auditable contract grade, not a human semantic-quality or release approval.
@@ -52,7 +52,7 @@ def compare_diversification(baseline, diversified):
     return {"cases": rows, "by_language": languages}
 
 
-def evaluate(call, workspace, agent, provider, profile, fixture=None, report=None, diversity=None):
+def evaluate(call, thread, agent, provider, profile, fixture=None, report=None, diversity=None):
     """Evaluate the frozen labels. `diversity` ({"agent", "provider", "profile"}) names an Agent whose memory policy is
     identical except for `diversity_lambda_millionths`; the fixture's near-duplicate `diversity_cases` then run on both
     Agents under a two-Unit budget and the report gains a paired `diversification.comparison`."""
@@ -77,7 +77,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             return value
 
         def operate(bank, action, operation_id=None):
-            return api(f"/api/workspaces/{workspace}/memory/operate", {
+            return api(f"/api/threads/{thread}/memory/operate", {
                 "operation_id": operation_id or str(uuid.uuid4()), "provider": provider, "bank": bank, "action": action})
 
         def usage(bank):
@@ -96,7 +96,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
         state["phase"] = case["id"] + ":indexing"
         deadline = time.monotonic() + 90
         while True:
-            entries = api(f"/api/workspaces/{workspace}/semantic/entries")["entries"]
+            entries = api(f"/api/threads/{thread}/semantic/entries")["entries"]
             states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in identities}
             if len(states) == len(identities) and all(value == "READY" for value in states.values()):
                 return
@@ -109,14 +109,14 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
         state, api, operate, _ = helpers(provider, requests)
         for case in labels["diversity_cases"]:
             state["phase"] = case["id"] + ":admission"
-            bank = api(f"/api/workspaces/{workspace}/memory/participants", {"agent": agent})["bank"]
+            bank = api(f"/api/threads/{thread}/memory/participants", {"agent": agent})["bank"]
             # Production breaks equal scores by Unit ID; ascending IDs in fixture order give both arms the same ties.
             identities = sorted(str(uuid.uuid4()) for _ in case["units"])
             changes = [{"operation": "add", "id": identity, "content": {
                 "text": row["text"], "kind": "world", "learning": "fact", "verification": "unverified",
                 "occurred": None, "entities": [], "evidence": [], "links": []}}
                 for identity, row in zip(identities, case["units"], strict=True)]
-            admitted = api(f"/api/workspaces/{workspace}/memory/units/mutate", {
+            admitted = api(f"/api/threads/{thread}/memory/units/mutate", {
                 "operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank, "changes": changes})
             await_index(api, state, case, identities)
             # The pinned utf8_upper_bound tokenizer charges the envelope bytes; size the budget from the live Units.
@@ -137,12 +137,12 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
         state, api, operate, usage = helpers(provider, requests)
         for case in labels["cases"]:
             state["phase"] = case["id"] + ":admission"
-            participant = api(f"/api/workspaces/{workspace}/memory/participants", {"agent": agent})
+            participant = api(f"/api/threads/{thread}/memory/participants", {"agent": agent})
             bank = participant["bank"]
             source = str(uuid.uuid4())
             content = {"text": case["text"], "kind": "world", "learning": "fact", "verification": "unverified",
                        "occurred": None, "entities": [], "evidence": [], "links": []}
-            mutation_path = f"/api/workspaces/{workspace}/memory/units/mutate"
+            mutation_path = f"/api/threads/{thread}/memory/units/mutate"
             admission = api(mutation_path, {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank,
                             "changes": [{"operation": "add", "id": source, "content": content}]})[0]
             evidence = {"kind": "unit", "bank": bank, "id": source, "revision": admission["revision"]}
@@ -166,7 +166,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             state["phase"] = case["id"] + ":indexing"
             deadline = time.monotonic() + 90
             while True:
-                entries = api(f"/api/workspaces/{workspace}/semantic/entries")["entries"]
+                entries = api(f"/api/threads/{thread}/semantic/entries")["entries"]
                 states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in predicted}
                 if len(states) == len(predicted) and all(state == "READY" for state in states.values()):
                     break
@@ -182,7 +182,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             corrected = {**content, "text": "The source was withdrawn for correction / 訂正のため元資料を撤回。"}
             api(mutation_path, {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank,
                 "changes": [{"operation": "correct", "id": source, "expected_revision": admission["revision"], "content": corrected}]})
-            visible = api(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank})["units"]
+            visible = api(f"/api/threads/{thread}/memory/units/query", {"provider": provider, "bank": bank})["units"]
             still_visible = {unit["id"] for unit in visible}.intersection(predicted)
             state["phase"] = case["id"] + ":usage"
             charged = usage(bank)
@@ -216,8 +216,10 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("base-url", "workspace", "agent-id", "agent-version", "provider-id", "provider-version", "server-revision", "output"):
+    for name in ("base-url", "agent-id", "agent-version", "provider-id", "provider-version", "server-revision", "output"):
         parser.add_argument("--" + name, required=True)
+    # docs/memory-evaluation.md passes --workspace, the flag's name before #1008.
+    parser.add_argument("--thread", "--workspace", dest="thread", required=True, help="The fixture Thread's id")
     for name in ("diversity-agent-id", "diversity-agent-version", "diversity-provider-id", "diversity-provider-version"):
         parser.add_argument("--" + name, help="Optional paired arm: an Agent whose memory policy differs only by diversity_lambda_millionths")
     parser.add_argument("--token-env", default="AIDASH_EVALUATION_TOKEN")
@@ -247,7 +249,7 @@ def main():
             diversity = {"agent": {"id": args.diversity_agent_id, "version": args.diversity_agent_version},
                          "provider": {"id": args.diversity_provider_id, "version": args.diversity_provider_version}}
             diversity["profile"] = {**profile, "agent": diversity["agent"], "provider": diversity["provider"]}
-        evaluate(call, args.workspace, profile["agent"], profile["provider"], profile, args.fixture, report, diversity)
+        evaluate(call, args.thread, profile["agent"], profile["provider"], profile, args.fixture, report, diversity)
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
         failure = error
