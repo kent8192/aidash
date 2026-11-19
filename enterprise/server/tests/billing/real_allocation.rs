@@ -898,8 +898,8 @@ impl Dispatch {
 			&d.app,
 			&token,
 			"POST",
-			"/api/workspaces",
-			json!({"title":"Allocation","request":"Exercise real runtime","node":node.node}),
+			"/api/threads",
+			json!({"title":"Allocation","node":node.node}),
 		)
 		.await;
 		assert_eq!(status, 200);
@@ -907,10 +907,7 @@ impl Dispatch {
 			&d.app,
 			&token,
 			"POST",
-			&format!(
-				"/api/workspaces/{}/tasks",
-				workspace["id"].as_str().unwrap()
-			),
+			&format!("/api/threads/{}/tasks", workspace["id"].as_str().unwrap()),
 			json!({"title":"Allocation","description":"Native capability dispatch"}),
 		)
 		.await;
