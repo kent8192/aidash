@@ -5,6 +5,7 @@ import { Alert, Hint, Loading } from "./components/patterns";
 import { apiFetch } from "./transport";
 import {
   flowStopPath,
+  hiddenCount,
   nodeFlows,
   orgChartPath,
   spendText,
@@ -165,6 +166,11 @@ function NodeBranch({
             ))}
           </ul>
         </div>
+      )}
+      {hiddenCount(node) > 0 && (
+        <Hint>
+          {t("orgChartHidden").replace("{count}", String(hiddenCount(node)))}
+        </Hint>
       )}
       {nodeFlows(node).map((flow) => (
         <div key={flow} className="grid gap-1 border-t pt-2">

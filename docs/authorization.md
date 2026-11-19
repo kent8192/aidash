@@ -250,7 +250,11 @@ the decision log. Administration history records the events with actor kind
 an Agent with its root person and creating Task), its Duties (title,
 Requester, Agent, state), its active Subnodes (creating Agent, root person,
 members) and the Root Task of the flow that made each Agent-created item.
-This month's spend from the Budget ledger shows only to someone who may set
+`node.read` alone shows none of the work on a Node: a Duty shows to its
+Requester, its named successor, readers of its Workspace (`workspace.read`) and
+`duty.administer`, as on its own page; an active Subnode to its root person and
+the Node's administrators (`node.administer`). The rest are only counted
+(`hidden_duties`, `hidden_subnodes`). This month's spend from the Budget ledger shows only to someone who may set
 that scope's Budget: `budget.manage` sees every spend, a
 Node's administrator that Node's and its Duties', a Duty's Requester that
 Duty's, and a person their own. A browser session is required, as for Budgets.

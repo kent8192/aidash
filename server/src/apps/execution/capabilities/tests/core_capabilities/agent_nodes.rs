@@ -298,8 +298,8 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	// Arrange: alice's chain creates a Node and sets up a Duty on its own
-	// Node; bob is a member who may read only the default Node and administer
-	// nothing.
+	// Node; bob is a member who may read only the default Node, reads no
+	// Workspace of hers and administers nothing.
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
 	let node = node_tool(
@@ -327,7 +327,12 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		&c,
 		"bob-member",
 		&["bob"],
-		&["node.administer", "budget.manage"],
+		&[
+			"node.administer",
+			"budget.manage",
+			"duty.administer",
+			"workspace.read",
+		],
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id": "bob-not-research",
@@ -368,8 +373,8 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		.unwrap();
 	assert_eq!(home["duties"][0]["title"], "Chart digest");
 	assert_eq!(home["duties"][0]["flow"], json!(c.task));
-	// bob does not see that Node; on the Node he reads he sees alice's
-	// Duty, but no spend.
+	// bob does not see that Node; on the Node he reads, alice's Duty is only
+	// counted, and he sees no spend.
 	assert_eq!(bob_status, 200, "{limited}");
 	let names: Vec<&Value> = limited["nodes"]
 		.as_array()
@@ -384,8 +389,8 @@ async fn the_org_chart_shows_each_person_what_they_may_see(
 		.iter()
 		.find(|entry| entry["name"] == home["name"])
 		.unwrap();
-	assert_eq!(bob_home["duties"][0]["title"], "Chart digest");
-	assert!(bob_home["duties"][0].get("spend").is_none());
+	assert_eq!(bob_home["duties"], json!([]));
+	assert_eq!(bob_home["hidden_duties"], 1);
 	assert!(bob_home.get("spend").is_none());
 	assert_eq!(limited["people"], json!([]));
 	// A Subject Credential reads no org chart.

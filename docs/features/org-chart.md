@@ -33,9 +33,19 @@ Settings → Tenant → **Org chart**, or
 - the Root Task of the flow that made each Agent-created item;
 - this month's spend (UTC), from the Budget ledger.
 
-Everyone holding `node.read` on a Node sees it with its Duties and Subnodes.
+`node.read` on a Node shows the Node itself, not the work on it:
+
+- a **Duty** shows to whoever its own page shows to: its Requester, the
+  successor named to take it over, whoever may read its Workspace
+  (`workspace.read`) and holders of `duty.administer`;
+- an **active Subnode** shows to the root person of the chain that created it
+  and to the Node's administrators (`node.administer`, which Tenant
+  Administrators hold);
+- the rest are only counted (`hidden_duties`, `hidden_subnodes`), so a member
+  sees that other people's work exists without seeing what it is.
+
 Spend follows the Budget rules: it shows only to whoever may set that scope's
-Budget.
+Budget, and only on the Duties the person sees.
 
 | Viewer                                                            | Spend                                       |
 | ----------------------------------------------------------------- | ------------------------------------------- |

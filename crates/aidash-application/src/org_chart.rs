@@ -15,10 +15,34 @@ pub struct Viewer {
 	pub subject: String,
 	/// Nodes the person holds `node.read` on; only these are shown.
 	pub reads: BTreeSet<String>,
-	/// Nodes the person administers (`node.administer`): they see its spend.
+	/// Nodes the person administers (`node.administer`): they see its
+	/// Subnodes and its spend.
 	pub administers: BTreeSet<String>,
+	/// Workspaces the person may read (`workspace.read`): they see the
+	/// Duties that work there, as the Duty list does.
+	pub workspaces: BTreeSet<Uuid>,
+	/// `duty.administer`: every Duty.
+	pub duty_administrator: bool,
 	/// `budget.manage`: every spend.
 	pub budget_manager: bool,
+}
+
+impl Viewer {
+	/// Whether the person sees `duty`, by the rule of a Duty's own page
+	/// (`aidash_application::duties`): its Requester, its named successor,
+	/// whoever may read its Workspace, and `duty.administer`.
+	pub fn sees_duty(&self, duty: &DutyRow) -> bool {
+		duty.requester == self.subject
+			|| duty.successor.as_deref() == Some(self.subject.as_str())
+			|| self.workspaces.contains(&duty.workspace)
+			|| self.duty_administrator
+	}
+
+	/// Whether the person sees `subnode`: the root person of the chain that
+	/// created it, or an administrator of its Node.
+	pub fn sees_subnode(&self, subnode: &SubnodeRow) -> bool {
+		subnode.root_subject == self.subject || self.administers.contains(&subnode.node)
+	}
 }
 
 /// One Node as stored.
@@ -35,6 +59,10 @@ pub struct NodeRow {
 pub struct DutyRow {
 	pub id: Uuid,
 	pub node: String,
+	/// The Workspace it works in, whose readers see it.
+	pub workspace: Uuid,
+	/// The person named to take it over, who sees it too.
+	pub successor: Option<String>,
 	pub title: String,
 	pub requester: String,
 	pub agent: EntityRef,
@@ -119,7 +147,11 @@ pub struct ChartNode {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub flow: Option<Uuid>,
 	pub duties: Vec<ChartDuty>,
+	/// Duties on this Node the person may not see.
+	pub hidden_duties: usize,
 	pub subnodes: Vec<ChartSubnode>,
+	/// Active Subnodes on this Node the person may not see.
+	pub hidden_subnodes: usize,
 	/// Shown only to someone who may see this Node's Budget.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub spend: Option<Spend>,
@@ -168,8 +200,11 @@ impl Rows {
 	}
 }
 
-/// What `viewer` may see of the Tenant. A Node shows, with its Duties and
-/// active Subnodes, to whoever holds `node.read` on it. Spend shows only to
+/// What `viewer` may see of the Tenant. A Node shows to whoever holds
+/// `node.read` on it; `node.read` alone shows none of the work on it. A Duty
+/// shows to whoever its own page shows to ([`Viewer::sees_duty`]) and an
+/// active Subnode to its root person and the Node's administrators
+/// ([`Viewer::sees_subnode`]); the rest are only counted. Spend shows only to
 /// whoever may set that scope's Budget: `budget.manage`, a Node's
 /// administrator, a Duty's Requester and a person for themself.
 pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) -> OrgChart {
@@ -190,7 +225,9 @@ pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) 
 				_ => None,
 			},
 			duties: vec![],
+			hidden_duties: 0,
 			subnodes: vec![],
+			hidden_subnodes: 0,
 			spend: (viewer.budget_manager || administers).then(|| {
 				rows.ledger
 					.nodes
@@ -200,6 +237,10 @@ pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) 
 			}),
 		};
 		for duty in rows.duties.iter().filter(|duty| duty.node == node.name) {
+			if !viewer.sees_duty(duty) {
+				chart.hidden_duties += 1;
+				continue;
+			}
 			let own = duty.requester == viewer.subject;
 			chart.duties.push(ChartDuty {
 				id: duty.id,
@@ -223,6 +264,10 @@ pub fn shape(viewer: &Viewer, rows: Rows, since: chrono::DateTime<chrono::Utc>) 
 			.iter()
 			.filter(|subnode| subnode.node == node.name)
 		{
+			if !viewer.sees_subnode(subnode) {
+				chart.hidden_subnodes += 1;
+				continue;
+			}
 			chart.subnodes.push(ChartSubnode {
 				id: subnode.id,
 				title: subnode.title.clone(),

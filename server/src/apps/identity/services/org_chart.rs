@@ -19,7 +19,7 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 fn framework(error: impl Into<reinhardt::core::exception::Error>) -> crate::Error {
@@ -166,6 +166,47 @@ async fn subnodes(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<Vec<
 		.collect())
 }
 
+/// What a Duty's own page checks for the person (`DutyScope::sees_workspace`
+/// and `administers`): the Workspaces holding Duties that they may read, and
+/// whether they hold `duty.administer`.
+async fn duty_visibility(
+	store: &crate::store::Store,
+	identity: &crate::authorization::identity::SubjectIdentity,
+	tenant: &str,
+) -> Result<(BTreeSet<Uuid>, bool)> {
+	let mut access = crate::authorization::access::Access::begin(store, identity).await?;
+	let result = async {
+		let workspaces: Vec<Uuid> = native::query_scalar(
+			&Query::select()
+				.distinct()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("duties"))
+				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut **access.tx)
+		.await?;
+		let mut readable = BTreeSet::new();
+		for workspace in workspaces {
+			let resource = match access.workspace(workspace).await {
+				Ok(resource) => resource,
+				Err(crate::Error::NotFound(_) | crate::Error::Forbidden) => continue,
+				Err(error) => return Err(error),
+			};
+			if access.decide(&resource, "workspace.read").await? {
+				readable.insert(workspace);
+			}
+		}
+		let resource = access.resource("tenant", tenant, json!({}));
+		let administers = access
+			.decide(&resource, aidash_domain::duties::ADMINISTER)
+			.await?;
+		Ok((readable, administers))
+	}
+	.await;
+	access.finish(result).await
+}
+
 impl TenantAdministrations {
 	/// `GET /api/tenants/{tenant}/org-chart`.
 	pub(crate) async fn org_chart(
@@ -176,6 +217,8 @@ impl TenantAdministrations {
 	) -> Result<OrgChart> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
 		let since = chart::month_start(Utc::now());
+		let (workspaces, duty_administrator) =
+			duty_visibility(&self.runtime.store, &administrator.identity, &tenant).await?;
 		let result = self
 			.runtime
 			.store
@@ -184,6 +227,8 @@ impl TenantAdministrations {
 				let snapshot = administrator.lock(tx, false).await?;
 				let mut viewer = Viewer {
 					subject: administrator.identity.subject.clone(),
+					workspaces,
+					duty_administrator,
 					..Viewer::default()
 				};
 				let live =
@@ -246,6 +291,8 @@ impl TenantAdministrations {
 						Some(DutyRow {
 							id: duty.id,
 							node: nodes.get(&duty.workspace_id)?.clone(),
+							workspace: duty.workspace_id,
+							successor: duty.successor.clone(),
 							state: duty.status().to_owned(),
 							title: duty.definition.title.clone(),
 							requester: duty.requester.clone(),

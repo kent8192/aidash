@@ -38,7 +38,11 @@ export type ChartNode = {
   created_by: NodeCreator;
   flow?: string;
   duties: ChartDuty[];
+  /** Duties here the person may not see. */
+  hidden_duties: number;
   subnodes: ChartSubnode[];
+  /** Active Subnodes here the person may not see. */
+  hidden_subnodes: number;
   spend?: Spend;
 };
 
@@ -104,4 +108,9 @@ export function stopSummary(result: FlowStopped): {
     failed: items.filter((item) => item.outcome === "failed").length,
     nodes: result.nodes.length,
   };
+}
+
+/** How many Duties and Subnodes on a Node act for others and stay hidden. */
+export function hiddenCount(node: ChartNode): number {
+  return node.hidden_duties + node.hidden_subnodes;
 }
