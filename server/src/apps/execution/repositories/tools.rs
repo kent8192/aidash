@@ -169,6 +169,18 @@ impl ToolOperations for Operations {
 		.map_err(Into::into)
 	}
 
+	async fn node(&self, key: &str, operation: &str, input: Value) -> Result<Value> {
+		crate::apps::identity::services::nodes::agent_tool(
+			&self.0.home.federation,
+			&self.0.run,
+			key,
+			operation,
+			input,
+		)
+		.await
+		.map_err(operation_error)
+	}
+
 	async fn connection_person(&self) -> Result<bool> {
 		Ok(
 			crate::apps::identity::repositories::oauth_connections::owner_of_run(

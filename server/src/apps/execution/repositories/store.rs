@@ -4067,7 +4067,7 @@ impl Store {
 	}
 
 	/// Run the cascade in the creator's transaction after locking the creator.
-	async fn subnode_control_in(
+	pub(crate) async fn subnode_control_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
 		creator: Uuid,

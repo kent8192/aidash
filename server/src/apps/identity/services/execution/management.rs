@@ -150,7 +150,7 @@ fn administrator_only() -> Error {
 	)
 }
 
-async fn readable(
+pub(crate) async fn readable(
 	access: &mut Access,
 	id: Uuid,
 	node: &str,

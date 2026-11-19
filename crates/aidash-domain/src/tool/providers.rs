@@ -86,6 +86,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"process_list" | "process_log" | "process_stop" => "core.processes@1",
 		"mcp_stdio" => "core.mcp_stdio@1",
 		"duty_create" | "duty_list" | "duty_update" | "duty_delete" => "core.duties@1",
+		"node_create" | "node_delete" => "core.nodes@1",
 		_ => return None,
 	})
 }
@@ -162,6 +163,7 @@ pub fn research_contract(_operation: ResearchOperation) -> ToolContract {
 			read_only_operation: false,
 			concurrency: Concurrency::Sequential,
 			exposure_update: false,
+			authority_change: false,
 		},
 		disclosure: DisclosureBoundary::External,
 		remote_exposure: false,

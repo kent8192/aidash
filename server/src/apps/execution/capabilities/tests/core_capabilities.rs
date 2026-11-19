@@ -1869,6 +1869,9 @@ mod lifecycle_tests;
 #[path = "core_capabilities/duties.rs"]
 mod duty_tests;
 
+#[path = "core_capabilities/agent_nodes.rs"]
+mod agent_node_tests;
+
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/runtime_faults.rs"]
 mod runtime_fault_tests;
