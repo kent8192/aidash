@@ -22,7 +22,7 @@ import {
   session as getSession,
   suspendedRuns,
   suspendedRunsResume,
-  workspaceGet,
+  threadGet,
 } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
@@ -43,7 +43,7 @@ import {
 import { ConnectionGate } from "./connection-gate";
 import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
-import { RequestWelcome } from "./collaboration/request/welcome";
+import { ThreadDashboard } from "./collaboration/request/dashboard";
 import { Graph } from "./collaboration/graph";
 import { Workbench } from "./workbench";
 const Configuration = lazy(() =>
@@ -52,14 +52,14 @@ const Configuration = lazy(() =>
   })),
 );
 
-import type { TenantState, HumanRequest, Workspace } from "./types";
+import type { TenantState, HumanRequest, Thread } from "./types";
 import { mergeWindow } from "./window-pages";
 import { useWindowPages } from "./use-window-pages";
 
-const noWorkspaces: Workspace[] = [];
+const noThreads: Thread[] = [];
 
-/** One page of a Node's Workspaces beyond the `/api/state` window. */
-async function readWorkspacePage(
+/** One page of a Node's Threads beyond the `/api/state` window. */
+async function readThreadPage(
   node: string | undefined,
   cursor: string,
   signal?: AbortSignal,
@@ -67,8 +67,8 @@ async function readWorkspacePage(
   const params = new URLSearchParams({ cursor });
   if (node) params.set("node", node);
   return (await (
-    await authenticatedFetch(`/api/workspaces?${params}`, { signal })
-  ).json()) as { items: Workspace[]; next_cursor: string | null };
+    await authenticatedFetch(`/api/threads?${params}`, { signal })
+  ).json()) as { items: Thread[]; next_cursor: string | null };
 }
 
 /** One page of a Node's pending Human Requests (`GET /api/human-requests`). */
@@ -503,26 +503,25 @@ function Dashboard({
     enabled: connected && (administratorContext || !remembered.pending),
     refetchInterval: 60_000,
   });
-  // "Show more" pages beyond the Workspace and pending Human Request windows
+  // "Show more" pages beyond the Thread and pending Human Request windows
   // of `/api/state` (#664) belong to one Node: a refresh re-reads them from
   // the fresh window's cursor instead of dropping them, and only a Node
   // change resets them. The pending list is how the dashboard learns that a
   // request was answered (a request leaves it once answered), and a new
-  // Workspace moves the Workspace window's boundary, so each fresh window
+  // Thread moves the Thread window's boundary, so each fresh window
   // re-reads the loaded range rather than keeping pages read after the old
   // boundary.
   const pagesKey = `${context ?? ""}:${remembered.selected?.name ?? ""}`;
   const selectedNode = remembered.selected?.name;
-  const workspacePages = useWindowPages<Workspace>({
+  const threadPages = useWindowPages<Thread>({
     key: pagesKey,
-    windowCursor: state.data?.next_cursors.workspaces ?? null,
+    windowCursor: state.data?.next_cursors.threads ?? null,
     freshAt: state.dataUpdatedAt,
-    readPage: (cursor, signal) =>
-      readWorkspacePage(selectedNode, cursor, signal),
-    none: noWorkspaces,
+    readPage: (cursor, signal) => readThreadPage(selectedNode, cursor, signal),
+    none: noThreads,
   });
-  const olderWorkspaces = workspacePages.older;
-  const workspaceCursor = workspacePages.cursor;
+  const olderThreads = threadPages.older;
+  const threadCursor = threadPages.cursor;
   const humanPages = useWindowPages<HumanRequest>({
     key: pagesKey,
     windowCursor: state.data?.next_cursors.human_requests ?? null,
@@ -538,45 +537,39 @@ function Dashboard({
     if (!fresh) return fresh;
     return {
       ...fresh,
-      workspaces: mergeWindow(fresh.workspaces, olderWorkspaces),
+      threads: mergeWindow(fresh.threads, olderThreads),
       next_cursors: {
         ...fresh.next_cursors,
-        workspaces: workspaceCursor,
+        threads: threadCursor,
         human_requests: humanCursor,
       },
     };
-  }, [
-    state.isError,
-    state.data,
-    olderWorkspaces,
-    workspaceCursor,
-    humanCursor,
-  ]);
-  const selectedWorkspace = useQuery({
-    queryKey: ["workspace", route.channel],
-    queryFn: () => workspaceGet(route.channel),
+  }, [state.isError, state.data, olderThreads, threadCursor, humanCursor]);
+  const selectedThread = useQuery({
+    queryKey: ["thread", route.channel],
+    queryFn: () => threadGet(route.channel),
     enabled: Boolean(
       projected &&
         route.channel &&
-        !projected.workspaces.some((row) => row.id === route.channel),
+        !projected.threads.some((row) => row.id === route.channel),
     ),
   });
   // React Query keeps the last snapshot after a failed re-read (for example
   // 403 once access is withdrawn), so a failed snapshot counts as none: it
-  // must not move the Node or bring the Workspace, its Tasks and Artifacts
+  // must not move the Node or bring the Thread, its Tasks and Artifacts
   // back into State.
-  const selectedSnapshot = selectedWorkspace.isError
+  const selectedSnapshot = selectedThread.isError
     ? undefined
-    : selectedWorkspace.data;
+    : selectedThread.data;
   useEffect(() => {
-    const workspace = selectedSnapshot?.workspace;
+    const thread = selectedSnapshot?.thread;
     if (
-      workspace &&
-      workspace.id === route.channel &&
-      workspace.node !== remembered.selected?.name &&
-      remembered.nodes.some((node) => node.name === workspace.node)
+      thread &&
+      thread.id === route.channel &&
+      thread.node !== remembered.selected?.name &&
+      remembered.nodes.some((node) => node.name === thread.node)
     ) {
-      remembered.select(workspace.node);
+      remembered.select(thread.node);
     }
   }, [selectedSnapshot, route.channel, remembered]);
   const everything = useMemo(() => {
@@ -584,13 +577,13 @@ function Dashboard({
     if (
       !projected ||
       !snapshot ||
-      snapshot.workspace.node !== remembered.selected?.name ||
-      projected.workspaces.some((row) => row.id === snapshot.workspace.id)
+      snapshot.thread.node !== remembered.selected?.name ||
+      projected.threads.some((row) => row.id === snapshot.thread.id)
     )
       return projected;
     return {
       ...projected,
-      workspaces: [...projected.workspaces, snapshot.workspace],
+      threads: [...projected.threads, snapshot.thread],
       tasks: [
         ...new Map(
           [...projected.tasks, ...snapshot.tasks].map((row) => [row.id, row]),
@@ -607,7 +600,7 @@ function Dashboard({
     };
   }, [projected, selectedSnapshot, remembered.selected?.name]);
   const channelNode = route.channel
-    ? everything?.workspaces.find((value) => value.id === route.channel)?.node
+    ? everything?.threads.find((value) => value.id === route.channel)?.node
     : undefined;
   const current =
     remembered.nodes.find((value) => value.name === channelNode) ??
@@ -865,7 +858,7 @@ function Dashboard({
             for (const key of [
               "state",
               "human-request",
-              "workspace",
+              "thread",
               "channel-history",
               "run",
               "marketplace",
@@ -952,12 +945,12 @@ function Dashboard({
           return true;
         }
       }
-      if (selection?.kind === "workspace" || selection?.kind === "goal") {
+      if (selection?.kind === "thread" || selection?.kind === "goal") {
         // A channel renders only once the dashboard state lists it, so the
         // new one is opened after the refresh.
         await client.invalidateQueries();
-        const value = result as { id?: string; workspace?: { id?: string } };
-        const id = value?.workspace?.id ?? value?.id;
+        // Opening a Thread returns the Thread's own fields (#1008).
+        const id = (result as { id?: string })?.id;
         if (id) go("collaboration", { channel: id });
       } else {
         // The request has succeeded, so the dialog closes now and the
@@ -1121,19 +1114,18 @@ function Dashboard({
     );
   const data = nodes.pending ? undefined : nodeState;
   const selectedRef = data
-    ? chooseChannel(data.workspaces, route.channel)
+    ? chooseChannel(data.threads, route.channel)
     : undefined;
-  const workspace =
-    selectedRef &&
-    data?.workspaces.find((value) => value.id === selectedRef.id);
-  const currentChannel = workspace?.id ?? route.channel;
+  const thread =
+    selectedRef && data?.threads.find((value) => value.id === selectedRef.id);
+  const currentChannel = thread?.id ?? route.channel;
   const runs = data
     ? data.runs.map((run) => ({ run, node: data.node.id }))
     : [];
   // The queue includes the selected Node's pending requests.
   const requests = (data?.human_requests ?? []).map((request) => {
-    const owner = everything?.workspaces.find(
-      (value) => value.id === request.workspace_id,
+    const owner = everything?.threads.find(
+      (value) => value.id === request.thread_id,
     );
     const title = owner?.title ?? "";
     return {
@@ -1143,7 +1135,7 @@ function Dashboard({
         current?.address ??
         everything?.deployment.id ??
         "",
-      workspace:
+      thread:
         owner && nodes.nodes.length > 1
           ? `${nodeLabel(nodes.nodes, owner.node)} / ${title}`
           : title,
@@ -1168,25 +1160,25 @@ function Dashboard({
       target.kind === "task"
         ? everything?.tasks.find((task) => task.id === target.id)
         : undefined;
-    let owner = everything?.workspaces.find(
-      (workspace) => workspace.id === target.workspace,
+    let owner = everything?.threads.find(
+      (thread) => thread.id === target.thread,
     );
     if (target.kind === "human" && !item) return;
     if ((!owner && item) || (target.kind === "task" && !task)) {
       const generation = nodeGeneration.current;
       try {
-        const snapshot = await workspaceGet(target.workspace);
+        const snapshot = await threadGet(target.thread);
         if (
           nodeGeneration.current !== generation ||
           client.getQueryState(["state", remembered.selected?.name])
             ?.dataUpdatedAt !== state.dataUpdatedAt
         )
           return;
-        owner = snapshot.workspace;
+        owner = snapshot.thread;
         if (target.kind === "task") {
           task = snapshot.tasks.find((value) => value.id === target.id);
           if (!task) return;
-          client.setQueryData(["workspace", target.workspace], snapshot);
+          client.setQueryData(["thread", target.thread], snapshot);
         }
         client.setQueryData<TenantState>(
           ["state", remembered.selected?.name],
@@ -1194,9 +1186,9 @@ function Dashboard({
             old
               ? {
                   ...old,
-                  workspaces: [
+                  threads: [
                     ...new Map(
-                      [...old.workspaces, snapshot.workspace].map((row) => [
+                      [...old.threads, snapshot.thread].map((row) => [
                         row.id,
                         row,
                       ]),
@@ -1244,11 +1236,11 @@ function Dashboard({
           deploymentAdministrator={deploymentAdministrator}
           streamStatus={administratorContext ? "live" : streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
-          workspaceMore={{
-            available: workspaceCursor !== null,
-            loading: workspacePages.loading,
-            error: workspacePages.error,
-            load: () => void workspacePages.loadMore(),
+          threadMore={{
+            available: threadCursor !== null,
+            loading: threadPages.loading,
+            error: threadPages.error,
+            load: () => void threadPages.loadMore(),
           }}
           humanMore={{
             available: humanCursor !== null,
@@ -1264,7 +1256,7 @@ function Dashboard({
               kind: "human",
               id: request.id,
               node,
-              workspace: request.workspace_id,
+              thread: request.thread_id,
             })
           }
           go={go}
@@ -1276,7 +1268,7 @@ function Dashboard({
           prepareChannel={() =>
             administratorContext
               ? go("collaboration", { channel: "" })
-              : open({ kind: "workspace" })
+              : open({ kind: "thread" })
           }
           theme={theme}
           account={{
@@ -1308,8 +1300,8 @@ function Dashboard({
             chooseContext,
             chooseNode: (name) => {
               nodes.select(name);
-              // The open Workspace belongs to the Node being left.
-              if (workspace && workspace.node !== name)
+              // The open Thread belongs to the Node being left.
+              if (thread && thread.node !== name)
                 go("collaboration", { channel: "" });
             },
             setLocale,
@@ -1379,17 +1371,17 @@ function Dashboard({
                   route.section === "creator") && <AdministratorTenantNotice />}
               {!administratorContext &&
                 route.section === "collaboration" &&
-                (workspace ? (
+                (thread ? (
                   <Channel
-                    key={workspace.id}
-                    workspace={workspace}
+                    key={thread.id}
+                    thread={thread}
                     data={data}
                     discovery={discovery.isError ? undefined : discovery.data}
                     tools={(view) => {
                       void navigate({
                         to: "/$section",
                         params: { section: "collaboration" },
-                        search: { channel: workspace.id, view },
+                        search: { channel: thread.id, view },
                       });
                     }}
                     runs={runs}
@@ -1397,15 +1389,23 @@ function Dashboard({
                     open={open}
                     graph={(focus) =>
                       go("graph", {
-                        channel: workspace.id,
+                        channel: thread.id,
                         focus: focus ?? "",
                       })
                     }
                   />
                 ) : (
-                  <RequestWelcome
+                  <ThreadDashboard
+                    data={data}
                     unavailable={!!route.channel}
                     create={() => open({ kind: "goal" })}
+                    select={(id) => {
+                      void navigate({
+                        to: "/$section",
+                        params: { section: "collaboration" },
+                        search: { channel: id },
+                      });
+                    }}
                   />
                 ))}
               {!administratorContext && route.section === "graph" && (
@@ -1496,7 +1496,7 @@ function Dashboard({
             stateError={state.isError ? state.error.message : undefined}
             nodeId={current?.address ?? ""}
             deploymentAdministrator={deploymentAdministrator}
-            workspace={currentChannel || undefined}
+            thread={currentChannel || undefined}
             close={() => go("collaboration", { focus: "" })}
           />
         )}

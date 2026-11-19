@@ -1,11 +1,9 @@
-export const workspaceCopy = {
+export const threadCopy = {
   "ja-JP": {
-    workspace: "ワークスペース",
+    thread: "スレッド",
     subtitle: "Human × Agent collaboration",
     goalChannels: "ゴール別チャンネル",
     conversations: "エージェントとの会話",
-    threads: "このチャンネルのスレッド",
-    noThreads: "表示中の履歴にスレッドはありません。",
     search: "チャンネル名・ゴールを検索",
     noMatches: "一致するチャンネルはありません。",
     addAgent: "チームにエージェントを追加",
@@ -59,11 +57,11 @@ export const workspaceCopy = {
     uploading: "アップロード中…",
     attachmentError: "添付できませんでした。ファイルは保持しています。",
     attachmentUnreadable:
-      "この Workspace のエージェントはこのファイルを読めません。",
+      "この Thread のエージェントはこのファイルを読めません。",
     attachmentUnreadableAudio:
-      "この Workspace のエージェントはこの音声を読めません。",
+      "この Thread のエージェントはこの音声を読めません。",
     attachmentUnreadableImage:
-      "この Workspace のエージェントはこの画像を読めません。",
+      "この Thread のエージェントはこの画像を読めません。",
     attachmentSendAnyway: "確認して、もう一度送信すると投稿できます。",
     bold: "太字",
     italic: "斜体",
@@ -80,18 +78,16 @@ export const workspaceCopy = {
     taskCounts: "件のタスク完了",
     waiting: "確認待ち",
     noParticipants: "まだ実行エージェントはいません。",
-    settings: "ワークスペース設定",
+    settings: "スレッド設定",
     history: "会話・実行履歴",
     access: "現在のアクセス権限で表示",
     newConversation: "エージェントとの会話を開始",
   },
   "en-US": {
-    workspace: "Workspace",
+    thread: "Thread",
     subtitle: "Human × Agent collaboration",
     goalChannels: "Goal channels",
     conversations: "Agent conversations",
-    threads: "Threads in this channel",
-    noThreads: "No threads in the loaded history.",
     search: "Search channel names and goals",
     noMatches: "No matching channels.",
     addAgent: "Add an agent to your team",
@@ -144,11 +140,11 @@ export const workspaceCopy = {
     },
     uploading: "Uploading…",
     attachmentError: "Upload failed. Your files have been kept.",
-    attachmentUnreadable: "The agents in this Workspace cannot read this file.",
+    attachmentUnreadable: "The agents in this Thread cannot read this file.",
     attachmentUnreadableAudio:
-      "The agents in this Workspace cannot read this audio.",
+      "The agents in this Thread cannot read this audio.",
     attachmentUnreadableImage:
-      "The agents in this Workspace cannot read this image.",
+      "The agents in this Thread cannot read this image.",
     attachmentSendAnyway: "Review the warning and send again to post anyway.",
     bold: "Bold",
     italic: "Italic",
@@ -165,7 +161,7 @@ export const workspaceCopy = {
     taskCounts: "tasks completed",
     waiting: "Awaiting input",
     noParticipants: "No execution agents yet.",
-    settings: "Workspace settings",
+    settings: "Thread settings",
     history: "Conversation and execution history",
     access: "Visible under your current access",
     newConversation: "Start an agent conversation",

@@ -10,7 +10,6 @@ import {
   Play,
   Server,
   Sparkles,
-  Target,
   Wrench,
 } from "lucide-react";
 import type { MeshKind } from "./mesh-model";
@@ -22,8 +21,7 @@ export const floatingToolbar =
 // Reuse the application's existing, consistent stroke icon library.
 const meshIcons = {
   human: CircleUserRound,
-  workspace: FolderKanban,
-  goal: Target,
+  thread: FolderKanban,
   conversation: MessageCircle,
   task: FileText,
   run: Play,

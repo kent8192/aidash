@@ -194,8 +194,8 @@ export const semanticReasons: Record<RemoteSemanticFailure, [string, string]> =
       "埋め込みモデルを利用できません。新しい Agent バージョンを登録してください。",
     ],
     data_protection: [
-      "The embedding model cannot meet this Tenant's Data Protection Level. Switch the Workspace to a model that meets it, then retry.",
-      "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。満たせるモデルに Workspace を切り替えてから再試行してください。",
+      "The embedding model cannot meet this Tenant's Data Protection Level. Switch the Thread to a model that meets it, then retry.",
+      "埋め込みモデルがこの Tenant のデータ保護レベルを満たせません。満たせるモデルに Thread を切り替えてから再試行してください。",
     ],
     context_budget: [
       "Semantic context does not fit the model's available context budget.",

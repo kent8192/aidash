@@ -73,7 +73,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   // The ordinary Subject uses genuine HTTP credentials, not a browser Mapping.
   // These bytes are actually persisted in channel_attachments, not a mock file.
   const store = async (node: string, content: Buffer) => {
-    const created = await request.post("/api/workspaces", {
+    const created = await request.post("/api/threads", {
       headers: subject,
       data: {
         title: `Lifecycle ${node}`,
@@ -82,15 +82,15 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
       },
     });
     expect(created.status()).toBe(200);
-    const workspace: { id: string; node: string } = await created.json();
-    expect(workspace.node).toBe(node);
+    const thread: { id: string; node: string } = await created.json();
+    expect(thread.node).toBe(node);
     const query = new URLSearchParams({
       filename: "lifecycle-evidence.bin",
       media_type: "application/octet-stream",
       idempotency_key: randomUUID(),
     });
     const uploaded = await request.post(
-      `/api/workspaces/${workspace.id}/attachments?${query}`,
+      `/api/threads/${thread.id}/attachments?${query}`,
       {
         headers: { ...subject, "content-type": "application/octet-stream" },
         data: content,
@@ -100,7 +100,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     const attachment: ChannelAttachment = await uploaded.json();
     expect(attachment.size_bytes).toBe(content.byteLength);
     const bound = await request.post(
-      `/api/workspaces/${workspace.id}/thread-messages`,
+      `/api/threads/${thread.id}/channel-messages`,
       {
         headers: subject,
         data: {
@@ -111,11 +111,11 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
       },
     );
     expect(bound.status()).toBe(200);
-    const path = `/api/workspaces/${workspace.id}/attachments/${attachment.id}`;
+    const path = `/api/threads/${thread.id}/attachments/${attachment.id}`;
     const downloaded = await request.get(path, { headers: subject });
     expect(downloaded.status()).toBe(200);
     expect(await downloaded.body()).toEqual(content);
-    return { workspace: workspace.id, path };
+    return { thread: thread.id, path };
   };
   const targetBytes = Buffer.from(
     "Target evidence retained across deletion.\n",
@@ -246,7 +246,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   expect(
     (await request.get(targetData.path, { headers: subject })).status(),
   ).toBe(404);
-  const fallback = await request.post("/api/workspaces", {
+  const fallback = await request.post("/api/threads", {
     headers: subject,
     data: {
       title: "Live default fallback",
@@ -321,11 +321,11 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   await expect(target).toContainText(
     "Logical stored data (shared bytes may be counted more than once): 0 bytes",
   );
-  // Workspace ownership lookup returns Forbidden; attachment download conceals
+  // Thread ownership lookup returns Forbidden; attachment download conceals
   // it as NotFound. The sibling read proves this Subject's authority stays live.
   expect(
     (
-      await request.get(`/api/workspaces/${targetData.workspace}`, {
+      await request.get(`/api/threads/${targetData.thread}`, {
         headers: subject,
       })
     ).status(),
@@ -363,7 +363,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
 // FIXME(#484): needs a Tenant Administrator Mapping (or a host-side Node
 // command) in the live stack to create the second Node.
 test.fixme(
-  "a Workspace created in a second Node belongs to that Node and to no other",
+  "a Thread created in a second Node belongs to that Node and to no other",
   async ({ page, request }) => {
     // A Tenant subject's state can take seconds to refresh (#404).
     test.setTimeout(120000);
@@ -397,7 +397,7 @@ test.fixme(
     await selector.selectOption(second.name);
     await page.keyboard.press("Escape");
 
-    const title = `Second Node workspace ${Date.now()}`;
+    const title = `Second Node thread ${Date.now()}`;
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Prepare a channel" }).click();
     const dialog = page.getByRole("dialog");
@@ -415,23 +415,23 @@ test.fixme(
       const channel = url.searchParams.get("channel");
       return !!channel && channel !== previousChannel;
     });
-    const workspaceId = new URL(page.url()).searchParams.get("channel");
-    expect(workspaceId).toBeTruthy();
+    const threadId = new URL(page.url()).searchParams.get("channel");
+    expect(threadId).toBeTruthy();
 
-    const read = await request.get(`/api/workspaces/${workspaceId}`, {
+    const read = await request.get(`/api/threads/${threadId}`, {
       headers: { authorization: `Bearer ${subject.token}` },
     });
     expect(read.status(), await read.text()).toBe(200);
     expect(
-      ((await read.json()) as { workspace: { node: string; title: string } })
-        .workspace,
+      ((await read.json()) as { thread: { node: string; title: string } })
+        .thread,
     ).toMatchObject({ node: second.name, title });
 
     const listed = () =>
       page
         .getByRole("button", { name: /^Switch request/ })
         .click()
-        .then(() => page.getByRole("navigation", { name: "Workspaces" }));
+        .then(() => page.getByRole("navigation", { name: "Threads" }));
     await expect(await listed()).toContainText(title);
     await page.keyboard.press("Escape");
 

@@ -69,7 +69,7 @@ function fixture() {
         status: "COMPLETED",
         owner: `${nodeAddress}/agents/researcher@1.0.0`,
         created_by: "human",
-        workspace_id: "workspace-1",
+        thread_id: "thread-1",
         revision: 1,
         requirements: {},
       },
@@ -78,7 +78,7 @@ function fixture() {
       {
         id: "run-1",
         node: defaultNode.name,
-        workspace_id: "workspace-1",
+        thread_id: "thread-1",
         home_node: nodeAddress,
         agent_id: "researcher",
         agent_version: "1.0.0",
@@ -92,9 +92,9 @@ function fixture() {
         error: null,
       },
     ],
-    workspaces: [
+    threads: [
       {
-        id: "workspace-1",
+        id: "thread-1",
         node: defaultNode.name,
         title: "Research",
         goal: "Collect evidence",
@@ -107,7 +107,7 @@ function fixture() {
     events: [],
     conversations: [],
     next_cursors: {
-      workspaces: null,
+      threads: null,
       tasks: null,
       runs: null,
       artifacts: null,
@@ -148,9 +148,9 @@ async function setup(page: Page, locale = "en-US") {
               ? { agents: [], errors: [] }
               : path.startsWith("/api/runs/")
                 ? { run: data.runs[0], invocations: [], memory: [] }
-                : path === "/api/workspaces/workspace-1"
+                : path === "/api/threads/thread-1"
                   ? {
-                      workspace: data.workspaces[0],
+                      thread: data.threads[0],
                       tasks: data.tasks,
                       artifacts: [],
                       messages: [],

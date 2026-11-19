@@ -27,9 +27,9 @@ export function fixture(reference = false) {
         ? { schema_version: 1, bindings: [], remove_default: [], ...config }
         : config,
   });
-  const workspaces = [
+  const threads = [
     {
-      id: "workspace-one",
+      id: "thread-one",
       scratch_space_id: "11111111-1111-4111-8111-111111111111",
       node: defaultNode.name,
       title: "Research",
@@ -39,7 +39,7 @@ export function fixture(reference = false) {
       created_at: "2026-09-22T10:00:00Z",
     },
     {
-      id: "workspace-two",
+      id: "thread-two",
       scratch_space_id: "22222222-2222-4222-8222-222222222222",
       node: defaultNode.name,
       title: "Planning",
@@ -49,9 +49,9 @@ export function fixture(reference = false) {
       created_at: "2026-09-22T11:00:00Z",
     },
   ];
-  const tasks = workspaces.map((workspace, index) => ({
+  const tasks = threads.map((thread, index) => ({
     id: `task-${index}`,
-    workspace_id: workspace.id,
+    thread_id: thread.id,
     title: index ? "Plan release" : "Collect evidence",
     description: "Use recorded sources",
     status: "RUNNING",
@@ -61,13 +61,13 @@ export function fixture(reference = false) {
     dependencies: [] as string[],
     parent_id: null,
     revision: 2,
-    created_at: workspace.created_at,
+    created_at: thread.created_at,
   }));
   const runs = tasks.map((task, index) => ({
     id: `run-${index}`,
     node: defaultNode.name,
     task_id: task.id,
-    workspace_id: task.workspace_id,
+    thread_id: task.thread_id,
     home_node: `${deployment.id}/${defaultNode.name}`,
     agent_id: "researcher",
     agent_version: "1.0.0",
@@ -78,8 +78,8 @@ export function fixture(reference = false) {
     state: {
       phase: "THINKING",
       data: {
-        force_workspace_read_compaction: false,
-        deferred_workspace_read: null,
+        force_thread_read_compaction: false,
+        deferred_thread_read: null,
         deferred_skill_read: null,
         deferred_workspace_observation: null,
         selected_media: [],
@@ -104,7 +104,7 @@ export function fixture(reference = false) {
   const data = {
     access: { kind: "deployment_administrator" },
     deployment,
-    workspaces,
+    threads,
     tasks,
     runs,
     registry: [
@@ -119,7 +119,7 @@ export function fixture(reference = false) {
     unconfirmed: [] as Unconfirmed[],
     installations: [],
     next_cursors: {
-      workspaces: null,
+      threads: null,
       tasks: null,
       runs: null,
       artifacts: null,
@@ -129,7 +129,7 @@ export function fixture(reference = false) {
     human_requests: [
       {
         id: "question-one",
-        workspace_id: "workspace-one",
+        thread_id: "thread-one",
         run_id: "run-0",
         kind: "INFORMATION_REQUEST",
         prompt: "Which market should I examine?",
@@ -141,26 +141,26 @@ export function fixture(reference = false) {
     ],
   };
   if (reference) {
-    data.workspaces = [
+    data.threads = [
       {
-        ...workspaces[0],
+        ...threads[0],
         title: "v0.1-release",
         goal: "異なるノードのエージェントで、登録・協調・実行・復旧を一周させる。",
       },
       {
-        ...workspaces[1],
+        ...threads[1],
         title: "docs-improvement",
         goal: "ドキュメントを改善する",
       },
       {
-        ...workspaces[1],
-        id: "workspace-three",
+        ...threads[1],
+        id: "thread-three",
         title: "performance-test",
         goal: "性能を検証する",
       },
       {
-        ...workspaces[1],
-        id: "workspace-four",
+        ...threads[1],
+        id: "thread-four",
         title: "website-launch",
         goal: "ウェブサイトを公開する",
       },
@@ -210,7 +210,7 @@ export function fixture(reference = false) {
     data.artifacts = [
       {
         id: "artifact-one",
-        workspace_id: "workspace-one",
+        thread_id: "thread-one",
         task_id: "task-1",
         name: "release-checklist.md",
         kind: "document",
@@ -232,7 +232,7 @@ export function fixture(reference = false) {
 
 type Message = {
   id: string;
-  workspace_id: string;
+  thread_id: string;
   sender: string;
   content: string;
   idempotency_key: string | null;
@@ -338,7 +338,7 @@ export async function setup(
         node: defaultNode.name,
         node_id: data.deployment.id,
         sequence: index + 1,
-        workspace_id: "workspace-one",
+        thread_id: "thread-one",
       }))
     : [];
   if (options.semanticPause) {
@@ -461,10 +461,10 @@ export async function setup(
   }
   const deadlineEvents: unknown[] = [];
   const messages: Record<string, Message[]> = {
-    "workspace-one": [
+    "thread-one": [
       ...Array.from({ length: options.olderMessages ?? 0 }, (_, index) => ({
         id: `older-${index}`,
-        workspace_id: "workspace-one",
+        thread_id: "thread-one",
         sender: "alice",
         content: `Previous message ${index}`,
         idempotency_key: null,
@@ -472,17 +472,17 @@ export async function setup(
       })),
       {
         id: "message-one",
-        workspace_id: "workspace-one",
+        thread_id: "thread-one",
         sender: "aidash://home/agents/researcher@1.0.0",
         content: "Evidence is ready to review.",
         idempotency_key: null,
         created_at: "2026-09-22T10:11:00Z",
       },
     ],
-    "workspace-two": [],
+    "thread-two": [],
   };
   if (options.referenceLayout) {
-    messages["workspace-one"] = [
+    messages["thread-one"] = [
       [
         "南 健人",
         "v0.1 のリリース準備を進めてください。差分の調査・実装・テストを分担し、\nパッケージを公開する前に、私の承認をお願いします。",
@@ -501,7 +501,7 @@ export async function setup(
       ],
     ].map(([sender, content], index) => ({
       id: index === 1 ? "message-one" : `reference-message-${index}`,
-      workspace_id: "workspace-one",
+      thread_id: "thread-one",
       sender,
       content,
       idempotency_key: null,
@@ -516,7 +516,7 @@ export async function setup(
   let uploadFailures = options.failFirstUpload ? 1 : 0;
   const threads = new Map<
     string,
-    { id: string; workspace_id: string; root_message_id: string }
+    { id: string; thread_id: string; root_message_id: string }
   >();
   const replies = new Map<string, string>();
   const submissions: { path: string; body: Record<string, unknown> }[] = [];
@@ -696,7 +696,7 @@ export async function setup(
           errors: [],
         },
       });
-    if (/^\/api\/workspaces\/[^/]+\/message-history$/.test(path)) {
+    if (/^\/api\/threads\/[^/]+\/message-history$/.test(path)) {
       const id = path.split("/")[3];
       historyRequests += 1;
       if (options.latestMessageChangesOnPoll && historyRequests === 2) {
@@ -738,7 +738,7 @@ export async function setup(
     }
     if (
       (options.messageAttachment || options.referenceLayout) &&
-      path === "/api/workspaces/workspace-one/attachments/attachment-one"
+      path === "/api/threads/thread-one/attachments/attachment-one"
     ) {
       return route.fulfill({
         body: "Source evidence",
@@ -746,7 +746,7 @@ export async function setup(
       });
     }
     if (
-      /^\/api\/workspaces\/[^/]+\/attachments$/.test(path) &&
+      /^\/api\/threads\/[^/]+\/attachments$/.test(path) &&
       request.method() === "POST"
     ) {
       submissions.push({
@@ -774,31 +774,31 @@ export async function setup(
     if (request.method() === "POST") {
       const body = request.postDataJSON();
       submissions.push({ path, body });
-      if (path === "/api/workspaces") {
-        const workspace = {
-          ...data.workspaces[0],
+      if (path === "/api/threads") {
+        const thread = {
+          ...data.threads[0],
           id: "prepared",
           title: body.title,
           goal: body.goal,
         };
-        data.workspaces.push(workspace);
+        data.threads.push(thread);
         messages.prepared = [];
-        return route.fulfill({ json: workspace });
+        return route.fulfill({ json: thread });
       }
-      if (/^\/api\/workspaces\/[^/]+\/threads$/.test(path)) {
+      if (/^\/api\/threads\/[^/]+\/threads$/.test(path)) {
         const id = path.split("/")[3];
         const previous = [...threads.values()].find(
           (thread) => thread.root_message_id === body.root_message_id,
         );
         const thread = previous ?? {
           id: `thread-${body.root_message_id}`,
-          workspace_id: id,
+          thread_id: id,
           root_message_id: body.root_message_id,
         };
         threads.set(thread.id, thread);
         return route.fulfill({ json: thread });
       }
-      if (/^\/api\/workspaces\/[^/]+\/thread-messages$/.test(path)) {
+      if (/^\/api\/threads\/[^/]+\/channel-messages$/.test(path)) {
         if (failures-- > 0)
           return route.fulfill({
             status: 503,
@@ -811,7 +811,7 @@ export async function setup(
         if (!message) {
           message = {
             id: String(body.idempotency_key),
-            workspace_id: id,
+            thread_id: id,
             sender: "alice",
             content: body.content,
             idempotency_key: body.idempotency_key,
@@ -847,14 +847,14 @@ export async function setup(
         return route.fulfill({ json: data.human_requests[0] });
       }
     }
-    const runsWorkspace = path.match(/^\/api\/workspaces\/([^/]+)\/runs$/)?.[1];
-    if (runsWorkspace)
+    const runsThread = path.match(/^\/api\/threads\/([^/]+)\/runs$/)?.[1];
+    if (runsThread)
       return route.fulfill({
         json: {
           items: data.runs
             .filter(
               (run) =>
-                run.workspace_id === runsWorkspace &&
+                run.thread_id === runsThread &&
                 !["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase),
             )
             .map(({ context, ...run }) => ({
@@ -866,24 +866,22 @@ export async function setup(
           next_cursor: null,
         },
       });
-    const workspace = data.workspaces.find(
-      (value) => path === `/api/workspaces/${value.id}`,
+    const thread = data.threads.find(
+      (value) => path === `/api/threads/${value.id}`,
     );
-    if (workspace) {
+    if (thread) {
       if (denyHistory)
         return route.fulfill({ status: 403, json: { error: "forbidden" } });
       return route.fulfill({
         json: {
-          workspace,
-          messages: messages[workspace.id],
-          tasks: data.tasks.filter(
-            (task) => task.workspace_id === workspace.id,
-          ),
+          thread,
+          messages: messages[thread.id],
+          tasks: data.tasks.filter((task) => task.thread_id === thread.id),
           artifacts: data.artifacts.filter(
-            (artifact) => artifact.workspace_id === workspace.id,
+            (artifact) => artifact.thread_id === thread.id,
           ),
           events:
-            workspace.id === "workspace-one"
+            thread.id === "thread-one"
               ? [...referenceEvents, ...deadlineEvents]
               : [],
           ...(options.omitUnconfirmed ? {} : { unconfirmed: data.unconfirmed }),
@@ -946,11 +944,10 @@ export async function setup(
         kind: "human.answered",
         created_at: "2026-09-22T10:20:00Z",
         data: { ...request },
-        node: data.workspaces.find(
-          (workspace) => workspace.id === request.workspace_id,
-        )!.node,
+        node: data.threads.find((thread) => thread.id === request.thread_id)!
+          .node,
         sequence: 100,
-        workspace_id: request.workspace_id,
+        thread_id: request.thread_id,
       });
     },
   };

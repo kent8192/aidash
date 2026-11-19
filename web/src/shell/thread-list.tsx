@@ -7,7 +7,7 @@ import { cn } from "../lib/utils";
 import type { State } from "../types";
 import { useI18n } from "../ui";
 import { shellCopy } from "./copy";
-import { workspaceStatus } from "./workspace-status";
+import { threadStatus } from "./thread-status";
 
 const dotTone = {
   attention: "bg-warning",
@@ -18,8 +18,8 @@ const dotTone = {
   unknown: "border border-faint bg-transparent",
 } as const;
 
-/** Searchable request history: the workspace switcher body on desktop and in the mobile menu. */
-export function WorkspaceList({
+/** Searchable request history: the thread switcher body on desktop and in the mobile menu. */
+export function ThreadList({
   data,
   more,
   current,
@@ -32,7 +32,7 @@ export function WorkspaceList({
   className,
 }: {
   data?: State;
-  /** "Show more" beyond the Workspace window; the pages live with State. */
+  /** "Show more" beyond the Thread window; the pages live with State. */
   more: {
     available: boolean;
     loading: boolean;
@@ -55,8 +55,8 @@ export function WorkspaceList({
     moreRequests: Boolean(data?.next_cursors.human_requests),
   };
   const query = filter.toLocaleLowerCase();
-  const workspaces = (data?.workspaces ?? []).filter((value) =>
-    `${value.title} ${value.goal}`.toLocaleLowerCase().includes(query),
+  const threads = (data?.threads ?? []).filter((value) =>
+    value.title.toLocaleLowerCase().includes(query),
   );
   return (
     <div className={cn("flex min-h-0 flex-col", className)}>
@@ -80,25 +80,25 @@ export function WorkspaceList({
         {copy.recentRequests}
       </p>
       <nav
-        aria-label={copy.workspaces}
+        aria-label={copy.threads}
         className="flex min-h-0 flex-col gap-px overflow-y-auto"
       >
-        {workspaces.map((workspace) => {
-          const { tone, progress, pending, pendingMore } = workspaceStatus(
+        {threads.map((thread) => {
+          const { tone, progress, pending, pendingMore } = threadStatus(
             data?.tasks ?? [],
             data?.human_requests ?? [],
-            workspace.id,
+            thread.id,
             windows,
           );
-          const selected = workspace.id === current;
+          const selected = thread.id === current;
           return (
             <Link
-              key={workspace.id}
+              key={thread.id}
               to="/$section"
               params={{ section: "collaboration" }}
-              search={{ channel: workspace.id }}
+              search={{ channel: thread.id }}
               onClick={navigate}
-              aria-label={`# ${workspace.title}`}
+              aria-label={`# ${thread.title}`}
               aria-current={selected ? "page" : undefined}
               className={cn(
                 "relative grid grid-cols-[8px_minmax(0,1fr)_auto] items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-150 hover:bg-accent",
@@ -118,16 +118,13 @@ export function WorkspaceList({
               <span className="min-w-0">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-mono text-[12.5px] font-medium text-foreground">
-                    {workspace.title}
+                    {thread.title}
                   </span>
                   {pending > 0 && (
                     <span className="shrink-0 rounded-sm bg-warning-soft px-1.5 font-mono text-[11px] leading-[18px] text-warning tabular">
                       {copy.awaiting(pending, pendingMore)}
                     </span>
                   )}
-                </span>
-                <span className="mt-0.5 line-clamp-1 block text-xs text-muted-foreground">
-                  {workspace.goal}
                 </span>
               </span>
               {progress && (
@@ -138,7 +135,7 @@ export function WorkspaceList({
             </Link>
           );
         })}
-        {data && workspaces.length === 0 && (
+        {data && threads.length === 0 && (
           <p className="px-2 py-3 text-xs text-muted-foreground">
             {filter ? copy.noMatch : copy.startFirst}
           </p>

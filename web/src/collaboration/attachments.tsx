@@ -17,14 +17,14 @@ import {
   descriptionTooLong,
   mergeMessagePages,
 } from "./conversation-model";
-import { workspaceCopy } from "./workspace-copy";
+import { threadCopy } from "./thread-copy";
 
 function AttachmentPreview({
-  workspace,
+  thread,
   attachment,
   close,
 }: {
-  workspace: string;
+  thread: string;
   attachment: ChannelAttachment;
   close: () => void;
 }) {
@@ -40,7 +40,7 @@ function AttachmentPreview({
     void (async () => {
       try {
         const response = await authenticatedFetch(
-          getChannelAttachmentDownloadUrl(workspace, attachment.id),
+          getChannelAttachmentDownloadUrl(thread, attachment.id),
           { signal: controller.signal },
         );
         const blob = await response.blob();
@@ -63,7 +63,7 @@ function AttachmentPreview({
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [workspace, attachment.id, attachment.media_type]);
+  }, [thread, attachment.id, attachment.media_type]);
   return (
     <Modal title={attachment.filename} close={close}>
       {content.error ? (
@@ -86,10 +86,10 @@ function AttachmentPreview({
 }
 
 export function AttachmentCard({
-  workspace,
+  thread,
   attachment,
 }: {
-  workspace: string;
+  thread: string;
   attachment: ChannelAttachment;
 }) {
   const { locale } = useI18n();
@@ -106,7 +106,7 @@ export function AttachmentCard({
     setError("");
     try {
       const response = await authenticatedFetch(
-        getChannelAttachmentDownloadUrl(workspace, attachment.id),
+        getChannelAttachmentDownloadUrl(thread, attachment.id),
       );
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement("a");
@@ -156,16 +156,16 @@ export function AttachmentCard({
       </div>
       {attachment.no_assigned_agent_can_read && (
         <p className="mt-1 text-xs text-warning">
-          {attachmentWarningText(attachment.media_type, workspaceCopy[locale])}
+          {attachmentWarningText(attachment.media_type, threadCopy[locale])}
         </p>
       )}
       {attachment.media_type.startsWith("image/") && (
-        <ImageDescription workspace={workspace} attachment={attachment} />
+        <ImageDescription thread={thread} attachment={attachment} />
       )}
       {error && <Alert className="mt-1">{error}</Alert>}
       {preview && (
         <AttachmentPreview
-          workspace={workspace}
+          thread={thread}
           attachment={attachment}
           close={() => setPreview(false)}
         />
@@ -176,14 +176,14 @@ export function AttachmentCard({
 
 /** An image's Image Description and index state; only its writer can save. */
 function ImageDescription({
-  workspace,
+  thread,
   attachment,
 }: {
-  workspace: string;
+  thread: string;
   attachment: ChannelAttachment;
 }) {
   const { locale } = useI18n();
-  const words = workspaceCopy[locale];
+  const words = threadCopy[locale];
   const client = useQueryClient();
   const [editing, setEditing] = useState(false),
     [text, setText] = useState(attachment.description ?? ""),
@@ -199,12 +199,12 @@ function ImageDescription({
     setSaving(true);
     setError("");
     try {
-      await channelAttachmentDescription(workspace, attachment.id, {
+      await channelAttachmentDescription(thread, attachment.id, {
         description: text.trim(),
       });
       setEditing(false);
       await client.invalidateQueries({
-        queryKey: ["channel-history", workspace],
+        queryKey: ["channel-history", thread],
       });
     } catch (reason) {
       setError(
@@ -268,17 +268,17 @@ function ImageDescription({
   );
 }
 
-export function ChannelFiles({ workspace }: { workspace: string }) {
+export function ChannelFiles({ thread }: { thread: string }) {
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
   const title =
     locale === "ja-JP" ? "チャンネルの共有ファイル" : "Shared channel files";
   const query = useInfiniteQuery({
-    queryKey: ["channel-history", workspace, null],
+    queryKey: ["channel-history", thread, null],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       channelMessageHistory(
-        workspace,
+        thread,
         { before: pageParam, limit: 40 },
         { signal },
       ),
@@ -306,7 +306,7 @@ export function ChannelFiles({ workspace }: { workspace: string }) {
           <ul className="grid gap-1.5">
             {files.map((file) => (
               <li key={file.id} className="min-w-0">
-                <AttachmentCard workspace={workspace} attachment={file} />
+                <AttachmentCard thread={thread} attachment={file} />
               </li>
             ))}
           </ul>

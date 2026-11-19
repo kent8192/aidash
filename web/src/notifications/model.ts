@@ -10,7 +10,7 @@ export type NoticeTarget = {
   kind: "human" | "task" | "approval" | "administration" | "duty";
   node: string;
   id: string;
-  workspace: string;
+  thread: string;
 };
 export type NoticeEntry = {
   eventId?: string;
@@ -21,7 +21,7 @@ export type NoticeEntry = {
   signature: string;
   kind: NoticeKind | null;
   detail: string;
-  workspaceTitle: string;
+  threadTitle: string;
   target: NoticeTarget;
   /** When an administration event happened, as an RFC 3339 time. */
   occurredAt?: string;
@@ -157,7 +157,7 @@ export class NoticeStore {
         item.kind === "duty_stopped";
       const newInput = input && !this.announcedInputs.has(entry.key);
       const taskStatusRevision = JSON.stringify([item.id, entry.signature]);
-      // First snapshots, newly granted workspaces and new remote nodes are quiet.
+      // First snapshots, newly granted threads and new remote nodes are quiet.
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
         !this.acknowledged(item) &&

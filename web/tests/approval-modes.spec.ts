@@ -189,7 +189,7 @@ async function approvals(
     return route.fulfill({ status: 204 });
   });
   await page.route(
-    "**/api/workspaces/workspace-one/threads/*/approval-mode",
+    "**/api/threads/thread-one/threads/*/approval-mode",
     (route) => {
       const request = route.request();
       if (request.method() === "PUT") {
@@ -592,7 +592,7 @@ test("a Deployment Administrator has no Approvals section", async ({
 });
 
 async function openThread(page: Page, ja = false) {
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page
     .getByRole("button", {
       name: ja ? "スレッドで返信" : "Reply in thread",
@@ -667,7 +667,7 @@ test("a Deployment Administrator cannot open a Tenant Thread", async ({
   page,
 }) => {
   await setup(page, { administrator: true });
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await expect(
     page.getByText(
       "Tenant content is not available to a Deployment Administrator.",
@@ -749,7 +749,7 @@ test("an approval the person's own Run waits for offers Always allow, with no sc
     pending(),
     pending({ id: "not-yours", allow_always: false }),
   ]);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: /Decisions/ }).click();
   const cards = page
     .getByRole("region", { name: "Approvals awaiting you" })
@@ -781,7 +781,7 @@ test("Allow for this Run still carries its targets and expiry", async ({
 }) => {
   await setup(page, { subject: true });
   const decisions = await inbox(page, [pending()]);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: /Decisions/ }).click();
   const card = page.getByRole("article", { name: "Tool call approval" });
   await card.getByRole("checkbox").check();
@@ -821,7 +821,7 @@ test("Sampling approval shows the server messages and grants only the pinned ser
       },
     }),
   ]);
-  await page.goto("/collaboration?channel=workspace-one");
+  await page.goto("/collaboration?channel=thread-one");
   await page.getByRole("button", { name: /Decisions/ }).click();
   const card = page.getByRole("article", {
     name: "Sampling approval",
@@ -848,7 +848,7 @@ test("Sampling approval shows the server messages and grants only the pinned ser
 async function runApprovals(page: Page, items: unknown[], ja = false) {
   const area = {
     id: "area-one",
-    workspace_id: "workspace-one",
+    thread_id: "thread-one",
     thread_id: "thread-message-one",
     agent_id: "researcher",
     owner: "alice",
@@ -1020,14 +1020,14 @@ test("a Tenant Administrator with approval.read sees a member's mode and rules, 
             key: null,
           },
           registry: [],
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -1470,7 +1470,7 @@ test("Approval Mode and Decider availability follow the selected Node", async ({
       .click();
     await page.getByTestId("node-selector").selectOption(name);
     await page.keyboard.press("Escape");
-    // Leaving a Workspace returns to Request. Reopen the view within the SPA
+    // Leaving a Thread returns to Request. Reopen the view within the SPA
     // so its previous Node's query cache remains part of this regression.
     if (view === "approvals") {
       await page.getByRole("button", { name: "Settings", exact: true }).click();

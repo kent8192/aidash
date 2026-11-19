@@ -12,28 +12,28 @@ import {
   primaryDestinations,
   visibleSettingsSections,
 } from "../src/collaboration/model.ts";
-const workspaces = [
+const threads = [
   { id: "one", title: "First" },
   { id: "two", title: "Second" },
 ];
 const data = {
   nodeId: "aidash://home",
-  workspaces,
+  threads,
   tasks: [
-    { id: "t1", workspace_id: "one", status: "RUNNING" },
-    { id: "t2", workspace_id: "two", status: "COMPLETED" },
+    { id: "t1", thread_id: "one", status: "RUNNING" },
+    { id: "t2", thread_id: "two", status: "COMPLETED" },
   ],
   runs: [
     {
       id: "r1",
-      workspace_id: "one",
+      thread_id: "one",
       task_id: "t1",
       agent_id: "a",
       agent_version: "1",
     },
     {
       id: "r2",
-      workspace_id: "two",
+      thread_id: "two",
       task_id: "t2",
       agent_id: "a",
       agent_version: "1",
@@ -107,11 +107,11 @@ test("undocumented views open their existing contextual owner", () => {
     "schedules",
   ]);
 });
-test("legacy conversation and workspaces routes lead to collaboration", () => {
+test("legacy conversation and threads routes lead to collaboration", () => {
   for (const route of [
     "/overview",
     "/tasks",
-    "/workspaces",
+    "/threads",
     "/conversations",
     "/events",
   ]) {
@@ -152,18 +152,18 @@ test("unrecognized settings section cannot become an arbitrary route", () =>
     "node",
   ));
 test("explicit inaccessible channel does not silently fall back", () =>
-  assert.equal(chooseChannel(workspaces, "private"), undefined));
+  assert.equal(chooseChannel(threads, "private"), undefined));
 test("empty channel selection can choose first available channel", () =>
-  assert.equal(chooseChannel(workspaces, "")?.id, "one"));
+  assert.equal(chooseChannel(threads, "")?.id, "one"));
 test("task node resolves its authorized channel", () =>
   assert.deepEqual(
     relatedChannels({ kind: "task", available: true, resourceId: "t2" }, data),
-    [workspaces[1]],
+    [threads[1]],
   ));
 test("run node resolves its authorized channel", () =>
   assert.deepEqual(
     relatedChannels({ kind: "run", available: true, resourceId: "r1" }, data),
-    [workspaces[0]],
+    [threads[0]],
   ));
 test("reused exact-version agent offers all related channels, current first", () =>
   assert.deepEqual(
@@ -172,7 +172,7 @@ test("reused exact-version agent offers all related channels, current first", ()
       data,
       "two",
     ),
-    [workspaces[1], workspaces[0]],
+    [threads[1], threads[0]],
   ));
 test("a different agent version is not a relationship match", () =>
   assert.deepEqual(
@@ -188,7 +188,7 @@ test("configured tool follows explicit versioned agent references", () =>
       { kind: "tool", available: true, entity: { id: "tool", version: "1" } },
       data,
     ),
-    workspaces,
+    threads,
   ));
 test("missing nodes never expose channel associations", () =>
   assert.deepEqual(
@@ -198,13 +198,13 @@ test("missing nodes never expose channel associations", () =>
     ),
     [],
   ));
-test("channel association never returns inaccessible workspaces", () =>
+test("channel association never returns inaccessible threads", () =>
   assert.deepEqual(
     relatedChannels(
       { kind: "agent", available: true, entity: { id: "a", version: "1" } },
-      { ...data, workspaces: [workspaces[1]] },
+      { ...data, threads: [threads[1]] },
     ),
-    [workspaces[1]],
+    [threads[1]],
   ));
 test("task progress counts work but does not declare goal completion", () =>
   assert.deepEqual(taskProgress(data.tasks, "one"), {
@@ -220,7 +220,7 @@ test("versioned agent IDs and scoped humans get distinct sender labels", () => {
   });
   assert.deepEqual(senderLabel("alice"), { kind: "human", name: "alice" });
 });
-test("remote workspace UUID collisions do not link a local channel", () => {
+test("remote thread UUID collisions do not link a local channel", () => {
   const foreign = {
     ...data,
     runs: data.runs.map((run) => ({ ...run, home_node: "aidash://other" })),
@@ -259,7 +259,7 @@ test("cluster coordinator contributes related channels even without a member ref
       },
       { ...data, registry },
     ),
-    workspaces,
+    threads,
   );
 });
 test("a human display identifier containing an agents path is not an agent identity", () => {

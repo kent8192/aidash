@@ -676,7 +676,7 @@ export function Configuration({
               }
               initiallyOpen={integration === "semantic"}
             >
-              <SemanticPage data={data} workspaceId={channel} />
+              <SemanticPage data={data} threadId={channel} />
             </ToolSection>
           )}
           {section === "registry" &&

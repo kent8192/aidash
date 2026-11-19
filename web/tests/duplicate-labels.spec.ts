@@ -95,7 +95,7 @@ test("semantic sources can page older messages and select remote agents", async 
       },
     }),
   );
-  await page.route("**/api/workspaces/workspace-one/semantic/index", (route) =>
+  await page.route("**/api/threads/thread-one/semantic/index", (route) =>
     route.fulfill({
       json: {
         revision: 1,
@@ -110,48 +110,41 @@ test("semantic sources can page older messages and select remote agents", async 
       },
     }),
   );
-  await page.route(
-    "**/api/workspaces/workspace-one/semantic/entries",
-    (route) => route.fulfill({ json: { entries: [], unconfirmed: [] } }),
+  await page.route("**/api/threads/thread-one/semantic/entries", (route) =>
+    route.fulfill({ json: { entries: [], unconfirmed: [] } }),
   );
-  await page.route(
-    "**/api/workspaces/workspace-one/semantic/history",
-    (route) => route.fulfill({ json: [] }),
+  await page.route("**/api/threads/thread-one/semantic/history", (route) =>
+    route.fulfill({ json: [] }),
   );
-  await page.route(
-    "**/api/workspaces/workspace-one/semantic/cleanup",
-    (route) =>
-      route.fulfill({
-        json: {
-          points: { pending: 0, failed: 0 },
-          collections: { pending: 0, failed: 0 },
-        },
-      }),
+  await page.route("**/api/threads/thread-one/semantic/cleanup", (route) =>
+    route.fulfill({
+      json: {
+        points: { pending: 0, failed: 0 },
+        collections: { pending: 0, failed: 0 },
+      },
+    }),
   );
-  await page.route(
-    "**/api/workspaces/workspace-one/message-history**",
-    (route) => {
-      const older = new URL(route.request().url()).searchParams.has("before");
-      return route.fulfill({
-        json: {
-          messages: [
-            {
-              message: {
-                id: older ? "older-message" : "recent-message",
-                content: older ? "Older evidence" : "Recent evidence",
-                created_at: "2026-09-23T10:00:00Z",
-              },
-              attachments: [],
-              thread_id: null,
-              is_thread_root: false,
+  await page.route("**/api/threads/thread-one/message-history**", (route) => {
+    const older = new URL(route.request().url()).searchParams.has("before");
+    return route.fulfill({
+      json: {
+        messages: [
+          {
+            message: {
+              id: older ? "older-message" : "recent-message",
+              content: older ? "Older evidence" : "Recent evidence",
+              created_at: "2026-09-23T10:00:00Z",
             },
-          ],
-          next_before: older ? null : "cursor",
-          unconfirmed: [],
-        },
-      });
-    },
-  );
+            attachments: [],
+            thread_id: null,
+            is_thread_root: false,
+          },
+        ],
+        next_before: older ? null : "cursor",
+        unconfirmed: [],
+      },
+    });
+  });
   await page.goto("/semantic");
   await page.getByRole("button", { name: "Add or edit source" }).click();
   const dialog = page.getByRole("dialog");

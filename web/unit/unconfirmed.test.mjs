@@ -15,14 +15,14 @@ const locale = (name) =>
 const english = locale("en-US");
 const japanese = locale("ja-JP");
 
-const entry = (node, kind, workspace_id, count) => ({
+const entry = (node, kind, thread_id, count) => ({
   node: `aidash://local/${node}`,
   kind,
-  workspace_id,
+  thread_id,
   count,
 });
 
-test("a list counts only its kind in the Workspaces in view", () => {
+test("a list counts only its kind in the Threads in view", () => {
   const entries = [
     entry("b", "task", "w1", 2),
     entry("b", "artifact", "w1", 5),

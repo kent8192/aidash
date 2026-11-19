@@ -14,26 +14,26 @@ const graphSearch = (page: Page) =>
 async function setup(
   page: Page,
   subject = true,
-  extraWorkspace = false,
+  extraThread = false,
   locale = "en-US",
 ) {
   const scene = meshScene();
-  if (extraWorkspace) {
-    scene.data.workspaces.push({
-      ...scene.data.workspaces[0],
-      id: "other-workspace",
-      title: "Other Workspace",
+  if (extraThread) {
+    scene.data.threads.push({
+      ...scene.data.threads[0],
+      id: "other-thread",
+      title: "Other Thread",
     });
     scene.data.tasks.push({
       ...scene.data.tasks[0],
       id: "other-task",
-      workspace_id: "other-workspace",
+      thread_id: "other-thread",
       title: "Other Task",
     });
     scene.data.events.push({
       ...scene.data.events[0],
-      id: "other-workspace-event",
-      workspace_id: "other-workspace",
+      id: "other-thread-event",
+      thread_id: "other-thread",
       kind: "task.created",
       data: { task_id: "other-task" },
     });
@@ -63,8 +63,8 @@ async function setup(
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/events/stream") return route.abort();
-    // A revoked Workspace is refused, as the server does.
-    if (path === "/api/workspaces/product-lab" && !data.workspaces.length)
+    // A revoked Thread is refused, as the server does.
+    if (path === "/api/threads/product-lab" && !data.threads.length)
       return route.fulfill({ status: 404, json: { error: "not found" } });
     const json =
       path === "/api/session"
@@ -73,9 +73,9 @@ async function setup(
           ? data
           : path === "/api/discover"
             ? scene.discovery
-            : path === "/api/workspaces/product-lab"
+            : path === "/api/threads/product-lab"
               ? {
-                  workspace: data.workspaces[0],
+                  thread: data.threads[0],
                   tasks: data.tasks,
                   artifacts: data.artifacts,
                   events: data.events,
@@ -96,7 +96,7 @@ async function setup(
       data = {
         ...data,
         registry: [],
-        workspaces: [],
+        threads: [],
         tasks: [],
         runs: [],
         artifacts: [],
@@ -107,9 +107,9 @@ async function setup(
   };
 }
 
-test("inspector follows the selected graph workspace", async ({ page }) => {
+test("inspector follows the selected graph thread", async ({ page }) => {
   const { errors } = await setup(page, true, true);
-  await page.getByLabel("Graph workspace").selectOption("other-workspace");
+  await page.getByLabel("Graph thread").selectOption("other-thread");
   await page
     .locator(".mesh-node-label")
     .filter({ hasText: "Other Task" })

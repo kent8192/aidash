@@ -27,7 +27,7 @@ import {
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
-  workspaceGet,
+  threadGet,
   runGet,
   runControl,
   runMessage,
@@ -45,7 +45,7 @@ import type {
   Run,
   State,
   Task,
-  Workspace,
+  Thread,
 } from "../types";
 import {
   Badge,
@@ -59,9 +59,9 @@ import {
 import {
   AssignForm,
   EntityForm,
-  GoalForm,
+  RequestForm,
   TaskForm,
-  WorkspaceForm,
+  ThreadForm,
   type Submit,
 } from "../forms";
 import { GenerationAssignForm } from "../generation";
@@ -76,9 +76,9 @@ import {
   deadlineTime,
 } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
-import { workspaceCopy } from "./workspace-copy";
+import { threadCopy } from "./thread-copy";
 import { InferenceProgress } from "./inference-progress";
-import { abandonable, resumableRun } from "./workspace-model";
+import { abandonable, resumableRun } from "./thread-model";
 import { isLocalRun } from "../node-selection";
 import {
   runMediaAccept,
@@ -90,7 +90,7 @@ export type Selection = {
   kind: string;
   task?: Task;
   entity?: Entry;
-  workspace?: Workspace;
+  thread?: Thread;
   run?: Run;
   request?: HumanRequest;
   artifact?: Artifact;
@@ -130,8 +130,8 @@ export function OperationsDialog({
   const d = selection;
   const [carryNode, setCarryNode] = useState<string>();
   const taskSnapshot = useQuery({
-    queryKey: ["workspace", d.task?.workspace_id],
-    queryFn: () => workspaceGet(d.task!.workspace_id),
+    queryKey: ["thread", d.task?.thread_id],
+    queryFn: () => threadGet(d.task!.thread_id),
     enabled: Boolean(d.task),
     refetchInterval: 2000,
     retry: false,
@@ -169,7 +169,7 @@ export function OperationsDialog({
     data.access.kind === "deployment_administrator";
   const unavailable =
     isDeploymentAdministrator && (d.kind === "entity" || d.kind === "cluster");
-  const execution = ["workspace", "goal", "task", "assign", "human"].includes(
+  const execution = ["thread", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
   const taskRuns = task
@@ -194,12 +194,12 @@ export function OperationsDialog({
   return (
     <Modal
       title={
-        d.kind === "workspace"
+        d.kind === "thread"
           ? copy.prepare
           : t(
               (
                 {
-                  goal: "newGoal",
+                  goal: "newRequest",
                   task: "newTask",
                   taskDetail: "task",
                   entityDetail: "agent",
@@ -259,19 +259,15 @@ export function OperationsDialog({
                     ))}
                 </div>
               ))}
-            {d.kind === "workspace" && (
+            {d.kind === "thread" && (
               <>
                 <Hint>{copy.setupNotice}</Hint>
-                <WorkspaceForm submit={submit} />
+                <ThreadForm submit={submit} />
               </>
             )}
-            {d.kind === "goal" && <GoalForm data={data} submit={submit} />}
+            {d.kind === "goal" && <RequestForm data={data} submit={submit} />}
             {d.kind === "task" && (
-              <TaskForm
-                data={data}
-                workspace={d.workspace?.id}
-                submit={submit}
-              />
+              <TaskForm data={data} thread={d.thread?.id} submit={submit} />
             )}
             {(d.kind === "entity" || d.kind === "cluster") && (
               <EntityForm
@@ -303,7 +299,7 @@ export function OperationsDialog({
             )}
             {d.kind === "run" && d.run && (
               <RunPanel
-                key={`${d.node ?? data.node.id}:${d.run.id}:${d.run.workspace_id}`}
+                key={`${d.node ?? data.node.id}:${d.run.id}:${d.run.thread_id}`}
                 id={d.run.id}
                 node={d.node ?? data.node.id}
                 data={data}
@@ -425,7 +421,7 @@ export function OperationsDialog({
                     <Button
                       variant="outline"
                       type="button"
-                      onClick={() => visitChannel(task.workspace_id)}
+                      onClick={() => visitChannel(task.thread_id)}
                     >
                       {copy.channelLink}
                     </Button>
@@ -526,7 +522,7 @@ export function OperationsDialog({
 }
 
 /**
- * Steps that went without optional Workspace semantic context (ADR 0059). Only a
+ * Steps that went without optional Thread semantic context (ADR 0059). Only a
  * Run local to its executing node degrades, which need not be the viewer's node.
  */
 function OutageWait({ run }: { run: Pick<Run, "state"> }) {
@@ -595,7 +591,7 @@ function RunPanel({
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
-  const fileCopy = workspaceCopy[locale];
+  const fileCopy = threadCopy[locale];
   const agentLabel = useAgentLabel(data, discovery);
   const query = useInfiniteQuery({
     queryKey: ["run", node, id],
@@ -737,7 +733,7 @@ function RunPanel({
             <Button
               variant="ghost"
               type="button"
-              onClick={() => visitChannel(run.workspace_id)}
+              onClick={() => visitChannel(run.thread_id)}
             >
               {copy.channelLink}
             </Button>
@@ -810,16 +806,12 @@ function RunPanel({
                   if (!uploaded) {
                     setUploading(true);
                     uploaded = (
-                      await channelAttachmentUpload(
-                        run.workspace_id,
-                        entry.file,
-                        {
-                          filename: entry.file.name,
-                          media_type:
-                            entry.file.type || "application/octet-stream",
-                          idempotency_key: entry.key,
-                        },
-                      )
+                      await channelAttachmentUpload(run.thread_id, entry.file, {
+                        filename: entry.file.name,
+                        media_type:
+                          entry.file.type || "application/octet-stream",
+                        idempotency_key: entry.key,
+                      })
                     ).id;
                     setFiles((current) =>
                       current.map((file) =>

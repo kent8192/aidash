@@ -1,5 +1,5 @@
 import type { EntityRef, HumanRequest, Task } from "../../types";
-import { terminalRun, type LocatedRun } from "../workspace-model";
+import { terminalRun, type LocatedRun } from "../thread-model";
 
 /** One agent taking part in this request on one execution node. */
 export type Participant = {

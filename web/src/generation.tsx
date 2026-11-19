@@ -1295,7 +1295,7 @@ export function GenerationAssignForm({
       </form>
       <RemoteGenerationAssignForm
         task={task.id}
-        workspace={task.workspace_id}
+        thread={task.thread_id}
         entries={data.registry}
         submit={submit}
       />

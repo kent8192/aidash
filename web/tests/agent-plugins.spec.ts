@@ -47,7 +47,7 @@ const reference = {
     search: {
       remote: {
         url: "https://mcp.example.com/search",
-        headers: [{ name: "X-Workspace", value: "private-header-value" }],
+        headers: [{ name: "X-Thread", value: "private-header-value" }],
       },
     },
   },
@@ -101,14 +101,14 @@ async function dashboard(page: Page, registry: unknown[]) {
             key: null,
           },
           registry,
-          workspaces: [],
+          threads: [],
           tasks: [],
           artifacts: [],
           events: [],
           runs: [],
           conversations: [],
           next_cursors: {
-            workspaces: null,
+            threads: null,
             tasks: null,
             runs: null,
             artifacts: null,
@@ -226,7 +226,7 @@ test.describe("Agent form", () => {
     await expect(importer).toContainText("${PLUGIN_DATA}/cache");
     await expect(importer).toContainText("LEVEL=debug");
     await expect(importer).toContainText("https://mcp.example.com/search");
-    await expect(importer).toContainText("X-Workspace");
+    await expect(importer).toContainText("X-Thread");
     await expect(importer).not.toContainText("private-header-value");
     await expect(importer).toContainText("Skipped (1)");
     await expect(importer).toContainText("unsupported_transport");
@@ -373,7 +373,7 @@ test("Catalog Approval shows the servers an Agent version's plugins admit", asyn
   await expect(plugins).toContainText("--root ${PLUGIN_DATA}");
   await expect(plugins).toContainText("LEVEL=debug");
   await expect(plugins).toContainText("https://mcp.example.com/search");
-  await expect(plugins).toContainText("X-Workspace");
+  await expect(plugins).toContainText("X-Thread");
   await expect(plugins).not.toContainText("private-header-value");
   await expect(plugins).toContainText("sse is not supported");
 });

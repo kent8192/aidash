@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resumableRun } from "../src/collaboration/workspace-model.ts";
+import { resumableRun } from "../src/collaboration/thread-model.ts";
 
 const paused = (semantic_reason) => ({
   phase: "READY",

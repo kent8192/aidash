@@ -49,9 +49,8 @@ import { useForm } from "@tanstack/react-form";
 import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
 import {
-  conversationCreate,
   scratchList,
-  workspaceCreate,
+  threadCreate,
   taskCreate,
   registryCreate,
   personalAgentCreate,
@@ -59,7 +58,7 @@ import {
 } from "./generated/aidash";
 export type Submit = (request: () => Promise<unknown>) => Promise<boolean>;
 /**
- * Where a new Workspace goes: the Node the person works in, unless the Tenant
+ * Where a new Thread goes: the Node the person works in, unless the Tenant
  * has others to choose from. `field` is that choice (absent while there is
  * nothing to choose) and `follow` moves the dashboard to the Node chosen.
  */
@@ -142,7 +141,7 @@ function probabilityBits(value: number): string {
   view.setFloat64(0, value);
   return view.getBigUint64(0).toString(16).padStart(16, "0");
 }
-export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
+export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
   const where = useNodeChoice();
   const [scratchChoice, setScratchChoice] = useState<{
@@ -165,7 +164,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
     ["agent", "cluster"].includes(e.kind),
   );
   const form = useForm({
-    defaultValues: { title: "", goal: "", target: "" },
+    defaultValues: { title: "", request: "", target: "" },
     onSubmit: async ({ value }) => {
       const target = targets.find(
         (e) => `${e.id}@${e.version}` === value.target,
@@ -173,7 +172,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
       if (!target) throw new Error(t("choose"));
       if (
         await submit(() =>
-          conversationCreate({
+          threadCreate({
             ...value,
             target: ref(value.target),
             target_kind: target.kind,
@@ -200,19 +199,19 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
               required
               value={f.state.value}
               onChange={(e) => f.handleChange(e.target.value)}
-              placeholder={t("goalTitle")}
+              placeholder={t("requestTitle")}
             />
           </Field>
         )}
       </form.Field>
-      <form.Field name="goal">
+      <form.Field name="request">
         {(f) => (
-          <Field label={t("goal")}>
+          <Field label={t("request")}>
             <Textarea
               required
               value={f.state.value}
               onChange={(e) => f.handleChange(e.target.value)}
-              placeholder={t("goalPlaceholder")}
+              placeholder={t("requestPlaceholder")}
               rows={5}
             />
           </Field>
@@ -266,14 +265,14 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
             className="justify-self-end"
             type="submit"
           >
-            {t("newGoal")}
+            {t("newRequest")}
           </Button>
         )}
       </form.Subscribe>
     </form>
   );
 }
-export function WorkspaceForm({ submit }: { submit: Submit }) {
+export function ThreadForm({ submit }: { submit: Submit }) {
   const { t } = useI18n();
   const where = useNodeChoice();
   return (
@@ -283,9 +282,8 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
         void submit(() =>
-          workspaceCreate({
+          threadCreate({
             title: String(d.get("title")),
-            goal: String(d.get("goal")),
             node: where.node,
           }),
         ).then((created) => {
@@ -296,9 +294,6 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
       <Field label={t("title")}>
         <Input name="title" required />
       </Field>
-      <Field label={t("goal")}>
-        <Textarea name="goal" rows={4} required />
-      </Field>
       {where.field}
       <Button className="justify-self-end">{t("create")}</Button>
     </form>
@@ -307,16 +302,16 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
 export function TaskForm({
   data,
   submit,
-  workspace,
+  thread,
 }: {
   data: State;
   submit: Submit;
-  workspace?: string;
+  thread?: string;
 }) {
   const { t, locale } = useI18n();
-  const [selectedWorkspace, setSelectedWorkspace] = useState(workspace ?? "");
+  const [selectedThread, setSelectedThread] = useState(thread ?? "");
   const [parent, setParent] = useState("");
-  const pages = useTaskPickerPages(data, selectedWorkspace);
+  const pages = useTaskPickerPages(data, selectedThread);
   const tasks = pages.tasks;
   const ancestors = new Set<string>();
   let ancestor: string | null | undefined = parent;
@@ -340,7 +335,7 @@ export function TaskForm({
           return;
         }
         void submit(() =>
-          taskCreate(String(d.get("workspace")), {
+          taskCreate(String(d.get("thread")), {
             title: String(d.get("title")),
             description: String(d.get("description")),
             requirements,
@@ -350,18 +345,18 @@ export function TaskForm({
         );
       }}
     >
-      <Field label={t("workspace")}>
+      <Field label={t("thread")}>
         <NativeSelect
-          name="workspace"
+          name="thread"
           required
-          value={selectedWorkspace}
+          value={selectedThread}
           onChange={(event) => {
-            setSelectedWorkspace(event.target.value);
+            setSelectedThread(event.target.value);
             setParent("");
           }}
         >
           <option value="">{t("choose")}</option>
-          {data.workspaces.map((w) => (
+          {data.threads.map((w) => (
             <option key={w.id} value={w.id}>
               {w.title}
             </option>
@@ -393,7 +388,7 @@ export function TaskForm({
           className={multiSelectClass}
           name="dependencies"
           multiple
-          key={`${selectedWorkspace}:${parent}`}
+          key={`${selectedThread}:${parent}`}
         >
           {tasks
             .filter((task) => !ancestors.has(task.id))
@@ -404,7 +399,7 @@ export function TaskForm({
             ))}
         </select>
       </Field>
-      {selectedWorkspace && pages.more && (
+      {selectedThread && pages.more && (
         <Button
           type="button"
           variant="outline"
@@ -1255,7 +1250,7 @@ export function AssignForm({
                 </Hint>
                 <HomeNativeMemoryFields
                   key={selected}
-                  workspace={task.workspace_id}
+                  thread={task.thread_id}
                   entries={data.registry}
                   required={nativeRequired}
                 />

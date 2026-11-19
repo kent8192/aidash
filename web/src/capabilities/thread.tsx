@@ -67,7 +67,7 @@ type Recipient = {
   node_id: string;
   agent_id: string;
   agent_version: string;
-  workspace_id: string;
+  thread_id: string;
 };
 function OperationCard({
   run,
@@ -117,7 +117,6 @@ function OperationCard({
           file={file}
           files={area.manifest}
           revision={area.revision}
-          thread={area.workspace_id}
         />
       ))}
       {(query.error || error || value.error) && (
@@ -208,11 +207,11 @@ function FileOperations({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const imageIndex = useQuery({
-    queryKey: ["semantic", area.workspace_id, "entries"],
-    // Shares its cache entry with the Workspace's semantic index view, so it
+    queryKey: ["semantic", area.thread_id, "entries"],
+    // Shares its cache entry with the Thread's semantic index view, so it
     // reads the same shape.
     queryFn: async () => {
-      const list = await semanticEntries(area.workspace_id);
+      const list = await semanticEntries(area.thread_id);
       return { items: list.entries, unconfirmed: list.unconfirmed };
     },
     enabled: area.manifest.some(
@@ -308,7 +307,7 @@ function FileOperations({
     initialPageParam: "",
     queryFn: ({ pageParam, signal }) =>
       apiFetch<{
-        items: (Recipient & { workspace_id?: string })[];
+        items: (Recipient & { thread_id?: string })[];
         next_cursor: string | null;
       }>(
         `/api/file-recipients?node_id=${encodeURIComponent(shareNode)}&run_id=${encodeURIComponent(run)}${pageParam ? `&cursor=${pageParam}` : ""}`,
@@ -514,7 +513,6 @@ function FileOperations({
                           file: f,
                           files: area.manifest,
                           revision: area.revision,
-                          thread: area.workspace_id,
                         })
                       }
                     >
@@ -627,7 +625,7 @@ function FileOperations({
                   .filter(
                     (r) =>
                       shareNode !== sourceAddress ||
-                      (r.workspace_id === area.workspace_id &&
+                      (r.thread_id === area.thread_id &&
                         r.agent_id !== area.agent_id),
                   )
                   .map((r, i) => (
@@ -637,10 +635,10 @@ function FileOperations({
                         node_id: r.node_id,
                         agent_id: r.agent_id,
                         agent_version: r.agent_version,
-                        workspace_id: r.workspace_id,
+                        thread_id: r.thread_id,
                       })}
                     >
-                      {r.agent_id}@{r.agent_version} · {r.workspace_id}
+                      {r.agent_id}@{r.agent_version} · {r.thread_id}
                     </option>
                   ))}
               </NativeSelect>
@@ -864,7 +862,6 @@ function FileOperations({
         area={area.id}
         revision={area.revision}
         files={area.manifest}
-        thread={area.workspace_id}
       />
       <CapabilityApprovals area={area.id} inlineIds={inlineIds} />
       {error && <Alert>{error}</Alert>}
@@ -872,11 +869,11 @@ function FileOperations({
   );
 }
 export function ThreadCapabilities({
-  workspace,
+  thread,
   data,
   onDeleted,
 }: {
-  workspace: string;
+  thread: string;
   data: State;
   onDeleted: () => void;
 }) {
@@ -897,14 +894,14 @@ export function ThreadCapabilities({
     undefined,
   );
   const query = useQuery({
-    queryKey: ["core-areas", workspace],
+    queryKey: ["core-areas", thread],
     queryFn: async ({ signal }) => {
       const items: Area[] = [];
       let cursor: string | null = null;
       do {
         const page: { items: Area[]; next_cursor: string | null } =
           await apiFetch(
-            `/api/working-areas?workspace_id=${workspace}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+            `/api/working-areas?thread_id=${thread}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
             { signal },
           );
         items.push(...page.items);
@@ -1127,7 +1124,7 @@ export function ThreadCapabilities({
                 });
               } else if (target)
                 await enqueueRun(
-                  `/workspaces/${workspace}/agents/${encodeURIComponent(target.id)}/runs`,
+                  `/threads/${thread}/agents/${encodeURIComponent(target.id)}/runs`,
                   {
                     agent_version: target.version,
                     title: prompt.slice(0, 80),
@@ -1224,7 +1221,7 @@ export function ThreadCapabilities({
         />
       )}
       <ThreadDeletion
-        workspace={workspace}
+        thread={thread}
         areas={query.data?.items ?? []}
         loaded={query.isSuccess}
         onDeleted={onDeleted}
@@ -1243,7 +1240,7 @@ export function ThreadCapabilities({
               ? "作業が終了しました。ファイルは保持されています。設定で復元可能な整理を選べます。"
               : "Work has ended. Files are retained; recoverable cleanup is available in settings."}{" "}
             <a
-              href={`/settings?view=workingFiles&channel=${encodeURIComponent(workspace)}`}
+              href={`/settings?view=workingFiles&channel=${encodeURIComponent(thread)}`}
             >
               {ja ? "作業ファイルの設定" : "Working file settings"}
             </a>
@@ -1255,12 +1252,12 @@ export function ThreadCapabilities({
 }
 
 function ThreadDeletion({
-  workspace,
+  thread,
   areas,
   loaded,
   onDeleted,
 }: {
-  workspace: string;
+  thread: string;
   areas: Area[];
   loaded: boolean;
   onDeleted: () => void;
@@ -1364,7 +1361,7 @@ function ThreadDeletion({
               setBusy(true);
               setError("");
               try {
-                await post(`/workspaces/${workspace}/delete`, {
+                await post(`/threads/${thread}/delete`, {
                   idempotency_key: crypto.randomUUID(),
                   files: areas.map((a) => ({
                     area_id: a.id,

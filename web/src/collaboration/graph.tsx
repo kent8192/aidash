@@ -60,7 +60,7 @@ import {
   type MeshNode,
   type MeshRelation,
 } from "./mesh-model";
-import { workspaceGraph } from "./graph-regions";
+import { threadGraph } from "./graph-regions";
 import { MeshInspector } from "./mesh-inspector";
 import type { MeshLayout } from "./mesh-canvas";
 import type { Selection } from "./details";
@@ -73,7 +73,6 @@ const Neighborhood = lazy(() =>
 );
 const supportedRelations = [
   "contains",
-  "goal",
   "depends",
   "produces",
   "executes",
@@ -133,7 +132,7 @@ export function Graph({
   const [expansions, setExpansions] = useState<Record<string, RemoteExpansion>>(
     {},
   );
-  const [graphWorkspace, setGraphWorkspace] = useState(channel);
+  const [graphThread, setGraphThread] = useState(channel);
   const [refreshTick, setRefreshTick] = useState(0);
   const requests = useRef(new Map<string, number>());
   const expansionsRef = useRef(expansions);
@@ -141,7 +140,7 @@ export function Graph({
     expansionsRef.current = expansions;
   }, [expansions]);
   useEffect(() => {
-    setGraphWorkspace(channel);
+    setGraphThread(channel);
   }, [channel]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -149,7 +148,7 @@ export function Graph({
   }, []);
   const graphMode = mode === "neighborhood" ? "mesh" : mode;
   const expandedKey = Object.keys(expansions).sort().join("\u0000");
-  const scope = JSON.stringify([graphWorkspace, hours, sendingNode]);
+  const scope = JSON.stringify([graphThread, hours, sendingNode]);
   useEffect(() => {
     setExpansions((previous) => {
       if (Object.values(previous).every((value) => value.scope === scope))
@@ -251,9 +250,9 @@ export function Graph({
         const options = {
           node_id: peer,
           sending_node: sendingNode ?? null,
-          scope_workspace: graphWorkspace || null,
+          scope_thread: graphThread || null,
           depth: 1 as const,
-          // Workspace relevance must not disappear when a perspective hides
+          // Thread relevance must not disappear when a perspective hides
           // Runs or the viewer turns off a display-only resource filter.
           mode: "mesh" as const,
           kinds: projectionKinds,
@@ -305,7 +304,7 @@ export function Graph({
         );
       }
     },
-    [graphWorkspace, hours, sendingNode],
+    [graphThread, hours, sendingNode],
   );
   useEffect(() => {
     if (mode === "neighborhood" || document.hidden) return;
@@ -367,7 +366,7 @@ export function Graph({
     () =>
       mergeGraphPages(
         buildMeshGraph(data, {
-          channel: graphWorkspace,
+          channel: graphThread,
           runs,
           authorizedPeers: peerIds,
           hours,
@@ -377,11 +376,11 @@ export function Graph({
         pages,
         runs,
       ),
-    [data, graphWorkspace, runs, peerIds, pages, hours, now],
+    [data, graphThread, runs, peerIds, pages, hours, now],
   );
   const full = useMemo(
-    () => workspaceGraph(merged, data.node.id, graphWorkspace, data),
-    [merged, data, graphWorkspace],
+    () => threadGraph(merged, data.node.id, graphThread, data),
+    [merged, data, graphThread],
   );
   useEffect(() => {
     const stillVisible = (id: string) => {
@@ -469,7 +468,7 @@ export function Graph({
             n.kind ===
               {
                 mesh: "agent",
-                collaboration: "workspace",
+                collaboration: "thread",
                 knowledge: "artifact",
                 execution: "task",
                 topology: "cluster",
@@ -477,7 +476,7 @@ export function Graph({
             !n.remote &&
             n.available,
         ) ??
-        graph.nodes.find((n) => n.kind === "workspace") ??
+        graph.nodes.find((n) => n.kind === "thread") ??
         graph.nodes[0])
       : undefined);
   const select = (id: string) => {
@@ -542,20 +541,20 @@ export function Graph({
     setSelectedId("");
     setClosed(false);
   };
-  // The mesh workspace is context; conversations and model/skill controls live
+  // The mesh thread is context; conversations and model/skill controls live
   // in their dedicated perspectives so the legend leaves room for the tools.
   const shownKinds =
     graphMode === "mesh"
       ? modeKinds.mesh.filter(
           (kind) =>
-            !["workspace", "conversation", "model", "skill"].includes(kind),
+            !["thread", "conversation", "model", "skill"].includes(kind),
         )
       : modeKinds[graphMode];
   const relationTypes = [...new Set(full.edges.map((e) => e.relation))];
   const localEvents = data.events
     .filter(
       (e) =>
-        (!graphWorkspace || e.workspace_id === graphWorkspace) &&
+        (!graphThread || e.thread_id === graphThread) &&
         inWindow(e.created_at, hours, now),
     )
     .map((event) => {
@@ -590,7 +589,7 @@ export function Graph({
     task: localLanes.get(event.id)?.task,
   }));
   const tasks = data.tasks.filter(
-    (task) => !graphWorkspace || task.workspace_id === graphWorkspace,
+    (task) => !graphThread || task.thread_id === graphThread,
   );
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -971,18 +970,18 @@ export function Graph({
                     </label>
                     {perspective}
                     <NativeSelect
-                      aria-label={copy.workspaceScope}
-                      value={graphWorkspace}
+                      aria-label={copy.threadScope}
+                      value={graphThread}
                       onChange={(event) => {
-                        setGraphWorkspace(event.target.value);
+                        setGraphThread(event.target.value);
                         setSelectedId("");
                         setFocused("");
                       }}
                     >
-                      <option value="">{copy.allWorkspaces}</option>
-                      {data.workspaces.map((workspace) => (
-                        <option key={workspace.id} value={workspace.id}>
-                          {workspace.title}
+                      <option value="">{copy.allThreads}</option>
+                      {data.threads.map((thread) => (
+                        <option key={thread.id} value={thread.id}>
+                          {thread.title}
                         </option>
                       ))}
                     </NativeSelect>
@@ -1194,7 +1193,7 @@ export function Graph({
                 runs={runs}
                 hours={hours}
                 now={now}
-                channel={graphWorkspace}
+                channel={graphThread}
                 copy={copy}
                 label={label}
                 status={status}
@@ -1214,8 +1213,7 @@ export function Graph({
             <ExecutionLanes
               tasks={tasks}
               runs={runs.filter(
-                ({ run }) =>
-                  !graphWorkspace || run.workspace_id === graphWorkspace,
+                ({ run }) => !graphThread || run.thread_id === graphThread,
               )}
               events={laneEvents}
               nodes={full.nodes}

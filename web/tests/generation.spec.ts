@@ -47,7 +47,7 @@ async function createGenerationScenario(
       return;
     }
     semanticContexts.push(
-      JSON.parse(input.messages[1].content).current.semantic_memory.workspace,
+      JSON.parse(input.messages[1].content).current.semantic_memory.thread,
     );
     res.end(
       JSON.stringify({
@@ -219,12 +219,12 @@ async function createGenerationScenario(
     const navigate = async (label: string) => {
       if (label === "タスク") {
         await page.goto(
-          `/collaboration?channel=${encodeURIComponent(workspace.id)}`,
+          `/collaboration?channel=${encodeURIComponent(thread.id)}`,
         );
         await page
           .getByRole("button", { name: "タスクと成果物", exact: true })
           .click();
-      } else if (label === "ワークスペース") {
+      } else if (label === "スレッド") {
         await page.goto("/collaboration");
       } else {
         await page.goto(
@@ -360,7 +360,7 @@ async function createGenerationScenario(
     ).toHaveValue("2");
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    await navigate("ワークスペース");
+    await navigate("スレッド");
     await page.getByRole("button", { name: "設定", exact: true }).click();
     await page
       .getByRole("button", { name: "準備用チャンネル", exact: true })
@@ -372,11 +372,9 @@ async function createGenerationScenario(
     await dialog.getByRole("button", { name: "作成", exact: true }).click();
     // The dialog closes once the refreshed state lists the new channel (#404).
     await expect(dialog).toHaveCount(0, { timeout: 30000 });
-    const { workspaces } = await api("/api/state", undefined, credential.token);
-    const workspace = workspaces.find(
-      (item: { title: string }) => item.title === id,
-    );
-    semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
+    const { threads } = await api("/api/state", undefined, credential.token);
+    const thread = threads.find((item: { title: string }) => item.title === id);
+    semanticRoot = `/api/threads/${thread.id}/semantic`;
     semanticIndex = await api(
       `${semanticRoot}/index`,
       {
@@ -421,7 +419,7 @@ async function createGenerationScenario(
         .getByRole("button", { name: "タスクを追加", exact: true })
         .click();
       await dialog
-        .getByLabel("ワークスペース", { exact: true })
+        .getByLabel("スレッド", { exact: true })
         .selectOption({ label: id });
       await dialog.getByLabel("タイトル", { exact: true }).fill(title);
       await dialog

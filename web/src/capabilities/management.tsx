@@ -18,7 +18,7 @@ import { OriginalReferences } from "./configuration";
 import { AgentCapabilities } from "./agent";
 type Managed = {
   area_id: string;
-  workspace_id: string;
+  thread_id: string;
   agent_id: string;
   owner: string;
   state: string;
@@ -63,7 +63,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
         {(area.bytes / 1024).toFixed(1)} KiB · {area.state}
       </p>
       <Hint>
-        {ja ? "スレッド" : "Thread"}: {area.workspace_id} ·{" "}
+        {ja ? "スレッド" : "Thread"}: {area.thread_id} ·{" "}
         {ja ? "所有者" : "Owner"}: {area.owner}
       </Hint>
       {area.recovery_expires_at && (
@@ -201,13 +201,11 @@ export function AreaLifecycle({ area }: { area: Managed }) {
     </article>
   );
 }
-export function WorkingFileSettings({
-  workspace,
-}: { workspace?: string } = {}) {
+export function WorkingFileSettings({ thread }: { thread?: string } = {}) {
   const headingId = useId();
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const [allWorkspaces, setAllWorkspaces] = useState(false);
+  const [allThreads, setAllThreads] = useState(false);
   const query = useInfiniteQuery({
     queryKey: ["core-managed"],
     initialPageParam: "",
@@ -221,10 +219,10 @@ export function WorkingFileSettings({
     retry: false,
   });
   const areas = (query.data?.pages.flatMap((page) => page.items) ?? []).filter(
-    (area) => allWorkspaces || !workspace || area.workspace_id === workspace,
+    (area) => allThreads || !thread || area.thread_id === thread,
   );
   const searching = Boolean(
-    workspace && !allWorkspaces && areas.length === 0 && query.hasNextPage,
+    thread && !allThreads && areas.length === 0 && query.hasNextPage,
   );
   const { isFetching, isError, fetchNextPage } = query;
   useEffect(() => {
@@ -239,10 +237,10 @@ export function WorkingFileSettings({
             ? "作業の完了やスレッドの削除だけではファイルは消えません。ここで保存、復元可能な整理、完全削除を選べます。"
             : "Files remain after work ends or a thread is deleted. Choose retention, recoverable cleanup or irreversible deletion here."}
         </p>
-        {workspace && (
+        {thread && (
           <Check
-            checked={allWorkspaces}
-            onChange={(event) => setAllWorkspaces(event.target.checked)}
+            checked={allThreads}
+            onChange={(event) => setAllThreads(event.target.checked)}
           >
             {ja
               ? "すべての依頼の作業ファイルを表示"

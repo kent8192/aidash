@@ -43,8 +43,8 @@ test("the Deployment Administrator replaces whole policies and holds no credenti
         id: "team-read",
         effect: "allow",
         subjects: { roles: ["reader"] },
-        actions: ["workspace.read"],
-        resources: { kinds: ["workspace"] },
+        actions: ["thread.read"],
+        resources: { kinds: ["thread"] },
         condition: {
           op: "eq",
           left: { source: "subject", path: "/team" },
@@ -103,7 +103,7 @@ test("the Deployment Administrator replaces whole policies and holds no credenti
       (
         await request.post(path, {
           headers,
-          data: { subject: "alice", action: "workspace.read" },
+          data: { subject: "alice", action: "thread.read" },
         })
       ).status(),
       path,
@@ -141,8 +141,8 @@ test("the Deployment Administrator replaces whole policies and holds no credenti
     id: "hold-access",
     effect: "deny",
     subjects: { ids: ["alice"] },
-    actions: ["workspace.read"],
-    resources: { kinds: ["workspace"] },
+    actions: ["thread.read"],
+    resources: { kinds: ["thread"] },
   });
   await dialog.getByLabel("ポリシー定義（JSON）").fill(JSON.stringify(latest));
   await dialog
@@ -207,10 +207,10 @@ test("the Deployment Administrator replaces whole policies and holds no credenti
   // Policy evaluation stays a Deployment-wide administered route.
   const evaluated = await api(`${base}/evaluate`, {
     subject: "alice",
-    action: "workspace.read",
+    action: "thread.read",
     resource: {
       tenant,
-      kind: "workspace",
+      kind: "thread",
       id: "audit-0",
       attributes: { team: "research" },
     },

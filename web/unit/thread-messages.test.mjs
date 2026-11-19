@@ -60,20 +60,17 @@ test("history is chronological and refreshed messages win over older pages", () 
   );
 });
 
-test("identical retry keeps its key and another Workspace cannot reuse it", () => {
+test("identical retry keeps its key and another Thread cannot reuse it", () => {
   let n = 0;
   const key = () => String(++n);
   const first = submissionFor(null, "channel", "  hello  ", key);
   assert.equal(first.content, "hello");
   assert.equal(submissionFor(first, "channel", "hello", key).key, first.key);
-  for (const [workspace, content] of [
+  for (const [thread, content] of [
     ["other-channel", "hello"],
     ["channel", "changed"],
   ]) {
-    assert.notEqual(
-      submissionFor(first, workspace, content, key).key,
-      first.key,
-    );
+    assert.notEqual(submissionFor(first, thread, content, key).key, first.key);
   }
 });
 
@@ -84,21 +81,21 @@ test("empty page list remains empty without inventing conversation data", () => 
 test("message retry identity includes attachment order", () => {
   let n = 0;
   const key = () => String(++n);
-  const first = submissionFor(null, "workspace", "source", key, ["b", "a"]);
+  const first = submissionFor(null, "thread", "source", key, ["b", "a"]);
   assert.notEqual(
-    submissionFor(first, "workspace", "source", key, ["a", "b"]).key,
+    submissionFor(first, "thread", "source", key, ["a", "b"]).key,
     first.key,
   );
   assert.equal(
-    submissionFor(first, "workspace", "source", key, ["b", "a"]).key,
+    submissionFor(first, "thread", "source", key, ["b", "a"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", "source", key, ["b"]).key,
+    submissionFor(first, "thread", "source", key, ["b"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", "source", key, []).key,
+    submissionFor(first, "thread", "source", key, []).key,
     first.key,
   );
 });
@@ -150,7 +147,7 @@ test("run media routes require one current route for every selected format", () 
 
 test("participants keep node and version identity and prefer a still-active run", async () => {
   const { channelAgents } = await import(
-    "../src/collaboration/workspace-model.ts"
+    "../src/collaboration/thread-model.ts"
   );
   const located = (node, id, phase, updated_at, version = "1.0.0") => ({
     node,
@@ -184,25 +181,17 @@ test("participants keep node and version identity and prefer a still-active run"
 test("message retry identity includes cited File versions", () => {
   let n = 0;
   const key = () => String(++n);
-  const first = submissionFor(
-    null,
-    "workspace",
-    null,
-    "source",
-    key,
-    [],
-    ["area:one"],
-  );
+  const first = submissionFor(null, "thread", "source", key, [], ["area:one"]);
   assert.equal(
-    submissionFor(first, "workspace", "source", key, [], ["area:one"]).key,
+    submissionFor(first, "thread", "source", key, [], ["area:one"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", "source", key, [], ["area:two"]).key,
+    submissionFor(first, "thread", "source", key, [], ["area:two"]).key,
     first.key,
   );
   assert.notEqual(
-    submissionFor(first, "workspace", "source", key, [], []).key,
+    submissionFor(first, "thread", "source", key, [], []).key,
     first.key,
   );
 });

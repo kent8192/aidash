@@ -45,7 +45,7 @@ import { cn } from "../lib/utils";
 import { readUnconfirmed, unconfirmedFor } from "../unconfirmed";
 import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { collaborationCopy } from "./copy";
-import { workspaceCopy } from "./workspace-copy";
+import { threadCopy } from "./thread-copy";
 import { senderLabel } from "./model";
 import {
   mergeMessagePages,
@@ -78,7 +78,7 @@ type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
 
-/** A workspace event shown inline in the channel feed as a muted system line. */
+/** A thread event shown inline in the channel feed as a muted system line. */
 export type SystemLine = { id: string; created_at: string; text: string };
 
 function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
@@ -213,7 +213,7 @@ function MessageCitations({ citations }: { citations: ChannelCitation[] }) {
 type ConversationProps = {
   data: State;
   discovery?: Discovery;
-  workspace: string;
+  thread: string;
   title: string;
   visible: boolean;
   /** Rendered after the channel messages (pending decisions on narrow screens). */
@@ -237,7 +237,7 @@ const toolButton =
   "size-7 text-muted-foreground hover:text-foreground [&_svg]:size-3.5";
 
 function ConversationFeed({
-  workspace,
+  thread,
   title,
   visible,
   data,
@@ -254,11 +254,12 @@ function ConversationFeed({
 }) {
   const { locale, t } = useI18n();
   const agentLabel = useAgentLabel(data, discovery);
+  const client = useQueryClient();
   const copy = collaborationCopy[locale],
-    words = workspaceCopy[locale];
+    words = threadCopy[locale];
   const target = "channel",
     draft = drafts[target] ?? emptyDraft;
-  // A person sets their Approval Mode for the Workspace beside the composer.
+  // A person sets their Approval Mode for the Thread beside the composer.
   const approvalTenant =
     data.access.kind === "subject" ? data.access.tenant : null;
   const updateDraft = (update: (draft: Draft) => Draft) =>
@@ -284,11 +285,11 @@ function ConversationFeed({
   const follow = useRef(true);
   const [nearBottom, setNearBottom] = useState(true);
   const query = useInfiniteQuery({
-    queryKey: ["channel-history", workspace],
+    queryKey: ["channel-history", thread],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       channelMessageHistory(
-        workspace,
+        thread,
         { before: pageParam, limit: 40 },
         { signal },
       ),
@@ -305,7 +306,7 @@ function ConversationFeed({
     : unconfirmedFor(
         (query.data?.pages ?? []).flatMap(readUnconfirmed),
         ["message"],
-        [workspace],
+        [thread],
       );
   const messages = allMessages;
   const latestMessageId = messages.at(-1)?.message.id;
@@ -349,7 +350,7 @@ function ConversationFeed({
         let uploaded = entry.uploaded;
         if (!uploaded) {
           setUploading(true);
-          uploaded = await channelAttachmentUpload(workspace, entry.file, {
+          uploaded = await channelAttachmentUpload(thread, entry.file, {
             filename: entry.file.name,
             media_type: entry.file.type || "application/octet-stream",
             idempotency_key: entry.key,
@@ -367,11 +368,9 @@ function ConversationFeed({
           entry.description,
         );
         if (description && uploaded.description !== description) {
-          uploaded = await channelAttachmentDescription(
-            workspace,
-            uploaded.id,
-            { description },
-          );
+          uploaded = await channelAttachmentDescription(thread, uploaded.id, {
+            description,
+          });
           const described = uploaded;
           updateDraft((current) => ({
             ...current,
@@ -392,14 +391,14 @@ function ConversationFeed({
       }
       const submission = submissionFor(
         pending.get(target) ?? null,
-        workspace,
+        thread,
         draft.text,
         () => crypto.randomUUID(),
         attachmentIds,
         cited.map((citation) => citation.key),
       );
       pending.set(target, submission);
-      await channelMessageCreate(workspace, {
+      await channelMessageCreate(thread, {
         content: submission.content,
         idempotency_key: submission.key,
         attachment_ids: submission.attachments,
@@ -414,8 +413,8 @@ function ConversationFeed({
       setSent(true);
       follow.current = true;
       await Promise.all([
-        client.invalidateQueries({ queryKey: ["channel-history", workspace] }),
-        client.invalidateQueries({ queryKey: ["workspace", workspace] }),
+        client.invalidateQueries({ queryKey: ["channel-history", thread] }),
+        client.invalidateQueries({ queryKey: ["thread", thread] }),
       ]);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -662,7 +661,7 @@ function ConversationFeed({
                           {entry.attachments.map((attachment) => (
                             <li key={attachment.id} className="min-w-0">
                               <AttachmentCard
-                                workspace={workspace}
+                                thread={thread}
                                 attachment={attachment}
                               />
                             </li>
@@ -964,7 +963,7 @@ function ConversationFeed({
                     <Code2 />
                   </Button>
                   {approvalTenant !== null && (
-                    <ThreadApprovalMode workspace={workspace} />
+                    <ThreadApprovalMode thread={thread} />
                   )}
                   {approvalTenant === null && (
                     <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-faint lg:flex">

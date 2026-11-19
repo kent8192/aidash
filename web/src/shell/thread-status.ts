@@ -1,38 +1,32 @@
 import { taskProgress } from "../collaboration/model.ts";
 
-export type WorkspaceTone =
-  | "attention"
-  | "active"
-  | "done"
-  | "idle"
-  | "unknown";
+export type ThreadTone = "attention" | "active" | "done" | "idle" | "unknown";
 
 /**
- * What the Workspace list may say about one Workspace from the Node-wide
+ * What the Thread list may say about one Thread from the Node-wide
  * windows of `/api/state` (#664). Tasks and pending requests found in the
  * windows prove attention, activity and waiting decisions. Completion and
  * idleness need every Task: while the Task window has more (`moreTasks`), a
- * Workspace's older Tasks may still be open, so the tone is "unknown" and no
+ * Thread's older Tasks may still be open, so the tone is "unknown" and no
  * count is given. While more pending requests exist (`moreRequests`), the
  * waiting count is a lower bound.
  */
-export function workspaceStatus(
+export function threadStatus(
   tasks: Parameters<typeof taskProgress>[0],
-  requests: readonly { workspace_id: string; response: unknown }[],
-  workspace: string,
+  requests: readonly { thread_id: string; response: unknown }[],
+  thread: string,
   { moreTasks, moreRequests }: { moreTasks: boolean; moreRequests: boolean },
 ): {
-  tone: WorkspaceTone;
+  tone: ThreadTone;
   progress: { completed: number; total: number } | null;
   pending: number;
   pendingMore: boolean;
 } {
-  const progress = taskProgress(tasks, workspace);
+  const progress = taskProgress(tasks, thread);
   const pending = requests.filter(
-    (request) =>
-      request.workspace_id === workspace && request.response === null,
+    (request) => request.thread_id === thread && request.response === null,
   ).length;
-  const tone: WorkspaceTone =
+  const tone: ThreadTone =
     progress.attention > 0
       ? "attention"
       : progress.active > 0

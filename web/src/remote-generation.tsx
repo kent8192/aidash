@@ -24,12 +24,12 @@ function reference(value: string): EntityRef {
 
 export function RemoteGenerationAssignForm({
   task,
-  workspace,
+  thread,
   entries,
   submit,
 }: {
   task: string;
-  workspace: string;
+  thread: string;
   entries: Entry[];
   submit: Submit;
 }) {
@@ -335,7 +335,7 @@ export function RemoteGenerationAssignForm({
                   />
                 </Field>
                 <HomeNativeMemoryFields
-                  workspace={workspace}
+                  thread={thread}
                   entries={entries}
                   generated
                 />

@@ -13,10 +13,10 @@ import { shellCopy } from "./copy";
 
 export type PendingDecision = {
   request: HumanRequest;
-  /** The address of the Node whose Workspace asked. */
+  /** The address of the Node whose Thread asked. */
   node: string;
-  /** What names the asking Workspace, with its Node when the Tenant has several. */
-  workspace: string;
+  /** What names the asking Thread, with its Node when the Tenant has several. */
+  thread: string;
 };
 
 /** Capability approvals addressed to the signed-in approver. */
@@ -107,7 +107,7 @@ export function DecisionQueue({
                     <span className="flex min-w-0 items-center gap-2">
                       <Badge value={decision.request.kind} />
                       <span className="truncate font-mono text-[11px] text-faint">
-                        {decision.workspace || decision.node}
+                        {decision.thread || decision.node}
                       </span>
                       <span className="ml-auto shrink-0 font-mono text-[11px] text-faint tabular">
                         {copy.ago(minutes)}

@@ -1,7 +1,7 @@
 import { ThreadCapabilities } from "../capabilities/thread";
 import { ReferenceName, RecordView } from "../record-view";
 import { skippedServers } from "../agent-plugins";
-import { WorkspaceScratchSpace } from "../scratch-spaces";
+import { ThreadScratchSpace } from "../scratch-spaces";
 import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
@@ -19,7 +19,7 @@ import {
   Play,
   Plus,
 } from "lucide-react";
-import { workspaceGet, workspaceRuns } from "../generated/aidash";
+import { threadGet, threadRuns } from "../generated/aidash";
 import type {
   Artifact,
   Discovery,
@@ -28,7 +28,7 @@ import type {
   Run,
   State,
   Task,
-  Workspace,
+  Thread,
 } from "../types";
 import { Badge, JsonView, useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
@@ -42,7 +42,7 @@ import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { isLocalRun } from "../node-selection";
 import { answeredAtDeadline } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
-import { workspaceCopy } from "./workspace-copy";
+import { threadCopy } from "./thread-copy";
 import { taskProgress } from "./model";
 import { entityKey } from "../agent-graph/model";
 import type { Selection } from "./details";
@@ -52,7 +52,7 @@ import {
   type SystemLine,
 } from "./conversation";
 import { ChannelStatus, useRunControl } from "./status";
-import { channelAgents, terminalRun } from "./workspace-model";
+import { channelAgents, terminalRun } from "./thread-model";
 import { ChannelRequests } from "./requests";
 import { ChannelFiles } from "./attachments";
 import { RequestCanvas } from "./request/canvas";
@@ -187,7 +187,7 @@ function deadlineLabel(event: MeshEvent, label: string) {
     : label;
 }
 
-/** Task referenced by a workspace event payload (`Task`, `{ task }` or `Run`). */
+/** Task referenced by a thread event payload (`Task`, `{ task }` or `Run`). */
 function eventTask(event: MeshEvent, tasks: readonly Task[]) {
   const data = event.data as {
     id?: unknown;
@@ -278,7 +278,7 @@ const channelState = {
 } as const;
 
 export function Channel({
-  workspace,
+  thread,
   data,
   discovery,
   runs,
@@ -288,7 +288,7 @@ export function Channel({
   tools,
 }: {
   discovery?: Discovery;
-  workspace: Workspace;
+  thread: Thread;
   data: State;
   runs: { run: Run; node: string }[];
   requests: { request: HumanRequest; node: string }[];
@@ -299,7 +299,7 @@ export function Channel({
   const { locale, t } = useI18n();
   const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
-  const words = workspaceCopy[locale];
+  const words = threadCopy[locale];
   const view = requestCopy[locale];
   const navigate = useNavigate();
   const desktop = useDesktop();
@@ -357,23 +357,23 @@ export function Channel({
       ? { available: false, preview_domain: null }
       : null);
   const query = useQuery({
-    queryKey: ["workspace", workspace.id],
-    queryFn: ({ signal }) => workspaceGet(workspace.id, { signal }),
+    queryKey: ["thread", thread.id],
+    queryFn: ({ signal }) => threadGet(thread.id, { signal }),
     refetchInterval: 2000,
     retry: false,
   });
   const tasks: Task[] = query.isError
     ? []
     : (query.data?.tasks ??
-      data.tasks.filter((task) => task.workspace_id === workspace.id));
+      data.tasks.filter((task) => task.thread_id === thread.id));
   const liveRuns = useQuery({
-    queryKey: ["workspace-live-runs", workspace.id],
+    queryKey: ["thread-live-runs", thread.id],
     queryFn: async ({ signal }) => {
       const items: Run[] = [];
       let cursor: string | null = null;
       do {
-        const page = await workspaceRuns(
-          workspace.id,
+        const page = await threadRuns(
+          thread.id,
           { live: true, cursor: cursor ?? undefined },
           { signal },
         );
@@ -388,7 +388,7 @@ export function Channel({
     retry: false,
   });
   const scopedRuns = runs.filter(
-    ({ run }) => run.workspace_id === workspace.id && isLocalRun(run, data),
+    ({ run }) => run.thread_id === thread.id && isLocalRun(run, data),
   );
   const terminal = scopedRuns.filter(({ run }) => terminalRun(run));
   scopedRuns.splice(
@@ -401,10 +401,10 @@ export function Channel({
   );
   const scopedRequests = requests.filter(
     ({ request }) =>
-      request.workspace_id === workspace.id && request.response === null,
+      request.thread_id === thread.id && request.response === null,
   );
   const agents = channelAgents(scopedRuns);
-  const progress = taskProgress(tasks, workspace.id);
+  const progress = taskProgress(tasks, thread.id);
   const control = useRunControl(scopedRuns, data.node.id);
   const active = scopedRuns.filter((item) => !terminalRun(item.run));
   const state = active.length
@@ -427,14 +427,14 @@ export function Channel({
             ? readUnconfirmed(query.data)
             : data.unconfirmed,
           kinds,
-          [workspace.id],
+          [thread.id],
         );
   const missingTasks = missing(["task"], true);
   const missingArtifacts = missing(["artifact"], true);
   const missingEvents = missing(["event"], true);
   const missingRuns = missing(["run"], false);
   const missingRequests = missing(["human_request"], false);
-  // The workspace snapshot refreshes every 2 s; its fetch time is the render's "now".
+  // The thread snapshot refreshes every 2 s; its fetch time is the render's "now".
   const now = query.dataUpdatedAt;
   const system: SystemLine[] = events.flatMap((event) => {
     const label =
@@ -504,7 +504,7 @@ export function Channel({
         runs={scopedRuns}
         requests={desktop ? scopedRequests : []}
         open={open}
-        addTask={() => open({ kind: "task", workspace })}
+        addTask={() => open({ kind: "task", thread })}
       />
       {query.data && (
         <TimelineStrip
@@ -553,7 +553,7 @@ export function Channel({
           variant="outline"
           size="sm"
           type="button"
-          onClick={() => open({ kind: "task", workspace })}
+          onClick={() => open({ kind: "task", thread })}
         >
           <Plus />
           {copy.newTask}
@@ -623,10 +623,10 @@ export function Channel({
         unconfirmed={missingArtifacts}
         hasOlder={data.next_cursors.artifacts !== null}
       />
-      <ChannelFiles workspace={workspace.id} />
+      <ChannelFiles thread={thread.id} />
       {data.access.kind === "subject" && (
         <ThreadCapabilities
-          workspace={workspace.id}
+          thread={thread.id}
           data={data}
           onDeleted={() =>
             void navigate({
@@ -640,9 +640,9 @@ export function Channel({
   );
   const conversation = query.isError ? null : (
     <ChannelConversation
-      key={workspace.id}
-      workspace={workspace.id}
-      title={workspace.title}
+      key={thread.id}
+      thread={thread.id}
+      title={thread.title}
       data={data}
       discovery={discovery}
       visible={shownTab === "conversation"}
@@ -656,14 +656,12 @@ export function Channel({
   return (
     <section
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
-      aria-label={workspace.title}
+      aria-label={thread.title}
     >
       <header className="flex shrink-0 flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-4 py-2.5 md:px-5 md:py-3">
         <div className="min-w-0 flex-1 basis-60">
           <div className="flex items-center gap-1.5 text-[11px]">
-            <span className="truncate font-mono text-faint">
-              {workspace.id}
-            </span>
+            <span className="truncate font-mono text-faint">{thread.id}</span>
             <span aria-hidden className="text-faint">
               ·
             </span>
@@ -685,17 +683,14 @@ export function Channel({
             </span>
           </div>
           <h1
-            aria-label={`# ${workspace.title}`}
+            aria-label={`# ${thread.title}`}
             className="truncate font-mono text-lg font-semibold tracking-tight text-foreground md:text-xl"
           >
-            {workspace.title}
+            {thread.title}
           </h1>
-          <p className="line-clamp-1 text-xs text-muted-foreground md:text-[13px]">
-            {workspace.goal}
-          </p>
-          <WorkspaceScratchSpace
-            id={workspace.scratch_space_id}
-            channel={workspace.id}
+          <ThreadScratchSpace
+            id={thread.scratch_space_id}
+            channel={thread.id}
           />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -751,9 +746,7 @@ export function Channel({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onSelect={() => open({ kind: "task", workspace })}
-              >
+              <DropdownMenuItem onSelect={() => open({ kind: "task", thread })}>
                 {copy.newTask}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => graph()}>
@@ -900,9 +893,7 @@ export function Channel({
                 value="schedules"
                 className="flex min-h-0 flex-1 flex-col overflow-y-auto"
               >
-                <DutiesPanel
-                  scope={{ kind: "workspace", workspace: workspace.id }}
-                />
+                <DutiesPanel scope={{ kind: "thread", thread: thread.id }} />
               </TabsContent>
             </aside>
           </Tabs>
@@ -913,7 +904,7 @@ export function Channel({
           <SheetHeader className="border-b border-border px-5 pb-3 pt-4">
             <SheetTitle>{view.progressTitle}</SheetTitle>
             <SheetDescription className="text-xs">
-              {workspace.title}
+              {thread.title}
             </SheetDescription>
           </SheetHeader>
           <Tabs
@@ -946,7 +937,7 @@ export function Channel({
               className="flex min-h-0 flex-1 flex-col px-5 py-4"
             >
               <ChannelStatus
-                workspace={workspace}
+                thread={thread}
                 data={data}
                 tasks={tasks}
                 runs={scopedRuns}
@@ -983,7 +974,7 @@ export function Channel({
                   variant="outline"
                   size="sm"
                   type="button"
-                  onClick={() => inspect({ kind: "task", workspace })}
+                  onClick={() => inspect({ kind: "task", thread })}
                 >
                   <Plus />
                   {copy.newTask}
@@ -1021,13 +1012,13 @@ export function Channel({
               )}
               <section className="grid gap-2">
                 <h3
-                  id={`participants-${workspace.id}`}
+                  id={`participants-${thread.id}`}
                   className="text-[11px] font-medium text-faint"
                 >
                   {copy.participants}
                 </h3>
                 <ul
-                  aria-labelledby={`participants-${workspace.id}`}
+                  aria-labelledby={`participants-${thread.id}`}
                   className="divide-y divide-border rounded-md border border-border"
                 >
                   {agents.map((item) => {
@@ -1077,7 +1068,7 @@ export function Channel({
                 unconfirmed={missingArtifacts}
                 hasOlder={data.next_cursors.artifacts !== null}
               />
-              <ChannelFiles workspace={workspace.id} />
+              <ChannelFiles thread={thread.id} />
             </TabsContent>
             <TabsContent
               value="activity"

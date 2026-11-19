@@ -4,7 +4,7 @@ export type {
   EntityRef,
   Entry,
   Task,
-  Workspace,
+  Thread,
   RunSummary as Run,
   HumanRequest,
   Artifact,

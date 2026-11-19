@@ -110,10 +110,10 @@ export function TransactionsPage({
           node_id: coordinator,
           mutations: [
             {
-              kind: "workspace_state",
-              workspace_id: "",
+              kind: "thread_title",
+              thread_id: "",
               expected_revision: 0,
-              state: {},
+              title: "",
             },
           ],
         },

@@ -6,7 +6,7 @@ import type { State, Task } from "./types";
  * Tasks older than the `/api/state` Task window (#664), read from
  * `GET /api/tasks` only when the person asks for them. `scope` names the
  * picker, so each keeps its own pages. The listing is not filtered by Node or
- * Workspace: callers keep only the Tasks they may offer.
+ * Thread: callers keep only the Tasks they may offer.
  */
 export function useTaskPages(
   data: State | undefined,
@@ -35,13 +35,13 @@ export function useTaskPages(
 }
 
 /** Task pickers read older pages only when the person asks for them. */
-export function useTaskPickerPages(data: State, workspace: string) {
-  const node = data.workspaces.find((item) => item.id === workspace)?.node;
-  const { older, ...page } = useTaskPages(data, [node, workspace]);
+export function useTaskPickerPages(data: State, thread: string) {
+  const node = data.threads.find((item) => item.id === thread)?.node;
+  const { older, ...page } = useTaskPages(data, [node, thread]);
   const tasks = [
     ...new Map(
       [...data.tasks, ...older]
-        .filter((task) => task.workspace_id === workspace)
+        .filter((task) => task.thread_id === thread)
         .map((task) => [task.id, task]),
     ).values(),
   ];
