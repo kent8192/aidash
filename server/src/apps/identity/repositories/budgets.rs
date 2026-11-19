@@ -43,7 +43,7 @@ const COLUMNS: [&str; 13] = [
 ];
 
 fn from_row(row: &native::Row) -> Result<Budget> {
-	let text = |name: &str| -> Result<String> { Ok(row.try_get(name)?) };
+	let text = |name: &str| -> Result<String> { row.try_get(name) };
 	Ok(Budget {
 		id: row.try_get("id")?,
 		tenant: text("tenant")?,

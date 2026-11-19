@@ -227,7 +227,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	assert_eq!(invalid_conversation.status_code(), 400);
 	assert_eq!(
 		invalid_conversation.json_value().unwrap()["error"],
-		"invalid request fields: goal, title"
+		"invalid request fields: title"
 	);
 	for (body, content_type, status) in [
 		("{", "application/json", 400),

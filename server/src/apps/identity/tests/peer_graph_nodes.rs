@@ -243,7 +243,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert!(
 		alice_nodes
 			.iter()
-			.any(|node| node["kind"] == "goal" && node["goal_body"] == "Use exactly one tool")
+			.any(|node| node["kind"] == "thread" && node["name"]["en"] == "Approved task")
 	);
 	assert!(
 		!alice_nodes

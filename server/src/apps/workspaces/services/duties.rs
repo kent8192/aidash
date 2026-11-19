@@ -1251,31 +1251,6 @@ pub async fn agent_tool(
 	access.finish(result).await
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use rstest::rstest;
-
-	#[rstest]
-	#[case(Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into()), true)]
-	#[case(Error::Forbidden, true)]
-	#[case(Error::NotFound("agent".into()), true)]
-	#[case(Error::Refused("Subnode has ended".into()), true)]
-	#[case(Error::Conflict("authorization revision changed".into()), false)]
-	#[case(Error::PolicyBusy { retry_after: 1 }, false)]
-	#[case(Error::RateLimited, false)]
-	#[case(Error::External("peer unavailable".into()), false)]
-	fn only_a_definite_refusal_burns_a_tick(#[case] error: Error, #[case] recorded: bool) {
-		// Act
-		let miss = classify(&error);
-		// Assert: a transient error records nothing, so the next pass retries.
-		assert_eq!(miss.is_some(), recorded, "{error:?}");
-		if let Some(Miss::Fail(reason)) = miss {
-			assert_eq!(reason, error.to_string());
-		}
-	}
-}
-
 /// A Duty starts no new Task while a Budget that covers it is at its Hard
 /// Limit (#1012 decision 33); the Task it would start is charged to its
 /// Node, its Requester and itself.
@@ -1301,4 +1276,29 @@ pub(crate) async fn budget_skip(
 			Some(format!("{}: {budget}", duties::skip::BUDGET))
 		}
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use rstest::rstest;
+
+	#[rstest]
+	#[case(Error::Conflict("RUNTIME_UNAVAILABLE: no isolated runner configured".into()), true)]
+	#[case(Error::Forbidden, true)]
+	#[case(Error::NotFound("agent".into()), true)]
+	#[case(Error::Refused("Subnode has ended".into()), true)]
+	#[case(Error::Conflict("authorization revision changed".into()), false)]
+	#[case(Error::PolicyBusy { retry_after: 1 }, false)]
+	#[case(Error::RateLimited, false)]
+	#[case(Error::External("peer unavailable".into()), false)]
+	fn only_a_definite_refusal_burns_a_tick(#[case] error: Error, #[case] recorded: bool) {
+		// Act
+		let miss = classify(&error);
+		// Assert: a transient error records nothing, so the next pass retries.
+		assert_eq!(miss.is_some(), recorded, "{error:?}");
+		if let Some(Miss::Fail(reason)) = miss {
+			assert_eq!(reason, error.to_string());
+		}
+	}
 }

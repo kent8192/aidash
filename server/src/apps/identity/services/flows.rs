@@ -73,12 +73,17 @@ impl TenantAdministrations {
 				)
 				.await
 				{
-					Ok((_, resource)) => {
-						if access.decide(&resource, "run.control").await? {
+					// A Run whose Thread an ended Subnode fences refuses
+					// `run.control` with an error; the Node administrator may
+					// still stop the flow.
+					Ok((_, resource)) => match access.decide(&resource, "run.control").await {
+						Ok(true) => {
 							allowed = true;
 							break;
 						}
-					}
+						Ok(false) | Err(Error::Forbidden) => {}
+						Err(error) => return Err(error),
+					},
 					Err(Error::Forbidden | Error::NotFound(_)) => {}
 					Err(error) => return Err(error),
 				}

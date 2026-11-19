@@ -192,7 +192,7 @@ async fn accepted_load_and_idle_reduction(
 			let mutation = client
 				.patch(format!("{}/api/threads/{ws}", processes[0].endpoint))
 				.bearer_auth(&fixture.token)
-				.json(&json!({"revision": sample / 10,"title":"Sample"}));
+				.json(&json!({"revision": sample / 10,"title":format!("Sample {sample}")}));
 			let operation = tokio::spawn(async move { mutation.send().await.unwrap() });
 			// Wait until writer A is actually at its durable event/commit boundary.
 			tokio::time::timeout(Duration::from_secs(3), async {
@@ -249,7 +249,12 @@ async fn accepted_load_and_idle_reduction(
 		let mut seen = std::collections::HashSet::new();
 		let mut correctness = true;
 		for event in observations {
-			let sample = event.data["data"]["state"]["sample"].as_u64().unwrap() as usize;
+			let sample: usize = event.data["data"]["title"]
+				.as_str()
+				.and_then(|title| title.strip_prefix("Sample "))
+				.unwrap()
+				.parse()
+				.unwrap();
 			let latency = event.at.duration_since(starts[sample]).as_secs_f64() * 1000.0;
 			let expected_scope = scope(event.client, &fixture);
 			correctness &=

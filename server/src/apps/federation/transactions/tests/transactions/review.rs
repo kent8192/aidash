@@ -457,9 +457,10 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 		matches!(result, Err(aidash_server::Error::Forbidden)),
 		"{result:?}"
 	);
-	let state: Value = sqlx::query_scalar(
+	// No mutation reached the Thread: its title is still its own.
+	let title: String = sqlx::query_scalar(
 		&Query::select()
-			.column(Alias::new("state"))
+			.column(Alias::new("title"))
 			.from(Alias::new("threads"))
 			.and_where(Expr::col("id").eq(Expr::value(thread)))
 			.to_string(PostgresQueryBuilder),
@@ -467,6 +468,6 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 	.fetch_one(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	assert_eq!(state, json!({}));
+	assert_ne!(title, "Intrusion");
 	cleanup(f, &url, &schema).await;
 }

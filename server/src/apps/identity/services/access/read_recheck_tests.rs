@@ -133,7 +133,7 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 		&driver, "acme", &node, "reader",
 	)
 	.await;
-	sqlx::query("INSERT INTO threads (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','{}',1,$3,'reader')").bind(thread).bind(&node).bind(scratch).execute(&driver).await.unwrap();
+	sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Fixture',1,$3,'reader')").bind(thread).bind(&node).bind(scratch).execute(&driver).await.unwrap();
 	sqlx::query(
 		"INSERT INTO authorization_threads (thread_id,tenant,owner_subject) VALUES ($1,'acme','reader')",
 	)

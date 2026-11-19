@@ -163,8 +163,8 @@ async fn thread_and_task_content_reject_unicode_blank_strings_over_http(
 	let mut blanks: Vec<String> = whitespace.iter().map(char::to_string).collect();
 	blanks.extend([whitespace.iter().collect(), String::new()]);
 	for blank in blanks {
-		for field in ["title", "goal"] {
-			let mut input = json!({"title":"Thread", "request":"Goal"});
+		for field in ["title"] {
+			let mut input = json!({"title":"Thread"});
 			input[field] = json!(blank);
 			let response = member.post("/api/threads", &input, "json").await.unwrap();
 			assert_eq!(

@@ -61,7 +61,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	assert_eq!(admitted["id"], json!(id));
 	assert!(admitted["decision"].is_null());
 	let mut changed = manifest.clone();
-	changed["participants"][0]["mutations"][0]["state"] = json!({"different":true});
+	changed["participants"][0]["mutations"][0]["title"] = json!("Different");
 	assert_json(
 		subject
 			.post("/api/transactions", &changed, "json")
@@ -182,7 +182,7 @@ async fn concurrent_admission_preserves_one_manifest_vote_and_audit(
             "thread_id":thread["id"],"expected_revision":0,"title":"Committed"}]}]});
 	let mut second = first.clone();
 	if conflicting {
-		second["participants"][0]["mutations"][0]["state"] = json!({"other":true});
+		second["participants"][0]["mutations"][0]["title"] = json!("Other");
 	}
 	// Act
 	let (a, b) = tokio::join!(

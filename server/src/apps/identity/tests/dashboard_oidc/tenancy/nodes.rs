@@ -291,7 +291,7 @@ async fn a_tenant_cannot_reach_another_tenants_nodes(
 
 impl Deployment {
 	async fn thread_on(&self, person: &Person, context: &str, node: Option<&str>) -> (u16, Value) {
-		let mut body = json!({"title":"Work","request":"Use a Node"});
+		let mut body = json!({"title":"Work"});
 		if let Some(node) = node {
 			body["node"] = json!(node);
 		}

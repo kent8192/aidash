@@ -48,7 +48,6 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 				"agent_id",
 				"owner",
 				"thread_id",
-				"thread_id",
 			]
 			.map(Alias::new),
 		)
@@ -59,7 +58,6 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			"fixture".into(),
 			"member".into(),
 			thread_id.into(),
-			Uuid::new_v4().into(),
 		])
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)

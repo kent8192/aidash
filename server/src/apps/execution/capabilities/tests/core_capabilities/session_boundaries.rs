@@ -38,10 +38,20 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 			.unwrap()
 			.unwrap();
 	assert_eq!(first.id, parent.id);
+	// A Working Area is keyed by Thread (#1008): a separate conversation is
+	// another Thread, and its Run gets its own Area.
+	let (status, independent) = common::post(
+		&c.app,
+		&c.token,
+		"/api/threads",
+		json!({"title":"Independent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{independent}");
 	let (_, other) = common::post(
 		&c.app,
 		&c.token,
-		&format!("/api/threads/{}/tasks", parent.thread_id),
+		&format!("/api/threads/{}/tasks", independent["id"].as_str().unwrap()),
 		json!({"title":"Independent","description":"A separate conversation"}),
 	)
 	.await;

@@ -28,7 +28,7 @@ const MANDATORY: [&str; 7] = [
 	"capability_unload",
 	"human_request",
 	"skill_asset_read",
-	"workspace_read",
+	"thread_read",
 ];
 const EAGER: &str = "plugin_0";
 const GUIDE_BODY: &str = "GUIDE-BODY: Draft the release notes from the checklist.";
@@ -697,7 +697,7 @@ async fn deferred_invocation_rejections_keep_unloaded_capabilities_unavailable(
 			json!({"file_id":Uuid::nil(),"representation":"text"}),
 		),
 		3 => Reply::Call("skill_load", json!({"skill_id":Uuid::nil()})),
-		4 => Reply::Call("capability_unload", json!({"alias":"workspace_read"})),
+		4 => Reply::Call("capability_unload", json!({"alias":"thread_read"})),
 		5 => Reply::Call(
 			"capability_load",
 			json!({"alias":"file_search","digest":"sha256:stale"}),
@@ -738,7 +738,7 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 	d.script(|_, context| {
 		if events(context).is_empty() {
 			Reply::Call(
-				"workspace_read",
+				"thread_read",
 				json!({"kind":"task","id":context["current"]["task"]["id"]}),
 			)
 		} else {
@@ -746,7 +746,20 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		}
 	});
 	let first = d.delegate(d.c.task, DEFERRED).await;
-	let second = d.task(first.thread_id).await;
+	// The failed deferred Run keeps its Thread's Working Area (one per Thread
+	// and Agent since #1008), so the legacy twin works in a Thread of its own.
+	let (status, thread) = request(
+		&d.c.app,
+		&d.c.token,
+		"POST",
+		"/api/threads",
+		json!({"title":"Legacy research"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let second = d
+		.task(serde_json::from_value(thread["id"].clone()).unwrap())
+		.await;
 	let mut outcomes = vec![];
 	for (revision, (task, version)) in [(d.c.task, DEFERRED), (second, LEGACY)]
 		.into_iter()
@@ -1184,16 +1197,17 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(
 			.collect::<Vec<_>>();
 		let events = events(context);
 		for id in required {
-			let last = events.iter().rev().find(|(call, _)| {
-				call["name"] == "workspace_read" && call["arguments"]["id"] == id
-			});
+			let last = events
+				.iter()
+				.rev()
+				.find(|(call, _)| call["name"] == "thread_read" && call["arguments"]["id"] == id);
 			match last {
 				None => {
-					return Reply::Call("workspace_read", json!({"kind":"message","id":id}));
+					return Reply::Call("thread_read", json!({"kind":"message","id":id}));
 				}
 				Some((_, result)) if result["next_offset"].is_u64() => {
 					return Reply::Call(
-						"workspace_read",
+						"thread_read",
 						json!({"kind":"message","id":id,"offset":result["next_offset"]}),
 					);
 				}
@@ -1241,14 +1255,11 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(
 		.partition(|body| instructions(body).contains(CATCH_UP));
 	assert!(!catch_up.is_empty() && !ordinary.is_empty(), "{requests:?}");
 	for body in &catch_up {
-		assert_eq!(
-			tool_names(body),
-			BTreeSet::from(["workspace_read".to_owned()])
-		);
+		assert_eq!(tool_names(body), BTreeSet::from(["thread_read".to_owned()]));
 	}
 	for body in &ordinary {
 		let names = tool_names(body);
-		assert!(names.contains("human_request") && names.contains("workspace_read"));
+		assert!(names.contains("human_request") && names.contains("thread_read"));
 		assert_eq!(names, expected_initial());
 	}
 	d.close().await;
@@ -1282,7 +1293,7 @@ async fn legacy_agent_beside_deferred_keeps_legacy_tools_and_skill_record(
 			"skill_list",
 			"skill_load",
 			"skill_read",
-			"workspace_read",
+			"thread_read",
 			"human_request",
 			"file_search",
 			"file_read",

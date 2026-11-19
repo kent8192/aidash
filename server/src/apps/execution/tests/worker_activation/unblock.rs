@@ -63,7 +63,6 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 					"agent_id",
 					"owner",
 					"thread_id",
-					"thread_id",
 				]
 				.map(a),
 			)
@@ -73,7 +72,6 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 				f.config.deployment.to_string().into(),
 				"fixture".into(),
 				"fixture".into(),
-				Uuid::new_v4().into(),
 				Uuid::new_v4().into(),
 			])
 			.to_string(PostgresQueryBuilder),

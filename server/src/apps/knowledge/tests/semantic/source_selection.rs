@@ -81,17 +81,14 @@ pub(super) async fn configure_selector(
 	assert_eq!(status, 200, "approve selector: {body}");
 }
 
-fn workspace_read(f: &aidash_server::federation::Federation) -> QualifiedRef {
-	QualifiedRef {
-		version: "1.1.0".into(),
-		..QualifiedRef::builtin(f.config.deployment.as_str(), "workspace_read")
-	}
+fn thread_read(f: &aidash_server::federation::Federation) -> QualifiedRef {
+	QualifiedRef::builtin(f.config.deployment.as_str(), "thread_read")
 }
 
 pub(super) fn declaration(f: &aidash_server::federation::Federation, case: SelectionCase) -> Value {
 	json!({
 		"provider":"aidash.native-context/1","operation":"workspace_retrieval",
-		"tools":{"read":[workspace_read(f)],"write":[],"detail":workspace_read(f)},
+		"tools":{"read":[thread_read(f)],"write":[],"detail":thread_read(f)},
 		"pin":{"policy":"scored","mode":case.mode(),"decider":{"registry_deployment":f.config.deployment,"id":"context-selector","version":"1.0.0"}},
 		"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1",
 		"disclosure":{"previews":true,"query":true},"required_home":false

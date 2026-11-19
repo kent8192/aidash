@@ -134,7 +134,7 @@ pub(super) fn migration() -> Migration {
 			table: "workspaces".into(),
 			constraint: Constraint::Check {
 				name: "workspaces_content".into(),
-				expression: r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000d \u0085                 　'::text)) > 0) AND (length(btrim(goal, E'\u0009\u000a\u000b\u000c\u000d \u0085                 　'::text)) > 0) AND (jsonb_typeof(state) = 'object'::text) AND (revision >= 0)), false)"#.into(),
+				expression: r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (length(btrim(goal, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (jsonb_typeof(state) = 'object'::text) AND (revision >= 0)), false)"#.into(),
 			},
 		})
 		// Backward only: give each restored goal its title, then drop the
@@ -175,7 +175,7 @@ pub(super) fn migration() -> Migration {
 			table: "threads".into(),
 			constraint: Constraint::Check {
 				name: "threads_content".into(),
-				expression: r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000d \u0085                 　'::text)) > 0) AND (revision >= 0)), false)"#.into(),
+				expression: r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (revision >= 0)), false)"#.into(),
 			},
 		})
 		.add_operation(Operation::RunSQL {

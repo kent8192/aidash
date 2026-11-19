@@ -107,10 +107,6 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, subject_token, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
-	let long_goal = format!(
-		"First line.\n{}\nEnd of the current Goal.",
-		"Authorized context. ".repeat(30)
-	);
 	let (status, created) = common::post(
 		&app,
 		&subject_token,
@@ -168,16 +164,15 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.iter()
 			.any(|node| node["kind"] == "agent" && node["resource_id"] == "research")
 	);
-	assert!(
-		nodes
-			.iter()
-			.any(|node| node["kind"] == "goal" && node["goal_body"] == "Use exactly one tool")
-	);
-	assert!(
-		nodes
-			.iter()
-			.any(|node| node["kind"] == "goal" && node["goal_body"] == long_goal)
-	);
+	// A Thread has no goal since #1008: the projection names the Threads.
+	for title in ["Approved task", "Long Goal Thread"] {
+		assert!(
+			nodes
+				.iter()
+				.any(|node| node["kind"] == "thread" && node["name"]["en"] == title),
+			"{title}: {page}"
+		);
+	}
 	assert!(
 		nodes
 			.iter()
@@ -196,20 +191,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{goals}");
-	assert!(
-		goals["nodes"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.all(|node| node["kind"] == "goal")
-	);
-	assert!(
-		goals["nodes"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.any(|node| node["goal_body"] == long_goal)
-	);
+	// The goal kind is still accepted, but no Thread produces one any more.
+	assert!(goals["nodes"].as_array().unwrap().is_empty(), "{goals}");
 	let (status, first) = graph(&app, &source, viewer, None, 2).await;
 	assert_eq!(status, 200, "{first}");
 	let cursor = first["next_cursor"]
@@ -245,7 +228,6 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 				.columns([
 					Alias::new("id"),
 					Alias::new("title"),
-					Alias::new("goal"),
 					Alias::new("tenant"),
 					Alias::new("node"),
 					Alias::new("scratch_space_id"),
@@ -258,7 +240,6 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.expr(Expr::cust("'Other tenant'"))
-						.expr(Expr::cust("'Unrelated'"))
 						.expr(Expr::cust("'other'"))
 						.expr(Expr::cust(
 							"(SELECT name FROM nodes WHERE tenant = 'other' AND is_default)",
@@ -571,14 +552,15 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	)
 	.await;
 	assert_eq!(status, 200, "{written}");
-	let (status, without_goal) = graph(&app, &source, viewer, None, 80).await;
-	assert_eq!(status, 200, "{without_goal}");
+	let (status, without_thread) = graph(&app, &source, viewer, None, 80).await;
+	assert_eq!(status, 200, "{without_thread}");
 	assert!(
-		!without_goal["nodes"]
+		!without_thread["nodes"]
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|node| node["kind"] == "goal")
+			.any(|node| node["kind"] == "thread"),
+		"{without_thread}"
 	);
 	// A continuation taken before the deny must not carry the old decision.
 	let (status, before_deny) = graph(&app, &source, viewer, None, 2).await;
@@ -766,7 +748,6 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		threads.into_table(Alias::new("threads")).columns([
 			Alias::new("id"),
 			Alias::new("title"),
-			Alias::new("goal"),
 			Alias::new("tenant"),
 			Alias::new("node"),
 			Alias::new("scratch_space_id"),
@@ -784,7 +765,6 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			threads.values_panic([
 				IntoValue::into_value(*id),
 				IntoValue::into_value("Hidden"),
-				IntoValue::into_value("Hidden goal"),
 				IntoValue::into_value("sparse"),
 				IntoValue::into_value(source.receiver.node.as_str()),
 				IntoValue::into_value(scratch_space),
@@ -813,7 +793,6 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				.columns([
 					Alias::new("id"),
 					Alias::new("title"),
-					Alias::new("goal"),
 					Alias::new("tenant"),
 					Alias::new("node"),
 					Alias::new("scratch_space_id"),
@@ -826,7 +805,6 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.expr(Expr::cust("'Last'"))
-						.expr(Expr::cust("'Reachable goal'"))
 						.expr(Expr::cust("'sparse'"))
 						.expr(Expr::cust(
 							"(SELECT name FROM nodes WHERE tenant = 'sparse' AND is_default)",
@@ -897,7 +875,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		.await
 		.unwrap();
 	let viewer = "sparse-subject";
-	let options = json!({"kinds":["goal"],"relations":[]});
+	let options = json!({"kinds":["thread"],"relations":[]});
 	let (status, first) = graph_custom(&app, &source, viewer, options.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert!(first["nodes"].as_array().unwrap().is_empty());
@@ -911,7 +889,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|node| node["goal_body"] == "Reachable goal")
+			.any(|node| node["kind"] == "thread" && node["name"]["en"] == "Last")
 	);
 	let options = json!({"kinds":["thread","goal"],"relations":[],"limit":2});
 	let (status, first) = graph_custom(&app, &source, viewer, options.clone()).await;

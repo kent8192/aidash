@@ -350,7 +350,7 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 	] {
 		paths.extend(
 			["forward", "backward"]
-				.map(|direction| format!("threads/sql/{direction}/{migration}.sql")),
+				.map(|direction| format!("workspaces/sql/{direction}/{migration}.sql")),
 		);
 	}
 	for migration in ["0067_scratch_member_policy", "0080_schedule_member_policy"] {

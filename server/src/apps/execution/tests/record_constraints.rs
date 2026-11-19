@@ -383,16 +383,6 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	check_rejected(
 		update(
 			f.store.pool.fixture_driver(),
-			"threads",
-			"state",
-			Expr::cust("'[]'::jsonb"),
-		)
-		.await,
-		"threads_content",
-	);
-	check_rejected(
-		update(
-			f.store.pool.fixture_driver(),
 			"tasks",
 			"title",
 			Expr::value(" "),
@@ -652,7 +642,6 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 		}
 		for (table, column, constraint) in [
 			("threads", "title", "threads_content"),
-			("threads", "goal", "threads_content"),
 			("tasks", "title", "tasks_content"),
 			("tasks", "description", "tasks_content"),
 		] {
@@ -690,7 +679,6 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 		}
 		for (table, column) in [
 			("threads", "title"),
-			("threads", "goal"),
 			("tasks", "title"),
 			("tasks", "description"),
 		] {

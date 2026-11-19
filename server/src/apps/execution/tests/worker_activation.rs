@@ -301,7 +301,7 @@ async fn separate_process_notifications_and_negative_control(
 				.clone()
 				.post(format!("{}/api/threads", f.config.endpoint))
 				.bearer_auth(&token)
-				.json(&json!({"title":"Activation sample","request":"Complete"}))
+				.json(&json!({"title":"Activation sample"}))
 				.send()
 				.await
 				.unwrap()

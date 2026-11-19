@@ -61,7 +61,7 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 			pool, "other", &foreign, "reader",
 		)
 		.await;
-		sqlx::query("INSERT INTO threads (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other','Other','{}',1,$3,'reader')").bind(other_thread).bind(foreign).bind(scratch).execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other',1,$3,'reader')").bind(other_thread).bind(foreign).bind(scratch).execute(pool).await.unwrap();
 		source_bank = Uuid::new_v4();
 		sqlx::query(
 			"INSERT INTO memory_banks (id,tenant,home,thread_id,revision) VALUES ($1,'other',$2,$3,1)",

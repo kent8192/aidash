@@ -267,14 +267,18 @@ mod tests {
 		assert!(migration.database_only);
 		assert!(matches!(migration.operations.as_slice(),
 			[Operation::RunSQL { sql, reverse_sql: Some(reverse) }] if sql == &expected[12].1 && reverse == &expected[13].1));
-		// The data rewrites of #962, #963 and #987 run beside typed and
+		// The data rewrites of #962, #963, #987 and #1008 run beside typed and
 		// handwritten DDL operations of the same migrations.
 		for (app, name, forward, backward) in [
 			("identity", "0083_data_protection_switches", 16, Some(17)),
 			("identity", "0085_remove_research_approvals", 18, None),
 			("execution", "0141_remove_research", 19, Some(20)),
 			("identity", "0098_duty_member_policy", 21, Some(22)),
-			("workspaces", "0033_duty_checks", 23, Some(24)),
+			// The Thread rewrites of #1008.
+			("identity", "0110_threads", 23, None),
+			("identity", "0111_thread_member_policy", 24, Some(25)),
+			("execution", "0148_threads", 26, None),
+			("workspaces", "0033_duty_checks", 27, Some(28)),
 		] {
 			let migration = FilesystemSource::new(&root)
 				.get_migration(app, name)

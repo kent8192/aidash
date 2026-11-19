@@ -1049,6 +1049,38 @@ pub(crate) async fn reference_download(
 	.await;
 	access.finish(result).await
 }
+/// The Working Area a file is downloaded from. One its owner kept when its
+/// Thread was deleted stays theirs to download (#1008, ADR 0140); every other
+/// refusal of the live-Thread check stands.
+async fn downloadable(access: &mut Access, id: Uuid) -> Result<Area> {
+	match sessions::load(access, id).await {
+		Err(refused @ (Error::Forbidden | Error::NotFound(_))) => {
+			let Ok(area) = super::cleanup::load(access, id, "file.read").await else {
+				return Err(refused);
+			};
+			let deleted: Option<i32> = crate::database::native::query_scalar(
+				&reinhardt::query::Query::select()
+					.expr(Expr::value(1_i32))
+					.from(Alias::new("threads"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.thread_id)))
+					.and_where(
+						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
+					)
+					.and_where(Expr::col(Alias::new("deleted_at")).is_not_null())
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **access.tx)
+			.await?;
+			if deleted.is_some() {
+				Ok(area)
+			} else {
+				Err(refused)
+			}
+		}
+		other => other,
+	}
+}
+
 pub(crate) async fn file_download(
 	f: Federation,
 	actor: Actor,
@@ -1057,7 +1089,7 @@ pub(crate) async fn file_download(
 ) -> Result<DownloadChunk> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
-		let area = sessions::load(&mut access, id).await?;
+		let area = downloadable(&mut access, id).await?;
 		let entry = if let Some(entry) = service::files(&area)?
 			.into_iter()
 			.find(|entry| entry.file_id == file)

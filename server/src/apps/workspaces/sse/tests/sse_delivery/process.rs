@@ -393,7 +393,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	let id = observations[0].id;
 	for observation in &observations {
 		assert_eq!(observation.id, id);
-		assert_eq!(observation.data["data"]["state"]["number"], 2);
+		assert_eq!(observation.data["data"]["title"], "Number");
 	}
 	let after = futures_util::future::join_all(processes.iter().map(Process::metrics)).await;
 	// Act: launch each replica after applying its broker availability or role configuration.
@@ -611,7 +611,7 @@ async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
 	assert_eq!(response.status(), 200);
 	let frames = receive(&mut received, 3, 3).await;
 	for frame in &frames {
-		assert_eq!(frame.data["data"]["state"]["boundary"], "A-to-B-to-C");
+		assert_eq!(frame.data["data"]["title"], "Boundary");
 	}
 	let after = futures_util::future::join_all(processes.iter().map(Process::metrics)).await;
 	// Act: launch each replica after applying its broker availability or role configuration.

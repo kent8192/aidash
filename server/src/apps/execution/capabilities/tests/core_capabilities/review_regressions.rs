@@ -659,7 +659,6 @@ async fn command_cleanup_fixture(
 					"agent_id",
 					"owner",
 					"thread_id",
-					"thread_id",
 					"state",
 				]
 				.map(Alias::new),
@@ -671,7 +670,6 @@ async fn command_cleanup_fixture(
 				run.agent_id.clone().into(),
 				"alice".into(),
 				run.thread_id.into(),
-				Uuid::new_v4().into(),
 				"running".into(),
 			])
 			.unwrap()

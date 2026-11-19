@@ -45,7 +45,7 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 		driver, "acme", &node, "reader",
 	)
 	.await;
-	sqlx::query("INSERT INTO threads (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Origin','Origin','{}',1,$3,'reader')").bind(thread).bind(&node).bind(scratch).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Origin',1,$3,'reader')").bind(thread).bind(&node).bind(scratch).execute(driver).await.unwrap();
 	sqlx::query(
 		"INSERT INTO authorization_threads (thread_id,tenant,owner_subject) VALUES ($1,'acme','reader')",
 	)
@@ -67,7 +67,7 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 		driver, "acme", &sibling, "reader",
 	)
 	.await;
-	sqlx::query("INSERT INTO threads(id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Sibling','Sibling','{}',1,$3,'reader')").bind(sibling_thread).bind(&sibling).bind(sibling_scratch).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Sibling',1,$3,'reader')").bind(sibling_thread).bind(&sibling).bind(sibling_scratch).execute(driver).await.unwrap();
 	sqlx::query(
 		"INSERT INTO authorization_threads(thread_id,tenant,owner_subject) VALUES ($1,'acme','reader')",
 	)
@@ -93,7 +93,7 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 		"reader",
 	)
 	.await;
-	sqlx::query("INSERT INTO threads(id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other','Other','{}',1,$3,'reader')").bind(foreign_thread).bind(&foreign_node).bind(foreign_scratch).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO threads (id,tenant,node,title,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other',1,$3,'reader')").bind(foreign_thread).bind(&foreign_node).bind(foreign_scratch).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_bundles(tenant,revision,document) VALUES ('other',1,'{\"tenant\":\"other\"}')").execute(driver).await.unwrap();
 	sqlx::query(
 		"INSERT INTO authorization_threads(thread_id,tenant,owner_subject) VALUES ($1,'other','reader')",

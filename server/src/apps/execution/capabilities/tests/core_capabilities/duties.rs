@@ -1489,16 +1489,21 @@ async fn a_same_tenant_sender_must_read_the_duty_unless_the_trigger_names_its_no
 	let named = add_trigger(&c, id, json!({"kind": "node_event", "from_node": sending})).await;
 	let duty_node = named["node_id"].as_str().unwrap().to_owned();
 	let named: Uuid = serde_json::from_value(named["id"].clone()).unwrap();
-	// Bob is a member who may use the Node but may not read the Thread.
+	// Bob may use the Node (the fixture allows any subject everything) but
+	// may neither read the Thread nor administer Duties.
 	let authorization = aidash_server::authorization::Authorization {
 		pool: c.f.store.pool.clone(),
 	};
 	let snapshot = authorization.snapshot("acme").await.unwrap();
 	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
-	bundle["subjects"]["bob"] = json!({"kind": "user", "groups": ["members"]});
+	bundle["subjects"]["bob"] = json!({"kind": "user"});
 	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"bob-reads-no-thread","effect":"deny","subjects":{"ids":["bob"]},
 		"actions":["thread.read"],"resources":{"kinds":["thread"]}
+	}));
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-administers-no-duty","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":[aidash_domain::duties::ADMINISTER],"resources":{"kinds":["tenant"]}
 	}));
 	common::replace_policy(&c.f.store, "acme", bundle).await;
 	let send = |trigger: Uuid| {

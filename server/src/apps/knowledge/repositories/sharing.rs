@@ -33,10 +33,27 @@ pub(crate) async fn get(
 	.await?;
 	match row {
 		Some(row) => Ok((
-			serde_json::from_value(serde_json::Value::String(row.try_get("scope")?))?,
+			from_stored(&row.try_get::<String>("scope")?)?,
 			row.try_get("revision")?,
 		)),
 		None => Ok((SharingScope::Thread, 0)),
+	}
+}
+
+/// The stored name of a scope. `memory_scope_valid` keeps the Thread scope's
+/// pre-#1008 name `workspace` (ADR 0140), so the row never changes meaning.
+fn stored(scope: SharingScope) -> &'static str {
+	match scope {
+		SharingScope::Thread => "workspace",
+		SharingScope::TenantAgent => "tenant_agent",
+	}
+}
+
+fn from_stored(value: &str) -> Result<SharingScope> {
+	match value {
+		"workspace" => Ok(SharingScope::Thread),
+		"tenant_agent" => Ok(SharingScope::TenantAgent),
+		_ => Err(Error::Invalid("invalid memory scope".into())),
 	}
 }
 
@@ -61,10 +78,7 @@ pub(crate) async fn set(
 		return Err(Error::Conflict("memory scope revision changed".into()));
 	}
 	let revision = current + 1;
-	let value = serde_json::to_value(scope)?
-		.as_str()
-		.ok_or_else(|| Error::Invalid("invalid memory scope".into()))?
-		.to_owned();
+	let value = stored(scope);
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_tenant_scope"))

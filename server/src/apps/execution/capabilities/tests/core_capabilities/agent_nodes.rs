@@ -120,7 +120,7 @@ async fn an_agent_creates_a_node_only_when_its_root_person_may(
 	);
 	assert_eq!(live_nodes(&c).await, before + 1);
 	let denials: i64 = sqlx::query_scalar(
-		"SELECT count(*) FROM authorization_decisions WHERE tenant = 'acme' AND action = 'node.create' AND NOT allowed",
+		"SELECT count(*) FROM authorization_decisions WHERE tenant = 'acme' AND action = 'node.create' AND NOT (decision->>'allowed')::boolean",
 	)
 	.fetch_one(c.f.store.pool.fixture_driver())
 	.await

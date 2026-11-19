@@ -288,7 +288,7 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		(202, response)
 	);
 	let mut changed = manifest.clone();
-	changed["participants"][0]["mutations"][0]["state"] = json!({"different":true});
+	changed["participants"][0]["mutations"][0]["title"] = json!("Different");
 	assert_eq!(
 		common::post(&app, &subject, "/api/transactions", changed)
 			.await

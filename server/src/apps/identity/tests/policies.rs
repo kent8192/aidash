@@ -161,7 +161,7 @@ async fn subject_credentials_enforce_thread_isolation_and_live_revocation(
 	}
 	let token = tokens[0]["token"].as_str().unwrap();
 	let other = tokens[1]["token"].as_str().unwrap();
-	let thread_body = json!({"title":"private","request":"tenant secret"});
+	let thread_body = json!({"title":"private"});
 	let (status, thread) =
 		scoped_request(&app, token, "POST", "/api/threads", thread_body.clone()).await;
 	assert_eq!(status, 200, "thread creation: {thread}");

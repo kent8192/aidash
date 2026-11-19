@@ -75,6 +75,10 @@ mod tests {
 				.iter_mut()
 				.find(|policy| policy.id == "members")
 				.unwrap();
+			// Stored policies of this migration's time predate the Thread actions.
+			*policy = crate::apps::identity::services::thread_policy_backfill::before_threads(
+				policy.clone(),
+			);
 			policy.actions.remove("scratch.create");
 			policy.actions.remove(aidash_domain::duties::CREATE);
 			if tenant == "scratch-custom-policy" {

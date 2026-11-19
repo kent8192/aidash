@@ -175,6 +175,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
+	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
 	("registry", "0081_thread_tools"),
 ];
@@ -223,8 +224,13 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("knowledge", "0058_threads"),
+	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
 ];
+
+/// Reversing the whole graph grows with the history; the bound only catches a
+/// hung reversal, so it is generous (#1016).
+const REVERSE_TO_ZERO: Duration = Duration::from_secs(120);
 
 async fn history_size() -> usize {
 	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
@@ -272,7 +278,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(execution[0].name, "0149_threads_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0058_threads");
+	assert_eq!(knowledge[0].name, "0059_threads_state");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -284,7 +290,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		133
+		134
 	);
 	let tables = migrations
 		.iter()
@@ -638,6 +644,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
+			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 		])
 		.await;
@@ -1121,7 +1128,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		133
+		134
 	);
 }
 
@@ -1570,7 +1577,7 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 	// Act: the same restricted role can reverse its own graph, then replay it.
 	let mut command = deployment_command(url.as_str(), fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+	let output = tokio::time::timeout(REVERSE_TO_ZERO, command.output())
 		.await
 		.unwrap()
 		.unwrap();
@@ -1701,7 +1708,7 @@ async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	);
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+	let output = tokio::time::timeout(REVERSE_TO_ZERO, command.output())
 		.await
 		.unwrap()
 		.unwrap();
@@ -1869,7 +1876,7 @@ async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
 	// Act
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+	let output = tokio::time::timeout(REVERSE_TO_ZERO, command.output())
 		.await
 		.unwrap()
 		.unwrap();
@@ -2265,6 +2272,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
+			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 			("registry", "0081_thread_tools"),
 		])
@@ -4925,6 +4933,20 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 	pool.close().await;
 }
 
+/// The migrations that dissolve the Workspace into Threads (#1008) and every
+/// migration that depends on them.
+const THREAD_MIGRATIONS: &[(&str, &str)] = &[
+	("workspaces", "0049_threads"),
+	("workspaces", "0050_threads_state"),
+	("execution", "0148_threads"),
+	("execution", "0149_threads_state"),
+	("identity", "0110_threads"),
+	("identity", "0111_thread_member_policy"),
+	("knowledge", "0058_threads"),
+	("knowledge", "0059_threads_state"),
+	("federation", "0030_threads"),
+];
+
 struct SourceLifetimeMigration {
 	app: &'static str,
 	physical: &'static str,
@@ -4992,8 +5014,15 @@ async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_prov
 			.iter()
 			.any(|c| c.name == source_fk)
 	);
+	// The Thread migrations (#1008) rename the tables these reversals name, so
+	// the round trip runs on the history just before them.
+	let before_threads = migrations
+		.iter()
+		.filter(|m| !THREAD_MIGRATIONS.contains(&(m.app_label.as_str(), m.name.as_str())))
+		.cloned()
+		.collect::<Vec<_>>();
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
-	executor.apply_migrations(&migrations).await.unwrap();
+	executor.apply_migrations(&before_threads).await.unwrap();
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for (pass, restored) in [false, true, false].into_iter().enumerate() {
 		let actual: Vec<String> = sqlx::query_scalar(
@@ -5477,6 +5506,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
+			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 		])
 		.await;
@@ -5559,6 +5589,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
+			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 		])
 		.await;
@@ -5649,6 +5680,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("knowledge", "0058_threads"),
+			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 		])
 		.await;

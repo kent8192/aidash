@@ -18,7 +18,6 @@ import {
   FileText,
   Italic,
   MessageSquare,
-  MessagesSquare,
   Paperclip,
   SendHorizontal,
   X,
@@ -29,11 +28,7 @@ import {
   channelMessageCreate,
   channelMessageHistory,
 } from "../generated/aidash";
-import type {
-  ChannelAttachment,
-  ChannelCitation,
-  ChannelMessage,
-} from "../generated/models";
+import type { ChannelAttachment, ChannelCitation } from "../generated/models";
 import { AttachmentCard } from "./attachments";
 import { useFileCitations } from "./file-citations";
 import { fileCitationPayload } from "./file-citation-model";
@@ -238,7 +233,6 @@ const toolButton =
 
 function ConversationFeed({
   thread,
-  title,
   visible,
   data,
   discovery,

@@ -108,7 +108,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		assert!(
 			items
 				.iter()
-				.all(|item| item["thread_id"] == expected.task_id.to_string()),
+				.all(|item| item["thread_id"] == expected.thread_id.to_string()),
 			"{page}"
 		);
 	}
@@ -1237,7 +1237,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|item| item["thread_id"] == c.receiver.task_id.to_string()),
+			.any(|item| item["thread_id"] == c.receiver.thread_id.to_string()),
 		"{body}"
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-source-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[sibling_name]}}));
