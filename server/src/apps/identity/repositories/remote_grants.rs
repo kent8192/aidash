@@ -1,6 +1,9 @@
 //! Database rows are converted explicitly into portable source execution state.
 use aidash_domain::federation::execution::home;
 use chrono::{DateTime, Utc};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait as _, IntoIden as _, JoinType, Query, SimpleExpr, TableRef,
+};
 use serde_json::Value;
 use uuid::Uuid;
 #[derive(Clone)]
@@ -83,6 +86,58 @@ impl From<HomeBinding> for home::HomeBinding {
 			initial_task: row.initial_task,
 		}
 	}
+}
+
+/// `CLOCK_TIMESTAMP()`: the time the statement reads it, not the transaction's start as
+/// `CURRENT_TIMESTAMP` would be, so a long transaction never takes an expired grant for live.
+pub(crate) fn clock_timestamp() -> SimpleExpr {
+	SimpleExpr::FunctionCall("CLOCK_TIMESTAMP".into_iden(), Vec::new())
+}
+
+/// A grant row of `authorization_remote_grants` that is neither revoked nor expired.
+pub(crate) fn unexpired() -> SimpleExpr {
+	Expr::col(Alias::new("revoked"))
+		.not()
+		.and(Expr::col(Alias::new("expires_at")).gt(clock_timestamp()))
+}
+
+/// The Run a grant row of `authorization_remote_grants` started is bound at the Home and has
+/// not ended. The binding pins the Task revision the Run works on; a Task that has moved on to
+/// another revision, or reached a terminal status, no longer has a live remote Run.
+pub(crate) fn run_live() -> SimpleExpr {
+	let (binding, task) = (Alias::new("b"), Alias::new("t"));
+	let column = |table: &Alias, name: &str| Expr::col((table.clone(), Alias::new(name)));
+	Expr::exists(
+		Query::select()
+			.expr(Expr::constant_true())
+			.from_as(
+				Alias::new("authorization_remote_execution"),
+				binding.clone(),
+			)
+			.join(
+				JoinType::InnerJoin,
+				TableRef::table_alias(Alias::new("tasks"), task.clone()),
+				column(&task, "id")
+					.equals((binding.clone(), Alias::new("task_id")))
+					.and(
+						column(&task, "revision")
+							.equals((binding.clone(), Alias::new("task_revision"))),
+					),
+			)
+			.and_where(
+				column(&binding, "grant_id")
+					.equals((Alias::new("authorization_remote_grants"), Alias::new("id"))),
+			)
+			.and_where(column(&task, "status").is_not_in([
+				"OPEN",
+				"COMPLETED",
+				"FAILED",
+				"CANCELLED",
+				"ABANDONED",
+			]))
+			.to_owned(),
+	)
+	.into()
 }
 
 pub(crate) mod authority;

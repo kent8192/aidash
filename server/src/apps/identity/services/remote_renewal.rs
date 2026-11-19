@@ -10,6 +10,7 @@
 //! renews it as well. Both extend the expiry only from the value they read, so
 //! replicas and the two paths together renew a grant once per window.
 use crate::Result;
+use crate::apps::identity::repositories::remote_grants::{clock_timestamp, run_live, unexpired};
 use crate::federation::Federation;
 use aidash_application::authorization::source::renewal::{
 	GrantLife, RENEW_WITHIN, RENEWAL_BATCH, Renewal, RenewalRepository, renew, renew_after_use,
@@ -20,20 +21,31 @@ use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, IntoIden as _, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use uuid::Uuid;
 
 const DISCOVERY: TenancyScope = TenancyScope::Deployment(DeploymentScopeReason::RemoteGrantRenewal);
 
-/// The Run this grant started is bound at the Home and has not ended. The
-/// binding pins the Task revision the Run works on; a Task that has moved on
-/// to another revision, or reached a terminal status, no longer has a live
-/// remote Run.
-const RUN_LIVE: &str = "EXISTS (SELECT 1 FROM authorization_remote_execution b \
-	JOIN tasks t ON t.id = b.task_id AND t.revision = b.task_revision \
-	WHERE b.grant_id = authorization_remote_grants.id \
-	AND t.status NOT IN ('OPEN', 'COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED'))";
+/// `CLOCK_TIMESTAMP() + make_interval(0, 0, 0, 0, 0, 0, seconds)`: `seconds` from now by the
+/// clock. The positional form is `make_interval(secs => seconds)`; a function call of the query
+/// builder takes no named arguments.
+fn seconds_from_now(seconds: i64) -> SimpleExpr {
+	let zero = || Expr::value(0_i32).into();
+	clock_timestamp().add(SimpleExpr::FunctionCall(
+		"make_interval".into_iden(),
+		vec![
+			zero(),
+			zero(),
+			zero(),
+			zero(),
+			zero(),
+			zero(),
+			Expr::value(seconds as f64).into(),
+		],
+	))
+}
 
 /// What one pass of the loop did.
 #[derive(Debug, Default)]
@@ -56,11 +68,9 @@ pub async fn sweep(f: &Federation) -> Result<Pass> {
 				.column(Alias::new("id"))
 				.column(Alias::new("node_id"))
 				.from(Alias::new("authorization_remote_grants"))
-				.and_where(Expr::cust("NOT revoked AND expires_at > CLOCK_TIMESTAMP()"))
-				.and_where(Expr::cust(format!(
-					"expires_at <= CLOCK_TIMESTAMP() + make_interval(secs => {window})"
-				)))
-				.and_where(Expr::cust(RUN_LIVE))
+				.and_where(unexpired())
+				.and_where(Expr::col(Alias::new("expires_at")).lte(seconds_from_now(window)))
+				.and_where(run_live())
 				.order_by(Alias::new("expires_at"), Order::Asc)
 				.limit(RENEWAL_BATCH)
 				.build(PostgresQueryBuilder);
@@ -133,8 +143,8 @@ impl RenewalRepository for Grants {
 				let (sql, values) = Query::select()
 					.column(Alias::new("revoked"))
 					.column(Alias::new("expires_at"))
-					.expr_as(Expr::cust("CLOCK_TIMESTAMP()"), Alias::new("now"))
-					.expr_as(Expr::cust(RUN_LIVE), Alias::new("run_live"))
+					.expr_as(clock_timestamp(), Alias::new("now"))
+					.expr_as(run_live(), Alias::new("run_live"))
 					.from(Alias::new("authorization_remote_grants"))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.build(PostgresQueryBuilder);
@@ -197,16 +207,11 @@ impl RenewalRepository for Grants {
 				// (or the loop and a description) only one changes the row.
 				let (sql, values) = Query::update()
 					.table(Alias::new("authorization_remote_grants"))
-					.value_expr(
-						Alias::new("expires_at"),
-						Expr::cust(format!(
-							"CLOCK_TIMESTAMP() + make_interval(secs => {ttl_seconds})"
-						)),
-					)
+					.value_expr(Alias::new("expires_at"), seconds_from_now(ttl_seconds))
 					.and_where(Expr::col("id").eq(Expr::value(id)))
 					.and_where(Expr::col("expires_at").eq(Expr::value(seen)))
-					.and_where(Expr::cust("NOT revoked AND expires_at > CLOCK_TIMESTAMP()"))
-					.and_where(Expr::cust(RUN_LIVE))
+					.and_where(unexpired())
+					.and_where(run_live())
 					.build(PostgresQueryBuilder);
 				Ok(tx
 					.execute(&sql, convert_values(values))
@@ -215,5 +220,41 @@ impl RenewalRepository for Grants {
 			})
 			.await
 			.map_err(Into::into)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// `expires_at <= CLOCK_TIMESTAMP() + make_interval(secs => 300)`, built by the query builder:
+	/// `make_interval`'s six leading arguments are zero, and the seconds are double precision.
+	#[test]
+	fn the_renewal_window_is_built_without_raw_sql() {
+		let (sql, values) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("authorization_remote_grants"))
+			.and_where(Expr::col(Alias::new("expires_at")).lte(seconds_from_now(300)))
+			.build(PostgresQueryBuilder);
+		assert_eq!(
+			sql,
+			"SELECT \"id\" FROM \"authorization_remote_grants\" WHERE \"expires_at\" <= \
+			CLOCK_TIMESTAMP() + make_interval($1, $2, $3, $4, $5, $6, $7)"
+		);
+		assert_eq!(
+			format!("{values:?}"),
+			format!(
+				"{:?}",
+				reinhardt::query::Values(vec![
+					0_i32.into(),
+					0_i32.into(),
+					0_i32.into(),
+					0_i32.into(),
+					0_i32.into(),
+					0_i32.into(),
+					300_f64.into(),
+				])
+			)
+		);
 	}
 }
