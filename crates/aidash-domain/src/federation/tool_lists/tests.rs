@@ -17,17 +17,15 @@ fn patterns_match_names_and_globs() {
 	assert!(!ToolPattern::new("a*b*c").unwrap().matches("axxbyy"));
 	assert!(ToolPattern::new("shell").unwrap().matches("shell"));
 	assert!(!ToolPattern::new("shell").unwrap().matches("shell_poll"));
+	// MCP tool names keep their case, and matching respects it.
+	let weather = ToolPattern::new("registry:weather/getWeather").unwrap();
+	assert!(weather.matches("registry:weather/getWeather"));
+	assert!(!weather.matches("registry:weather/getweather"));
 }
 
 #[test]
 fn patterns_reject_bad_input() {
-	for bad in [
-		"",
-		"File_read",
-		"a b",
-		"x;y",
-		&"a".repeat(MAX_PATTERN_BYTES + 1),
-	] {
+	for bad in ["", "a b", "a,b", "x;y", &"a".repeat(MAX_PATTERN_BYTES + 1)] {
 		assert!(ToolPattern::new(bad).is_err(), "{bad:?}");
 	}
 	assert!(
@@ -262,6 +260,9 @@ fn an_answer_lists_the_exact_key_or_a_pattern_that_matches_it() {
 	// A pattern that misses the key would leave the Run paused on the same call.
 	assert!(answered_pattern(key, Some("registry:gitlab/*")).is_err());
 	assert!(answered_pattern(key, Some("Bad Pattern")).is_err());
+	// The default answer for a paused MCP call lists its exact, case-kept key.
+	let mcp = "registry:weather/getWeather";
+	assert_eq!(answered_pattern(mcp, None).unwrap().as_str(), mcp);
 }
 
 #[test]

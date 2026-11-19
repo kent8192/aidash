@@ -99,7 +99,8 @@ pub struct ToolDiscovery {
 	pub tools: Vec<DiscoveredTool>,
 }
 
-/// One tool name or `*` pattern, such as `file_*` or `registry:github/*`.
+/// One tool name or `*` pattern, such as `file_*` or `registry:github/*`. Matching is
+/// case-sensitive: an MCP server's tool name keeps its case in the key (`registry:weather/getWeather`).
 #[derive(
 	Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -110,13 +111,11 @@ impl ToolPattern {
 	pub fn new(pattern: impl Into<String>) -> Result<Self> {
 		let pattern = pattern.into();
 		let valid = |c: char| {
-			c.is_ascii_lowercase()
-				|| c.is_ascii_digit()
-				|| matches!(c, '_' | '-' | '.' | ':' | '/' | '@' | '*')
+			c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/' | '@' | '*')
 		};
 		if pattern.is_empty() || pattern.len() > MAX_PATTERN_BYTES || !pattern.chars().all(valid) {
 			return Err(Error::Invalid(format!(
-				"tool pattern must be 1 to {MAX_PATTERN_BYTES} lowercase letters, digits or _-.:/@*"
+				"tool pattern must be 1 to {MAX_PATTERN_BYTES} letters, digits or _-.:/@*"
 			)));
 		}
 		Ok(Self(pattern))
