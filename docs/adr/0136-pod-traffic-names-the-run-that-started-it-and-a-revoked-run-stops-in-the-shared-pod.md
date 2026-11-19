@@ -25,3 +25,7 @@ Code in the Pod runs as root and can read another process's environment, so it c
 ## Amendment (2026-11-16, #738)
 
 ADR 0137: the Run credential also admits requests to the Scratch Space's External services. The Egress request record names that Run, which stays attribution, so Catalog Approvals limited to certain Agents do not count there.
+
+## Amendment (2026-11-17)
+
+A Run that a Remote Grant started runs its commands in the receiving Node's Delegated Run Scratch Space under the receiving Node's authority for that Run, and its credential names that Run as for a local one (ADR 0139). Removing a tool from either Federation tool list stops its commands as a withdrawal does.

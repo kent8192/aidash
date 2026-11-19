@@ -134,6 +134,22 @@ impl Binding {
 	}
 }
 
+impl NativeBinding {
+	/// The one bank a memory tool of a Run executing for another Home writes: the Agent's
+	/// participant bank on the Home. A published Workspace bank is read, never written (ADR 0126).
+	pub fn write_bank(&self) -> &crate::memory::Bank {
+		&self.participant.bank
+	}
+	/// Whether the write bank is private to the Agent, which a tool write requires.
+	pub fn writes_private_bank(&self) -> bool {
+		self.participant.bank.participant.is_some()
+	}
+	/// The banks a tool recall reads: the declared participant and published Workspace banks.
+	pub fn read_banks(&self) -> &[NativeBank] {
+		&self.banks
+	}
+}
+
 impl Binding {
 	pub fn native(&self) -> Option<&NativeBinding> {
 		match self {
@@ -329,3 +345,85 @@ pub mod status;
 pub mod disclosure;
 
 pub mod reuse;
+
+#[cfg(test)]
+mod native_tool_tests {
+	use super::*;
+	use crate::memory::Bank;
+
+	fn bank(participant: Option<Uuid>) -> Bank {
+		Bank {
+			home: "aidash://home/node".into(),
+			tenant: "tenant".into(),
+			workspace: Uuid::from_u128(1),
+			participant,
+		}
+	}
+	fn provider() -> Provider {
+		Provider {
+			node_id: "aidash://home".into(),
+			entry: EntityRef {
+				id: "memory".into(),
+				version: "1".into(),
+			},
+			digest: "d".into(),
+			configuration_digest: "c".into(),
+		}
+	}
+	fn declared(bank: Bank) -> NativeBank {
+		NativeBank {
+			bank,
+			provider: provider(),
+			roles: vec![],
+			max_model_tokens: 1,
+			max_context_tokens: 1,
+			cache_max_age_seconds: 1,
+			cache_max_attempts: 1,
+		}
+	}
+	fn binding() -> NativeBinding {
+		let participant = bank(Some(Uuid::from_u128(2)));
+		NativeBinding {
+			selection: NativeRequest {
+				participant: Uuid::from_u128(2),
+				expected_revision: 1,
+				provider: provider().entry,
+			},
+			generation: None,
+			participant: crate::memory::Binding {
+				bank: participant.clone(),
+				participant_revision: 1,
+				agent: EntityRef {
+					id: "agent".into(),
+					version: "1".into(),
+				},
+				provider: provider().entry,
+			},
+			agent: provider(),
+			// The published Workspace bank is declared first on purpose.
+			banks: vec![declared(bank(None)), declared(participant)],
+		}
+	}
+
+	#[test]
+	fn a_memory_tool_writes_only_the_agents_participant_bank() {
+		let binding = binding();
+		assert_eq!(binding.write_bank().participant, Some(Uuid::from_u128(2)));
+		assert!(binding.writes_private_bank());
+		// The shared Workspace bank is readable by the tool, and is not the write bank.
+		assert!(
+			binding
+				.read_banks()
+				.iter()
+				.any(|declared| declared.bank.participant.is_none())
+		);
+		assert_ne!(binding.write_bank(), &binding.read_banks()[0].bank);
+	}
+
+	#[test]
+	fn a_binding_with_a_workspace_wide_bank_has_no_private_write_bank() {
+		let mut binding = binding();
+		binding.participant.bank.participant = None;
+		assert!(!binding.writes_private_bank());
+	}
+}

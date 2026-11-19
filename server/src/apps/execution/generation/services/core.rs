@@ -62,3 +62,23 @@ pub(crate) async fn assign_in_restricted(
 	.await
 	.map_err(Into::into)
 }
+/// The assignment a Run started by a Remote Grant forwards to its Home (ADR 0139): the
+/// delegation chain's Generation policy decides, and only an Agent of the Home's own Node
+/// is returned.
+pub(crate) async fn assign_in_home(
+	f: &Federation,
+	access: &mut Access,
+	task_id: Uuid,
+	policy_id: &str,
+	reason: &str,
+) -> Result<Assignment> {
+	aidash_application::generation::assignment::assign_in_home(
+		&mut crate::bootstrap::generation_assignment_scope(f, access),
+		task_id,
+		policy_id,
+		reason,
+		&crate::bootstrap::registry_validation_for(&f.store),
+	)
+	.await
+	.map_err(Into::into)
+}

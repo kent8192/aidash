@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from golden_path import tool_descriptor, tool_binding, api_request, entity, tenant_subject, default_node, register_node, wait_for
+from golden_path import tool_descriptor, tool_binding, api_request, entity, tenant_subject, default_node, register_node, list_federation_tools, wait_for
 
 # Budget for a scoped Run to reach its crash boundary, and again to complete
 # after the SIGKILL. Each durable phase performs bounded Home RPCs before its
@@ -273,6 +273,9 @@ def verify(base_a, base_b, node_a, node_b, worker, provider_socket, launch_worke
         receiver_administrator = administrator(base_b, receiver_tenant, "administrator")
         register_node(base_a, source_tenant, address_b, receiver.url, source_administrator)
         register_node(base_b, receiver_tenant, address_a, home.url, receiver_administrator)
+        # The remote Run calls the receiver's Registry tool, which both Nodes must list (ADR 0139).
+        list_federation_tools(base_a, source_tenant, address_b, source_administrator, ["registry:scoped-effect/*"])
+        list_federation_tools(base_b, receiver_tenant, address_a, receiver_administrator, ["registry:scoped-effect/*"])
         registered = True
         receiver_administrator.api(f"/api/authorization/{receiver_tenant}/peer-mappings", {"node": receiver_node, "source_node": address_a, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
         entries = [

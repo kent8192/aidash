@@ -9,6 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check as Tick } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
 import {
   Alert,
   Check,
@@ -21,6 +22,7 @@ import {
 import {
   tenantNodeRegistrationHistory,
   tenantNodeRegistrationSet,
+  tenantNodeRegistrationToolLists,
   tenantNodeRegistrations,
   tenantNodeUpdate,
   tenantNodesCreate,
@@ -29,13 +31,22 @@ import { useNodes } from "./nodes";
 import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 import {
   changedRegistration,
+  changedToolLists,
   inOtherDeployment,
   newRegistration,
   type RegistrationDraft,
+  toolAskAnswer,
+  toolAskChoices,
+  toolAsksPath,
+  type ToolAsk,
+  type ToolAskChoice,
+  type ToolAsks,
+  toolListsDraft,
+  type ToolListsDraft,
 } from "./node-registrations";
 import { registryDeployment } from "./node-selection";
 import { RecordView } from "./record-view";
-import { ApiError } from "./transport";
+import { ApiError, apiFetch } from "./transport";
 import { useTenantActions } from "./tenant-administration";
 import { Badge, Field, Modal, Panel, useI18n } from "./ui";
 import type { State } from "./types";
@@ -183,6 +194,7 @@ export function NodesPage({ data }: { data: State }) {
           label={selected.label}
           own={registryDeployment(data)}
           editable={can("node_registration.update")}
+          toolsEditable={can("node.federation_tools.manage")}
         />
       )}
       {can("node_registration.read") && can("node_registration.update") && (
@@ -227,12 +239,216 @@ export function NodesPage({ data }: { data: State }) {
   );
 }
 
+const ASK_LABELS: Record<ToolAskChoice, string> = {
+  run_only: "toolAsksRunOnly",
+  add: "toolAsksAdd",
+  decline: "toolAsksDecline",
+  block: "toolAsksBlock",
+};
+
+/** The remote Runs that stopped on a tool a list of this registration lacks (ADR 0139), for
+ *  the people who hold `node.federation_tools.manage`. Each answer is one of this Run only, add
+ *  to the list (optionally as a pattern), decline, or, for the receiving Node, block. */
+function WaitingForAnswer({
+  tenant,
+  node,
+  sourceNode,
+}: {
+  tenant: string;
+  node: string;
+  sourceNode: string;
+}) {
+  const { t, locale } = useI18n();
+  const client = useQueryClient();
+  const path = toolAsksPath(tenant, node, sourceNode);
+  const [patterns, setPatterns] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const asks = useQuery({
+    queryKey: ["tool-asks", tenant, node, sourceNode],
+    queryFn: () => apiFetch<ToolAsks>(path),
+    refetchInterval: 10000,
+  });
+  const answer = async (ask: ToolAsk, choice: ToolAskChoice) => {
+    if (busy) return;
+    setBusy(`${ask.side}:${ask.id}`);
+    setError("");
+    setDone(false);
+    try {
+      await apiFetch(`${path}/${ask.id}/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          toolAskAnswer(ask, choice, patterns[ask.id] ?? ""),
+        ),
+      });
+      setDone(true);
+      await client.invalidateQueries({ queryKey: ["tool-asks"] });
+      // An answer that adds to a list is a new revision of the registration.
+      await client.invalidateQueries({ queryKey: ["node-registrations"] });
+      await client.invalidateQueries({
+        queryKey: ["node-registration-history"],
+      });
+    } catch (reason) {
+      setError(failure(reason));
+      await client.invalidateQueries({ queryKey: ["tool-asks"] });
+    } finally {
+      setBusy("");
+    }
+  };
+  const rows = asks.isError ? undefined : asks.data?.asks;
+  return (
+    <div className="col-span-full grid gap-2" data-tool-asks={sourceNode}>
+      <span className="text-xs font-medium text-foreground">
+        {t("toolAsksTitle")}
+      </span>
+      <Hint>{t("toolAsksHelp")}</Hint>
+      {asks.isError && <Alert>{asks.error.message}</Alert>}
+      {error && <Alert>{t(error)}</Alert>}
+      {done && !error && (
+        <p className="text-xs text-muted-foreground">{t("toolAsksAnswered")}</p>
+      )}
+      {asks.isPending && <Loading />}
+      {rows?.length === 0 && (
+        <p className="text-xs text-muted-foreground">{t("toolAsksNone")}</p>
+      )}
+      {rows?.map((ask) => (
+        <div
+          key={`${ask.side}:${ask.id}`}
+          className="grid gap-2 rounded-md border border-border p-3"
+          data-tool-ask={ask.id}
+        >
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Badge
+              value={ask.side === "home" ? "toolAsksHome" : "toolAsksReceiver"}
+              tone="brand"
+            />
+            <span className="font-mono font-medium text-foreground">
+              {ask.tool}
+            </span>
+            {ask.key !== ask.tool && (
+              <span className="font-mono text-muted-foreground">{ask.key}</span>
+            )}
+          </div>
+          <div className="grid gap-0.5 text-xs text-muted-foreground">
+            {ask.task_title && (
+              <span>
+                {t("toolAsksTask")}: {ask.task_title}
+              </span>
+            )}
+            {ask.paused_since && (
+              <span>
+                {t("toolAsksSince")}:{" "}
+                {new Date(ask.paused_since).toLocaleString(locale)}
+              </span>
+            )}
+          </div>
+          <Field label={t("toolAsksPattern")}>
+            <Input
+              className="font-mono text-xs"
+              value={patterns[ask.id] ?? ""}
+              disabled={!!busy}
+              placeholder={ask.key}
+              onChange={(event) =>
+                setPatterns({ ...patterns, [ask.id]: event.target.value })
+              }
+            />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            {toolAskChoices(ask.side).map((choice) => (
+              <Button
+                key={choice}
+                size="sm"
+                variant={choice === "run_only" ? "default" : "outline"}
+                disabled={!!busy}
+                onClick={() => void answer(ask, choice)}
+              >
+                {t(ASK_LABELS[choice])}
+              </Button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The Federation tool lists of one registration (ADR 0139): what this Node asks
+ *  the registered Node for, and what it allows and blocks for that Node. */
+function FederationTools({
+  row,
+  tenant,
+  node,
+  editable,
+  busy,
+  save,
+}: {
+  row: Parameters<typeof toolListsDraft>[0];
+  tenant: string;
+  node: string;
+  editable: boolean;
+  busy: boolean;
+  save: (lists: ToolListsDraft) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  // Keyed by revision by the caller, so a refetch of the same revision keeps
+  // what is being typed and a new revision starts from the stored lists.
+  const [lists, setLists] = useState<ToolListsDraft>(() => toolListsDraft(row));
+  // The waiting calls are asked of the other Node only while the section is open.
+  const [open, setOpen] = useState(false);
+  const field = (key: keyof ToolListsDraft, label: string) => (
+    <Field label={label}>
+      <Textarea
+        className="font-mono text-xs"
+        rows={4}
+        value={lists[key]}
+        disabled={!editable || busy}
+        onChange={(event) => setLists({ ...lists, [key]: event.target.value })}
+      />
+    </Field>
+  );
+  return (
+    <details
+      className="col-span-full"
+      data-federation-tools={row.source_node}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+        {t("federationTools")}
+      </summary>
+      <div className="mt-2 grid gap-2 md:grid-cols-2">
+        <Hint>{t("federationToolsHelp")}</Hint>
+        {field("request_tools", t("federationToolsRequest"))}
+        {field("request_hosts", t("federationToolsRequestHosts"))}
+        {field("allowance", t("federationToolsAllowance"))}
+        {field("block", t("federationToolsBlock"))}
+        {editable && (
+          <div>
+            <Button size="sm" disabled={busy} onClick={() => void save(lists)}>
+              {t("federationToolsSave")}
+            </Button>
+          </div>
+        )}
+        {editable && open && (
+          <WaitingForAnswer
+            tenant={tenant}
+            node={node}
+            sourceNode={row.source_node}
+          />
+        )}
+      </div>
+    </details>
+  );
+}
+
 function Registrations({
   tenant,
   node,
   label,
   own,
   editable,
+  toolsEditable,
 }: {
   tenant: string;
   node: string;
@@ -240,6 +456,8 @@ function Registrations({
   /** `aidash://<name>` of this Deployment. */
   own: string;
   editable: boolean;
+  /** Whether the person holds `node.federation_tools.manage`. */
+  toolsEditable: boolean;
 }) {
   const { t, locale } = useI18n();
   const client = useQueryClient();
@@ -283,6 +501,31 @@ function Registrations({
         input,
       );
       setAdding(false);
+      await client.invalidateQueries({ queryKey: ["node-registrations"] });
+      await client.invalidateQueries({
+        queryKey: ["node-registration-history"],
+      });
+    } catch (reason) {
+      setError(failure(reason));
+      await client.invalidateQueries({ queryKey: ["node-registrations"] });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveToolLists = async (
+    row: Parameters<typeof toolListsDraft>[0],
+    lists: ToolListsDraft,
+  ) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await tenantNodeRegistrationToolLists(
+        encodeURIComponent(tenant),
+        encodeURIComponent(node),
+        encodeURIComponent(row.source_node),
+        changedToolLists(row, lists),
+      );
       await client.invalidateQueries({ queryKey: ["node-registrations"] });
       await client.invalidateQueries({
         queryKey: ["node-registration-history"],
@@ -423,6 +666,15 @@ function Registrations({
                     </Button>
                   </div>
                 )}
+                <FederationTools
+                  key={`${row.source_node}:${row.revision}`}
+                  row={row}
+                  tenant={tenant}
+                  node={node}
+                  editable={toolsEditable}
+                  busy={busy}
+                  save={(lists) => saveToolLists(row, lists)}
+                />
               </div>
             ))}
           </RowList>

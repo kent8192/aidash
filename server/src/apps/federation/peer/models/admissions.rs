@@ -1,4 +1,6 @@
-//! Immutable receiver admissions serialized by both source task and grant.
+//! Receiver admissions serialized by both source task and grant. What an admission binds never
+//! changes; only the Home's Federation Tool Request it keeps follows the Home's latest describe
+//! (ADR 0139), besides its cancellation and the receiving Node's Run-only answers.
 use super::AuthorizationRemoteAdmission;
 use crate::Result;
 use reinhardt::db::orm::{Model, OrmExecutor};

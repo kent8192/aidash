@@ -712,6 +712,23 @@ async fn publication_tombstones_only_removed_working_objects() {
 }
 
 #[tokio::test]
+async fn a_receiving_area_publishes_without_a_workspace_index_or_event() {
+	let (mut scope, mut area, mut image) = fixture(b"bytes");
+	image.path = "image.png".into();
+	image.media_type = "image/png".into();
+	scope.previous = json!([]);
+	area.manifest = json!([image]);
+	area.constraints = json!([
+		aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node")
+	]);
+	publish(&mut scope, &mut area).await.unwrap();
+	// The revision is still saved, so the Area's readers see the Reference set.
+	assert_eq!(scope.persisted.as_ref().unwrap().revision, area.revision);
+	assert!(scope.image_publications.is_empty());
+	assert!(scope.events.is_empty());
+}
+
+#[tokio::test]
 async fn publication_records_image_versions_in_publication_order() {
 	use aidash_domain::semantic::indexing::ImageChange;
 	let (mut scope, mut area, mut old) = fixture(b"bytes");
@@ -852,6 +869,72 @@ async fn message_attachments_can_snapshot_saved_files_while_the_area_is_running(
 	);
 }
 
+/// A message with files from a receiving Area goes to another Tenant's Home, so the rule of a
+/// share to that Home holds (ADR 0139, ADR 0114): a Reference file, a copy of it as made and a
+/// file with its bytes stay; an edited copy goes. A local Area's message keeps its own rule.
+#[tokio::test]
+async fn a_receiving_areas_message_never_carries_a_reference_file_or_a_copy_as_made() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	let record = Uuid::new_v4();
+	let file = |path: &str, digest: &str, kind, provenance| FileEntry {
+		file_id: Uuid::new_v4(),
+		path: path.into(),
+		digest: digest.into(),
+		size: 8,
+		media_type: "text/plain".into(),
+		scope: kind,
+		provenance,
+	};
+	let reference = json!({"kind":"reference","id":record});
+	let manifest = vec![
+		file(
+			"references/doc.txt",
+			"reference",
+			FileScope::References,
+			reference.clone(),
+		),
+		// `file_copy` keeps the original's provenance.
+		file("copy.txt", "reference", FileScope::Working, reference),
+		// The same bytes saved again carry no provenance of a Reference.
+		file("out/doc.txt", "reference", FileScope::Working, json!({})),
+		file("edited.txt", "edited", FileScope::Working, json!({})),
+	];
+	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
+	let area = scope.area.as_mut().unwrap();
+	area.manifest = json!(manifest);
+	area.constraints = json!([home]);
+	for path in ["references/doc.txt", "copy.txt", "out/doc.txt"] {
+		assert!(
+			matches!(
+				snapshot_message_files(&mut scope, &run, &[path.into()]).await,
+				Err(Error::NotFound(_))
+			),
+			"{path} stays"
+		);
+	}
+	let sent = snapshot_message_files(&mut scope, &run, &["edited.txt".into()])
+		.await
+		.unwrap();
+	assert_eq!(sent[0].0.path, "edited.txt");
+	// An Area that copied a Reference file, or holds private text or received files, sends none,
+	// as it shares none.
+	scope.area.as_mut().unwrap().constraints = json!([home, {"kind":"reference","id":record}]);
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &["edited.txt".into()]).await,
+		Err(Error::Forbidden)
+	));
+	// A local Area posts to its own Workspace, where only the Reference file itself stays.
+	scope.area.as_mut().unwrap().constraints = json!([]);
+	let local = snapshot_message_files(&mut scope, &run, &["out/doc.txt".into()])
+		.await
+		.unwrap();
+	assert_eq!(local[0].0.path, "out/doc.txt");
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &["references/doc.txt".into()]).await,
+		Err(Error::NotFound(_))
+	));
+}
+
 #[tokio::test]
 async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
@@ -939,6 +1022,40 @@ async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
 	.await
 	.unwrap_err();
 	assert!(matches!(error, Error::Conflict(reason) if reason == "WORKING_QUOTA"));
+}
+
+/// A receiving Area cannot read its Home's message, so a copy of that message's attachment
+/// adds no message source, which would make every later check of the Area refuse (ADR 0139).
+#[tokio::test]
+async fn a_receiving_areas_attachment_copy_adds_no_home_message_source() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	scope.active_run = Some(run.id);
+	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
+	scope.area.as_mut().unwrap().constraints = json!([home]);
+	let area = scope.area.as_ref().unwrap().clone();
+	let message = Uuid::new_v4();
+	let attachment = Uuid::new_v4();
+	let output = copy_thread_attachment(
+		&mut scope,
+		&run,
+		Uuid::new_v4(),
+		area.revision,
+		"copied.png".into(),
+		message,
+		attachment,
+		"image/png".into(),
+		"digest".into(),
+		b"image",
+	)
+	.await
+	.unwrap();
+	// The file still says where it came from.
+	assert_eq!(output["file"]["provenance"]["message_id"], json!(message));
+	assert_eq!(
+		scope.persisted.as_ref().unwrap().constraints,
+		json!([home]),
+		"only the Home the Area serves"
+	);
 }
 #[rstest::rstest]
 #[case("outbound_get", json!({"allowed_hosts":["example.com"]}), json!({"url":"https://outside.example/data"}))]

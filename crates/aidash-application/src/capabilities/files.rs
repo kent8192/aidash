@@ -457,7 +457,7 @@ async fn legacy(
 	})
 }
 /// Shape a tool result as the Envelope Agents read.
-fn envelope(
+pub fn envelope(
 	scope: &mut dyn FileScopePort,
 	area: &Area,
 	key: &str,
@@ -1059,10 +1059,17 @@ pub async fn copy_thread_attachment(
 	};
 	entries.push(file.clone());
 	area.manifest = json!(entries);
-	let source = json!({"kind":"message", "id":message_id});
-	let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
-	if !constraints.contains(&source) {
-		constraints.push(source);
+	// A local Area stays usable only while its Workspace message may still be read. A receiving
+	// Area (ADR 0139) gets no such source: the message is the Home's, which this Node cannot
+	// read, so every later check of the Area would refuse. The Home checked the pull, the file
+	// keeps its provenance, the Area sends files to that Home only, and a copy into the Scratch
+	// Space above carries no source either.
+	if !area.is_remote_home() {
+		let source = json!({"kind":"message", "id":message_id});
+		let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
+		if !constraints.contains(&source) {
+			constraints.push(source);
+		}
 	}
 	publish(scope, &mut area).await?;
 	let result = json!({"area_id":area.id, "revision":area.revision, "file":file});
@@ -1105,12 +1112,28 @@ pub async fn snapshot_message_files(
 	scope.require_current(&area, run).await?;
 	scope.authorize(&area, "file.read").await?;
 	let entries = files(&area)?;
+	// A receiving Area's files go to its Home, another Tenant's Node: the rule of a share to
+	// that Home holds (ADR 0139), so neither its Reference files nor copies of them as made
+	// leave, and an Area holding private originals or received files sends none.
+	let leaving = area.is_remote_home();
+	if leaving {
+		super::sharing::require_unbarred(&area)?;
+	}
+	let kept = if leaving {
+		super::sharing::reference_digests(&entries)
+	} else {
+		BTreeSet::new()
+	};
 	let mut result = Vec::with_capacity(paths.len());
 	let mut total = 0_u64;
 	for path in paths {
 		let file = entries
 			.iter()
-			.find(|file| file.path == *path && !file.is_reference_file())
+			.find(|file| {
+				file.path == *path
+					&& !file.is_reference_file()
+					&& !kept.contains(file.digest.as_str())
+			})
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?
 			.clone();
 		total = total.saturating_add(file.size);
@@ -1166,6 +1189,11 @@ pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<(
 	} else {
 		aidash_domain::semantic::indexing::image_changes(&previous, &current)
 	};
+	// A receiving Area belongs to a Home whose Workspace this Node does not hold: no Workspace
+	// image index or event stream here can take what it changes (ADR 0139).
+	if area.is_remote_home() {
+		return Ok(());
+	}
 	if !changes.is_empty() {
 		scope.image_publication(area, &changes).await?;
 	}

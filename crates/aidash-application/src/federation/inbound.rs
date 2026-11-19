@@ -12,6 +12,9 @@ use aidash_domain::{
 };
 use uuid::Uuid;
 
+/// How long past its `exp` a verified token's `jti` stays recorded.
+pub const TOKEN_RECORD_GRACE_SECS: u64 = 30;
+
 /// What the transport knows before anything is checked. The receiver, sender
 /// and subject of a token are the unverified claims; `accept` verifies them.
 #[derive(Debug, Clone)]
@@ -176,6 +179,7 @@ pub async fn accept(
 		source_node: sender.clone(),
 	};
 	let mut advancement = None;
+	let mut token = None;
 	match (&proof, &registration.counterpart) {
 		(Proof::InProcess, Counterpart::SameDeployment) => {}
 		(Proof::Token(raw), Counterpart::OtherDeployment { .. }) => {
@@ -196,6 +200,7 @@ pub async fn accept(
 				},
 			)?;
 			advancement = candidate.map(|keys| (stored.keys_revision, keys));
+			token = Some((claims.jti, claims.exp));
 			if claims.iss != sender.deployment.as_str()
 				|| claims.sub != sender.to_string()
 				|| claims.aud != receiver.to_string()
@@ -232,6 +237,23 @@ pub async fn accept(
 			subject: subject.clone(),
 		}
 	};
+	// Record the verified token last, after every check that can refuse the
+	// request for another reason, so such a request burns no `jti`. A reuse
+	// answers the same `Unauthorized` as any refusal, and a record that cannot
+	// be written refuses the request (ADR 0064).
+	if let Some((jti, exp)) = token
+		&& !repository
+			.record_token(
+				&tenant,
+				&receiver.node,
+				&sender.deployment,
+				jti,
+				exp.saturating_add(TOKEN_RECORD_GRACE_SECS),
+			)
+			.await?
+	{
+		return Err(Error::Unauthorized);
+	}
 	if let Some((keys_revision, keys)) = advancement {
 		let advanced = if live_authority {
 			repository

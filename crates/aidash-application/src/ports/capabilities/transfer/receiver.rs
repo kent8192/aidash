@@ -28,8 +28,31 @@ pub trait ReceiverScope: TransferScope {
 	async fn publish(&mut self, area: &mut Area) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: serde_json::Value) -> Result<()>;
 }
+/// A Home taking a delivery from a Run executing for another Home (ADR 0139, decision 20). The
+/// delivery's own admission (the live Remote Grant, its Binding and the tool the Run called)
+/// stands in for the Node-level `file.transfer` a Peer Mapping must hold, so `mapped` does not
+/// ask for it; the delegating Run's Area is still authorized for `file.receive` for a share.
+#[derive(Clone, Copy)]
+pub struct DeliveryMode {
+	/// The tool the delegating Run's own Binding must hold for its Area to take the files, or
+	/// `None` when the delivery is not a share into that Area.
+	pub bound_operation: Option<&'static str>,
+}
+impl DeliveryMode {
+	/// Whether the files land in the delegating Run's Working Area, which then anchors their
+	/// staging: its state, its quota and its generation. A message's files become Thread
+	/// Attachments of the grant's Workspace instead, so they stage in no Area, bounded by the
+	/// delivery's own budgets and the storage reservation, and need no delegating Run.
+	pub fn into_area(&self) -> bool {
+		self.bound_operation.is_some()
+	}
+}
 #[async_trait]
 pub trait ReceiverRepository: TransferRepository {
+	/// `Some` for a Home taking a delivery, `None` for a Peer Mapping's `file-transfer/1`.
+	fn delivery(&self) -> Option<DeliveryMode> {
+		None
+	}
 	fn node_id(&self) -> &str;
 	async fn incoming(&self, id: Uuid) -> Result<Record>;
 	async fn status_snapshot(&self, id: Uuid) -> Result<Record>;

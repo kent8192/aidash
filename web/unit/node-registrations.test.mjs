@@ -107,3 +107,41 @@ test("a Node of this Deployment never sends an endpoint", () => {
     },
   );
 });
+
+test("only the receiving Node may block", async () => {
+  const { toolAskChoices } = await import("../src/node-registrations.ts");
+  assert.deepEqual(toolAskChoices("receiver"), [
+    "run_only",
+    "add",
+    "decline",
+    "block",
+  ]);
+  assert.deepEqual(toolAskChoices("home"), ["run_only", "add", "decline"]);
+});
+
+test("an answer names its call and sends a typed pattern only where it lists something", async () => {
+  const { toolAskAnswer, toolAsksPath } = await import(
+    "../src/node-registrations.ts"
+  );
+  const ask = { key: "registry:github/create_issue", call: "call-7" };
+  assert.deepEqual(toolAskAnswer(ask, "add", " registry:github/* "), {
+    choice: "add",
+    key: "registry:github/create_issue",
+    call: "call-7",
+    pattern: "registry:github/*",
+  });
+  assert.deepEqual(toolAskAnswer(ask, "add", "  "), {
+    choice: "add",
+    key: "registry:github/create_issue",
+    call: "call-7",
+  });
+  assert.deepEqual(toolAskAnswer(ask, "decline", "shell"), {
+    choice: "decline",
+    key: "registry:github/create_issue",
+    call: "call-7",
+  });
+  assert.equal(
+    toolAsksPath("acme", "default", "aidash://other/n"),
+    "/api/tenants/acme/nodes/default/registrations/aidash%3A%2F%2Fother%2Fn/tool-asks",
+  );
+});

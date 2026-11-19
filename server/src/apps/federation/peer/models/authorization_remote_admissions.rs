@@ -33,6 +33,10 @@ pub struct AuthorizationRemoteAdmission {
 	pub subject_chain: Vec<String>,
 	#[field]
 	pub description: Json<Value>,
+	/// The Federation tool list the receiving Node's people allowed for this Run only
+	/// (ADR 0139); absent means none.
+	#[field]
+	pub run_tool_allowance: Option<Json<Value>>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

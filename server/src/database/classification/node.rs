@@ -72,6 +72,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "authorization_peer_mapping_history"
 		| "authorization_remote_admissions"
 		| "authorization_remote_grants"
+		| "federation_token_ids"
 		| "subnodes"
 		| "node_instructions"
 		| "scratch_spaces"

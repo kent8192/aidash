@@ -48,6 +48,15 @@ pub(crate) struct Repository<'a> {
 	/// The receiving Node of an inbound transfer; `None` for the sending side,
 	/// which acts for the Tenant that owns each transfer.
 	pub(crate) receiver: Option<Receiver>,
+	/// Set when the Home takes a delivery from a Run executing for another Home (ADR 0139): the
+	/// grant stands in for the Peer Mapping, and the description is the one the Home built.
+	pub(crate) delivery: Option<HomeDelivery>,
+}
+/// A delivery from a Run executing for another Home, as the Home takes it.
+pub(crate) struct HomeDelivery {
+	pub(crate) grant: Uuid,
+	pub(crate) description: Description,
+	pub(crate) mode: aidash_application::ports::capabilities::transfer::receiver::DeliveryMode,
 }
 /// The Node a transfer arrives at.
 pub(crate) struct Receiver {

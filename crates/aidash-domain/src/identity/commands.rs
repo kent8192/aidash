@@ -12,7 +12,11 @@ pub struct Metadata {
 	pub request_key: String,
 }
 pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
-	if operation == "delegate" && data["key"].as_str().is_none() {
+	if matches!(
+		operation,
+		"delegate" | "task_assign" | "connection_request" | "outbound_request" | "memory_mutate"
+	) && data["key"].as_str().is_none()
+	{
 		return Err(Error::Invalid("missing command key".into()));
 	}
 	let mutation =
@@ -28,6 +32,10 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 				| "run_message_output"
 				| "event" | "human_request"
 				| "mcp.connection_call"
+				| "task_assign"
+				| "connection_request"
+				| "outbound_request"
+				| "memory_mutate"
 		);
 	let digest = registry::rules::digest(&json!({"operation":operation,"data":data}));
 	// Personal calls use their logical invocation key. `not_personal` is an internal
@@ -65,8 +73,43 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"delegate" => Some("task_delegate"),
 		"discover" => Some("agent_discover"),
 		"created_task" => Some("task_delegate"),
+		// Home-forwarded tools (ADR 0139): each op is named as its tool so the
+		// Binding and the Home's own Request ([`requested`]) are checked for the
+		// tool the Run called.
+		"task_assign" => Some("task_assign"),
+		"workspace_search" => Some("workspace_search"),
+		"connection_request" => Some("connection_request"),
+		// A remote Run's outbound GET is approved by the Home's root person first (ADR 0139,
+		// decision 22): the Home asks and answers under the tool the Run called.
+		"outbound_request" | "outbound_read" => Some("outbound_get"),
+		"memory_recall" => Some("memory_recall"),
+		"memory_reflect" => Some("memory_reflect"),
+		"memory_mutate" => Some("memory_mutate"),
 		_ => None,
 	}
+}
+/// Whether the Home checks its own Federation Tool Request for `operation` before it serves it
+/// (ADR 0139, decision 1): the Home-forwarded tools, whose ops a receiving Node sends only when
+/// the Run called that tool. The older ops also carry traffic of the Run itself that no list
+/// names (a person asked about a tool approval or a Completion Review, records read for the
+/// Run's context, tasks an Agent tool creates), so only the Binding is checked for them.
+/// `delegate` and `discover` come only from a remote Run's `task_delegate` and `agent_discover`,
+/// which hand work on through the Home (#654, #1013), so they are checked too. `created_task`
+/// only tells the receiver whether its grant made a Task, before the lists decide the call.
+pub fn requested(operation: &str) -> bool {
+	matches!(
+		operation,
+		"delegate"
+			| "discover"
+			| "task_assign"
+			| "workspace_search"
+			| "connection_request"
+			| "outbound_request"
+			| "outbound_read"
+			| "memory_recall"
+			| "memory_reflect"
+			| "memory_mutate"
+	)
 }
 pub fn require_input_key(key: &str, run: Uuid) -> Result<()> {
 	if key.len() > 512

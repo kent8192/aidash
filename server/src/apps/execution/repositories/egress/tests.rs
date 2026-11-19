@@ -148,6 +148,7 @@ fn scope(space: Uuid, run: Option<Uuid>) -> ScopeSettings {
 		allowed_hosts: AllowedHosts {
 			hosts: Vec::new(),
 			allow_all: false,
+			home_ceiling: None,
 		},
 		budget: DailyBudget {
 			sent_bytes: 1 << 30,

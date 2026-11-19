@@ -574,6 +574,37 @@ impl RuntimeTasks {
 				},
 			)),
 		);
+		// Every replica runs the renewal; each extends a grant only from the expiry
+		// it read, so a grant is renewed once per window (ADR 0109).
+		let renewals = federation.clone();
+		tasks.spawn_service(
+			"remote-grant-renewal",
+			runtime_task(watched_loop::run(
+				"remote-grant-renewal",
+				Duration::from_secs(300),
+				move |_| {
+					let renewals = renewals.clone();
+					async move {
+						match crate::apps::identity::services::remote_renewal::sweep(&renewals)
+							.await
+						{
+							Ok(pass) if pass.renewed + pass.chain_broken + pass.failed > 0 => {
+								tracing::info!(
+									renewed = pass.renewed,
+									chain_broken = pass.chain_broken,
+									failed = pass.failed,
+									"Remote Grant renewal pass"
+								);
+							}
+							Ok(_) => {}
+							Err(error) => {
+								tracing::warn!(%error, "Remote Grant renewal pass failed");
+							}
+						}
+					}
+				},
+			)),
+		);
 		let retention = federation.store.clone();
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		let serving = event_streams.is_some();
@@ -2158,6 +2189,7 @@ pub(crate) fn transfer_repository(
 	crate::apps::execution::repositories::transfer::Repository {
 		federation,
 		receiver: None,
+		delivery: None,
 	}
 }
 /// A transfer arriving at the Node `receiver`.
@@ -2175,7 +2207,18 @@ pub(crate) fn transfer_receiver_repository(
 				.to_string(),
 			node: receiver,
 		}),
+		delivery: None,
 	}
+}
+/// A delivery from a Run executing for another Home, arriving at the Home Node `receiver`.
+pub(crate) fn home_delivery_repository(
+	federation: &crate::federation::Federation,
+	receiver: aidash_domain::nodes::NodeName,
+	delivery: crate::apps::execution::repositories::transfer::HomeDelivery,
+) -> crate::apps::execution::repositories::transfer::Repository<'_> {
+	let mut repository = transfer_receiver_repository(federation, receiver);
+	repository.delivery = Some(delivery);
+	repository
 }
 pub(crate) fn transfer_scope<'a>(
 	store: Option<&'a Store>,

@@ -154,6 +154,7 @@ fn world() -> World {
 		configuration_digest: digest(),
 	};
 	let description = Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::from_u128(104),
 		source_node: run.home_node.clone(),
 		target_node: "aidash://executor".into(),

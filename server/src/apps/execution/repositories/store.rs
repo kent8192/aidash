@@ -777,6 +777,14 @@ impl Store {
 		self.event_in_executor(&mut **tx, workspace, kind, data)
 			.await
 	}
+	/// The Workspace an event of `run` belongs to: none for a Run executing here for another
+	/// Home, whose Workspace this Node does not hold and no event row can name (ADR 0139).
+	pub(crate) fn event_workspace(&self, run: Option<&Run>, workspace: Uuid) -> Option<Uuid> {
+		match run {
+			Some(run) if !run.is_local(self.deployment.as_str()) => None,
+			_ => Some(workspace),
+		}
+	}
 	pub(crate) async fn event_in_executor(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -5716,6 +5724,21 @@ impl Store {
 						.map_or_else(|| refusal.tool.clone(), |stopped| stopped.name.clone()),
 					kind,
 					tool_call: call.tool_call.clone(),
+					// A Federation tool list stopped the call: record who has to be asked, by
+					// the key the lists matched (carried as the refusal's action).
+					ask: match (refusal.check, &refusal.action) {
+						(
+							aidash_domain::tool::RefusalCheck::FederationTools { home, receiver },
+							Some(key),
+						) => Some(aidash_domain::federation::tool_lists::ToolAsk {
+							key: key.clone(),
+							lacking: aidash_domain::federation::tool_lists::Lacking {
+								home,
+								receiver,
+							},
+						}),
+						_ => None,
+					},
 				}
 			}),
 		)

@@ -366,6 +366,10 @@ pub(crate) struct Access {
 	/// A remote worker's Home Workspace corpus digest, from the describe reply
 	/// that refreshed this authority (#191). `None` for every other Access.
 	pub(crate) home_corpus_digest: Option<String>,
+	/// The tools the Home's Description requests, from the same reply. `None` when it carries
+	/// none (the Home shares the receiver's Tenant) and for every other Access.
+	pub(crate) home_tool_request:
+		Option<aidash_domain::federation::tool_lists::FederationToolRequest>,
 	pub(super) environment: Value,
 }
 
@@ -701,6 +705,7 @@ impl Access {
 			read_grant: None,
 			shared_area: false,
 			home_corpus_digest: None,
+			home_tool_request: None,
 			environment: json!({"node_id":node,"transport":"api"}),
 		}
 	}
@@ -870,6 +875,7 @@ impl Access {
 			read_grant: lease.read_grant,
 			shared_area: false,
 			home_corpus_digest: None,
+			home_tool_request: None,
 			environment: lease.environment.clone(),
 		})
 	}

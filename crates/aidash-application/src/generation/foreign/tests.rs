@@ -74,6 +74,7 @@ fn scope() -> Scope {
         "name":{"en":"Agent"},"description":{}}))
 		.unwrap();
 	let description = Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::from_u128(5),
 		source_node: intent.home_node.clone(),
 		target_node: intent.target_node.clone(),

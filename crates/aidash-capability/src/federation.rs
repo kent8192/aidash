@@ -144,9 +144,11 @@ impl FederationClaims {
 	/// `now` seconds since the epoch, for exactly `request`. The checks run in
 	/// this order: size, shape, header, key, signature, `kid`, expiry, issue
 	/// time (at most `IAT_LEEWAY_SECS` ahead of `now`), lifetime, `jti`,
-	/// protocol, then method, path and body. A repeat of
-	/// the same request within the lifetime is the handlers' to deduplicate; the
-	/// receiver keeps no `jti` store.
+	/// protocol, then method, path and body. This check keeps no state: a
+	/// receiving Node in another Tenant records the sending Deployment and `jti`
+	/// of every token that passes, until `exp` plus 30 seconds, and refuses a
+	/// repeat (`docs/protocol.md`, ADR 0064). Handlers still deduplicate repeats
+	/// of the same request they mean to accept twice.
 	pub fn verify(
 		token: &str,
 		keys: &PublicKeys,

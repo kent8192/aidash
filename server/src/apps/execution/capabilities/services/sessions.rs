@@ -56,6 +56,15 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 	let Some(area) = area else {
 		return Ok(false);
 	};
+	// A Run executing here for another Home is visible through its admission; its receiving
+	// Area never was a reason to hide it, and only the Home person's chain may use the Area.
+	if area.constraints.as_array().is_some_and(|sources| {
+		sources
+			.iter()
+			.any(|source| source["kind"] == aidash_domain::capabilities::sessions::REMOTE_HOME)
+	}) {
+		return Ok(true);
+	}
 	if access.read_lookups.walking() {
 		let messages: Vec<_> = area
 			.constraints
@@ -175,6 +184,30 @@ pub(crate) async fn initialize(
 	application::initialize(
 		&mut crate::bootstrap::session_scope(Some(store), access),
 		&run.metadata(),
+		config,
+	)
+	.await
+	.map_err(Into::into)
+}
+/// Bind the receiving Working Area of a Run executing here for another Home, and pin its Agent
+/// version's Reference set into it (ADR 0139). The Home person owning it is the one the Run's
+/// Delegated Run Scratch Space belongs to. The Area's thread is the Home Task's: the receiver
+/// is told the Task, not the Home's thread (the description carries none), so a Task is a
+/// thread here and follow-up Runs of the same Task, Agent and person reuse the Area.
+pub(crate) async fn initialize_remote(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	config: &AgentConfig,
+) -> Result<()> {
+	let metadata = run.metadata();
+	let owner =
+		crate::apps::workspaces::repositories::scratch::remote_person(access, &metadata).await?;
+	application::initialize_remote(
+		&mut crate::bootstrap::session_scope(Some(store), access),
+		&metadata,
+		run.task_id,
+		&owner,
 		config,
 	)
 	.await

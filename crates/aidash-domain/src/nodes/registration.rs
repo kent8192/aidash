@@ -5,6 +5,7 @@
 use super::keys::{PublicDeploymentKey, RolloverSchedule, TrustedDeploymentKeys};
 use super::{DeploymentId, DeploymentKeyId, NodeAddress, NodeName};
 use crate::configuration::validate_endpoint;
+use crate::federation::tool_lists::{FederationToolRequest, ToolList};
 use crate::tenancy::TenantName;
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -169,10 +170,41 @@ pub struct NodeRegistration {
 	pub dashboard_origin: Option<String>,
 	pub atomic_transactions: bool,
 	pub enabled: bool,
+	/// What the owning Node asks the registered Node to let its remote Runs use,
+	/// with the defaults applied when none was set (ADR 0139).
+	pub tool_request: FederationToolRequest,
+	/// The tools the owning Node lets the registered Node's remote Runs use.
+	pub tool_allowance: ToolList,
+	/// The tools the owning Node never lets them use.
+	pub tool_block: ToolList,
 	pub revision: i64,
 	pub actor: String,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
+}
+
+/// A Tenant Administrator's replacement of one registration's three Federation tool lists.
+/// Each list is validated while the body is read, so a bad pattern is a 422.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolListsInput {
+	/// The revision being replaced.
+	pub revision: i64,
+	/// What this Node asks the registered Node for.
+	pub request: FederationToolRequest,
+	/// What this Node lets the registered Node's remote Runs use.
+	pub allowance: ToolList,
+	/// What this Node never lets them use.
+	pub block: ToolList,
+}
+
+impl ToolListsInput {
+	pub fn checked(&self) -> Result<()> {
+		if self.revision < 1 {
+			return Err(Error::Invalid("invalid Node Registration revision".into()));
+		}
+		Ok(())
+	}
 }
 
 impl NodeRegistration {

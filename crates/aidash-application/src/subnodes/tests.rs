@@ -4,7 +4,7 @@ use aidash_domain::{
 	RunControl, RunPhase,
 	identity::{tenancy, tenant_administration as admin},
 	policy::{Decision, Effect, Policy, ResourceSelector, SubjectSelector},
-	subnodes::{Member, State, SubnodeId, SubnodeLimits},
+	subnodes::{Member, State, SubnodeId},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -55,10 +55,6 @@ struct Scope {
 	decisions: Vec<(Evaluation, Decision)>,
 	inserted: usize,
 	member_required: Allowance,
-	remote: bool,
-	nested: bool,
-	active: usize,
-	limits: SubnodeLimits,
 }
 fn scope() -> Scope {
 	let run = run();
@@ -81,10 +77,6 @@ fn scope() -> Scope {
 		decisions: vec![],
 		inserted: 0,
 		member_required: Allowance::default(),
-		remote: false,
-		nested: false,
-		active: 0,
-		limits: SubnodeLimits::default(),
 	}
 }
 impl Scope {
@@ -137,14 +129,8 @@ impl CreateScope for Scope {
 			attributes: json!({}),
 		})
 	}
-	async fn remote_grant_started_run(&mut self, _: Uuid) -> Result<bool> {
-		Ok(self.remote)
-	}
 	async fn replay(&mut self, _: &RunMetadata, _: &str, _: &Create) -> Result<Option<Subnode>> {
 		Ok(None)
-	}
-	async fn limits(&mut self) -> Result<SubnodeLimits> {
-		Ok(self.limits)
 	}
 	async fn creator_authority(&mut self, _: &RunMetadata) -> Result<Allowance> {
 		Ok(Allowance::default())
@@ -205,18 +191,11 @@ async fn a_member_agent_creates_a_subnode_without_a_named_grant() {
 }
 
 #[tokio::test]
-async fn creation_refuses_unconsented_remote_and_uncovered_members_but_admits_the_creator_agent() {
-	// Nesting and the number of Subnodes are not limited (#1012, ADR 0143).
+async fn creation_refuses_uncovered_members_but_admits_the_creator_agent() {
+	// Nesting and the number of Subnodes are not limited (#1012, ADR 0143), and a
+	// remote Run's consent comes from the Federation tool lists (ADR 0139).
 	let mut scope = scope();
 	scope.grant();
-	scope.nested = true;
-	scope.active = 1_000;
-	scope.remote = true;
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Refused(_))
-	));
-	scope.remote = false;
 	scope.member_required.tools.insert("private@1".into());
 	assert!(
 		matches!(create(&mut scope, &run(), "key", &input()).await, Err(Error::Refused(message)) if message.contains("private@1"))
@@ -237,19 +216,81 @@ async fn creation_refuses_unconsented_remote_and_uncovered_members_but_admits_th
 	);
 }
 
-#[tokio::test]
-async fn a_remote_grant_run_creates_only_when_the_tenant_allows_it() {
-	let mut scope = scope();
-	scope.grant();
-	scope.remote = true;
-	assert!(matches!(
-		create(&mut scope, &run(), "key", &input()).await,
-		Err(Error::Refused(message)) if message == "remote Runs are not permitted to create Subnodes"
-	));
-	assert_eq!(scope.inserted, 0);
-	scope.limits.remote_runs_may_create = true;
-	create(&mut scope, &run(), "key", &input()).await.unwrap();
-	assert_eq!(scope.inserted, 1);
+fn list(patterns: &[&str]) -> aidash_domain::federation::tool_lists::ToolList {
+	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
+	ToolList::new(patterns.iter().map(|p| ToolPattern::new(*p).unwrap())).unwrap()
+}
+fn keys(names: &[&str]) -> BTreeSet<String> {
+	names.iter().map(|name| (*name).to_owned()).collect()
+}
+fn lists(
+	request: &[&str],
+	allowance: &[&str],
+	block: &[&str],
+) -> aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
+	aidash_domain::federation::tool_lists::OwnedRemoteToolLists {
+		request: list(request),
+		allowance: list(allowance),
+		block: list(block),
+		..Default::default()
+	}
+}
+
+#[test]
+fn a_member_needs_every_tool_to_pass_both_lists_of_the_creating_run() {
+	let both = lists(
+		&["file_read", "registry:github/*"],
+		&["file_read", "registry:github/create_issue"],
+		&[],
+	);
+	assert!(
+		within_federation_lists(&both, &keys(&["file_read", "registry:github/create_issue"]))
+			.is_ok()
+	);
+	// Listed by the Home only, by the receiver only, and by neither.
+	for lacking in [
+		"registry:github/list_issues",
+		"file_search",
+		"registry:gitlab/x",
+	] {
+		assert!(
+			matches!(
+				within_federation_lists(&both, &keys(&["file_read", lacking])),
+				Err(Error::Refused(message)) if message.contains(lacking)
+			),
+			"{lacking}"
+		);
+	}
+}
+
+#[test]
+fn a_block_and_a_reach_that_never_refuse_the_member_whatever_the_lists_say() {
+	let blocked = lists(&["*"], &["*"], &["file_read"]);
+	assert!(within_federation_lists(&blocked, &keys(&["file_read"])).is_err());
+	assert!(within_federation_lists(&blocked, &keys(&["file_search"])).is_ok());
+	// `skill_list` is Reach never: no list makes it usable.
+	assert!(within_federation_lists(&lists(&["*"], &["*"], &[]), &keys(&["skill_list"])).is_err());
+}
+
+#[test]
+fn run_reach_and_coordination_tools_need_no_list_entry() {
+	let empty = lists(&[], &[], &[]);
+	assert!(
+		within_federation_lists(
+			&empty,
+			&keys(&[
+				"journal_read",
+				"subnode_message",
+				"task_create",
+				"agent_discover"
+			])
+		)
+		.is_ok()
+	);
+	// A run-only answer on either side counts, as it does for the creating Run's own calls.
+	let mut answered = lists(&["shell"], &[], &[]);
+	answered.run_allowance = list(&["shell"]);
+	assert!(within_federation_lists(&answered, &keys(&["shell"])).is_ok());
 }
 
 struct Management {

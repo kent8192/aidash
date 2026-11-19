@@ -246,7 +246,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let federation = graph.get_leaf_nodes_for_app("federation");
 	assert_eq!(federation.len(), 1);
-	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
+	assert_eq!(federation[0].name, "0029_run_only_tool_answers_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
 	assert_eq!(registry[0].name, "0080_node_tools");
@@ -270,7 +270,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		128
+		131
 	);
 	let tables = migrations
 		.iter()
@@ -1088,7 +1088,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		128
+		131
 	);
 }
 

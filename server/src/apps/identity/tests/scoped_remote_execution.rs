@@ -1680,13 +1680,8 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
 	let requests = p.requests.lock().await;
 	assert_eq!(requests.len(), 1, "{run:?}");
-	assert!(
-		requests[0]["tools"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.all(|tool| tool["function"]["name"] != "memory_mutate")
-	);
+	// Whether memory_mutate is offered is no longer this test's concern: it is a candidate a
+	// remote Run may be offered, and the Federation tool lists decide each call (ADR 0139).
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
 	let semantic = &context["current"]["semantic_memory"];
@@ -3263,6 +3258,61 @@ async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
 	p.close().await;
 }
 
+/// A Run executing here for another Home has no Workspace on this Node, so work done on its
+/// behalf is checked through its admission instead (#989): a healthy foreign Run may act, and a
+/// withdrawal on the executing Node stops it, as it did before the Workspace was left out.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_foreign_run_acts_through_its_admission_and_a_withdrawal_stops_it(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let may_act = async || {
+		let aidash_server::authorization::identity::Actor::Subject(identity) =
+			authorization.authenticate(&p.receiver_token).await.unwrap()
+		else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		let run = p.run().await;
+		let chain: Vec<String> = sqlx::query_scalar(
+			"SELECT subject_chain FROM authorization_remote_admissions WHERE task_id = $1",
+		)
+		.bind(run.task_id)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::authorization::services::execution::operation_may_act(
+			&p.b.store, &identity, chain, run.id,
+		)
+		.await
+	};
+	may_act()
+		.await
+		.expect("a healthy foreign Run acts through its admission");
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&EntityRef {
+				id: "research".into(),
+				version: "1.0.0".into(),
+			},
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	assert!(
+		matches!(may_act().await, Err(aidash_server::Error::Forbidden)),
+		"a withdrawal on the executing Node stops a foreign Run's actions"
+	);
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review_receiver_only_executor_activates_required_home(
@@ -3449,6 +3499,37 @@ async fn receiver_owns_the_remote_executor_subject(
 	p.close().await;
 }
 
+impl Pair {
+	/// Lists `task_delegate` and `agent_discover` on both Nodes (ADR 0139): the
+	/// Home's Federation Tool Request for the receiver and the receiver's
+	/// Allowance for the Home, beside the defaults. The pair's Nodes belong to
+	/// different Deployments, so a hop through the Home needs both lists, and
+	/// neither tool is a default. Both sides read these rows live.
+	async fn list_onward_tools(&self) {
+		let mut tools: Vec<String> = aidash_domain::federation::tool_lists::DEFAULT_TOOLS
+			.iter()
+			.map(|tool| (*tool).to_owned())
+			.collect();
+		tools.extend(["task_delegate".to_owned(), "agent_discover".to_owned()]);
+		let updated =
+			sqlx::query("UPDATE node_registrations SET tool_request = $1 WHERE source_node = $2")
+				.bind(json!({"tools": tools, "hosts": []}))
+				.bind(node_of(&self.b))
+				.execute(self.a.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		assert_eq!(updated.rows_affected(), 1);
+		let updated =
+			sqlx::query("UPDATE node_registrations SET tool_allowance = $1 WHERE source_node = $2")
+				.bind(json!(tools))
+				.bind(node_of(&self.a))
+				.execute(self.b.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		assert_eq!(updated.rows_affected(), 1);
+	}
+}
+
 /// Multi-hop delegation (#654, ADR 0109 amendment): a Remote Grant Run
 /// discovers through its Home, creates a child there and hands it on to a
 /// third Node. The Home prepares that grant itself, for the chain that
@@ -3459,6 +3540,7 @@ async fn a_remote_grant_run_hands_its_child_on_to_a_third_node_through_its_home(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
+	p.list_onward_tools().await;
 	// A third Node: a second Node of the Home's Tenant with the Agent approved.
 	let third =
 		p.a.config
@@ -3575,6 +3657,7 @@ async fn a_hop_through_an_executor_the_home_does_not_know_is_refused(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
+	p.list_onward_tools().await;
 	let third =
 		p.a.config
 			.deployment
@@ -3639,6 +3722,7 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
+	p.list_onward_tools().await;
 	let run = p.run().await;
 	let home = Home::new(p.b.clone(), run.clone());
 	let child = home
@@ -3692,6 +3776,7 @@ async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
+	p.list_onward_tools().await;
 	let third =
 		p.a.config
 			.deployment
@@ -3824,6 +3909,47 @@ async fn another_tenants_node_wakes_only_a_trigger_that_names_it(#[future(awt)] 
 	p.close().await;
 }
 
+/// Across Tenants a hop through the Home needs both Federation tool lists to
+/// name the tool (ADR 0139): with the default lists the Home serves neither
+/// `discover` nor `delegate`, so nothing is handed on.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_hop_needs_both_lists_to_name_the_tool(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	let home = Home::new(p.b.clone(), p.run().await);
+	assert!(home.discover_cards(&Default::default()).await.is_err());
+	let child = home
+		.create_task(
+			"unlisted-hop-child",
+			&NewTask {
+				title: "Unlisted hop child".into(),
+				description: "Not handed on".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	let refused = home
+		.delegate_with_key("unlisted-hop", child.id, &node_of(&p.a), &agent)
+		.await;
+	assert!(refused.is_err(), "{refused:?}");
+	assert!(
+		p.a.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.iter()
+			.all(|run| run.task_id != child.id)
+	);
+	p.close().await;
+}
+
 /// A Remote Grant Run may hand a child back to its Home's own Node (#654).
 #[rstest::rstest]
 #[tokio::test]
@@ -3831,6 +3957,7 @@ async fn a_remote_grant_run_hands_its_child_back_to_its_homes_own_node(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
+	p.list_onward_tools().await;
 	let home = Home::new(p.b.clone(), p.run().await);
 	let child = home
 		.create_task(
@@ -4277,6 +4404,7 @@ impl Pair {
 				tool: "task_delegate".into(),
 				tool_call: None,
 				kind: aidash_domain::tool::RefusalKind::OtherNode,
+				ask: None,
 			}),
 			..Default::default()
 		};
@@ -7535,7 +7663,7 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_substitute(
+async fn remote_memory_mutate_cannot_write_a_receiver_substitute(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
@@ -7547,9 +7675,12 @@ async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_subs
 	p.step().await;
 	assert_eq!(p.requests.lock().await.len(), 1);
 	let run = p.run().await;
-	assert_eq!(
-		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"],
-		"unavailable tool memory_mutate",
+	// memory_mutate is now a candidate a remote Run is offered (ADR 0139); a write it cannot
+	// make still answers an explicit tool error and leaves no Unit on either Node.
+	assert!(
+		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"]
+			.as_str()
+			.is_some_and(|error| !error.is_empty()),
 		"unsupported remote writes must return an explicit tool error"
 	);
 	for node in [&p.a, &p.b] {

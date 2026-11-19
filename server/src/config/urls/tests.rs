@@ -99,6 +99,7 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		("POST", "/federation/v0.1/scoped/dependencies/verify"),
 		("POST", "/federation/v0.1/scoped/discover"),
 		("POST", "/federation/v0.1/scoped/duty-events"),
+		("POST", "/federation/v0.1/scoped/tools/discover"),
 		("POST", "/federation/v0.1/scoped/execution/admissions"),
 		(
 			"POST",
@@ -121,6 +122,18 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 			"/federation/v0.1/scoped/execution/admissions/{id}/verify",
 		),
 		("POST", "/federation/v0.1/scoped/execution/commands"),
+		(
+			"POST",
+			"/federation/v0.1/scoped/execution/deliveries/chunks",
+		),
+		(
+			"POST",
+			"/federation/v0.1/scoped/execution/deliveries/commit",
+		),
+		(
+			"POST",
+			"/federation/v0.1/scoped/execution/deliveries/prepare",
+		),
 		("POST", "/federation/v0.1/thread-attachment/1/fetch"),
 		(
 			"POST",

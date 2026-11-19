@@ -234,6 +234,29 @@ pub async fn assign_in_drafted(
 	}
 	create_in_drafted(scope, &task, policy, reason, None, validation, draft).await
 }
+/// A `task_assign` that a Run started by a Remote Grant forwards to its Home (ADR 0139).
+/// The assignee is only an Agent of the Home Node that holds the Workspace, existing or
+/// generated there: the catalog is this Deployment's and the delegation is local, and the
+/// result is checked once more so a Node the Home does not hold the Workspace on can never be
+/// returned. It never selects a member filter, because a remote Run has no Subnode.
+pub async fn assign_in_home(
+	scope: &mut dyn GenerationAssignmentScope,
+	task_id: Uuid,
+	policy_id: &str,
+	reason: &str,
+	validation: &DefinitionValidation,
+) -> Result<Assignment> {
+	let assignment =
+		assign_in_restricted(scope, task_id, policy_id, reason, validation, None).await?;
+	if let Assignment::Existing { delegation } = &assignment {
+		let workspace = scope.task(task_id).await?.workspace_id;
+		let home = scope.workspace_node(workspace).await?;
+		if !aidash_domain::nodes::names_home(&delegation.node_id, &home.to_string()) {
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(assignment)
+}
 /// What the person the chain starts at decided in advance about a generation
 /// request that needs an approver (ADR 0076). Only a refusal is acted on: an
 /// advance approval never stands in for the person's Catalog Approval of the

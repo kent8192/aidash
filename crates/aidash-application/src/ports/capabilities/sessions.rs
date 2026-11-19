@@ -1,7 +1,7 @@
 //! A session scope shares current authority and the same locked persistence transaction.
 use crate::Result;
 use aidash_domain::{
-	Task,
+	RunMetadata, Task,
 	capabilities::sessions::{Area, SessionRun},
 	policy::Resource,
 	registry::{AgentConfig, EntityRef},
@@ -33,6 +33,15 @@ pub trait SessionScope: Send {
 	async fn parent_areas(&mut self, id: Uuid) -> Result<Vec<Area>>;
 	async fn lock_thread(&mut self, thread: Uuid, workspace: Uuid) -> Result<()>;
 	async fn ensure_area(&mut self, task: &Task, thread: Uuid, agent_id: &str) -> Result<Area>;
+	/// The Area of a Run executing here for another Home, created empty when absent and kept
+	/// with its `remote_home` constraint. It is keyed by this Tenant, the Run's Home Node and
+	/// Workspace, `thread`, the Run's Agent and the Home person `owner` (ADR 0139).
+	async fn ensure_remote_area(
+		&mut self,
+		run: &RunMetadata,
+		thread: Uuid,
+		owner: &str,
+	) -> Result<Area>;
 	async fn initialized(&mut self, run_id: Uuid) -> Result<Option<bool>>;
 	async fn initialized_locked(&mut self, run_id: Uuid) -> Result<bool>;
 	async fn mark_initialized(&mut self, run_id: Uuid) -> Result<()>;

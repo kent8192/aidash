@@ -87,6 +87,18 @@ impl InboundRepository for Clock<'_> {
 	) -> aidash_application::Result<Option<ReceivingKeys>> {
 		self.0.receiving_keys(owner).await
 	}
+	async fn record_token(
+		&self,
+		tenant: &TenantName,
+		receiver: &NodeName,
+		sender: &DeploymentId,
+		jti: uuid::Uuid,
+		expires_at: u64,
+	) -> aidash_application::Result<bool> {
+		self.0
+			.record_token(tenant, receiver, sender, jti, expires_at)
+			.await
+	}
 	async fn advance_keys(
 		&self,
 		owner: &ReceivingKeyOwner,

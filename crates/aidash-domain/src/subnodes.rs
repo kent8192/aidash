@@ -148,8 +148,6 @@ pub enum Refusal {
 	MemberHasWork,
 	#[error("agent is not a member")]
 	NotMember,
-	#[error("remote Runs are not permitted to create Subnodes")]
-	RemoteCreationDisabled,
 }
 
 /// Reject an allowance that exceeds what the creating Run may use.
@@ -187,23 +185,16 @@ pub fn member_fits(required: &Allowance, allowance: &Allowance) -> Result<(), Re
 
 /// Tenant settings for Subnodes. There is no cap on how many Subnodes a Run
 /// creates, how many members one has or how deeply they nest (#1012, ADR
-/// 0143); what remains is the receiving Tenant's consent to Subnodes created
-/// by work another Node sent it.
+/// 0143), and a remote Run's consent comes from both Nodes' Federation tool
+/// lists (ADR 0139), so nothing here is read any more.
 #[derive(
 	Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(deny_unknown_fields)]
 pub struct SubnodeLimits {
+	// No longer read: the receiving Node's Federation Tool Allowance replaced this setting
+	// (ADR 0110, ADR 0139). It stays in the stored and API shape until a migration drops it.
 	pub remote_runs_may_create: bool,
-}
-
-impl SubnodeLimits {
-	pub fn check_remote(self, remote: bool) -> Result<(), Refusal> {
-		if remote && !self.remote_runs_may_create {
-			return Err(Refusal::RemoteCreationDisabled);
-		}
-		Ok(())
-	}
 }
 
 #[cfg(test)]
@@ -242,23 +233,6 @@ mod tests {
 		assert_eq!(
 			allowance_within(&creator, &allowance(&["task_create"], &[])),
 			Err(Refusal::CoordinationToolInAllowance("task_create".into()))
-		);
-	}
-
-	#[test]
-	fn only_the_receivers_consent_to_remote_creation_remains() {
-		let limits = SubnodeLimits::default();
-		assert_eq!(limits.check_remote(false), Ok(()));
-		assert_eq!(
-			limits.check_remote(true),
-			Err(Refusal::RemoteCreationDisabled)
-		);
-		assert_eq!(
-			SubnodeLimits {
-				remote_runs_may_create: true,
-			}
-			.check_remote(true),
-			Ok(())
 		);
 	}
 	#[test]

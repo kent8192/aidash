@@ -193,6 +193,11 @@ impl ToolOperations for Operations {
 	}
 
 	async fn connection_person(&self) -> Result<bool> {
+		// A Run executing for another Home has no authority here to look the chain root up;
+		// the Home holds it and refuses a root that is not a person (ADR 0139).
+		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
+			return Ok(true);
+		}
 		Ok(
 			crate::apps::identity::repositories::oauth_connections::owner_of_run(
 				&self.0.store,
@@ -265,6 +270,22 @@ impl ToolOperations for Operations {
 		reason: &str,
 		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Value> {
+		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
+			// The Home assigns under its own Generation policy, to its own Agents only.
+			// Its scoped `task_assign` carries no free-form draft (#1012), so a Run
+			// executing for another Home cannot write one.
+			if draft.is_some() {
+				return Err(aidash_application::Error::Invalid(
+					"a Run executing for another Home cannot draft a generated agent".into(),
+				));
+			}
+			return self
+				.0
+				.home
+				.forward_assign(id, policy, reason)
+				.await
+				.map_err(Into::into);
+		}
 		Ok(json!(self.0.home.assign(id, policy, reason, draft).await?))
 	}
 	async fn delegate_with_key(
@@ -295,7 +316,25 @@ impl ToolOperations for Operations {
 			return self.message(key, content).await;
 		}
 		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
-			return Err(aidash_application::Error::Forbidden);
+			// The Home takes the bytes as Thread Attachments of the message it posts for the
+			// Agent (ADR 0139, decision 20).
+			let authority = self
+				.0
+				.home
+				.tool_authority()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			return authority
+				.message_files_to_home(
+					&self.0.store,
+					&self.0.run,
+					&self.0.home,
+					key,
+					content,
+					files,
+					descriptions,
+				)
+				.await
+				.map_err(operation_error);
 		}
 		let authority = self
 			.0
@@ -365,7 +404,49 @@ impl ToolOperations for Operations {
 	}
 	async fn attachment_copy(&self, input: Value) -> Result<Value> {
 		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
-			return Err(aidash_application::Error::Forbidden);
+			// Reach: the Home's Workspace (ADR 0139, decision 20). The Home keeps the attachment
+			// and answers the receiver's pull; the bytes land where the Run's commands run.
+			let id: Uuid = serde_json::from_value(input["id"].clone())
+				.map_err(|_| aidash_application::Error::Invalid("invalid attachment id".into()))?;
+			let record = self
+				.0
+				.home
+				.read_record("attachment", &id.to_string())
+				.await?;
+			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())
+				.map_err(|_| aidash_application::Error::Forbidden)?;
+			let digest = record["sha256"]
+				.as_str()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let media_type = record["attachment"]["media_type"]
+				.as_str()
+				.ok_or(aidash_application::Error::Forbidden)?
+				.to_owned();
+			// Fetched before any authority lease is taken: the pull is a Home request. It is
+			// bounded at 8 MiB by `/thread-attachment/1/fetch`, which is below the 100 MiB a
+			// Thread Attachment may be.
+			let (_, _, content) = self
+				.0
+				.home
+				.thread_attachment(id, message_id, digest)
+				.await?
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let authority = self
+				.0
+				.home
+				.tool_authority()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			return authority
+				.copy_pulled_thread_attachment(
+					&self.0.store,
+					&self.0.run,
+					input,
+					message_id,
+					media_type,
+					&content,
+				)
+				.await
+				.map_err(operation_error);
 		}
 		let authority = self
 			.0
@@ -420,7 +501,12 @@ impl ToolOperations for Operations {
 	async fn workspace_search(&self, input: Value) -> Result<Value> {
 		let ctx = &self.0;
 		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			return Err(aidash_application::Error::Forbidden);
+			// The Home searches its own Workspace by text.
+			return ctx
+				.home
+				.forward_workspace_search(input)
+				.await
+				.map_err(Into::into);
 		}
 		let authority = ctx
 			.home
@@ -454,7 +540,12 @@ impl ToolOperations for Operations {
 	) -> Result<Vec<aidash_domain::memory::Unit>> {
 		let ctx = &self.0;
 		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			return Err(aidash_application::Error::Forbidden);
+			// The Home writes only this Agent's participant bank.
+			return ctx
+				.home
+				.forward_memory_mutate(key, changes)
+				.await
+				.map_err(Into::into);
 		}
 		if let Some(authority) = &ctx.home.authority {
 			authority
@@ -479,6 +570,14 @@ impl ToolOperations for Operations {
 		reflect: bool,
 	) -> Result<Value> {
 		let ctx = &self.0;
+		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
+			// The Home's published bank and this Agent's participant bank.
+			return ctx
+				.home
+				.forward_memory_recall(key, query, reflect)
+				.await
+				.map_err(Into::into);
+		}
 		if let Some(authority) = &ctx.home.authority {
 			let (outcome, left_out) = authority
 				.memory_recall(&ctx.store, &ctx.run, key, query.clone(), reflect)
@@ -500,6 +599,18 @@ impl ToolOperations for Operations {
 		Ok(json!(lease.finish(result).await?))
 	}
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
+		// A connection request of a Run executing for another Home asks the Home's person
+		// under the `connection_request` tool, not under `human_request`.
+		if kind == aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+			&& !self.0.run.is_local(self.0.store.deployment.as_str())
+		{
+			return self
+				.0
+				.home
+				.forward_connection_request(prompt, key)
+				.await
+				.map_err(Into::into);
+		}
 		self.0
 			.home
 			.human_request(kind, prompt, key)

@@ -1,5 +1,25 @@
 # Aidash native migration history
 
+`federation/0028_run_only_tool_answers` (after `federation/0027_federation_tool_lists_state`)
+adds the nullable `jsonb` column `run_tool_allowance` to `authorization_remote_admissions` (the
+tools the receiving Node's people allowed for one Run only) and `tool_request_additions` to
+`authorization_remote_grants` (the tools the Home's people allowed for one Run only), each a
+Federation tool list of ADR 0139 (#989); NULL means none. It uses only Reinhardt operations.
+`0029_run_only_tool_answers_state` records the model state.
+
+`federation/0026_federation_tool_lists` (after `federation/0025_federation_token_ids_state`)
+adds `tool_request` and `tool_allowance` (nullable `jsonb`; NULL means the default list) and
+`tool_block` (`jsonb NOT NULL DEFAULT '[]'`) to `node_registrations` and
+`node_registration_history`, the Federation Tool Request, Allowance and Block of ADR 0139 (#989).
+It uses only Reinhardt operations. `0027_federation_tool_lists_state` records the model state.
+
+`federation/0024_federation_token_ids` (after
+`federation/0023_delegation_unused_columns_state`) creates the Tenant-owned
+`federation_token_ids` table, which records the `jti` of every Federation token a
+receiving Node in another Tenant verified until `exp` plus 30 seconds (ADR 0064,
+#989). Its row-level policy is a SQL asset because Reinhardt migrations cannot
+express policies. `0025_federation_token_ids_state` records the model state.
+
 `federation/0022_delegation_unused_columns` (after
 `federation/0021_node_preview_origin_merge`) drops the `delegations_retry` index
 and the `binding_snapshot`, `human_requests`, `next_attempt_at` and `delivered`
@@ -963,7 +983,7 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `execution/0145_stints` and `0146_stints_row_level_security` add `stints` (#1009, ADR 0141): one row per Agent's awake stretch on a Task, with the Agent version, Node, start, end and why it ended. A trigger on `runs` opens a Stint when the Run becomes ready or starts working and none is open, and ends it when the Run enters any wait but failure delivery (the reason is the wait's name) or reaches a terminal phase; a partial unique index keeps one open Stint per Run. `inference_attempts.stint_id` is filled by a trigger from the open Stint. Reinhardt has no trigger operation, so the functions and triggers are the documented raw-SQL exception. 0136 is the rendered Tenant-owned row-level policy asset. Stints go with their Run on Node purge.
 
-`execution/0143_subnode_caps_removed` and `0144_subnode_caps_removed_state` drop `subnode_limits.members_per_subnode`, `subnode_limits.subnodes_per_run` and their range check (#1012, ADR 0143): Subnodes nest and are no longer capped per Run or in members. Only `remote_runs_may_create`, the receiving Tenant's consent, remains. The reverse restores both columns with their former defaults (5 and 3) and the range check.
+`execution/0143_subnode_caps_removed` and `0144_subnode_caps_removed_state` drop `subnode_limits.members_per_subnode`, `subnode_limits.subnodes_per_run` and their range check (#1012, ADR 0143): Subnodes nest and are no longer capped per Run or in members. Only `remote_runs_may_create` remains, which nothing reads since the Federation tool lists took over the receiving Tenant's consent (ADR 0139). The reverse restores both columns with their former defaults (5 and 3) and the range check.
 
 `identity/0091_standing_instructions`, `0092_standing_instructions_row_level_security` and `0093_standing_instructions_state` add `tenant_instructions` (one per Tenant) and `node_instructions` (one per Node, foreign key to `nodes`) for #1010: the text, at most 16,384 bytes (PostgreSQL text cannot hold NUL; the application refuses it first), a positive revision for optimistic updates, and who changed it when. 0092 is the rendered Tenant-owned row-level policy asset; 0093 records the ORM state. Node Instructions go with their Node on purge.
 

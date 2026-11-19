@@ -162,6 +162,7 @@ pub(crate) mod receiving_keys;
 pub(crate) mod tenant_deletions;
 pub(crate) mod tenant_purge;
 pub(crate) mod tenants;
+pub(crate) mod tool_asks;
 
 pub(crate) mod invitations;
 

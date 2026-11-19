@@ -3,7 +3,8 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-pub use aidash_domain::nodes::registration::RegistrationInput;
+use aidash_domain::federation::tool_lists::{FederationToolRequest, ToolList};
+pub use aidash_domain::nodes::registration::{RegistrationInput, ToolListsInput};
 
 /// A Node Registration as its Tenant sees it.
 #[derive(Serialize, JsonSchema)]
@@ -20,6 +21,12 @@ pub(crate) struct RegistrationRecord {
 	pub(crate) key_id: Option<String>,
 	pub(crate) atomic_transactions: bool,
 	pub(crate) enabled: bool,
+	/// What this Node asks the registered Node to let its remote Runs use.
+	pub(crate) tool_request: FederationToolRequest,
+	/// What this Node lets the registered Node's remote Runs use.
+	pub(crate) tool_allowance: ToolList,
+	/// What this Node never lets them use.
+	pub(crate) tool_block: ToolList,
 	pub(crate) revision: i64,
 	/// `oidc:<identity>` or `deployment_administrator`.
 	pub(crate) actor: String,
@@ -46,6 +53,9 @@ impl From<aidash_domain::nodes::registration::NodeRegistration> for Registration
 			source_node: row.source_node.to_string(),
 			atomic_transactions: row.atomic_transactions,
 			enabled: row.enabled,
+			tool_request: row.tool_request,
+			tool_allowance: row.tool_allowance,
+			tool_block: row.tool_block,
 			revision: row.revision,
 			actor: row.actor,
 			created_at: row.created_at,

@@ -552,7 +552,21 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 			.await
 		{
 			Ok(Some(run)) => match check.run_visible(&run).await {
-				Ok(true) => Ok(()),
+				// A list change acts like a withdrawal (ADR 0139): a preview the Run's lists
+				// no longer let it start stops at this recheck.
+				Ok(true) => {
+					match super::operations::remote_tools::withdrawn(
+						check.tx.as_mut(),
+						run.id,
+						"live_preview_start",
+					)
+					.await
+					{
+						Ok(false) => Ok(()),
+						Ok(true) => Err(NativeError::Forbidden),
+						Err(error) => Err(error),
+					}
+				}
 				Ok(false) => Err(NativeError::Forbidden),
 				Err(error) => Err(error),
 			},
@@ -560,7 +574,21 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 			Err(error) => Err(error),
 		}
 	} else {
-		access.recheck_run_reads(preview.run_id).await.map(|_| ())
+		// A Subnode member's preview answers to the lists of the Run that created its Subnode.
+		match access.recheck_run_reads(preview.run_id).await {
+			Ok(run) => match super::operations::remote_tools::withdrawn(
+				access.tx.as_mut(),
+				run.id,
+				"live_preview_start",
+			)
+			.await
+			{
+				Ok(false) => Ok(()),
+				Ok(true) => Err(NativeError::Forbidden),
+				Err(error) => Err(error),
+			},
+			Err(error) => Err(error),
+		}
 	};
 	access.finish(result).await.map(|()| true)
 }

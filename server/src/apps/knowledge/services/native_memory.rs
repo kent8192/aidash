@@ -1108,7 +1108,7 @@ pub async fn mutate(store: &Store, actor: &Actor, mutation: Mutation) -> Result<
 	lease.finish(result).await
 }
 
-async fn validate_direct_mutation(
+pub(crate) async fn validate_direct_mutation(
 	lease: &mut Lease<'_>,
 	mutation: &Mutation,
 	policy: &Policy,

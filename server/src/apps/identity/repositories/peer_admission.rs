@@ -63,6 +63,50 @@ fn stored_node(node: &str) -> aidash_domain::nodes::NodeName {
 	aidash_domain::nodes::NodeName::parse(node).expect("a stored Node name is valid")
 }
 
+/// Save the Home's Federation Tool Request of `description`, as it has just been described, on
+/// the admission `id`, when that admission still binds `identity` and `subjects` to it and stores
+/// another Request (ADR 0139, decision 12). Answers whether it wrote.
+///
+/// A lease of the Run shares the admission row for as long as its transaction stays open, and
+/// the task that holds one may be the one asking here, so this never waits for the row: one that
+/// another transaction holds is left for the Run's next worker boundary.
+pub(crate) async fn save_tool_request(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	id: Uuid,
+	identity: &ExecutionPrincipal,
+	subjects: &[String],
+	description: &Description,
+) -> NativeResult<bool> {
+	let row: Option<Record> = crate::database::native::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_remote_admissions"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.lock(LockType::NoKeyUpdate)
+			.lock_behavior(reinhardt::query::LockBehavior::SkipLocked)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut *tx)
+	.await?;
+	let Some(record) = row.map(State::from) else {
+		return Ok(false);
+	};
+	if !record.matches(identity, subjects, description)? {
+		return Ok(false);
+	}
+	let Some(stored) = record.with_tool_request(description)? else {
+		return Ok(false);
+	};
+	let (sql, values) = Query::update()
+		.table(Alias::new("authorization_remote_admissions"))
+		.value(Alias::new("description"), stored)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, reinhardt::db::orm::execution::convert_values(values))
+		.await?;
+	Ok(true)
+}
+
 impl From<Record> for State {
 	fn from(r: Record) -> Self {
 		Self {
@@ -612,6 +656,26 @@ impl PeerAdmissionScope for Owned {
 	}
 	fn corpus_digest(&mut self, digest: Option<String>) {
 		self.access.home_corpus_digest = digest
+	}
+	fn tool_request(
+		&mut self,
+		request: Option<aidash_domain::federation::tool_lists::FederationToolRequest>,
+	) {
+		self.access.home_tool_request = request
+	}
+	async fn save_tool_request(&mut self, id: Uuid, description: &Description) -> Result<()> {
+		let identity = self.identity();
+		let subjects = self.access.subjects.clone();
+		let tenancy = self.access.tenancy()?;
+		self.runtime
+			.store
+			.pool
+			.scoped(&tenancy, async |tx| {
+				save_tool_request(&mut **tx, id, &identity, &subjects, description).await
+			})
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
 	}
 	async fn activation_record(&mut self, id: Uuid) -> Result<Option<State>> {
 		crate::apps::execution::repositories::node_cancellations::require_admission_open(

@@ -333,6 +333,12 @@ impl SourcePeerScope for SourceSession {
 }
 #[async_trait]
 impl GrantScope for SourceSession {
+	async fn registered_tool_request(
+		&mut self,
+		_: &str,
+	) -> Result<Option<aidash_domain::federation::tool_lists::FederationToolRequest>> {
+		Ok(None)
+	}
 	fn home_address(&self) -> String {
 		aidash_domain::nodes::NodeAddress::derived("aidash://home", "home").to_string()
 	}
@@ -675,4 +681,24 @@ async fn selection_inspection_checks_assignment_authority_without_creating_a_gra
 			"rollback_with_denial_audit"
 		]
 	);
+}
+
+#[test]
+fn a_receiver_reads_the_request_a_description_carries() {
+	use crate::authorization::peer::tool_request::{authorization_details, requested_tools};
+	use aidash_domain::federation::tool_lists::FederationToolRequest;
+	// Without an entry the lists do not apply (a receiver of the Home's own Tenant).
+	let mut description = description();
+	assert_eq!(requested_tools(&description).unwrap(), None);
+	let request = FederationToolRequest::defaults();
+	description.authorization_details = authorization_details(Some(&request));
+	assert_eq!(requested_tools(&description).unwrap(), Some(request));
+	// Several entries are refused, not read as "no lists".
+	let twice = [
+		description.authorization_details.clone(),
+		description.authorization_details.clone(),
+	]
+	.concat();
+	description.authorization_details = twice;
+	assert!(requested_tools(&description).is_err());
 }

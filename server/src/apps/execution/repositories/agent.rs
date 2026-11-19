@@ -1202,11 +1202,17 @@ impl<'a> Environment<'a> {
 		)
 	}
 	fn native_home(&self) -> Home {
-		Home::new(self.federation.clone(), self.step_run.clone()).with_authority(
-			self.authority
-				.as_ref()
-				.and_then(|authority| authority.guard.local_authority()),
-		)
+		Home::new(self.federation.clone(), self.step_run.clone())
+			.with_authority(
+				self.authority
+					.as_ref()
+					.and_then(|authority| authority.guard.local_authority()),
+			)
+			.with_receiver_authority(
+				self.authority
+					.as_ref()
+					.and_then(|authority| authority.guard.receiver_authority()),
+			)
 	}
 }
 
@@ -1923,6 +1929,13 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 				tools.insert((*name).to_owned(), providers.intrinsic_tool(name, note)?);
 			}
 		}
+		// Last, so the coordination and journal tools added above are filtered too.
+		self.authority
+			.as_ref()
+			.expect("checked above")
+			.guard
+			.remote_tool_filter(&mut tools)
+			.await?;
 		Ok(tools)
 	}
 }

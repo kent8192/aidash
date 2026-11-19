@@ -38,3 +38,7 @@ A person now **declines** the call the Run is paused on. The Run records the cal
 - The management view offers a paused call to a holder of `run.decline_call` with `workspace.read`, even without `run.control` (#819).
 - For a pause saved before the stopped call was recorded, two calls to the same tool in a filtered response cannot be distinguished by name; the journal may record the other call’s arguments.
 - Nothing is deployed, so both Nodes update together and there is no compatibility path for the new `Activation` field.
+
+## Amendment (2026-11-17)
+
+The receiving Node's people now answer one kind of pause in a Run that a Remote Grant started: a call that the receiving Node's Federation Tool Allowance lacks (ADR 0139). They may allow it for the Run, add the tool, block it, or decline the call, which becomes a Declined Call as when the Home declines. Every other decline stays with the Home's people. `RemoteAsk` pauses now record the waiting call, so declining one no longer answers 409.

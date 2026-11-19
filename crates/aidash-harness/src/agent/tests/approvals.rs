@@ -1272,3 +1272,55 @@ async fn an_ordered_request_keeps_the_auto_instruction_out_of_the_cached_system_
 		json!(instruction.trim_start())
 	);
 }
+
+/// An outbound read of a Run executing for another Home waits on the Home's person (ADR 0139,
+/// decision 22). While that person has not answered, each attempt under the approval's own key
+/// raises the same approval again. That attempt is never recorded as the call's result, so the
+/// next wake asks the Home again instead of replaying the wait, and a later answer reaches the
+/// Run.
+#[rstest]
+#[tokio::test]
+async fn a_capability_approval_raised_again_under_its_own_key_is_asked_again_not_replayed(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	let tool = outbound_tool(&mut fixture);
+	let approval = Uuid::from_u128(0xa2);
+	let waiting_for_home = json!({"status":"approval_required","approval_id":approval});
+	*tool.outputs.lock().unwrap() = [
+		waiting_for_home.clone(),
+		waiting_for_home.clone(),
+		waiting_for_home,
+		json!({"status":"running","operation_id":approval}),
+	]
+	.into();
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			"outbound_get",
+			json!({"url":"https://example.com/"}),
+		)],
+	);
+
+	// Act: the call, then two wakes while the Home's person has not answered, then one after.
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(last_write(&fixture).0, "run.waiting_for_approval");
+	for _ in 0..2 {
+		advance_sources(&mut fixture).await.unwrap();
+		advance_sources(&mut fixture).await.unwrap();
+		assert_eq!(last_write(&fixture).0, "run.waiting_for_approval");
+	}
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+
+	// Assert: every wake made the call again under the approval's key.
+	let again = format!("{}:approval:{approval}", base_key(&fixture.run));
+	assert_eq!(
+		tool.keys(),
+		[base_key(&fixture.run), again.clone(), again.clone(), again]
+	);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(tool_result(&saved)["status"], "running");
+}

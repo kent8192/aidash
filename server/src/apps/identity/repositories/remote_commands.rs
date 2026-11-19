@@ -76,6 +76,8 @@ use reinhardt::query::QueryStatementBuilder as _;
 
 mod effects;
 
+mod search;
+
 pub(crate) mod humans;
 
 mod connections;

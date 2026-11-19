@@ -70,3 +70,16 @@ pub async fn discover(
 ) -> ViewResult<Response> {
 	crate::http::json(service.discover(peer.0, input).await)
 }
+
+/// The tools this Node offers the calling Node to request (ADR 0139).
+#[post(
+	"/federation/v0.1/scoped/tools/discover",
+	name = "peer-mappings-discover-tools",
+	auth = "protected"
+)]
+pub async fn discover_tools(
+	#[inject] service: Depends<PeerMappings>,
+	#[inject] peer: InboundCall,
+) -> ViewResult<Response> {
+	crate::http::json(service.discover_tools(peer.0).await)
+}

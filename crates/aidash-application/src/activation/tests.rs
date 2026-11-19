@@ -227,6 +227,51 @@ async fn home_owned_human_waits_poll_without_querying_local_requests(
 	);
 }
 
+/// An outbound read of a Run executing for another Home waits on the Home's person. Nothing here
+/// decides it, so the Run wakes to ask the Home again at the polling cadence instead of at once,
+/// which re-ran the call in a loop; a pending local approval still waits until it expires and a
+/// decided one is due at once.
+#[rstest]
+#[case::awaiting_home("awaiting_home", Some(1))]
+#[case::pending_here("pending", Some(600))]
+#[case::approved("approved", Some(0))]
+#[case::denied("denied", Some(0))]
+#[tokio::test]
+async fn an_approval_awaiting_the_home_is_polled_not_rerun_at_once(
+	now: DateTime<Utc>,
+	repository: Repository,
+	#[case] state: &str,
+	#[case] seconds: Option<i64>,
+) {
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	row.metadata.updated_at = now;
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Approval {
+			approval: ApprovalRef::Capability {
+				approval_id: Uuid::from_u128(9),
+			},
+			resume: Box::default(),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	*repository.0.approval.lock().unwrap() = Some(Approval {
+		state: state.into(),
+		expires_at: Some(now + chrono::Duration::seconds(600)),
+	});
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	assert_eq!(
+		due(&mut scope, &row, now, repository.node_id())
+			.await
+			.unwrap(),
+		seconds.map(|seconds| now + chrono::Duration::seconds(seconds))
+	);
+}
+
 /// Newer input ends only the Run's own Completion Review (#112): the Run is due
 /// so its step answers the review on the Run's behalf. A request the model
 /// raised, or a review without newer input, still waits for its answer.
@@ -350,6 +395,8 @@ struct State {
 	holds_recoveries: AtomicBool,
 	/// The owning Tenant's Lease Recovery limit; `None` keeps the default.
 	lease_recovery_limit: Mutex<Option<u32>>,
+	/// The capability approval record a Run waits on, when one exists.
+	approval: Mutex<Option<Approval>>,
 }
 impl State {
 	fn record(&self, event: impl Into<String>) {
@@ -392,6 +439,7 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		deferred: Mutex::new(vec![]),
 		holds_recoveries: AtomicBool::new(false),
 		lease_recovery_limit: Mutex::new(None),
+		approval: Mutex::new(None),
 	}))
 }
 struct Scope {
@@ -461,7 +509,16 @@ impl SchedulingScope for Scope {
 	}
 	async fn approval(&mut self, _: Uuid) -> Result<Option<Approval>> {
 		self.state.record("approval");
-		Ok(None)
+		Ok(self
+			.state
+			.approval
+			.lock()
+			.unwrap()
+			.as_ref()
+			.map(|approval| Approval {
+				state: approval.state.clone(),
+				expires_at: approval.expires_at,
+			}))
 	}
 	async fn dependencies_ready(&mut self, _: Uuid) -> Result<bool> {
 		self.state.record("dependencies");

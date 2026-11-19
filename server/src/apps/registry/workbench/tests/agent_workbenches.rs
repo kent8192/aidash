@@ -108,6 +108,29 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let (status, draft) =
 		common::post(&app, token, "/api/workbench/drafts", json!({"entry":entry})).await;
 	assert_eq!(status, 200, "draft: {draft}");
+	// The default tools alone take most of the default 16,384-token total limit, so a two-step
+	// session (the call, then the answer) needs a Tenant limit the default tools fit twice.
+	// Write at the revision the limits have now, so an existing row is not a conflict.
+	let (status, current) = request(
+		&app,
+		token,
+		"GET",
+		"/api/workbench/test-limits/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "test limits: {current}");
+	let mut limits = current["limits"].clone();
+	limits["max_total_tokens"] = json!(65536);
+	let (status, saved) = request(
+		&app,
+		token,
+		"PUT",
+		"/api/workbench/test-limits/acme",
+		limits,
+	)
+	.await;
+	assert_eq!(status, 200, "test limits: {saved}");
 	let path = format!(
 		"/api/workbench/drafts/{}/tests",
 		draft["id"].as_str().unwrap()

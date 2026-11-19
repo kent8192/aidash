@@ -108,3 +108,52 @@ fn a_tools_own_fallback_shaped_result_never_becomes_a_control_outcome() {
 		&json!({"outcome":"connection","cause":{"error":"connection_required","resource":"https://mcp.example/tools"}})
 	));
 }
+
+#[rstest]
+#[case::assign("task_assign", "task_assign", true)]
+#[case::request("connection_request", "connection_request", true)]
+#[case::mutate("memory_mutate", "memory_mutate", true)]
+#[case::search("workspace_search", "workspace_search", false)]
+#[case::recall("memory_recall", "memory_recall", false)]
+#[case::reflect("memory_reflect", "memory_reflect", false)]
+fn home_forwarded_tools_check_their_own_tool_and_only_writes_enter_the_journal(
+	#[case] operation: &str,
+	#[case] tool: &str,
+	#[case] mutation: bool,
+) {
+	assert_eq!(builtin(operation), Some(tool));
+	assert_eq!(
+		prepare(operation, &json!({"key":"id"})).unwrap().mutation,
+		mutation
+	);
+}
+
+#[rstest]
+#[case::assign("task_assign")]
+#[case::request("connection_request")]
+#[case::mutate("memory_mutate")]
+fn home_forwarded_writes_require_an_explicit_string_key(#[case] operation: &str) {
+	assert!(
+		matches!(prepare(operation,&json!({})),Err(Error::Invalid(message)) if message=="missing command key")
+	);
+}
+
+#[rstest]
+fn an_outbound_request_is_a_keyed_mutation_checked_as_the_tool_the_run_called() {
+	assert!(
+		prepare("outbound_request", &json!({"key":"id"}))
+			.unwrap()
+			.mutation
+	);
+	assert!(matches!(
+		prepare("outbound_request", &json!({})),
+		Err(Error::Invalid(message)) if message == "missing command key"
+	));
+	assert!(
+		!prepare("outbound_read", &json!({"id":"x"}))
+			.unwrap()
+			.mutation
+	);
+	assert_eq!(builtin("outbound_request"), Some("outbound_get"));
+	assert_eq!(builtin("outbound_read"), Some("outbound_get"));
+}

@@ -632,6 +632,7 @@ fn admission_description(
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let now = chrono::Utc::now();
 	Description {
+		authorization_details: Vec::new(),
 		grant_id: Uuid::new_v4(),
 		source_node: home_node(),
 		target_node: format!("{DEPLOYMENT}/{node}"),
@@ -701,13 +702,26 @@ async fn remote_preview(fixture: &Fixture) -> RemoteRun {
 		.execute(driver)
 		.await
 		.unwrap();
-	sqlx::query("INSERT INTO node_registrations (tenant,node,source_node,atomic_transactions,enabled,revision,actor) VALUES ('acme',$1,$2,false,true,1,'fixture')")
+	// Both Federation tool lists name the Live preview tools, so only reads decide here (ADR 0139).
+	sqlx::query("INSERT INTO node_registrations (tenant,node,source_node,atomic_transactions,enabled,revision,actor,tool_allowance) VALUES ('acme',$1,$2,false,true,1,'fixture','[\"live_preview_*\"]'::jsonb)")
 		.bind(&node).bind(home_node())
 		.execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_peer_mappings (tenant,node,source_node,source_subject,credential_id,enabled,revision,actor) VALUES ('acme',$1,$2,$3,$4,true,1,'fixture')")
 		.bind(&node).bind(home_node()).bind(SOURCE_SUBJECT).bind(fixture.identity.credential_id)
 		.execute(driver).await.unwrap();
-	let description = admission_description(fixture, workspace);
+	let mut description = admission_description(fixture, workspace);
+	description.authorization_details = vec![
+		aidash_domain::federation::tool_lists::ToolAuthorizationDetail::new(
+			&aidash_domain::federation::tool_lists::FederationToolRequest {
+				tools: aidash_domain::federation::tool_lists::ToolList::new([
+					aidash_domain::federation::tool_lists::ToolPattern::new("live_preview_*")
+						.unwrap(),
+				])
+				.unwrap(),
+				hosts: Vec::new(),
+			},
+		),
+	];
 	sqlx::query("INSERT INTO authorization_remote_admissions (id,node,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES ($1,$2,$3,$4,$5,'acme',$6,$7,$8)")
 		.bind(fixture.run).bind(&node).bind(home_node()).bind(description.grant_id).bind(fixture.task)
 		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
@@ -1823,4 +1837,107 @@ async fn refused_run_stop_is_recovered_after_restart_and_acknowledged_only_on_su
 	assert!(stopped_at.is_some());
 	assert!(!repository.targets().await.unwrap().contains(&pending));
 	assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// Saves `description`'s Request on the Run's admission as a worker boundary does, answering
+/// whether it wrote.
+async fn save_request(
+	fixture: &Fixture,
+	description: &aidash_domain::federation::execution::Description,
+) -> bool {
+	let identity = aidash_domain::identity::execution::ExecutionPrincipal {
+		tenant: "acme".into(),
+		subject: "reader".into(),
+		credential_id: fixture.identity.credential_id,
+	};
+	let mut tx = fixture
+		.store
+		.pool
+		.begin(&fixture.identity.tenancy().unwrap())
+		.await
+		.unwrap();
+	let saved = crate::apps::identity::repositories::peer_admission::save_tool_request(
+		&mut *tx,
+		fixture.run,
+		&identity,
+		&["reader".into(), "helper".into()],
+		description,
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	saved
+}
+
+/// What the checks without a Home connection read now: whether a Live preview is withdrawn,
+/// and the egress hosts the Home names.
+async fn background_view(
+	fixture: &Fixture,
+) -> (
+	bool,
+	Option<Vec<aidash_domain::federation::tool_lists::HostPattern>>,
+) {
+	use crate::apps::execution::repositories::operations::remote_tools;
+	let mut tx = fixture
+		.store
+		.pool
+		.begin(&fixture.identity.tenancy().unwrap())
+		.await
+		.unwrap();
+	let withdrawn = remote_tools::withdrawn(&mut *tx, fixture.run, "live_preview_start")
+		.await
+		.unwrap();
+	let hosts = remote_tools::home_hosts(&mut *tx, DEPLOYMENT, fixture.run)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	(withdrawn, hosts)
+}
+
+/// A Request the Home narrows or widens after admission reaches the Read Recheck and egress
+/// once a worker boundary has described it (ADR 0139, decision 12).
+#[rstest]
+#[tokio::test]
+async fn a_described_request_reaches_the_checks_without_a_home_connection(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_domain::federation::tool_lists::{
+		FederationToolRequest, HostPattern, ToolAuthorizationDetail, ToolList, ToolPattern,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let remote = remote_preview(&fixture).await;
+	let described = |tools: &[&str], hosts: &[&str]| {
+		let mut description = remote.description.clone();
+		description.authorization_details =
+			vec![ToolAuthorizationDetail::new(&FederationToolRequest {
+				tools: ToolList::new(tools.iter().map(|tool| ToolPattern::new(*tool).unwrap()))
+					.unwrap(),
+				hosts: hosts
+					.iter()
+					.map(|host| HostPattern::new(*host).unwrap())
+					.collect(),
+			})];
+		description
+	};
+	assert_eq!(background_view(&fixture).await, (false, Some(vec![])));
+	// The Home no longer asks for Live previews: the running one is withdrawn.
+	assert!(save_request(&fixture, &described(&["shell"], &[])).await);
+	assert_eq!(background_view(&fixture).await, (true, Some(vec![])));
+	// The Home adds them back with a host: the preview stays and egress may reach the host.
+	let widened = described(&["live_preview_*"], &["example.com"]);
+	assert!(save_request(&fixture, &widened).await);
+	assert_eq!(
+		background_view(&fixture).await,
+		(false, Some(vec![HostPattern::new("example.com").unwrap()]))
+	);
+	// Described again unchanged, nothing is written.
+	assert!(!save_request(&fixture, &widened).await);
+	// A Description that no longer matches the admission saves nothing.
+	let mut other = described(&["shell"], &[]);
+	other.task.title = "Another task".into();
+	assert!(!save_request(&fixture, &other).await);
+	assert_eq!(
+		background_view(&fixture).await,
+		(false, Some(vec![HostPattern::new("example.com").unwrap()]))
+	);
 }

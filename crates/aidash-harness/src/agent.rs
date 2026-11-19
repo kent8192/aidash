@@ -3277,7 +3277,15 @@ connection: None,
 					return self.tool_error(run, token, &call, cursor, declined.kind.declined_sentence()).await;
 				}
 				let Some(tool) = tools.get(&call.name) else {
-					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
+					// A Run executing for another Home reports its calls there, so a tool it lacks
+					// answers in the words a blocked or Reach never tool answers: a tool blocked after
+					// the map was built must read the same as one that never was (ADR 0139, decision 14).
+					let message = if home.local() {
+						format!("unavailable tool {}", call.name)
+					} else {
+						aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL.to_owned()
+					};
+					return self.tool_error(run, token, &call, cursor, message).await;
 				};
 				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
 					// Every call is checked against the Exposure set its request
@@ -3637,7 +3645,21 @@ connection: None,
 					progress.deferred_selected_media = selections[..deferred_count].to_vec();
 					progress.selected_media = selections[deferred_count..].to_vec();
 				}
-                let output = if invocation.status != "COMPLETED" && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
+				// A call made again under its approval's own key that raises the same approval waits on
+				// an answer nothing on this Node gives: the Home's person's, for a Run executing for
+				// another Home (ADR 0139). Its invocation stays open, so the next wake asks again
+				// instead of replaying this wait for good. Only a replay-safe call may run again.
+				let reraised = invocation.status != "COMPLETED"
+					&& contract.replay_safe()
+					&& !contract.behavior.tenant_tool_call()
+					&& !resumed_operation
+					&& run.state.tool()?.approval.is_some_and(|approval| {
+						matches!(
+							FrameworkResult::decode(&contract, &output, &call.arguments),
+							Ok(FrameworkResult::Approval(id)) if id == approval
+						)
+					});
+                let output = if !reraised && invocation.status != "COMPLETED" && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
                 } else { output };
                 let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };

@@ -4,7 +4,7 @@ use aidash_domain::{
 	RunMetadata,
 	policy::Resource,
 	registry::EntityRef,
-	subnodes::{Allowance, Subnode, SubnodeLimits},
+	subnodes::{Allowance, Subnode},
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -17,7 +17,6 @@ pub trait CreateScope: AuthorizationLease {
 	/// The receiving Node address, independent of the Run's remote Home.
 	fn execution_node(&self) -> &str;
 	async fn node_resource(&mut self, run: &RunMetadata) -> Result<Resource>;
-	async fn remote_grant_started_run(&mut self, run: Uuid) -> Result<bool>;
 	/// Return an earlier receipt, or conflict if the key names different input.
 	async fn replay(
 		&mut self,
@@ -25,7 +24,6 @@ pub trait CreateScope: AuthorizationLease {
 		key: &str,
 		input: &Create,
 	) -> Result<Option<Subnode>>;
-	async fn limits(&mut self) -> Result<SubnodeLimits>;
 	/// The creator's bound tools and Secrets that the current lease may use.
 	async fn creator_authority(&mut self, run: &RunMetadata) -> Result<Allowance>;
 	/// Checks Node Catalog Approval and returns the member's complete Binding closure.
