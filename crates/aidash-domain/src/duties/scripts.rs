@@ -228,7 +228,9 @@ pub enum RouterAction {
 	Drop {},
 	/// The script did the work itself.
 	Act {},
-	/// Start a model Task in the Duty's Thread.
+	/// Start a model Task in the Duty's Thread. The Task keeps the Duty's
+	/// own title; the Router's title and description reach the Agent only
+	/// as data, beside the event they were computed from.
 	Task {
 		title: String,
 		#[serde(default)]

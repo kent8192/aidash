@@ -329,7 +329,7 @@ test("an event shows the Router's decision", () => {
   };
   assert.equal(
     eventLabel(task, false),
-    'started a Task · Router: new Task "Fix CI"',
+    "started a Task · Router: started a Task (Fix CI)",
   );
   assert.equal(
     eventLabel(

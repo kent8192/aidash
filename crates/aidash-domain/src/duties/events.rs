@@ -142,7 +142,7 @@ pub fn task_description(mission: &str, trigger: &TriggerKind, payload: &Value) -
 
 /// [`task_description`] for a Task the Duty's Router started (#1011 D3). The
 /// Router computed its title and description from the event, so they stay
-/// inside the data with it.
+/// inside the data with it, and the Task keeps the Duty's own title.
 pub fn routed_task_description(
 	mission: &str,
 	trigger: &TriggerKind,

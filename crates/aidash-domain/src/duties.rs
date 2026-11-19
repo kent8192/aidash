@@ -422,7 +422,9 @@ pub enum TriggerChoice {
 	Remove(NoTrigger),
 }
 
-/// `{"kind": "none"}`: removes a time trigger, a Router or a Watcher.
+// It also removes a Router or a Watcher (#1011). Its doc comment is part of
+// the `duty_update` tool declaration, so it stays as it was.
+/// `{"kind": "none"}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoTrigger {

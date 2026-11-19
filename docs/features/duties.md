@@ -133,9 +133,10 @@ triggers.
   and prints one JSON object:
   - `{"action":"drop"}`: the event is `dropped`;
   - `{"action":"act"}`: the script did the work itself, `acted`;
-  - `{"action":"task","title":"…","description":"…"}`: a model Task with that
-    title starts in the Duty's Thread, as an event's Task does; the Router's
-    title and description stay inside the event's data;
+  - `{"action":"task","title":"…","description":"…"}`: a model Task starts in
+    the Duty's Thread, as an event's Task does. It keeps the Duty's own title:
+    the Router's title and description reach the Agent only inside the
+    event's data, since a Router often copies event text into them;
   - `{"action":"deliver","task_id":"…","input":"…"}`: the event goes to that
     open Task of the Duty as a booked event does, with the Router's `input`
     beside its payload, and wakes its Run.

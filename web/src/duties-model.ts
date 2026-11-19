@@ -383,10 +383,11 @@ export function routerLabel(action: RouterAction, ja: boolean): string {
       return ja ? "ルーター: 破棄" : "Router: drop";
     case "act":
       return ja ? "ルーター: 自分で処理" : "Router: acted";
+    // The Task keeps the Duty's title; the Router's title is its note.
     case "task":
       return ja
-        ? `ルーター: 新しい仕事「${action.title}」`
-        : `Router: new Task "${action.title}"`;
+        ? `ルーター: 仕事を開始（${action.title}）`
+        : `Router: started a Task (${action.title})`;
     case "deliver":
       return ja
         ? `ルーター: 仕事 ${action.task_id} に渡す`

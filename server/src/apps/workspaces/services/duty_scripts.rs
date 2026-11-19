@@ -552,6 +552,10 @@ async fn decide(
 					&event.payload,
 					(title, description),
 				);
+				// The Task keeps the Duty's own title: a Router often copies
+				// event fields (a pull request title, a mail subject) into
+				// its title, which would reach the model outside the data
+				// fence. Its title and description stay inside it (ADR 0142).
 				// Several decisions may start Tasks in one pass; each start
 				// keys on its own time.
 				let (task, thread) = start_with(
@@ -559,7 +563,7 @@ async fn decide(
 					lease,
 					duty,
 					(Utc::now(), ""),
-					(title.trim().to_owned(), description),
+					(duty.definition.title.clone(), description),
 				)
 				.await?;
 				duty_repository::insert_tick(
