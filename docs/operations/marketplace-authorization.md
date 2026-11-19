@@ -62,7 +62,7 @@ A **Duty template** (#1011 D4) is a package of kind `duty_template`: a ready-mad
 - `POST /api/marketplace/packages/{key}/duty` installs it with the reviewed `digest`, the `workspace_id`, an optional `agent` (the suggested one by default) and an `idempotency_key`. It creates a Duty, never an installation or a Registry definition, and `POST /api/marketplace/packages/{key}/install` refuses a template with 400. The response is the Duty and `triggers_to_create`.
 - `POST /api/duties/{id}/template-update` moves a Duty to a later version (`key`, `digest`) of its template.
 
-A template never carries a secret, a trigger secret, a Requester or an id of the Tenant it came from. Every part of it refuses fields it does not know, so a request or a stored manifest naming one is refused with 400 rather than stripped, and its text and scripts are refused when they hold something that looks like a credential. The same checks run on publishing and on installing, whichever Tenant published it.
+A template never carries a secret, a trigger secret, a Requester or an id of the Tenant it came from. Every part of it refuses fields it does not know, so a request naming one is refused with 422 and a stored manifest naming one with 400, never stripped, and its text and scripts are refused with 400 when they hold something that looks like a credential. The same checks run on publishing and on installing, whichever Tenant published it.
 
 ## Revisions, approval and recovery
 

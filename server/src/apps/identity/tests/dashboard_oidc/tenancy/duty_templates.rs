@@ -201,7 +201,14 @@ async fn a_published_duty_installs_as_the_installers_own_duty(
 		.await;
 	assert_eq!(status, 200, "{detail}");
 	let manifest = detail["manifest"].to_string();
-	for absent in [duty.as_str(), "alice", "secret", "requester", "credential"] {
+	// Alice is the Tenant Creator, the subject `owner`.
+	for absent in [
+		duty.as_str(),
+		"\"owner\"",
+		"secret",
+		"requester",
+		"credential",
+	] {
 		assert!(!manifest.contains(absent), "{absent} in {manifest}");
 	}
 	let digest = detail["summary"]["digest"].as_str().unwrap().to_owned();
@@ -324,7 +331,8 @@ async fn a_template_with_a_secret_like_field_or_credential_is_refused(
 		}
 		body
 	};
-	// Act + Assert: a template has no place for a secret or a Requester.
+	// Act + Assert: a template has no place for a secret or a Requester; the
+	// body is refused as it is parsed.
 	for extra in [
 		json!({"webhook_secret": "s3cr3t"}),
 		json!({"requester": "alice"}),
@@ -337,7 +345,7 @@ async fn a_template_with_a_secret_like_field_or_credential_is_refused(
 				publish(extra.clone()),
 			)
 			.await;
-		assert_eq!(status, 400, "{extra}: {refused}");
+		assert_eq!(status, 422, "{extra}: {refused}");
 	}
 	// Act + Assert: a credential written into the Duty's procedure stays home.
 	let leaky = f
