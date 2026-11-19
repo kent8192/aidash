@@ -2335,6 +2335,32 @@ fn a_run_only_answer_keeps_the_work_until_it_is_gone() {
 
 #[rstest]
 #[tokio::test]
+async fn a_block_pattern_leaves_run_reach_tools_in_the_remote_tool_map(mut repository: Repository) {
+	// A Block of `*` names every listable tool, but a tool of Reach Run is usable whatever the
+	// lists say (`RemoteToolLists::decide`), so the tool map must keep it as well.
+	repository.remote = true;
+	repository.lists = Some(lists(&["*"], &["*"], &["*"]));
+	let mut tools: BTreeMap<String, ToolContract> =
+		["journal_read", "workspace_read", "schedule_list"]
+			.into_iter()
+			.map(|name| {
+				(
+					name.to_owned(),
+					aidash_domain::tool::builtin_contract(name).unwrap(),
+				)
+			})
+			.collect();
+	super::filter_remote(&repository, &mut tools, Clone::clone)
+		.await
+		.unwrap();
+	assert_eq!(
+		tools.keys().map(String::as_str).collect::<Vec<_>>(),
+		["journal_read"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_listed_tool_runs_in_a_remote_run(
 	mut repository: Repository,
 	run: RunMetadata,

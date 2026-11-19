@@ -711,7 +711,8 @@ fn pinned_operation(
 
 /// Take from a remote Run's tool map what it may never call: tools of Reach never, and tools the
 /// receiving Node blocks for the Home. Every other candidate stays, even one a side has yet to
-/// list, since calling it asks that side.
+/// list, since calling it asks that side. A Block names only listable tools: a tool of Reach Run
+/// stays whatever the Block says, as `RemoteToolLists::decide` lets it run (ADR 0139).
 pub async fn filter_remote<T: Send>(
 	repository: &dyn AgentToolRepository,
 	tools: &mut BTreeMap<String, T>,
@@ -723,10 +724,11 @@ pub async fn filter_remote<T: Send>(
 	let block = repository.lease().await?.remote_tool_block().await?;
 	for name in tools.keys().cloned().collect::<Vec<_>>() {
 		let declaration = contract(&tools[&name]);
-		let blocked = block.as_ref().is_some_and(|block| {
-			pinned_operation(repository, &declaration)
-				.is_some_and(|operation| block.matches(&list_key(&declaration, &operation)))
-		});
+		let blocked = declaration.reach.listable()
+			&& block.as_ref().is_some_and(|block| {
+				pinned_operation(repository, &declaration)
+					.is_some_and(|operation| block.matches(&list_key(&declaration, &operation)))
+			});
 		if declaration.reach == ToolReach::Never || blocked {
 			tools.remove(&name);
 		}
