@@ -66,7 +66,7 @@ impl TriggerKind {
 			Self::NodeEvent { from_node } => from_node.as_deref().is_none_or(|node| {
 				crate::nodes::NodeAddress::parse(node).is_ok_and(|node| node == *sender)
 			}),
-			Self::Webhook | Self::DutyCompleted { .. } => false,
+			Self::Webhook | Self::DutyCompleted { .. } | Self::Watcher => false,
 		}
 	}
 }
