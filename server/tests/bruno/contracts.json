@@ -1436,14 +1436,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -2589,7 +2589,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -2597,7 +2597,7 @@
             "required": [
               "answered_by",
               "id",
-              "workspace_id",
+              "thread_id",
               "run_id",
               "kind",
               "prompt",
@@ -3526,7 +3526,7 @@
               "version": {
                 "type": ["string", "null"]
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -3538,7 +3538,7 @@
               "name",
               "resource_id",
               "version",
-              "workspace_id",
+              "thread_id",
               "status",
               "goal_body",
               "at"
@@ -3614,12 +3614,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -3721,7 +3721,7 @@
               "version": {
                 "type": ["string", "null"]
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -3733,7 +3733,7 @@
               "name",
               "resource_id",
               "version",
-              "workspace_id",
+              "thread_id",
               "status",
               "goal_body",
               "at"
@@ -3809,12 +3809,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -7775,7 +7775,7 @@
     "method": "GET",
     "name": "working_area_list",
     "path": "/api/working-areas",
-    "query_parameters": ["cursor", "thread_id", "workspace_id"],
+    "query_parameters": ["cursor", "thread_id"],
     "responses": {
       "200": {
         "definitions": {
@@ -7821,17 +7821,12 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
               }
             },
             "required": [
               "id",
               "tenant",
               "home_node",
-              "workspace_id",
               "thread_id",
               "agent_id",
               "owner",
@@ -7921,17 +7916,12 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
               }
             },
             "required": [
               "id",
               "tenant",
               "home_node",
-              "workspace_id",
               "thread_id",
               "agent_id",
               "owner",
@@ -9229,7 +9219,7 @@
     "json": true,
     "method": "POST",
     "name": "core_thread_run",
-    "path": "/api/workspaces/{workspace}/threads/{thread}/agents/{agent}/runs",
+    "path": "/api/threads/{thread}/agents/{agent}/runs",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -9276,17 +9266,12 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
               }
             },
             "required": [
               "id",
               "tenant",
               "home_node",
-              "workspace_id",
               "thread_id",
               "agent_id",
               "owner",
@@ -9307,7 +9292,7 @@
       }
     },
     "source": "server/src/apps/execution/capabilities/views/management.rs",
-    "uuid_parameters": ["thread", "workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
@@ -10971,15 +10956,10 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
               }
             },
             "required": [
               "area_id",
-              "workspace_id",
               "thread_id",
               "agent_id",
               "owner",
@@ -11266,17 +11246,12 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
               }
             },
             "required": [
               "id",
               "tenant",
               "home_node",
-              "workspace_id",
               "thread_id",
               "agent_id",
               "owner",
@@ -11298,21 +11273,6 @@
     },
     "source": "server/src/apps/execution/capabilities/views/management.rs",
     "uuid_parameters": ["id"]
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "core_restore_new_thread",
-    "path": "/api/workspaces/{workspace}/working-areas/{id}/restore/new-thread",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {},
-        "schema": {}
-      }
-    },
-    "source": "server/src/apps/execution/capabilities/views/management.rs",
-    "uuid_parameters": ["id", "workspace"]
   },
   {
     "json": false,
@@ -11956,19 +11916,9 @@
               "thread_id": {
                 "format": "uuid",
                 "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
               }
             },
-            "required": [
-              "node_id",
-              "agent_id",
-              "agent_version",
-              "thread_id",
-              "workspace_id"
-            ],
+            "required": ["node_id", "agent_id", "agent_version", "thread_id"],
             "type": "object"
           },
           "RecipientPage": {
@@ -12214,7 +12164,7 @@
     "json": true,
     "method": "POST",
     "name": "core_thread_delete",
-    "path": "/api/workspaces/{workspace}/threads/{thread}/delete",
+    "path": "/api/threads/{thread}/delete",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -12276,7 +12226,7 @@
       }
     },
     "source": "server/src/apps/execution/capabilities/views/management.rs",
-    "uuid_parameters": ["thread", "workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
@@ -12328,14 +12278,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -12401,12 +12351,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -12435,8 +12385,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "workspace-create",
-    "path": "/api/workspaces",
+    "name": "thread-create",
+    "path": "/api/threads",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -12445,14 +12395,170 @@
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
             "type": "string"
           },
-          "Workspace": {
+          "Conversation": {
             "properties": {
               "created_at": {
                 "format": "date-time",
                 "type": "string"
               },
-              "goal": {
+              "created_by": {
                 "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "scratch_space_id": {
+                "description": "Fixed when the conversation starts.",
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "target_kind": {
+                "type": "string"
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "scratch_space_id",
+              "created_by",
+              "id",
+              "thread_id",
+              "target",
+              "target_kind",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "Delegation": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "agent_version": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["task_id", "node_id", "agent_id", "agent_version"],
+            "type": "object"
+          },
+          "Task": {
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "description": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "owner": {
+                "type": ["string", "null"]
+              },
+              "parent_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
+              },
+              "requirements": {},
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "thread_id",
+              "title",
+              "description",
+              "status",
+              "requirements",
+              "owner",
+              "created_by",
+              "dependencies",
+              "parent_id",
+              "revision",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "TaskStatus": {
+            "enum": [
+              "OPEN",
+              "CLAIMED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED",
+              "CANCELLED",
+              "ABANDONED"
+            ],
+            "type": "string"
+          },
+          "ThreadOpened": {
+            "description": "What opening a Thread returns (#1008, ADR 0140): the Thread's own fields\nand, when a person asked an Agent or cluster for something, the\nconversation record, the Root Task whose description is the request, and\nits delegation (all `null` for a Thread opened without a request).",
+            "properties": {
+              "conversation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Conversation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "description": "The person (or the Duty's requester) who opened it.",
+                "type": "string"
+              },
+              "delegation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Delegation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "id": {
                 "format": "uuid",
@@ -12460,7 +12566,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+                "description": "The Node of its Tenant that the Thread, its Tasks and its Runs belong to."
               },
               "revision": {
                 "format": "int64",
@@ -12470,7 +12576,16 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "state": {},
+              "task": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Task"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "title": {
                 "type": "string"
               }
@@ -12480,16 +12595,18 @@
               "scratch_space_id",
               "node",
               "title",
-              "goal",
-              "state",
+              "created_by",
               "revision",
-              "created_at"
+              "created_at",
+              "conversation",
+              "task",
+              "delegation"
             ],
             "type": "object"
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/Workspace"
+          "$ref": "#/components/schemas/ThreadOpened"
         }
       }
     },
@@ -12499,8 +12616,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "workspace-get",
-    "path": "/api/workspaces/{id}",
+    "name": "thread-get",
+    "path": "/api/threads/{id}",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -12537,14 +12654,14 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "task_id",
               "kind",
               "name",
@@ -12578,13 +12695,13 @@
                     "type": "null"
                   }
                 ],
-                "description": "The Node of the Workspace or executing Run; none for a Tenant-level event."
+                "description": "The Node of the Thread or executing Run; none for a Tenant-level event."
               },
               "sequence": {
                 "format": "int64",
                 "type": "integer"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -12593,7 +12710,7 @@
               "sequence",
               "id",
               "node",
-              "workspace_id",
+              "thread_id",
               "kind",
               "data",
               "created_at"
@@ -12624,14 +12741,14 @@
               "sender": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "sender",
               "content",
               "idempotency_key",
@@ -12684,14 +12801,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -12718,13 +12835,51 @@
             ],
             "type": "string"
           },
-          "Workspace": {
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The silent Node, except in graph responses where this is the answering Node.",
+                "type": "string"
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "thread_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
+          "Thread": {
             "properties": {
               "created_at": {
                 "format": "date-time",
                 "type": "string"
               },
-              "goal": {
+              "created_by": {
+                "description": "The person (or the Duty's requester) who opened it.",
                 "type": "string"
               },
               "id": {
@@ -12733,7 +12888,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+                "description": "The Node of its Tenant that the Thread, its Tasks and its Runs belong to."
               },
               "revision": {
                 "format": "int64",
@@ -12743,7 +12898,6 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "state": {},
               "title": {
                 "type": "string"
               }
@@ -12753,14 +12907,13 @@
               "scratch_space_id",
               "node",
               "title",
-              "goal",
-              "state",
+              "created_by",
               "revision",
               "created_at"
             ],
             "type": "object"
           },
-          "WorkspaceSnapshot": {
+          "ThreadSnapshot": {
             "properties": {
               "artifacts": {
                 "items": {
@@ -12786,8 +12939,8 @@
                 },
                 "type": "array"
               },
-              "workspace": {
-                "$ref": "#/components/schemas/Workspace"
+              "thread": {
+                "$ref": "#/components/schemas/Thread"
               },
               "unconfirmed": {
                 "default": [],
@@ -12799,7 +12952,7 @@
               }
             },
             "required": [
-              "workspace",
+              "thread",
               "tasks",
               "artifacts",
               "events",
@@ -12807,47 +12960,10 @@
               "unconfirmed"
             ],
             "type": "object"
-          },
-          "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
-            "properties": {
-              "count": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/UnconfirmedKind"
-              },
-              "node": {
-                "description": "The silent Node, except in graph responses where this is the answering Node.",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["node", "kind", "workspace_id", "count"],
-            "type": "object"
-          },
-          "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
-            "enum": [
-              "task",
-              "run",
-              "artifact",
-              "event",
-              "message",
-              "human_request",
-              "semantic_entry",
-              "memory_unit"
-            ],
-            "type": "string"
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/WorkspaceSnapshot"
+          "$ref": "#/components/schemas/ThreadSnapshot"
         }
       }
     },
@@ -12857,8 +12973,8 @@
   {
     "json": true,
     "method": "PATCH",
-    "name": "workspace-update",
-    "path": "/api/workspaces/{id}",
+    "name": "thread-update",
+    "path": "/api/threads/{id}",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -12867,13 +12983,14 @@
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
             "type": "string"
           },
-          "Workspace": {
+          "Thread": {
             "properties": {
               "created_at": {
                 "format": "date-time",
                 "type": "string"
               },
-              "goal": {
+              "created_by": {
+                "description": "The person (or the Duty's requester) who opened it.",
                 "type": "string"
               },
               "id": {
@@ -12882,7 +12999,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+                "description": "The Node of its Tenant that the Thread, its Tasks and its Runs belong to."
               },
               "revision": {
                 "format": "int64",
@@ -12892,7 +13009,6 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "state": {},
               "title": {
                 "type": "string"
               }
@@ -12902,8 +13018,7 @@
               "scratch_space_id",
               "node",
               "title",
-              "goal",
-              "state",
+              "created_by",
               "revision",
               "created_at"
             ],
@@ -12911,7 +13026,7 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/Workspace"
+          "$ref": "#/components/schemas/Thread"
         }
       }
     },
@@ -12922,7 +13037,7 @@
     "json": true,
     "method": "POST",
     "name": "task-create",
-    "path": "/api/workspaces/{id}/tasks",
+    "path": "/api/threads/{id}/tasks",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -12968,14 +13083,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -13015,7 +13130,7 @@
     "json": true,
     "method": "POST",
     "name": "message-create",
-    "path": "/api/workspaces/{id}/messages",
+    "path": "/api/threads/{id}/messages",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -13088,14 +13203,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -13134,273 +13249,8 @@
   {
     "json": true,
     "method": "POST",
-    "name": "conversation-create",
-    "path": "/api/conversations",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "Conversation": {
-            "properties": {
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "created_by": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "scratch_space_id": {
-                "description": "Fixed when the conversation starts.",
-                "format": "uuid",
-                "type": "string"
-              },
-              "target": {
-                "type": "string"
-              },
-              "target_kind": {
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "scratch_space_id",
-              "created_by",
-              "id",
-              "workspace_id",
-              "target",
-              "target_kind",
-              "created_at"
-            ],
-            "type": "object"
-          },
-          "ConversationResponse": {
-            "properties": {
-              "conversation": {
-                "$ref": "#/components/schemas/Conversation"
-              },
-              "delegation": {
-                "$ref": "#/components/schemas/Delegation"
-              },
-              "task": {
-                "$ref": "#/components/schemas/Task"
-              },
-              "workspace": {
-                "$ref": "#/components/schemas/Workspace"
-              }
-            },
-            "required": ["conversation", "workspace", "task", "delegation"],
-            "type": "object"
-          },
-          "Delegation": {
-            "properties": {
-              "agent_id": {
-                "type": "string"
-              },
-              "agent_version": {
-                "type": "string"
-              },
-              "node_id": {
-                "type": "string"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["task_id", "node_id", "agent_id", "agent_version"],
-            "type": "object"
-          },
-          "NodeName": {
-            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
-            "type": "string"
-          },
-          "Task": {
-            "properties": {
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "created_by": {
-                "type": "string"
-              },
-              "dependencies": {
-                "items": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "description": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "owner": {
-                "type": ["string", "null"]
-              },
-              "parent_id": {
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "requirements": {},
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "status": {
-                "$ref": "#/components/schemas/TaskStatus"
-              },
-              "title": {
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "workspace_id",
-              "title",
-              "description",
-              "status",
-              "requirements",
-              "owner",
-              "created_by",
-              "dependencies",
-              "parent_id",
-              "revision",
-              "created_at"
-            ],
-            "type": "object"
-          },
-          "TaskStatus": {
-            "enum": [
-              "OPEN",
-              "CLAIMED",
-              "RUNNING",
-              "COMPLETED",
-              "FAILED",
-              "BLOCKED",
-              "CANCELLED",
-              "ABANDONED"
-            ],
-            "type": "string"
-          },
-          "Workspace": {
-            "properties": {
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "goal": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "node": {
-                "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "scratch_space_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "state": {},
-              "title": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "scratch_space_id",
-              "node",
-              "title",
-              "goal",
-              "state",
-              "revision",
-              "created_at"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ConversationResponse"
-        }
-      }
-    },
-    "source": "server/src/apps/workspaces/views/management.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "channel-thread-create",
-    "path": "/api/workspaces/{id}/threads",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ChannelThread": {
-            "properties": {
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "created_by": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "root_message_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "workspace_id",
-              "root_message_id",
-              "created_by",
-              "created_at"
-            ],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ChannelThread"
-        }
-      }
-    },
-    "source": "server/src/apps/workspaces/views/channels.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": true,
-    "method": "POST",
     "name": "channel-message-create",
-    "path": "/api/workspaces/{id}/thread-messages",
+    "path": "/api/threads/{id}/channel-messages",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -13419,7 +13269,7 @@
                 "type": "string"
               },
               "index_state": {
-                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "description": "Where an image stands in the Thread index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
                 "type": ["string", "null"]
               },
               "media_type": {
@@ -13427,7 +13277,7 @@
               },
               "no_assigned_agent_can_read": {
                 "default": false,
-                "description": "Computed for the Workspace's currently assigned Agents, not persisted.",
+                "description": "Computed for the Thread's currently assigned Agents, not persisted.",
                 "type": "boolean"
               },
               "size_bytes": {
@@ -13502,24 +13352,11 @@
                 },
                 "type": "array"
               },
-              "is_thread_root": {
-                "type": "boolean"
-              },
               "message": {
                 "$ref": "#/components/schemas/Message"
-              },
-              "thread_id": {
-                "format": "uuid",
-                "type": ["string", "null"]
               }
             },
-            "required": [
-              "message",
-              "thread_id",
-              "is_thread_root",
-              "attachments",
-              "citations"
-            ],
+            "required": ["message", "attachments", "citations"],
             "type": "object"
           },
           "Message": {
@@ -13546,14 +13383,14 @@
               "sender": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "sender",
               "content",
               "idempotency_key",
@@ -13574,8 +13411,8 @@
     "json": false,
     "method": "GET",
     "name": "channel-message-history",
-    "path": "/api/workspaces/{id}/message-history",
-    "query_parameters": ["before", "limit", "thread_id"],
+    "path": "/api/threads/{id}/message-history",
+    "query_parameters": ["before", "limit"],
     "responses": {
       "200": {
         "definitions": {
@@ -13593,7 +13430,7 @@
                 "type": "string"
               },
               "index_state": {
-                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "description": "Where an image stands in the Thread index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
                 "type": ["string", "null"]
               },
               "media_type": {
@@ -13601,7 +13438,7 @@
               },
               "no_assigned_agent_can_read": {
                 "default": false,
-                "description": "Computed for the Workspace's currently assigned Agents, not persisted.",
+                "description": "Computed for the Thread's currently assigned Agents, not persisted.",
                 "type": "boolean"
               },
               "size_bytes": {
@@ -13676,24 +13513,11 @@
                 },
                 "type": "array"
               },
-              "is_thread_root": {
-                "type": "boolean"
-              },
               "message": {
                 "$ref": "#/components/schemas/Message"
-              },
-              "thread_id": {
-                "format": "uuid",
-                "type": ["string", "null"]
               }
             },
-            "required": [
-              "message",
-              "thread_id",
-              "is_thread_root",
-              "attachments",
-              "citations"
-            ],
+            "required": ["message", "attachments", "citations"],
             "type": "object"
           },
           "ChannelMessagePage": {
@@ -13744,14 +13568,14 @@
               "sender": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "sender",
               "content",
               "idempotency_key",
@@ -13774,12 +13598,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -13809,7 +13633,7 @@
     "json": false,
     "method": "POST",
     "name": "channel-attachment-upload",
-    "path": "/api/workspaces/{id}/attachments",
+    "path": "/api/threads/{id}/attachments",
     "query_parameters": ["filename", "idempotency_key", "media_type"],
     "responses": {
       "200": {
@@ -13828,7 +13652,7 @@
                 "type": "string"
               },
               "index_state": {
-                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "description": "Where an image stands in the Thread index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
                 "type": ["string", "null"]
               },
               "media_type": {
@@ -13836,7 +13660,7 @@
               },
               "no_assigned_agent_can_read": {
                 "default": false,
-                "description": "Computed for the Workspace's currently assigned Agents, not persisted.",
+                "description": "Computed for the Thread's currently assigned Agents, not persisted.",
                 "type": "boolean"
               },
               "size_bytes": {
@@ -13866,7 +13690,7 @@
     "json": false,
     "method": "GET",
     "name": "channel-attachment-download",
-    "path": "/api/workspaces/{id}/attachments/{attachment_id}",
+    "path": "/api/threads/{id}/attachments/{attachment_id}",
     "query_parameters": [],
     "source": "server/src/apps/workspaces/views/channels.rs",
     "uuid_parameters": ["attachment_id", "id"]
@@ -15626,7 +15450,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of the requesting Workspace."
+                "description": "The Node of the requesting Thread."
               },
               "policy_id": {
                 "type": "string"
@@ -15667,7 +15491,7 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -15683,7 +15507,7 @@
               "prepared",
               "grant_id",
               "admission_id",
-              "workspace_id",
+              "thread_id",
               "root_subject",
               "subject_chain",
               "agent_id",
@@ -16125,7 +15949,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of the requesting Workspace."
+                "description": "The Node of the requesting Thread."
               },
               "policy_id": {
                 "type": "string"
@@ -16166,7 +15990,7 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -16182,7 +16006,7 @@
               "prepared",
               "grant_id",
               "admission_id",
-              "workspace_id",
+              "thread_id",
               "root_subject",
               "subject_chain",
               "agent_id",
@@ -16627,7 +16451,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of the requesting Workspace."
+                "description": "The Node of the requesting Thread."
               },
               "policy_id": {
                 "type": "string"
@@ -16668,7 +16492,7 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -16684,7 +16508,7 @@
               "prepared",
               "grant_id",
               "admission_id",
-              "workspace_id",
+              "thread_id",
               "root_subject",
               "subject_chain",
               "agent_id",
@@ -25421,7 +25245,7 @@
     "json": true,
     "method": "POST",
     "name": "semantic-configure",
-    "path": "/api/workspaces/{workspace}/semantic/index",
+    "path": "/api/threads/{thread}/semantic/index",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25443,13 +25267,13 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
-              "workspace_id",
+              "thread_id",
               "tenant",
               "revision",
               "spec",
@@ -25465,13 +25289,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
     "method": "GET",
     "name": "semantic-index",
-    "path": "/api/workspaces/{workspace}/semantic/index",
+    "path": "/api/threads/{thread}/semantic/index",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25493,13 +25317,13 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
-              "workspace_id",
+              "thread_id",
               "tenant",
               "revision",
               "spec",
@@ -25515,13 +25339,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "semantic-put",
-    "path": "/api/workspaces/{workspace}/semantic/entries",
+    "path": "/api/threads/{thread}/semantic/entries",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25572,14 +25396,14 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "key",
               "source",
               "agent",
@@ -25603,13 +25427,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
     "method": "GET",
     "name": "semantic-entries",
-    "path": "/api/workspaces/{workspace}/semantic/entries",
+    "path": "/api/threads/{thread}/semantic/entries",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25660,14 +25484,14 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "key",
               "source",
               "agent",
@@ -25719,12 +25543,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -25748,13 +25572,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "DELETE",
     "name": "semantic-delete",
-    "path": "/api/workspaces/{workspace}/semantic/entries/{id}",
+    "path": "/api/threads/{thread}/semantic/entries/{id}",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25805,14 +25629,14 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "key",
               "source",
               "agent",
@@ -25836,13 +25660,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["id", "workspace"]
+    "uuid_parameters": ["id", "thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "semantic-reindex",
-    "path": "/api/workspaces/{workspace}/semantic/entries/{id}/reindex",
+    "path": "/api/threads/{thread}/semantic/entries/{id}/reindex",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25893,14 +25717,14 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "key",
               "source",
               "agent",
@@ -25924,13 +25748,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["id", "workspace"]
+    "uuid_parameters": ["id", "thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "semantic-search",
-    "path": "/api/workspaces/{workspace}/semantic/search",
+    "path": "/api/threads/{thread}/semantic/search",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -25994,10 +25818,6 @@
               "truncated": {
                 "type": "boolean"
               },
-              "workspace_id": {
-                "format": "uuid",
-                "type": "string"
-              },
               "unconfirmed": {
                 "default": [],
                 "description": "Entries this search left out because a Node did not answer (#770).",
@@ -26005,10 +25825,14 @@
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
                 "type": "array"
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": "string"
               }
             },
             "required": [
-              "workspace_id",
+              "thread_id",
               "index_revision",
               "model",
               "model_version",
@@ -26034,12 +25858,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -26063,13 +25887,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
     "method": "GET",
     "name": "semantic-history",
-    "path": "/api/workspaces/{workspace}/semantic/history",
+    "path": "/api/threads/{thread}/semantic/history",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -26098,14 +25922,14 @@
               "state": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "sequence",
-              "workspace_id",
+              "thread_id",
               "entry_id",
               "revision",
               "state",
@@ -26124,13 +25948,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
     "method": "GET",
     "name": "semantic-cleanup",
-    "path": "/api/workspaces/{workspace}/semantic/cleanup",
+    "path": "/api/threads/{thread}/semantic/cleanup",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -26172,7 +25996,7 @@
       }
     },
     "source": "server/src/apps/knowledge/views/entries.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
@@ -26305,27 +26129,25 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Rename a Thread (its only mutable attribute).",
                 "properties": {
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "kind": {
-                    "enum": ["workspace_state"],
+                    "enum": ["thread_title"],
                     "type": "string"
                   },
-                  "state": {},
-                  "workspace_id": {
+                  "thread_id": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "title": {
                     "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "workspace_id",
-                  "expected_revision",
-                  "state"
-                ],
+                "required": ["kind", "thread_id", "expected_revision", "title"],
                 "type": "object"
               },
               {
@@ -26509,27 +26331,25 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Rename a Thread (its only mutable attribute).",
                 "properties": {
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "kind": {
-                    "enum": ["workspace_state"],
+                    "enum": ["thread_title"],
                     "type": "string"
                   },
-                  "state": {},
-                  "workspace_id": {
+                  "thread_id": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "title": {
                     "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "workspace_id",
-                  "expected_revision",
-                  "state"
-                ],
+                "required": ["kind", "thread_id", "expected_revision", "title"],
                 "type": "object"
               },
               {
@@ -26771,27 +26591,25 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Rename a Thread (its only mutable attribute).",
                 "properties": {
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "kind": {
-                    "enum": ["workspace_state"],
+                    "enum": ["thread_title"],
                     "type": "string"
                   },
-                  "state": {},
-                  "workspace_id": {
+                  "thread_id": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "title": {
                     "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "workspace_id",
-                  "expected_revision",
-                  "state"
-                ],
+                "required": ["kind", "thread_id", "expected_revision", "title"],
                 "type": "object"
               },
               {
@@ -26987,27 +26805,25 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Rename a Thread (its only mutable attribute).",
                 "properties": {
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "kind": {
-                    "enum": ["workspace_state"],
+                    "enum": ["thread_title"],
                     "type": "string"
                   },
-                  "state": {},
-                  "workspace_id": {
+                  "thread_id": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "title": {
                     "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "workspace_id",
-                  "expected_revision",
-                  "state"
-                ],
+                "required": ["kind", "thread_id", "expected_revision", "title"],
                 "type": "object"
               },
               {
@@ -27150,27 +26966,25 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "Rename a Thread (its only mutable attribute).",
                 "properties": {
                   "expected_revision": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "kind": {
-                    "enum": ["workspace_state"],
+                    "enum": ["thread_title"],
                     "type": "string"
                   },
-                  "state": {},
-                  "workspace_id": {
+                  "thread_id": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "title": {
                     "type": "string"
                   }
                 },
-                "required": [
-                  "kind",
-                  "workspace_id",
-                  "expected_revision",
-                  "state"
-                ],
+                "required": ["kind", "thread_id", "expected_revision", "title"],
                 "type": "object"
               },
               {
@@ -30527,9 +30341,9 @@
               "usage_truncated": {
                 "type": "boolean"
               },
-              "workspaces": {
+              "threads": {
                 "items": {
-                  "$ref": "#/components/schemas/WorkspaceUse"
+                  "$ref": "#/components/schemas/ThreadUse"
                 },
                 "type": "array"
               }
@@ -30538,7 +30352,7 @@
               "entry",
               "source_node",
               "observed_at",
-              "workspaces",
+              "threads",
               "usage_truncated",
               "test_evidence",
               "test_evidence_truncated",
@@ -30546,7 +30360,7 @@
             ],
             "type": "object"
           },
-          "WorkspaceUse": {
+          "ThreadUse": {
             "properties": {
               "current": {
                 "type": "boolean"
@@ -30555,15 +30369,15 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "title": {
+              "thread_id": {
+                "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
-                "format": "uuid",
+              "title": {
                 "type": "string"
               }
             },
-            "required": ["workspace_id", "title", "current", "latest_run_at"],
+            "required": ["thread_id", "title", "current", "latest_run_at"],
             "type": "object"
           }
         },
@@ -30627,18 +30441,18 @@
               "tenant": {
                 "type": "string"
               },
-              "workspace_id": {
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
               "workspace_read": {
                 "type": ["boolean", "null"]
+              },
+              "thread_id": {
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "tenant",
               "subject",
-              "workspace_id",
+              "thread_id",
               "policy_revision",
               "observed_at",
               "requested_capabilities",
@@ -30893,14 +30707,14 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "task_id",
               "kind",
               "name",
@@ -31255,7 +31069,7 @@
               "target_kind": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -31264,7 +31078,7 @@
               "scratch_space_id",
               "created_by",
               "id",
-              "workspace_id",
+              "thread_id",
               "target",
               "target_kind",
               "created_at"
@@ -31559,13 +31373,13 @@
                     "type": "null"
                   }
                 ],
-                "description": "The Node of the Workspace or executing Run; none for a Tenant-level event."
+                "description": "The Node of the Thread or executing Run; none for a Tenant-level event."
               },
               "sequence": {
                 "format": "int64",
                 "type": "integer"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -31574,7 +31388,7 @@
               "sequence",
               "id",
               "node",
-              "workspace_id",
+              "thread_id",
               "kind",
               "data",
               "created_at"
@@ -31631,7 +31445,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -31639,7 +31453,7 @@
             "required": [
               "answered_by",
               "id",
-              "workspace_id",
+              "thread_id",
               "run_id",
               "kind",
               "prompt",
@@ -31719,7 +31533,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -31872,12 +31686,12 @@
               "tasks": {
                 "type": ["string", "null"]
               },
-              "workspaces": {
+              "threads": {
                 "type": ["string", "null"]
               }
             },
             "required": [
-              "workspaces",
+              "threads",
               "tasks",
               "runs",
               "artifacts",
@@ -32120,11 +31934,6 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
               "account_suspension_epoch": {
                 "description": "The common Account suspension that paused this Run.",
                 "format": "uint64",
@@ -32148,6 +31957,11 @@
                   }
                 ],
                 "description": "Start of the current external-service outage, retained across wake-ups."
+              },
+              "thread_event_cursor": {
+                "description": "Last thread event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -32542,15 +32356,15 @@
                 "type": "array"
               },
               "unconfirmed": {
-                "description": "Rows this read scanned and could not confirm because a Node did not\nanswer, for each Node, kind and Workspace. `[]` when none.",
+                "description": "Rows this read scanned and could not confirm because a Node did not\nanswer, for each Node, kind and Thread. `[]` when none.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
                 "type": "array"
               },
-              "workspaces": {
+              "threads": {
                 "items": {
-                  "$ref": "#/components/schemas/Workspace"
+                  "$ref": "#/components/schemas/Thread"
                 },
                 "type": "array"
               }
@@ -32560,7 +32374,7 @@
               "access",
               "deployment",
               "registry",
-              "workspaces",
+              "threads",
               "tasks",
               "runs",
               "human_requests",
@@ -32618,14 +32432,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -32676,29 +32490,6 @@
                   }
                 ]
               },
-              "deferred_workspace_observation": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "deferred_workspace_read": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "force_workspace_read_compaction": {
-                "type": "boolean"
-              },
               "media_intake_through_seq": {
                 "format": "int64",
                 "type": ["integer", "null"]
@@ -32708,13 +32499,36 @@
                   "$ref": "#/components/schemas/ModelMedia"
                 },
                 "type": "array"
+              },
+              "deferred_thread_observation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deferred_thread_read": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "force_thread_read_compaction": {
+                "type": "boolean"
               }
             },
             "required": [
-              "force_workspace_read_compaction",
-              "deferred_workspace_read",
+              "force_thread_read_compaction",
+              "deferred_thread_read",
               "deferred_skill_read",
-              "deferred_workspace_observation",
+              "deferred_thread_observation",
               "selected_media",
               "media_intake_through_seq",
               "deferred_run_message_reads"
@@ -32931,7 +32745,7 @@
                   }
                 ]
               },
-              "workspace_read_plan": {
+              "thread_read_plan": {
                 "anyOf": [
                   {
                     "$ref": "#/components/schemas/ReadPlan"
@@ -32964,7 +32778,7 @@
               "run_message_summary_end_seq",
               "run_message_summary_limit",
               "deferred_reads",
-              "workspace_read_plan",
+              "thread_read_plan",
               "skill_read_plan",
               "workspace_observation_plan",
               "home_approval",
@@ -33036,14 +32850,14 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
                 "properties": {
                   "cursor": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "reason": {
-                    "enum": ["workspace"],
+                    "enum": ["task_wait"],
                     "type": "string"
                   },
                   "resume": {
@@ -33208,7 +33022,7 @@
           },
           "WorkingImageSelection": {
             "additionalProperties": false,
-            "description": "A current Workspace image selected by its Area and immutable File version.",
+            "description": "A current Thread image selected by its Area and immutable File version.",
             "properties": {
               "area_id": {
                 "format": "uuid",
@@ -33235,48 +33049,6 @@
               "file_id",
               "path",
               "expected_digest"
-            ],
-            "type": "object"
-          },
-          "Workspace": {
-            "properties": {
-              "created_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "goal": {
-                "type": "string"
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "node": {
-                "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
-              },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "scratch_space_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "state": {},
-              "title": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "scratch_space_id",
-              "node",
-              "title",
-              "goal",
-              "state",
-              "revision",
-              "created_at"
             ],
             "type": "object"
           },
@@ -33459,7 +33231,7 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -33468,7 +33240,7 @@
               "state_version",
               "id",
               "task_id",
-              "workspace_id",
+              "thread_id",
               "node",
               "home_node",
               "agent_id",
@@ -33527,12 +33299,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -33603,6 +33375,47 @@
               }
             },
             "required": ["key", "lacking"],
+            "type": "object"
+          },
+          "Thread": {
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "description": "The person (or the Duty's requester) who opened it.",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName",
+                "description": "The Node of its Tenant that the Thread, its Tasks and its Runs belong to."
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scratch_space_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "scratch_space_id",
+              "node",
+              "title",
+              "created_by",
+              "revision",
+              "created_at"
+            ],
             "type": "object"
           }
         },
@@ -33865,14 +33678,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "description",
               "status",
@@ -34877,7 +34690,7 @@
               },
               {
                 "additionalProperties": false,
-                "description": "Evidence a Native step admitted that history did not hold yet (#942):\nworkspace observation entries and Run messages. Like a tool result it\nis appended once and sent at its position; only offloading or\ncompaction removes it.",
+                "description": "Evidence a Native step admitted that history did not hold yet (#942):\nthread observation entries and Run messages. Like a tool result it\nis appended once and sent at its position; only offloading or\ncompaction removes it.",
                 "properties": {
                   "items": {
                     "items": {
@@ -35865,7 +35678,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -36491,11 +36304,6 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
               "standing_declines": {
                 "description": "Refusals a person declined for the rest of this Run.",
                 "items": {
@@ -36518,6 +36326,11 @@
                 "description": "The common Account suspension that paused this Run.",
                 "format": "uint64",
                 "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "thread_event_cursor": {
+                "description": "Last thread event delivered to this Run.",
+                "format": "int64",
                 "type": ["integer", "null"]
               }
             },
@@ -37096,7 +36909,7 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -37105,7 +36918,7 @@
               "state_version",
               "id",
               "task_id",
-              "workspace_id",
+              "thread_id",
               "node",
               "home_node",
               "agent_id",
@@ -37515,29 +37328,6 @@
                   }
                 ]
               },
-              "deferred_workspace_observation": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "deferred_workspace_read": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "force_workspace_read_compaction": {
-                "type": "boolean"
-              },
               "media_intake_through_seq": {
                 "format": "int64",
                 "type": ["integer", "null"]
@@ -37547,13 +37337,36 @@
                   "$ref": "#/components/schemas/ModelMedia"
                 },
                 "type": "array"
+              },
+              "deferred_thread_observation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deferred_thread_read": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "force_thread_read_compaction": {
+                "type": "boolean"
               }
             },
             "required": [
-              "force_workspace_read_compaction",
-              "deferred_workspace_read",
+              "force_thread_read_compaction",
+              "deferred_thread_read",
               "deferred_skill_read",
-              "deferred_workspace_observation",
+              "deferred_thread_observation",
               "selected_media",
               "media_intake_through_seq",
               "deferred_run_message_reads"
@@ -37800,7 +37613,7 @@
                   }
                 ]
               },
-              "workspace_read_plan": {
+              "thread_read_plan": {
                 "anyOf": [
                   {
                     "$ref": "#/components/schemas/ReadPlan"
@@ -37833,7 +37646,7 @@
               "run_message_summary_end_seq",
               "run_message_summary_limit",
               "deferred_reads",
-              "workspace_read_plan",
+              "thread_read_plan",
               "skill_read_plan",
               "workspace_observation_plan",
               "home_approval",
@@ -37969,14 +37782,14 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
                 "properties": {
                   "cursor": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "reason": {
-                    "enum": ["workspace"],
+                    "enum": ["task_wait"],
                     "type": "string"
                   },
                   "resume": {
@@ -38141,7 +37954,7 @@
           },
           "WorkingImageSelection": {
             "additionalProperties": false,
-            "description": "A current Workspace image selected by its Area and immutable File version.",
+            "description": "A current Thread image selected by its Area and immutable File version.",
             "properties": {
               "area_id": {
                 "format": "uuid",
@@ -38203,7 +38016,7 @@
                 "type": ["string", "null"]
               },
               "key": {
-                "description": "The pinned key, such as `workspace` or `run_messages`.",
+                "description": "The pinned key, such as `thread` or `run_messages`.",
                 "type": "string"
               },
               "listed": {
@@ -38732,7 +38545,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -38740,7 +38553,7 @@
             "required": [
               "answered_by",
               "id",
-              "workspace_id",
+              "thread_id",
               "run_id",
               "kind",
               "prompt",
@@ -38763,7 +38576,7 @@
     "method": "GET",
     "name": "events",
     "path": "/api/events",
-    "query_parameters": ["after", "workspace_id"],
+    "query_parameters": ["after", "thread_id"],
     "responses": {
       "200": {
         "definitions": {
@@ -38790,13 +38603,13 @@
                     "type": "null"
                   }
                 ],
-                "description": "The Node of the Workspace or executing Run; none for a Tenant-level event."
+                "description": "The Node of the Thread or executing Run; none for a Tenant-level event."
               },
               "sequence": {
                 "format": "int64",
                 "type": "integer"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -38805,7 +38618,7 @@
               "sequence",
               "id",
               "node",
-              "workspace_id",
+              "thread_id",
               "kind",
               "data",
               "created_at"
@@ -38850,12 +38663,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -38886,7 +38699,7 @@
     "method": "GET",
     "name": "stream",
     "path": "/api/events/stream",
-    "query_parameters": ["after", "workspace_id"],
+    "query_parameters": ["after", "thread_id"],
     "source": "server/src/apps/execution/views/management.rs",
     "uuid_parameters": []
   },
@@ -39070,7 +38883,7 @@
     "json": true,
     "method": "POST",
     "name": "memory-operate",
-    "path": "/api/workspaces/{workspace}/memory/operate",
+    "path": "/api/threads/{thread}/memory/operate",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -40010,13 +39823,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "memory-participant-upgrade",
-    "path": "/api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
+    "path": "/api/threads/{thread}/memory/participants/{participant}/upgrade",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -40084,13 +39897,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["participant", "workspace"]
+    "uuid_parameters": ["participant", "thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "memory-units",
-    "path": "/api/workspaces/{workspace}/memory/units/query",
+    "path": "/api/threads/{thread}/memory/units/query",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -40500,12 +40313,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -40529,13 +40342,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "memory-mutate",
-    "path": "/api/workspaces/{workspace}/memory/units/mutate",
+    "path": "/api/threads/{thread}/memory/units/mutate",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -40924,13 +40737,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "memory-impact",
-    "path": "/api/workspaces/{workspace}/memory/units/impact",
+    "path": "/api/threads/{thread}/memory/units/impact",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -41122,13 +40935,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "memory-participant",
-    "path": "/api/workspaces/{workspace}/memory/participants",
+    "path": "/api/threads/{thread}/memory/participants",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -41196,13 +41009,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
     "method": "GET",
     "name": "memory-participants",
-    "path": "/api/workspaces/{workspace}/memory/participants",
+    "path": "/api/threads/{thread}/memory/participants",
     "query_parameters": ["after"],
     "responses": {
       "200": {
@@ -41286,13 +41099,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "memory-participant-assignment",
-    "path": "/api/workspaces/{workspace}/tasks/{task}/memory-participant",
+    "path": "/api/threads/{thread}/tasks/{task}/memory-participant",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -41326,13 +41139,13 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["task", "workspace"]
+    "uuid_parameters": ["task", "thread"]
   },
   {
     "json": false,
     "method": "GET",
     "name": "memory-participant-current",
-    "path": "/api/workspaces/{workspace}/tasks/{task}/memory-participant",
+    "path": "/api/threads/{thread}/tasks/{task}/memory-participant",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -41379,7 +41192,7 @@
       }
     },
     "source": "server/src/apps/knowledge/views/memory.rs",
-    "uuid_parameters": ["task", "workspace"]
+    "uuid_parameters": ["task", "thread"]
   },
   {
     "json": true,
@@ -41474,7 +41287,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -41482,7 +41295,7 @@
             "required": [
               "answered_by",
               "id",
-              "workspace_id",
+              "thread_id",
               "run_id",
               "kind",
               "prompt",
@@ -42747,7 +42560,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -42880,7 +42693,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -43010,7 +42823,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -44009,7 +43822,7 @@
                 "type": "string"
               },
               {
-                "description": "OpenAI reports that the owner's plan or workspace is not eligible.\nReconnecting does not help, so the owner is not asked to.",
+                "description": "OpenAI reports that the owner's plan or thread is not eligible.\nReconnecting does not help, so the owner is not asked to.",
                 "enum": ["ineligible"],
                 "type": "string"
               }
@@ -44197,7 +44010,7 @@
                 "type": "string"
               },
               {
-                "description": "OpenAI reports that the owner's plan or workspace is not eligible.\nReconnecting does not help, so the owner is not asked to.",
+                "description": "OpenAI reports that the owner's plan or thread is not eligible.\nReconnecting does not help, so the owner is not asked to.",
                 "enum": ["ineligible"],
                 "type": "string"
               }
@@ -45130,7 +44943,7 @@
     "json": false,
     "method": "GET",
     "name": "thread-approval-mode",
-    "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
+    "path": "/api/threads/{thread}/approval-mode",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -45243,13 +45056,13 @@
       }
     },
     "source": "server/src/apps/identity/views/approval_preferences.rs",
-    "uuid_parameters": ["thread", "workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "PUT",
     "name": "thread-approval-mode-update",
-    "path": "/api/workspaces/{workspace}/threads/{thread}/approval-mode",
+    "path": "/api/threads/{thread}/approval-mode",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -45362,7 +45175,7 @@
       }
     },
     "source": "server/src/apps/identity/views/approval_preferences.rs",
-    "uuid_parameters": ["thread", "workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
@@ -49398,7 +49211,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -49528,7 +49341,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -49658,7 +49471,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -49835,7 +49648,7 @@
                 "type": "string"
               },
               "default": {
-                "description": "The current default Node; Workspaces go there unless another is chosen.",
+                "description": "The current default Node; Threads go there unless another is chosen.",
                 "type": "boolean"
               },
               "deletion": {
@@ -50682,7 +50495,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -50946,11 +50759,6 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
               "account_suspension_epoch": {
                 "description": "The common Account suspension that paused this Run.",
                 "format": "uint64",
@@ -50974,6 +50782,11 @@
                   }
                 ],
                 "description": "Start of the current external-service outage, retained across wake-ups."
+              },
+              "thread_event_cursor": {
+                "description": "Last thread event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -51326,29 +51139,6 @@
                   }
                 ]
               },
-              "deferred_workspace_observation": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "deferred_workspace_read": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "force_workspace_read_compaction": {
-                "type": "boolean"
-              },
               "media_intake_through_seq": {
                 "format": "int64",
                 "type": ["integer", "null"]
@@ -51358,13 +51148,36 @@
                   "$ref": "#/components/schemas/ModelMedia"
                 },
                 "type": "array"
+              },
+              "deferred_thread_observation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deferred_thread_read": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "force_thread_read_compaction": {
+                "type": "boolean"
               }
             },
             "required": [
-              "force_workspace_read_compaction",
-              "deferred_workspace_read",
+              "force_thread_read_compaction",
+              "deferred_thread_read",
               "deferred_skill_read",
-              "deferred_workspace_observation",
+              "deferred_thread_observation",
               "selected_media",
               "media_intake_through_seq",
               "deferred_run_message_reads"
@@ -51581,7 +51394,7 @@
                   }
                 ]
               },
-              "workspace_read_plan": {
+              "thread_read_plan": {
                 "anyOf": [
                   {
                     "$ref": "#/components/schemas/ReadPlan"
@@ -51614,7 +51427,7 @@
               "run_message_summary_end_seq",
               "run_message_summary_limit",
               "deferred_reads",
-              "workspace_read_plan",
+              "thread_read_plan",
               "skill_read_plan",
               "workspace_observation_plan",
               "home_approval",
@@ -51686,14 +51499,14 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
                 "properties": {
                   "cursor": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "reason": {
-                    "enum": ["workspace"],
+                    "enum": ["task_wait"],
                     "type": "string"
                   },
                   "resume": {
@@ -51858,7 +51671,7 @@
           },
           "WorkingImageSelection": {
             "additionalProperties": false,
-            "description": "A current Workspace image selected by its Area and immutable File version.",
+            "description": "A current Thread image selected by its Area and immutable File version.",
             "properties": {
               "area_id": {
                 "format": "uuid",
@@ -52067,7 +51880,7 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -52076,7 +51889,7 @@
               "state_version",
               "id",
               "task_id",
-              "workspace_id",
+              "thread_id",
               "node",
               "home_node",
               "agent_id",
@@ -52135,12 +51948,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -52283,7 +52096,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -52291,7 +52104,7 @@
             "required": [
               "answered_by",
               "id",
-              "workspace_id",
+              "thread_id",
               "run_id",
               "kind",
               "prompt",
@@ -52315,12 +52128,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -53366,7 +53179,7 @@
               "title": {
                 "type": ["string", "null"]
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -53374,7 +53187,7 @@
             "required": [
               "id",
               "title",
-              "workspace_id",
+              "thread_id",
               "leader",
               "members",
               "allowance",
@@ -54599,8 +54412,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "workspace-list",
-    "path": "/api/workspaces",
+    "name": "thread-list",
+    "path": "/api/threads",
     "query_parameters": ["cursor", "node"],
     "responses": {
       "200": {
@@ -54609,13 +54422,14 @@
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
             "type": "string"
           },
-          "Workspace": {
+          "Thread": {
             "properties": {
               "created_at": {
                 "format": "date-time",
                 "type": "string"
               },
-              "goal": {
+              "created_by": {
+                "description": "The person (or the Duty's requester) who opened it.",
                 "type": "string"
               },
               "id": {
@@ -54624,7 +54438,7 @@
               },
               "node": {
                 "$ref": "#/components/schemas/NodeName",
-                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+                "description": "The Node of its Tenant that the Thread, its Tasks and its Runs belong to."
               },
               "revision": {
                 "format": "int64",
@@ -54634,7 +54448,6 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "state": {},
               "title": {
                 "type": "string"
               }
@@ -54644,18 +54457,17 @@
               "scratch_space_id",
               "node",
               "title",
-              "goal",
-              "state",
+              "created_by",
               "revision",
               "created_at"
             ],
             "type": "object"
           },
-          "WorkspacePage": {
+          "ThreadPage": {
             "properties": {
               "items": {
                 "items": {
-                  "$ref": "#/components/schemas/Workspace"
+                  "$ref": "#/components/schemas/Thread"
                 },
                 "type": "array"
               },
@@ -54668,7 +54480,7 @@
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/WorkspacePage"
+          "$ref": "#/components/schemas/ThreadPage"
         }
       }
     },
@@ -54678,8 +54490,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "workspace-runs",
-    "path": "/api/workspaces/{id}/runs",
+    "name": "thread-runs",
+    "path": "/api/threads/{id}/runs",
     "query_parameters": ["cursor", "live"],
     "responses": {
       "200": {
@@ -55130,7 +54942,7 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
               }
@@ -55394,11 +55206,6 @@
                   }
                 ]
               },
-              "workspace_event_cursor": {
-                "description": "Last workspace event delivered to this Run.",
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
               "account_suspension_epoch": {
                 "description": "The common Account suspension that paused this Run.",
                 "format": "uint64",
@@ -55422,6 +55229,11 @@
                   }
                 ],
                 "description": "Start of the current external-service outage, retained across wake-ups."
+              },
+              "thread_event_cursor": {
+                "description": "Last thread event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -55774,29 +55586,6 @@
                   }
                 ]
               },
-              "deferred_workspace_observation": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "deferred_workspace_read": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeferredRead"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "force_workspace_read_compaction": {
-                "type": "boolean"
-              },
               "media_intake_through_seq": {
                 "format": "int64",
                 "type": ["integer", "null"]
@@ -55806,13 +55595,36 @@
                   "$ref": "#/components/schemas/ModelMedia"
                 },
                 "type": "array"
+              },
+              "deferred_thread_observation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deferred_thread_read": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeferredRead"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "force_thread_read_compaction": {
+                "type": "boolean"
               }
             },
             "required": [
-              "force_workspace_read_compaction",
-              "deferred_workspace_read",
+              "force_thread_read_compaction",
+              "deferred_thread_read",
               "deferred_skill_read",
-              "deferred_workspace_observation",
+              "deferred_thread_observation",
               "selected_media",
               "media_intake_through_seq",
               "deferred_run_message_reads"
@@ -56029,7 +55841,7 @@
                   }
                 ]
               },
-              "workspace_read_plan": {
+              "thread_read_plan": {
                 "anyOf": [
                   {
                     "$ref": "#/components/schemas/ReadPlan"
@@ -56062,7 +55874,7 @@
               "run_message_summary_end_seq",
               "run_message_summary_limit",
               "deferred_reads",
-              "workspace_read_plan",
+              "thread_read_plan",
               "skill_read_plan",
               "workspace_observation_plan",
               "home_approval",
@@ -56134,14 +55946,14 @@
               },
               {
                 "additionalProperties": false,
-                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "description": "A Run waits in `task_wait` for its Tasks, input, or a ceiling (#1008).",
                 "properties": {
                   "cursor": {
                     "format": "int64",
                     "type": "integer"
                   },
                   "reason": {
-                    "enum": ["workspace"],
+                    "enum": ["task_wait"],
                     "type": "string"
                   },
                   "resume": {
@@ -56306,7 +56118,7 @@
           },
           "WorkingImageSelection": {
             "additionalProperties": false,
-            "description": "A current Workspace image selected by its Area and immutable File version.",
+            "description": "A current Thread image selected by its Area and immutable File version.",
             "properties": {
               "area_id": {
                 "format": "uuid",
@@ -56515,7 +56327,7 @@
                 "format": "date-time",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
@@ -56524,7 +56336,7 @@
               "state_version",
               "id",
               "task_id",
-              "workspace_id",
+              "thread_id",
               "node",
               "home_node",
               "agent_id",
@@ -56583,12 +56395,12 @@
                 "description": "The silent Node, except in graph responses where this is the answering Node.",
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
-            "required": ["node", "kind", "workspace_id", "count"],
+            "required": ["node", "kind", "thread_id", "count"],
             "type": "object"
           },
           "UnconfirmedKind": {
@@ -56695,7 +56507,7 @@
           },
           "SharingScope": {
             "description": "Where built-in memory may be recalled across Runs.",
-            "enum": ["workspace", "tenant_agent"],
+            "enum": ["thread", "tenant_agent"],
             "type": "string"
           }
         },
@@ -56732,7 +56544,7 @@
           },
           "SharingScope": {
             "description": "Where built-in memory may be recalled across Runs.",
-            "enum": ["workspace", "tenant_agent"],
+            "enum": ["thread", "tenant_agent"],
             "type": "string"
           }
         },
@@ -56748,7 +56560,7 @@
     "json": true,
     "method": "PUT",
     "name": "channel-attachment-description",
-    "path": "/api/workspaces/{id}/attachments/{attachment_id}/description",
+    "path": "/api/threads/{id}/attachments/{attachment_id}/description",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -56767,7 +56579,7 @@
                 "type": "string"
               },
               "index_state": {
-                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "description": "Where an image stands in the Thread index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
                 "type": ["string", "null"]
               },
               "media_type": {
@@ -56775,7 +56587,7 @@
               },
               "no_assigned_agent_can_read": {
                 "default": false,
-                "description": "Computed for the Workspace's currently assigned Agents, not persisted.",
+                "description": "Computed for the Thread's currently assigned Agents, not persisted.",
                 "type": "boolean"
               },
               "size_bytes": {
@@ -57156,8 +56968,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "workspace-duties",
-    "path": "/api/workspaces/{workspace}/duties",
+    "name": "thread-duties",
+    "path": "/api/threads/{thread}/duties",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -57293,9 +57105,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -57313,10 +57125,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -57345,11 +57153,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -57357,7 +57171,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -57513,13 +57326,13 @@
       }
     },
     "source": "server/src/apps/workspaces/views/duties.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": true,
     "method": "POST",
     "name": "duty-create",
-    "path": "/api/workspaces/{workspace}/duties",
+    "path": "/api/threads/{thread}/duties",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -57655,9 +57468,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -57675,10 +57488,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -57707,11 +57516,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -57719,7 +57534,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -57872,7 +57686,7 @@
       }
     },
     "source": "server/src/apps/workspaces/views/duties.rs",
-    "uuid_parameters": ["workspace"]
+    "uuid_parameters": ["thread"]
   },
   {
     "json": false,
@@ -58014,9 +57828,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -58034,10 +57848,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -58066,11 +57876,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -58078,7 +57894,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -58271,14 +58086,14 @@
               "title": {
                 "type": "string"
               },
-              "workspace_id": {
+              "thread_id": {
                 "format": "uuid",
                 "type": "string"
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
               "title",
               "requester",
               "halt",
@@ -58533,9 +58348,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -58553,10 +58368,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -58585,11 +58396,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -58597,7 +58414,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -58702,10 +58518,6 @@
               "task_id": {
                 "format": "uuid",
                 "type": ["string", "null"]
-              },
-              "thread_id": {
-                "format": "uuid",
-                "type": ["string", "null"]
               }
             },
             "required": [
@@ -58716,7 +58528,6 @@
               "status",
               "reason",
               "task_id",
-              "thread_id",
               "started_by"
             ],
             "type": "object"
@@ -59025,9 +58836,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -59045,10 +58856,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -59077,11 +58884,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -59089,7 +58902,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -59384,9 +59196,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -59404,10 +59216,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -59436,11 +59244,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -59448,7 +59262,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -59743,9 +59556,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -59763,10 +59576,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -59795,11 +59604,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -59807,7 +59622,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
@@ -60102,9 +59916,9 @@
                 "type": ["string", "null"]
               },
               "thread_id": {
-                "description": "The Duty's own Thread, once its first Task opened it.",
+                "description": "The Duty's own Thread, where its Tasks belong (#1008).",
                 "format": "uuid",
-                "type": ["string", "null"]
+                "type": "string"
               },
               "title": {
                 "type": "string"
@@ -60122,10 +59936,6 @@
               },
               "updated_at": {
                 "format": "date-time",
-                "type": "string"
-              },
-              "workspace_id": {
-                "format": "uuid",
                 "type": "string"
               },
               "router": {
@@ -60154,11 +59964,17 @@
                 "description": "When the Watcher runs next.",
                 "format": "date-time",
                 "type": ["string", "null"]
+              },
+              "origin_thread_id": {
+                "description": "The Thread it was registered from; None for a Duty from before #1008.",
+                "format": "uuid",
+                "type": ["string", "null"]
               }
             },
             "required": [
               "id",
-              "workspace_id",
+              "thread_id",
+              "origin_thread_id",
               "requester",
               "mine",
               "title",
@@ -60166,7 +59982,6 @@
               "procedure",
               "agent",
               "trigger",
-              "thread_id",
               "approval_mode",
               "max_lateness_seconds",
               "pause_after_failures",
