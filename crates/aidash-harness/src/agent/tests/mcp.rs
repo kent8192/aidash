@@ -354,7 +354,7 @@ async fn live_form_wait_reduces_the_next_modern_input_deadline(mut fixture: Fixt
 	let active = checkpoint.active.as_ref().unwrap();
 	assert_eq!(
 		(active.deadline - active.started_at).num_milliseconds() as u64,
-		900_000 - checkpoint.waited_millis
+		7 * 86_400_000 - checkpoint.waited_millis
 	);
 }
 

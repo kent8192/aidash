@@ -639,6 +639,7 @@ impl DefinitionValidation {
 	/// `deferred@1`: the request carries Mandatory exposure, eager tools and
 	/// eager Skill blocks, and may grow to the full exposure budgets. Every
 	/// single Discoverable capability must also fit its own budget.
+	#[allow(clippy::too_many_arguments)]
 	fn deferred_headroom(
 		&self,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
