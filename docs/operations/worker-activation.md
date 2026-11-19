@@ -147,7 +147,7 @@ it abandons (#772). A cancel settles that completion with exactly those Tasks.
 - A cancelled Run is never gated, because cancellation needs no state. A worker that
   cannot load the state takes a repair lease and replaces the state with cancellation
   delivery, which finishes the Run and its Task from metadata alone. This records no
-  error and no `run.invalid_state` event, and inspection reports no `lease_wait`.
+  error and no `execution.invalid_state` event, and inspection reports no `lease_wait`.
 
 To add a capability when a change adds persisted state that older workers reject:
 

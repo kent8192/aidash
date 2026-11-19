@@ -111,7 +111,7 @@ when headers are returned. The response-start timeout therefore does not cut off
 an established stream. Existing 15-second heartbeats, live authorization checks,
 and `Last-Event-ID` replay behavior are preserved. Backpressure does not create
 unbounded buffered event queues. The Run inference stream
-(`/api/runs/{run}/inference/stream`) uses the same SSE admission permit,
+(`/api/executions/{run}/inference/stream`) uses the same SSE admission permit,
 heartbeat, per-frame authorization and backpressure close, so the
 `aidash_sse_*` series below also cover it.
 
@@ -168,8 +168,8 @@ Aidash additionally emits:
 - `aidash_inference_progress_coalesced_total`: progress items merged or dropped because the worker's bounded progress buffer was full. Inference never waits for progress delivery.
 - `aidash_background_service_failures_total{service="preview gateway"}` and `{service="egress gateway"}`: failed attempts to accept a connection, usually because the process ran out of file descriptors. A connection waiting through a shortage is not lost and counts once per attempt, so the counter grows by about one a second while accepts keep failing. The gateway retries once a second and keeps running, and a TCP probe can stay green meanwhile. A standalone `preview-gateway` has no metrics listener, so only its log shows this: one line when failures start, one a minute while they continue, one on recovery.
 
-A `run.lease_recovery_claimed` event records the Run, its Lease Recovery count,
-and whether its next step is isolated before that step starts. A `run.crash_loop`
+An `execution.lease_recovery_claimed` event records the Run, its Lease Recovery count,
+and whether its next step is isolated before that step starts. An `execution.crash_loop`
 event records the count when a Crash Loop Failure enters failure delivery.
 
 A prompt cache that stops working fails silently: requests succeed and the bill

@@ -62,8 +62,8 @@ Thread. Use an isolated deployment.
 | Find Tool call approvals    | `GET /api/capabilities/approvals?state=pending&role=approver`                                | `server/src/apps/execution/capabilities/views/management.rs:364` |
 | Answer approvals            | `POST /api/human-requests/{id}/answer`                                                       | `server/src/apps/execution/views/management.rs:80`               |
 | Decide Tool call approvals  | `POST /api/capabilities/approvals/{id}/decide` with `allow_once` or `deny`                   | `server/src/apps/execution/capabilities/views/management.rs:377` |
-| Run inspection              | `GET /api/runs/{id}`                                                                         | `server/src/apps/execution/views/management.rs:49`               |
-| Cancel on timeout           | `POST /api/runs/{id}/control` with `{"action": "cancel"}`                                    | `server/src/apps/execution/views/management.rs:59`               |
+| Run inspection              | `GET /api/executions/{id}`                                                                   | `server/src/apps/execution/views/management.rs:49`               |
+| Cancel on timeout           | `POST /api/executions/{id}/control` with `{"action": "cancel"}`                              | `server/src/apps/execution/views/management.rs:59`               |
 | Per-request usage           | `GET /api/threads/{id}` (`model.completed` events with `run_id`, `step` and `context_usage`) | `server/src/apps/workspaces/views/management.rs:41`              |
 
 ## Fixture

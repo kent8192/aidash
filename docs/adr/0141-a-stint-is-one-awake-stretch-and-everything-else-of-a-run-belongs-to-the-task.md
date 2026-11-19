@@ -20,3 +20,11 @@ Decided on 2026-11-17 and 2026-11-18 in the agent activation grilling (umbrella 
 
 - API paths and event names that say "run" are renamed; Aidash is not deployed, so no compatibility layer is kept.
 - Dashboards show Stints inside a Task's history, which makes cost per awake stretch visible.
+
+## Amendment (2026-11-20, implementation of #1009)
+
+Calls made while renaming, recorded here so the decisions above are read with them:
+
+- **The table, the API paths and the event names follow; internal names stay.** `runs` is `task_executions` (same rows, keys, policies and triggers; its keys, checks and indexes take `task_executions` names). Every `runs` path segment under `/api/` is `executions` (`/api/executions/{id}/...`, `/api/tasks/{id}/executions`, `/api/threads/{id}/executions`, `/api/threads/{id}/agents/{agent}/executions`, `/api/suspended-executions`), and route names follow (`run-get` is `execution-get`, `task-runs` is `task-executions`, and so on). Every `run.*` event is `execution.*` with the same meaning and data, and stored events were renamed with them.
+- **Kept, because they are internal or stored**: the `run_id` columns and fields of other tables and API bodies, the `run_*` table names, the Rust types (`Run`, `RunRecord`, ...), trigger and function names, the keys `runs` and `next_cursors.runs` in `/api/state`, the resource kind `run` and the policy actions `run.read`, `run.message`, `run.control`, `run.decline_call` and `run.finish` (stored in policies; renaming them needs a policy migration of its own), the Runner protocol (`/v2/runs/...`), stored resource and evidence keys (`{node}/runs/{id}`, `aidash://home/runs/{id}`), the federation report `remote.run.recovered` and the event `task.remote_run_recovered`, and the people-facing word "Run" in the dashboard.
+- **`run.control` was both an action and an event.** Only the event became `execution.control`; the action keeps its name.
