@@ -3577,7 +3577,11 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 		.as_str()
 		.unwrap_or_default();
 	// Not the deny-next-hop policy's refusal: the call never reached target authority.
-	assert_eq!(error, "unavailable tool task_delegate", "{history}");
+	assert_eq!(
+		error,
+		aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL,
+		"{history}"
+	);
 	p.close().await;
 }
 

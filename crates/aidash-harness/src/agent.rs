@@ -3249,7 +3249,15 @@ connection: None,
 					return self.tool_error(run, token, &call, cursor, declined.kind.declined_sentence()).await;
 				}
 				let Some(tool) = tools.get(&call.name) else {
-					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
+					// A Run executing for another Home reports its calls there, so a tool it lacks
+					// answers in the words a blocked or Reach never tool answers: a tool blocked after
+					// the map was built must read the same as one that never was (ADR 0139, decision 14).
+					let message = if home.local() {
+						format!("unavailable tool {}", call.name)
+					} else {
+						aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL.to_owned()
+					};
+					return self.tool_error(run, token, &call, cursor, message).await;
 				};
 				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
 					// Every call is checked against the Exposure set its request
