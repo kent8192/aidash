@@ -109,6 +109,33 @@ impl Record {
 			&& self.subject_chain == subjects
 			&& pinned(self.description.clone()) == pinned(serde_json::to_value(description)?))
 	}
+	/// The stored Description carrying the Home's Federation Tool Request from `fresh`, a
+	/// Description the Home has just described, when it differs from the stored one; `None` when
+	/// it does not. The Request is the only part replaced: the rest stays as admitted, the
+	/// expiry included. Background checks that hold no Home connection read the Request from
+	/// the admission (ADR 0139, decision 12), so a Request the Home widened or narrowed reaches
+	/// them once a worker boundary has described it.
+	pub fn with_tool_request(&self, fresh: &Description) -> serde_json::Result<Option<Value>> {
+		let mut stored = self.description.clone();
+		let Some(fields) = stored.as_object_mut() else {
+			return Ok(None);
+		};
+		let current = fields
+			.get("authorization_details")
+			.cloned()
+			.unwrap_or_else(|| Value::Array(Vec::new()));
+		let request = serde_json::to_value(&fresh.authorization_details)?;
+		if current == request {
+			return Ok(None);
+		}
+		// Stored as a Description serializes it: absent when empty.
+		if fresh.authorization_details.is_empty() {
+			fields.remove("authorization_details");
+		} else {
+			fields.insert("authorization_details".into(), request);
+		}
+		Ok(Some(stored))
+	}
 	pub fn matches_run(&self, run: &RunMetadata, description: &Description) -> bool {
 		self.source_node == run.home_node
 			&& self.task_id == run.task_id

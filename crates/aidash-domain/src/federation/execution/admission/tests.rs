@@ -111,6 +111,63 @@ fn a_renewed_grant_or_a_changed_tool_request_keeps_the_admission(
 	);
 }
 
+/// The admission keeps the Request the Home last described, widened or narrowed, so checks that
+/// hold no Home connection read it (ADR 0139, decision 12); nothing else it pinned moves.
+#[rstest]
+fn the_admission_keeps_the_request_the_home_last_described(
+	binding: (Record, ExecutionPrincipal, Description),
+) {
+	use crate::federation::tool_lists::{
+		FederationToolRequest, HostPattern, ToolAuthorizationDetail, ToolList, ToolPattern,
+	};
+	let (mut record, identity, description) = binding;
+	let chain = ["mapped".to_owned(), "agent".to_owned()];
+	let request = |tools: &[&str], hosts: &[&str]| {
+		vec![ToolAuthorizationDetail::new(&FederationToolRequest {
+			tools: ToolList::new(tools.iter().map(|tool| ToolPattern::new(*tool).unwrap()))
+				.unwrap(),
+			hosts: hosts
+				.iter()
+				.map(|host| HostPattern::new(*host).unwrap())
+				.collect(),
+		})]
+	};
+	let described = |details| {
+		let mut fresh = description.clone();
+		fresh.authorization_details = details;
+		// A renewal moves the expiry the admission does not take.
+		fresh.expires_at += chrono::Duration::hours(1);
+		fresh
+	};
+	let stored = |record: &Record| {
+		serde_json::from_value::<Description>(record.description.clone()).unwrap()
+	};
+	// The Home answers an ask by adding `shell` and a host.
+	let widened = described(request(&["shell", "workspace_*"], &["example.com"]));
+	record.description = record.with_tool_request(&widened).unwrap().unwrap();
+	assert_eq!(
+		stored(&record).authorization_details,
+		widened.authorization_details
+	);
+	assert_eq!(stored(&record).expires_at, description.expires_at);
+	assert!(record.matches(&identity, &chain, &widened).unwrap());
+	// Described again unchanged: nothing to write.
+	assert!(record.with_tool_request(&widened).unwrap().is_none());
+	// The Home narrows its tools and hosts.
+	let narrowed = described(request(&["workspace_*"], &[]));
+	record.description = record.with_tool_request(&narrowed).unwrap().unwrap();
+	assert_eq!(
+		stored(&record).authorization_details,
+		narrowed.authorization_details
+	);
+	// A Request withdrawn altogether is stored as a Description without one.
+	let none = described(Vec::new());
+	record.description = record.with_tool_request(&none).unwrap().unwrap();
+	assert!(record.description.get("authorization_details").is_none());
+	assert!(record.with_tool_request(&description).unwrap().is_none());
+	assert!(record.matches(&identity, &chain, &description).unwrap());
+}
+
 #[rstest]
 #[case(0)]
 #[case(1)]

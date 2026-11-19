@@ -1,9 +1,10 @@
 //! Whether a Run executing here for another Home may still use the tool its work depends on
 //! (ADR 0139, decision 12). The 30 second Read Recheck holds no Home connection, so it decides
 //! from what this Node keeps: its own registration of the Home (Allowance and Block), the
-//! Run-only answers on the admission and the Home's Request as the admission last saw it. A
-//! change of the Home's Request that the Home has not yet sent reaches a running command at the
-//! Run's next worker boundary, where the lease asks the Home afresh.
+//! Run-only answers on the admission and the Home's Request as the admission last saw it. Every
+//! worker boundary describes the grant afresh and saves a changed Request on the admission
+//! (`peer_admission::save_tool_request`), so a Request the Home widens or narrows reaches a
+//! running command, a Live preview, egress and Subnode members at the Run's next boundary.
 use crate::{Error, Result as NativeResult};
 use aidash_domain::{
 	federation::{
@@ -143,7 +144,7 @@ pub(crate) async fn withdrawn(
 ///
 /// This is the Home's Request as the admission last saw it: the egress proxy has no Federation
 /// and holds no Home connection, so a Request the Home narrows reaches a running command only
-/// once the Run's next worker boundary has refreshed the admission. The 30 second Read Recheck
+/// once the Run's next worker boundary has described the grant and saved it on the admission. The 30 second Read Recheck
 /// stops a command whose tool a list withdrew, but not one that merely narrows the hosts.
 ///
 /// `Ok(None)` puts no further limit: a Run no other Home started, or one whose Home shares this
