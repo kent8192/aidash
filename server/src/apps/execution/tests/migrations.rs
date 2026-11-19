@@ -790,14 +790,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0048_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0062_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0047_duty_creating_task".to_owned()
+			"0061_duty_template_check".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -5426,6 +5426,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0043_duty_trigger_from_node"),
 			("workspaces", "0044_duty_trigger_node_event_check"),
 			("workspaces", "0047_duty_creating_task"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5500,6 +5502,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0043_duty_trigger_from_node"),
 			("workspaces", "0044_duty_trigger_node_event_check"),
 			("workspaces", "0047_duty_creating_task"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5582,6 +5586,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0043_duty_trigger_from_node"),
 			("workspaces", "0044_duty_trigger_node_event_check"),
 			("workspaces", "0047_duty_creating_task"),
+			("workspaces", "0060_duty_template"),
+			("workspaces", "0061_duty_template_check"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

@@ -177,6 +177,35 @@ pub trait InstallationScope: InstallationRead + StagingScope {
 #[async_trait]
 pub trait MarketplaceRead: InstallationRead {
 	async fn version_page(&mut self, after: &str, limit: u64) -> Result<Vec<(String, Version)>>;
+	/// Every published version of one package of one publisher on one Node,
+	/// before any authorization: the candidates a Duty installed from a
+	/// template is offered as updates (#1011 D4). An adapter with an index
+	/// overrides this walk over every version.
+	async fn package_versions(
+		&mut self,
+		repository: &str,
+		owner_tenant: &str,
+		package_id: &str,
+	) -> Result<Vec<Version>> {
+		let mut found = vec![];
+		let mut cursor = String::new();
+		loop {
+			let page = self.version_page(&cursor, 64).await?;
+			let exhausted = page.len() < 64;
+			for (key, version) in page {
+				cursor = key;
+				if version.repository == repository
+					&& version.owner_tenant == owner_tenant
+					&& version.package_id == package_id
+				{
+					found.push(version);
+				}
+			}
+			if exhausted {
+				return Ok(found);
+			}
+		}
+	}
 	async fn source_references(&mut self, offset: usize, limit: u64) -> Result<Vec<EntityRef>>;
 	/// Filter by the current tenant before decoding any persisted document.
 	async fn installation_documents(&mut self) -> Result<Vec<serde_json::Value>>;

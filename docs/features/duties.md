@@ -171,6 +171,69 @@ A Run books the next event of a trigger of its root person's Duty by calling
 Router's `input` when a Router delivered it). A Run
 that arrived through Federation books none.
 
+## Duty templates
+
+A **Duty template** is a ready-made Duty in the Marketplace, such as a GitHub
+CI duty or Gmail triage (#1011 D4). It is a package of kind `duty_template`,
+browsed, read and shared like any other package (see
+[Tenant Marketplace operations](../operations/marketplace-authorization.md#duty-templates)).
+A template carries:
+
+- the title, mission and procedure of the Duty it becomes;
+- its Router and Watcher, if it has them, with the same shape and limits as a
+  Duty's;
+- the Duty Triggers it expects, each with a short instruction: a time trigger
+  (`cron` or `interval`), `webhook`, `duty_completed` and `node_event`, at
+  most one of each;
+- the Agent it suggests, by id and version, if its publisher chose to.
+
+It never carries a secret, a trigger secret, a Requester, a credential or an
+id of the Tenant it came from. Every part of it refuses fields it does not
+know, so one that names a secret is refused rather than silently stripped,
+and its text, scripts and instructions are refused when they hold something
+that looks like a credential: an Aidash Subject Credential, a GitHub, GitLab,
+Slack, Anthropic, OpenRouter, OpenAI, AWS or Google API key, or a private key
+block. A Watcher reaches an outside service through the Scratch Space's
+External services, whose proxy adds the credential (ADR 0137), so a script
+never needs one written in it. The same checks run when a template is
+published and when it is installed, whichever Tenant published it.
+
+**Installing** a template into a Workspace,
+`POST /api/marketplace/packages/{key}/duty` with the reviewed `digest`, the
+`workspace_id` and an `idempotency_key`, sets up a Duty whose Requester is the
+person who installs it, as for any Duty they set up. It needs
+`marketplace.read` and `marketplace.install` on the package and
+`workspace.read`, `duty.create` and `task.create` on the Workspace. The
+person picks the Agent (`agent`); without one, the suggested Agent staffs it,
+which the Node must have approved like any Agent a Duty names. The Duty gets
+the template's mission, procedure, scripts and time trigger, the Requester's
+own default Approval Mode, the default lateness and a pause after 3 failures.
+Its scripts need no approval of their own (ADR 0142): shell or Python must be
+approved for the Node, as for any Router or Watcher. The template's other
+triggers come back as `triggers_to_create`, each with its instruction, for the
+person to create with `POST /api/duties/{id}/triggers`; a webhook's secret is
+shown only then, to them. A retried install with the same key returns the
+same Duty. A template is never installed as a Registry copy.
+
+**Publishing** one of their Duties, `POST /api/duties/{id}/template`, is the
+Requester's alone and needs `marketplace.publish`. The template is the Duty's
+title, mission, procedure, scripts and time trigger, the kinds of its other
+triggers with the instruction the publisher writes for each, and its Agent
+when `suggest_agent` is true (the default). `GET /api/duties/{id}/template`
+shows it first, with empty instructions. The body names the package
+(`package_id`), a semantic `version`, the `author` and an optional
+`description`; a version is immutable, and the new one is shared with the
+publisher's Tenant until they share it further.
+
+**Updates.** A Duty installed from a template records the template version
+(`template`: key, Node, owner Tenant, package and version). When a later
+version of the same package of the same publisher is readable and installable
+by the viewer, the Duty's page offers it as `template_update`; nothing applies
+it by itself. Its Requester applies it with
+`POST /api/duties/{id}/template-update` (`key`, `digest`): the template's
+mission, procedure and scripts replace the Duty's, and its title, Agent and
+triggers stay as the Requester set them.
+
 ## Ticks
 
 Every replica looks for Duties whose time trigger is due every

@@ -56,6 +56,8 @@ import { useI18n, Panel, Field, type StatusTone } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
 import { ApprovalSetReview } from "./marketplace-approval";
+import { DutyTemplateDetail, DutyTemplateInstall } from "./duty-templates";
+import { isDutyTemplate, templateOf } from "./duty-templates-model";
 import { TenantSecretAssignments } from "./tenant-secrets";
 import { SecretReadiness } from "./capabilities/secret-readiness";
 import type { SecretReadinessFact } from "./capabilities/secret-readiness-model";
@@ -154,6 +156,7 @@ export function ScopedMarketplace({
   const busyRetry = useBusyRetry();
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const [installingDuty, setInstallingDuty] = useState(false);
   const [denied, setDenied] = useState(false);
   const [config, setConfig] = useState("{}");
   const [bindings, setBindings] = useState("[]");
@@ -367,6 +370,11 @@ export function ScopedMarketplace({
       </Panel>
     );
   const view = selected ? detail.data : undefined;
+  // A Duty template installs as a Duty, not a Registry copy (#1011 D4).
+  const dutyTemplate =
+    view && isDutyTemplate(view.summary.kind)
+      ? templateOf(view.manifest)
+      : undefined;
   return (
     <div className="grid min-w-0 gap-6">
       {message &&
@@ -550,17 +558,38 @@ export function ScopedMarketplace({
                   </div>
                 </div>
               )}
-              <Hint>{copy.dependencies}</Hint>
+              {dutyTemplate ? (
+                <DutyTemplateDetail template={dutyTemplate} />
+              ) : (
+                <Hint>{copy.dependencies}</Hint>
+              )}
               <Disclosure summary={copy.manifest}>
                 <RecordView value={view.manifest} />
               </Disclosure>
               {view.summary.actions.includes("install") && (
                 <div>
-                  <Button onClick={() => setInstalling(true)}>
+                  <Button
+                    onClick={() =>
+                      dutyTemplate
+                        ? setInstallingDuty(true)
+                        : setInstalling(true)
+                    }
+                  >
                     <ShieldCheck aria-hidden />
                     {copy.reviewInstall}
                   </Button>
                 </div>
+              )}
+              {dutyTemplate && installingDuty && (
+                <DutyTemplateInstall
+                  packageKey={view.summary.key}
+                  digest={view.summary.digest}
+                  template={dutyTemplate}
+                  tenant={tenant}
+                  node={home?.name}
+                  open={installingDuty}
+                  onClose={() => setInstallingDuty(false)}
+                />
               )}
               {view.summary.actions.includes("share") && (
                 <div className="grid gap-2 border-t border-border pt-3">

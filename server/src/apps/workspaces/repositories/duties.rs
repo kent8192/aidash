@@ -77,6 +77,10 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 		consecutive_failures: row.consecutive_failures,
 		created_by_run_id: row.created_by_run_id,
 		creation_key: row.creation_key,
+		template: row
+			.template
+			.map(|template| serde_json::from_value(template.0))
+			.transpose()?,
 		revision: row.revision,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
@@ -124,6 +128,11 @@ fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 	row.consecutive_failures = duty.consecutive_failures;
 	row.created_by_run_id = duty.created_by_run_id;
 	row.creation_key = duty.creation_key.clone();
+	row.template = duty
+		.template
+		.as_ref()
+		.map(|template| serde_json::to_value(template).map(reinhardt::db::orm::Json))
+		.transpose()?;
 	row.created_at = duty.created_at;
 	row.updated_at = duty.updated_at;
 	Ok(())
@@ -166,6 +175,7 @@ pub(crate) async fn insert(
 		.router(None)
 		.watcher(None)
 		.watcher_next_at(None)
+		.template(None)
 		.finish();
 	write(&mut row, duty)?;
 	DutyRecord::objects()
@@ -360,6 +370,23 @@ pub(crate) async fn list(
 /// registrations, so two cannot both take the last place a plan allows; it is
 /// advisory, so no Run's lease on the Tenant waits for it.
 pub(crate) async fn count(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<i64> {
+	lock_registrations(tx, tenant).await?;
+	native::query_scalar::<i64>(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+			.from(Alias::new("duties"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *tx)
+	.await
+}
+
+/// Takes the transaction lock that serializes a Tenant's registrations.
+pub(crate) async fn lock_registrations(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+) -> Result<()> {
 	use reinhardt::db::orm::execution::convert_values;
 	use reinhardt::query::{IntoIden, SimpleExpr};
 	let (sql, values) = Query::select()
@@ -375,15 +402,37 @@ pub(crate) async fn count(tx: &mut dyn TransactionExecutor, tenant: &str) -> Res
 		))
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
-	native::query_scalar::<i64>(
+	Ok(())
+}
+
+/// The Duty `requester` installed from a template with this install request
+/// (#1011 D4), so a retried install returns it. The caller holds
+/// [`lock_registrations`], so two retries cannot both miss it.
+pub(crate) async fn installed(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	requester: &str,
+	install_key: Uuid,
+) -> Result<Option<Duty>> {
+	let id = native::query_scalar::<Uuid>(
 		&Query::select()
-			.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+			.column(Alias::new("id"))
 			.from(Alias::new("duties"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("requester").eq(requester.to_owned()))
+			.and_where(Expr::cust_with_values(
+				"template->>'install_key' = ?",
+				[install_key.to_string()],
+			))
+			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&mut *tx)
-	.await
+	.scalar_optional(&mut *tx)
+	.await?;
+	match id {
+		Some(id) => load(tx, tenant, id, false).await,
+		None => Ok(None),
+	}
 }
 
 /// The mission and procedure of the Duty whose tick started `task`, if one

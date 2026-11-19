@@ -1409,6 +1409,8 @@ mod deletion;
 
 #[path = "tenancy/demo_data.rs"]
 mod demo_data;
+#[path = "tenancy/duty_templates.rs"]
+mod duty_templates;
 #[path = "tenancy/exchange.rs"]
 mod exchange;
 #[path = "tenancy/nodes.rs"]

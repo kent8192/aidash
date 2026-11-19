@@ -298,7 +298,20 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					SCRIPT_VERSIONS,
 				)
 				.await?;
-				serde_json::to_value(DetailView::new(detail, &mine, versions))?
+				// A later version of its template is offered, never applied
+				// (#1011 D4).
+				let template_update = match &detail.duty.template {
+					Some(source) => {
+						crate::apps::marketplace::services::duty_templates::newer(
+							scope.access,
+							f.store.deployment.as_str(),
+							source,
+						)
+						.await?
+					}
+					None => None,
+				};
+				serde_json::to_value(DetailView::new(detail, &mine, versions, template_update))?
 			}
 			Operation::Update(id, patch) => {
 				serde_json::to_value(view(app::update(&mut scope, id, patch).await?))?

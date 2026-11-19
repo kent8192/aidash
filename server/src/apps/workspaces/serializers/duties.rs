@@ -5,6 +5,7 @@ use aidash_domain::{
 	duties::{
 		Duty, Halt, Tick, Trigger,
 		scripts::{Script, Version, Watcher},
+		templates::Source as TemplateSource,
 	},
 	registry::EntityRef,
 };
@@ -55,6 +56,8 @@ pub(crate) struct DutyView {
 	pub consecutive_failures: i32,
 	/// The Run whose Agent registered it, if an Agent did.
 	pub created_by_run_id: Option<Uuid>,
+	/// The Marketplace template version it was installed from (#1011 D4).
+	pub template: Option<TemplateSource>,
 	pub revision: i64,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
@@ -103,6 +106,7 @@ impl DutyView {
 			next_scheduled_at: duty.next_scheduled_at,
 			consecutive_failures: duty.consecutive_failures,
 			created_by_run_id: duty.created_by_run_id,
+			template: duty.template.as_ref().map(TemplateSource::shown),
 			revision: duty.revision,
 			created_at: duty.created_at,
 			updated_at: duty.updated_at,
@@ -121,6 +125,10 @@ pub(crate) struct DetailView {
 	pub ticks: Vec<Tick>,
 	/// A newer version of its Agent the Requester could move it to.
 	pub newer_agent_version: Option<String>,
+	/// A later version of the template it was installed from that the viewer
+	/// may install, which its Requester may move it to (#1011 D4). Never
+	/// applied by itself.
+	pub template_update: Option<TemplateSource>,
 	/// Saved versions of its Router and Watcher with their authors, newest
 	/// first (#1011).
 	pub script_versions: Vec<Version>,
@@ -129,11 +137,17 @@ pub(crate) struct DetailView {
 }
 
 impl DetailView {
-	pub fn new(detail: Detail, viewer: &str, script_versions: Vec<Version>) -> Self {
+	pub fn new(
+		detail: Detail,
+		viewer: &str,
+		script_versions: Vec<Version>,
+		template_update: Option<TemplateSource>,
+	) -> Self {
 		Self {
 			duty: DutyView::new(detail.duty, viewer, detail.may_administer),
 			ticks: detail.ticks,
 			newer_agent_version: detail.newer_agent_version,
+			template_update,
 			script_versions,
 			may_edit: detail.may_edit,
 			may_administer: detail.may_administer,

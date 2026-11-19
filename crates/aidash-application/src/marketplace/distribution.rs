@@ -154,12 +154,18 @@ pub async fn summary(
 		actions.push("read".into());
 	}
 	if can_read && scope.decide(&resource, "marketplace.install").await? {
-		let prospective = prospective_installation(scope.tenant(), &version.key);
-		let resource = scope.installation_resource(&prospective, None);
-		if scope.decide(&resource, "installation.create").await?
-			&& scope.decide(&resource, "installation.read").await?
-		{
+		// A Duty template becomes a Duty, whose own checks run when a person
+		// picks the Workspace; it makes no Marketplace installation (#1011 D4).
+		if version.kind == aidash_domain::duties::templates::KIND {
 			actions.push("install".into());
+		} else {
+			let prospective = prospective_installation(scope.tenant(), &version.key);
+			let resource = scope.installation_resource(&prospective, None);
+			if scope.decide(&resource, "installation.create").await?
+				&& scope.decide(&resource, "installation.read").await?
+			{
+				actions.push("install".into());
+			}
 		}
 	}
 	if scope.tenant() == version.owner_tenant {

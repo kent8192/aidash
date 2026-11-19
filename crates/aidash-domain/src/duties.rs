@@ -16,6 +16,7 @@ use uuid::Uuid;
 pub mod cron;
 pub mod events;
 pub mod scripts;
+pub mod templates;
 
 /// Registering Duties, and changing, pausing and deleting your own. Judged
 /// on the Workspace the Duty belongs to. Members hold it by default.
@@ -305,6 +306,10 @@ pub struct Duty {
 	#[serde(skip)]
 	#[schemars(skip)]
 	pub creation_key: Option<String>,
+	/// The Marketplace template version it was installed from, if it was
+	/// (#1011 D4), so a later version can be offered as an update.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub template: Option<templates::Source>,
 	pub revision: i64,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,

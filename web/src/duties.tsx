@@ -30,6 +30,7 @@ import {
   type DutyForm,
   type ScriptLanguage,
 } from "./duties-model";
+import { DutyTemplateLine, PublishDutyTemplate } from "./duty-templates";
 
 const copy = {
   "ja-JP": {
@@ -419,6 +420,7 @@ function DutyHistory({
   const { locale } = useI18n();
   const words = copy[locale];
   const ja = locale === "ja-JP";
+  const client = useQueryClient();
   const [successor, setSuccessor] = useState("");
   const detail = useQuery({
     queryKey: ["duty", id],
@@ -444,6 +446,18 @@ function DutyHistory({
       )}
       {newer_agent_version && duty.mine && (
         <Hint>{words.newer(newer_agent_version)}</Hint>
+      )}
+      <DutyTemplateLine
+        detail={detail.data}
+        onUpdated={() => {
+          void client.invalidateQueries({ queryKey: ["duty", id] });
+          void client.invalidateQueries({ queryKey: ["duties"] });
+        }}
+      />
+      {duty.mine && (
+        <div>
+          <PublishDutyTemplate duty={duty} />
+        </div>
       )}
       {may_administer && duty.halt === "requester_left" && (
         <form

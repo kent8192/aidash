@@ -6,7 +6,10 @@
 use crate::{Error, Result};
 use aidash_domain::{
 	approval_rules::ApprovalMode,
-	duties::{self, Actor, Change, Definition, Duty, Halt, Patch, Resumption, Tick},
+	duties::{
+		self, Actor, Change, Definition, Duty, Halt, Patch, Resumption, Tick,
+		templates::{Source, Template},
+	},
 	registry::EntityRef,
 };
 use async_trait::async_trait;
@@ -125,6 +128,43 @@ pub async fn register(
 	definition: Definition,
 	origin: Origin,
 ) -> Result<Duty> {
+	register_with(scope, workspace, definition, origin, None).await
+}
+
+/// Sets up a Duty from a Marketplace template the person may install
+/// (#1011 D4): the person who installs it is its Requester, as for any Duty
+/// they set up, and it is staffed by `agent`, else by the Agent the template
+/// suggests. Its time trigger is the template's; its other triggers are the
+/// person's to create, since only they may hold a webhook secret. The
+/// template version is recorded so a later one can be offered as an update.
+pub async fn install_template(
+	scope: &mut dyn DutyScope,
+	workspace: Uuid,
+	template: &Template,
+	agent: Option<EntityRef>,
+	source: Source,
+) -> Result<Duty> {
+	template.validate(scope.now())?;
+	let agent = agent
+		.or_else(|| template.agent.as_ref().map(|agent| agent.reference()))
+		.ok_or_else(|| Error::Invalid("choose the Agent that carries the Duty out".into()))?;
+	register_with(
+		scope,
+		workspace,
+		template.definition(agent),
+		Origin::Person,
+		Some(source),
+	)
+	.await
+}
+
+async fn register_with(
+	scope: &mut dyn DutyScope,
+	workspace: Uuid,
+	definition: Definition,
+	origin: Origin,
+	template: Option<Source>,
+) -> Result<Duty> {
 	scope.require_workspace(workspace, "workspace.read").await?;
 	if let Origin::Agent { run_id, key } = &origin
 		&& let Some(existing) = scope.created_by(*run_id, key).await?
@@ -167,6 +207,7 @@ pub async fn register(
 			Origin::Person => None,
 			Origin::Agent { key, .. } => Some(key),
 		},
+		template,
 		revision: 0,
 		created_at: now,
 		updated_at: now,
@@ -222,6 +263,60 @@ pub async fn update(scope: &mut dyn DutyScope, id: Uuid, patch: Patch) -> Result
 	if patch.is_empty() {
 		return Ok(duty);
 	}
+	change(scope, &mut duty, &patch).await?;
+	scope.save(&duty).await?;
+	Ok(duty)
+}
+
+/// Moves a Duty installed from a template to a later version of it (#1011
+/// D4), as its Requester's own edit: the template's mission, procedure and
+/// scripts replace the Duty's, and its title, Agent and triggers stay.
+/// Nothing moves a Duty to a new version but this.
+pub async fn update_from_template(
+	scope: &mut dyn DutyScope,
+	id: Uuid,
+	template: &Template,
+	source: Source,
+) -> Result<Duty> {
+	let mut duty = visible(scope, id, true).await?;
+	permitted(scope, &duty, Change::Edit).await?;
+	if !duty
+		.template
+		.as_ref()
+		.is_some_and(|current| current.precedes(&source))
+	{
+		return Err(Error::Invalid(
+			"only a later version of the template the Duty was installed from updates it".into(),
+		));
+	}
+	template.validate(scope.now())?;
+	change(scope, &mut duty, &template.update_patch()).await?;
+	duty.template = Some(Source {
+		install_key: duty
+			.template
+			.as_ref()
+			.and_then(|current| current.install_key),
+		..source
+	});
+	scope.save(&duty).await?;
+	Ok(duty)
+}
+
+/// A Duty of the person's own, for them to publish as a template (#1011
+/// D4). Only its Requester publishes a Duty: its mission and scripts are
+/// theirs to share.
+pub async fn own(scope: &mut dyn DutyScope, id: Uuid) -> Result<Duty> {
+	let duty = visible(scope, id, false).await?;
+	if duty.requester != scope.subject() {
+		return Err(Error::Invalid(
+			"only the Duty's Requester can publish it as a template".into(),
+		));
+	}
+	Ok(duty)
+}
+
+/// Applies `patch` to a loaded Duty as its Requester's edit; the caller saves.
+async fn change(scope: &mut dyn DutyScope, duty: &mut Duty, patch: &Patch) -> Result<()> {
 	scope
 		.require_workspace(duty.workspace_id, duties::CREATE)
 		.await?;
@@ -239,8 +334,7 @@ pub async fn update(scope: &mut dyn DutyScope, id: Uuid, patch: Patch) -> Result
 		duty.watcher_next_at = None;
 	}
 	duty.updated_at = now;
-	scope.save(&duty).await?;
-	Ok(duty)
+	Ok(())
 }
 
 /// A Duty its Requester may change: for adding or removing its triggers.

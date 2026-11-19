@@ -1052,3 +1052,5 @@ ADR 0138 (#987, #962) removes the Research category; page reading (`research.pag
 approver columns to Catalog Approvals and their history. Existing rows are Node-scoped and do not
 carry. `identity/0089_approval_carry_over_state` records the corresponding ORM state; the
 physical `scope` default is retained for existing write paths.
+
+`workspaces/0060_duty_template` (after `workspaces/0047_duty_creating_task`) adds the nullable JSONB `duties.template` (in the ORM model): the Marketplace Duty template version a Duty was installed from (#1011 D4), its version key, Node, owner Tenant, package and version, and the install request's idempotency key, so a later version can be offered as an update and a retried install returns the same Duty. `workspaces/0061_duty_template_check` (database-only) checks that it is an object naming those five strings. Both use typed operations; existing Duties stay empty. Duty templates themselves are ordinary `marketplace_versions` rows of kind `duty_template`, so the Marketplace app has no migration.
