@@ -357,6 +357,10 @@ async fn dispatch(
 			let input = input!(body, DiscoveryInput);
 			respond(boxed(|| identity_peer::discover_for(f, admitted, input)).await)
 		}
+		// The view reads no body: the sender is the whole question (ADR 0139).
+		("POST", ["scoped", "tools", "discover"]) => {
+			respond(boxed(|| identity_peer::tools_discover_for(f, admitted)).await)
+		}
 		("POST", ["scoped", "graph"]) => {
 			let input = checked!(body, identity_peer::graph::GraphRequest);
 			respond(boxed(|| identity_peer::graph::project(f, admitted, input)).await)
