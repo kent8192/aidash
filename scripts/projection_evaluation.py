@@ -97,7 +97,7 @@ TABLE_FIELDS = {
     "context_compaction_attempts": COMMON | {"stage", "policy_version", "provider", "source_from_seq",
                                              "source_through_seq", "base_revision", "observed_input_seq",
                                              "before_tokens", "after_tokens", "reason", "candidate_digest", "provider_dispatched"},
-    "generation_embedding_usage": COMMON | {"request_id", "workspace_id", "entry_id", "provider_id",
+    "generation_embedding_usage": COMMON | {"request_id", "thread_id", "entry_id", "provider_id",
                                              "provider_version", "request_bytes", "reserved_tokens", "reported_tokens",
                                              "accounting_kind", "provider_work_unpriced"},
 }

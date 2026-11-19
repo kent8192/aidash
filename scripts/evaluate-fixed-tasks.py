@@ -69,7 +69,7 @@ DETERMINISTIC_LIMITATIONS = [
 LIVE_LIMITATIONS = [
     "Provider model aliases and routes can change upstream without notice. This tier records no provider-reported "
     "model or route identity (model.reported_identities is null): Usage Records have no HTTP read endpoint and "
-    "Workspace events do not carry the identity. model.route is only the connected Provider Credential's "
+    "Thread events do not carry the identity. model.route is only the connected Provider Credential's "
     "catalog provider.",
     "Live outputs are restricted content: the manifest keeps digests and verifier results, not answers.",
     "Spend is enforced from conservative per-Run worst-case reservations that cover every harness retry of every "
@@ -372,22 +372,22 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
         checks = []
         for variant, provider, agent in variants:
             try:
-                workspace = api.post("/api/workspaces", {"title": f"{experiment.prefix} memory {scenario['id']} "
-                                                                  f"{variant['id']}", "goal": "Memory scenario"},
-                                     experiment.token)["id"]
-                # Memory banks require an enabled Workspace index (enabled per Workspace); its embeddings
+                thread = api.post("/api/threads", {"title": f"{experiment.prefix} memory {scenario['id']} "
+                                                            f"{variant['id']}"},
+                                  experiment.token)["id"]
+                # Memory banks require an enabled Thread index (enabled per Thread); its embeddings
                 # come from the fixture.
-                api.post(f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+                api.post(f"/api/threads/{thread}/semantic/index", {"expected_revision": 0, "spec": {
                     "embedding": embedding_config, "vector": {"provider": "postgres", "endpoint": "local",
                                                               "credential_env": None},
                     "enabled": True, "auto_context": False, "max_sources": 100, "max_results": 10,
                     "max_result_tokens": 32768, "max_input_bytes": 32768}}, experiment.token)
-                participant = api.post(f"/api/workspaces/{workspace}/memory/participants",
+                participant = api.post(f"/api/threads/{thread}/memory/participants",
                                        {"agent": {"id": agent["id"], "version": "1.0.0"}}, experiment.token)
                 provider_ref = {"id": provider["id"], "version": "1.0.0"}
-                variant_checks, seed = runner.run_memory_scenario(api, experiment.token, workspace, provider_ref,
+                variant_checks, seed = runner.run_memory_scenario(api, experiment.token, thread, provider_ref,
                                                                   participant["bank"], scenario)
-                results.append({"variant": variant["id"], "workspace": workspace, "bank": participant["bank"],
+                results.append({"variant": variant["id"], "thread": thread, "bank": participant["bank"],
                                 "seed_sha256": seed, "passed": all(item["passed"] for item in variant_checks)})
                 checks += [dict(item, variant=variant["id"]) for item in variant_checks]
             except Exception as error:  # Recorded as an error for this scenario, never as passing.
@@ -678,7 +678,7 @@ def run_deterministic(args, binary_directory):
                 # An arm the corpus marks available was rejected: a harness regression, not an absent feature.
                 error = unavailable_arms_error(registration_errors)
             usage = usage_reader_for(postgres, "aidash_evaluation", password, query)
-            # Runs are independent (own Workspace, Task and fixture probe state), so up to
+            # Runs are independent (own Thread, Task and fixture probe state), so up to
             # --parallel of them share the Node's worker slots. Results keep plan order.
             jobs = [(repeat, planned) for planned, repeat in evaluation.execution_schedule(
                 planned_runs, args.repeats, args.execution_seed)

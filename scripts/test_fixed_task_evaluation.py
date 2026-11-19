@@ -52,7 +52,7 @@ def answer_json(value):
 
 
 def observation(**overrides):
-    value = {"run_id": "run", "workspace": "ws", "phase": "COMPLETED", "error": None, "human_answers": [],
+    value = {"run_id": "run", "thread": "ws", "phase": "COMPLETED", "error": None, "human_answers": [],
              "tool_calls": [], "final_answer": None, "steps": 2, "compactions": 0, "requests": None,
              "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 10.0}
     value.update(overrides)
@@ -927,7 +927,7 @@ class OfflineCalibrationTest(unittest.TestCase):
         fixture = fixture_module.Fixture({"fixture/m": 128000})
         task_uuid = "00000000-0000-0000-0000-0000000000aa"
         fixture.register(task_uuid, item, "offline")
-        tools = ["human_request", "workspace_read"] + [tool["alias"] for tool in evaluation.task_tools(value, item)]
+        tools = ["human_request", "thread_read"] + [tool["alias"] for tool in evaluation.task_tools(value, item)]
         history, calls, answers = [], [], []
         human = iter(item.get("human_answers", []))
         for _ in range(16):
@@ -971,11 +971,16 @@ class CacheReuseTest(unittest.TestCase):
         class Api:
             def get(self, path, token):
                 after = int(path.split("after=")[1])
+                self.paths.append(path)
                 if after == 0:
-                    return [{"sequence": i, "kind": "model.completed", "data": {"run_id": "r", "context_usage": {"compactions": 0}}} for i in range(1, 151)]
-                return []
-        events = runner.compaction_events(Api(), "token", "w", "r")
+                    return {"events": [{"sequence": i, "kind": "model.completed", "data": {"run_id": "r", "context_usage": {"compactions": 0}}} for i in range(1, 151)],
+                            "unconfirmed": []}
+                return {"events": [], "unconfirmed": []}
+        api = Api()
+        api.paths = []
+        events = runner.compaction_events(api, "token", "w", "r")
         self.assertEqual(len(events), 150)
+        self.assertEqual(api.paths, ["/api/events?thread_id=w&after=0", "/api/events?thread_id=w&after=150"])
 
     def test_probe_dry_run_preserves_reasoning_and_pins_route(self):
         script = Path(__file__).resolve().parent / "prompt_cache_route_probe.py"
@@ -1050,7 +1055,7 @@ class CacheReuseTest(unittest.TestCase):
         self.assertAlmostEqual(metric["summary_hit"], 100 / 120)
         self.assertIsNone(evaluation.summarize_usage(None)["cache_reuse"]["overall_hit"])
 
-    def test_compaction_markers_follow_accepted_workspace_events(self):
+    def test_compaction_markers_follow_accepted_thread_events(self):
         records = [{"purpose": "main", "outcome": "completed"} for _ in range(3)]
         events = [{"context_usage": {"compactions": n}} for n in (0, 1, 1)]
         runner.mark_compaction(records, events)
@@ -1178,7 +1183,7 @@ class FakeNode:
     def call(self, method, path, body, token, timeout=None):
         if method == "GET" and path.startswith("/api/tenants/") and path.endswith("/nodes"):
             return 200, [{"name": "default-12345678", "address": "aidash://live/default-12345678", "default": True}]
-        if path == "/api/workspaces" and method == "POST":
+        if path == "/api/threads" and method == "POST":
             return 200, {"id": "ws-1"}
         if path.endswith("/tasks"):
             return 200, {"id": "task-uuid", "revision": 0}
@@ -1212,7 +1217,7 @@ class FakeNode:
             self.cancelled = True
             self.phases = ["CANCELLED"]
             return 200, {}
-        if path == "/api/workspaces/ws-1":
+        if path == "/api/threads/ws-1":
             return 200, {"artifacts": [{"run_id": "run-1", "content": self.artifact}], "events": [
                 {"kind": "model.completed", "data": {"run_id": "run-1", "step": 1,
                                                      "context_usage": {"input_tokens": 10, "output_tokens": 5}}}]}

@@ -82,8 +82,8 @@ class NativeMemory(RemoteMemory):
             body["spec"].setdefault("remote", {})["memory"] = [self.descriptor(0, "home-embedding")]
         return super().user(node, path, body, method)
 
-    def generated_task(self, workspace):
-        return super().generated_task(workspace, policy_suffix="-" + self.language.lower())
+    def generated_task(self, thread):
+        return super().generated_task(thread, policy_suffix="-" + self.language.lower())
 
     def configure(self):
         zero = {"input_per_million": 0, "output_per_million": 0}
@@ -139,19 +139,19 @@ class NativeMemory(RemoteMemory):
             self.register(node, "agent", "learning", {"model": reference("model"), "instructions": "Report fixture failures with their actual verification status / 検証状態を保持する",
                 "schema_version": 1, "bindings": [binding("memory", self.learning_memory)], "remove_default": ["file_search", "file_read", "memory_mutate"]}, ["native-learning-ordinary"])
 
-    def mutate(self, workspace, bank, changes):
-        return self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/units/mutate", {
+    def mutate(self, thread, bank, changes):
+        return self.ok(self.user(0, f"/api/threads/{thread}/memory/units/mutate", {
             "operation_id": str(uuid.uuid4()), "provider": self.memory, "bank": bank, "changes": changes}))
 
-    def workspace(self):
-        workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Native memory {self.language}", "request": "Read attributed Home memory / 出典付き記憶を参照"}))["id"]
-        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+    def thread(self):
+        thread = self.ok(self.user(0, "/api/threads", {"title": f"Native memory {self.language}"}))["id"]
+        self.ok(self.user(0, f"/api/threads/{thread}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None}, "enabled": True,
             "auto_context": False, "max_sources": 100, "max_results": 4, "max_result_tokens": 32768, "max_input_bytes": 32768}}))
-        participant = self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/participants", {"agent": ref(self.entries[0]["research"])}))
-        other = self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/participants", {"agent": ref(self.entries[0]["research"])}))
+        participant = self.ok(self.user(0, f"/api/threads/{thread}/memory/participants", {"agent": ref(self.entries[0]["research"])}))
+        other = self.ok(self.user(0, f"/api/threads/{thread}/memory/participants", {"agent": ref(self.entries[0]["research"])}))
         shared = {**participant["bank"], "participant": None}
-        self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/operate", {"operation_id": str(uuid.uuid4()), "provider": self.memory, "bank": shared, "action": {"action": "configure_bank", "expected_revision": 0}}))
+        self.ok(self.user(0, f"/api/threads/{thread}/memory/operate", {"operation_id": str(uuid.uuid4()), "provider": self.memory, "bank": shared, "action": {"action": "configure_bank", "expected_revision": 0}}))
         self.selection = {"participant": participant["id"], "expected_revision": participant["revision"], "provider": self.memory}
         self.unit_ids = {}
         source = None
@@ -160,15 +160,15 @@ class NativeMemory(RemoteMemory):
                               ("other", other["bank"], "DO NOT DISCLOSE: separate logical Agent")]:
             unit_id = str(uuid.uuid4())
             self.unit_ids[key] = unit_id
-            value = self.mutate(workspace, bank, [{"operation": "add", "id": unit_id, "content": {
+            value = self.mutate(thread, bank, [{"operation": "add", "id": unit_id, "content": {
                 "text": text, "kind": "world", "learning": "fact", "verification": "unverified", "occurred": None, "entities": [], "evidence": [], "links": []}}])
             if key == "shared":
                 source = value[0]
         # Start Home maintenance only to finish these projections.
         self.scale(0, "worker", 1)
-        self.until(lambda: len([entry for entry in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))["entries"] if entry["state"] == "READY"]) == 3, "native index ready")
+        self.until(lambda: len([entry for entry in self.ok(self.user(0, f"/api/threads/{thread}/semantic/entries"))["entries"] if entry["state"] == "READY"]) == 3, "native index ready")
         self.scale(0, "worker", 0)
-        return workspace, source
+        return thread, source
 
     def activate(self, task, agent):
         grant = str(uuid.uuid4())
@@ -182,13 +182,13 @@ class NativeMemory(RemoteMemory):
         self.language = language
         record = {"name": "generated" if generated else "ordinary", "language": language, "started_at": now(), "result": "failed"}
         self.evidence["cases"].append(record)
-        workspace, source = self.workspace()
+        thread, source = self.thread()
         if generated:
-            child, agent, parent = self.generated_task(workspace)
+            child, agent, parent = self.generated_task(thread)
             task = child["id"]
             record["parent"] = parent
         else:
-            task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Remote research", "description": "Find attributed knowledge / 出典付き知識を探す"}))["id"]
+            task = self.ok(self.user(0, f"/api/threads/{thread}/tasks", {"title": "Remote research", "description": "Find attributed knowledge / 出典付き知識を探す"}))["id"]
             agent = ref(self.entries[1]["research"])
         grant, run = self.activate(task, agent)
         record.update(task=task, run=run, grant=grant)
@@ -221,7 +221,7 @@ class NativeMemory(RemoteMemory):
         self.finish(task, run)
         assert len(self.captured("inference", task)) == 2, self.captured("inference", task)
         record["recovered"] = self.snapshot(task, run)
-        self.mutate(workspace, source["bank"], [{"operation": "delete", "id": source["id"], "expected_revision": source["revision"]}])
+        self.mutate(thread, source["bank"], [{"operation": "delete", "id": source["id"], "expected_revision": source["revision"]}])
         assert self.user(0, f"/api/tasks/{task}/remote-grants/{grant}/semantic")[0] == 403
         assert self.user(1, f"/api/runs/{run}/semantic")[0] == 403
         control = self.ok(self.user(1, f"/api/runs/{run}/management"))
@@ -237,14 +237,14 @@ class NativeMemory(RemoteMemory):
         record["result"] = "passed"
 
     def evaluation(self):
-        workspace, _ = self.workspace()
+        thread, _ = self.thread()
         self.scale(0, "worker", 1)
         specification = importlib.util.spec_from_file_location("native_evaluation", ROOT / "scripts/evaluate-native-memory.py")
         module = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(module)
         self.evidence["fixed_label_evaluation"] = {}
         module.evaluate(
-            lambda path, body: self.user(0, path, body), workspace, ref(self.entries[0]["research"]), self.memory,
+            lambda path, body: self.user(0, path, body), thread, ref(self.entries[0]["research"]), self.memory,
             {"kind": "synthetic-contract-provider", "server_image": self.args.image, "provider": self.entries[0]["native-memory"],
              "agent": self.entries[0]["research"], "declared_prices": "zero-price synthetic model", "model_acceptance": "unapproved"},
             report=self.evidence["fixed_label_evaluation"])
@@ -259,12 +259,12 @@ class NativeMemory(RemoteMemory):
         """Registry, real inference/journal, opted-in extraction and human CAS review."""
         record = {"language": language, "generated": generated, "home": "aidash://tx-00", "started_at": now()}
         self.evidence.setdefault("run_learning", []).append(record)
-        workspace = self.ok(self.user(0, "/api/workspaces", {"title": f"Learning {language}", "request": "Review attributed failure observations"}))["id"]
-        self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+        thread = self.ok(self.user(0, "/api/threads", {"title": f"Learning {language}"}))["id"]
+        self.ok(self.user(0, f"/api/threads/{thread}/semantic/index", {"expected_revision": 0, "spec": {
             "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None}, "enabled": True,
             "auto_context": False, "max_sources": 100, "max_results": 4, "max_result_tokens": 32768, "max_input_bytes": 32768}}))
         capability = "native-learning-generated-" + language.lower() if generated else "native-learning-ordinary"
-        task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": f"Learning {'generated' if generated else 'ordinary'} {language}",
+        task = self.ok(self.user(0, f"/api/threads/{thread}/tasks", {"title": f"Learning {'generated' if generated else 'ordinary'} {language}",
             "description": "Synthetic rollback check failed / 合成データのロールバック検証は失敗", "requirements": {"capability": capability}}))
         if generated:
             name = "native-learning-" + language.lower()
@@ -283,17 +283,17 @@ class NativeMemory(RemoteMemory):
         self.scale(0, "worker", 1)
         self.until(lambda: bool(self.db(0, "runs", task["id"]) and self.db(0, "runs", task["id"])[0]["phase"] == "COMPLETED"), "learning Run completed")
         run = self.db(0, "runs", task["id"])[0]
-        assignment = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks/{task['id']}/memory-participant"))
+        assignment = self.ok(self.user(0, f"/api/threads/{thread}/tasks/{task['id']}/memory-participant"))
         # This fresh task has no manual participant assignment. The real Run
         # admits its own logical identity; use that authorized host-bound bank.
         assert assignment["participant"] is None, assignment
-        participants = self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/participants"))
+        participants = self.ok(self.user(0, f"/api/threads/{thread}/memory/participants"))
         matching = [p for p in participants["items"] if p["agent"] == {"id": run["agent_id"], "version": run["agent_version"]}]
         assert len(matching) == 1, participants
         bank = matching[0]["bank"]
 
         def operate(action, operation=None):
-            return self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/operate", {
+            return self.ok(self.user(0, f"/api/threads/{thread}/memory/operate", {
                 "operation_id": operation or str(uuid.uuid4()), "provider": self.learning_memory, "bank": bank, "action": action}))
 
         self.until(lambda: len(operate({"action": "candidates"})["value"]) == 2, "opted-in canonical Run candidates")
@@ -314,7 +314,7 @@ class NativeMemory(RemoteMemory):
             "mutation": {"operation_id": operation, "provider": self.learning_memory, "bank": bank,
                          "changes": [{"operation": "add", "id": candidate["id"], "content": candidate["content"]}]}}
         if self.args.live_ui:
-            browser = self.review_ui(workspace, bank, candidate, language, generated)
+            browser = self.review_ui(thread, bank, candidate, language, generated)
             action, operation = browser["request"]["action"], browser["request"]["operation_id"]
             reviewed = browser["result"]["value"]
             record["browser_review"] = browser
@@ -322,7 +322,7 @@ class NativeMemory(RemoteMemory):
             reviewed = operate(action, operation)["value"]
         assert operate(action, operation)["value"] == reviewed, "human review replay duplicated admission"
         assert reviewed["content"]["verification"] == "unverified", reviewed
-        self.until(lambda: any(row["id"] == reviewed["id"] and row["state"] == "READY" for row in self.ok(self.user(0, f"/api/workspaces/{workspace}/semantic/entries"))["entries"]), "reviewed unit indexed under original allowance")
+        self.until(lambda: any(row["id"] == reviewed["id"] and row["state"] == "READY" for row in self.ok(self.user(0, f"/api/threads/{thread}/semantic/entries"))["entries"]), "reviewed unit indexed under original allowance")
         # The second pending candidate keeps natural retirement from racing
         # these authorized reads. Human review remains explicit and bounded.
         history_action = {"action": "history", "id": reviewed["id"], "expected_revision": reviewed["revision"], "before": None}
@@ -334,7 +334,7 @@ class NativeMemory(RemoteMemory):
         rejection = {"action": "review", "id": rejected["id"], "expected_revision": rejected["revision"], "mutation": None}
         reject_key = str(uuid.uuid4())
         assert operate(rejection, reject_key)["value"] is None
-        replay_status, replay = self.user(0, f"/api/workspaces/{workspace}/memory/operate", {
+        replay_status, replay = self.user(0, f"/api/threads/{thread}/memory/operate", {
             "operation_id": reject_key, "provider": self.learning_memory, "bank": bank, "action": rejection})
         assert replay_status in (200, 403), (replay_status, replay)
         if replay_status == 200:
@@ -346,20 +346,20 @@ class NativeMemory(RemoteMemory):
             assert current["quota_released"], current
             record["retired_origin"] = current
             record["origin_usage"] = self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/requests/{record['generation']['id']}/usage"))
-            assert self.user(0, f"/api/workspaces/{workspace}/memory/operate", {
+            assert self.user(0, f"/api/threads/{thread}/memory/operate", {
                 "operation_id": str(uuid.uuid4()), "provider": self.learning_memory, "bank": bank, "action": history_action})[0] == 403
             record["retired_catalogue_disclosure"] = "forbidden under current authority"
         record.update(task=task, run=run, bank=bank, candidate=candidate, reviewed=reviewed, history=history,
                       rejected_candidate=rejected, charged_usage=charged_usage, result="passed")
         self.scale(0, "worker", 0)
 
-    def review_ui(self, workspace, bank, candidate, language, generated):
+    def review_ui(self, thread, bank, candidate, language, generated):
         """A real browser posts human review to the live subject-authorized API."""
         name = f"review-{language}-{'generated' if generated else 'ordinary'}"
         with tempfile.TemporaryDirectory(prefix="aidash-memory-browser-") as temporary:
             directory = Path(temporary)
             source, result = directory / "input.json", directory / "output.json"
-            source.write_text(json.dumps({"workspace": workspace, "bank": bank, "candidate": candidate,
+            source.write_text(json.dumps({"thread": thread, "bank": bank, "candidate": candidate,
                 "language": language, "token": self.tokens[0]}))
             source.chmod(0o600)
             with socket.socket() as listener:

@@ -31,7 +31,7 @@ record = {'git_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode()
           'patch_sha256':hashlib.sha256(patch).hexdigest(),'untracked_sha256':hashes,
           'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':platform.platform(),
           'rustc':subprocess.check_output(['rustc','--version']).decode().strip(),
-          'settings':{'api_processes':3,'connections':100,'filtered_connections':90,'global_connections':10,'workspaces':10,'active_seconds':30,'events_per_second':10,'active_repetitions':3,'idle_seconds':60,'idle_repetitions':3,'active_reconcile_ms':60000,'idle_reconcile_ms':5000},
+          'settings':{'api_processes':3,'connections':100,'filtered_connections':90,'global_connections':10,'threads':10,'active_seconds':30,'events_per_second':10,'active_repetitions':3,'idle_seconds':60,'idle_repetitions':3,'active_reconcile_ms':60000,'idle_reconcile_ms':5000},
           'service_images':['aidash-orm-test-postgres:17-pg-jsonschema-0.3.4','nats:2.12-alpine'],
           'resource_limits':'No per-process limits; API processes on host, services in local Docker engine.',
           'timing':'Controller monotonic clock, release of writer event/commit advisory barrier through complete frame parsing; nearest-rank percentiles of slowest eligible client per event.'}

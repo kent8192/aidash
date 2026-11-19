@@ -49,7 +49,7 @@ def api_request(base, path, body=None, token=TOKEN, headers=None, timeout=API_TI
 
 
 def default_node(base, tenant, token):
-    """The name and the address of the Tenant's default Node, which new Workspaces and Runs use.
+    """The name and the address of the Tenant's default Node, which new Threads and Runs use.
 
     `token` must be a Tenant subject's (#484).
     """
@@ -267,8 +267,8 @@ def approve_fixture_tool_calls(base, token):
             tool_call_approvals.decide(lambda path, body: api_request(base, path, body, token=token), card, True)
 
 
-def diagnose(base, token, tenant, workspace, database):
-    """Print a stalled workspace's Runs and human requests from the database, then its Tenant's state through the API."""
+def diagnose(base, token, tenant, thread, database):
+    """Print a stalled Thread's Runs and human requests from the database, then its Tenant's state through the API."""
     def show(label, value):
         print(f"--- {label}: {json.dumps(value, ensure_ascii=False)}", flush=True)
 
@@ -288,7 +288,7 @@ def diagnose(base, token, tenant, workspace, database):
         except subprocess.CalledProcessError as error:
             print(f"--- {label} unavailable: {error!r}", flush=True)
     try:
-        snapshot = api_request(base, f"/api/workspaces/{workspace}", token=token)
+        snapshot = api_request(base, f"/api/threads/{thread}", token=token)
         show("tasks", [{key: task.get(key) for key in ("id", "title", "status", "parent_id")} for task in snapshot["tasks"]])
         tasks = {task["id"] for task in snapshot["tasks"]}
         requests = page_items(base, "/api/human-requests?state=all", token)
@@ -328,7 +328,7 @@ def artifact_read_state(history, artifact_id):
         )
         for event in history
         if event.get("kind") == "tool"
-        and event.get("call", {}).get("name") == "workspace_read"
+        and event.get("call", {}).get("name") == "thread_read"
         and event.get("call", {}).get("arguments", {}).get("kind") == "artifact"
         and event.get("call", {}).get("arguments", {}).get("id") == artifact_id
         and isinstance(event.get("result", {}).get("content"), str)
@@ -376,7 +376,7 @@ class Fixture:
         current = context["current"]
         history = context.get("history", [])
         task = current["task"]
-        workspace = current["workspace"]
+        thread = current["thread"]
         tools = [(event.get("call", {}).get("name"), event.get("result")) for event in history]
         calls = []
         text = ""
@@ -399,16 +399,16 @@ class Fixture:
                 for name, result in tools:
                     if name == "task_create":
                         call("task_delegate", {"task_id": result["id"], "node_id": self.node_b if result["title"] == "Actix" else self.node_a, "agent": {"id": "researcher", "version": "1.0.0"}})
-            elif any(child["status"] != "COMPLETED" for child in workspace["tasks"] if child["parent_id"] == task["id"]):
-                call("workspace_wait", {"seconds": 2})
+            elif any(child["status"] != "COMPLETED" for child in thread["tasks"] if child["parent_id"] == task["id"]):
+                call("task_wait", {"seconds": 2})
             else:
                 contents = []
                 waiting_for_reads = False
-                for artifact in workspace["artifacts"]:
+                for artifact in thread["artifacts"]:
                     content, offset = artifact_read_state(history, artifact["id"])
                     if offset is not None:
                         waiting_for_reads = True
-                        call("workspace_read", {"kind": "artifact", "id": artifact["id"], "offset": offset, "max_chars": 8000})
+                        call("thread_read", {"kind": "artifact", "id": artifact["id"], "offset": offset, "max_chars": 8000})
                     else:
                         contents.append(str(content))
                 if not waiting_for_reads:
@@ -976,19 +976,19 @@ def main():
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice"}))
         else:
-            created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "request": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
-        workspace = created["workspace"]["id"]
+            created = api_request(base_a, "/api/threads", {"title": "Rustフレームワークの競合調査", "request": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"}, token=tokens[base_a])
+        thread = created["id"]
         # Reaching Actix takes the coordinator's delegation and the Axum
         # researcher's whole Run first, each step authorized for a Tenant
         # subject, and the two researchers share a Working Area, so they run
         # one after the other. Like scoped recovery (#321), this waits for
         # progress, not a latency bound.
         if not fixture.remote_effect_started.wait(300):
-            diagnose(base_a, tokens[base_a], tenant_a, workspace, db_a)
+            diagnose(base_a, tokens[base_a], tenant_a, thread, db_a)
             raise AssertionError("The Actix research tool was never invoked")
 
         def actix_run():
-            actix = next((t for t in api_request(base_a, f"/api/workspaces/{workspace}", token=tokens[base_a])["tasks"] if t["title"] == "Actix"), None)
+            actix = next((t for t in api_request(base_a, f"/api/threads/{thread}", token=tokens[base_a])["tasks"] if t["title"] == "Actix"), None)
             return actix and latest_task_run(base_a, actix["id"], tokens[base_a])
 
         worker_a.kill()
@@ -999,7 +999,7 @@ def main():
         reconciled_key = reconcile_uncertain_http(base_a, before["id"], lambda: dict(fixture.effects), tokens[base_a])
 
         def complete():
-            snapshot = api_request(base_a, f"/api/workspaces/{workspace}", token=tokens[base_a])
+            snapshot = api_request(base_a, f"/api/threads/{thread}", token=tokens[base_a])
             failures = [t for t in snapshot["tasks"] if t["status"] in ["FAILED", "CANCELLED"]]
             if failures:
                 print("Task failure:", json.dumps(failures), flush=True)
@@ -1042,9 +1042,9 @@ def main():
                 entity("tool", tool_id, tool_descriptor(node, tool_config)),
                 entity("agent", agent_id, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Verify the registered plugin, then return its result.", "schema_version": 1, "bindings": [tool_binding(node, tool_id)], "remove_default": [], "max_steps": 32}),
             ])
-            plugin_conversation = api_request(base, "/api/conversations", {"title": agent_id, "request": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"}, token=tokens[base])
-            plugin_workspace = plugin_conversation["workspace"]["id"]
-            result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}", token=tokens[base])["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
+            plugin_conversation = api_request(base, "/api/threads", {"title": agent_id, "request": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"}, token=tokens[base])
+            plugin_thread = plugin_conversation["id"]
+            result = wait_for(lambda base=base, plugin_thread=plugin_thread, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/threads/{plugin_thread}", token=tokens[base])["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"
             plugin_runs.append(agent_id)
         # This branch is mandatory: legacy recovery alone cannot establish
@@ -1058,7 +1058,7 @@ def main():
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))},
                         scoped_proxy_sockets, issue_a, issue_b, administrator)
-        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
+        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "thread_id": thread, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()
         if args.dashboard:

@@ -546,31 +546,31 @@ class Cluster:
                      "atomic_transactions": True, "enabled": True, "expected_revision": 0})
                 assert status == 200, (local, remote, status, response)
 
-    def inspect(self, node, transaction, workspace, key):
+    def inspect(self, node, transaction, thread, key):
         result = self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
-            "-qAt", "-v", "ON_ERROR_STOP=1", "-v", f"transaction={transaction}", "-v", f"workspace={workspace}",
+            "-qAt", "-v", "ON_ERROR_STOP=1", "-v", f"transaction={transaction}", "-v", f"thread={thread}",
             "-f", "-", value=self.queries[key] + ";\n")
         return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
-    def observe(self, count, transaction, workspaces, observations):
+    def observe(self, count, transaction, threads, observations):
         verified_new_state = any(entry.get("revision") == 1 for entry in observations)
         for node in range(count):
             try:
-                status, body = self.member(node, f"/api/workspaces/{workspaces[node]}")
+                status, body = self.member(node, f"/api/threads/{threads[node]}")
             except (OSError, urllib.error.URLError):
                 observations.append({"time": now(), "node": node, "status": "unavailable"})
                 continue
             entry = {"time": now(), "node": node, "status": status}
             assert status in (200, 503), entry
             if status == 200:
-                revision = body["workspace"]["revision"]
+                revision = body["thread"]["revision"]
                 assert revision in (0, 1)
                 entry["revision"] = revision
                 observations.append(entry)
                 assert not (verified_new_state and revision == 0), "old state after publication"
                 if revision == 1 and not verified_new_state:
                     for other in range(count):
-                        assert self.inspect(other, transaction, workspaces[other], "tx_workspace")[0]["revision"] == 1, "partial visibility"
+                        assert self.inspect(other, transaction, threads[other], "tx_thread")[0]["revision"] == 1, "partial visibility"
                     # Once all participants durably applied this immutable
                     # manifest, they cannot go back. Avoid quadratic diagnostic
                     # traffic while still checking every ordinary response.
@@ -588,15 +588,15 @@ class Cluster:
         name = f"tx-{owner}-server"
         submission = None
         try:
-            workspaces = []
+            threads = []
             for node in range(count):
-                status, body = self.member(node, "/api/workspaces", {"title": "Transaction acceptance", "request": "Fixed atomic state"})
+                status, body = self.member(node, "/api/threads", {"title": "Transaction acceptance"})
                 assert status == 200, status
-                workspaces.append(body["id"])
+                threads.append(body["id"])
             manifest = {"id": transaction, "coordinator": self.nodes[0]["address"], "isolation": "serializable",
                 "deadline": (datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=10)).isoformat(),
-                "participants": [{"node_id": self.nodes[node]["address"], "mutations": [{"kind": "workspace_state", "workspace_id": workspaces[node],
-                "expected_revision": 99 if abort and node == count - 1 else 0, "state": {"committed": True}}]} for node in range(count)]}
+                "participants": [{"node_id": self.nodes[node]["address"], "mutations": [{"kind": "thread_title", "thread_id": threads[node],
+                "expected_revision": 99 if abort and node == count - 1 else 0, "title": "Transaction acceptance committed"}]} for node in range(count)]}
             self.kube("set", "env", f"deployment/{name}", f"AIDASH_TRANSACTION_FAULT={transaction}:{point}", "AIDASH_TRANSACTION_FAULT_DIR=/tmp")
             self.rollout(name)
             self.ready(owner)
@@ -606,7 +606,7 @@ class Cluster:
 
             def reached():
                 nonlocal held
-                self.observe(count, transaction, workspaces, trace)
+                self.observe(count, transaction, threads, trace)
                 for pod in self.pods(f"app=tx-{owner},role=server"):
                     pod_name = pod["metadata"]["name"]
                     if self.kube("exec", pod_name, "--", "test", "-f", marker, check=False).returncode == 0:
@@ -616,7 +616,7 @@ class Cluster:
 
             self.until(reached, f"durable cut {point}")
             record["cut_reached_at"] = now()
-            self.observe(count, transaction, workspaces, trace)
+            self.observe(count, transaction, threads, trace)
             if lifecycle == "scale":
                 for node in range(count):
                     self.kube("scale", f"deployment/tx-{node}-worker", "--replicas=2")
@@ -641,17 +641,17 @@ class Cluster:
             self.rollout(name)
             self.ready(owner)
             if lifecycle == "partition":
-                self.observe(count, transaction, workspaces, trace)
+                self.observe(count, transaction, threads, trace)
                 self.kube("scale", "deployment/tx-1-server", "--replicas=1")
                 self.rollout("tx-1-server")
                 self.ready(1)
             record["services_restored_at"] = now()
             restored = time.monotonic()
-            if not self.inspect(0, transaction, workspaces[0], "tx_coordinator"):
+            if not self.inspect(0, transaction, threads[0], "tx_coordinator"):
                 assert self.member(0, "/api/transactions", manifest)[0] == 202
 
             def complete():
-                self.observe(count, transaction, workspaces, trace)
+                self.observe(count, transaction, threads, trace)
                 status, detail = self.member(0, f"/api/transactions/{transaction}")
                 return status == 200 and detail["transaction"]["complete"]
 
@@ -659,15 +659,15 @@ class Cluster:
             record["completed_at"] = now()
             record["converged_seconds"] = time.monotonic() - restored
             assert record["converged_seconds"] <= 180
-            decision = self.inspect(0, transaction, workspaces[0], "tx_coordinator")[0]
+            decision = self.inspect(0, transaction, threads[0], "tx_coordinator")[0]
             assert decision["decision"] == ("ABORT" if abort else "COMMIT")
             durable = []
             for node in range(count):
-                row = {key: self.inspect(node, transaction, workspaces[node], key)
-                       for key in ["tx_participant", "tx_barrier", "tx_workspace", "tx_events"]}
+                row = {key: self.inspect(node, transaction, threads[node], key)
+                       for key in ["tx_participant", "tx_barrier", "tx_thread", "tx_events"]}
                 assert row["tx_participant"][0]["phase"] == ("ABORTED" if abort else "COMMITTED")
                 assert row["tx_barrier"][0]["transaction_id"] is None
-                assert row["tx_workspace"][0]["revision"] == int(not abort)
+                assert row["tx_thread"][0]["revision"] == int(not abort)
                 assert len(row["tx_events"]) == int(not abort)
                 durable.append(row)
             record["durable"] = durable
