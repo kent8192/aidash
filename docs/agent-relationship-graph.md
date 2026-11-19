@@ -59,20 +59,20 @@ tests. `npm test` runs these tests followed by the existing Playwright suite,
 including `tests/agent-graph.spec.ts`. The browser suite requires the normal built
 application at `AIDASH_E2E_URL` (default `http://127.0.0.1:18080`).
 
-## Workspace Graph View
+## Thread Graph View
 
-Open **Graph View** from the collaboration sidebar. The workspace selector keeps
-only shared resources owned by the selected Home Workspace, its recorded Runs,
+Open **Graph View** from the collaboration sidebar. The thread selector keeps
+only shared resources owned by the selected Home Thread, its recorded Runs,
 Agents with an explicit Task, Run or Conversation relationship, and their
-referenced configuration. **All workspaces** groups shared resources separately
-by `(Home Node, Workspace)`. The canvas uses the
+referenced configuration. **All threads** groups shared resources separately
+by `(Home Node, Thread)`. The canvas uses the
 existing Cytoscape dependency and Lucide icons. The user-provided Mesh + Accent
 logo kit supplies the sidebar, compact mark, sign-in wordmark and favicon; the
 original SVG/ICO files are kept in `web/public/brand` without redrawing.
 
 Five perspectives share the same authorized projection and placement rules.
 Outlined execution regions contain only Agents and Runs, grouped by their
-executing Node. Shared Workspace data is grouped by Home Node and Workspace;
+executing Node. Shared Thread data is grouped by Home Node and Thread;
 referenced configuration has a separate origin-labeled group, and Humans remain
 outside these regions. A region appears only while it has visible resources.
 Peer controls remain available when an authorized Node has no visible region.
@@ -82,7 +82,7 @@ resources. Individual Messages remain represented by their Conversation vertex.
 | Perspective     | Resource focus                                                           |
 | --------------- | ------------------------------------------------------------------------ |
 | Agent mesh      | Agents, Runs, Tasks, Goals, Artifacts and referenced configuration.      |
-| Collaboration   | Workspace, people, conversations and their recorded work.                |
+| Collaboration   | Thread, people, conversations and their recorded work.                   |
 | Knowledge graph | Goals, Tasks, Artifacts and their explicit producers and dependencies.   |
 | Execution flow  | Recorded Tasks, Runs and events, with counts and a time-scaled timeline. |
 | Topology        | Visible Agents and their exact configuration relationships.              |
@@ -103,7 +103,7 @@ dialog is also unchanged.
   selection, navigate with the minimap, or use fullscreen. Polling retains positions
   and camera state; changing perspective or layout computes a fresh arrangement.
 - Select a node to inspect its overview, connected tasks, recorded events and
-  directed connections. Existing entity/task dialogs and workspace navigation are
+  directed connections. Existing entity/task dialogs and thread navigation are
   reachable from this panel. Artifact contents are expanded only on request.
 - Select an activity window (hour, day, week, month, or all available records).
   It filters completed runs and events; active runs and current task/configuration
@@ -125,7 +125,7 @@ One activation centers all current nodes, displayed labels, edges and group
 boundaries in the measured area clear of the inspector, minimap and controls.
 It includes disconnected and off-screen elements and already-loaded authorized
 remote projections within the current filters and rendering limits. Selection,
-Workspace, filters, expanded Peers and node positions are retained.
+Thread, filters, expanded Peers and node positions are retained.
 
 Fit caps magnification at unit scale and permits an overview below the usual
 minimum zoom for large graphs. Manual zoom remains gradual at that scale. Padding
@@ -133,7 +133,7 @@ is 36 CSS px, or 16 CSS px in compact usable areas, reduced further only when th
 available area is extremely small. The button is disabled with an accessible
 explanation when the graph is empty or cannot be measured safely.
 
-The workspace mesh, agent neighborhood and agent detail graph share this behavior.
+The thread mesh, agent neighborhood and agent detail graph share this behavior.
 Initial display and deliberate perspective/layout changes frame the graph;
 ordinary polling, filtering, expansion, resizing and opening the inspector retain
 the camera until an explicit fit. Temporary empty filter results also retain the
@@ -144,7 +144,7 @@ camera. Fit does not load resources or rerun a layout. See the
 
 `collaboration/mesh-model.ts` projects only explicit, version-pinned configuration
 references and recorded activity. It does not scan free text or arbitrary JSON for
-relationships. Goals represent the existing workspace goal; humans are explicit
+relationships. Goals represent the existing thread goal; humans are explicit
 non-agent task/artifact/conversation principals. Registry IDs include origin,
 kind and version. Missing exact references stay unavailable.
 
@@ -159,19 +159,19 @@ states. The next page control replaces the current remote window, keeping
 browser memory bounded. Collapse removes that Peer's projected data without
 resetting other expanded Peers. Reload starts with boundaries only.
 
-The receiving Node decides which Registry, Workspace, Goal, Task, Run, Artifact
+The receiving Node decides which Registry, Thread, Goal, Task, Run, Artifact
 and Conversation nodes, exact relationships and activity markers the viewer
-may see. A Goal inspector shows the full current body only after Workspace
+may see. A Goal inspector shows the full current body only after Thread
 read authorization. Remote Task descriptions, Artifact contents, message bodies,
 human requests and raw configuration are not sent. Remote inspector and search
 use only projected fields, never matching local IDs as a fallback. A local Run
 can connect to a remote Agent only when that Agent is in the current authorized
 projection. A Home-observed Run keeps its authorized Home events and related
-Workspace even when its executor is remote or its Peer projection is expanded.
-A selected local Workspace limits remote operational records to
-explicitly related resources; selecting all Workspaces allows the receiving
-Node's own authorized Workspaces. Continuation resources retain their explicit
-Node and Workspace ownership even if their page omits the Workspace vertex.
+Thread even when its executor is remote or its Peer projection is expanded.
+A selected local Thread limits remote operational records to
+explicitly related resources; selecting all Threads allows the receiving
+Node's own authorized Threads. Continuation resources retain their explicit
+Node and Thread ownership even if their page omits the Thread vertex.
 Peer expansion does not traverse onward to a third Node. If the answering Node cannot confirm scanned rows, a separate warning names that answering Node and the count; the silent Node is not disclosed. The count does not promise that the rows will be visible when confirmation succeeds.
 
 Expanded projections refresh within 30 seconds while the view is visible.

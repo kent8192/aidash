@@ -6,7 +6,7 @@ This document describes runtime and recovery contracts, including the accepted N
 
 A Deployment publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, protocol version and, when it has a Deployment Key, that key's ID and public key (`key` is `null` otherwise). During a scheduled rollover, optional `key_rollover` publishes `successor` or `retiring` public identities, `published_at`, `activates_at`, `retires_at` (Unix seconds) and the public `transition` proof. The document names no Node and exposes neither private keys nor File/KMS source references. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
 
-The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every workspace, task and Run belongs to a Tenant (ADR 0043), and it reads or changes no Tenant content or settings (ADR 0102). A Tenant's first Subject Credential in a headless setup comes from `manage issue-subject-credential` on the host. Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each Node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-Node acceptance in #38 remains open.
+The Deployment Administrator token retains privileged bootstrap, administration and recovery access; it runs no work of its own, because every thread, task and Run belongs to a Tenant (ADR 0043), and it reads or changes no Tenant content or settings (ADR 0102). A Tenant's first Subject Credential in a headless setup comes from `manage issue-subject-credential` on the host. Revocable subject tokens apply the current tenant policy to thread and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each Node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-Node acceptance in #38 remains open.
 
 Federation retains the `/federation/v0.1` path namespace and speaks protocol `0.5` only. A request at any other version, including `0.2`, `0.3` and `0.4`, answers 400 before any token is read. A Node of one Deployment authenticates to a Node of another with a short-lived Federation token, a compact JWS signed with the sending Deployment's Deployment Key (`alg` `EdDSA`, `typ` `aidash-federation+jwt`, `kid` the key ID). Each request carries `Authorization: Bearer <Federation token>` and `X-Aidash-Protocol: 0.5`. The token's claims are:
 
@@ -42,7 +42,7 @@ and projection generation, and the receiver rechecks authority per page. A can
 expand C only through its own separately authorized direct Node connection;
 B's connection to C is not included in B's graph projection. See the
 [authorization contract](authorization.md#federated-graph-view-authority) and
-[Graph View controls](agent-relationship-graph.md#workspace-graph-view).
+[Graph View controls](agent-relationship-graph.md#thread-graph-view).
 
 ### Remote Grants that sleep and hand work on
 
@@ -52,7 +52,7 @@ A Run that a Remote Grant started may call `agent_discover` and `task_delegate` 
 
 - `agent_discover` is the scoped Home command `discover` (`{"search":{…}}`). The Home's Node of the Task discovers as the grant's root subject under the grant's chain, exactly as a person's discovery does, and returns only the cards a model sees (`{agents:[{node_id, entity}], errors}`). The cards are not recorded as Read dependencies of the receiver's Run.
 - `task_delegate` sends the scoped command `delegate` for a child the grant created. For the Home's own Node the Home admits the child locally, as before. For any other Node, the receiver's own Node included, the Home checks the child under the command's lease, releases it, and then prepares and activates a Remote Grant of its own for the child, as `POST /api/tasks/{id}/delegate` does for the grant's root subject. A retry reuses the prepared grant.
-- The receiving Node of the Run consents through its policy's `tool.invoke` on the tool, the Agent's `allow_task_delegation`, and `task.delegate` on the Home's Task as the foreign resource `{home}/tasks/{id}`. Only `task_delegate` names a Task other than the Run's own, and only one the Home records as this grant's output (it asks with the scoped command `created_task` before taking its lease); that Task is judged with its own attributes (`source_workspace_id`, `source_task_id`, `source_parent_task_id`), never the admitted Task's. Any other id is answered like a Task that does not exist. The Home judges the chain by its own policy: the root person, every Agent of the chain its policy knows, and `federation.execute` on the target Node; it strips only the new receiver's executor when it does not know it. An earlier receiver's executor therefore must be an Agent subject of the Home's policy, as it already must for the Home to admit a Task that executor created; otherwise the hop is refused. Each target decides by its own Node Registration, Peer Mapping, policy and Catalog Approval.
+- The receiving Node of the Run consents through its policy's `tool.invoke` on the tool, the Agent's `allow_task_delegation`, and `task.delegate` on the Home's Task as the foreign resource `{home}/tasks/{id}`. Only `task_delegate` names a Task other than the Run's own, and only one the Home records as this grant's output (it asks with the scoped command `created_task` before taking its lease); that Task is judged with its own attributes (`source_thread_id`, `source_task_id`, `source_parent_task_id`), never the admitted Task's. Any other id is answered like a Task that does not exist. The Home judges the chain by its own policy: the root person, every Agent of the chain its policy knows, and `federation.execute` on the target Node; it strips only the new receiver's executor when it does not know it. An earlier receiver's executor therefore must be an Agent subject of the Home's policy, as it already must for the Home to admit a Task that executor created; otherwise the hop is refused. Each target decides by its own Node Registration, Peer Mapping, policy and Catalog Approval.
 - There is no depth limit (ADR 0143). A Run admitted from another Node, or working a Task another Node's Run created, already runs under the strictest Data Protection policy (ADR 0104). Results reach the Home directly from every hop; a Run fetches Thread Attachments only from its direct Home.
 
 ### Node events
@@ -61,9 +61,9 @@ A Run that a Remote Grant started may call `agent_discover` and `task_delegate` 
 
 The builtin `duty_notify` (`core.duties@1`) sends one such event from a local Run's Node: to a Node of its own Tenant as the person at the root of the Run's chain, and to a Node of another Tenant as the Node itself. It is a Tool call approval of that person; a Run that arrived through Federation or whose chain starts at no person sends none. The receiver does not deduplicate events.
 
-Remote workers retrieve workspace metadata with `snapshot_workspace`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB limit on a Federation response. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
+Remote workers retrieve thread metadata with `snapshot_thread`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB limit on a Federation response. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
 
-Agent memory is separated by agent ID, version, workspace UUID and workspace home Node. Existing local memory retains its local namespace; a remote Run cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
+Agent memory is separated by agent ID, version, thread UUID and thread home Node. Existing local memory retains its local namespace; a remote Run cannot read or overwrite it by reusing a thread UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
 
 ### Deployment Key rollover
 
@@ -172,7 +172,7 @@ When a CloudEvent plus its NATS headers exceeds the broker payload limit, the pu
 
 Event sequence allocation is serialized through a transaction advisory lock so commit order agrees with the SSE cursor. `/api/events/stream` honors `Last-Event-ID`; `/api/events?after=N` provides JSON replay and answers `{"events": [...], "unconfirmed": [...]}`, with the cursor to continue from in the `x-aidash-event-cursor` header. The stream can skip an event whose Read dependency lies on a Node that did not answer, says nothing about it, and does not send it again while the client stays connected; a reconnect reads forward only, and `GET /api/events?after=` checks the skipped events again (ADR 0133). Holding the cursor until the Node answers would stop every stream for one Node's trouble. A disconnected or slow client can resume from the PostgreSQL event log. SSE is an observation channel, not the worker's durable queue.
 
-The Workspace's home Node owns task revisions and artifacts. A remote Node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-Node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
+The Thread's home Node owns task revisions and artifacts. A remote Node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-Node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
 
 ### Inference Progress
 
@@ -180,7 +180,7 @@ Every provider call of a Run step is an Inference Attempt. The worker records it
 
 Models stream inference by default: a model config that omits `streaming`, or sets it to `null`, requests a server-sent event stream, and `streaming: false` opts out to the non-streamed request. A 2xx answer to a streamed request that is `application/json` instead of `text/event-stream` is accepted as a whole non-streamed completion without progress; any other content type fails the attempt.
 
-Progress is tentative and display-only. A streaming adapter offers only text and tool-call status (index, ID, name and argument size), never partial arguments or reasoning, and only a complete, validated response can enter ToolCall state. The worker flushes progress every 250 ms or 4 KiB into `inference_progress`, apart from the event journal and without its advisory lock. Rows carry a per-Run `progress_seq`, which the lease-fenced writer allocates under the Run row lock and never reuses. A row holds at most 16 KiB of item data. Fifteen minutes after an outcome, a bounded maintenance pass deletes the attempt's text and tool-call rows; its `started` and `outcome` rows remain as long as the Run. Only the low-rate markers `inference.started`, `inference.accepted`, `inference.discarded` and `inference.interrupted` enter the event journal, with `{run_id, task_id, workspace_id, attempt_id, reason?}` and the same workspace rule as the Run's own events. They reach `/api/events`, the event stream and NATS, but the dashboard projections (the `events` of `/api/state` and of workspace snapshots) omit them: each would otherwise cost every projection a full Run visibility check, and the Run's own events already carry its state. The dashboard does not refetch on a marker frame. Attempt IDs are public; the worker lease token is never exposed.
+Progress is tentative and display-only. A streaming adapter offers only text and tool-call status (index, ID, name and argument size), never partial arguments or reasoning, and only a complete, validated response can enter ToolCall state. The worker flushes progress every 250 ms or 4 KiB into `inference_progress`, apart from the event journal and without its advisory lock. Rows carry a per-Run `progress_seq`, which the lease-fenced writer allocates under the Run row lock and never reuses. A row holds at most 16 KiB of item data. Fifteen minutes after an outcome, a bounded maintenance pass deletes the attempt's text and tool-call rows; its `started` and `outcome` rows remain as long as the Run. Only the low-rate markers `inference.started`, `inference.accepted`, `inference.discarded` and `inference.interrupted` enter the event journal, with `{run_id, task_id, thread_id, attempt_id, reason?}` and the same thread rule as the Run's own events. They reach `/api/events`, the event stream and NATS, but the dashboard projections (the `events` of `/api/state` and of thread snapshots) omit them: each would otherwise cost every projection a full Run visibility check, and the Run's own events already carry its state. The dashboard does not refetch on a marker frame. Attempt IDs are public; the worker lease token is never exposed.
 
 `GET /api/runs/{run}/inference/stream` delivers progress over SSE. `Last-Event-ID` or `?after=N` resumes after a `progress_seq`; without a cursor the stream starts at the latest attempt's first row. Each frame has `id: <seq>` and `event: inference.delta` (text), `inference.tool_call` or `inference.outcome`; a `started` row is an `inference.outcome` frame whose item is `{"outcome":"pending"}`. Frame data is a CloudEvents 1.0 envelope with type `aidash.inference.progress.v1`, `subject` set to the Run ID and `data` of `{attempt_id, seq, kind, item}`. When the cursor precedes pruned rows, an `event: gap` frame without an ID carries `{attempt_id, outcome, from, to}` before the attempt's outcome row. The stream polls every 250 ms while an attempt is pending and otherwise waits for marker wakeups or the reconciliation interval. Like the event stream, it is an observation channel; a response is durable only when accepted.
 
@@ -284,7 +284,7 @@ instructions add the resident Skill blocks and the capability index. The same
 estimate covers them; `context.usage.exposure` records their bytes per request.
 Legacy requests are measured exactly as before.
 
-The model's pinned workspace and `workspace_observe` use the same bounded view.
+The model's pinned thread and `workspace_observe` use the same bounded view.
 Observations include goal/task previews, artifact IDs and metadata, message
 previews, and event IDs/kinds/timestamps. Event payloads are never automatically
 embedded, so observing an earlier `tool.completed` event cannot copy its full
@@ -295,7 +295,7 @@ and audit APIs retain their original content.
 maximum 50). Each collection reports its total and next offset. Events/messages
 are newest first; tasks/artifacts retain snapshot order. These are live pages,
 so refresh after concurrent changes. `workspace_read` selects an accessible
-`workspace`, `task`, `artifact`, `message` or `event` by exact ID, through the
+`thread`, `task`, `artifact`, `message` or `event` by exact ID, through the
 same authorization-filtered Home snapshot. It returns JSON text in Unicode
 character ranges: `offset`, `max_chars` (default 8,000, maximum 16,000),
 `total_chars` and `next_offset`. Concatenate chunks in offset order to recover
@@ -401,29 +401,29 @@ UI strings live in `web/src/locales/en-US.json` and `ja-JP.json`. Entity names a
 `GET /api/tasks?offset=N` returns up to 500 authorized tasks, newest first, with
 `next_offset` for the next page.
 `GET /api/state?node=<name>` returns candidate windows for the selected Node;
-without `node`, the windows cover the Tenant. Workspaces, Tasks, Runs, Artifacts,
+without `node`, the windows cover the Tenant. Threads, Tasks, Runs, Artifacts,
 pending Human Requests and Conversations each scan at most 50 candidates. Runs
 are ordered by `updated_at` descending; the other windows use `created_at`
 descending. Ties use descending IDs. The response keeps each collection as an
 array and adds `next_cursors` with a cursor or null for each collection. A cursor
 names the last scanned candidate, including a candidate hidden by authorization.
 Filtering can produce short or empty pages with a cursor; a full page can lead
-to an empty final page. Returned Workspaces include the Workspace window, the
-Workspaces of all returned items and the Workspaces of its `unconfirmed` entries.
+to an empty final page. Returned Threads include the Thread window, the
+Threads of all returned items and the Threads of its `unconfirmed` entries.
 `unconfirmed` counts only the candidates these windows scanned.
-`GET /api/workspaces?node=<name>&cursor=<cursor>`
-continues the Workspace window and returns `{items, next_cursor}`. Deployment
+`GET /api/threads?node=<name>&cursor=<cursor>`
+continues the Thread window and returns `{items, next_cursor}`. Deployment
 Administrators receive empty state collections and null cursors.
-`GET /api/tasks/{id}/runs`, `GET /api/workspaces/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor, unconfirmed}`
+`GET /api/tasks/{id}/runs`, `GET /api/threads/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor, unconfirmed}`
 in newest-first order, with up to 50 candidates per page. Supply the opaque `cursor` to
 continue; visibility filtering can leave a page short or empty even when it has
 a next cursor. A full candidate page can also lead to an empty final page.
-The Workspace Run list orders by last update and accepts `live=true` to omit terminal Runs; it requires `workspace.read` and checks each Run's visibility.
+The Thread Run list orders by last update and accepts `live=true` to omit terminal Runs; it requires `thread.read` and checks each Run's visibility.
 Human Requests accept `run`, `node`, and `state=pending|answered|all`;
 the default is `pending`. An unanswered request's `answer_by` comes from the
 owning Run's waiting state. Run creation times for records predating the
 creation-time migration are approximated by their last update at migration. The
-cursor currently encodes the last scanned candidate ID. Each candidate Workspace
+cursor currently encodes the last scanned candidate ID. Each candidate Thread
 is checked for read access before the item is disclosed.
 Run visibility still checks its dependencies, including every Human Request of
 the Run; the Human Request list reuses each Run decision within the page.
@@ -444,9 +444,9 @@ submission succeeds. A stream request with `Last-Event-ID: -1` starts from the
 current high-water mark; the dashboard refreshes state after the connection is
 established and then resumes from acknowledged event IDs on reconnect.
 
-Optional workspace snapshots are reduced to the selected model's available
+Optional thread snapshots are reduced to the selected model's available
 context budget before history compaction, with a `snapshot_truncated` marker.
-The durable workspace remains intact and tools can retrieve omitted details.
+The durable thread remains intact and tools can retrieve omitted details.
 Automatic semantic retrieval skips budgets too small to contain provenance.
 
 Agent registration rejects instructions, referenced skills and tool definitions
@@ -459,15 +459,15 @@ definition over `schema_bytes`, or any Registry or attached Skill block over
 
 ### Unconfirmed items
 
-A list, search or Agent tool result that leaves out an item because a Node holding one of its Read dependencies did not answer says so (ADR 0133). `GET /api/state`, `GET /api/tasks`, `GET /api/tasks/{id}/runs`, `GET /api/workspaces/{id}/runs`, `GET /api/human-requests`, `GET /api/workspaces/{id}`, `GET /api/workspaces/{id}/message-history`, `POST /api/workspaces/{workspace}/memory/units/query`, `POST /api/workspaces/{workspace}/semantic/search`, `GET /api/workspaces/{workspace}/semantic/entries` and `GET /api/events` carry `unconfirmed`, always present and `[]` when empty:
+A list, search or Agent tool result that leaves out an item because a Node holding one of its Read dependencies did not answer says so (ADR 0133). `GET /api/state`, `GET /api/tasks`, `GET /api/tasks/{id}/runs`, `GET /api/threads/{id}/runs`, `GET /api/human-requests`, `GET /api/threads/{id}`, `GET /api/threads/{id}/message-history`, `POST /api/threads/{thread}/memory/units/query`, `POST /api/threads/{thread}/semantic/search`, `GET /api/threads/{thread}/semantic/entries` and `GET /api/events` carry `unconfirmed`, always present and `[]` when empty:
 
 ```json
 "unconfirmed": [
-  {"node": "aidash://local/brave-otter-k3m9q2xa", "kind": "task", "workspace_id": "…", "count": 3}
+  {"node": "aidash://local/brave-otter-k3m9q2xa", "kind": "task", "thread_id": "…", "count": 3}
 ]
 ```
 
-`kind` is one of `task`, `run`, `artifact`, `event`, `message`, `human_request`, `semantic_entry` and `memory_unit`. `count` is the number of rows this response scanned and could not confirm, so a later page can report more. It is not a total, and it is not "you should see these": the Node can still refuse an item once it answers. A row counts once, under the first silent Node its check reached, only after the reader's own permission to read that kind in that Workspace and `federation.discover` on that Node have passed. A real refusal is never counted: where a check that can meet a silent Node is followed by others in a chain (a Run's `run.read`, `memory.read` and Human Requests after its Task, an artifact's provenance after its Task, the other evidence of a memory unit), the rest of the chain is judged too, and a row any of them refuses is not counted. An event that sits in no Workspace is never counted. A peer's `503 node_unreachable` for a call a Run made through its Home (`{"code": "node_unreachable", "node", "after_effect"}`) stays typed and is retried or paused like a local one. `/api/events`, `semantic/entries` and `memory/units/query` were bare arrays and are now `{events, unconfirmed}`, `{entries, unconfirmed}` and `{units, unconfirmed}`. `WorkspaceSnapshot` has the field with a default, because peers read it. The federated graph also returns `unconfirmed`, but attributes every count to the answering Node rather than naming the silent Node. It never forwards that third Node’s address. Counts describe scanned rows, not guaranteed visible items; its warning is separate from the display-limit notice.
+`kind` is one of `task`, `run`, `artifact`, `event`, `message`, `human_request`, `semantic_entry` and `memory_unit`. `count` is the number of rows this response scanned and could not confirm, so a later page can report more. It is not a total, and it is not "you should see these": the Node can still refuse an item once it answers. A row counts once, under the first silent Node its check reached, only after the reader's own permission to read that kind in that Thread and `federation.discover` on that Node have passed. A real refusal is never counted: where a check that can meet a silent Node is followed by others in a chain (a Run's `run.read`, `memory.read` and Human Requests after its Task, an artifact's provenance after its Task, the other evidence of a memory unit), the rest of the chain is judged too, and a row any of them refuses is not counted. An event that sits in no Thread is never counted. A peer's `503 node_unreachable` for a call a Run made through its Home (`{"code": "node_unreachable", "node", "after_effect"}`) stays typed and is retried or paused like a local one. `/api/events`, `semantic/entries` and `memory/units/query` were bare arrays and are now `{events, unconfirmed}`, `{entries, unconfirmed}` and `{units, unconfirmed}`. `ThreadSnapshot` has the field with a default, because peers read it. The federated graph also returns `unconfirmed`, but attributes every count to the answering Node rather than naming the silent Node. It never forwards that third Node’s address. Counts describe scanned rows, not guaranteed visible items; its warning is separate from the display-limit notice.
 
 `GET /api/tasks/{id}/runs` with a parent Task that cannot be confirmed stays `503 node_unreachable`, and so does a message-history `before` message that cannot be confirmed; both are the read of one thing. Only their rows are counted.
 
@@ -492,7 +492,7 @@ callback. The two Nodes check the citation against their own journals:
 - the Home: the same against its journal for the step the executing Node claims, the
   grant is still live (`403`), no consumed source changed or was revoked
   (`409`, reason `invalidated`, the same conditions under which
-  `grants/describe` answers 409), and the Workspace corpus digest equals the
+  `grants/describe` answers 409), and the Thread corpus digest equals the
   one it recorded before that retrieval (`409`, reason `stale`).
 
 A `stale` answer makes the Run drop its cached retrieval and retrieve again

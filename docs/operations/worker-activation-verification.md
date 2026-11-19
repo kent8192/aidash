@@ -2,7 +2,7 @@
 
 The current disposable cluster profile is
 `bash scripts/test-cluster.sh kubernetes`. Process checks remain
-`bash scripts/test-worker-activation.sh`; workspace Rust checks are separate.
+`bash scripts/test-worker-activation.sh`; thread Rust checks are separate.
 Every result must identify its exact source inputs, image digest and run record.
 
 The [historical verification register](../history/worker-activation-verification.md)

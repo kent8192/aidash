@@ -59,7 +59,7 @@ extend to another port or scheme on the same host.
 
 - A host that is a non-public address literal (loopback, private, link-local,
   the metadata server and similar ranges) is refused before any request, and
-  a Workspace semantic index that names one is refused when it is configured.
+  a Thread semantic index that names one is refused when it is configured.
   Workbench test endpoints follow the same rule and share the list.
 - Tenant HTTP and MCP tool endpoints, and the remote MCP servers of the Agent
   Plugins an Agent takes in, follow the same rule and share the list. A
@@ -368,10 +368,10 @@ seconds after completing a page. A failed candidate is retried on the next sweep
 without blocking later Tenants. It never lists Secret Manager secrets.
 
 Admission records a local-only Provider Credential ID per Run and provider.
-This includes the enabled workspace semantic index's embedding provider, even
+This includes the enabled thread semantic index's embedding provider, even
 when the Agent's Model is keyless. Missing embedding bindings
 therefore reject admission before the Run is committed. RequiredHome remote
-semantic search accepts keyless and Tenant-backed workspace embeddings. The Home
+semantic search accepts keyless and Tenant-backed thread embeddings. The Home
 embeds the query itself, so a `provider_credential` source resolves the Home
 Tenant's current Provider Credential Binding as memory-retrieval maintenance,
 exactly as local Run-less retrieval does; the receiving node never receives

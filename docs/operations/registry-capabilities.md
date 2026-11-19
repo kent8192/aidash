@@ -68,7 +68,7 @@ Cluster coordinators require all three coordination tools.
 {
   "schema_version": 1,
   "model": { "id": "model", "version": "1.0.0" },
-  "instructions": "Work within the authorized workspace.",
+  "instructions": "Work within the authorized thread.",
   "bindings": [
     {
       "kind": "memory",
@@ -94,7 +94,7 @@ operations. An Agent whose only memory Binding is a native conversation or
 semantic memory source is not offered `memory_recall`, `memory_reflect` or
 `memory_mutate`; that memory reaches the model only as automatic context.
 `memory_mutate` alone does not enable reading. Supported native
-context declarations wrap the existing conversation/semantic memory, workspace
+context declarations wrap the existing conversation/semantic memory, thread
 retrieval, private-reference, original-reference and Skill adapters. Private
 Agent documents become immutable private Source definitions. Their contents
 retain separate knowledge/reference authorization and are never made public by
@@ -642,7 +642,7 @@ Peer execution requires protocol `0.2` or later; the `/v0.1/` URL namespace rema
 a path name and does not negotiate an old contract. Both Nodes verify that the
 protocol header is a version they accept, and the Provider contracts. Protocol
 `0.3` additionally lets a remote Ordered Run see changes to the Home's semantic
-corpus (see [context projection](../features/context-projection.md)). Remote mandatory workspace and Human operations
+corpus (see [context projection](../features/context-projection.md)). Remote mandatory thread and Human operations
 use Home authority under the exact task, grant, admission and Run. Unsupported
 remote defaults have persisted placement exclusions; explicit incompatible
 Bindings fail admission.
@@ -767,7 +767,7 @@ production isolation profile.
 
 ## Native Memory providers
 
-A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native workspace `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.
+A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native thread `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.
 
 A `memory` descriptor's configuration is the `ProviderConfig` in `crates/aidash-domain/src/memory.rs`: the engine and its policy only. It rejects unknown fields, so do not add operation, pinning, disclosure or binding controls to it. Those are separate Registry and admission controls: the memory operations are their own builtin Tool descriptors, the admitted Binding snapshot pins exact versions, authorization governs disclosure, and the Agent's Binding list selects the provider. Private memory bodies and credentials are not part of a descriptor: they stay in authorized provider storage, and catalog metadata never exposes them (see [Registry boundary](../architecture.md#registry-boundary)). The memory contracts that these providers serve are described in [architecture](../architecture.md#memory-contracts).
 

@@ -20,7 +20,7 @@ the explicit LCOV input and `fail_ci_if_error: true` remain required.
 Sixteen independent jobs execute the locked Cargo targets in eight fields: foundation, server unit
 and binaries, identity, execution, persistence, collaboration, federation, and
 knowledge/marketplace. `scripts/rust-test-partitions.py` inventories the actual
-workspace; new integration targets are assigned by their owning application.
+thread; new integration targets are assigned by their owning application.
 Unsupported target kinds fail the inventory instead of silently losing coverage.
 Each field has two shards. Cargo's target runner lists each test binary, sorts its
 exact test names and selects alternating names for shards 1 and 2. This splits
@@ -46,7 +46,7 @@ This instruments shared application and harness code called by server integratio
 tests without repeating their unit suites. With package-only coverage, the
 successful reports at `b0a14cad` contained application code only in foundation:
 peer admissions and desktop protocol use cases incorrectly had zero hits even
-though server tests exercised them. The all-workspace reports retain those hits
+though server tests exercised them. The all-thread reports retain those hits
 when merged. Existing thresholds, exclusions and required partitions are unchanged.
 An instrumented two-crate regression checks that server tests contribute coverage
 to a dependency while its unit tests remain excluded from that partition.
@@ -117,7 +117,7 @@ without reducing case counts or recovery bounds.
 ## Required Clippy checks
 
 The required Clippy matrix checks each Cargo workspace once: the backend with
-all features, plus the existing desktop and infrastructure observer workspaces.
+all features, plus the existing desktop and infrastructure observer threads.
 Each job has its own Cargo cache and denies warnings. Trunk retains formatting
 and the other linters; it excludes Clippy in hosted CI because its nearest-package
 grouping launched repeated `--workspace` commands against the same build directory.
@@ -217,7 +217,7 @@ runtime-only credential mounts and build paths. GCP and Cloud Helm contracts
 cover the managed common-auth profile and private mTLS Secret on server and
 worker. They do not deploy a cluster or publish images.
 
-Library tests in the Enterprise workspace additionally exercise signed OIDC/BFF
+Library tests in the Enterprise thread additionally exercise signed OIDC/BFF
 flows, Product Session and refresh boundaries, mTLS peer permissions and source
 lifecycle, real service-role isolation and cross-schema FK rejection. These
 local/hosted fixtures do not establish live GCIP, cluster deployment, provider

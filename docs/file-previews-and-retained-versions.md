@@ -16,7 +16,7 @@ and
 
 A File version is one immutable File of a Working Area at one path. Opening a
 File preview, like downloading it, checks current authority over the Working
-Area: the Workspace read permission, the `file.read` action of the
+Area: the Thread read permission, the `file.read` action of the
 `working_area` resource, and the authority of every message or reference the
 Area was built from. A File preview always opens the exact File version
 selected; it never substitutes a newer one.

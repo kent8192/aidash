@@ -47,24 +47,24 @@ seconds (default 600) is cancelled and reported with `timed_out: true`.
 
 Each invocation registers new immutable entries under a random `cxe-<hex>`
 prefix: tools, Skills and two Agents per case. Each variant runs in a new
-Workspace. Use an isolated deployment.
+Thread. Use an isolated deployment.
 
 ## API calls
 
-| Purpose                     | Call                                                                                            | Defined at                                                       |
-| --------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Node identity               | `GET /.well-known/aidash`                                                                       | `server/src/apps/federation/peer/views/management.rs:43`         |
-| Register tool, Skill, Agent | `POST /api/registry`                                                                            | `server/src/apps/registry/views/management.rs:40`                |
-| Workspace                   | `POST /api/workspaces`                                                                          | `server/src/apps/workspaces/views/management.rs:32`              |
-| Task                        | `POST /api/workspaces/{id}/tasks`                                                               | `server/src/apps/workspaces/views/management.rs:60`              |
-| Admit the Run               | `POST /api/tasks/{id}/delegate` with this node's ID                                             | `server/src/apps/federation/remote/views/management.rs:15`       |
-| Find the Run and approvals  | `GET /api/state` (`runs`, `human_requests`)                                                     | `server/src/apps/execution/views/management.rs:20`               |
-| Find Tool call approvals    | `GET /api/capabilities/approvals?state=pending&role=approver`                                   | `server/src/apps/execution/capabilities/views/management.rs:364` |
-| Answer approvals            | `POST /api/human-requests/{id}/answer`                                                          | `server/src/apps/execution/views/management.rs:80`               |
-| Decide Tool call approvals  | `POST /api/capabilities/approvals/{id}/decide` with `allow_once` or `deny`                      | `server/src/apps/execution/capabilities/views/management.rs:377` |
-| Run inspection              | `GET /api/runs/{id}`                                                                            | `server/src/apps/execution/views/management.rs:49`               |
-| Cancel on timeout           | `POST /api/runs/{id}/control` with `{"action": "cancel"}`                                       | `server/src/apps/execution/views/management.rs:59`               |
-| Per-request usage           | `GET /api/workspaces/{id}` (`model.completed` events with `run_id`, `step` and `context_usage`) | `server/src/apps/workspaces/views/management.rs:41`              |
+| Purpose                     | Call                                                                                         | Defined at                                                       |
+| --------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Node identity               | `GET /.well-known/aidash`                                                                    | `server/src/apps/federation/peer/views/management.rs:43`         |
+| Register tool, Skill, Agent | `POST /api/registry`                                                                         | `server/src/apps/registry/views/management.rs:40`                |
+| Thread                      | `POST /api/threads`                                                                          | `server/src/apps/workspaces/views/management.rs:32`              |
+| Task                        | `POST /api/threads/{id}/tasks`                                                               | `server/src/apps/workspaces/views/management.rs:60`              |
+| Admit the Run               | `POST /api/tasks/{id}/delegate` with this node's ID                                          | `server/src/apps/federation/remote/views/management.rs:15`       |
+| Find the Run and approvals  | `GET /api/state` (`runs`, `human_requests`)                                                  | `server/src/apps/execution/views/management.rs:20`               |
+| Find Tool call approvals    | `GET /api/capabilities/approvals?state=pending&role=approver`                                | `server/src/apps/execution/capabilities/views/management.rs:364` |
+| Answer approvals            | `POST /api/human-requests/{id}/answer`                                                       | `server/src/apps/execution/views/management.rs:80`               |
+| Decide Tool call approvals  | `POST /api/capabilities/approvals/{id}/decide` with `allow_once` or `deny`                   | `server/src/apps/execution/capabilities/views/management.rs:377` |
+| Run inspection              | `GET /api/runs/{id}`                                                                         | `server/src/apps/execution/views/management.rs:49`               |
+| Cancel on timeout           | `POST /api/runs/{id}/control` with `{"action": "cancel"}`                                    | `server/src/apps/execution/views/management.rs:59`               |
+| Per-request usage           | `GET /api/threads/{id}` (`model.completed` events with `run_id`, `step` and `context_usage`) | `server/src/apps/workspaces/views/management.rs:41`              |
 
 ## Fixture
 
@@ -90,14 +90,14 @@ Each `cases[]` item has the case inputs, `tool_count`, `skill_count`, the
 registered `registry` identities and `variants.legacy` / `variants.deferred`.
 Each variant has these fields:
 
-- `agent`, `exposure_policy` (`null` for legacy), `workspace`, `task`,
+- `agent`, `exposure_policy` (`null` for legacy), `thread`, `task`,
   `run_id`, final `phase`, `error`, `state_error`, `step`, `timed_out`,
   `compactions`.
 - `provider_usage`: provider token counts from `context.usage`.
   - `input_tokens` and `output_tokens` are sums over the `model.completed`
     events the runner observed; `observed_requests` is how many there were.
   - `latest` is the Run's final `context.usage`.
-  - `event_window_complete` is false if the Workspace returned its full window
+  - `event_window_complete` is false if the Thread returned its full window
     of 100 events, so earlier requests may be missing from the sums.
 - `exposure_bytes` (deferred only): per-request lists of `schema_bytes` (tool
   definitions), `skill_bytes` (resident Skill bodies) and `metadata_bytes`
@@ -123,7 +123,7 @@ Each variant has these fields:
 ## What the API does not expose
 
 - `context.usage` holds only the latest provider response. Per-request token
-  counts come from `model.completed` events, and `GET /api/workspaces/{id}`
+  counts come from `model.completed` events, and `GET /api/threads/{id}`
   returns at most the 100 most recent events (see `event_window_complete`).
 - Legacy requests record no tool-definition or Skill-body bytes;
   `context.usage.exposure` exists only for `deferred@1` requests. The runner

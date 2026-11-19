@@ -133,7 +133,7 @@ _Avoid_: Tool alias, completed effect
 ### Context dependencies
 
 **Agent memory scope**:
-The retained-memory boundary of an exact Agent definition within its Home node and Workspace. It is distinct from a particular Run's reasoning context or permission to read and write that memory.
+The retained-memory boundary of an exact Agent definition within its Home node and Thread. It is distinct from a particular Run's reasoning context or permission to read and write that memory.
 _Avoid_: Run-private memory, globally shared memory
 
 **Context source**:
@@ -181,12 +181,12 @@ _Avoid_: Safety certification, automatically learned policy
 ### Execution placement
 
 **Home node**:
-The Node that owns a Workspace and its shared Tasks, Messages, and published Artifacts, including when another Node performs the work.
+The Node that owns a Thread and its shared Tasks, Messages, and published Artifacts, including when another Node performs the work.
 _Avoid_: Execution node, central server
 
 **Execution node**:
 The Node responsible for carrying out a Run. In remote execution it is distinct from the Home node.
-_Avoid_: Home node, Workspace owner
+_Avoid_: Home node, Thread owner
 
 **Receiver admission**:
 The Execution node's acceptance of exact remote work and its declared dependencies under the applicable authority and supported contracts. Acceptance is distinct from starting or completing the Run.

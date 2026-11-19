@@ -14,9 +14,9 @@ A Duty whose Requester leaves stops until a named successor takes it over.
 
 ## Setting one up
 
-A person sets up a Duty in a Workspace's **Duties** tab, or through
-`POST /api/workspaces/{workspace}/duties`. It needs `workspace.read`,
-`duty.create` and `task.create` on the Workspace; members hold all three by
+A person sets up a Duty in a Thread's **Duties** tab, or through
+`POST /api/threads/{thread}/duties`. It needs `thread.read`,
+`duty.create` and `task.create` on the Thread; members hold all three by
 default.
 
 ```json
@@ -65,10 +65,13 @@ Mapping stops it.
 
 ## The Duty's Thread
 
-Every Task of a Duty works in the Duty's own Thread. Its first Task opens it,
-with the title and mission as its first message, and the Duty records it.
-The Requester talks to the Duty there, and its Tasks report there. Deleting
-the Thread stops the Duty.
+Every Task of a Duty works in the Duty's own Thread (#1008, ADR 0140).
+Registering the Duty opens that Thread, in the Node and Scratch Space of the
+Thread it was registered from and created by its Requester, with the title
+and mission as its first message; the Duty records both Threads
+(`thread_id`, `origin_thread_id`), so the Agent tools of the Thread it came
+from still list and change it. The Requester talks to the Duty there, and its
+Tasks report there. Deleting the Thread stops the Duty.
 
 ## Other Duty Triggers
 
@@ -191,7 +194,7 @@ scheduled time starts at most one Task.
 After `pause_after_failures` failed Tasks in a row the Duty pauses itself. It
 stops when its Requester leaves the Tenant or loses access, when its Agent
 version can no longer be started, when its Thread is deleted and when the
-Tenant is deleted (a restore leaves it stopped). Deleting the Workspace
+Tenant is deleted (a restore leaves it stopped). Deleting the Thread
 deletes its Duties. The bell shows a **Duty stopped** notice to the Requester,
 and to holders of `duty.administer` for a Duty waiting for a successor. A
 Duty's Task completion appears in the bell without a toast; a failure also
@@ -208,7 +211,7 @@ definition removes its tools with `remove_default`. `duty_create`,
 `duty_update` and `duty_delete` (which also pauses) are Tool call approvals of
 the person at the root of the Run's chain, decided by their Approval Mode and
 Approval Rules; `duty_list` needs none. A Duty an Agent sets up acts as that
-person and belongs to the Run's Workspace. A Run a Duty started may set up
+person and belongs to the Run's Thread. A Run a Duty started may set up
 Duties too (#1012): only the root person's authority and Budget bound what a
 chain creates. A Run that arrived through Federation and a Run whose chain
 starts at no person cannot set up or change Duties. A retried tool call

@@ -61,7 +61,7 @@ Desktop keeps its Cloud broker and product-local start/authorize/exchange/refres
 
 Cloud's private RPC path uses `reinhardt::grpc`, mTLS and authorization for each calling service. Product service credentials do not grant Account Suspension/restoration authority. The router namespace and DI interceptor are not authorization mechanisms. Certificate issuance, peer identity verification, rotation and service permissions are required infrastructure.
 
-Initial research at Reinhardt revision `bb2562bc4839250d277a7ceecbf7fe5c18dd82c8` and upstream main `746e267ffc2edb75ee626d7508d273b526c387d6` found service registration and DI but no standard server mTLS configuration or dedicated client/channel API. The implementation adds those prerequisites in [Reinhardt PR #6876](https://github.com/kent8192/reinhardt-web/pull/6876) and pins its immutable runtime revision `b6a006a769ca340c22a51e67fef1bb4be1dc3039` in both workspaces. Cloud uses the facade transport and peer identity APIs; the implementation does not bypass the selected framework.
+Initial research at Reinhardt revision `bb2562bc4839250d277a7ceecbf7fe5c18dd82c8` and upstream main `746e267ffc2edb75ee626d7508d273b526c387d6` found service registration and DI but no standard server mTLS configuration or dedicated client/channel API. The implementation adds those prerequisites in [Reinhardt PR #6876](https://github.com/kent8192/reinhardt-web/pull/6876) and pins its immutable runtime revision `b6a006a769ca340c22a51e67fef1bb4be1dc3039` in both threads. Cloud uses the facade transport and peer identity APIs; the implementation does not bypass the selected framework.
 
 ## Protected operations and lifecycle
 
@@ -131,7 +131,7 @@ The following are acceptance contracts. Local automated evidence, hosted CI and 
 | Artifact boundary                 | Reject unauthorized downloads/updates and malformed/digest-mismatched artifacts; verify pinned-copy execution under local approval without refetching from Marketplace                                             |
 | Recall persistence                | Learned Recall blocks new Runs after communication loss and Connection removal; an offline-issued Recall applies on resynchronization without promising earlier delivery                                           |
 | Enforcement claims                | Demonstrate server-side acquisition restrictions; never represent local signatures, mTLS or Recall as proof against a modified Self-hosted runtime                                                                 |
-| Source/build boundary             | Community builds without Enterprise; GCIP code/data remains Enterprise; shared dependencies stay aligned across the two workspaces                                                                                 |
+| Source/build boundary             | Community builds without Enterprise; GCIP code/data remains Enterprise; shared dependencies stay aligned across the two threads                                                                                    |
 
 ## Implemented project layout
 
@@ -171,7 +171,7 @@ access/refresh tokens stay native; GCIP's transient upstream proof stays in the
 Enterprise sign-in bridge.
 
 Each product builds native and WASM from one Cargo package in the Enterprise
-workspace and packages its assets and executable in one image. Rust uses
+thread and packages its assets and executable in one image. Rust uses
 `enterprise/Cargo.lock`; wasm-pack and Python assemble static assets without
 Node.js or a JavaScript package manifest. Browser E2E uses the native WebDriver
 fixtures in `reinhardt-test/src/fixtures/wasm/e2e.rs`. Existing crate names,
@@ -214,4 +214,4 @@ GCIP/cluster/payment evidence must be reported independently of local tests.
 - [ADR 0091: acquisition enforcement and local-copy limits](adr/0091-marketplace-enforces-acquisition-without-promising-local-copy-drm.md)
 - [ADR 0092: offline Recall semantics](adr/0092-recalls-preserve-known-stops-without-requiring-online-execution.md)
 
-Existing constraints: [ADR 0032: Community/Enterprise workspaces](adr/0032-enterprise-is-a-separate-cargo-workspace.md), [ADR 0072: pinned Agent Plugin copies](adr/0072-an-agent-plugin-is-a-pinned-copy-inside-the-agent-version-and-adds-no-registry-definitions.md), [ADR 0082: production update backups](adr/0082-production-updates-take-a-pre-update-backup-that-excludes-the-home-recovery-ledger.md).
+Existing constraints: [ADR 0032: Community/Enterprise threads](adr/0032-enterprise-is-a-separate-cargo-thread.md), [ADR 0072: pinned Agent Plugin copies](adr/0072-an-agent-plugin-is-a-pinned-copy-inside-the-agent-version-and-adds-no-registry-definitions.md), [ADR 0082: production update backups](adr/0082-production-updates-take-a-pre-update-backup-that-excludes-the-home-recovery-ledger.md).

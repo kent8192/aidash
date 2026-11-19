@@ -89,7 +89,7 @@ Remote run-message admission, reconciliation, Home reservation recovery and
 observed-input acknowledgements share an application ledger scope. History import
 and new-input acceptance remain one native transaction. A late connection error
 checks the committed input before promoting or releasing its Home fence. Domain
-rules bind delivered records to the original node, task, workspace and content;
+rules bind delivered records to the original node, task, thread and content;
 typed native RPC adapters retain the preceding Federation 0.1 peer fallback and
 its bounded history/snapshot behavior.
 
@@ -105,7 +105,7 @@ identity rules and atomically consuming the logout identity with revocation.
 Node registration, Federation acceptance and delegation authorization use
 shared application rules. Native registration pins the other Deployment's key
 while retaining the same advisory lock, row locks and audit transaction. Graph repositories retain projection queries and current viewer
-leases; application checks workspace permission before record disclosure.
+leases; application checks thread permission before record disclosure.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
@@ -154,7 +154,7 @@ The [migration runbook](../server/migrations/README.md) describes the supported
 empty-database boundary and maintenance cutover. Runtime queries are tested with
 real PostgreSQL; builds do not require a live database.
 
-The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Trust between Nodes of different Tenants is explicit: each side registers the other Node, and Deployments sign requests with their own Deployment Key, so no shared secret is configured. Public identity contains only the Deployment's public key. Registry versions are immutable and model selection is explicit.
+The thread's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Trust between Nodes of different Tenants is explicit: each side registers the other Node, and Deployments sign requests with their own Deployment Key, so no shared secret is configured. Public identity contains only the Deployment's public key. Registry versions are immutable and model selection is explicit.
 
 Every execution step is persisted before advancing. A leased worker processes one step at a time, renews the lease during inference/tool work and fences journal writes against stale owners. Tool calls are journaled before invocation. Read-only and idempotent adapters may replay with the original key. An unsafe invocation whose outcome was not committed is blocked for human reconciliation, never silently repeated. An arbitrary external service cannot offer exactly-once effects without cooperating with the idempotency contract.
 
@@ -193,7 +193,7 @@ withdrawal generation resets a Journal Query session.
 Every `subnode_message` is returned to the creating Run as a `Trust::Data`
 envelope, including messages from Tasks without a Journal range. It is not a
 person's instruction or correction. During message catch-up, result bodies are
-not folded into the human-message summary; their Workspace records remain
+not folded into the human-message summary; their Thread records remain
 available through `workspace_read`. Earlier result references are bounded in
 the request, and older messages can be found through `workspace_observe`
 pagination. See [ADR 0110](adr/0110-agents-create-subnodes-which-are-run-scoped-groups-not-nodes.md).
@@ -212,7 +212,7 @@ mechanism needs regression and acceptance work in every contract that uses it.
 - **(b) Persistent source ingestion and semantic retrieval.** Owned by #110, with
   retrieval reuse from #172 and PR #186. It covers Source ingestion, the semantic
   index on PostgreSQL with pgvector and PGroonga, and two retrieval paths that keep
-  provenance, scope, lifecycle and authorization. Workspace Source retrieval searches
+  provenance, scope, lifecycle and authorization. Thread Source retrieval searches
   the pgvector index (FR-MEM-001). Native memory recall is separate and ranks the
   authorized units of a Bank with four rankings (semantic, keyword, graph and
   temporal). A reranker is a required policy role: either a registered model or the
