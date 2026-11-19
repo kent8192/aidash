@@ -21,6 +21,8 @@ struct State {
 	task_read_unreachable: bool,
 	grant_revoked: bool,
 	grant_expired: bool,
+	/// The Home Task's status when it is not the fixture's Running.
+	task_status: Option<TaskStatus>,
 	calls: Vec<String>,
 	scopes: usize,
 	rpcs: usize,
@@ -262,6 +264,7 @@ impl HomeScope for Scope {
 		_: Uuid,
 		_: Value,
 	) -> Result<aidash_domain::HumanRequest> {
+		self.repository.call("answer_human");
 		Err(Error::Forbidden)
 	}
 
@@ -287,7 +290,11 @@ impl HomeScope for Scope {
 		if self.repository.state.lock().unwrap().denied == Some("task.read") {
 			return Err(Error::Forbidden);
 		}
-		Ok(task())
+		let mut read = task();
+		if let Some(status) = self.repository.state.lock().unwrap().task_status {
+			read.status = status;
+		}
+		Ok(read)
 	}
 	async fn control_task(&mut self, _: Uuid) -> Result<Option<Task>> {
 		self.repository.call("task.control_projection");
@@ -1150,9 +1157,47 @@ async fn holder_authority_rechecks_grant_liveness() {
 	);
 	repository.state.lock().unwrap().grant_revoked = false;
 	repository.state.lock().unwrap().grant_expired = true;
+	// Past its lifetime a started grant still lives while its Task is open,
+	// however long the remote Run sleeps (#1013).
+	assert!(
+		holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+	// It ends with the Task.
+	repository.state.lock().unwrap().task_status = Some(TaskStatus::Completed);
 	assert!(
 		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
 			.await
 			.unwrap()
 	);
+}
+
+#[tokio::test]
+async fn a_person_answers_a_sleeping_remote_run_after_its_grants_lifetime() {
+	// The fixture's grant expired long ago; its Task is still running, asleep
+	// on this question, so the answer reaches the Run's question (#1013).
+	let repository = Repository::default();
+	let _ = answer_human(
+		&repository,
+		task().id,
+		Uuid::from_u128(4),
+		Uuid::from_u128(6),
+		json!({"answer":"yes"}),
+	)
+	.await;
+	assert!(repository.calls().contains(&"answer_human".to_owned()));
+	// Once the Task has ended the grant has too, and the question is not open.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().task_status = Some(TaskStatus::Cancelled);
+	let result = answer_human(
+		&repository,
+		task().id,
+		Uuid::from_u128(4),
+		Uuid::from_u128(6),
+		json!({"answer":"yes"}),
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!repository.calls().contains(&"answer_human".to_owned()));
 }

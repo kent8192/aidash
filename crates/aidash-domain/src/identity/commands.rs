@@ -63,6 +63,7 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"message" => Some("workspace_message"),
 		"create_task" => Some("task_create"),
 		"delegate" => Some("task_delegate"),
+		"discover" => Some("agent_discover"),
 		_ => None,
 	}
 }

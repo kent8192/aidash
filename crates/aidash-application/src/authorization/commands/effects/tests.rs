@@ -196,6 +196,21 @@ impl RemoteCommandEffects for Scope {
 		self.call("children")?;
 		Ok(json!([]))
 	}
+	async fn discover(
+		&mut self,
+		workspace: Uuid,
+		search: &aidash_domain::registry::Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards> {
+		assert_eq!(workspace, self.task.workspace_id);
+		self.call(&format!(
+			"discover:{}",
+			search.kind.as_deref().unwrap_or("")
+		))?;
+		Ok(aidash_domain::federation::DiscoveryCards {
+			agents: vec![],
+			errors: vec![],
+		})
+	}
 	async fn created_by_grant(&mut self, _: Uuid, child: Uuid) -> Result<bool> {
 		assert_eq!(child, Uuid::from_u128(5));
 		self.call("provenance")?;
@@ -533,6 +548,119 @@ async fn delegation_requires_both_grant_output_provenance_and_the_local_target(
 		assert!(scope.applied.is_empty());
 	}
 	assert!(scope.calls.contains(&"provenance".into()));
+}
+#[rstest]
+#[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]
+#[case::receivers_own_node("aidash://peer/brave-otter-k3m9q2xa")]
+#[tokio::test]
+async fn a_child_handed_to_another_node_is_checked_here_and_granted_after_the_lease(
+	mut scope: Scope,
+	#[case] node: &str,
+) {
+	// Multi-hop delegation (#654): the Home checks the child under the command's
+	// lease exactly as for its own Node, applies nothing and leaves the grant
+	// to the caller, which prepares it after the lease ends.
+	let child = scope.child();
+	let id = child.id;
+	scope.additional.insert(id, child);
+	let data = json!({"key":"id","task_id":id,"node_id":node,"agent":{"id":"next","version":"2"}});
+	assert!(is_onward(scope.local_node(), "delegate", &data));
+	let onward = onward(&mut scope, input("delegate", &data)).await.unwrap();
+	assert_eq!(
+		onward,
+		Onward {
+			child: id,
+			node: node.into(),
+			agent: EntityRef {
+				id: "next".into(),
+				version: "2".into()
+			},
+		}
+	);
+	assert!(scope.applied.is_empty());
+	assert!(scope.journal.is_empty());
+	assert_eq!(
+		scope.calls,
+		[
+			"binding".to_owned(),
+			"task:00000000-0000-0000-0000-000000000002".to_owned(),
+			"builtin:task_delegate".to_owned(),
+			"previous:delegate:id".to_owned(),
+			"task_resource".to_owned(),
+			format!("task:{id}"),
+			"provenance".to_owned(),
+			"live".to_owned(),
+		]
+	);
+}
+#[rstest]
+#[case::not_created_by_this_grant(false, true, true)]
+#[case::grant_ended(true, false, true)]
+#[case::someone_elses_child(true, true, false)]
+#[tokio::test]
+async fn an_onward_delegation_fails_closed_like_a_local_one(
+	mut scope: Scope,
+	#[case] created: bool,
+	#[case] live: bool,
+	#[case] own_child: bool,
+) {
+	let mut child = scope.child();
+	if !own_child {
+		child.parent_id = Some(Uuid::from_u128(77));
+	}
+	let id = child.id;
+	scope.additional.insert(id, child);
+	scope.created = created;
+	scope.live = live;
+	let data = json!({"key":"id","task_id":id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":{"id":"next","version":"2"}});
+	let result = onward(&mut scope, input("delegate", &data)).await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(scope.applied.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn the_homes_own_node_is_never_handed_on(mut scope: Scope) {
+	let child = scope.child();
+	let id = child.id;
+	scope.additional.insert(id, child);
+	let data = json!({"key":"id","task_id":id,"node_id":"aidash://home","agent":{"id":"next","version":"2"}});
+	assert!(!is_onward(scope.local_node(), "delegate", &data));
+	assert!(!is_onward(
+		scope.local_node(),
+		"create_task",
+		&json!({"node_id":"aidash://third/quiet-falcon-4f8k2m1z"})
+	));
+	assert!(matches!(
+		onward(&mut scope, input("delegate", &data)).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.calls.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_run_discovers_from_its_homes_task_node_and_rechecks_the_grant(mut scope: Scope) {
+	let result = run(&mut scope, "discover", &json!({"search":{"kind":"agent"}}))
+		.await
+		.unwrap();
+	assert_eq!(result, json!({"agents":[],"errors":[]}));
+	assert_eq!(
+		scope.calls,
+		[
+			"binding",
+			"task:00000000-0000-0000-0000-000000000002",
+			"builtin:agent_discover",
+			"task_resource",
+			"discover:agent",
+			"live"
+		]
+	);
+	// Discovery writes nothing and is never recorded for replay.
+	assert!(scope.journal.is_empty());
+	scope.live = false;
+	assert!(matches!(
+		run(&mut scope, "discover", &json!({})).await,
+		Err(Error::Forbidden)
+	));
 }
 #[rstest]
 #[case::terminal("run_message_terminal_transition",json!({"key":"id","revision":8,"status":"COMPLETED","through_seq":-1}),"invalid terminal sequence")]

@@ -114,6 +114,65 @@ impl Grant {
 	}
 }
 
+/// What decides whether a Remote Grant still lets its Task be worked
+/// (#1013, Round 3 Q5 of the agent activation grilling).
+///
+/// A grant's lifetime (at most an hour) is its admission deadline: it bounds
+/// the grant only until a receiver has started the Task. From then on the
+/// grant lives while its Task has not ended, whether the Run's Stint is awake
+/// or asleep waiting for an approval, CI or a child Task, so the Home keeps it
+/// renewed for as long as the Task is open. Revocation ends it at once. A broken
+/// chain is not part of this rule: the Home re-evaluates the whole chain at
+/// every use, so every use of such a grant is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Liveness {
+	pub revoked: bool,
+	pub expires_at: DateTime<Utc>,
+	/// A receiver admitted the grant: the Home holds a binding for it.
+	pub bound: bool,
+	/// The Home recorded the receiver's activation of the Run.
+	pub activated: bool,
+	/// The Home Task's status, if the Task still exists.
+	pub task: Option<crate::TaskStatus>,
+}
+
+impl Liveness {
+	/// Whether a receiver has started the Task: the Home recorded the
+	/// activation, or a bound Task already left `OPEN`, which only the
+	/// receiver's claim does (the mark is written after the receiver answers
+	/// and may be missing, #772).
+	pub fn started(&self) -> bool {
+		self.bound
+			&& (self.activated
+				|| self
+					.task
+					.is_some_and(|status| status != crate::TaskStatus::Open))
+	}
+
+	/// Whether the grant is live at `now`.
+	pub fn live(&self, now: DateTime<Utc>) -> bool {
+		!self.revoked
+			&& (self.expires_at > now
+				|| (self.started() && self.task.is_some_and(|status| !status.is_terminal())))
+	}
+}
+
+/// The Task statuses that end a Remote Grant a receiver has started.
+pub fn ending_statuses() -> impl Iterator<Item = crate::TaskStatus> {
+	[
+		crate::TaskStatus::Open,
+		crate::TaskStatus::Claimed,
+		crate::TaskStatus::Running,
+		crate::TaskStatus::Completed,
+		crate::TaskStatus::Failed,
+		crate::TaskStatus::Blocked,
+		crate::TaskStatus::Cancelled,
+		crate::TaskStatus::Abandoned,
+	]
+	.into_iter()
+	.filter(|status| status.is_terminal())
+}
+
 /// Complete current authority required to reuse an immutable preparation key.
 pub struct PreparationAuthority<'a> {
 	pub task_id: Uuid,

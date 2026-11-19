@@ -381,8 +381,9 @@ impl HomeScope for Scope {
 						.and_where(
 							Expr::col("root_subject").ne(Expr::value(query_bind_3.to_owned())),
 						)
-						.and_where(Expr::col("revoked").eq(false))
-						.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
+						.and_where(Expr::cust(super::remote_grants::live_condition(
+							"authorization_remote_grants",
+						)))
 						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
@@ -398,9 +399,39 @@ impl HomeScope for Scope {
 	}
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>> {
 		let worker_subjects = self.access.read_run.map(|_| self.access.subjects.clone());
-		let result:NativeResult<Vec<GrantRow>>=async {let identity=self.access.identity.clone();let access=&mut *self.access;Ok({ let query_bind_1 = task.id; let query_bind_2 = node; let query_bind_3 = &identity.tenant; let query_bind_4 = &identity.subject; crate::database::native::query_as(&Query::select().column(Asterisk).from(Alias::new("authorization_remote_grants"))
-            .and_where(SimpleExpr::CustomWithExpr("(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND NOT revoked AND expires_at>CLOCK_TIMESTAMP())".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
-            .order_by(Alias::new("expires_at"),reinhardt::query::Order::Desc).limit(100).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? })}.await;
+		let result: NativeResult<Vec<GrantRow>> = async {
+			let identity = self.access.identity.clone();
+			let access = &mut *self.access;
+			Ok({
+				let query_bind_1 = task.id;
+				let query_bind_2 = node;
+				let query_bind_3 = &identity.tenant;
+				let query_bind_4 = &identity.subject;
+				crate::database::native::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							format!(
+								"(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND {})",
+								super::remote_grants::live_condition("authorization_remote_grants")
+							),
+							vec![
+								Expr::value(query_bind_1.to_owned()).into(),
+								Expr::value(query_bind_2.to_owned()).into(),
+								Expr::value(query_bind_3.to_owned()).into(),
+								Expr::value(query_bind_4.to_owned()).into(),
+							],
+						))
+						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
+						.limit(100)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **access.tx)
+				.await?
+			})
+		}
+		.await;
 		result
 			.map(|r| {
 				r.into_iter()

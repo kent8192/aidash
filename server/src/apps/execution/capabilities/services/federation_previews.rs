@@ -62,9 +62,11 @@ async fn source_target(
 	// A release is cleanup for a previously authorized hold, so V can still
 	// notify H after the source grant expires or is revoked.
 	if matches!(audience, SourceAudience::Viewer) {
-		grant_query
-			.and_where(Expr::col("revoked").eq(Expr::value(false)))
-			.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"));
+		grant_query.and_where(Expr::cust(
+			crate::apps::identity::repositories::remote_grants::live_condition(
+				"authorization_remote_grants",
+			),
+		));
 	}
 	let grant: Option<(String, String, uuid::Uuid)> =
 		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))
@@ -193,13 +195,15 @@ pub(crate) async fn retain(
 		)
 		.await?;
 		let description: Description = serde_json::from_value(record.description)?;
+		// The Run below exists, so its Home decides whether the grant still lives
+		// and has just asked as that Home; the pinned lifetime bounds only the
+		// admission (#1013).
 		if record.node != admitted.receiver.node.as_str()
 			|| record.tenant != admitted.tenant.as_str()
 			|| record.credential_id != access.identity.credential_id
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -349,13 +353,15 @@ pub(crate) async fn inspect(
 		)
 		.await?;
 		let description: Description = serde_json::from_value(record.description)?;
+		// The Run below exists, so its Home decides whether the grant still lives
+		// and has just asked as that Home; the pinned lifetime bounds only the
+		// admission (#1013).
 		if record.node != admitted.receiver.node.as_str()
 			|| record.tenant != admitted.tenant.as_str()
 			|| record.credential_id != access.identity.credential_id
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -459,13 +465,15 @@ pub(crate) async fn issue(
 		)
 		.await?;
 		let description: Description = serde_json::from_value(record.description)?;
+		// The Run below exists, so its Home decides whether the grant still lives
+		// and has just asked as that Home; the pinned lifetime bounds only the
+		// admission (#1013).
 		if record.node != admitted.receiver.node.as_str()
 			|| record.tenant != admitted.tenant.as_str()
 			|| record.credential_id != access.identity.credential_id
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}

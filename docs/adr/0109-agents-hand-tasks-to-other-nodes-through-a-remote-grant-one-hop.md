@@ -28,3 +28,17 @@ The grant records the Run's delegation chain followed by the selected receiver's
 - The `task_delegate` description finally matches its behaviour (#572).
 - Policy and Catalog Approval refusals record a decision, as do unreachable targets and incompatible executor subjects. The asking Node receives a limited reason from the receiver.
 - A Tenant that wants to keep its agents from delegating across Nodes denies `federation.execute` to them in its policy.
+
+## Amendment (2026-11-19, multi-hop delegation, #654 via #1013)
+
+ADR 0143 removed the one-hop limit. A Run that a Remote Grant started may call `agent_discover` and `task_delegate`, and the work it hands on may go to any Node, including the Home's own Node and the receiver's own Node.
+
+- **Every hop is granted from the Task's Home.** The Run's child Tasks live at the Home, so `task_delegate` is the Home's scoped `delegate` command. For another Node the Home checks the child under the command's lease, releases its locks, and prepares and activates a Remote Grant of its own for the child as the grant's root subject. `agent_discover` is the Home's scoped `discover` command, which returns only cards.
+- **Authority.** The Home judges the whole chain by its own policy, as for any grant it prepares: the root person, every Agent of the chain it knows, and `federation.execute` on the target. Only the new receiver's executor may be unknown to it. An earlier receiver's executor must be an Agent subject of the Home's policy, as it already must be for the Home to admit a Task that executor created; otherwise the hop is refused.
+- **Consent.** The middle Node consents through its own policy (`tool.invoke` on the tool and `task.delegate` on the Home's Task as a foreign resource) and the Agent's `allow_task_delegation`. Each target decides by its own Node Registration, Peer Mapping, policy and Catalog Approval.
+- **Data Protection.** A Run admitted from another Node, or working a Task another Node's Run created, already assumes the strictest policy (ADR 0104), so nothing travels with the chain.
+- **Limits.** There is no depth limit. Every hop creates a new Task that can be assigned once, so the same Task cannot loop. Budgets bound what the chain spends.
+- **Results and Thread Attachments** reach the Home directly from every hop; a Run fetches Thread Attachments only from its direct Home.
+- **Lifetime.** A Remote Grant whose Task a receiver started lives while that Task is open, however long the Run sleeps, and ends with the Task; its 1–3600 second lifetime bounds only the admission (#1013, Round 3 Q5).
+
+Considered and rejected: relaying through the middle Node, which would store another Node's Task there and carry results and Thread Attachments through every hop; and stripping every executor the Home does not know from the chain, which would let a Node the Home never named act in its chains unchecked.

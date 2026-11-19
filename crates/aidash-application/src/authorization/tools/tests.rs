@@ -922,24 +922,55 @@ async fn core_skill_operations_use_the_skill_flag_even_for_a_null_skill_id(
 	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
-#[case("task_delegate")]
-#[case("agent_discover")]
 #[tokio::test]
-async fn one_hop_rejection_precedes_remote_refresh_and_agent_flags(
+async fn a_remote_grant_run_discovers_through_its_home_without_a_hop_limit(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// Multi-hop delegation (#654, ADR 0109): discovery is a Home command, so this
+	// Node checks only that its policy lets the Run use the tool.
+	repository.remote = true;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("agent_discover", json!({})),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository
+			.decisions()
+			.into_iter()
+			.map(|(resource, action)| (resource.id, action))
+			.collect::<Vec<_>>(),
+		vec![("builtin:agent_discover".into(), "tool.invoke".into())]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	mut repository: Repository,
 	run: RunMetadata,
 	mut agent: AgentConfig,
-	#[case] name: &str,
 ) {
 	repository.remote = true;
-	repository.fault = Some("lease");
 	agent.allow_task_delegation = Some(false);
-	let result = authorize(&repository, &run, &agent, &call(name, json!({}))).await;
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await;
 	assert!(
-		matches!(result, Err(Error::Invalid(ref message)) if message.contains("one hop")),
+		matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag),
 		"{result:?}"
 	);
-	assert!(repository.calls().is_empty());
 }
 #[rstest]
 #[case::task("task_create", "workspace", "task.create")]
@@ -1235,8 +1266,55 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 	);
 }
 #[rstest]
+#[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]
+#[case::the_receivers_own_node("aidash://receiver/brave-otter-k3m9q2xa")]
 #[tokio::test]
-async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
+async fn a_remote_grant_run_hands_a_home_task_on_to_any_node_its_home_decides(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] node: &str,
+) {
+	// Multi-hop delegation (#654): the child lives at the Home, which checks the
+	// agent and the target Node by its own policy and prepares the next grant.
+	// This Node consents to its Run using the tool and to `task.delegate` on the
+	// Home's Task, and never checks its own catalog or `federation.execute`.
+	repository.remote = true;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":node,"agent":reference()}),
+		),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository
+			.decisions()
+			.into_iter()
+			.map(|(resource, action)| (resource.id, action))
+			.collect::<Vec<_>>(),
+		vec![
+			("builtin:task_delegate".into(), "tool.invoke".into()),
+			(
+				format!("aidash://home/tasks/{}", id(9)),
+				"task.delegate".into()
+			),
+		]
+	);
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|name| name.starts_with("catalog:") || name.starts_with("task_read:"))
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_run_names_a_home_task_only_by_its_id(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1248,28 +1326,17 @@ async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
 		&agent,
 		&call(
 			"task_delegate",
-			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+			json!({"task_id":"not-a-task","node_id":"aidash://third/node","agent":reference()}),
 		),
 	)
 	.await;
-	// The one-hop restriction is a Rejected Call before target admission.
-	assert!(
-		matches!(result, Err(Error::Invalid(ref message))
-			if message.contains("one hop")),
-		"{result:?}"
-	);
+	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
 	assert!(
 		!repository
-			.calls()
-			.contains(&"catalog:configured:agent.execute".into())
-	);
-	assert!(
-		!repository
-			.calls()
+			.decisions()
 			.iter()
-			.any(|name| name.starts_with("task_read:"))
+			.any(|(_, action)| action == "task.delegate")
 	);
-	assert!(repository.decisions().is_empty());
 }
 #[rstest]
 #[case::memory("memory_mutate")]

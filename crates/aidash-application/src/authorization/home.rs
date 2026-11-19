@@ -13,7 +13,7 @@ use aidash_domain::{
 				Activation, Admission, Declined, Message, MessageReceipt, RemoteExecutionControl,
 				RemoteExecutionControlState,
 			},
-			home::{FollowUpInput, Grant, Status},
+			home::{FollowUpInput, Grant, Liveness, Status},
 		},
 	},
 	nonempty,
@@ -45,6 +45,18 @@ fn subject<R: HomeRepository>(
 	repository: &R,
 ) -> Result<aidash_domain::identity::execution::ExecutionPrincipal> {
 	repository.identity().ok_or(Error::Forbidden)
+}
+/// The liveness of a bound grant whose Task the caller has read (#1013). The
+/// binding is the caller's to check; only the Task's status tells whether
+/// the receiver started it, since the Home binding does not carry the mark.
+fn live(grant: &Grant, task: Option<&Task>) -> Liveness {
+	Liveness {
+		revoked: grant.revoked,
+		expires_at: grant.expires_at,
+		bound: true,
+		activated: false,
+		task: task.map(|task| task.status),
+	}
 }
 async fn managed_task<S: HomeScope>(scope: &mut S, id: Uuid, read: bool) -> Result<Task> {
 	if read {
@@ -566,7 +578,7 @@ async fn holder_may_decline<R: HomeRepository>(
 		let Some(found) = scope.task_grant(task, grant).await? else {
 			return Ok(false);
 		};
-		if found.revoked || found.expires_at <= chrono::Utc::now() {
+		if found.revoked {
 			return Ok(false);
 		}
 		let identity = scope.identity();
@@ -578,6 +590,9 @@ async fn holder_may_decline<R: HomeRepository>(
 		let Some(binding) = scope.binding(grant).await? else {
 			return Ok(false);
 		};
+		if !live(&found, Some(&task)).live(chrono::Utc::now()) {
+			return Ok(false);
+		}
 		let run = scope.resource("run", binding.admission_id, resource.attributes);
 		scope.may(&run, "run.decline_call").await
 	}
@@ -855,13 +870,15 @@ pub async fn answer_human<R: HomeRepository>(
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		managed_task(&mut scope, task, true).await?;
+		let read = managed_task(&mut scope, task, true).await?;
 		let current = scope
 			.requester_grant(task, grant)
 			.await?
 			.ok_or(Error::Forbidden)?;
 		let bound = scope.binding(grant).await?.ok_or(Error::Forbidden)?;
-		if current.revoked || current.expires_at <= chrono::Utc::now() {
+		// A Run asleep on this question keeps its grant while its Task is open
+		// (#1013), however long the person takes to answer.
+		if !live(&current, Some(&read)).live(chrono::Utc::now()) {
 			// Preserve the revoked-grant boundary except for a known closed
 			// question; answer_human still checks the person's answer authority.
 			let closed = scope

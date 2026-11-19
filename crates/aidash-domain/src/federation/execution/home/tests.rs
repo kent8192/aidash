@@ -182,3 +182,86 @@ fn malformed_original_snapshot_preserves_decoding_failure() {
 	binding.initial_task = json!({"bad":"snapshot"});
 	assert!(grant().admitted_task(&current, Some(&binding)).is_err());
 }
+
+fn liveness(
+	expired: bool,
+	bound: bool,
+	activated: bool,
+	task: Option<crate::TaskStatus>,
+) -> Liveness {
+	let now = chrono::Utc::now();
+	Liveness {
+		revoked: false,
+		expires_at: if expired {
+			now - chrono::Duration::seconds(1)
+		} else {
+			now + chrono::Duration::hours(1)
+		},
+		bound,
+		activated,
+		task,
+	}
+}
+
+#[rstest]
+#[case::claimed(crate::TaskStatus::Claimed)]
+#[case::running(crate::TaskStatus::Running)]
+#[case::blocked(crate::TaskStatus::Blocked)]
+fn a_started_grant_lives_past_its_lifetime_while_its_task_is_open(
+	#[case] status: crate::TaskStatus,
+) {
+	// The Run's Stint may sleep for days on an approval, CI or a child Task;
+	// nothing about the Run enters the rule, only the Task.
+	let grant = liveness(true, true, true, Some(status));
+	assert!(grant.started());
+	assert!(grant.live(chrono::Utc::now()));
+}
+
+#[rstest]
+#[case::completed(crate::TaskStatus::Completed)]
+#[case::failed(crate::TaskStatus::Failed)]
+#[case::cancelled(crate::TaskStatus::Cancelled)]
+#[case::abandoned(crate::TaskStatus::Abandoned)]
+fn a_started_grant_ends_with_its_task(#[case] status: crate::TaskStatus) {
+	assert!(!liveness(true, true, true, Some(status)).live(chrono::Utc::now()));
+	// Within its lifetime the grant itself has not ended; the Home refuses a
+	// command for an ended Task on its own.
+	assert!(liveness(false, true, true, Some(status)).live(chrono::Utc::now()));
+}
+
+#[rstest]
+fn a_grant_no_receiver_started_still_expires() {
+	let now = chrono::Utc::now();
+	// Prepared only, or admitted but never activated while the Task stayed open.
+	assert!(!liveness(true, false, false, Some(crate::TaskStatus::Open)).live(now));
+	assert!(!liveness(true, true, false, Some(crate::TaskStatus::Open)).live(now));
+	assert!(liveness(false, true, false, Some(crate::TaskStatus::Open)).live(now));
+	// A missing activation mark does not matter once the receiver claimed the Task.
+	let claimed = liveness(true, true, false, Some(crate::TaskStatus::Running));
+	assert!(claimed.started());
+	assert!(claimed.live(now));
+	// A gone Task keeps nothing alive.
+	assert!(!liveness(true, true, true, None).live(now));
+}
+
+#[rstest]
+#[case::inside_its_lifetime(false)]
+#[case::past_its_lifetime(true)]
+fn revocation_ends_a_grant_at_once(#[case] expired: bool) {
+	let mut grant = liveness(expired, true, true, Some(crate::TaskStatus::Running));
+	grant.revoked = true;
+	assert!(!grant.live(chrono::Utc::now()));
+}
+
+#[rstest]
+fn the_ending_statuses_are_exactly_the_terminal_ones() {
+	assert_eq!(
+		ending_statuses().collect::<Vec<_>>(),
+		vec![
+			crate::TaskStatus::Completed,
+			crate::TaskStatus::Failed,
+			crate::TaskStatus::Cancelled,
+			crate::TaskStatus::Abandoned,
+		]
+	);
+}

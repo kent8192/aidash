@@ -240,8 +240,10 @@ impl SourceReadScope for Scope<'_> {
 					.column(Asterisk)
 					.from(Alias::new("authorization_remote_grants"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(id=? AND node_id=? AND tenant=? AND NOT revoked AND expires_at>CLOCK_TIMESTAMP())"
-							.to_owned(),
+						format!(
+							"(id=? AND node_id=? AND tenant=? AND {})",
+							super::live_condition("authorization_remote_grants")
+						),
 						vec![
 							Expr::value(query_bind_1.to_owned()).into(),
 							Expr::value(query_bind_2.to_owned()).into(),

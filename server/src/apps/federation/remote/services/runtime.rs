@@ -448,19 +448,27 @@ impl Home {
 		self
 	}
 	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
-		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
-			.await?
-			.is_some()
-		{
-			return Err(Error::Invalid(
-				"a Run started by a Remote Grant is limited to one hop and cannot discover agents"
-					.into(),
-			));
-		}
 		let Some(authority) = &self.authority else {
 			return Err(Error::Forbidden);
 		};
 		authority.discover(&self.federation, search).await
+	}
+	/// Discovery as a model sees it. A Run started by a Remote Grant discovers
+	/// through its Home, the Node every Task it hands on is granted from
+	/// (#654, ADR 0109); only cards come back.
+	pub async fn discover_cards(
+		&self,
+		search: &Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return self.command("discover", json!({"search": search})).await;
+		}
+		Ok(aidash_domain::federation::DiscoveryCards::from(
+			&self.discover(search).await?,
+		))
 	}
 	pub fn owner(&self) -> String {
 		self.run
@@ -1085,15 +1093,8 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
-		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
-			.await?
-			.is_some()
-		{
-			return Err(Error::Invalid(
-				"a Run started by a Remote Grant is limited to one hop and cannot delegate tasks"
-					.into(),
-			));
-		}
+		// A Run started by a Remote Grant has no local authority: its Home owns
+		// the Task and hands it on, to its own Node or to any other (#654).
 		let _scope = self.tenancy().await?;
 		if let Some(authority) = &self.authority {
 			return authority

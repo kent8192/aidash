@@ -226,10 +226,7 @@ impl ToolOperations for Operations {
 	}
 	async fn discover(&self, input: &Search) -> Result<Value> {
 		// A model chooses an Agent by its card; the whole definition stays with people.
-		let discovery = self.0.home.discover(input).await?;
-		Ok(json!(aidash_domain::federation::DiscoveryCards::from(
-			&discovery
-		)))
+		Ok(json!(self.0.home.discover_cards(input).await?))
 	}
 	async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
 		self.0
