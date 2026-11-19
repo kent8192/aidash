@@ -2217,6 +2217,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0076_delete_subnode_tool"),
 			("registry", "0077_tool_parallelism_64"),
 			("registry", "0078_duty_tools"),
+			("registry", "0079_workbench_input_bytes"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5413,6 +5414,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0035_duty_triggers"),
 			("workspaces", "0036_duty_triggers_row_level_security"),
 			("workspaces", "0037_duty_triggers_state"),
+			("workspaces", "0038_task_duty"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5480,6 +5482,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0035_duty_triggers"),
 			("workspaces", "0036_duty_triggers_row_level_security"),
 			("workspaces", "0037_duty_triggers_state"),
+			("workspaces", "0038_task_duty"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5555,6 +5558,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0035_duty_triggers"),
 			("workspaces", "0036_duty_triggers_row_level_security"),
 			("workspaces", "0037_duty_triggers_state"),
+			("workspaces", "0038_task_duty"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

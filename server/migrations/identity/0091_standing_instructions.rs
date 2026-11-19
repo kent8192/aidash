@@ -53,6 +53,15 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "node_instructions_tenant_root_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "node_instructions_node_fkey".into(),
 					columns: vec!["tenant".into(), "node".into()],
 					referenced_table: "nodes".into(),

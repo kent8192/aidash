@@ -42,6 +42,10 @@ pub(super) fn migration() -> Migration {
 					deferrable: None,
 				},
 				Constraint::Unique {
+					name: "budgets_tenant_id_key".into(),
+					columns: vec!["tenant".into(), "id".into()],
+				},
+				Constraint::Unique {
 					name: "budgets_scope_key".into(),
 					columns: vec!["tenant".into(), "scope_kind".into(), "scope_key".into()],
 				},
@@ -79,9 +83,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "budget_notices_budget_fkey".into(),
-					columns: vec!["budget_id".into()],
+					columns: vec!["tenant".into(), "budget_id".into()],
 					referenced_table: "budgets".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::NoAction,
 					deferrable: None,

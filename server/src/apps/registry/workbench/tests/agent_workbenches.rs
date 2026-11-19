@@ -91,7 +91,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		200
 	);
 	let token = &common::subject_credential(&f.store, "acme", "alice").await;
-	// The default test limits (20,000 input bytes, 16,384 total tokens) no
+	// The default test limits (40,000 input bytes, 32,768 total tokens) no
 	// longer hold an Agent with every default tool. This test is about the
 	// simulated tool, so it raises them to the Deployment's ceilings.
 	let limits_path = "/api/workbench/test-limits/acme";

@@ -61,7 +61,10 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 	for (path, operations) in paths {
 		// Public browser endpoints that publish a typed contract: desktop
 		// sign-in, and an Invitation holder opening or redeeming a link.
-		let public = path.starts_with("/auth/desktop/") || path.starts_with("/auth/invitations/");
+		// A Duty webhook authenticates by its signature (#1011).
+		let public = path.starts_with("/auth/desktop/")
+			|| path.starts_with("/auth/invitations/")
+			|| path.starts_with("/hooks/duties/");
 		assert!(
 			path.starts_with("/api/") || path.starts_with("/federation/v0.1/") || public,
 			"{path}"

@@ -87,7 +87,7 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 		.await;
 	assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"approval-test-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 	// With every default tool, the request after the approved call outgrows
-	// the default test limits (20,000 input bytes, 16,384 total tokens). This
+	// the default test limits (40,000 input bytes, 32,768 total tokens). This
 	// test is about who may answer the approval, so it raises the limits to
 	// the Deployment's ceilings.
 	let limits_path = "/api/workbench/test-limits/acme";

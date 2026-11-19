@@ -28,6 +28,15 @@ pub(super) fn migration() -> Migration {
 			],
 			constraints: vec![
 				Constraint::ForeignKey {
+					name: "stints_tenant_root_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "stints_run_fkey".into(),
 					columns: vec!["tenant".into(), "run_id".into()],
 					referenced_table: "runs".into(),

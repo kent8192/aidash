@@ -22,6 +22,10 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("created_by", FieldType::Text).with_not_null(true),
 			],
 			constraints: vec![
+				Constraint::Unique {
+					name: "duty_triggers_tenant_id_key".into(),
+					columns: vec!["tenant".into(), "id".into()],
+				},
 				Constraint::ForeignKey {
 					name: "duty_triggers_tenant_fkey".into(),
 					columns: vec!["tenant".into()],
@@ -155,9 +159,9 @@ pub(super) fn migration() -> Migration {
 				},
 				Constraint::ForeignKey {
 					name: "duty_bookings_trigger_fkey".into(),
-					columns: vec!["trigger_id".into()],
+					columns: vec!["tenant".into(), "trigger_id".into()],
 					referenced_table: "duty_triggers".into(),
-					referenced_columns: vec!["id".into()],
+					referenced_columns: vec!["tenant".into(), "id".into()],
 					on_delete: ForeignKeyAction::Cascade,
 					on_update: ForeignKeyAction::Restrict,
 					deferrable: None,

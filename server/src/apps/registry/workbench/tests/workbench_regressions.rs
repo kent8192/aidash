@@ -906,8 +906,13 @@ async fn real_test_profiles_require_a_distinct_canonical_destination(
 #[rstest::fixture]
 async fn one_step_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let mut wb = workbench;
-	let mut entry = wb.draft["entry"].clone();
-	entry["config"]["max_steps"] = json!(1);
+	// Agents have no step limit (#1009); a Workbench test keeps its own.
+	let limits_path = "/api/workbench/test-limits/acme";
+	let read = wb.call("GET", limits_path, Value::Null).await;
+	let mut limits = read["limits"].clone();
+	limits["max_steps"] = json!(1);
+	wb.call("PUT", limits_path, limits).await;
+	let entry = wb.draft["entry"].clone();
 	wb.draft = wb
 		.call(
 			"PUT",
@@ -924,7 +929,7 @@ async fn one_step_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn behavioral_evidence_cannot_exceed_the_draft_agents_step_limit(
+async fn behavioral_evidence_cannot_exceed_the_tests_step_limit(
 	#[future(awt)] one_step_workbench: Workbench,
 ) {
 	let wb = one_step_workbench;
