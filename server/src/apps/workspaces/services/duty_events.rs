@@ -232,10 +232,13 @@ pub(crate) async fn receive(
 
 /// An event another Node sends to a `node_event` trigger (#1013, ADR 0142).
 ///
-/// Who may send was decided when the request was accepted: a Node of this
-/// Tenant only for a subject the Tenant's policy lets use this Node, a Node of
-/// another Tenant only through this Tenant's Node Registration (and its Peer
-/// Mapping, when the sender names a subject). The sender is the Node the
+/// Which Node may send was decided when the request was accepted: a Node of
+/// this Tenant only for a subject the Tenant's policy lets use this Node, a
+/// Node of another Tenant only through this Tenant's Node Registration (and
+/// its Peer Mapping, when the sender names a subject). Per Duty, a trigger
+/// that names the sending Node (`from_node`) takes its events; an open trigger
+/// takes only a same-Tenant subject who may read the Duty, never another
+/// Tenant's Node. The sender is the Node the
 /// Federation token proved, never the body. The event is input, never a
 /// requester: the Duty starts or wakes its Task as its own Requester, and the
 /// sender's identity never reaches that Task's authority. An unknown trigger,
@@ -283,6 +286,35 @@ pub(crate) async fn receive_from_node(
 		.await?;
 	if node.as_deref() != Some(admitted.receiver.node.as_str()) {
 		return Err(not_found());
+	}
+	// Per Duty: a trigger that names the sender takes its events. Otherwise
+	// only a sender of this Tenant whose subject may read the Duty (its
+	// Requester or successor, `workspace.read` on its Workspace, or
+	// `duty.administer`) may wake it; another Tenant's Node never reaches an
+	// open trigger.
+	if !trigger.kind.names(&admitted.sender) {
+		if !matches!(admitted.acting, Acting::SameTenant { .. }) {
+			return Err(not_found());
+		}
+		let mut access = crate::authorization::peer::access(f, &admitted).await?;
+		let readable = async {
+			let mut scope = Adapter {
+				access: &mut access,
+				store: &f.store,
+				now: Utc::now(),
+			};
+			match app::detail(&mut scope, trigger.duty_id).await {
+				Ok(_) => Ok(true),
+				Err(
+					aidash_application::Error::NotFound(_) | aidash_application::Error::Forbidden,
+				) => Ok(false),
+				Err(error) => Err(error.into()),
+			}
+		}
+		.await;
+		if !access.finish(readable).await? {
+			return Err(not_found());
+		}
 	}
 	let event = deliver(f, &tenant, &trigger, payload).await?;
 	f.notify.notify_waiters();

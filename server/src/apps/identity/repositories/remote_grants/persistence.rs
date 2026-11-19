@@ -50,6 +50,19 @@ pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 		.await?
 	})
 }
+/// The delegation chain a Remote Grant pins, read under the caller's lease:
+/// its root person, every Agent so far, and the receiver's executor.
+pub(crate) async fn subject_chain(access: &mut Access, id: Uuid) -> NativeResult<Vec<String>> {
+	crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("subject_chain"))
+			.from(Alias::new("authorization_remote_grants"))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **access.tx)
+	.await
+}
 #[async_trait]
 impl SourceAuthorityScope for Scope {
 	fn source_subjects(&self) -> &[String] {
@@ -453,6 +466,7 @@ impl GrantRepository for Repository {
 		Ok(Scope {
 			runtime: self.runtime.clone(),
 			access: Box::new(Access::begin(&self.runtime.store, &identity).await?),
+			chain: None,
 		})
 	}
 	async fn source_grant(&self, id: Uuid, node: &str) -> Result<Option<Grant>> {

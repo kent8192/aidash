@@ -113,3 +113,21 @@ fn a_node_event_names_its_proven_sender_beside_the_data_it_sent() {
 	let large = Value::String("a".repeat(MAX_EVENT_BYTES));
 	assert!(node_event_payload(&partner, large).is_err());
 }
+
+#[rstest]
+fn only_a_trigger_that_names_its_sender_names_it() {
+	let partner =
+		crate::nodes::NodeAddress::parse("aidash://partner/quiet-falcon-4f8k2m1z").unwrap();
+	let other = crate::nodes::NodeAddress::parse("aidash://other/brave-otter-k3m9q2xa").unwrap();
+	let pinned = TriggerKind::NodeEvent {
+		from_node: Some(partner.to_string()),
+	};
+	assert!(pinned.names(&partner));
+	assert!(!pinned.names(&other));
+	// An open trigger admits a Node but names none, so it never takes another
+	// Tenant's events.
+	let open = TriggerKind::NodeEvent { from_node: None };
+	assert!(open.admits(&partner));
+	assert!(!open.names(&partner));
+	assert!(!TriggerKind::Webhook.names(&partner));
+}

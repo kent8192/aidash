@@ -2107,6 +2107,7 @@ impl WorkerAuthority {
 				runtime: f.clone(),
 				actor: Some(super::identity::Actor::Subject(identity)),
 				worker: Some(run.metadata()),
+				chain: None,
 			};
 			let result = aidash_application::authorization::home::delegate(
 				&repository,
