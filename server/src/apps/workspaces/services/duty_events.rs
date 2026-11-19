@@ -119,6 +119,11 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		};
 		match op {
 			Operation::Create(id, kind) => {
+				if matches!(kind, TriggerKind::Watcher) {
+					return Err(Error::Invalid(
+						"a Watcher is set on the Duty itself, not added as a trigger".into(),
+					));
+				}
 				let duty = app::editable(&mut scope, id).await?;
 				if let TriggerKind::DutyCompleted { source_duty_id } = &kind {
 					if *source_duty_id == duty.id {
@@ -234,9 +239,10 @@ pub(crate) async fn completed(
 }
 
 /// Delivers one event to its Duty as the Duty's Requester: to the Task that
-/// booked the trigger, else as a new Task in the Duty's Thread, unless the
-/// Duty is stopped or its previous Task is still open (the Router default).
-async fn deliver(
+/// booked the trigger, else to the Duty's Router (#1011 D3), which decides
+/// what it does; without one, as a new Task in the Duty's Thread, unless the
+/// Duty is stopped or its previous Task is still open.
+pub(crate) async fn deliver(
 	f: &Federation,
 	tenant: &str,
 	trigger: &DutyTrigger,
@@ -263,6 +269,7 @@ async fn deliver(
 		outcome: EventOutcome::Skipped,
 		reason: None,
 		task_id: None,
+		router: None,
 	};
 	let identity = SubjectIdentity {
 		http_session: None,
@@ -298,6 +305,12 @@ async fn deliver(
 		}
 		if duty.halt.is_some() {
 			event.reason = Some(format!("the Duty is {}", duty.status()));
+		} else if let Some(router) = &duty.definition.router {
+			// The Router decides; it runs without a model and its Task
+			// settles in the scheduler pass (#1011 D3).
+			event.outcome = EventOutcome::Routing;
+			super::duty_scripts::route(f, &mut lease, &duty, router, (trigger, &event), now)
+				.await?;
 		} else if duty_repository::running(lease.tx(), tenant, duty.id).await? {
 			event.reason = Some(aidash_domain::duties::skip::OVERLAP.into());
 		} else if let Some(reason) =
@@ -307,7 +320,8 @@ async fn deliver(
 		} else {
 			let description =
 				events::task_description(&duty.definition.mission, &trigger.kind, &event.payload);
-			match start_with(f, &mut lease, &duty, (now, ""), description).await {
+			let title = duty.definition.title.clone();
+			match start_with(f, &mut lease, &duty, (now, ""), (title, description)).await {
 				Ok((task, thread)) => {
 					event.outcome = EventOutcome::Started;
 					event.task_id = Some(task);

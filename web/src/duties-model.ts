@@ -7,6 +7,43 @@ export type ApprovalMode = "manual" | "auto" | "dont_ask" | "bypass";
 export type Trigger =
   | { kind: "cron"; expression: string; time_zone: string }
   | { kind: "interval"; every_seconds: number };
+/** A Router's or Watcher's code (#1011): Python or shell that runs without
+ *  a model. */
+export type ScriptLanguage = "python" | "shell";
+export type Script = { language: ScriptLanguage; source: string };
+export type Watcher = { script: Script; every_seconds: number };
+/** What a Router decided about one event. */
+export type RouterAction =
+  | { action: "drop" }
+  | { action: "act" }
+  | { action: "task"; title: string; description?: string }
+  | { action: "deliver"; task_id: string; input: string };
+export type DutyEvent = {
+  id: string;
+  received_at: string;
+  outcome:
+    | "started"
+    | "delivered"
+    | "skipped"
+    | "failed"
+    | "routing"
+    | "dropped"
+    | "acted";
+  reason: string | null;
+  task_id?: string | null;
+  router?: RouterAction | null;
+};
+/** One saved version of a Duty's script, with who saved it and when. */
+export type ScriptVersion = {
+  id: string;
+  duty_id: string;
+  role: "router" | "watcher";
+  language: ScriptLanguage;
+  source: string;
+  every_seconds: number | null;
+  author: string;
+  created_at: string;
+};
 export type Halt =
   | "paused"
   | "failures"
@@ -33,6 +70,12 @@ export type Duty = {
   max_lateness_seconds: number;
   /** Failed Tasks in a row after which it pauses itself; 0 never does. */
   pause_after_failures: number;
+  /** Decides what each event no Task booked does, instead of one Task per
+   *  event (#1011). */
+  router?: Script | null;
+  /** Polls an outside service on its own interval and reports events. */
+  watcher?: Watcher | null;
+  watcher_next_at?: string | null;
   status: "active" | "paused" | "stopped";
   halt: Halt | null;
   halted_at: string | null;
@@ -64,6 +107,8 @@ export type DutyDetail = {
   duty: Duty;
   ticks: Tick[];
   newer_agent_version: string | null;
+  /** Saved Router and Watcher versions, newest first. */
+  script_versions?: ScriptVersion[];
   may_edit: boolean;
   may_administer: boolean;
 };
@@ -97,8 +142,20 @@ export type DutyForm = {
   approvalMode: ApprovalMode | "default";
   maxLatenessMinutes: string;
   pauseAfterFailures: string;
+  /** The Router, when the Duty has one. */
+  routerOn: boolean;
+  routerLanguage: ScriptLanguage;
+  routerSource: string;
+  /** The Watcher, when the Duty has one. */
+  watcherOn: boolean;
+  watcherLanguage: ScriptLanguage;
+  watcherSource: string;
+  watcherEveryMinutes: string;
 };
 export type FormProblem =
+  | "router"
+  | "watcher"
+  | "watcher_interval"
   | "title"
   | "mission"
   | "procedure"
@@ -123,6 +180,13 @@ export function emptyForm(timeZone: string): DutyForm {
     approvalMode: "default",
     maxLatenessMinutes: "60",
     pauseAfterFailures: "3",
+    routerOn: false,
+    routerLanguage: "python",
+    routerSource: "",
+    watcherOn: false,
+    watcherLanguage: "python",
+    watcherSource: "",
+    watcherEveryMinutes: "5",
   };
 }
 
@@ -143,7 +207,27 @@ export function formOf(duty: Duty): DutyForm {
     approvalMode: duty.approval_mode ?? "default",
     maxLatenessMinutes: String(Math.round(duty.max_lateness_seconds / 60)),
     pauseAfterFailures: String(duty.pause_after_failures),
+    routerOn: Boolean(duty.router),
+    routerLanguage: duty.router?.language ?? "python",
+    routerSource: duty.router?.source ?? "",
+    watcherOn: Boolean(duty.watcher),
+    watcherLanguage: duty.watcher?.script.language ?? "python",
+    watcherSource: duty.watcher?.script.source ?? "",
+    watcherEveryMinutes: duty.watcher
+      ? String(Math.round(duty.watcher.every_seconds / 60))
+      : "5",
   };
+}
+
+/** The largest script source, in bytes, as the server counts it. */
+export const MAX_SCRIPT_BYTES = 64 * 1024;
+
+function scriptProblem(source: string): boolean {
+  return (
+    !source.trim() ||
+    source.includes("\0") ||
+    new TextEncoder().encode(source).length > MAX_SCRIPT_BYTES
+  );
 }
 
 const CRON_FIELD = /^[\w*,/-]+$/;
@@ -174,7 +258,31 @@ export function formProblems(form: DutyForm): FormProblem[] {
   const lateness = Number(form.maxLatenessMinutes);
   if (!Number.isInteger(lateness) || lateness < 1 || lateness > 7 * 24 * 60)
     problems.push("lateness");
+  if (form.routerOn && scriptProblem(form.routerSource))
+    problems.push("router");
+  if (form.watcherOn) {
+    if (scriptProblem(form.watcherSource)) problems.push("watcher");
+    // A Watcher runs every minute at most often, and at least once a year.
+    const minutes = Number(form.watcherEveryMinutes);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 366 * 24 * 60)
+      problems.push("watcher_interval");
+  }
   return problems;
+}
+
+function routerOf(form: DutyForm): Script | undefined {
+  return form.routerOn
+    ? { language: form.routerLanguage, source: form.routerSource }
+    : undefined;
+}
+
+function watcherOf(form: DutyForm): Watcher | undefined {
+  return form.watcherOn
+    ? {
+        script: { language: form.watcherLanguage, source: form.watcherSource },
+        every_seconds: Number(form.watcherEveryMinutes) * 60,
+      }
+    : undefined;
 }
 
 /** The body of `POST /api/workspaces/{workspace}/duties`. */
@@ -190,6 +298,8 @@ export function definitionOf(form: DutyForm) {
       : { approval_mode: form.approvalMode }),
     max_lateness_seconds: Number(form.maxLatenessMinutes) * 60,
     pause_after_failures: Number(form.pauseAfterFailures),
+    ...(routerOf(form) ? { router: routerOf(form) } : {}),
+    ...(watcherOf(form) ? { watcher: watcherOf(form) } : {}),
   };
 }
 
@@ -217,6 +327,12 @@ export function patchOf(form: DutyForm, original?: Duty) {
     form.timing === "interval" &&
     form.everyMinutes === shown?.everyMinutes;
   const sameLateness = form.maxLatenessMinutes === shown?.maxLatenessMinutes;
+  const watcher = watcherOf(form);
+  // A Watcher kept in seconds keeps them when its minutes were not touched.
+  const sameWatcherInterval =
+    watcher &&
+    original?.watcher &&
+    form.watcherEveryMinutes === shown?.watcherEveryMinutes;
   return {
     title: definition.title,
     mission: definition.mission,
@@ -231,7 +347,52 @@ export function patchOf(form: DutyForm, original?: Duty) {
         ? original.max_lateness_seconds
         : definition.max_lateness_seconds,
     approval_mode: form.approvalMode,
+    router: routerOf(form) ?? { kind: "none" as const },
+    watcher: watcher
+      ? sameWatcherInterval
+        ? {
+            ...watcher,
+            every_seconds:
+              original?.watcher?.every_seconds ?? watcher.every_seconds,
+          }
+        : watcher
+      : { kind: "none" as const },
   };
+}
+
+/** What became of an event, with the Router's decision when it made one. */
+export function eventLabel(event: DutyEvent, ja: boolean): string {
+  const outcome = {
+    started: ja ? "仕事を開始" : "started a Task",
+    delivered: ja ? "仕事に渡した" : "delivered to a Task",
+    skipped: ja ? "スキップ" : "skipped",
+    failed: ja ? "失敗" : "failed",
+    routing: ja ? "ルーターが判断中" : "Router deciding",
+    dropped: ja ? "破棄" : "dropped",
+    acted: ja ? "ルーターが処理" : "handled by the Router",
+  }[event.outcome];
+  const router = event.router ? routerLabel(event.router, ja) : "";
+  const reason = event.reason ? ` (${event.reason})` : "";
+  return `${outcome}${router ? ` · ${router}` : ""}${reason}`;
+}
+
+/** A Router's decision in a few words. */
+export function routerLabel(action: RouterAction, ja: boolean): string {
+  switch (action.action) {
+    case "drop":
+      return ja ? "ルーター: 破棄" : "Router: drop";
+    case "act":
+      return ja ? "ルーター: 自分で処理" : "Router: acted";
+    // The Task keeps the Duty's title; the Router's title is its note.
+    case "task":
+      return ja
+        ? `ルーター: 仕事を開始（${action.title}）`
+        : `Router: started a Task (${action.title})`;
+    case "deliver":
+      return ja
+        ? `ルーター: 仕事 ${action.task_id} に渡す`
+        : `Router: deliver to Task ${action.task_id}`;
+  }
 }
 
 /** A scheduled time in the viewer's time zone. */

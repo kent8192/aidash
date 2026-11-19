@@ -1506,6 +1506,10 @@ impl<'a> Executor<'a> {
 				}
 				home.claim(&task, &entry).await?;
 				home.transition(aidash_domain::TaskStatus::Running).await?;
+				// A Duty's Router or Watcher runs without a model (#1011).
+				if let Some(invocation) = store.duty_script(run).await? {
+					return self.start_duty_script(run, token, &invocation).await;
+				}
 				self.record_start_content(run, &agent).await?;
 				if !run.context.history.iter().any(|entry| {
 					matches!(entry.event, context::ContextEvent::MemoryRecall { .. })
@@ -1529,6 +1533,12 @@ impl<'a> Executor<'a> {
 				store.save_run(run, token, "run.started").await?;
 			}
 			RunState::Thinking(thinking) => Box::pin(async {
+				// A Duty script Run never asks a model, whatever led it here (#1011).
+				if store.duty_script(run).await?.is_some() {
+					return Err(Error::Invalid(
+						"a Duty script Run never calls a model".into(),
+					));
+				}
 				if !home.local() {
 					run.recovery.remote_task_fingerprint = Some(home.child_summary(run.task_id).await?.fingerprint());
 				}
@@ -2778,6 +2788,14 @@ connection: None,
 			})
 			.await?,
 			RunState::ToolCall(_) => Box::pin(async {
+				// A Duty script Run makes its own calls; no model turn is involved (#1011).
+				if duty_script::script_response(&run.state.tool()?.response)
+					&& let Some(invocation) = store.duty_script(run).await?
+				{
+					return self
+						.duty_script_step(run, token, home.as_ref(), guard, &invocation)
+						.await;
+				}
 				// Recover a pending response written before activity was journaled.
 				record_provider_turn(run, agent.projection_version)?;
 				// An old home replica can still accept a correction directly from
@@ -4886,6 +4904,7 @@ fn summary_dependencies(
 
 mod approval;
 mod completion;
+mod duty_script;
 mod mcp;
 mod progress;
 #[cfg(test)]

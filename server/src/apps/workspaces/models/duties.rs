@@ -72,6 +72,15 @@ pub struct DutyRecord {
 	pub created_at: DateTime<Utc>,
 	#[field]
 	pub updated_at: DateTime<Utc>,
+	/// The Router script, if the Duty has one (#1011 D3).
+	#[field(null = true)]
+	pub router: Option<Json<Value>>,
+	/// The Watcher script and its interval, if the Duty has one.
+	#[field(null = true)]
+	pub watcher: Option<Json<Value>>,
+	/// When the Watcher runs next.
+	#[field(null = true)]
+	pub watcher_next_at: Option<DateTime<Utc>>,
 }
 
 #[model(app_label = "workspaces", table_name = "duty_ticks")]
@@ -148,7 +157,8 @@ pub struct DutyEventRecord {
 	pub received_at: DateTime<Utc>,
 	#[field]
 	pub payload: Json<Value>,
-	/// `started`, `delivered`, `skipped` or `failed`.
+	/// `started`, `delivered`, `skipped`, `failed`, or with a Router
+	/// `routing`, `dropped` or `acted`.
 	#[field(field_type = "text")]
 	pub outcome: String,
 	#[field(field_type = "text", null = true)]
@@ -158,6 +168,9 @@ pub struct DutyEventRecord {
 	/// The Run a delivered event woke.
 	#[field(null = true)]
 	pub run_id: Option<Uuid>,
+	/// What the Duty's Router decided about it (#1011 D3).
+	#[field(null = true)]
+	pub router: Option<Json<Value>>,
 }
 
 /// A Task's booking of the next event of a trigger (#1011): the event wakes
@@ -179,4 +192,63 @@ pub struct DutyBookingRecord {
 	pub run_id: Uuid,
 	#[field]
 	pub created_at: DateTime<Utc>,
+}
+
+/// One saved version of a Duty's Router or Watcher, with who saved it and
+/// when (#1011 D3). Keyed on the Duty and deleted with it.
+#[model(app_label = "workspaces", table_name = "duty_script_versions")]
+#[derive(Serialize, Deserialize)]
+pub struct DutyScriptVersionRecord {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub duty_id: Uuid,
+	/// `router` or `watcher`.
+	#[field(field_type = "text")]
+	pub role: String,
+	/// `python` or `shell`.
+	#[field(field_type = "text")]
+	pub language: String,
+	#[field(field_type = "text")]
+	pub source: String,
+	/// A Watcher's interval when this version was saved.
+	#[field(null = true)]
+	pub every_seconds: Option<i64>,
+	#[field(field_type = "text")]
+	pub author: String,
+	#[field]
+	pub created_at: DateTime<Utc>,
+}
+
+/// A Task a Duty started to run its Router or Watcher without a model
+/// (#1011 D3): the frozen script, what it reads on stdin, and whether the
+/// Duty has applied its outcome. Keyed on the Task.
+#[model(app_label = "workspaces", table_name = "duty_script_runs")]
+#[derive(Serialize, Deserialize)]
+pub struct DutyScriptRunRecord {
+	#[field(primary_key = true)]
+	pub task_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field]
+	pub duty_id: Uuid,
+	/// `router` or `watcher`.
+	#[field(field_type = "text")]
+	pub role: String,
+	/// The event a Router decides about.
+	#[field(null = true)]
+	pub event_id: Option<Uuid>,
+	#[field(field_type = "text")]
+	pub language: String,
+	#[field(field_type = "text")]
+	pub source: String,
+	#[field(field_type = "text")]
+	pub stdin: String,
+	#[field]
+	pub created_at: DateTime<Utc>,
+	/// When the Duty applied what the script decided or reported.
+	#[field(null = true)]
+	pub settled_at: Option<DateTime<Utc>>,
 }

@@ -27,6 +27,8 @@ fn definition(trigger: Trigger) -> Definition {
 		approval_mode: None,
 		max_lateness_seconds: DEFAULT_MAX_LATENESS_SECONDS,
 		pause_after_failures: DEFAULT_PAUSE_AFTER_FAILURES,
+		router: None,
+		watcher: None,
 	}
 }
 
@@ -469,4 +471,55 @@ fn a_tick_ends_only_when_its_task_is_terminal(
 	// Act + Assert: a blocked Task may run again, so its tick stays open.
 	assert_eq!(TickStatus::of_task(task), tick);
 	assert_eq!(tick.is_some(), task.is_terminal());
+}
+
+#[rstest]
+fn a_definition_checks_its_router_and_watcher() {
+	let mut definition = definition(Trigger::Interval {
+		every_seconds: 3600,
+	});
+	definition.router = Some(scripts::Script {
+		language: scripts::Language::Python,
+		source: String::new(),
+	});
+	assert!(definition.validate(at("2026-11-19T00:00:00Z")).is_err());
+	definition.router = None;
+	definition.watcher = Some(scripts::Watcher {
+		script: scripts::Script {
+			language: scripts::Language::Shell,
+			source: "echo '[]'".into(),
+		},
+		every_seconds: 30,
+	});
+	assert!(definition.validate(at("2026-11-19T00:00:00Z")).is_err());
+}
+
+#[rstest]
+fn a_patch_sets_and_removes_scripts() {
+	let before = definition(Trigger::Interval {
+		every_seconds: 3600,
+	});
+	let router = scripts::Script {
+		language: scripts::Language::Python,
+		source: "print('{\"action\":\"drop\"}')".into(),
+	};
+	let patch: Patch = serde_json::from_value(serde_json::json!({
+		"router": {"language": "python", "source": router.source},
+		"watcher": {"script": {"language": "shell", "source": "echo '[]'"}, "every_seconds": 300},
+	}))
+	.unwrap();
+	let (after, retimed) = patch.apply(&before);
+	assert_eq!(after.router, Some(router));
+	assert_eq!(
+		after.watcher.as_ref().map(|watcher| watcher.every_seconds),
+		Some(300)
+	);
+	assert!(!retimed, "scripts do not move the time trigger");
+	let removal: Patch = serde_json::from_value(serde_json::json!({
+		"router": {"kind": "none"},
+		"watcher": {"kind": "none"},
+	}))
+	.unwrap();
+	let (cleared, _) = removal.apply(&after);
+	assert_eq!((cleared.router, cleared.watcher), (None, None));
 }

@@ -789,12 +789,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0039_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0042_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0038_task_duty".to_owned())]
+		vec![(
+			"workspaces".to_owned(),
+			"0041_duty_scripts_state".to_owned()
+		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -5415,6 +5418,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0036_duty_triggers_row_level_security"),
 			("workspaces", "0037_duty_triggers_state"),
 			("workspaces", "0038_task_duty"),
+			("workspaces", "0039_duty_scripts"),
+			("workspaces", "0040_duty_scripts_row_level_security"),
+			("workspaces", "0041_duty_scripts_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5483,6 +5489,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0036_duty_triggers_row_level_security"),
 			("workspaces", "0037_duty_triggers_state"),
 			("workspaces", "0038_task_duty"),
+			("workspaces", "0039_duty_scripts"),
+			("workspaces", "0040_duty_scripts_row_level_security"),
+			("workspaces", "0041_duty_scripts_state"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5559,6 +5568,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0036_duty_triggers_row_level_security"),
 			("workspaces", "0037_duty_triggers_state"),
 			("workspaces", "0038_task_duty"),
+			("workspaces", "0039_duty_scripts"),
+			("workspaces", "0040_duty_scripts_row_level_security"),
+			("workspaces", "0041_duty_scripts_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

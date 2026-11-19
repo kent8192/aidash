@@ -154,7 +154,18 @@ impl DutyScope for Adapter<'_> {
 	}
 	async fn insert(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
-		Ok(repository::insert(&mut *self.access.tx, &tenant, duty).await?)
+		repository::insert(&mut *self.access.tx, &tenant, duty).await?;
+		// Every script version is kept with its author and time (#1011).
+		let author = self.subject().to_owned();
+		crate::apps::workspaces::repositories::duty_scripts::save_versions(
+			&mut *self.access.tx,
+			&tenant,
+			None,
+			duty,
+			(&author, self.now),
+		)
+		.await?;
+		Ok(())
 	}
 	async fn load_for_update(&mut self, id: Uuid) -> aidash_application::Result<Duty> {
 		let tenant = tenant(self.access);
@@ -170,7 +181,17 @@ impl DutyScope for Adapter<'_> {
 	}
 	async fn save(&mut self, duty: &Duty) -> aidash_application::Result<()> {
 		let tenant = tenant(self.access);
+		let before = repository::load(&mut *self.access.tx, &tenant, duty.id, false).await?;
 		repository::save(&mut *self.access.tx, &tenant, duty).await?;
+		let author = self.subject().to_owned();
+		crate::apps::workspaces::repositories::duty_scripts::save_versions(
+			&mut *self.access.tx,
+			&tenant,
+			before.as_ref().map(|before| &before.definition),
+			duty,
+			(&author, self.now),
+		)
+		.await?;
 		Ok(())
 	}
 	async fn delete(&mut self, id: Uuid) -> aidash_application::Result<()> {
@@ -191,6 +212,9 @@ impl DutyScope for Adapter<'_> {
 		Ok(repository::ticks(&mut *self.access.tx, &tenant, id, limit).await?)
 	}
 }
+
+/// Script versions a Duty's page shows.
+const SCRIPT_VERSIONS: u32 = 20;
 
 /// What a person asks of the Duties API.
 pub(crate) enum Operation {
@@ -237,7 +261,16 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					.collect::<Vec<_>>(),
 			)?,
 			Operation::Read(id) => {
-				serde_json::to_value(DetailView::new(app::detail(&mut scope, id).await?, &mine))?
+				let detail = app::detail(&mut scope, id).await?;
+				let tenant = tenant(scope.access);
+				let versions = crate::apps::workspaces::repositories::duty_scripts::versions(
+					&mut *scope.access.tx,
+					&tenant,
+					detail.duty.id,
+					SCRIPT_VERSIONS,
+				)
+				.await?;
+				serde_json::to_value(DetailView::new(detail, &mine, versions))?
 			}
 			Operation::Update(id, patch) => {
 				serde_json::to_value(view(app::update(&mut scope, id, patch).await?))?
@@ -326,16 +359,18 @@ async fn start(
 	key: (DateTime<Utc>, &str),
 ) -> Result<(Uuid, Uuid)> {
 	let description = duty.definition.mission.clone();
-	start_with(f, lease, duty, key, description).await
+	let title = duty.definition.title.clone();
+	start_with(f, lease, duty, key, (title, description)).await
 }
 
-/// [`start`] with the Task description an event writes (#1011).
+/// [`start`] with the Task title and description an event, a Router or a
+/// script writes (#1011).
 pub(crate) async fn start_with(
 	f: &Federation,
 	lease: &mut Lease,
 	duty: &Duty,
 	key: (DateTime<Utc>, &str),
-	description: String,
+	(title, description): (String, String),
 ) -> Result<(Uuid, Uuid)> {
 	let workspace = duty.workspace_id;
 	let definition = &duty.definition;
@@ -402,7 +437,7 @@ pub(crate) async fn start_with(
 		crate::apps::execution::capabilities::serializers::contracts::Enqueue {
 			idempotency_key: tick_key(duty.id, key.0, &format!("{}:run", key.1)),
 			agent_version: definition.agent.version.clone(),
-			title: definition.title.clone(),
+			title,
 			description,
 			read_pages: vec![],
 		},
@@ -468,6 +503,10 @@ pub struct Pass {
 	pub failed: Vec<(Uuid, String)>,
 	pub stopped: Vec<(Uuid, Halt)>,
 	pub settled: usize,
+	/// Router and Watcher Tasks whose outcome the Duty applied (#1011).
+	pub scripts_settled: usize,
+	/// Watcher Tasks this pass started.
+	pub watchers_started: Vec<Uuid>,
 }
 
 impl Pass {
@@ -508,6 +547,8 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 			}
 		}
 	}
+	// What Routers decided and Watchers found (#1011).
+	report.scripts_settled = super::duty_scripts::settle_all(f, now).await;
 	// A tick that failed transiently stays due, oldest first. Paging past it
 	// tries each due Duty at most once per pass, so a few that keep
 	// failing cannot hold back the rest of the Deployment; only ticks that
@@ -534,7 +575,12 @@ pub async fn pass(f: &Federation, now: DateTime<Utc>) -> Result<Pass> {
 			break;
 		}
 	}
-	if !report.started.is_empty() {
+	// Watchers run on their own interval, apart from the time trigger.
+	report.watchers_started = super::duty_scripts::run_watchers(f, now).await;
+	if !report.started.is_empty()
+		|| !report.watchers_started.is_empty()
+		|| report.scripts_settled > 0
+	{
 		f.notify.notify_waiters();
 	}
 	Ok(report)
@@ -1105,6 +1151,10 @@ pub async fn agent_tool(
 					pause_after_failures: input
 						.pause_after_failures
 						.unwrap_or(duties::DEFAULT_PAUSE_AFTER_FAILURES),
+					// The Duty tools do not carry scripts yet; a person adds
+					// them in the Duty's editor (#1011).
+					router: None,
+					watcher: None,
 				};
 				let duty = app::register(
 					&mut scope,
@@ -1138,6 +1188,8 @@ pub async fn agent_tool(
 					approval_mode: input.approval_mode,
 					max_lateness_seconds: input.max_lateness_seconds,
 					pause_after_failures: input.pause_after_failures,
+					router: None,
+					watcher: None,
 				};
 				summary(&app::update(&mut scope, input.duty_id, patch).await?)
 			}

@@ -1,7 +1,7 @@
 /** Duties (#557): a Workspace's Duties, "my Duties", and for holders
  *  of `duty.administer` every Duty of the Tenant. A Duty always
  *  acts as its Requester (ADR 0134), so only they edit or resume it. */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "./transport";
 import { Field, Panel, useI18n } from "./ui";
@@ -14,6 +14,7 @@ import { Textarea } from "./components/ui/textarea";
 import {
   definitionOf,
   emptyForm,
+  eventLabel,
   formOf,
   formProblems,
   formatTime,
@@ -25,7 +26,9 @@ import {
   type FormProblem,
   type Duty,
   type DutyDetail,
+  type DutyEvent,
   type DutyForm,
+  type ScriptLanguage,
 } from "./duties-model";
 
 const copy = {
@@ -79,9 +82,21 @@ const copy = {
       interval: "間隔は1分から1年までです",
       lateness: "許容する遅れは1分から7日までです",
       failures: "一時停止までの失敗回数は0から1000までです",
+      router: "ルーターのコードを入力してください（64 KiB以内）",
+      watcher: "ウォッチャーのコードを入力してください（64 KiB以内）",
+      watcher_interval: "ウォッチャーの間隔は1分から1年までです",
     } satisfies Record<FormProblem, string>,
     status: { active: "有効", paused: "一時停止", stopped: "停止" },
     byAgent: "Agent が登録",
+    router: "ルーター（イベントごとの振り分けスクリプト）",
+    watcher: "ウォッチャー（定期的に外部を確認するスクリプト）",
+    scriptHint:
+      'スクリプトはモデルを使わずに職務の Agent の実行環境で動きます。Python なら code_interpreter、シェルなら shell をこのノードでカタログ承認し、Agent に結び付けてください。ルーターは標準入力でイベントを読み、{"action":"drop"|"act"|"task"|"deliver"} を1つ出力します。ウォッチャーはイベントの JSON 配列を出力します（1回32件まで）。',
+    language: "言語",
+    source: "コード",
+    watcherEvery: "ウォッチャーの間隔（分）",
+    versions: "スクリプトの履歴",
+    nextWatch: "次のウォッチャー実行",
   },
   "en-US": {
     title: "Duties",
@@ -134,9 +149,21 @@ const copy = {
       interval: "The interval is between 1 minute and 1 year",
       lateness: "Lateness is between 1 minute and 7 days",
       failures: "The failures before a pause are 0 to 1000",
+      router: "Enter the Router's code (at most 64 KiB)",
+      watcher: "Enter the Watcher's code (at most 64 KiB)",
+      watcher_interval: "A Watcher runs every minute to once a year",
     } satisfies Record<FormProblem, string>,
     status: { active: "Active", paused: "Paused", stopped: "Stopped" },
     byAgent: "Registered by an Agent",
+    router: "Router (a script that routes each event)",
+    watcher: "Watcher (a script that polls an outside service)",
+    scriptHint:
+      'Scripts run without a model, in the Duty\'s Agent\'s execution environment. Approve code_interpreter (Python) or shell for this Node in the Catalog and bind it to the Agent. A Router reads the event on stdin and prints one {"action":"drop"|"act"|"task"|"deliver"}; a Watcher prints a JSON array of events (32 per run at most).',
+    language: "Language",
+    source: "Code",
+    watcherEvery: "Watcher every (minutes)",
+    versions: "Script versions",
+    nextWatch: "Next Watcher run",
   },
 };
 
@@ -437,11 +464,47 @@ function DutyHistory({
           </Button>
         </form>
       )}
+      {duty.router && (
+        <Hint>
+          {words.router}: {duty.router.language}
+        </Hint>
+      )}
+      {duty.watcher && (
+        <Hint>
+          {words.watcher}: {duty.watcher.script.language} ·{" "}
+          {triggerSummary(
+            { kind: "interval", every_seconds: duty.watcher.every_seconds },
+            ja,
+          )}{" "}
+          · {words.nextWatch}:{" "}
+          {formatTime(duty.watcher_next_at ?? null, locale, timeZone)}
+        </Hint>
+      )}
       <DutyTriggers
         duty={duty.id}
         canEdit={detail.data.may_edit}
         timeZone={timeZone}
       />
+      {(detail.data.script_versions ?? []).length > 0 && (
+        <>
+          <h4 className="text-xs font-medium text-faint">{words.versions}</h4>
+          <ul className="grid gap-1 text-xs">
+            {(detail.data.script_versions ?? []).map((version) => (
+              <li key={version.id} className="flex flex-wrap gap-2">
+                <span className="font-mono tabular">
+                  {formatTime(version.created_at, locale, timeZone)}
+                </span>
+                <Badge>
+                  {version.role === "router" ? words.router : words.watcher}
+                </Badge>
+                <span>
+                  {version.language} · {version.author}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <h4 className="text-xs font-medium text-faint">{words.history}</h4>
       <ul className="grid gap-1 text-xs">
         {ticks.map((tick) => (
@@ -463,12 +526,6 @@ type DutyTrigger = {
   source_duty_id?: string;
   url: string | null;
   secret: string | null;
-};
-type DutyEvent = {
-  id: string;
-  received_at: string;
-  outcome: "started" | "delivered" | "skipped" | "failed";
-  reason: string | null;
 };
 
 /** A Duty's triggers besides the clock and the events they brought (#1011).
@@ -620,10 +677,7 @@ function DutyTriggers({
             <span className="font-mono tabular">
               {formatTime(event.received_at, locale, timeZone)}
             </span>
-            <span>
-              {event.outcome}
-              {event.reason ? ` (${event.reason})` : ""}
-            </span>
+            <span>{eventLabel(event, ja)}</span>
           </li>
         ))}
       </ul>
@@ -761,6 +815,33 @@ function DutyEditor({
           />
         </Field>
       </div>
+      <Hint>{words.scriptHint}</Hint>
+      <ScriptFields
+        label={words.router}
+        on={form.routerOn}
+        language={form.routerLanguage}
+        source={form.routerSource}
+        onOn={(on) => set("routerOn", on)}
+        onLanguage={(language) => set("routerLanguage", language)}
+        onSource={(source) => set("routerSource", source)}
+      />
+      <ScriptFields
+        label={words.watcher}
+        on={form.watcherOn}
+        language={form.watcherLanguage}
+        source={form.watcherSource}
+        onOn={(on) => set("watcherOn", on)}
+        onLanguage={(language) => set("watcherLanguage", language)}
+        onSource={(source) => set("watcherSource", source)}
+      >
+        <Field label={words.watcherEvery}>
+          <Input
+            inputMode="numeric"
+            value={form.watcherEveryMinutes}
+            onChange={(event) => set("watcherEveryMinutes", event.target.value)}
+          />
+        </Field>
+      </ScriptFields>
       {tried && problems.length > 0 && (
         <Alert>
           {problems.map((problem) => words.problems[problem]).join(" / ")}
@@ -775,5 +856,68 @@ function DutyEditor({
         </Button>
       </div>
     </form>
+  );
+}
+
+/** A Router's or Watcher's code in the Duty editor (#1011). */
+function ScriptFields({
+  label,
+  on,
+  language,
+  source,
+  onOn,
+  onLanguage,
+  onSource,
+  children,
+}: {
+  label: string;
+  on: boolean;
+  language: ScriptLanguage;
+  source: string;
+  onOn: (on: boolean) => void;
+  onLanguage: (language: ScriptLanguage) => void;
+  onSource: (source: string) => void;
+  children?: ReactNode;
+}) {
+  const { locale } = useI18n();
+  const words = copy[locale];
+  return (
+    <fieldset className="grid gap-2">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(event) => onOn(event.target.checked)}
+        />
+        {label}
+      </label>
+      {on && (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={words.language}>
+              <NativeSelect
+                value={language}
+                onChange={(event) =>
+                  onLanguage(event.target.value as ScriptLanguage)
+                }
+              >
+                <option value="python">Python</option>
+                <option value="shell">Shell</option>
+              </NativeSelect>
+            </Field>
+            {children}
+          </div>
+          <Field label={words.source}>
+            <Textarea
+              className="font-mono"
+              rows={8}
+              spellCheck={false}
+              value={source}
+              onChange={(event) => onSource(event.target.value)}
+            />
+          </Field>
+        </>
+      )}
+    </fieldset>
   );
 }

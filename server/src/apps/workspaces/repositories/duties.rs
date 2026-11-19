@@ -57,10 +57,19 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 				.transpose()?,
 			max_lateness_seconds: row.max_lateness_seconds,
 			pause_after_failures: row.pause_after_failures,
+			router: row
+				.router
+				.map(|router| serde_json::from_value(router.0))
+				.transpose()?,
+			watcher: row
+				.watcher
+				.map(|watcher| serde_json::from_value(watcher.0))
+				.transpose()?,
 		},
 		thread_id: row.thread_id,
 		anchor: row.anchor,
 		next_scheduled_at: row.next_scheduled_at,
+		watcher_next_at: row.watcher_next_at,
 		halt: row.halt.as_deref().map(Halt::parse).transpose()?,
 		halted_at: row.halted_at,
 		halt_reason: row.halt_reason,
@@ -94,6 +103,17 @@ fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 	row.approval_mode = definition.approval_mode.map(mode_text).transpose()?;
 	row.max_lateness_seconds = definition.max_lateness_seconds;
 	row.pause_after_failures = definition.pause_after_failures;
+	row.router = definition
+		.router
+		.as_ref()
+		.map(|router| serde_json::to_value(router).map(reinhardt::db::orm::Json))
+		.transpose()?;
+	row.watcher = definition
+		.watcher
+		.as_ref()
+		.map(|watcher| serde_json::to_value(watcher).map(reinhardt::db::orm::Json))
+		.transpose()?;
+	row.watcher_next_at = duty.watcher_next_at;
 	row.anchor = duty.anchor;
 	row.next_scheduled_at = duty.next_scheduled_at;
 	row.next_fire_at = duty.next_fire_at();
@@ -143,6 +163,9 @@ pub(crate) async fn insert(
 		.revision(0)
 		.created_at(duty.created_at)
 		.updated_at(duty.updated_at)
+		.router(None)
+		.watcher(None)
+		.watcher_next_at(None)
 		.finish();
 	write(&mut row, duty)?;
 	DutyRecord::objects()
