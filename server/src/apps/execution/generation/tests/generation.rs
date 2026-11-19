@@ -950,6 +950,15 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	}
 	.unwrap();
 	assert_eq!(origin.len(), 2);
+	// A live generated agent of the same person would take the child itself
+	// (#1012 decision 49), so the parent's agent first reaches the end of its
+	// lifetime: the child then needs a generation of its own, one level deeper.
+	sqlx::query(
+		"UPDATE generation_requests SET expires_at = CLOCK_TIMESTAMP() - INTERVAL '1 second' WHERE tenant = 'acme'",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	let (status, body) = request(
 		&app,
 		&token,
@@ -1202,20 +1211,33 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 		Value::Null,
 	)
 	.await;
-	assert_eq!(jobs.as_array().unwrap().len(), 2, "{jobs}");
-	let child = jobs
-		.as_array()
-		.unwrap()
-		.iter()
-		.find(|j| j["depth"] == 2)
-		.unwrap();
-	assert_eq!(child["status"], "QUEUED");
-	assert_eq!(child["subject_chain"].as_array().unwrap().len(), 2);
+	// The worker's nested `task_assign` reuses its own live generated agent
+	// (#1012 decision 49): no second generation request, and the child Task
+	// runs as that agent under the parent's chain.
+	assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
+	let generated = jobs[0]["agent_id"].as_str().unwrap().to_owned();
 	aidash_server::generation::provision::reconcile(&f)
 		.await
 		.unwrap();
 	let runs = f.store.runs(&TEST_FIXTURE).await.unwrap();
-	assert_eq!(runs.len(), 2);
+	assert!(runs.len() >= 2, "{}", runs.len());
+	assert!(runs.iter().all(|run| run.agent_id == generated));
+	let parent = task.parse::<uuid::Uuid>().unwrap();
+	let child: uuid::Uuid = sqlx::query_scalar("SELECT id FROM tasks WHERE parent_id = $1")
+		.bind(parent)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(runs.iter().any(|run| run.task_id == child));
+	let origin: Vec<String> = sqlx::query_scalar(
+		"SELECT subject_chain FROM authorization_task_origins WHERE task_id = $1",
+	)
+	.bind(child)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(origin.len(), 2, "{origin:?}");
+	assert_eq!(origin[0], "alice");
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }

@@ -3683,17 +3683,31 @@ async fn a_hop_through_an_executor_the_home_does_not_know_is_refused(
 		)
 		.await
 		.unwrap();
-	// The Home forgets the receiver's executor.
-	let mut policy = p.source_policy.clone();
-	policy["subjects"]
-		.as_object_mut()
-		.unwrap()
-		.remove(&aidash_domain::agent_subject(
-			&node_of(&p.b),
-			"research",
-			"1.0.0",
-		));
-	common::replace_policy(&p.a.store, "acme", policy).await;
+	// The Home forgets the receiver's executor. `common::replace_policy` keeps
+	// every Agent subject the policy already has, so this replaces it directly.
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let current = authorization.snapshot("acme").await.unwrap();
+	let mut policy = serde_json::to_value(&current.bundle).unwrap();
+	let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+	assert!(
+		policy["subjects"]
+			.as_object_mut()
+			.unwrap()
+			.remove(&executor)
+			.is_some(),
+		"the Home knew {executor}"
+	);
+	authorization
+		.replace(
+			"acme",
+			current.revision,
+			serde_json::from_value(policy).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.expect("the Home forgets the executor");
 	let agent = EntityRef {
 		id: "research".into(),
 		version: "1.0.0".into(),
@@ -4253,7 +4267,13 @@ async fn a_sleeping_remote_run_keeps_its_grant_past_its_lifetime_until_its_task_
 	let run = p.run().await;
 	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
 	assert!(!p.requests.lock().await.is_empty());
-	// Once the Task has ended, the grant has too.
+	// Once the Task has ended, the grant has too. The receiver took the message
+	// above; its fence would otherwise hold the Task open until the Run answers.
+	sqlx::query("UPDATE remote_run_message_fences SET consumed = true WHERE task_id = $1")
+		.bind(p.task)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
 		.bind(p.task)
 		.execute(p.a.store.pool.fixture_driver())
