@@ -340,9 +340,10 @@ impl NodeRegistrations {
 				// The receiving Node's people decline their own list's pause as the Home's people
 				// decline any other: the call is answered with a Declined Call and the Run goes on.
 				let store = &f.store;
+				// Policy, gate, then the Run, the order a Home's cancel of the admission takes.
 				let mut tx = store.pool.begin(&administrator.scope()?).await?;
-				crate::transactions::gate::read_in(&mut tx).await?;
 				require_manage(administrator, &mut *tx, registration).await?;
+				crate::transactions::gate::read_in(&mut tx).await?;
 				if !asks::lock_receiver_ask(&mut *tx, run, &input.call, &key).await? {
 					return Err(not_waiting());
 				}
@@ -380,9 +381,6 @@ impl NodeRegistrations {
 					.pool
 					.atomic(&administrator.scope()?, async |tx| {
 						require_manage(administrator, tx, registration).await?;
-						if !asks::lock_receiver_ask(tx, run, &input.call, &key).await? {
-							return Err(not_waiting());
-						}
 						match choice {
 							AskChoice::RunOnly => {
 								asks::allow_run_only_on_receiver(tx, run, pattern.clone()).await?;
@@ -407,6 +405,12 @@ impl NodeRegistrations {
 								)
 								.await?;
 							}
+						}
+						// The Run is locked after the admission or registration row, the order a
+						// Home's cancel takes; a Run that no longer waits on this ask alone rolls
+						// the list change back.
+						if !asks::lock_receiver_ask(tx, run, &input.call, &key).await? {
+							return Err(not_waiting());
 						}
 						// The pause's own call is answered by the next attempt: allowed, it runs;
 						// blocked, it answers the same words as an unknown tool.
