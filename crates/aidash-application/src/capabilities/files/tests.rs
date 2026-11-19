@@ -869,6 +869,72 @@ async fn message_attachments_can_snapshot_saved_files_while_the_area_is_running(
 	);
 }
 
+/// A message with files from a receiving Area goes to another Tenant's Home, so the rule of a
+/// share to that Home holds (ADR 0139, ADR 0114): a Reference file, a copy of it as made and a
+/// file with its bytes stay; an edited copy goes. A local Area's message keeps its own rule.
+#[tokio::test]
+async fn a_receiving_areas_message_never_carries_a_reference_file_or_a_copy_as_made() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	let record = Uuid::new_v4();
+	let file = |path: &str, digest: &str, kind, provenance| FileEntry {
+		file_id: Uuid::new_v4(),
+		path: path.into(),
+		digest: digest.into(),
+		size: 8,
+		media_type: "text/plain".into(),
+		scope: kind,
+		provenance,
+	};
+	let reference = json!({"kind":"reference","id":record});
+	let manifest = vec![
+		file(
+			"references/doc.txt",
+			"reference",
+			FileScope::References,
+			reference.clone(),
+		),
+		// `file_copy` keeps the original's provenance.
+		file("copy.txt", "reference", FileScope::Working, reference),
+		// The same bytes saved again carry no provenance of a Reference.
+		file("out/doc.txt", "reference", FileScope::Working, json!({})),
+		file("edited.txt", "edited", FileScope::Working, json!({})),
+	];
+	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
+	let area = scope.area.as_mut().unwrap();
+	area.manifest = json!(manifest);
+	area.constraints = json!([home]);
+	for path in ["references/doc.txt", "copy.txt", "out/doc.txt"] {
+		assert!(
+			matches!(
+				snapshot_message_files(&mut scope, &run, &[path.into()]).await,
+				Err(Error::NotFound(_))
+			),
+			"{path} stays"
+		);
+	}
+	let sent = snapshot_message_files(&mut scope, &run, &["edited.txt".into()])
+		.await
+		.unwrap();
+	assert_eq!(sent[0].0.path, "edited.txt");
+	// An Area that copied a Reference file, or holds private text or received files, sends none,
+	// as it shares none.
+	scope.area.as_mut().unwrap().constraints = json!([home, {"kind":"reference","id":record}]);
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &["edited.txt".into()]).await,
+		Err(Error::Forbidden)
+	));
+	// A local Area posts to its own Workspace, where only the Reference file itself stays.
+	scope.area.as_mut().unwrap().constraints = json!([]);
+	let local = snapshot_message_files(&mut scope, &run, &["out/doc.txt".into()])
+		.await
+		.unwrap();
+	assert_eq!(local[0].0.path, "out/doc.txt");
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &["references/doc.txt".into()]).await,
+		Err(Error::NotFound(_))
+	));
+}
+
 #[tokio::test]
 async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));

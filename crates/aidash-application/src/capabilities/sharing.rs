@@ -16,6 +16,32 @@ use aidash_domain::{
 use serde_json::{Value, json};
 use sha2::Digest as _;
 use uuid::Uuid;
+/// The digests no file of `available` may leave the Run with. A Reference file can be read by a
+/// Run but never leaves it, and neither can a copy of it as made: the recipient could download
+/// what only the uploader may (ADR 0114). A copy is known by its provenance or, once copied
+/// again with the same bytes, by its digest. An edited copy is its editor's own file.
+pub(crate) fn reference_digests(available: &[FileEntry]) -> std::collections::BTreeSet<&str> {
+	available
+		.iter()
+		.filter(|f| f.provenance["kind"] == "reference")
+		.map(|f| f.digest.as_str())
+		.collect()
+}
+
+/// Refuse an Area whose constraints bar its files from leaving it ([`BARRING`]).
+pub(crate) fn require_unbarred(area: &Area) -> Result<()> {
+	if area
+		.constraints
+		.as_array()
+		.ok_or(Error::Forbidden)?
+		.iter()
+		.any(|c| c["kind"].as_str().is_some_and(|k| BARRING.contains(&k)))
+	{
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}
+
 /// Snapshot selection is immutable; no allocation occurs before all budgets pass.
 pub fn select_files(
 	available: &[FileEntry],
@@ -25,15 +51,7 @@ pub fn select_files(
 	let mut chosen = vec![];
 	let mut seen = std::collections::BTreeSet::new();
 	let mut size = 0;
-	// A Reference file can be read by a Run but never leaves it, and neither can a
-	// copy of it as made: the recipient could download what only the uploader may
-	// (ADR 0114). A copy is known by its provenance or, once copied again with the
-	// same bytes, by its digest. An edited copy is its editor's own file.
-	let reference_digests = available
-		.iter()
-		.filter(|f| f.provenance["kind"] == "reference")
-		.map(|f| f.digest.as_str())
-		.collect::<std::collections::BTreeSet<_>>();
+	let reference_digests = reference_digests(available);
 	for selection in selections {
 		let file = available
 			.iter()
@@ -109,15 +127,7 @@ pub async fn home_prepare(
 		));
 	}
 	scope.permit(area, "file.share").await?;
-	if area
-		.constraints
-		.as_array()
-		.ok_or(Error::Forbidden)?
-		.iter()
-		.any(|c| c["kind"].as_str().is_some_and(|k| BARRING.contains(&k)))
-	{
-		return Err(Error::Forbidden);
-	}
+	require_unbarred(area)?;
 	let mounted: Vec<FileEntry> = serde_json::from_value(area.manifest.clone())?;
 	let (chosen, total) = select_files(&mounted, &input.files, &limits)?;
 	let mut files = Vec::with_capacity(chosen.len());
