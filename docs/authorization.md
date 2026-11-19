@@ -279,8 +279,9 @@ or `.../catalog/approvals` with `enabled: false`, or a carried withdrawal), and
 after every policy save (`POST /api/authorization/{tenant}`), Aidash ends each
 active Subnode whose creating Agent version is definitely unusable on the
 Subnode's Node: its Catalog Approval there is disabled, or the policy names its
-Agent subject with `enabled: false`. An Agent with no approval row (a generated
-Agent) or no subject is not treated as removed. The Subnode ends as its
+Agent subject with `enabled: false` (a generated version's retirement disables
+both). A version with no approval row on that Node (such as a generated version
+registered unapproved) or no subject is not treated as removed. The Subnode ends as its
 creator's own end would, with reason `creator_agent_removed`: its member Runs
 are cancelled and its records stay readable. This runs right after the change
 commits, one creating Run per transaction that checks again under lock; a

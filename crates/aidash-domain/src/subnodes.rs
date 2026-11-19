@@ -65,9 +65,12 @@ pub enum EndReason {
 /// Only a definite signal counts: the version's Catalog Approval on that Node
 /// is withdrawn or disabled (`catalog_enabled == Some(false)`), or the Tenant's
 /// policy names its Agent subject and disables it (`subject_enabled ==
-/// Some(false)`). Absence proves nothing: a generated Agent works without a
-/// Catalog Approval, and a subject missing from the policy bundle may be one
-/// that was never written there. Neither absence ends a Subnode.
+/// Some(false)`). A generated version's approval that its retirement
+/// disabled counts too. Absence proves nothing: a generated version may run
+/// with no approval row on the Node (one registered unapproved, as on the
+/// receiving Node of a foreign generation), and a subject missing from the
+/// policy bundle may be one that was never written there. Neither absence
+/// ends a Subnode.
 pub fn creator_removed(catalog_enabled: Option<bool>, subject_enabled: Option<bool>) -> bool {
 	catalog_enabled == Some(false) || subject_enabled == Some(false)
 }
@@ -323,7 +326,7 @@ mod tests {
 	#[rstest::rstest]
 	#[case::approved_and_enabled(Some(true), Some(true), false)]
 	#[case::never_approved_nor_named(None, None, false)]
-	#[case::generated_agent_without_approval(None, Some(true), false)]
+	#[case::no_approval_row(None, Some(true), false)]
 	#[case::approved_but_not_a_subject(Some(true), None, false)]
 	#[case::approval_withdrawn(Some(false), Some(true), true)]
 	#[case::approval_withdrawn_subject_absent(Some(false), None, true)]

@@ -643,7 +643,7 @@ impl crate::ports::subnodes::CreatorRemovalScope for Removal {
 #[case::approval_withdrawn(Some(false), Some(true), true)]
 #[case::subject_disabled(Some(true), Some(false), true)]
 #[case::still_usable(Some(true), Some(true), false)]
-#[case::generated_agent_without_approval(None, Some(true), false)]
+#[case::no_approval_row(None, Some(true), false)]
 #[case::absent_from_policy_and_catalog(None, None, false)]
 #[tokio::test]
 async fn a_disabled_creator_deletes_its_subnodes_and_an_absent_one_does_not(

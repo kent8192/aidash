@@ -123,7 +123,8 @@ struct Creator {
 }
 
 /// The creating Runs of active Subnodes whose Agent version looks removed.
-/// Nothing here is locked: each candidate is decided again under lock.
+/// Only the policy row is share-locked, for this short read; each candidate is
+/// decided again under lock.
 async fn candidates(
 	tx: &mut dyn TransactionExecutor,
 	deployment: &DeploymentId,
