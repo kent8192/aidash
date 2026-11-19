@@ -203,7 +203,9 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 	let Some(row) = record(tx, tenant, id, true).await? else {
 		return Err(Error::NotFound("duty not found".into()));
 	};
-	// Ticks go with their Duty through the cascading key.
+	// Ticks go with their Duty through the cascading key; its Budgets go
+	// too, while its spend stays in the ledger (#1012).
+	crate::apps::identity::repositories::budgets::delete_for_duty(tx, tenant, row.id).await?;
 	DutyRecord::objects()
 		.delete_with_executor(tx, row.id)
 		.await

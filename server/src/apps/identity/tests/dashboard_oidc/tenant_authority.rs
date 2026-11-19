@@ -2044,6 +2044,33 @@ async fn budgets_are_set_by_their_people_in_a_browser(
 	assert_eq!(status, 200, "{issued}");
 	let token = issued["token"].as_str().unwrap().to_owned();
 	assert_eq!(t.bearer(&token, "POST", &path, person("owner")).await, 403);
+	// A limit an administrator put on a person is not theirs to lift.
+	let (status, imposed) =
+		t.d.as_person(&t.alice, "PUT", &own_path, Some(&t.alice_context), {
+			let mut lower = person("bob");
+			lower["hard_limit_nanocredits"] = json!(1_000_000_000_i64);
+			lower["expected_revision"] = json!(2);
+			lower
+		})
+		.await;
+	assert_eq!(status, 200, "{imposed}");
+	let mut lift = person("bob");
+	lift["hard_limit_nanocredits"] = json!(99_000_000_000_i64);
+	lift["expected_revision"] = json!(3);
+	let (status, lifted) =
+		t.d.as_person(&t.bob, "PUT", &own_path, Some(&t.bob_context), lift)
+			.await;
+	assert_eq!(status, 403, "{lifted}");
+	let (status, _) =
+		t.d.as_person(
+			&t.bob,
+			"DELETE",
+			&own_path,
+			Some(&t.bob_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 403);
 	// Only someone who may change a Budget removes it.
 	let tenant_path = format!("{path}/{}", created["id"].as_str().unwrap());
 	let (status, _) =

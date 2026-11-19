@@ -158,6 +158,7 @@ pub(crate) async fn update(
 	id: Uuid,
 	definition: &Definition,
 	expected_revision: i64,
+	by: &str,
 ) -> Result<Budget> {
 	let current = get(tx, tenant, id, true).await?;
 	if current.revision != expected_revision {
@@ -190,6 +191,9 @@ pub(crate) async fn update(
 				crate::database::text_array(definition.recipients.clone()),
 			)
 			.value_expr(Alias::new("revision"), Expr::value(current.revision + 1))
+			// Whoever sets a Budget last is who may change it without
+			// `budget.manage` (see the service).
+			.value_expr(Alias::new("created_by"), Expr::value(by.to_owned()))
 			.value_expr(Alias::new("updated_at"), Expr::value(Utc::now()))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
@@ -486,4 +490,23 @@ pub(crate) async fn claim_notice(
 	.await?
 	.rows_affected()
 		== 1)
+}
+
+/// Removes the Budgets of a Duty with the Duty; its spend stays in the ledger.
+pub(crate) async fn delete_for_duty(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	duty: Uuid,
+) -> Result<()> {
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("budgets"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("scope_kind").eq("duty"))
+			.and_where(Expr::col("scope_key").eq(duty.to_string()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
 }

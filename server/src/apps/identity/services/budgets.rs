@@ -21,11 +21,16 @@ use uuid::Uuid;
 
 /// Who may set a Budget: anyone with `budget.manage`; a Node's administrator
 /// for that Node; a Duty's Requester for that Duty; a person for themself.
+/// Only `budget.manage` changes or removes a Budget someone else set last,
+/// so a person cannot lift a limit an administrator put on them (`existing`
+/// is the stored Budget being changed). A Duty or Node that no longer exists
+/// gives nobody a scope right; `budget.manage` still reaches its Budget.
 async fn may_manage(
 	tx: &mut dyn TransactionExecutor,
 	administrator: &TenantAdministrator,
 	snapshot: &Snapshot,
 	scope: &Scope,
+	existing: Option<&Budget>,
 	strict: bool,
 ) -> Result<bool> {
 	let tenant = administrator.tenant().to_owned();
@@ -46,21 +51,26 @@ async fn may_manage(
 		}
 	};
 	let subject = administrator.identity.subject.clone();
-	Ok(match scope {
-		Scope::Person { subject: person } if *person == subject => true,
-		Scope::Duty { duty_id } => {
-			let duty =
+	let set_by_someone_else = existing.is_some_and(|budget| budget.created_by != subject);
+	let scope_right = !set_by_someone_else
+		&& match scope {
+			Scope::Person { subject: person } => *person == subject,
+			Scope::Duty { duty_id } => {
 				crate::apps::workspaces::repositories::duties::load(tx, &tenant, *duty_id, false)
 					.await?
-					.ok_or_else(|| Error::NotFound("duty not found".into()))?;
-			duty.requester == subject || decide(tx, BUDGET_MANAGE, &tenant).await?
-		}
-		Scope::Node { node } => {
-			crate::apps::identity::repositories::nodes::get_live(tx, &tenant, node).await?;
-			decide(tx, NODE_ADMINISTER, node).await? || decide(tx, BUDGET_MANAGE, &tenant).await?
-		}
-		Scope::Tenant | Scope::Person { .. } => decide(tx, BUDGET_MANAGE, &tenant).await?,
-	})
+					.is_some_and(|duty| duty.requester == subject)
+			}
+			Scope::Node { node } => {
+				match crate::apps::identity::repositories::nodes::get_live(tx, &tenant, node).await
+				{
+					Ok(_) => decide(tx, NODE_ADMINISTER, node).await?,
+					Err(Error::NotFound(_)) => false,
+					Err(error) => return Err(error),
+				}
+			}
+			Scope::Tenant => false,
+		};
+	Ok(scope_right || decide(tx, BUDGET_MANAGE, &tenant).await?)
 }
 
 async fn view(tx: &mut dyn TransactionExecutor, budget: Budget) -> Result<BudgetView> {
@@ -106,6 +116,7 @@ impl TenantAdministrations {
 						&administrator,
 						&snapshot,
 						&budget.definition.scope,
+						Some(&budget),
 						false,
 					)
 					.await?
@@ -134,7 +145,8 @@ impl TenantAdministrations {
 			.pool
 			.atomic(&administrator.scope()?, async |tx| {
 				let snapshot = administrator.lock(tx, false).await?;
-				if !may_manage(tx, &administrator, &snapshot, &definition.scope, true).await? {
+				if !may_manage(tx, &administrator, &snapshot, &definition.scope, None, true).await?
+				{
 					return Err(Error::Forbidden);
 				}
 				let budget =
@@ -168,6 +180,7 @@ impl TenantAdministrations {
 					&administrator,
 					&snapshot,
 					&current.definition.scope,
+					Some(&current),
 					true,
 				)
 				.await?
@@ -180,6 +193,7 @@ impl TenantAdministrations {
 					id,
 					&update.definition,
 					update.expected_revision,
+					&administrator.identity.subject,
 				)
 				.await?;
 				view(tx, budget).await
@@ -208,6 +222,7 @@ impl TenantAdministrations {
 					&administrator,
 					&snapshot,
 					&current.definition.scope,
+					Some(&current),
 					true,
 				)
 				.await?
