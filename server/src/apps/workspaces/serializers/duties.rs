@@ -213,6 +213,17 @@ pub(crate) struct DeletedView {
 	pub deleted: Uuid,
 }
 
+/// An event another Node sends to a `node_event` Duty Trigger (#1013).
+/// The sender is the Node its Federation token proves, never a field here.
+#[derive(Debug, Clone, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NodeEventInput {
+	pub trigger_id: Uuid,
+	/// The event, JSON of at most 256 KiB, which the Duty reads as data.
+	#[serde(default)]
+	pub payload: serde_json::Value,
+}
+
 /// What a webhook request did (#1011).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(crate) struct DutyEventReceipt {

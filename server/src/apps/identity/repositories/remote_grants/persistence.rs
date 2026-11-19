@@ -36,7 +36,9 @@ pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 		let query_bind_1 = id;
 		crate::database::native::query_scalar(
 			&Query::select()
-				.expr(Expr::cust("NOT revoked AND expires_at > CLOCK_TIMESTAMP()"))
+				.expr(Expr::cust(super::live_condition(
+					"authorization_remote_grants",
+				)))
 				.from(Alias::new("authorization_remote_grants"))
 				.and_where(SimpleExpr::CustomWithExpr(
 					"(id = ?)".to_owned(),

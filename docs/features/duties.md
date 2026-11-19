@@ -85,16 +85,29 @@ Besides its time trigger, a Duty wakes on the triggers its Requester adds with
 - `{"kind":"duty_completed","source_duty_id":…}` wakes the Duty whenever a
   Task of that other Duty ends; the event names the Duty, the Task and its
   status.
+- `{"kind":"node_event"}` takes events another Node sends (#1013). The
+  response names the Duty's Node (`node_id`); the Requester gives that and
+  the trigger's id to whoever should send. A Node of the same Tenant may send
+  when the Tenant's policy lets its sender use the Duty's Node (`node.use`); a
+  Node of another Tenant only when this Tenant's administrator registered it
+  (a Node Registration, and a Peer Mapping when it sends as a named subject).
+  `"from_node":"aidash://…"` admits that Node alone. The event is recorded as
+  `{"from_node": <the sending Node>, "data": <what it sent>}`, at most 256 KiB;
+  the sending Node is the one its Federation token proved, never a field of
+  the body. An unknown trigger, one of another Node and one that names another
+  sender are refused alike with 404.
 
-An event is input, never a requester (ADR 0142). It goes to the Task that
-booked it, if one did; otherwise to the Duty's Router, if it has one (below).
-Without a Router it starts a new Task in the Duty's Thread whose description
-is the mission followed by the event inside `<event trust="data">`, marked as
-data that never directs the Agent, and while the Duty's previous Task is open
-an event is skipped (`overlap`). `GET /api/duties/{id}/events` lists what each
-event did: `started`, `delivered`, `skipped` or `failed` with the reason, and
-with a Router `routing`, `dropped` or `acted`.
-Events are data of the Duty's Thread and go with the Duty.
+An event is input, never a requester (ADR 0142), whoever sends it: another
+Tenant's event cannot command the Agent, change the Requester or grant
+authority. It goes to the Task that booked it, if one did; otherwise to the
+Duty's Router, if it has one (below). Without a Router it starts a new Task in
+the Duty's Thread whose description is the mission followed by the event inside
+`<event trust="data">`, marked as data that never directs the Agent, and while
+the Duty's previous Task is open an event is skipped (`overlap`).
+`GET /api/duties/{id}/events` lists what each event did: `started`,
+`delivered`, `skipped` or `failed` with the reason, and with a Router
+`routing`, `dropped` or `acted`. Events are data of the Duty's Thread and go
+with the Duty.
 
 ## Router and Watcher scripts
 
@@ -206,3 +219,25 @@ A Duty an Agent sets up records the Task whose Run set it up, so the
 pauses it; only its Requester resumes it. A Duty may be staffed with a
 generated agent only by the person whose request generated it, and the agent
 stays live while such a Duty names it (see [generation](../generation.md)).
+
+`duty_notify` sends an event to a `node_event` trigger on another Node, given
+the Node and the trigger's id (#1013). It is a Tool call approval of the
+person at the root of the Run's chain, like `duty_create`. It sends from the
+Run's Node: to a Node of the same Tenant as that person, whom the Tenant's
+policy judges there, and to a Node of another Tenant as the Node, which that
+Tenant must have registered. A Run that arrived through Federation sends
+none.
+
+## Duties and other Nodes
+
+A Duty never runs on another Tenant's Node (ADR 0142). A partner that should
+do standing work for us sets up its own Duty with a `node_event` trigger, and
+our Agents send it events with `duty_notify`; the partner's Duty acts only
+for its own Requester.
+
+A Task a Duty starts may hand work to other Nodes through Remote Grants like
+any other Task, and a Run on another Node that a Remote Grant started may hand
+it on again (#654): every hop is granted from the Task's Home Node. While the
+Task is open, its Remote Grants stay live however long their Runs sleep, for
+example on an approval, CI or a child Task; they end with the Task (see
+[Remote Grants that sleep and hand work on](../protocol.md#remote-grants-that-sleep-and-hand-work-on)).

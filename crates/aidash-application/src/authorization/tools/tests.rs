@@ -353,6 +353,8 @@ struct Repository {
 	snapshot: Option<BindingSnapshot>,
 	plugin_tools: Option<aidash_domain::agent_plugin::PluginTools>,
 	subnode_allowance: Option<aidash_domain::subnodes::Allowance>,
+	/// The Tasks the Home records as outputs of the Run's Remote Grant.
+	outputs: Vec<Uuid>,
 }
 #[fixture]
 fn repository() -> Repository {
@@ -373,6 +375,7 @@ fn repository() -> Repository {
 		snapshot: None,
 		plugin_tools: None,
 		subnode_allowance: None,
+		outputs: vec![],
 	}
 }
 impl Repository {
@@ -416,6 +419,10 @@ impl AgentToolRepository for Repository {
 		self.record("lease");
 		self.check("lease")?;
 		Ok(Box::new(Scope(self)))
+	}
+	async fn grant_output(&self, task: Uuid) -> Result<bool> {
+		self.record(format!("grant_output:{task}"));
+		Ok(self.outputs.contains(&task))
 	}
 }
 #[async_trait]
@@ -922,24 +929,55 @@ async fn core_skill_operations_use_the_skill_flag_even_for_a_null_skill_id(
 	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
-#[case("task_delegate")]
-#[case("agent_discover")]
 #[tokio::test]
-async fn one_hop_rejection_precedes_remote_refresh_and_agent_flags(
+async fn a_remote_grant_run_discovers_through_its_home_without_a_hop_limit(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// Multi-hop delegation (#654, ADR 0109): discovery is a Home command, so this
+	// Node checks only that its policy lets the Run use the tool.
+	repository.remote = true;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("agent_discover", json!({})),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository
+			.decisions()
+			.into_iter()
+			.map(|(resource, action)| (resource.id, action))
+			.collect::<Vec<_>>(),
+		vec![("builtin:agent_discover".into(), "tool.invoke".into())]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	mut repository: Repository,
 	run: RunMetadata,
 	mut agent: AgentConfig,
-	#[case] name: &str,
 ) {
 	repository.remote = true;
-	repository.fault = Some("lease");
 	agent.allow_task_delegation = Some(false);
-	let result = authorize(&repository, &run, &agent, &call(name, json!({}))).await;
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await;
 	assert!(
-		matches!(result, Err(Error::Invalid(ref message)) if message.contains("one hop")),
+		matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag),
 		"{result:?}"
 	);
-	assert!(repository.calls().is_empty());
 }
 #[rstest]
 #[case::task("task_create", "workspace", "task.create")]
@@ -1235,8 +1273,161 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 	);
 }
 #[rstest]
+#[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]
+#[case::the_receivers_own_node("aidash://receiver/brave-otter-k3m9q2xa")]
 #[tokio::test]
-async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
+async fn a_remote_grant_run_hands_a_home_task_on_to_any_node_its_home_decides(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+	#[case] node: &str,
+) {
+	// Multi-hop delegation (#654): the child lives at the Home, which checks the
+	// agent and the target Node by its own policy and prepares the next grant.
+	// This Node consents to its Run using the tool and to `task.delegate` on the
+	// Home's Task, and never checks its own catalog or `federation.execute`.
+	repository.remote = true;
+	repository.outputs = vec![id(9)];
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":node,"agent":reference()}),
+		),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository
+			.decisions()
+			.into_iter()
+			.map(|(resource, action)| (resource.id, action))
+			.collect::<Vec<_>>(),
+		vec![
+			("builtin:task_delegate".into(), "tool.invoke".into()),
+			(
+				format!("aidash://home/tasks/{}", id(9)),
+				"task.delegate".into()
+			),
+		]
+	);
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|name| name.starts_with("catalog:") || name.starts_with("task_read:"))
+	);
+	// The Home's record was asked before this Node's authority lease was taken
+	// (the earlier lease is the remote authority refresh, released before it).
+	let calls = repository.calls();
+	let asked = calls
+		.iter()
+		.position(|call| call == &format!("grant_output:{}", id(9)))
+		.unwrap();
+	assert!(asked < calls.iter().rposition(|call| call == "lease").unwrap());
+	assert_eq!(
+		calls[..asked]
+			.iter()
+			.filter(|call| *call == "lease")
+			.count(),
+		calls[..asked]
+			.iter()
+			.filter(|call| *call == "release")
+			.count()
+	);
+	// The handed-on Task is judged as itself, not with the admitted Task's attributes.
+	let decisions = repository.decisions();
+	assert_ne!(decisions[1].0.attributes, repository.context);
+	assert_eq!(
+		decisions[1].0.attributes,
+		json!({"source_workspace_id":run.workspace_id,"source_task_id":id(9),"source_parent_task_id":run.task_id})
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_run_hands_on_only_a_task_its_grant_created(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	// Any other id is answered like a Task that does not exist, before any
+	// lease or decision here (#654).
+	repository.remote = true;
+	repository.outputs = vec![id(8)];
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":id(9),"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message)) if message.contains("was not found")),
+		"{result:?}"
+	);
+	assert!(repository.decisions().is_empty());
+	// No lease follows the Home's answer.
+	let calls = repository.calls();
+	let asked = calls
+		.iter()
+		.position(|call| call == &format!("grant_output:{}", id(9)))
+		.unwrap();
+	assert!(!calls[asked..].contains(&"lease".to_owned()));
+}
+#[rstest]
+#[tokio::test]
+async fn only_task_delegate_names_another_task_and_its_own_task_keeps_its_context(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.remote = true;
+	// The Run's own Task asks the Home nothing and keeps the admitted context.
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"task_delegate",
+			json!({"task_id":run.task_id,"node_id":"aidash://third/quiet-falcon-4f8k2m1z","agent":reference()}),
+		),
+	)
+	.await
+	.unwrap();
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|call| call.starts_with("grant_output:"))
+	);
+	let decisions = repository.decisions();
+	assert_eq!(
+		decisions[1].0.id,
+		format!("aidash://home/tasks/{}", run.task_id)
+	);
+	assert_eq!(decisions[1].0.attributes, repository.context);
+	// No other tool asks the Home about a named Task.
+	let contract = aidash_domain::tool::builtin_contract("task_create").unwrap();
+	assert!(
+		delegated_output(
+			&repository,
+			&run,
+			&call("task_create", json!({"task_id":id(9)})),
+			&contract
+		)
+		.await
+		.unwrap()
+		.is_none()
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_remote_grant_run_names_a_home_task_only_by_its_id(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1248,28 +1439,17 @@ async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
 		&agent,
 		&call(
 			"task_delegate",
-			json!({"task_id":id(9),"node_id":run.home_node,"agent":reference()}),
+			json!({"task_id":"not-a-task","node_id":"aidash://third/node","agent":reference()}),
 		),
 	)
 	.await;
-	// The one-hop restriction is a Rejected Call before target admission.
-	assert!(
-		matches!(result, Err(Error::Invalid(ref message))
-			if message.contains("one hop")),
-		"{result:?}"
-	);
+	assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
 	assert!(
 		!repository
-			.calls()
-			.contains(&"catalog:configured:agent.execute".into())
-	);
-	assert!(
-		!repository
-			.calls()
+			.decisions()
 			.iter()
-			.any(|name| name.starts_with("task_read:"))
+			.any(|(_, action)| action == "task.delegate")
 	);
-	assert!(repository.decisions().is_empty());
 }
 #[rstest]
 #[case::memory("memory_mutate")]

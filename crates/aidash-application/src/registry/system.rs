@@ -28,7 +28,12 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain(SUBNODE_TOOLS.iter().copied())
 		.chain(JOURNAL_TOOLS.iter().copied())
 		.chain(NODE_TOOLS.iter().copied())
+		.chain(NOTIFY_TOOLS.iter().copied())
 }
+
+/// Sending an event to another Node's Duty (#1013). An Agent definition binds
+/// it explicitly; it is not a default tool, so no saved Agent changes.
+pub const NOTIFY_TOOLS: &[&str] = &["duty_notify"];
 
 /// The `core.nodes@1` operations (#1012, ADR 0143). An Agent definition binds
 /// them explicitly, like the Subnode tools: they are not default tools, so

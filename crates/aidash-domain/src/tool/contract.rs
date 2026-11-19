@@ -687,6 +687,14 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.tool_call_approval = true;
 			behavior.authority_change = true;
 		}
+		// An event for another Node's Duty (#1013) carries data out of this
+		// Node, so the person at the root of the chain approves it like a
+		// change of their Duties. It is input there, never a requester.
+		"duty_notify" => {
+			behavior.effect = ToolEffect::Unsafe;
+			behavior.tool_call_approval = true;
+			contract.disclosure = DisclosureBoundary::External;
+		}
 		_ => return None,
 	}
 	Some(contract)
@@ -785,6 +793,20 @@ mod tests {
 		// Every other contract keeps its pinned digest: the flag is omitted.
 		let encoded = serde_json::to_value(builtin_contract("duty_create").unwrap()).unwrap();
 		assert!(encoded["behavior"].get("authority_change").is_none());
+	}
+
+	#[test]
+	fn a_node_event_leaves_the_node_only_with_the_persons_approval() {
+		let contract = builtin_contract("duty_notify").unwrap();
+		assert!(contract.behavior.tool_call_approval);
+		assert_eq!(contract.behavior.effect, ToolEffect::Unsafe);
+		assert_eq!(contract.disclosure, DisclosureBoundary::External);
+		// A Run that arrived through Federation never sends one.
+		assert!(!contract.remote_exposure);
+		assert_eq!(
+			crate::tool::providers::core_provider("duty_notify"),
+			Some("core.duties@1")
+		);
 	}
 	#[test]
 	fn modes_and_remote_exposure_are_explicit_sets() {

@@ -1,6 +1,8 @@
 //! HTTP commands adapt the shared application use case and commit its source authority lease.
 use super::*;
+use aidash_application::authorization::commands::effects;
 use aidash_application::federation::inbound::Admitted;
+use aidash_application::ports::authorization::commands::effects::RemoteCommandEffects as _;
 pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> Result<Value> {
 	let node = &admitted.sender.to_string();
 	let mut revision_race = false;
@@ -12,25 +14,60 @@ pub(crate) async fn handle(f: Federation, admitted: Admitted, input: Input) -> R
 	let agent = &description.inspection.agent;
 	let mut command_scope = crate::bootstrap::remote_command_scope(&f, &mut access);
 	command_scope.bindings = Some(&description.inspection.binding_snapshot);
-	let result = aidash_application::authorization::commands::effects::execute(
-		&mut command_scope,
-		aidash_application::authorization::commands::Command {
-			grant_id: input.grant_id,
-			admission_id: input.admission_id,
-			operation: &input.operation,
-			data: &input.data,
-			node,
-			agent: &agent.id,
-			version: &agent.version,
-		},
-		agent,
-	)
-	.await
-	.map_err(Into::into);
+	let command = aidash_application::authorization::commands::Command {
+		grant_id: input.grant_id,
+		admission_id: input.admission_id,
+		operation: &input.operation,
+		data: &input.data,
+		node,
+		agent: &agent.id,
+		version: &agent.version,
+	};
+	if effects::is_onward(command_scope.local_node(), &input.operation, &input.data) {
+		// Multi-hop delegation (#654): check the child under this lease, release
+		// it, and only then prepare and activate this Home's own grant, which
+		// talks to the target Node.
+		let checked = effects::onward(&mut command_scope, command)
+			.await
+			.map_err(Into::into);
+		let identity = access.identity.clone();
+		let onward = access.finish(checked).await?;
+		return hand_on(&f, identity, onward).await;
+	}
+	let result = effects::execute(&mut command_scope, command, agent)
+		.await
+		.map_err(Into::into);
 	if let Err(error) = &result {
 		tracing::warn!(operation=%input.operation,error=%error,"scoped home command rejected");
 	}
 	access.finish(result).await
+}
+
+/// Hands a child Task of a Remote Grant Run on to another Node through a
+/// Remote Grant of this Home (#654, ADR 0109). It acts as the grant's root
+/// subject: the grant it prepares inherits the child's delegation chain, this
+/// Node's policy judges that chain and the target Node, and the target decides
+/// by its own consent. A retry reuses the grant the first call prepared.
+async fn hand_on(
+	f: &Federation,
+	identity: crate::authorization::identity::SubjectIdentity,
+	onward: effects::Onward,
+) -> Result<Value> {
+	let repository = crate::apps::identity::repositories::home_execution::Repository {
+		runtime: f.clone(),
+		actor: Some(crate::authorization::identity::Actor::Subject(identity)),
+		worker: None,
+	};
+	let delegation = aidash_application::authorization::home::delegate(
+		&repository,
+		onward.child,
+		&onward.node,
+		&onward.agent,
+		true,
+	)
+	.await
+	.map_err(crate::Error::from)?;
+	Ok(serde_json::to_value(delegation)?)
 }
 
 /// Fetch only for the direct delegate, under both the live grant and the

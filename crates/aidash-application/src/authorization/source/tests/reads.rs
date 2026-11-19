@@ -69,6 +69,7 @@ impl Reader {
 			task_id: task().id,
 			task_revision: task().revision,
 			initial_task: json!(task()),
+			activated: true,
 		};
 		let mut base = Scope::new();
 		base.subjects = vec!["viewer".into()];

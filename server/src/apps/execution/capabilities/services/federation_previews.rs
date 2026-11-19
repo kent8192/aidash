@@ -16,6 +16,33 @@ use reinhardt::query::{
 };
 use serde_json::json;
 
+/// The receiver's own bound on a Home's request about one of its admitted
+/// Runs (#1013). The admission must still be open and the Run not ended. Once
+/// the Run has started, its Home decides whether the grant still lives, and
+/// has just asked as that Home: a started grant outlives its pinned lifetime
+/// while its Task is open. A Run that never started is still bound by it.
+async fn require_live_admission(
+	access: &mut crate::authorization::access::Access,
+	description: &Description,
+	run: &aidash_domain::Run,
+) -> Result<()> {
+	crate::apps::execution::repositories::node_cancellations::require_admission_open(
+		&mut **access.tx,
+		run.id,
+	)
+	.await?;
+	if !aidash_domain::federation::execution::admission::serves_home(
+		run.phase(),
+		run.control,
+		run.step,
+		description.expires_at,
+		chrono::Utc::now(),
+	) {
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}
+
 fn reference_id(sender: &str, message: uuid::Uuid, file: uuid::Uuid) -> String {
 	format!("{sender}:{message}:{file}")
 }
@@ -62,9 +89,11 @@ async fn source_target(
 	// A release is cleanup for a previously authorized hold, so V can still
 	// notify H after the source grant expires or is revoked.
 	if matches!(audience, SourceAudience::Viewer) {
-		grant_query
-			.and_where(Expr::col("revoked").eq(Expr::value(false)))
-			.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"));
+		grant_query.and_where(Expr::cust(
+			crate::apps::identity::repositories::remote_grants::live_condition(
+				"authorization_remote_grants",
+			),
+		));
 	}
 	let grant: Option<(String, String, uuid::Uuid)> =
 		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))
@@ -199,7 +228,6 @@ pub(crate) async fn retain(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -218,6 +246,7 @@ pub(crate) async fn retain(
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		let area = super::sessions::for_run(&mut access, &run).await?;
 		if area.id != request.area_id {
 			return Err(Error::Forbidden);
@@ -355,7 +384,6 @@ pub(crate) async fn inspect(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -371,6 +399,7 @@ pub(crate) async fn inspect(
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		// A remote Run has an admission record rather than a local execution
 		// grant. With no preview listener there is no area or viewing address to
 		// disclose; V can show the explicit unavailable state.
@@ -465,7 +494,6 @@ pub(crate) async fn issue(
 			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
 			|| description.source_node != admitted.sender.to_string()
 			|| description.target_node != admitted.receiver.to_string()
-			|| description.expires_at <= chrono::Utc::now()
 		{
 			return Err(Error::Forbidden);
 		}
@@ -481,6 +509,7 @@ pub(crate) async fn issue(
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		let area = super::sessions::for_run(&mut access, &run).await?;
 		let peer = aidash_application::preview::Peer {
 			sender: admitted.sender.to_string(),

@@ -447,6 +447,21 @@ pub mod tool {
 		#[serde(default)]
 		pub action: Removal,
 	}
+
+	/// An event for a Duty on another Node (#1013). Its Requester set up a
+	/// `node_event` trigger and gave you the Node and the trigger's id.
+	#[derive(Debug, Clone, Deserialize, JsonSchema)]
+	#[serde(deny_unknown_fields)]
+	pub struct Notify {
+		/// The address of the Node the Duty is on, such as
+		/// `aidash://deployment/quiet-falcon-4f8k2m1z`.
+		pub node_id: String,
+		/// The id of the Duty's `node_event` trigger.
+		pub trigger_id: Uuid,
+		/// The event: JSON of at most 256 KiB. The Duty reads it as data.
+		#[serde(default)]
+		pub payload: serde_json::Value,
+	}
 }
 
 #[cfg(test)]

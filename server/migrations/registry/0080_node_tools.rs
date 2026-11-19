@@ -1,7 +1,8 @@
 // reinhardt-migration-source: 1
 // Raw SQL is DDL only: PostgreSQL validation function bodies have no typed operation.
-// Admit the `core.nodes@1` builtins `node_create` and `node_delete` (#1012),
-// which an Agent binds explicitly; they are never default tools.
+// Admit the `core.nodes@1` builtins `node_create` and `node_delete` (#1012)
+// and the `core.duties@1` builtin `duty_notify` (#1013), which an Agent binds
+// explicitly; none is a default tool.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0080_node_tools", "registry")

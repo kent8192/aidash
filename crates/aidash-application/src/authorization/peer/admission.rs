@@ -86,14 +86,18 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 			},
 			requirements: serde_json::from_value(description.task.requirements.clone())?,
 		};
-		let retained = if let Some(id) = scope.existing(source, description.grant_id).await? {
-			scope.activation_run(id).await?.is_some_and(|run| {
-				run.context.binding_snapshot.as_deref()
-					== Some(&description.inspection.binding_snapshot)
-			})
-		} else {
-			false
+		let activated = match scope.existing(source, description.grant_id).await? {
+			Some(id) => scope.activation_run(id).await?,
+			None => None,
 		};
+		// Once this Node has started the Run, the Home decides whether the grant
+		// still lives (#1013): its lifetime bounds only the admission, and the
+		// Home keeps a started grant while its Task is open, Stint asleep or not.
+		let started = activated.is_some();
+		let retained = activated.is_some_and(|run| {
+			run.context.binding_snapshot.as_deref()
+				== Some(&description.inspection.binding_snapshot)
+		});
 		let fresh = if retained {
 			super::execution::inspect_retained(&mut scope, source, &input, &description.inspection)
 				.await?
@@ -125,7 +129,7 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 		);
 		scope.require(&task, "task.read").await?;
 		scope.require(&task, "task.execute").await?;
-		if !scope.receiver_live(description.expires_at).await? {
+		if !started && !scope.receiver_live(description.expires_at).await? {
 			return Err(Error::Forbidden);
 		};
 		Ok(())

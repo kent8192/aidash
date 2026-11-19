@@ -23,6 +23,14 @@ pub enum TriggerKind {
 	/// events name the Duty's id as their trigger, and the trigger API never
 	/// creates one.
 	Watcher,
+	/// An event another Node sends (#1013): a Node of the same Tenant when
+	/// the Tenant's policy lets its sender use this Duty's Node, a Node of
+	/// another Tenant only when this Tenant registered it. `from_node`, when
+	/// set, admits only that Node's events.
+	NodeEvent {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		from_node: Option<String>,
+	},
 }
 
 impl TriggerKind {
@@ -31,8 +39,48 @@ impl TriggerKind {
 			Self::Webhook => "webhook",
 			Self::DutyCompleted { .. } => "duty_completed",
 			Self::Watcher => "watcher",
+			Self::NodeEvent { .. } => "node_event",
 		}
 	}
+
+	/// Checks what a person asks for: a `node_event` trigger's `from_node`
+	/// must be a Node address.
+	pub fn validate(&self) -> Result<()> {
+		if let Self::NodeEvent {
+			from_node: Some(node),
+		} = self
+		{
+			crate::nodes::NodeAddress::parse(node).map_err(|_| {
+				Error::Invalid(
+					"from_node must be a Node address such as aidash://deployment/node".into(),
+				)
+			})?;
+		}
+		Ok(())
+	}
+
+	/// Whether a `node_event` trigger takes an event from `sender`. Every
+	/// other kind takes none from a Node.
+	pub fn admits(&self, sender: &crate::nodes::NodeAddress) -> bool {
+		match self {
+			Self::NodeEvent { from_node } => from_node.as_deref().is_none_or(|node| {
+				crate::nodes::NodeAddress::parse(node).is_ok_and(|node| node == *sender)
+			}),
+			Self::Webhook | Self::DutyCompleted { .. } => false,
+		}
+	}
+}
+
+/// The payload an event from another Node is recorded with: the sending
+/// Node, which the Federation token proved, and the data it sent (#1013).
+/// Both are data the Agent reads, never a requester.
+pub fn node_event_payload(sender: &crate::nodes::NodeAddress, data: Value) -> Result<Value> {
+	if serde_json::to_vec(&data)?.len() > MAX_EVENT_BYTES {
+		return Err(Error::Invalid(format!(
+			"an event may be at most {MAX_EVENT_BYTES} bytes"
+		)));
+	}
+	Ok(serde_json::json!({"from_node": sender.to_string(), "data": data}))
 }
 
 /// A stored Duty Trigger.

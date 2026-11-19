@@ -170,14 +170,6 @@ pub async fn authorize(
 	call: &ToolCall,
 	contract: &ToolContract,
 ) -> Result<()> {
-	if repository.is_remote()
-		&& matches!(&contract.identity, ToolIdentity::Builtin(grant)
-			if matches!(grant.as_str(), "builtin:task_delegate" | "builtin:agent_discover"))
-	{
-		return Err(Error::Invalid(
-			"a Run started by a Remote Grant is limited to one hop and cannot discover agents or delegate tasks".into(),
-		));
-	}
 	named(
 		refresh(repository).await,
 		call,
@@ -191,6 +183,10 @@ pub async fn authorize(
 	{
 		return Err(refused(call, RefusalCheck::AgentFlag, None));
 	}
+	// A Run started by a Remote Grant hands on only a Task its grant created at
+	// the Home (#654): the Home's record of the grant's outputs says which, and
+	// it is asked before this Node's lease is taken.
+	let delegated = delegated_output(repository, run, call, contract).await?;
 	// Taking the lease only waits for the Access guard; it refuses nothing.
 	let mut scope = repository.lease().await?;
 	if let Some(allowance) = scope.subnode_allowance().await?
@@ -221,16 +217,6 @@ pub async fn authorize(
 				.narrowed(Some(contract.behavior.concurrency));
 			if current != *contract {
 				return Err(Error::Conflict("admitted provider contract changed".into()));
-			}
-			if repository.is_remote()
-				&& descriptor.provider == "core.tasks@1"
-				&& matches!(
-					descriptor.operation.as_str(),
-					"task_delegate" | "agent_discover"
-				) {
-				return Err(Error::Invalid(
-					"a Run started by a Remote Grant is limited to one hop and cannot discover agents or delegate tasks".into(),
-				));
 			}
 			operation = Some(descriptor.operation);
 			&current.authorization
@@ -411,6 +397,16 @@ pub async fn authorize(
 					.as_str()
 					.ok_or_else(|| Error::Invalid("missing node_id".into()))?;
 				let reference: EntityRef = serde_json::from_value(call.arguments["agent"].clone())?;
+				if repository.is_remote() {
+					// A Run started by a Remote Grant hands work on through its Home, which
+					// owns the Task and prepares the next grant itself (#654, ADR 0109): the
+					// Home checks the agent and the target Node by its own policy, and the
+					// target decides by its own consent. This Node consented through the
+					// tool's policy check, the Agent's delegation flag and `task.delegate`
+					// on the Home's Task below.
+					aidash_domain::nodes::NodeAddress::parse(node)?;
+					continue;
+				}
 				if aidash_domain::nodes::names_home(node, &run.home_node) {
 					named(
 						scope.catalog(&reference, "agent.execute", &call.name).await,
@@ -469,6 +465,7 @@ pub async fn authorize(
 					kind,
 					&id,
 					named_task,
+					delegated,
 				)
 				.await;
 				let resource = named(
@@ -629,6 +626,37 @@ pub async fn filter<T: Send>(
 	Ok(())
 }
 
+/// The Task a Remote Grant Run's `task_delegate` names, when it is not the
+/// Run's own: only a Task the Home records as this grant's output may be
+/// handed on (#654); any other is the model's mistake, answered like a Task
+/// that does not exist. `None` for every other call.
+async fn delegated_output(
+	repository: &dyn AgentToolRepository,
+	run: &RunMetadata,
+	call: &ToolCall,
+	contract: &ToolContract,
+) -> Result<Option<Uuid>> {
+	if !repository.is_remote()
+		|| !contract
+			.authorization
+			.requirements
+			.contains(&AuthorizationRequirement::LocalDelegation)
+	{
+		return Ok(None);
+	}
+	let Some(named) = call.arguments["task_id"].as_str() else {
+		return Ok(None);
+	};
+	let task: Uuid = named.parse().map_err(|_| task_not_found(named))?;
+	if task == run.task_id {
+		return Ok(None);
+	}
+	if !repository.grant_output(task).await? {
+		return Err(task_not_found(named));
+	}
+	Ok(Some(task))
+}
+
 async fn protected_resource(
 	scope: &mut dyn crate::ports::authorization::tools::AgentToolScope,
 	remote: bool,
@@ -636,12 +664,25 @@ async fn protected_resource(
 	kind: &str,
 	id: &str,
 	named_task: bool,
+	delegated: Option<Uuid>,
 ) -> Result<aidash_domain::policy::Resource> {
 	Ok(if remote {
-		// A foreign Run's admitted Task is the only one it can name; another is the model's
-		// mistake, like a task the local Workspace does not hold.
 		if named_task && kind == "task" && id != run.task_id.to_string() {
-			return Err(task_not_found(id));
+			// Only `task_delegate` names another Task, and only one the Home
+			// recorded as this grant's output (#654). It is judged as that Task,
+			// never with the admitted Task's attributes.
+			let Some(task) = delegated.filter(|task| task.to_string() == id) else {
+				return Err(task_not_found(id));
+			};
+			return Ok(scope.resource(
+				kind,
+				&format!("{}/tasks/{task}", run.home_node),
+				json!({
+					"source_workspace_id": run.workspace_id,
+					"source_task_id": task,
+					"source_parent_task_id": run.task_id,
+				}),
+			));
 		}
 		scope.resource(
 			kind,
@@ -688,8 +729,16 @@ pub async fn action(
 ) -> Result<()> {
 	refresh(repository).await?;
 	let mut scope = repository.lease().await?;
-	let resource =
-		protected_resource(scope.as_mut(), repository.is_remote(), run, kind, id, false).await?;
+	let resource = protected_resource(
+		scope.as_mut(),
+		repository.is_remote(),
+		run,
+		kind,
+		id,
+		false,
+		None,
+	)
+	.await?;
 	scope.require(&resource, action).await
 }
 

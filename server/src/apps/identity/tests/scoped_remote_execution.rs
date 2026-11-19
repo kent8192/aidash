@@ -3449,12 +3449,28 @@ async fn receiver_owns_the_remote_executor_subject(
 	p.close().await;
 }
 
+/// Multi-hop delegation (#654, ADR 0109 amendment): a Remote Grant Run
+/// discovers through its Home, creates a child there and hands it on to a
+/// third Node. The Home prepares that grant itself, for the chain that
+/// reached it through the receiver, and the child stays a Federated output.
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_grant_run_reports_its_one_hop_limit_for_discovery_and_delegation(
+async fn a_remote_grant_run_hands_its_child_on_to_a_third_node_through_its_home(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
+	// A third Node: a second Node of the Home's Tenant with the Agent approved.
+	let third =
+		p.a.config
+			.deployment
+			.node(common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let research =
+		p.a.registry
+			.get(&tenant, "research", "1.0.0")
+			.await
+			.unwrap();
+	common::approve_agent_on(&p.a, "acme", &research, &third).await;
 	let run = p.run().await;
 	for operation in ["agent_discover", "task_delegate"] {
 		let binding = run
@@ -3466,49 +3482,180 @@ async fn remote_grant_run_reports_its_one_hop_limit_for_discovery_and_delegation
 			.iter()
 			.find(|binding| binding.definition.config["operation"] == operation)
 			.unwrap();
-		assert!(
-			binding.excluded_reason.is_none(),
-			"{operation} must be available to return a one-hop rejection"
-		);
+		assert!(binding.excluded_reason.is_none(), "{operation}");
 	}
 	let home = Home::new(p.b.clone(), run);
-	let discovery = home.discover(&Default::default()).await.unwrap_err();
-	assert!(discovery.to_string().contains("one hop"), "{discovery}");
+	let cards = home.discover_cards(&Default::default()).await.unwrap();
+	assert!(
+		cards
+			.agents
+			.iter()
+			.any(|card| card.node_id == third.to_string()),
+		"{cards:?}"
+	);
+	let child = home
+		.create_task(
+			"multi-hop-child",
+			&NewTask {
+				title: "Multi-hop child".into(),
+				description: "Handed on to a third Node".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
 	let agent = EntityRef {
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	let refusal = home
-		.delegate_with_key("one-hop", p.task, &node_of(&p.a), &agent)
+	let delegation = home
+		.delegate_with_key("multi-hop", child.id, &third.to_string(), &agent)
 		.await
-		.unwrap_err();
-	assert!(refusal.to_string().contains("one hop"), "{refusal}");
+		.unwrap();
+	assert_eq!(delegation.task_id, child.id);
+	assert_eq!(delegation.node_id, third.to_string());
+	// The Home prepared the next grant for the whole chain, ending with the
+	// third Node's executor.
+	let chain: Vec<String> = sqlx::query_scalar(
+		"SELECT subject_chain FROM authorization_remote_grants WHERE task_id = $1 AND node_id = $2",
+	)
+	.bind(child.id)
+	.bind(third.to_string())
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		chain.last(),
+		Some(&aidash_domain::qualified_agent(&third, "research", "1.0.0"))
+	);
+	assert!(
+		chain.contains(&aidash_domain::agent_subject(
+			&node_of(&p.b),
+			"research",
+			"1.0.0"
+		)),
+		"{chain:?}"
+	);
+	// The child is the remote Run's output, so its origin stays Federated.
+	let output: bool = sqlx::query_scalar(
+		"SELECT EXISTS (SELECT 1 FROM authorization_remote_outputs WHERE grant_id = $1 AND resource_kind = 'task' AND resource_id = $2)",
+	)
+	.bind(p.grant)
+	.bind(child.id)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(output);
+	// A retry reuses the grant the first call prepared.
+	let again = home
+		.delegate_with_key("multi-hop", child.id, &third.to_string(), &agent)
+		.await
+		.unwrap();
+	assert_eq!(again.node_id, delegation.node_id);
+	let grants: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1 AND node_id = $2",
+	)
+	.bind(child.id)
+	.bind(third.to_string())
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(grants, 1);
 	p.close().await;
 }
 
+/// An earlier hop's executor sits mid-chain at the next hop. The Home judges
+/// the whole chain by its own policy, so one it does not know refuses the
+/// hop (#654, fail closed), as it refuses to admit a Task that executor made.
 #[rstest::rstest]
 #[tokio::test]
-async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
+async fn a_hop_through_an_executor_the_home_does_not_know_is_refused(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let third =
+		p.a.config
+			.deployment
+			.node(common::second_node_in(p.a.store.pool.fixture_driver(), "acme").await);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let research =
+		p.a.registry
+			.get(&tenant, "research", "1.0.0")
+			.await
+			.unwrap();
+	common::approve_agent_on(&p.a, "acme", &research, &third).await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let child = home
+		.create_task(
+			"unknown-executor-child",
+			&NewTask {
+				title: "Unknown executor child".into(),
+				description: "Handed on".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	// The Home forgets the receiver's executor.
+	let mut policy = p.source_policy.clone();
+	policy["subjects"]
+		.as_object_mut()
+		.unwrap()
+		.remove(&aidash_domain::agent_subject(
+			&node_of(&p.b),
+			"research",
+			"1.0.0",
+		));
+	common::replace_policy(&p.a.store, "acme", policy).await;
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	assert!(
+		home.delegate_with_key("unknown-executor", child.id, &third.to_string(), &agent)
+			.await
+			.is_err()
+	);
+	let grants: i64 =
+		sqlx::query_scalar("SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1")
+			.bind(child.id)
+			.fetch_one(p.a.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(grants, 0);
+	p.close().await;
+}
+
+/// The receiver's own policy lets its Run's `task_delegate` call hand a Home
+/// Task on (#654): the call passes the tool authorization here as a real Run's
+/// call does, and the Home admits the child on its own Node.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
 	let run = p.run().await;
-	let binding = run
-		.context
-		.binding_snapshot
-		.as_ref()
-		.unwrap()
-		.bindings
-		.iter()
-		.find(|binding| binding.definition.config["operation"] == "task_delegate")
+	let home = Home::new(p.b.clone(), run.clone());
+	let child = home
+		.create_task(
+			"tool-hop-child",
+			&NewTask {
+				title: "Tool hop child".into(),
+				description: "Handed on by the model".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
 		.unwrap();
-	assert!(binding.excluded_reason.is_none());
-	let target = aidash_domain::nodes::NodeAddress::derived("aidash://third", "acme").to_string();
-	let mut policy = p.receiver_policy.clone();
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-next-hop","effect":"deny","subjects":{"any":true},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target]}}));
-	common::replace_policy(&p.b.store, "acme", policy).await;
 	let pending = common::tool_pending(
-		json!({"response":{"text":"","tool_calls":[{"id":"second-hop","name":"task_delegate","arguments":{"task_id":p.task,"node_id":target,"agent":{"id":"research","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+		json!({"response":{"text":"","tool_calls":[{"id":"next-hop","name":"task_delegate","arguments":{"task_id":child.id,"node_id":node_of(&p.a),"agent":{"id":"research","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
 	);
 	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
 		.bind(pending)
@@ -3520,29 +3667,30 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 	let run = p.run().await;
 	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
 	let history = json!(run.context);
-	let error = first_result(&history)["event"]["result"]["error"]
-		.as_str()
-		.unwrap_or_default();
-	assert!(error.contains("one hop"), "{history}");
+	let result = &first_result(&history)["event"]["result"];
+	assert!(result.get("error").is_none(), "{history}");
+	assert_eq!(result["task_id"], json!(child.id), "{history}");
+	assert_eq!(
+		p.a.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|run| run.task_id == child.id)
+			.count(),
+		1
+	);
 	p.close().await;
 }
 
+/// A Remote Grant Run may hand a child back to its Home's own Node (#654).
 #[rstest::rstest]
 #[tokio::test]
-async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_pair: Pair) {
+async fn a_remote_grant_run_hands_its_child_back_to_its_homes_own_node(
+	#[future(awt)] scoped_pair: Pair,
+) {
 	let p = scoped_pair;
-	let run = p.run().await;
-	let excluded = run
-		.context
-		.binding_snapshot
-		.as_ref()
-		.unwrap()
-		.bindings
-		.iter()
-		.find(|binding| binding.definition.config["operation"] == "task_delegate")
-		.unwrap();
-	assert!(excluded.excluded_reason.is_none());
-	let home = Home::new(p.b.clone(), run);
+	let home = Home::new(p.b.clone(), p.run().await);
 	let child = home
 		.create_task(
 			"scoped-child-create",
@@ -3560,21 +3708,23 @@ async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	// A Remote Grant never lets its Run hand work on.
+	// The second call is the durable replay of the first.
 	for _ in 0..2 {
-		assert!(
-			home.delegate_with_key("scoped-child-delegate", child.id, &node_of(&p.a), &agent)
-				.await
-				.is_err()
-		);
+		let delegation = home
+			.delegate_with_key("scoped-child-delegate", child.id, &node_of(&p.a), &agent)
+			.await
+			.unwrap();
+		assert_eq!(delegation.task_id, child.id);
 	}
-	assert!(
-		!p.a.store
+	assert_eq!(
+		p.a.store
 			.runs(&TEST_FIXTURE)
 			.await
 			.unwrap()
 			.iter()
-			.any(|run| run.task_id == child.id)
+			.filter(|run| run.task_id == child.id)
+			.count(),
+		1
 	);
 	assert!(
 		p.a.store
@@ -3582,7 +3732,7 @@ async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_
 			.await
 			.unwrap()
 			.owner
-			.is_none()
+			.is_some()
 	);
 	p.close().await;
 }
@@ -3590,7 +3740,6 @@ async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_
 #[rstest::rstest]
 #[case("source_policy")]
 #[case("receiver_policy")]
-#[case("expiry")]
 #[case("grant_revocation")]
 #[case("source_credential")]
 #[case("receiver_mapping")]
@@ -3625,27 +3774,6 @@ async fn a_changed_execution_boundary_stops_before_inference(
 				.0,
 				200
 			);
-		}
-		"expiry" => {
-			{
-				let query_bind_1 = p.grant;
-				sqlx::query(
-					&Query::update()
-						.table(Alias::new("authorization_remote_grants"))
-						.value_expr(
-							Alias::new("expires_at"),
-							Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
-						)
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id=?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(p.a.store.pool.fixture_driver())
-				.await
-			}
-			.unwrap();
 		}
 		"grant_revocation" => {
 			assert_eq!(
@@ -3782,6 +3910,96 @@ async fn a_changed_execution_boundary_stops_before_inference(
 			.artifacts
 			.is_empty()
 	);
+	p.close().await;
+}
+
+/// Ends the grant's lifetime in the past on both Nodes, as if it had been
+/// prepared with a short one: the receiver pins the Description the Home
+/// described, `expires_at` included, and compares every later description
+/// with it, so moving only the Home's column would fail for that reason.
+async fn lapse_grant(p: &Pair) {
+	const LAPSED: &str = "2000-01-01T00:00:00Z";
+	sqlx::query(
+		"UPDATE authorization_remote_grants SET expires_at = $2::timestamptz WHERE id = $1",
+	)
+	.bind(p.grant)
+	.bind(LAPSED)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let pinned = sqlx::query(
+		"UPDATE authorization_remote_admissions SET description = jsonb_set(description, '{expires_at}', to_jsonb($2::text)) WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.bind(LAPSED)
+	.execute(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(pinned.rows_affected(), 1);
+}
+
+/// Round 3 Q5 of the agent activation grilling (#1013): a Remote Grant lives
+/// while its Task is open, however long the Run's Stint sleeps, and ends with
+/// the Task. Its lifetime bounds only the admission.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_sleeping_remote_run_keeps_its_grant_past_its_lifetime_until_its_task_ends(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	assert_eq!(p.run().await.phase().as_str(), "THINKING");
+	// The Run sleeps past its grant's lifetime, as it would on a three-day approval.
+	lapse_grant(&p).await;
+	// The Home's requester still reaches it, and the receiver takes the input.
+	let messages = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
+	let sent = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&messages,
+		json!({"id":Uuid::new_v4(),"content":"Still there after the weekend?"}),
+	)
+	.await;
+	assert_eq!(sent.0, 200, "{}", sent.1);
+	assert_eq!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+	let (status, states) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{states}");
+	assert_eq!(states.as_array().unwrap().len(), 1, "{states}");
+	// Its next boundary describes the grant afresh and goes on.
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+	assert!(!p.requests.lock().await.is_empty());
+	// Once the Task has ended, the grant has too.
+	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+		.bind(p.task)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let ended = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&messages,
+		json!({"id":Uuid::new_v4(),"content":"After the end"}),
+	)
+	.await;
+	assert_ne!(ended.0, 200, "{}", ended.1);
 	p.close().await;
 }
 
@@ -4156,32 +4374,28 @@ async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
 	);
 	assert!(states[0].get("human_requests").is_none(), "{states}");
 	assert!(states[0].get("semantic").is_none(), "{states}");
-	// A stale Home grant must never offer a call, even while the receiver remains paused.
-	let original_expiry: chrono::DateTime<chrono::Utc> =
-		sqlx::query_scalar("SELECT expires_at FROM authorization_remote_grants WHERE id = $1")
-			.bind(p.grant)
-			.fetch_one(p.a.store.pool.fixture_driver())
-			.await
-			.unwrap();
-	for update in [
-		"UPDATE authorization_remote_grants SET revoked = true WHERE id = $1",
-		"UPDATE authorization_remote_grants SET revoked = false, expires_at = now() - interval '1 second' WHERE id = $1",
-	] {
-		sqlx::query(update)
-			.bind(p.grant)
-			.execute(p.a.store.pool.fixture_driver())
-			.await
-			.unwrap();
-		let (status, stale) = request(&p.aa, &mia, "GET", &path, json!({})).await;
-		assert_eq!(status, 200, "{stale}");
-		assert_eq!(stale, json!([]));
-	}
-	sqlx::query("UPDATE authorization_remote_grants SET expires_at = $2 WHERE id = $1")
+	// A revoked Home grant must never offer a call, even while the receiver remains paused.
+	sqlx::query("UPDATE authorization_remote_grants SET revoked = true WHERE id = $1")
 		.bind(p.grant)
-		.bind(original_expiry)
 		.execute(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	let (status, stale) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{stale}");
+	assert_eq!(stale, json!([]));
+	sqlx::query("UPDATE authorization_remote_grants SET revoked = false WHERE id = $1")
+		.bind(p.grant)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// Past its lifetime a held grant still offers the call while its Task is
+	// open, and the call can still be declined: the Run sleeps on it, and its
+	// grant lives until the Task ends (#1013).
+	lapse_grant(&p).await;
+	let (status, sleeping) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{sleeping}");
+	assert_eq!(sleeping.as_array().unwrap().len(), 1, "{sleeping}");
+	assert_eq!(sleeping[0]["execution"]["declinable_call"]["call"], key);
 	let (status, declined) =
 		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
 	assert_eq!(status, 200, "{declined}");

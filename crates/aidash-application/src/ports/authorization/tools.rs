@@ -18,6 +18,10 @@ pub trait AgentToolRepository: Send + Sync {
 	/// The plugin tools the Run pinned at its first step; `None` before it pinned any.
 	fn plugin_tools(&self) -> Option<&PluginTools>;
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>>;
+	/// Whether the Home records `task` as an output of the Remote Grant that
+	/// started this Run (#654): a Task the Run created there, which it may hand
+	/// on. Asked only for a Run started by a Remote Grant, outside any lease.
+	async fn grant_output(&self, task: Uuid) -> Result<bool>;
 }
 #[async_trait]
 pub trait AgentToolScope: Send {

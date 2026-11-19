@@ -113,8 +113,8 @@ pub struct DutyTickRecord {
 	pub settled_at: Option<DateTime<Utc>>,
 }
 
-/// A Duty Trigger other than the clock (#1011): a webhook, or another Duty's
-/// Task ending.
+/// A Duty Trigger other than the clock (#1011): a webhook, another Duty's
+/// Task ending, or an event from another Node (#1013).
 #[model(app_label = "workspaces", table_name = "duty_triggers")]
 #[derive(Serialize, Deserialize)]
 pub struct DutyTriggerRecord {
@@ -126,12 +126,16 @@ pub struct DutyTriggerRecord {
 	pub workspace_id: Uuid,
 	#[field]
 	pub duty_id: Uuid,
-	/// `webhook` or `duty_completed`.
+	/// `webhook`, `duty_completed` or `node_event`.
 	#[field(field_type = "text")]
 	pub kind: String,
 	/// The Duty whose Tasks ending wakes this one, for `duty_completed`.
 	#[field(null = true)]
 	pub source_duty_id: Option<Uuid>,
+	/// The only Node a `node_event` trigger takes events from, if one is
+	/// named (#1013).
+	#[field(null = true, field_type = "text")]
+	pub from_node: Option<String>,
 	#[field]
 	pub created_at: DateTime<Utc>,
 	#[field(field_type = "text")]

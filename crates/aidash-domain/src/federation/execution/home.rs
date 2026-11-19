@@ -45,6 +45,8 @@ pub struct HomeBinding {
 	pub task_id: Uuid,
 	pub task_revision: i64,
 	pub initial_task: Value,
+	/// The Home recorded the receiver's activation of the Run (#772, #1013).
+	pub activated: bool,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -112,6 +114,77 @@ impl Grant {
 			Ok(Some(task.clone()))
 		}
 	}
+}
+
+/// What decides whether a Remote Grant still lets its Task be worked
+/// (#1013, Round 3 Q5 of the agent activation grilling).
+///
+/// A grant's lifetime (at most an hour) is its admission deadline: it bounds
+/// the grant only until the receiver has started the Task. From then on the
+/// grant lives while its Task has not ended, whether the Run's Stint is awake
+/// or asleep waiting for an approval, CI or a child Task, so the Home keeps it
+/// renewed for as long as the Task is open. Revocation ends it at once. A broken
+/// chain is not part of this rule: the Home re-evaluates the whole chain at
+/// every use, so every use of such a grant is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Liveness {
+	pub revoked: bool,
+	pub expires_at: DateTime<Utc>,
+	/// This grant's own Home binding recorded the receiver's activation. The
+	/// Task's status never stands in for it.
+	pub activated: bool,
+	/// The receiver's executor holds the Task: the Task's owner is the last
+	/// subject of the grant's chain, which only that receiver's claim makes it.
+	/// A Task someone else claimed, or one a retry reopened, is not held.
+	pub held: bool,
+	/// The Home Task's status, if the Task still exists.
+	pub task: Option<crate::TaskStatus>,
+}
+
+impl Liveness {
+	/// The facts of `grant`, its Home binding and its Home Task.
+	pub fn of(grant: &Grant, binding: Option<&HomeBinding>, task: Option<&crate::Task>) -> Self {
+		Self {
+			revoked: grant.revoked,
+			expires_at: grant.expires_at,
+			activated: binding.is_some_and(|binding| {
+				binding.grant_id == grant.id
+					&& binding.task_id == grant.task_id
+					&& binding.activated
+			}),
+			held: task.is_some_and(|task| {
+				task.id == grant.task_id
+					&& task.owner.is_some()
+					&& task.owner.as_ref() == grant.subject_chain.last()
+			}),
+			task: task.map(|task| task.status),
+		}
+	}
+
+	/// Whether the grant is live at `now`: inside its lifetime, or activated,
+	/// held by its receiver and its Task not ended.
+	pub fn live(&self, now: DateTime<Utc>) -> bool {
+		!self.revoked
+			&& (self.expires_at > now
+				|| (self.activated
+					&& self.held && self.task.is_some_and(|status| !status.is_terminal())))
+	}
+}
+
+/// The Task statuses that end a Remote Grant its receiver holds.
+pub fn ending_statuses() -> impl Iterator<Item = crate::TaskStatus> {
+	[
+		crate::TaskStatus::Open,
+		crate::TaskStatus::Claimed,
+		crate::TaskStatus::Running,
+		crate::TaskStatus::Completed,
+		crate::TaskStatus::Failed,
+		crate::TaskStatus::Blocked,
+		crate::TaskStatus::Cancelled,
+		crate::TaskStatus::Abandoned,
+	]
+	.into_iter()
+	.filter(|status| status.is_terminal())
 }
 
 /// Complete current authority required to reuse an immutable preparation key.

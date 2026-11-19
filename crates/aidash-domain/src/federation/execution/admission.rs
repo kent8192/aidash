@@ -188,5 +188,23 @@ pub struct MessageReceipt {
 	pub run_id: Uuid,
 	pub accepted: bool,
 }
+/// Whether a receiver still serves its Home's request about an admitted Run
+/// (a Live preview, #1013), the admission being open: never for an ended or
+/// cancelled Run; for a Run that never started (step 0, `READY`), only within
+/// the grant's pinned lifetime. Once the Run has started, whether its grant
+/// still lives is the Home's to decide, and the Home has just asked.
+pub fn serves_home(
+	phase: crate::RunPhase,
+	control: crate::RunControl,
+	step: i32,
+	expires_at: DateTime<Utc>,
+	now: DateTime<Utc>,
+) -> bool {
+	if phase.is_terminal() || control == crate::RunControl::Cancelled {
+		return false;
+	}
+	let started = step > 0 || phase != crate::RunPhase::Ready;
+	started || expires_at > now
+}
 #[cfg(test)]
 mod tests;

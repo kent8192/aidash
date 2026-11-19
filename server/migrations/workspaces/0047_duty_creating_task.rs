@@ -7,7 +7,7 @@
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0047_duty_creating_task", "workspaces")
-		.add_dependency("workspaces", "0041_duty_scripts_state")
+		.add_dependency("workspaces", "0044_duty_trigger_node_event_check")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {

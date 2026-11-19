@@ -134,6 +134,28 @@ impl RemoteCommandEffects for Scope<'_> {
 			.map(|value| json!(value))
 			.map_err(Into::into)
 	}
+	async fn discover(
+		&mut self,
+		workspace: Uuid,
+		search: &aidash_domain::registry::Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards> {
+		let result: NativeResult<aidash_domain::federation::DiscoveryCards> = async {
+			// The Node of the Home Task asks, as the grant's root subject under the
+			// chain the command's lease holds, exactly as a person's discovery
+			// does (#654). Only the cards a model sees leave this Node.
+			let node = self.access.workspace_node(workspace).await?;
+			let discovery = crate::authorization::peer::discovery::discover_in(
+				self.runtime,
+				self.access,
+				Some(node),
+				search,
+			)
+			.await?;
+			Ok(aidash_domain::federation::DiscoveryCards::from(&discovery))
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn created_by_grant(&mut self, grant: Uuid, child: Uuid) -> Result<bool> {
 		let result: NativeResult<bool> = async {
 let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = child; crate::database::native::query_scalar(&Query::select()

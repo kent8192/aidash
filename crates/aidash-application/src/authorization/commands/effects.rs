@@ -12,7 +12,7 @@ use aidash_domain::{
 		self, Metadata,
 		effects::{AuditError, audit_event, child_eligible, field},
 	},
-	registry::{EntityRef, Entry},
+	registry::{EntityRef, Entry, Search},
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -200,6 +200,19 @@ pub async fn execute(
 				record
 			}
 		}
+		// Whether a Task is one this grant created, so the receiver may let its
+		// Run hand it on (#654). Reads nothing else about the Task.
+		"created_task" => {
+			let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+			json!({"created": scope.created_by_grant(input.grant_id, id).await?})
+		}
+		"discover" => {
+			let search: Search = match data.get("search") {
+				None | Some(Value::Null) => Search::default(),
+				Some(search) => serde_json::from_value(search.clone())?,
+			};
+			serde_json::to_value(scope.discover(task.workspace_id, &search).await?)?
+		}
 		"workspace_children" => {
 			let parent: Uuid = serde_json::from_value(data["parent_id"].clone())?;
 			if parent != task.id {
@@ -324,6 +337,8 @@ pub async fn execute(
 				return Err(Error::Forbidden);
 			}
 			let created = scope.created_by_grant(input.grant_id, child.id).await?;
+			// Another Node is reached through [`onward`] and a Remote Grant of the
+			// Home's own, never inside this lease.
 			if !created || field(data, "node_id")? != scope.local_node() {
 				return Err(Error::Forbidden);
 			}
@@ -446,6 +461,66 @@ pub async fn execute(
 		return Err(Error::Forbidden);
 	}
 	Ok(result)
+}
+/// A scoped `delegate` that names a Node other than the Home's own (#654,
+/// ADR 0109). The Home hands the child on through a Remote Grant of its own,
+/// which it prepares and activates only after the command's lease ends: both
+/// talk to the target Node, and the Home releases its locks before peer calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Onward {
+	pub child: Uuid,
+	pub node: String,
+	pub agent: EntityRef,
+}
+
+/// Whether a scoped command hands a child Task to another Node.
+pub fn is_onward(local_node: &str, operation: &str, data: &Value) -> bool {
+	operation == "delegate"
+		&& data
+			.get("node_id")
+			.and_then(Value::as_str)
+			.is_some_and(|node| node != local_node)
+}
+
+/// Checks an onward `delegate` under the command's lease as strictly as one
+/// for the Home's own Node: a live binding, no conflicting replay, a child of
+/// the Run's Task that this grant created and the caller may hand on. It
+/// prepares nothing; the caller hands the child on after the lease ends, and
+/// the grant it prepares re-checks the whole chain by the Home's policy.
+pub async fn onward(scope: &mut dyn RemoteCommandEffects, input: Command<'_>) -> Result<Onward> {
+	let data = input.data;
+	let grant = input.grant_id;
+	if !is_onward(scope.local_node(), input.operation, data) {
+		return Err(Error::Invalid(
+			"only a delegation to another Node is handed on".into(),
+		));
+	}
+	let node = field(data, "node_id")?.to_owned();
+	aidash_domain::nodes::NodeAddress::parse(&node)?;
+	let Prepared { task, owner, .. } = match prepare(scope, input).await? {
+		// Nothing records an onward delegation for replay: handing the same child
+		// to the same Agent again reuses the grant the first call prepared.
+		Admission::Replay(_) => {
+			return Err(Error::Conflict(
+				"remote command key binds a different delegation".into(),
+			));
+		}
+		Admission::Ready(prepared) => *prepared,
+	};
+	let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+	let child = scope.task(id).await?;
+	if !child_eligible(&task, &child, &owner) || !scope.created_by_grant(grant, child.id).await? {
+		return Err(Error::Forbidden);
+	}
+	let agent: EntityRef = serde_json::from_value(data["agent"].clone())?;
+	if !scope.live(grant).await? {
+		return Err(Error::Forbidden);
+	}
+	Ok(Onward {
+		child: child.id,
+		node,
+		agent,
+	})
 }
 async fn track(
 	scope: &mut dyn RemoteCommandEffects,

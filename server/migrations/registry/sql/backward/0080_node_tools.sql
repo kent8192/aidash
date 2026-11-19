@@ -5,6 +5,11 @@ BEGIN
   RAISE EXCEPTION 'registry 0080_node_tools cannot be reversed: definitions declare Node tools'
    USING ERRCODE = '55000';
  END IF;
+ IF EXISTS(SELECT 1 FROM registry WHERE kind = 'tool' AND metadata #>> '{config,provider}' = 'core.duties@1'
+  AND metadata #>> '{config,operation}' = 'duty_notify') THEN
+  RAISE EXCEPTION 'registry 0080_node_tools cannot be reversed: definitions declare duty_notify'
+   USING ERRCODE = '55000';
+ END IF;
 END $$;
 DO $$
 DECLARE original text; copied text;

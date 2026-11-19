@@ -1,5 +1,7 @@
 //! Duty Trigger endpoints and the webhook that receives events (#1011).
-use super::super::services::duty_events::{Operation, execute, receive};
+use super::super::services::duty_events::{Operation, execute, receive, receive_from_node};
+use crate::apps::identity::services::http_auth::InboundCall;
+use crate::apps::workspaces::serializers::duties::NodeEventInput;
 use crate::{authorization::identity::Actor, federation::Federation, http::json::Json};
 use aidash_domain::duties::events::TriggerKind;
 use reinhardt::http::ViewResult;
@@ -69,4 +71,19 @@ pub async fn webhook(
 		.and_then(|value| value.to_str().ok())
 		.map(str::to_owned);
 	crate::http::json(receive(&runtime, trigger, signature.as_deref(), request.body()).await)
+}
+
+/// An event another Node sends to a `node_event` trigger (#1013). The sending
+/// Node and subject come from the verified Federation token, never the body.
+#[post(
+	"/federation/v0.1/scoped/duty-events",
+	name = "duty-node-event",
+	auth = "protected"
+)]
+pub async fn node_event(
+	#[inject] runtime: Federation,
+	#[inject] peer: InboundCall,
+	Json(input): Json<NodeEventInput>,
+) -> ViewResult<Response> {
+	crate::http::json(receive_from_node(&runtime, peer.0, input.trigger_id, input.payload).await)
 }

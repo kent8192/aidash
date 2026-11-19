@@ -189,6 +189,7 @@ impl HomeScope for SourceSession {
 			task_id: task().id,
 			task_revision: 7,
 			initial_task: if changed { json!({}) } else { json!(task()) },
+			activated: true,
 		}))
 	}
 	async fn grants(&mut self, _: Uuid) -> Result<Vec<Grant>> {

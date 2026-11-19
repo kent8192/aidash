@@ -122,6 +122,14 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 	) -> Result<Value>;
 	async fn record(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value>;
 	async fn children(&mut self, workspace: Uuid, parent: Uuid) -> Result<Value>;
+	/// The Agents the Node of `workspace` finds for the grant's chain, as the
+	/// cards a model sees (#654): a Remote Grant Run discovers through its
+	/// Home, which is where every Task it hands on is granted from.
+	async fn discover(
+		&mut self,
+		workspace: Uuid,
+		search: &aidash_domain::registry::Search,
+	) -> Result<aidash_domain::federation::DiscoveryCards>;
 	async fn created_by_grant(&mut self, grant: Uuid, child: Uuid) -> Result<bool>;
 	async fn apply(&mut self, context: WriteContext<'_>, effect: Effect<'_>) -> Result<Applied>;
 	async fn record_output(

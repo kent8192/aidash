@@ -82,6 +82,9 @@ pub struct TriggerView {
 	pub url: Option<String>,
 	/// The webhook's signing secret, shown once when it is created.
 	pub secret: Option<String>,
+	/// Where another Node sends a `node_event` trigger's events: the Duty's
+	/// Node, which a sender names with the trigger's id (#1013).
+	pub node_id: Option<String>,
 }
 
 /// What a person asks of a Duty's triggers.
@@ -92,13 +95,29 @@ pub(crate) enum Operation {
 	Events(Uuid),
 }
 
-fn view(f: &Federation, trigger: DutyTrigger, secret: bool) -> TriggerView {
+fn view(f: &Federation, trigger: DutyTrigger, secret: bool, node: &str) -> TriggerView {
 	let webhook = matches!(trigger.kind, TriggerKind::Webhook);
+	let node_event = matches!(trigger.kind, TriggerKind::NodeEvent { .. });
 	TriggerView {
 		url: webhook.then(|| format!("{}{WEBHOOK_PREFIX}{}", f.config.endpoint, trigger.id)),
 		secret: (webhook && secret).then(|| webhook_secret(f, trigger.id)),
+		node_id: node_event.then(|| node.to_owned()),
 		trigger,
 	}
+}
+
+/// The address of the Node a Duty's Workspace belongs to.
+async fn duty_node(
+	f: &Federation,
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	duty: &Duty,
+) -> Result<String> {
+	let node = duty_repository::workspace_node(tx, tenant, duty.workspace_id).await?;
+	Ok(f.config
+		.deployment
+		.node(aidash_domain::nodes::NodeName::parse(&node)?)
+		.to_string())
 }
 
 /// Runs one person's trigger operation. Only the Requester adds or removes a
@@ -125,6 +144,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					));
 				}
 				let duty = app::editable(&mut scope, id).await?;
+				kind.validate()?;
 				if let TriggerKind::DutyCompleted { source_duty_id } = &kind {
 					if *source_duty_id == duty.id {
 						return Err(Error::Invalid("a Duty cannot wake on its own Tasks".into()));
@@ -146,16 +166,18 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					&trigger,
 				)
 				.await?;
-				Ok(serde_json::to_value(view(f, trigger, true))?)
+				let node = duty_node(f, &mut *scope.access.tx, &tenant, &duty).await?;
+				Ok(serde_json::to_value(view(f, trigger, true, &node))?)
 			}
 			Operation::List(id) => {
 				let detail = app::detail(&mut scope, id).await?;
 				let triggers =
 					repository::triggers(&mut *scope.access.tx, &tenant, detail.duty.id).await?;
+				let node = duty_node(f, &mut *scope.access.tx, &tenant, &detail.duty).await?;
 				Ok(serde_json::to_value(
 					triggers
 						.into_iter()
-						.map(|trigger| view(f, trigger, false))
+						.map(|trigger| view(f, trigger, false, &node))
 						.collect::<Vec<_>>(),
 				)?)
 			}
@@ -212,6 +234,121 @@ pub(crate) async fn receive(
 		},
 	)?)
 }
+
+/// An event another Node sends to a `node_event` trigger (#1013, ADR 0142).
+///
+/// Who may send was decided when the request was accepted: a Node of this
+/// Tenant only for a subject the Tenant's policy lets use this Node, a Node of
+/// another Tenant only through this Tenant's Node Registration (and its Peer
+/// Mapping, when the sender names a subject). The sender is the Node the
+/// Federation token proved, never the body. The event is input, never a
+/// requester: the Duty starts or wakes its Task as its own Requester, and the
+/// sender's identity never reaches that Task's authority. An unknown trigger,
+/// one of another kind or Node, and one that names another sender are refused
+/// alike, so a sender learns nothing of the triggers it may not use.
+pub(crate) async fn receive_from_node(
+	f: &Federation,
+	admitted: aidash_application::federation::inbound::Admitted,
+	trigger: Uuid,
+	data: Value,
+) -> Result<Value> {
+	use aidash_application::federation::inbound::Acting;
+	let tenant = admitted.tenant.as_str().to_owned();
+	if matches!(admitted.acting, Acting::Node)
+		&& admitted.sender.deployment == f.config.deployment
+		&& f.node_tenant_of(&admitted.sender.node).await? == admitted.tenant
+	{
+		// A Node of this Tenant names the subject it sends for, so the
+		// Tenant's policy decides.
+		return Err(Error::Forbidden);
+	}
+	let payload = events::node_event_payload(&admitted.sender, data)?;
+	let not_found = || Error::NotFound("trigger not found".into());
+	let Some((found, trigger)) = repository::locate(&f.store.pool, trigger).await? else {
+		return Err(not_found());
+	};
+	if found != tenant || !trigger.kind.admits(&admitted.sender) {
+		return Err(not_found());
+	}
+	// The trigger must belong to a Duty of the receiving Node.
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant)?;
+	let node = f
+		.store
+		.pool
+		.scoped(&scope, async |tx| {
+			let Some(duty) =
+				duty_repository::load(&mut **tx, &tenant, trigger.duty_id, false).await?
+			else {
+				return Ok(None);
+			};
+			duty_repository::workspace_node(&mut **tx, &tenant, duty.workspace_id)
+				.await
+				.map(Some)
+		})
+		.await?;
+	if node.as_deref() != Some(admitted.receiver.node.as_str()) {
+		return Err(not_found());
+	}
+	let event = deliver(f, &tenant, &trigger, payload).await?;
+	f.notify.notify_waiters();
+	Ok(serde_json::to_value(
+		crate::apps::workspaces::serializers::duties::DutyEventReceipt {
+			event_id: event.id,
+			outcome: event.outcome,
+		},
+	)?)
+}
+
+/// `duty_notify`: an Agent sends an event to a Duty on another Node (#1013).
+/// It sends from the Run's Node through a route its Tenant set up: to a Node
+/// of its own Tenant as the person at the root of the Run's chain, whom that
+/// Tenant's policy judges there; to a Node of another Tenant as the Node
+/// itself, which that Tenant registered. A Run that arrived through
+/// Federation, or whose chain starts at no person, sends none. Its approval
+/// was already decided by that person's Approval Mode and Approval Rules.
+pub async fn notify(f: &Federation, run: &aidash_domain::Run, input: Value) -> Result<Value> {
+	use aidash_application::ports::authorization::ExecutionGrantRepository;
+	let input: aidash_application::duties::tool::Notify =
+		serde_json::from_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
+	if !run.is_local(f.config.deployment.as_str()) {
+		return Err(Error::Invalid(
+			"a Run that arrived through Federation cannot send Duty events".into(),
+		));
+	}
+	let target = aidash_domain::nodes::NodeAddress::parse(&input.node_id)?;
+	// Refuse an oversized event before anything leaves this Node.
+	events::node_event_payload(&target, input.payload.clone())?;
+	let grant = crate::apps::identity::repositories::execution::Grants { store: &f.store }
+		.grant(run.id)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	let person =
+		crate::apps::identity::repositories::oauth_connections::owner_of_run(&f.store, run)
+			.await?
+			.map(|owner| owner.subject)
+			.ok_or_else(|| {
+				Error::Invalid("this Run's delegation chain does not start at a person".into())
+			})?;
+	let tenant = aidash_domain::tenancy::TenantName::new(&grant.tenant)?;
+	let same_tenant = target.deployment == f.config.deployment
+		&& f.node_tenant_of(&target.node).await.ok().as_ref() == Some(&tenant);
+	let sender = aidash_domain::federation::route::Sender {
+		tenant,
+		node: Some(run.node.clone()),
+		subject: same_tenant.then_some(person),
+	};
+	f.request::<Value>(
+		&sender,
+		&target.to_string(),
+		reqwest::Method::POST,
+		NODE_EVENTS,
+		Some(&json!({"trigger_id": input.trigger_id, "payload": input.payload})),
+	)
+	.await
+}
+
+/// Where a Node receives events for its Duties, under `/federation/v0.1`.
+pub(crate) const NODE_EVENTS: &str = "/scoped/duty-events";
 
 /// Fires the `duty_completed` triggers of the Duty whose Task ended.
 pub(crate) async fn completed(
