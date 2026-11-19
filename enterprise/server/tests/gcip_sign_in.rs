@@ -2282,7 +2282,7 @@ fn administered_policy(tenant: &str, administrators: &[&str]) -> Value {
 			"id": "tenant-administrators",
 			"effect": "allow",
 			"subjects": {"groups": ["administrators"]},
-			"actions": aidash_domain::identity::tenant_administration::ACTIONS,
+			"actions": aidash_domain::identity::tenant_administration::ACTIONS.as_slice(),
 			"resources": {"kinds": [
 				"registration", "mapping", "subject", "invitation", "policy", "decision",
 				"credential", "peer_mapping", "test_limits", "test_profile", "node",
