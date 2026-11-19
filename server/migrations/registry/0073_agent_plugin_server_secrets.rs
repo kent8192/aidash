@@ -13,7 +13,10 @@
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0073_agent_plugin_server_secrets", "registry")
-		.add_dependency("registry", "0072_remove_agent_external_service_draft_bindings")
+		.add_dependency(
+			"registry",
+			"0072_remove_agent_external_service_draft_bindings",
+		)
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::RunSQL {

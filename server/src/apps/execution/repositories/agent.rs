@@ -1984,33 +1984,32 @@ impl Environment<'_> {
 			)
 			.await;
 			let result = async {
-				let semantic = match semantic? {
-					// Optional workspace context may degrade; memory still follows
-					// and still fails closed (ADR 0059).
-					// A Data Protection refusal never clears by waiting, so an
-					// optional slot degrades at once instead of after retries (#963).
-					aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
-						cause,
-					) if degrade
-						|| (cause
-							== aidash_domain::semantic::degraded::OutageCause::DataProtection
-							&& agent.workspace_degrades) =>
-					{
-						Some(aidash_domain::semantic::degraded::marker(cause))
-					}
-					// Only the READY part of an incomplete index (ADR 0129).
-					aidash_application::semantic::retrieval::WorkspaceContext::Partial(result)
-						if degrade =>
-					{
-						Some(aidash_domain::semantic::degraded::partial(
+				let semantic =
+					match semantic? {
+						// Optional workspace context may degrade; memory still follows
+						// and still fails closed (ADR 0059).
+						// A Data Protection refusal never clears by waiting, so an
+						// optional slot degrades at once instead of after retries (#963).
+						aidash_application::semantic::retrieval::WorkspaceContext::Unavailable(
+							cause,
+						) if degrade
+							|| (cause
+								== aidash_domain::semantic::degraded::OutageCause::DataProtection
+								&& agent.workspace_degrades) =>
+						{
+							Some(aidash_domain::semantic::degraded::marker(cause))
+						}
+						// Only the READY part of an incomplete index (ADR 0129).
+						aidash_application::semantic::retrieval::WorkspaceContext::Partial(
+							result,
+						) if degrade => Some(aidash_domain::semantic::degraded::partial(
 							serde_json::to_value(result)?,
-						))
-					}
-					workspace => workspace
-						.required()?
-						.map(serde_json::to_value)
-						.transpose()?,
-				};
+						)),
+						workspace => workspace
+							.required()?
+							.map(serde_json::to_value)
+							.transpose()?,
+					};
 				workspace_retrieved = semantic.as_ref().is_some_and(|value| {
 					aidash_domain::semantic::degraded::degraded(value).is_none()
 				});
