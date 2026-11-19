@@ -16,7 +16,7 @@ use crate::{Error, Result};
 use aidash_domain::RunControlAction;
 use aidash_domain::federation::execution::admission::{Activation, RemoteExecutionControlState};
 use aidash_domain::federation::tool_lists::{
-	AskChoice, AskSide, FederationToolRequest, ToolPattern, answered_pattern,
+	AskChoice, AskSide, FederationToolRequest, ToolPattern, answered_pattern, names_one_tool,
 };
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::nodes::{NodeAddress, NodeName};
@@ -44,8 +44,36 @@ enum Registered {
 
 /// What an answer is about, found from its path id.
 enum Found {
-	Receiver(Box<asks::ReceiverAsk>),
+	/// A remote Run this Node hosts for the registered Home.
+	Receiver(Uuid),
 	Home(asks::HomeGrant),
+}
+
+/// An answer to a Run that no longer waits on the call the page showed.
+fn not_waiting() -> Error {
+	Error::Conflict("the remote Run does not wait for that answer".into())
+}
+
+/// Decide the administrator's `node.federation_tools.manage` on the registration under the
+/// Tenant's policy lock in `tx`. Every transaction that writes an answer decides it again, as
+/// `set_tool_lists` does, so a permission revoked or a Mapping disabled since the ask was
+/// found stops the write.
+async fn require_manage(
+	administrator: &TenantAdministrator,
+	tx: &mut dyn TransactionExecutor,
+	(tenant, node, source): (&str, &NodeName, &NodeAddress),
+) -> Result<()> {
+	let snapshot = administrator.lock(tx, false).await?;
+	administrator
+		.require(
+			tx,
+			&snapshot,
+			rules::NODE_FEDERATION_TOOLS_MANAGE,
+			&source.to_string(),
+			attributes(node.as_str(), source),
+		)
+		.await?;
+	require_node(tx, tenant, node).await
 }
 
 fn parse_address(source_node: &str) -> Result<NodeAddress> {
@@ -60,7 +88,7 @@ fn parse_address(source_node: &str) -> Result<NodeAddress> {
 
 /// Record the answer as the tenant administration audit event of a list change (decision 29).
 async fn audit(
-	tx: &mut reinhardt::db::orm::AtomicTransaction,
+	tx: &mut dyn TransactionExecutor,
 	by: &AdministrationActor,
 	tenant: &str,
 ) -> Result<()> {
@@ -144,19 +172,10 @@ impl NodeRegistrations {
 				f.store
 					.pool
 					.atomic(&administrator.scope()?, async |tx| {
-						let snapshot = administrator.lock(tx, false).await?;
-						administrator
-							.require(
-								tx,
-								&snapshot,
-								rules::NODE_FEDERATION_TOOLS_MANAGE,
-								&source.to_string(),
-								attributes(node.as_str(), &source),
-							)
+						require_manage(administrator, tx, (tenant.as_str(), &node, &source))
 							.await?;
-						require_node(tx, &tenant, &node).await?;
 						let hosted =
-							asks::receiver_asks(tx, &tenant, node.as_str(), &source, None).await?;
+							asks::receiver_asks(tx, &tenant, node.as_str(), &source).await?;
 						let mut issued = Vec::new();
 						for grant in asks::home_grants(tx, &tenant, node.as_str(), &source, None)
 							.await?
@@ -182,6 +201,7 @@ impl NodeRegistrations {
 				task_title: ask.task_title,
 				tool: ask.paused.tool,
 				key: ask.ask.key,
+				call: ask.paused.key,
 				paused_since: Some(ask.paused_since),
 			})
 			.collect();
@@ -191,7 +211,8 @@ impl NodeRegistrations {
 			async move {
 				let activation = self.home_status(tenant, node, source, grant.id).await?;
 				let call = activation.declinable_call?;
-				let key = call.home_list_key?;
+				// A key that names no single tool could not be answered (`answer_as_home`).
+				let key = call.home_list_key.filter(|key| names_one_tool(key))?;
 				Some(ToolAskRecord {
 					side: AskSide::Home,
 					id: grant.id,
@@ -201,6 +222,7 @@ impl NodeRegistrations {
 					task_title: title,
 					tool: call.tool,
 					key,
+					call: call.call,
 					paused_since: None,
 				})
 			}
@@ -241,9 +263,11 @@ impl NodeRegistrations {
 		})
 	}
 
-	/// Answer one waiting call. `id` is the admission of a receiver ask or the grant of a Home ask.
-	/// Allowing the call for this Run or adding it resumes the Run; if the other side still lacks
-	/// the tool the Run pauses again and that side is asked, so an answer never loops.
+	/// Answer one waiting call. `id` is the admission of a receiver ask or the grant of a Home ask;
+	/// `input` names the call and key the page showed, and an answer to a Run that waits on
+	/// anything else now is refused with 409. Allowing the call for this Run or adding it resumes
+	/// the Run; if the other side still lacks the tool the Run pauses again and that side is
+	/// asked, so an answer never loops.
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) async fn answer_tool_ask(
 		&self,
@@ -260,28 +284,14 @@ impl NodeRegistrations {
 		let f = self.runtime.clone();
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
+				let registration = (tenant.as_str(), &node, &source);
 				let found = f
 					.store
 					.pool
 					.atomic(&administrator.scope()?, async |tx| {
-						let snapshot = administrator.lock(tx, false).await?;
-						administrator
-							.require(
-								tx,
-								&snapshot,
-								rules::NODE_FEDERATION_TOOLS_MANAGE,
-								&source.to_string(),
-								attributes(node.as_str(), &source),
-							)
-							.await?;
-						require_node(tx, &tenant, &node).await?;
-						if let Some(ask) =
-							asks::receiver_asks(tx, &tenant, node.as_str(), &source, Some(id))
-								.await?
-								.into_iter()
-								.next()
-						{
-							return Ok(Found::Receiver(Box::new(ask)));
+						require_manage(administrator, tx, registration).await?;
+						if asks::admitted_from(tx, &tenant, node.as_str(), &source, id).await? {
+							return Ok(Found::Receiver(id));
 						}
 						if let Some(grant) =
 							asks::home_grants(tx, &tenant, node.as_str(), &source, Some(id))
@@ -295,19 +305,12 @@ impl NodeRegistrations {
 					})
 					.await?;
 				match found {
-					Found::Receiver(ask) => {
-						self.answer_as_receiver(
-							administrator,
-							&tenant,
-							&node,
-							&source,
-							*ask,
-							&input,
-						)
-						.await
+					Found::Receiver(run) => {
+						self.answer_as_receiver(administrator, registration, run, &input)
+							.await
 					}
 					Found::Home(grant) => {
-						self.answer_as_home(administrator, &tenant, &node, &source, grant, &input)
+						self.answer_as_home(administrator, registration, grant, &input)
 							.await
 					}
 				}
@@ -315,18 +318,20 @@ impl NodeRegistrations {
 			.await
 	}
 
-	/// The receiving Node's people answer for a remote Run it hosts for `source`.
+	/// The receiving Node's people answer for a remote Run it hosts for the registered Home. Each
+	/// write decides the permission again and locks the Run, which has to wait on exactly the
+	/// call the page showed and on nothing else: a pause of the Home's people or a Safety Stop
+	/// laid over the ask is lifted only by whoever holds it (ADR 0101, ADR 0118 as amended).
 	async fn answer_as_receiver(
 		&self,
 		administrator: &Arc<TenantAdministrator>,
-		tenant: &str,
-		node: &NodeName,
-		source: &NodeAddress,
-		ask: asks::ReceiverAsk,
+		registration: (&str, &NodeName, &NodeAddress),
+		run: Uuid,
 		input: &ToolAskAnswerInput,
 	) -> Result<ToolAskAnswered> {
+		let (tenant, node, source) = registration;
 		let f = &self.runtime;
-		let key = ask.ask.key.clone();
+		let key = input.key.clone();
 		let by = AdministrationActor::TenantAdministrator(administrator.clone());
 		let actor = format!("oidc:{}", administrator.identity_id);
 		let mut listed = None;
@@ -335,45 +340,52 @@ impl NodeRegistrations {
 				// The receiving Node's people decline their own list's pause as the Home's people
 				// decline any other: the call is answered with a Declined Call and the Run goes on.
 				let store = &f.store;
-				let scope = store.run_tenancy(ask.run).await?;
-				let mut tx = store.pool.begin(&scope).await?;
+				let mut tx = store.pool.begin(&administrator.scope()?).await?;
 				crate::transactions::gate::read_in(&mut tx).await?;
+				require_manage(administrator, &mut *tx, registration).await?;
+				if !asks::lock_receiver_ask(&mut *tx, run, &input.call, &key).await? {
+					return Err(not_waiting());
+				}
 				let declined = store
 					.decline_call_in(
 						&mut tx,
-						ask.run,
-						&ask.paused.key,
+						run,
+						&input.call,
 						&administrator.identity.subject,
 						false,
 					)
 					.await?;
+				crate::apps::execution::models::event_records::append_run(
+					&mut *tx,
+					run,
+					None,
+					"run.tool_ask_answered",
+					json!({"run_id": run, "side": "receiver", "choice": "decline", "key": key, "by": administrator.identity.subject}),
+				)
+				.await?;
+				audit(&mut *tx, &by, tenant).await?;
 				tx.commit().await?;
-				store.run_control_committed(ask.run, declined.run.control);
-				f.store
-					.pool
-					.atomic(&administrator.scope()?, async |tx| {
-						crate::apps::execution::models::event_records::append_run(
-							tx,
-							ask.run,
-							None,
-							"run.tool_ask_answered",
-							json!({"run_id": ask.run, "side": "receiver", "choice": "decline", "key": key, "by": administrator.identity.subject}),
-						)
-						.await?;
-						audit(tx, &by, tenant).await
-					})
-					.await?;
+				store.run_control_committed(run, declined.run.control);
 			}
 			choice => {
 				let pattern = answered_pattern(&key, input.pattern.as_deref())?;
 				listed = Some(pattern.as_str().to_owned());
+				// Like any registration write, a list change waits for pending atomic
+				// transactions.
+				let _visibility = match choice {
+					AskChoice::RunOnly => None,
+					_ => Some(crate::transactions::gate::ReadLease::begin(&f.store).await?),
+				};
 				f.store
 					.pool
 					.atomic(&administrator.scope()?, async |tx| {
+						require_manage(administrator, tx, registration).await?;
+						if !asks::lock_receiver_ask(tx, run, &input.call, &key).await? {
+							return Err(not_waiting());
+						}
 						match choice {
 							AskChoice::RunOnly => {
-								asks::allow_run_only_on_receiver(tx, ask.run, pattern.clone())
-									.await?;
+								asks::allow_run_only_on_receiver(tx, run, pattern.clone()).await?;
 							}
 							AskChoice::Add => {
 								extend_registered_list(
@@ -399,14 +411,14 @@ impl NodeRegistrations {
 						// The pause's own call is answered by the next attempt: allowed, it runs;
 						// blocked, it answers the same words as an unknown tool.
 						f.store
-							.control_in_executor(tx, ask.run, RunControlAction::Resume)
+							.control_in_executor(tx, run, RunControlAction::Resume)
 							.await?;
 						crate::apps::execution::models::event_records::append_run(
 							tx,
-							ask.run,
+							run,
 							None,
 							"run.tool_ask_answered",
-							json!({"run_id": ask.run, "side": "receiver", "choice": input.choice, "key": key, "pattern": pattern.as_str(), "by": administrator.identity.subject}),
+							json!({"run_id": run, "side": "receiver", "choice": input.choice, "key": key, "pattern": pattern.as_str(), "by": administrator.identity.subject}),
 						)
 						.await?;
 						audit(tx, &by, tenant).await
@@ -415,7 +427,7 @@ impl NodeRegistrations {
 			}
 		}
 		f.notify.notify_waiters();
-		tracing::info!(run_id = %ask.run, tool = %ask.paused.tool, choice = ?input.choice, "receiver answered a tool ask");
+		tracing::info!(run_id = %run, key = %key, choice = ?input.choice, "receiver answered a tool ask");
 		Ok(ToolAskAnswered {
 			side: AskSide::Receiver,
 			choice: input.choice,
@@ -425,16 +437,15 @@ impl NodeRegistrations {
 		})
 	}
 
-	/// The Home's people answer for a Remote Grant it issued to `receiver`.
+	/// The Home's people answer for a Remote Grant it issued to the registered receiving Node.
 	async fn answer_as_home(
 		&self,
 		administrator: &Arc<TenantAdministrator>,
-		tenant: &str,
-		node: &NodeName,
-		receiver: &NodeAddress,
+		registration: (&str, &NodeName, &NodeAddress),
 		grant: asks::HomeGrant,
 		input: &ToolAskAnswerInput,
 	) -> Result<ToolAskAnswered> {
+		let (tenant, node, receiver) = registration;
 		if !input.choice.allowed_on(AskSide::Home) {
 			return Err(Error::Unprocessable(
 				"only the receiving Node keeps a Block".into(),
@@ -445,13 +456,22 @@ impl NodeRegistrations {
 		let activation = self
 			.home_status(tenant, node, receiver, grant.id)
 			.await
-			.ok_or_else(|| Error::Conflict("the remote Run does not wait for an answer".into()))?;
-		let call = activation
-			.declinable_call
-			.ok_or_else(|| Error::Conflict("the remote Run does not wait for an answer".into()))?;
+			.ok_or_else(not_waiting)?;
+		let call = activation.declinable_call.ok_or_else(not_waiting)?;
 		let key = call.home_list_key.clone().ok_or_else(|| {
 			Error::Conflict("the remote Run waits for the receiving Node, not the Home".into())
 		})?;
+		// The answer is about the call the page showed; the Run may have moved on to another.
+		if call.call != input.call || key != input.key {
+			return Err(not_waiting());
+		}
+		// The receiving Node names the key, so a key that names no single tool (`*`) would
+		// let it choose what the Home's Request lists.
+		if !names_one_tool(&key) {
+			return Err(Error::Conflict(
+				"the receiving Node did not name a single tool".into(),
+			));
+		}
 		let by = AdministrationActor::TenantAdministrator(administrator.clone());
 		let actor = format!("oidc:{}", administrator.identity_id);
 		let repository = crate::bootstrap::home_execution_repository(
@@ -461,6 +481,14 @@ impl NodeRegistrations {
 		let mut listed = None;
 		match input.choice {
 			AskChoice::Decline => {
+				// The decline is a request to the receiving Node, which no transaction here can
+				// span: decide the permission again just before it, after the status request.
+				f.store
+					.pool
+					.atomic(&administrator.scope()?, async |tx| {
+						require_manage(administrator, tx, registration).await
+					})
+					.await?;
 				aidash_application::authorization::home::decline_tool_ask(
 					&repository,
 					grant.task_id,
@@ -479,9 +507,21 @@ impl NodeRegistrations {
 			choice => {
 				let pattern = answered_pattern(&key, input.pattern.as_deref())?;
 				listed = Some(pattern.as_str().to_owned());
+				let _visibility = match choice {
+					AskChoice::RunOnly => None,
+					_ => Some(crate::transactions::gate::ReadLease::begin(&f.store).await?),
+				};
 				f.store
 					.pool
 					.atomic(&administrator.scope()?, async |tx| {
+						// Decided again here: the status request ran outside any transaction.
+						require_manage(administrator, tx, registration).await?;
+						if asks::home_grants(tx, tenant, node.as_str(), receiver, Some(grant.id))
+							.await?
+							.is_empty()
+						{
+							return Err(not_waiting());
+						}
 						if matches!(choice, AskChoice::RunOnly) {
 							asks::allow_run_only_on_home(tx, grant.id, pattern.clone()).await?;
 						} else {

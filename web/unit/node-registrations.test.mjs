@@ -119,16 +119,27 @@ test("only the receiving Node may block", async () => {
   assert.deepEqual(toolAskChoices("home"), ["run_only", "add", "decline"]);
 });
 
-test("an answer sends a typed pattern only where it lists something", async () => {
+test("an answer names its call and sends a typed pattern only where it lists something", async () => {
   const { toolAskAnswer, toolAsksPath } = await import(
     "../src/node-registrations.ts"
   );
-  assert.deepEqual(toolAskAnswer("add", " registry:github/* "), {
+  const ask = { key: "registry:github/create_issue", call: "call-7" };
+  assert.deepEqual(toolAskAnswer(ask, "add", " registry:github/* "), {
     choice: "add",
+    key: "registry:github/create_issue",
+    call: "call-7",
     pattern: "registry:github/*",
   });
-  assert.deepEqual(toolAskAnswer("add", "  "), { choice: "add" });
-  assert.deepEqual(toolAskAnswer("decline", "shell"), { choice: "decline" });
+  assert.deepEqual(toolAskAnswer(ask, "add", "  "), {
+    choice: "add",
+    key: "registry:github/create_issue",
+    call: "call-7",
+  });
+  assert.deepEqual(toolAskAnswer(ask, "decline", "shell"), {
+    choice: "decline",
+    key: "registry:github/create_issue",
+    call: "call-7",
+  });
   assert.equal(
     toolAsksPath("acme", "default", "aidash://other/n"),
     "/api/tenants/acme/nodes/default/registrations/aidash%3A%2F%2Fother%2Fn/tool-asks",

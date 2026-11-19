@@ -292,6 +292,118 @@ fn an_answer_lists_the_exact_key_or_a_pattern_that_matches_it() {
 }
 
 #[test]
+fn an_asked_key_that_names_no_single_tool_is_never_listed() {
+	assert!(names_one_tool("shell"));
+	assert!(names_one_tool("registry:weather/getWeather"));
+	// A receiving Node that names `*` (or any pattern) to the Home cannot widen its Request.
+	for key in ["*", "file_*", "registry:github/*", "", "a b"] {
+		assert!(!names_one_tool(key), "{key:?}");
+		assert!(answered_pattern(key, None).is_err(), "{key:?}");
+		assert!(answered_pattern(key, Some("*")).is_err(), "{key:?}");
+	}
+}
+
+fn paused_on(call: &str, key: &str, receiver: bool) -> crate::run_state::PausedCall {
+	crate::run_state::PausedCall {
+		key: call.into(),
+		index: 0,
+		replay_safe: true,
+		tool: key.into(),
+		kind: crate::tool::RefusalKind::OtherNode,
+		tool_call: None,
+		ask: Some(ToolAsk {
+			key: key.into(),
+			lacking: Lacking {
+				home: !receiver,
+				receiver,
+			},
+		}),
+	}
+}
+
+#[test]
+fn the_receiver_answers_only_its_own_ask_and_only_while_nothing_else_holds_the_run() {
+	use crate::{ControlSource, RunControl};
+	let paused = paused_on("call-1", "shell", true);
+	let may = |control, source, paused: Option<&crate::run_state::PausedCall>, call, key| {
+		receiver_may_answer(control, source, paused, call, key)
+	};
+	// The worker's Authority Pause leaves the source `System`.
+	assert!(may(
+		RunControl::Paused,
+		ControlSource::System,
+		Some(&paused),
+		"call-1",
+		"shell"
+	));
+	// The Home's people (or this Node's) paused it since, or a Safety Stop hit it.
+	for source in [
+		ControlSource::Tenant,
+		ControlSource::DeploymentAdministrator,
+	] {
+		assert!(!may(
+			RunControl::Paused,
+			source,
+			Some(&paused),
+			"call-1",
+			"shell"
+		));
+	}
+	// Running again, or cancelled.
+	for control in [RunControl::Active, RunControl::Cancelled] {
+		assert!(!may(
+			control,
+			ControlSource::System,
+			Some(&paused),
+			"call-1",
+			"shell"
+		));
+	}
+	// A stale page: the Run now waits on another call, or another tool.
+	assert!(!may(
+		RunControl::Paused,
+		ControlSource::System,
+		Some(&paused),
+		"call-2",
+		"shell"
+	));
+	assert!(!may(
+		RunControl::Paused,
+		ControlSource::System,
+		Some(&paused),
+		"call-1",
+		"file_read"
+	));
+	// No paused call, a pause that asks only the Home, or one that is no list ask at all.
+	assert!(!may(
+		RunControl::Paused,
+		ControlSource::System,
+		None,
+		"call-1",
+		"shell"
+	));
+	let home_only = paused_on("call-1", "shell", false);
+	assert!(!may(
+		RunControl::Paused,
+		ControlSource::System,
+		Some(&home_only),
+		"call-1",
+		"shell"
+	));
+	let no_ask = crate::run_state::PausedCall {
+		ask: None,
+		..paused.clone()
+	};
+	assert!(!may(
+		RunControl::Paused,
+		ControlSource::System,
+		Some(&no_ask),
+		"call-1",
+		"shell"
+	));
+}
+
+#[test]
 fn only_the_receiver_may_block() {
 	assert!(AskChoice::Block.allowed_on(AskSide::Receiver));
 	assert!(!AskChoice::Block.allowed_on(AskSide::Home));

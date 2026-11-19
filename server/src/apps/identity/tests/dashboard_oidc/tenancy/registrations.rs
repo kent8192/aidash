@@ -639,7 +639,7 @@ async fn waiting_tool_asks_are_listed_and_answered_only_by_list_holders(
 			"POST",
 			&answer,
 			Some(&context),
-			json!({"choice": "run_only"}),
+			json!({"choice": "run_only", "key": "shell", "call": "call-1"}),
 		)
 		.await;
 	assert_eq!(status, 404, "{refused}");
@@ -649,10 +649,24 @@ async fn waiting_tool_asks_are_listed_and_answered_only_by_list_holders(
 			"POST",
 			&answer,
 			Some(&context),
-			json!({"choice": "always"}),
+			json!({"choice": "always", "key": "shell", "call": "call-1"}),
 		)
 		.await;
 	assert_eq!(status, 422, "an unknown choice is unprocessable: {refused}");
+	// An answer names the call and key the page showed, so it never lands on a later call.
+	let (status, refused) = d
+		.as_person(
+			&alice,
+			"POST",
+			&answer,
+			Some(&context),
+			json!({"choice": "run_only"}),
+		)
+		.await;
+	assert_eq!(
+		status, 422,
+		"an answer without its call is unprocessable: {refused}"
+	);
 
 	// A member lacks `node.federation_tools.manage`, for the list and for an answer.
 	let (status, refused) = d
@@ -665,7 +679,7 @@ async fn waiting_tool_asks_are_listed_and_answered_only_by_list_holders(
 			"POST",
 			&answer,
 			Some(&member),
-			json!({"choice": "decline"}),
+			json!({"choice": "decline", "key": "shell", "call": "call-1"}),
 		)
 		.await;
 	assert_eq!(status, 403, "{refused}");

@@ -136,6 +136,8 @@ export type ToolAsk = {
   tool: string;
   /** The key the lists match; an answer adds it exactly unless a pattern is typed. */
   key: string;
+  /** The paused call; an answer names it and the key, so it never lands on a later call. */
+  call: string;
   paused_since: string | null;
 };
 
@@ -157,13 +159,17 @@ export function toolAsksPath(
   return `/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registrations/${encodeURIComponent(sourceNode)}/tool-asks`;
 }
 
-/** The request body of an answer. The pattern only goes with the choices that list something. */
+/** The request body of an answer. It names the call and key it answers, so a page shown
+ *  before the Run moved on is refused rather than applied to another call. The pattern only
+ *  goes with the choices that list something. */
 export function toolAskAnswer(
+  ask: Pick<ToolAsk, "key" | "call">,
   choice: ToolAskChoice,
   pattern: string,
-): { choice: ToolAskChoice; pattern?: string } {
+): { choice: ToolAskChoice; key: string; call: string; pattern?: string } {
+  const answer = { choice, key: ask.key, call: ask.call };
   const typed = pattern.trim();
   return choice !== "decline" && typed !== ""
-    ? { choice, pattern: typed }
-    : { choice };
+    ? { ...answer, pattern: typed }
+    : answer;
 }

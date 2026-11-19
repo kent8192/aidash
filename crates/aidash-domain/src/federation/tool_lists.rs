@@ -431,9 +431,22 @@ impl AskChoice {
 	}
 }
 
+/// Whether `key` names exactly one tool: a valid list entry without `*`. An asked key always
+/// does, since the worker records [`list_key`] of the called tool; a key that does not would
+/// let an answer list every tool the pattern matches (a receiving Node naming `*` to the Home).
+pub fn names_one_tool(key: &str) -> bool {
+	!key.contains('*') && ToolPattern::new(key).is_ok()
+}
+
 /// What an answer adds to a list: `pattern`, which has to match the asked `key` or the
-/// answer would leave the Run paused on the same call, or the exact key.
+/// answer would leave the Run paused on the same call, or the exact key. The asked key must
+/// name one tool ([`names_one_tool`]).
 pub fn answered_pattern(key: &str, pattern: Option<&str>) -> Result<ToolPattern> {
+	if !names_one_tool(key) {
+		return Err(Error::Invalid(
+			"the asked tool is not a single tool name".into(),
+		));
+	}
 	let Some(pattern) = pattern.map(str::trim).filter(|pattern| !pattern.is_empty()) else {
 		return ToolPattern::new(key);
 	};
@@ -444,6 +457,33 @@ pub fn answered_pattern(key: &str, pattern: Option<&str>) -> Result<ToolPattern>
 		));
 	}
 	Ok(pattern)
+}
+
+/// Whether the receiving Node's people may answer the call `call` about `key` now, and so
+/// resume the Run: it is paused, the pause is the Authority Pause that stopped exactly that
+/// call because the receiver's lists lack `key`, and nothing has paused the Run since.
+///
+/// The worker's Authority Pause names no control source, so the Run's source becomes
+/// `System`. A person's pause laid over it (`Tenant`, the Home's people included) or a Safety
+/// Stop (`DeploymentAdministrator`) replaces the source and keeps the paused call; only its
+/// own holder lifts that pause (ADR 0101; ADR 0118 as amended limits the receiver's people
+/// to the list ask). A page that shows an older call or key no longer matches either.
+pub fn receiver_may_answer(
+	control: crate::RunControl,
+	source: crate::ControlSource,
+	paused: Option<&crate::run_state::PausedCall>,
+	call: &str,
+	key: &str,
+) -> bool {
+	control == crate::RunControl::Paused
+		&& source == crate::ControlSource::System
+		&& paused.is_some_and(|paused| {
+			paused.key == call
+				&& paused
+					.ask
+					.as_ref()
+					.is_some_and(|ask| ask.key == key && ask.lacking.receiver)
+		})
 }
 
 /// What a remote Run's call to one tool may do now.

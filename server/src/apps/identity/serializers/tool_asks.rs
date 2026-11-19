@@ -23,6 +23,8 @@ pub(crate) struct ToolAskRecord {
 	pub(crate) tool: String,
 	/// The key the lists match, which an answer adds as an exact entry by default.
 	pub(crate) key: String,
+	/// The paused call. An answer names it with `key`, so it never lands on a later call.
+	pub(crate) call: String,
 	/// When the Run stopped; absent on the Home, which learns the pause from the receiver.
 	pub(crate) paused_since: Option<DateTime<Utc>>,
 }
@@ -38,6 +40,11 @@ pub(crate) struct ToolAsks {
 #[serde(deny_unknown_fields)]
 pub struct ToolAskAnswerInput {
 	pub choice: AskChoice,
+	/// The `key` of the ask as listed. A Run that now waits on another tool, or on anything
+	/// but this ask, answers 409.
+	pub key: String,
+	/// The `call` of the ask as listed. A Run that now waits on another call answers 409.
+	pub call: String,
 	/// A tool name or `*` pattern that matches the asked tool, added by `add`, `run_only` and
 	/// `block` instead of the exact tool.
 	#[serde(default)]

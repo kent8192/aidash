@@ -270,7 +270,9 @@ function WaitingForAnswer({
       await apiFetch(`${path}/${ask.id}/answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(toolAskAnswer(choice, patterns[ask.id] ?? "")),
+        body: JSON.stringify(
+          toolAskAnswer(ask, choice, patterns[ask.id] ?? ""),
+        ),
       });
       setDone(true);
       await client.invalidateQueries({ queryKey: ["tool-asks"] });
