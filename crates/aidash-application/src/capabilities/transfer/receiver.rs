@@ -35,11 +35,19 @@ fn manifest_limits(repository: &dyn ReceiverRepository) -> ManifestLimits {
 		bytes: l.share_bytes,
 	}
 }
+/// The generation a staged transfer records of the Area it lands in, and checks again before
+/// each later step; none for a message a Home takes, which lands in no Area.
+fn generation(area: Option<&Area>) -> Value {
+	area.map_or(Value::Null, |area| json!(area.generation))
+}
+/// The authority a transfer is staged and stored under, and the Area it lands in. `None` only
+/// for a message a Home takes from a Run executing for another Home (ADR 0139): its files become
+/// Thread Attachments of the grant's Workspace, which the delivery's admission already chose.
 async fn mapped<'a>(
 	repository: &'a dyn ReceiverRepository,
 	source: &str,
 	description: &Description,
-) -> Result<(Box<dyn ReceiverScope + 'a>, Area)> {
+) -> Result<(Box<dyn ReceiverScope + 'a>, Option<Area>)> {
 	let mut scope = repository
 		.begin_peer(source, &description.source_subject)
 		.await?;
@@ -51,6 +59,9 @@ async fn mapped<'a>(
 			return Err(Error::Forbidden);
 		}
 		let delivery = repository.delivery();
+		if delivery.is_some_and(|mode| !mode.into_area()) {
+			return Ok(None);
+		}
 		// A Home taking a delivery has already admitted it through the grant, so it neither
 		// resolves nor asks for the Node-level `file.transfer` a Peer Mapping must hold.
 		let node = match delivery {
@@ -96,7 +107,7 @@ async fn mapped<'a>(
 				.require_bound_operation(admitted.expect("checked admitted recipient"), operation)
 				.await?;
 		}
-		Ok(area)
+		Ok(Some(area))
 	}
 	.await;
 	match result {
@@ -108,7 +119,12 @@ async fn current<'a>(
 	repository: &'a dyn ReceiverRepository,
 	source: &str,
 	input: &Identity,
-) -> Result<(Box<dyn ReceiverScope + 'a>, Area, Record, Description)> {
+) -> Result<(
+	Box<dyn ReceiverScope + 'a>,
+	Option<Area>,
+	Record,
+	Description,
+)> {
 	let record: Record = repository.incoming(input.transfer_id).await?;
 	let description: Description = serde_json::from_value(record.data["description"].clone())?;
 	if description.source_node != source || description.input_digest != input.input_digest {
@@ -170,14 +186,18 @@ pub async fn prepare(
             Err(Error::NotFound(_)) => {},
             Err(error) => return Err(error),
         }
-        available(&area.state)?;
-        if aidash_domain::capabilities::operations::counted_files(&serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?).map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
+        // An Area the files land in must take them; a message's files land in none and are held
+        // to the delivery's own budgets, checked above, and the storage reservation below.
+        if let Some(area) = &area {
+            available(&area.state)?;
+            if aidash_domain::capabilities::operations::counted_files(&serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?).map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
+        }
         // Reserve both provisional chunks and final immutable objects. Actual
         // allocation consumes this reservation transactionally, never twice.
 		scope.lock_conversion().await?;
         scope.reserve((2*total) as i64).await?;
-        let data=json!({"description":description,"generation":area.generation,"mapped_credential":scope.credential(),"chunks":{},"reserved":2*total});
-        let record=scope.insert(input.transfer_id,Some(area.id),"transfer_in","staging",data,Some(description.expires_at)).await?;
+        let data=json!({"description":description,"generation":generation(area.as_ref()),"mapped_credential":scope.credential(),"chunks":{},"reserved":2*total});
+        let record=scope.insert(input.transfer_id,area.as_ref().map(|area|area.id),"transfer_in","staging",data,Some(description.expires_at)).await?;
         Ok(view(&record))
     }.await;
 	finish(scope, result).await
@@ -198,7 +218,7 @@ pub async fn chunk(
 	let result = async {
 		if record.state != "staging"
 			|| description.expires_at <= Utc::now()
-			|| record.data["generation"] != area.generation
+			|| record.data["generation"] != generation(area.as_ref())
 		{
 			return Err(Error::Conflict("TRANSFER_UNAVAILABLE".into()));
 		}
@@ -260,8 +280,13 @@ pub async fn commit(
 			.callback(source, "/scoped/files/describe", &json!(input))
 			.await?,
 	)?;
-	let (mut scope, mut area, mut record, description) =
-		current(repository, source, &input).await?;
+	let (scope, area, mut record, description) = current(repository, source, &input).await?;
+	// Only files that land in an Area are committed here; a message's are taken by
+	// `staged_files` and `settle`.
+	let Some(mut area) = area else {
+		return finish(scope, Err(Error::Forbidden)).await;
+	};
+	let mut scope = scope;
 	if json!(fresh) != json!(description) {
 		return Err(Error::Forbidden);
 	}
@@ -344,7 +369,7 @@ pub async fn staged_files(
 		}
 		if record.state != "staging"
 			|| description.expires_at <= Utc::now()
-			|| record.data["generation"] != area.generation
+			|| record.data["generation"] != generation(area.as_ref())
 		{
 			return Err(Error::Conflict("TRANSFER_UNAVAILABLE".into()));
 		}
@@ -386,7 +411,7 @@ pub async fn settle(
 		if record.state == "committed" {
 			return Ok(view(&record));
 		}
-		if record.state != "staging" || record.data["generation"] != area.generation {
+		if record.state != "staging" || record.data["generation"] != generation(area.as_ref()) {
 			return Err(Error::Conflict("TRANSFER_UNAVAILABLE".into()));
 		}
 		let total = description.files.iter().map(|f| f.size).sum::<u64>();

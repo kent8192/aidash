@@ -32,7 +32,9 @@ const TOOLS: [&str; 2] = ["file_share", "workspace_message"];
 /// What the Home resolved from the live grant for one request of a delivery. None of it comes
 /// from the request.
 struct Admission {
-	/// Where the delivery lands, in the Working Area of the Run that delegated.
+	/// Where the delivery lands: for a share, the Working Area of the Run that delegated; for a
+	/// message, which lands in no Area, this Node and the executing Agent, the grant's Task
+	/// standing in for the thread.
 	target: Recipient,
 	/// The grant's root subject, whose authority the delivery is made under.
 	subject: String,
@@ -52,8 +54,10 @@ fn mode(tool: &str) -> DeliveryMode {
 	}
 }
 
-/// Admit one request: the live grant, its Binding, the tool the Run called and the task, then
-/// the Working Area of the delegating Run. Opens and closes its own transaction.
+/// Admit one request: the live grant, its Binding, the tool the Run called and the task, then,
+/// for a share, the Working Area of the delegating Run. A message is posted in the grant's
+/// Workspace, so it needs no delegating Run and a grant a person made can send one (ADR 0139).
+/// Opens and closes its own transaction.
 async fn admit(
 	f: &Federation,
 	admitted: &Admitted,
@@ -85,40 +89,52 @@ async fn admit(
 			)
 			.await?
 		};
-		// The chain is the sending subjects and then the executor: the one before the executor is
-		// the Run that delegated. A grant nobody's Run made has no such Run to deliver to.
 		let row = crate::bootstrap::peer_home_execution_repository(f)
 			.source_grant(grant, &node)
 			.await?
 			.ok_or(crate::Error::Forbidden)?;
-		let delegator = row
-			.subject_chain
-			.len()
-			.checked_sub(2)
-			.and_then(|index| row.subject_chain.get(index))
-			.ok_or(crate::Error::Forbidden)?;
-		let parent = task
-			.parent_id
-			.ok_or_else(|| crate::Error::NotFound("DELIVERY_NO_DELEGATING_RUN".into()))?;
-		let (area, version) = home_delivery::delegating_area(
-			&mut access,
-			f.config.deployment.as_str(),
-			parent,
-			delegator,
-		)
-		.await?;
-		let profile = &f.store.capabilities.0;
-		Ok(Admission {
-			target: Recipient {
-				node_id: f
-					.config
-					.deployment
-					.node(admitted.receiver.node.clone())
-					.to_string(),
+		let node_id = f
+			.config
+			.deployment
+			.node(admitted.receiver.node.clone())
+			.to_string();
+		let target = if mode(tool).into_area() {
+			// The chain is the sending subjects and then the executor: the one before the
+			// executor is the Run that delegated. A grant nobody's Run made has no such Run to
+			// deliver to.
+			let delegator = row
+				.subject_chain
+				.len()
+				.checked_sub(2)
+				.and_then(|index| row.subject_chain.get(index))
+				.ok_or(crate::Error::Forbidden)?;
+			let parent = task
+				.parent_id
+				.ok_or_else(|| crate::Error::NotFound("DELIVERY_NO_DELEGATING_RUN".into()))?;
+			let (area, version) = home_delivery::delegating_area(
+				&mut access,
+				f.config.deployment.as_str(),
+				parent,
+				delegator,
+			)
+			.await?;
+			Recipient {
+				node_id,
 				agent_id: area.agent_id.clone(),
 				agent_version: version,
 				thread_id: area.thread_id,
-			},
+			}
+		} else {
+			Recipient {
+				node_id,
+				agent_id: agent.id.clone(),
+				agent_version: agent.version.clone(),
+				thread_id: task.id,
+			}
+		};
+		let profile = &f.store.capabilities.0;
+		Ok(Admission {
+			target,
 			subject: row.root_subject.clone(),
 			tenant: row.tenant.clone(),
 			owner: aidash_domain::agent_subject(&node, &agent.id, &agent.version),
