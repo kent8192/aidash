@@ -570,3 +570,122 @@ async fn creator_agent_can_be_added_as_member() {
 	add_member(&mut scope, &run(), id, &creator).await.unwrap();
 	assert_eq!(scope.effects, ["add"]);
 }
+
+/// A creating Run whose Agent version stands as the Tenant says (#1012).
+struct Removal {
+	ending: Ending,
+	creator: Option<(EntityRef, String)>,
+	catalog: Option<bool>,
+	subject: Option<bool>,
+	asked: Vec<String>,
+}
+impl Removal {
+	fn new(catalog: Option<bool>, subject: Option<bool>) -> Self {
+		Self {
+			ending: Ending::default(),
+			creator: Some((
+				EntityRef {
+					id: "creator".into(),
+					version: "1".into(),
+				},
+				"aidash://local/brave-otter-k3m9q2xa".into(),
+			)),
+			catalog,
+			subject,
+			asked: vec![],
+		}
+	}
+}
+#[async_trait]
+impl crate::ports::subnodes::EndScope for Removal {
+	async fn active_subnodes(&mut self, creator: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+		self.ending.active_subnodes(creator).await
+	}
+	async fn mark_ended(
+		&mut self,
+		id: SubnodeId,
+		thread: Uuid,
+		reason: subnodes::EndReason,
+	) -> Result<()> {
+		self.ending.mark_ended(id, thread, reason).await
+	}
+	async fn active_runs(&mut self, thread: Uuid) -> Result<Vec<Uuid>> {
+		self.ending.active_runs(thread).await
+	}
+	async fn control_run(
+		&mut self,
+		run: Uuid,
+		action: aidash_domain::RunControlAction,
+		source: aidash_domain::ControlSource,
+	) -> Result<()> {
+		assert_eq!(source, aidash_domain::ControlSource::Tenant);
+		self.ending.control_run(run, action, source).await
+	}
+}
+#[async_trait]
+impl crate::ports::subnodes::CreatorRemovalScope for Removal {
+	async fn lock_creator(&mut self, creator: Uuid) -> Result<Option<(EntityRef, String)>> {
+		assert_eq!(creator, run().id);
+		Ok(self.creator.clone())
+	}
+	async fn catalog_enabled(&mut self, node: &str, agent: &EntityRef) -> Result<Option<bool>> {
+		self.asked
+			.push(format!("catalog {node} {}@{}", agent.id, agent.version));
+		Ok(self.catalog)
+	}
+	async fn subject_enabled(&mut self, subject: &str) -> Result<Option<bool>> {
+		self.asked.push(format!("subject {subject}"));
+		Ok(self.subject)
+	}
+}
+
+#[rstest::rstest]
+#[case::approval_withdrawn(Some(false), Some(true), true)]
+#[case::subject_disabled(Some(true), Some(false), true)]
+#[case::still_usable(Some(true), Some(true), false)]
+#[case::generated_agent_without_approval(None, Some(true), false)]
+#[case::absent_from_policy_and_catalog(None, None, false)]
+#[tokio::test]
+async fn a_disabled_creator_deletes_its_subnodes_and_an_absent_one_does_not(
+	#[case] catalog: Option<bool>,
+	#[case] subject: Option<bool>,
+	#[case] removed: bool,
+) {
+	use aidash_domain::RunControlAction;
+	let mut scope = Removal::new(catalog, subject);
+	let ended = end_if_creator_removed(&mut scope, run().id).await.unwrap();
+	assert_eq!(ended, removed);
+	// Both facts are read on the creator's own Node, for its exact version.
+	assert_eq!(
+		scope.asked,
+		[
+			"catalog aidash://local/brave-otter-k3m9q2xa creator@1",
+			"subject aidash://local/brave-otter-k3m9q2xa/agents/creator@1"
+		]
+	);
+	if removed {
+		assert_eq!(
+			scope.ending.marks,
+			[subnodes::EndReason::CreatorAgentRemoved]
+		);
+		assert_eq!(
+			scope.ending.controls,
+			[
+				(Uuid::from_u128(8), RunControlAction::Cancel),
+				(Uuid::from_u128(9), RunControlAction::Cancel)
+			]
+		);
+	} else {
+		assert!(scope.ending.marks.is_empty());
+		assert!(scope.ending.controls.is_empty());
+	}
+}
+
+#[tokio::test]
+async fn a_creator_without_active_subnodes_reads_nothing_more() {
+	let mut scope = Removal::new(Some(false), Some(false));
+	scope.creator = None;
+	assert!(!end_if_creator_removed(&mut scope, run().id).await.unwrap());
+	assert!(scope.asked.is_empty());
+	assert!(scope.ending.marks.is_empty());
+}

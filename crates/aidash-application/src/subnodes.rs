@@ -291,6 +291,41 @@ pub async fn control_for_creator(
 	Ok(())
 }
 
+/// Deletes a creating Run's active Subnodes when its Agent version is
+/// definitely unusable on their Node (#1012: disabling or removing the
+/// creating Agent deletes its Subnodes). Called after a Catalog Approval is
+/// withdrawn or disabled, or a policy that may disable an Agent subject is
+/// saved; the scope re-reads both under lock, so a decision made from a stale
+/// read never ends a Subnode whose creator was approved again meanwhile.
+///
+/// Every Subnode of one creating Run has that Run's Agent and Node, so the
+/// whole set ends together, through the same cascade a creator's own end
+/// takes ([`control_for_creator`]): marked `creator_agent_removed`, member Runs
+/// cancelled, records kept. Returns whether anything ended.
+pub async fn end_if_creator_removed(
+	scope: &mut dyn crate::ports::subnodes::CreatorRemovalScope,
+	creator: uuid::Uuid,
+) -> Result<bool> {
+	let Some((agent, node)) = scope.lock_creator(creator).await? else {
+		return Ok(false);
+	};
+	let catalog = scope.catalog_enabled(&node, &agent).await?;
+	let subject = aidash_domain::agent_subject(&node, &agent.id, &agent.version);
+	let subject = scope.subject_enabled(&subject).await?;
+	if !subnodes::creator_removed(catalog, subject) {
+		return Ok(false);
+	}
+	control_for_creator(
+		scope,
+		creator,
+		aidash_domain::RunControlAction::Cancel,
+		aidash_domain::ControlSource::Tenant,
+		Some(subnodes::EndReason::CreatorAgentRemoved),
+	)
+	.await?;
+	Ok(true)
+}
+
 /// Arguments after the built-in tool's schema and agent references are parsed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]

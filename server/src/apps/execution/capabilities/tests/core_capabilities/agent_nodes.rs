@@ -292,6 +292,122 @@ async fn stopping_a_flow_cancels_its_runs_ends_its_subnodes_and_pauses_its_dutie
 	c.close().await;
 }
 
+/// The state and end reason of a Subnode.
+async fn subnode_end(c: &CoreFixture, subnode: Uuid) -> (String, Option<String>) {
+	sqlx::query_as("SELECT state, ended_reason FROM subnodes WHERE id = $1")
+		.bind(subnode)
+		.fetch_one(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+/// Disabling or removing the creating Agent deletes its Subnodes (#1012):
+/// withdrawing the creating version's Catalog Approval on the Subnode's Node,
+/// or disabling its Agent subject in the Tenant's policy, ends the Subnode
+/// with `creator_agent_removed`. A policy save that leaves the Agent usable
+/// ends nothing.
+#[rstest::rstest]
+#[case::approval_withdrawn(true)]
+#[case::subject_disabled(false)]
+#[tokio::test]
+async fn disabling_the_creating_agent_deletes_its_subnodes(
+	#[future] capability_fixture: CoreFixture,
+	#[case] withdraw: bool,
+) {
+	// Arrange: the fixture's research@1.1.0 Run created a Subnode on the
+	// Tenant's default Node.
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let subnode = late_subnode::seed_subnode(&c.f, run.id, &[]).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let alice = common::BrowserMapping::new(&c.f, "acme", "alice").await;
+	// A policy save that changes nothing about the Agent keeps the Subnode.
+	let (status, current) = alice
+		.send("GET", "/api/authorization/acme", Value::Null)
+		.await;
+	assert_eq!(status, 200, "{current}");
+	let (status, saved) = alice
+		.send(
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision": current["revision"], "bundle": current["bundle"]}),
+		)
+		.await;
+	assert!(status == 200 || status == 202, "{saved}");
+	assert_eq!(subnode_end(&c, subnode).await, ("active".into(), None));
+	// Act
+	if withdraw {
+		let (status, bindings) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/authorization/acme/catalog?node={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{bindings}");
+		let binding = bindings
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|binding| {
+				binding["entry_id"] == "research" && binding["entry_version"] == "1.1.0"
+			})
+			.cloned()
+			.unwrap_or_else(|| panic!("research@1.1.0 is approved: {bindings}"));
+		let (status, withdrawn) = request(
+			&c.app,
+			&c.token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node": node, "entry": {"id": "research", "version": "1.1.0"},
+				"expected_revision": binding["revision"], "enabled": false, "scope": "node"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{withdrawn}");
+		assert_eq!(withdrawn["enabled"], false, "{withdrawn}");
+	} else {
+		let (status, current) = alice
+			.send("GET", "/api/authorization/acme", Value::Null)
+			.await;
+		assert_eq!(status, 200, "{current}");
+		let subject = aidash_server::domain::qualified_agent(
+			&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
+			"research",
+			"1.1.0",
+		);
+		let mut bundle = current["bundle"].clone();
+		assert!(
+			bundle["subjects"].get(&subject).is_some(),
+			"the approved Agent is a subject: {bundle}"
+		);
+		bundle["subjects"][&subject]["enabled"] = json!(false);
+		let (status, saved) = alice
+			.send(
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision": current["revision"], "bundle": bundle}),
+			)
+			.await;
+		assert!(status == 200 || status == 202, "{saved}");
+	}
+	// Assert: the Subnode ended as its creator's own end would, records kept.
+	assert_eq!(
+		subnode_end(&c, subnode).await,
+		("dissolved".into(), Some("creator_agent_removed".into()))
+	);
+	let events: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM events WHERE kind = 'subnode.dissolved' \
+		 AND data->>'subnode_id' = $1 AND data->>'reason' = 'creator_agent_removed'",
+	)
+	.bind(subnode.to_string())
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(events, 1);
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn the_org_chart_shows_each_person_what_they_may_see(

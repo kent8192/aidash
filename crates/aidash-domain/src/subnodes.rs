@@ -53,6 +53,23 @@ pub enum EndReason {
 	CreatorFailed,
 	CreatorCancelled,
 	SafetyStop,
+	/// The creating Agent version was disabled or its approval withdrawn
+	/// (#1012): see [`creator_removed`].
+	CreatorAgentRemoved,
+}
+
+/// Whether a Subnode's creating Agent version is definitely unusable on the
+/// Subnode's Node, so the Subnode is deleted (#1012: "disabling or removing
+/// the creating Agent deletes its Subnodes").
+///
+/// Only a definite signal counts: the version's Catalog Approval on that Node
+/// is withdrawn or disabled (`catalog_enabled == Some(false)`), or the Tenant's
+/// policy names its Agent subject and disables it (`subject_enabled ==
+/// Some(false)`). Absence proves nothing: a generated Agent works without a
+/// Catalog Approval, and a subject missing from the policy bundle may be one
+/// that was never written there. Neither absence ends a Subnode.
+pub fn creator_removed(catalog_enabled: Option<bool>, subject_enabled: Option<bool>) -> bool {
+	catalog_enabled == Some(false) || subject_enabled == Some(false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +318,32 @@ mod tests {
 		);
 		subnode.state = State::Dissolved;
 		assert!(!subnode.allows_delegation(&worker));
+	}
+
+	#[rstest::rstest]
+	#[case::approved_and_enabled(Some(true), Some(true), false)]
+	#[case::never_approved_nor_named(None, None, false)]
+	#[case::generated_agent_without_approval(None, Some(true), false)]
+	#[case::approved_but_not_a_subject(Some(true), None, false)]
+	#[case::approval_withdrawn(Some(false), Some(true), true)]
+	#[case::approval_withdrawn_subject_absent(Some(false), None, true)]
+	#[case::subject_disabled(Some(true), Some(false), true)]
+	#[case::subject_disabled_without_approval(None, Some(false), true)]
+	#[case::both(Some(false), Some(false), true)]
+	fn only_a_definite_signal_removes_the_creator(
+		#[case] catalog: Option<bool>,
+		#[case] subject: Option<bool>,
+		#[case] removed: bool,
+	) {
+		assert_eq!(creator_removed(catalog, subject), removed);
+	}
+
+	#[test]
+	fn the_creator_removal_reason_is_stored_in_snake_case() {
+		assert_eq!(
+			serde_json::to_value(EndReason::CreatorAgentRemoved).unwrap(),
+			serde_json::json!("creator_agent_removed")
+		);
 	}
 
 	#[test]
