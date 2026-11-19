@@ -2481,6 +2481,80 @@ async fn a_tool_a_side_lacks_pauses_the_run_naming_that_side(
 	assert_eq!(refusal.action.as_deref(), Some("workspace_read"));
 }
 
+/// The defaults hold `workspace_message` without files (decision 6): a message that sends files
+/// is decided, and asked about, on its own key, and is never more permitted than a plain one.
+#[rstest]
+#[tokio::test]
+async fn a_message_with_files_is_decided_on_its_own_key(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	use aidash_domain::federation::tool_lists::{DEFAULT_TOOLS, WORKSPACE_MESSAGE_FILES};
+	repository.remote = true;
+	repository.lists = Some(lists(DEFAULT_TOOLS, DEFAULT_TOOLS, &[]));
+	let plain = call("workspace_message", json!({"content":"done"}));
+	authorize(&repository, &run, &agent, &plain).await.unwrap();
+	let empty = call("workspace_message", json!({"content":"done","files":[]}));
+	authorize(&repository, &run, &agent, &empty).await.unwrap();
+	let with_files = call(
+		"workspace_message",
+		json!({"content":"done","files":["out/report.pdf"]}),
+	);
+	let result = authorize(&repository, &run, &agent, &with_files).await;
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected an authority pause, got {result:?}");
+	};
+	assert_eq!(
+		refusal.check,
+		RefusalCheck::FederationTools {
+			home: true,
+			receiver: true
+		}
+	);
+	assert_eq!(refusal.action.as_deref(), Some(WORKSPACE_MESSAGE_FILES));
+	// `workspace_message*` names both forms.
+	repository.lists = Some(lists(&["workspace_message*"], &["workspace_message*"], &[]));
+	authorize(&repository, &run, &agent, &with_files)
+		.await
+		.unwrap();
+	let unavailable = |result: Result<()>| {
+		matches!(result, Err(Error::Invalid(message))
+			if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL)
+	};
+	// A Block of the files form stops only messages with files.
+	repository.lists = Some(lists(
+		&["workspace_message*"],
+		&["workspace_message*"],
+		&[WORKSPACE_MESSAGE_FILES],
+	));
+	authorize(&repository, &run, &agent, &plain).await.unwrap();
+	assert!(unavailable(
+		authorize(&repository, &run, &agent, &with_files).await
+	));
+	// A Block of the plain message stops both: files never make a message more permitted.
+	repository.lists = Some(lists(
+		&["workspace_message*"],
+		&["workspace_message*"],
+		&["workspace_message"],
+	));
+	assert!(unavailable(
+		authorize(&repository, &run, &agent, &with_files).await
+	));
+	// Lacking the plain message, the pause asks about it first.
+	repository.lists = Some(lists(
+		&[WORKSPACE_MESSAGE_FILES],
+		&[WORKSPACE_MESSAGE_FILES],
+		&[],
+	));
+	let Err(Error::AuthorityRefused(refusal)) =
+		authorize(&repository, &run, &agent, &with_files).await
+	else {
+		panic!("expected an authority pause");
+	};
+	assert_eq!(refusal.action.as_deref(), Some("workspace_message"));
+}
+
 #[rstest]
 #[tokio::test]
 async fn a_run_only_answer_of_each_side_lets_the_call_through(

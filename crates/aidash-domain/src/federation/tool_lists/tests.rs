@@ -187,6 +187,32 @@ fn list_key_names_builtins_plainly_and_registry_tools_by_definition_and_operatio
 }
 
 #[test]
+fn a_message_with_files_needs_its_own_key_after_the_plain_one() {
+	use serde_json::json;
+	let keys = |key: &str, arguments| call_keys(key.to_owned(), &arguments);
+	for plain in [
+		json!({"content":"hi"}),
+		json!({"content":"hi","files":null}),
+		json!({"content":"hi","files":[]}),
+	] {
+		assert_eq!(keys("workspace_message", plain), ["workspace_message"]);
+	}
+	// Anything else in `files`, malformed included, is a message with files.
+	for files in [json!(["out/a.pdf"]), json!("out/a.pdf")] {
+		assert_eq!(
+			keys("workspace_message", json!({"content":"hi","files":files})),
+			["workspace_message", WORKSPACE_MESSAGE_FILES]
+		);
+	}
+	assert_eq!(keys("file_share", json!({"files":["a"]})), ["file_share"]);
+	// The defaults hold the plain message only; a pattern of the tool names both forms.
+	assert!(ToolList::defaults().matches("workspace_message"));
+	assert!(!ToolList::defaults().matches(WORKSPACE_MESSAGE_FILES));
+	assert!(list(&["workspace_message*"]).matches(WORKSPACE_MESSAGE_FILES));
+	assert!(ToolPattern::new(WORKSPACE_MESSAGE_FILES).is_ok());
+}
+
+#[test]
 fn a_run_only_answer_lets_the_call_through_without_changing_the_registered_lists() {
 	let allowance = list(&["workspace_read"]);
 	let run_only = list(&["registry:github/create_issue"]);

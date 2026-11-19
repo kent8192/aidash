@@ -16,8 +16,14 @@ pub const MAX_PATTERN_BYTES: usize = 200;
 /// The `type` of the RFC 9396 `authorization_details` entry a Remote Grant carries.
 pub const AUTHORIZATION_DETAIL_TYPE: &str = "aidash.federation.tools";
 
+/// The key a `workspace_message` call that sends files is listed under. A message with files
+/// moves the Run's files to the Home, which a plain message does not, so the lists name it apart
+/// and the defaults leave it out (decision 6). `workspace_message*` names both.
+pub const WORKSPACE_MESSAGE_FILES: &str = "workspace_message:files";
+
 /// The tools a new Node Registration starts with on both sides: those acting only on the
-/// Home's own Workspace and people, plus the receiving Agent's Skills.
+/// Home's own Workspace and people, plus the receiving Agent's Skills. `workspace_message` is
+/// a message without files; with files it is [`WORKSPACE_MESSAGE_FILES`].
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"task_create",
 	"artifact_publish",
@@ -66,6 +72,25 @@ pub fn list_key(contract: &ToolContract, operation: &str) -> String {
 		ToolIdentity::AgentPlugin(tool) => {
 			format!("agent-plugin:{}/{}/{}", tool.plugin, tool.server, tool.tool)
 		}
+	}
+}
+
+/// The keys the lists must all let through, in order, for one call of a tool listed under `key`.
+/// A `workspace_message` whose `files` is anything but absent, null or empty also needs
+/// [`WORKSPACE_MESSAGE_FILES`], after the plain key, so a message with files is never more
+/// permitted than one without and a call the tool would refuse never passes as a plain message.
+/// Every other call needs `key` alone.
+pub fn call_keys(key: String, arguments: &serde_json::Value) -> Vec<String> {
+	let files = key == "workspace_message"
+		&& match arguments.get("files") {
+			None | Some(serde_json::Value::Null) => false,
+			Some(serde_json::Value::Array(files)) => !files.is_empty(),
+			Some(_) => true,
+		};
+	if files {
+		vec![key, WORKSPACE_MESSAGE_FILES.to_owned()]
+	} else {
+		vec![key]
 	}
 }
 

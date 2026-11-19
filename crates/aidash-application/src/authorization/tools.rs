@@ -8,7 +8,8 @@ use aidash_domain::{
 	RunMetadata,
 	exposure::{self, CapabilityIdentity},
 	federation::tool_lists::{
-		OwnedRemoteToolLists, ToolVerdict, UNAVAILABLE_TOOL, list_key, registry_operation,
+		OwnedRemoteToolLists, ToolVerdict, UNAVAILABLE_TOOL, call_keys, list_key,
+		registry_operation,
 	},
 	provider::ToolCall,
 	registry::{
@@ -114,23 +115,31 @@ fn federation_gate(
 	if member && aidash_domain::subnodes::COORDINATION_TOOLS.contains(&key.as_str()) {
 		return Ok(());
 	}
-	match lists.lists().decide(contract.reach, &key) {
-		ToolVerdict::Usable => Ok(()),
-		ToolVerdict::Unavailable => Err(Error::Invalid(UNAVAILABLE_TOOL.into())),
-		ToolVerdict::Ask(_) if member => Err(Error::Refused(
-			"this tool is not available to Subnode members of this Run".into(),
-		)),
-		// The key the lists matched travels as the refusal's action, so the pause can say which
-		// pattern its answer adds without resolving the tool again.
-		ToolVerdict::Ask(lacking) => Err(refused(
-			call,
-			RefusalCheck::FederationTools {
-				home: lacking.home,
-				receiver: lacking.receiver,
-			},
-			Some(&key),
-		)),
+	// A message that sends files needs its own key as well as the plain one (decision 6).
+	for key in call_keys(key, &call.arguments) {
+		match lists.lists().decide(contract.reach, &key) {
+			ToolVerdict::Usable => {}
+			ToolVerdict::Unavailable => return Err(Error::Invalid(UNAVAILABLE_TOOL.into())),
+			ToolVerdict::Ask(_) if member => {
+				return Err(Error::Refused(
+					"this tool is not available to Subnode members of this Run".into(),
+				));
+			}
+			// The key the lists matched travels as the refusal's action, so the pause can say
+			// which pattern its answer adds without resolving the tool again.
+			ToolVerdict::Ask(lacking) => {
+				return Err(refused(
+					call,
+					RefusalCheck::FederationTools {
+						home: lacking.home,
+						receiver: lacking.receiver,
+					},
+					Some(&key),
+				));
+			}
+		}
 	}
+	Ok(())
 }
 
 /// Whether work a remote Run started with the builtin tool `tool`, a running command, a Live
