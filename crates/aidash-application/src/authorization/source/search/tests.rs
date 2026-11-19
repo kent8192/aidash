@@ -653,6 +653,7 @@ impl SemanticSearchScope for Scope {
 			task_id: task().id,
 			task_revision: task().revision,
 			initial_task: json!(task()),
+			activated: true,
 		}))
 	}
 	fn disclosure_mode(&mut self, grant: Uuid) -> Result<()> {

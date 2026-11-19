@@ -3630,6 +3630,59 @@ async fn a_hop_through_an_executor_the_home_does_not_know_is_refused(
 	p.close().await;
 }
 
+/// The receiver's own policy lets its Run's `task_delegate` call hand a Home
+/// Task on (#654): the call passes the tool authorization here as a real Run's
+/// call does, and the Home admits the child on its own Node.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let run = p.run().await;
+	let home = Home::new(p.b.clone(), run.clone());
+	let child = home
+		.create_task(
+			"tool-hop-child",
+			&NewTask {
+				title: "Tool hop child".into(),
+				description: "Handed on by the model".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	let pending = common::tool_pending(
+		json!({"response":{"text":"","tool_calls":[{"id":"next-hop","name":"task_delegate","arguments":{"task_id":child.id,"node_id":node_of(&p.a),"agent":{"id":"research","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+	);
+	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(pending)
+		.bind(run.id)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+	let history = json!(run.context);
+	let result = &first_result(&history)["event"]["result"];
+	assert!(result.get("error").is_none(), "{history}");
+	assert_eq!(result["task_id"], json!(child.id), "{history}");
+	assert_eq!(
+		p.a.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|run| run.task_id == child.id)
+			.count(),
+		1
+	);
+	p.close().await;
+}
+
 /// A Remote Grant Run may hand a child back to its Home's own Node (#654).
 #[rstest::rstest]
 #[tokio::test]
@@ -3860,6 +3913,31 @@ async fn a_changed_execution_boundary_stops_before_inference(
 	p.close().await;
 }
 
+/// Ends the grant's lifetime in the past on both Nodes, as if it had been
+/// prepared with a short one: the receiver pins the Description the Home
+/// described, `expires_at` included, and compares every later description
+/// with it, so moving only the Home's column would fail for that reason.
+async fn lapse_grant(p: &Pair) {
+	const LAPSED: &str = "2000-01-01T00:00:00Z";
+	sqlx::query(
+		"UPDATE authorization_remote_grants SET expires_at = $2::timestamptz WHERE id = $1",
+	)
+	.bind(p.grant)
+	.bind(LAPSED)
+	.execute(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let pinned = sqlx::query(
+		"UPDATE authorization_remote_admissions SET description = jsonb_set(description, '{expires_at}', to_jsonb($2::text)) WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.bind(LAPSED)
+	.execute(p.b.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(pinned.rows_affected(), 1);
+}
+
 /// Round 3 Q5 of the agent activation grilling (#1013): a Remote Grant lives
 /// while its Task is open, however long the Run's Stint sleeps, and ends with
 /// the Task. Its lifetime bounds only the admission.
@@ -3872,13 +3950,7 @@ async fn a_sleeping_remote_run_keeps_its_grant_past_its_lifetime_until_its_task_
 	p.step().await;
 	assert_eq!(p.run().await.phase().as_str(), "THINKING");
 	// The Run sleeps past its grant's lifetime, as it would on a three-day approval.
-	sqlx::query(
-		"UPDATE authorization_remote_grants SET expires_at = now() - interval '1 second' WHERE id = $1",
-	)
-	.bind(p.grant)
-	.execute(p.a.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	lapse_grant(&p).await;
 	// The Home's requester still reaches it, and the receiver takes the input.
 	let messages = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
 	let sent = request(
@@ -4303,12 +4375,6 @@ async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
 	assert!(states[0].get("human_requests").is_none(), "{states}");
 	assert!(states[0].get("semantic").is_none(), "{states}");
 	// A revoked Home grant must never offer a call, even while the receiver remains paused.
-	let original_expiry: chrono::DateTime<chrono::Utc> =
-		sqlx::query_scalar("SELECT expires_at FROM authorization_remote_grants WHERE id = $1")
-			.bind(p.grant)
-			.fetch_one(p.a.store.pool.fixture_driver())
-			.await
-			.unwrap();
 	sqlx::query("UPDATE authorization_remote_grants SET revoked = true WHERE id = $1")
 		.bind(p.grant)
 		.execute(p.a.store.pool.fixture_driver())
@@ -4317,23 +4383,19 @@ async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
 	let (status, stale) = request(&p.aa, &mia, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{stale}");
 	assert_eq!(stale, json!([]));
-	// Past its lifetime a started grant still offers the call while its Task is
-	// open: the Run sleeps on it, and its grant lives until the Task ends (#1013).
-	sqlx::query("UPDATE authorization_remote_grants SET revoked = false, expires_at = now() - interval '1 second' WHERE id = $1")
+	sqlx::query("UPDATE authorization_remote_grants SET revoked = false WHERE id = $1")
 		.bind(p.grant)
 		.execute(p.a.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	// Past its lifetime a held grant still offers the call while its Task is
+	// open, and the call can still be declined: the Run sleeps on it, and its
+	// grant lives until the Task ends (#1013).
+	lapse_grant(&p).await;
 	let (status, sleeping) = request(&p.aa, &mia, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{sleeping}");
 	assert_eq!(sleeping.as_array().unwrap().len(), 1, "{sleeping}");
 	assert_eq!(sleeping[0]["execution"]["declinable_call"]["call"], key);
-	sqlx::query("UPDATE authorization_remote_grants SET expires_at = $2 WHERE id = $1")
-		.bind(p.grant)
-		.bind(original_expiry)
-		.execute(p.a.store.pool.fixture_driver())
-		.await
-		.unwrap();
 	let (status, declined) =
 		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
 	assert_eq!(status, 200, "{declined}");

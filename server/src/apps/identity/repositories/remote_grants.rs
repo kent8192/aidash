@@ -44,13 +44,15 @@ pub(crate) struct HomeBinding {
 	pub task_id: Uuid,
 	pub task_revision: i64,
 	pub initial_task: Value,
+	pub activated_at: Option<DateTime<Utc>>,
 }
 crate::native_record!(HomeBinding {
 	grant_id,
 	admission_id,
 	task_id,
 	task_revision,
-	initial_task
+	initial_task,
+	activated_at
 });
 
 impl From<Grant> for home::Grant {
@@ -81,36 +83,47 @@ impl From<HomeBinding> for home::HomeBinding {
 			task_id: row.task_id,
 			task_revision: row.task_revision,
 			initial_task: row.initial_task,
+			activated: row.activated_at.is_some(),
 		}
 	}
 }
 
 /// The SQL condition that the `authorization_remote_grants` row named by
 /// `grant` (its table name or alias) is live: the rule of
-/// [`home::Liveness`] (#1013). Its lifetime bounds it until a receiver has
-/// started its Task; from then on it lives while the Task has not ended,
-/// however long the Run's Stint sleeps. Every Home check of a grant's
-/// liveness uses this condition, so none of them reads `expires_at` alone.
+/// [`home::Liveness`] (#1013). Its lifetime bounds it until this grant's own
+/// Home binding has recorded the receiver's activation and the receiver holds
+/// the Task (its owner is the last subject of the grant's chain, which only
+/// that receiver's claim makes it); from then on it lives while the Task has
+/// not ended, however long the Run's Stint sleeps. The Task's status never
+/// stands in for the activation. Every Home check of a grant's liveness uses
+/// this condition, so none of them reads `expires_at` alone.
 pub(crate) fn live_condition(grant: &str) -> String {
 	let ended = home::ending_statuses()
 		.map(|status| format!("'{}'", status.as_str()))
 		.collect::<Vec<_>>()
 		.join(", ");
 	format!(
-		"(NOT {grant}.revoked AND ({grant}.expires_at > CLOCK_TIMESTAMP() OR EXISTS (SELECT 1 FROM authorization_remote_execution live_binding JOIN tasks live_task ON live_task.id = live_binding.task_id AND live_task.tenant = live_binding.tenant WHERE live_binding.grant_id = {grant}.id AND (live_binding.activated_at IS NOT NULL OR live_task.status <> '{open}') AND live_task.status NOT IN ({ended}))))",
-		open = aidash_domain::TaskStatus::Open.as_str(),
+		"(NOT {grant}.revoked AND ({grant}.expires_at > CLOCK_TIMESTAMP() OR EXISTS (SELECT 1 FROM authorization_remote_execution live_binding JOIN tasks live_task ON live_task.id = live_binding.task_id AND live_task.tenant = live_binding.tenant WHERE live_binding.grant_id = {grant}.id AND live_binding.task_id = {grant}.task_id AND live_binding.activated_at IS NOT NULL AND live_task.owner = {grant}.subject_chain[array_length({grant}.subject_chain, 1)] AND live_task.status NOT IN ({ended}))))"
 	)
 }
 
 #[cfg(test)]
 mod live_condition_tests {
 	#[test]
-	fn the_condition_names_the_grant_and_every_ending_status() {
+	fn the_condition_needs_this_grants_activation_its_executor_and_an_open_task() {
 		let condition = super::live_condition("g");
 		assert!(condition.starts_with("(NOT g.revoked AND (g.expires_at > CLOCK_TIMESTAMP()"));
-		assert!(condition.contains("live_binding.grant_id = g.id"));
-		assert!(condition.contains("live_task.status <> 'OPEN'"));
+		assert!(
+			condition.contains("live_binding.grant_id = g.id AND live_binding.task_id = g.task_id")
+		);
+		assert!(condition.contains("live_binding.activated_at IS NOT NULL"));
+		assert!(
+			condition
+				.contains("live_task.owner = g.subject_chain[array_length(g.subject_chain, 1)]")
+		);
 		assert!(condition.contains("NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED')"));
+		// The Task's status never stands in for the activation.
+		assert!(!condition.contains("<> 'OPEN'"));
 		assert_eq!(
 			condition.matches('(').count(),
 			condition.matches(')').count()

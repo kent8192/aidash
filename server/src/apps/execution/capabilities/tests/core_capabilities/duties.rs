@@ -1037,5 +1037,18 @@ async fn an_event_from_another_node_of_the_tenant_wakes_a_duty(
 	// The next event finds the Task open and is skipped, the Router default.
 	let skipped = send(Some(requester), trigger, json!({})).await.unwrap();
 	assert_eq!(skipped["outcome"], "skipped");
+	// `duty_notify` sends the same way from a Run of the sibling Node, as the
+	// person at the root of the Run's chain.
+	let mut run = admit(&c).await;
+	run.node = sibling.clone();
+	run.home_node = sending.clone();
+	let sent = aidash_server::apps::workspaces::services::duty_events::notify(
+		&c.f,
+		&run,
+		json!({"node_id": duty_node, "trigger_id": trigger, "payload": {"from": "an agent"}}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(sent["outcome"], "skipped", "{sent}");
 	c.close().await;
 }

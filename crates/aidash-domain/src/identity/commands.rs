@@ -64,6 +64,7 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 		"create_task" => Some("task_create"),
 		"delegate" => Some("task_delegate"),
 		"discover" => Some("agent_discover"),
+		"created_task" => Some("task_delegate"),
 		_ => None,
 	}
 }

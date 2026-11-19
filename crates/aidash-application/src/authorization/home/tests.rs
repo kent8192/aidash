@@ -23,6 +23,8 @@ struct State {
 	grant_expired: bool,
 	/// The Home Task's status when it is not the fixture's Running.
 	task_status: Option<TaskStatus>,
+	/// The Home binding recorded no activation.
+	unactivated: bool,
 	calls: Vec<String>,
 	scopes: usize,
 	rpcs: usize,
@@ -109,7 +111,8 @@ fn grant(required: bool) -> Grant {
 		tenant: "tenant".into(),
 		credential_id: principal().credential_id,
 		root_subject: "requester".into(),
-		subject_chain: vec!["requester".into()],
+		// The receiver's executor, which holds the fixture's Task (#1013).
+		subject_chain: vec!["requester".into(), "agent".into()],
 		inspection: json!({"node_id":"aidash://receiver","authority_digest":"authority","agent":crate::test_support::agent("agent"),"definitions":[],"binding_snapshot":crate::test_support::snapshot("aidash://receiver","agent")}),
 		expires_at: Utc.timestamp_opt(3600, 0).unwrap(),
 		revoked: false,
@@ -343,12 +346,14 @@ impl HomeScope for Scope {
 	}
 	async fn binding(&mut self, _: Uuid) -> Result<Option<HomeBinding>> {
 		let changed = self.repository.state.lock().unwrap().binding_changed;
+		let unactivated = self.repository.state.lock().unwrap().unactivated;
 		Ok(Some(HomeBinding {
 			grant_id: Uuid::from_u128(4),
 			admission_id: Uuid::from_u128(5),
 			task_id: task().id,
 			task_revision: 7,
 			initial_task: if changed { json!({}) } else { json!(task()) },
+			activated: !unactivated,
 		}))
 	}
 	async fn grants(&mut self, _: Uuid) -> Result<Vec<Grant>> {
@@ -1166,6 +1171,14 @@ async fn holder_authority_rechecks_grant_liveness() {
 	);
 	// It ends with the Task.
 	repository.state.lock().unwrap().task_status = Some(TaskStatus::Completed);
+	assert!(
+		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+	// A running Task never stands in for an activation the binding did not record.
+	repository.state.lock().unwrap().task_status = None;
+	repository.state.lock().unwrap().unactivated = true;
 	assert!(
 		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
 			.await

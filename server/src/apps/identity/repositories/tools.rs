@@ -47,6 +47,17 @@ impl AgentToolRepository for AgentTools<'_> {
 			run: self.run,
 		}))
 	}
+	async fn grant_output(&self, task: Uuid) -> Result<bool> {
+		// Only the Home records what a Remote Grant's Run created there (#654).
+		let Some(federation) = self.remote else {
+			return Ok(false);
+		};
+		let home = crate::federation::Home::new(federation.clone(), self.run.clone());
+		let answer: Value = home
+			.command("created_task", serde_json::json!({"task_id": task}))
+			.await?;
+		Ok(answer["created"] == Value::Bool(true))
+	}
 }
 #[async_trait]
 impl AgentToolScope for Scope<'_> {

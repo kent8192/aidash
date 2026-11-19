@@ -46,18 +46,6 @@ fn subject<R: HomeRepository>(
 ) -> Result<aidash_domain::identity::execution::ExecutionPrincipal> {
 	repository.identity().ok_or(Error::Forbidden)
 }
-/// The liveness of a bound grant whose Task the caller has read (#1013). The
-/// binding is the caller's to check; only the Task's status tells whether
-/// the receiver started it, since the Home binding does not carry the mark.
-fn live(grant: &Grant, task: Option<&Task>) -> Liveness {
-	Liveness {
-		revoked: grant.revoked,
-		expires_at: grant.expires_at,
-		bound: true,
-		activated: false,
-		task: task.map(|task| task.status),
-	}
-}
 async fn managed_task<S: HomeScope>(scope: &mut S, id: Uuid, read: bool) -> Result<Task> {
 	if read {
 		return scope.task_read(id).await;
@@ -590,7 +578,7 @@ async fn holder_may_decline<R: HomeRepository>(
 		let Some(binding) = scope.binding(grant).await? else {
 			return Ok(false);
 		};
-		if !live(&found, Some(&task)).live(chrono::Utc::now()) {
+		if !Liveness::of(&found, Some(&binding), Some(&task)).live(chrono::Utc::now()) {
 			return Ok(false);
 		}
 		let run = scope.resource("run", binding.admission_id, resource.attributes);
@@ -878,7 +866,7 @@ pub async fn answer_human<R: HomeRepository>(
 		let bound = scope.binding(grant).await?.ok_or(Error::Forbidden)?;
 		// A Run asleep on this question keeps its grant while its Task is open
 		// (#1013), however long the person takes to answer.
-		if !live(&current, Some(&read)).live(chrono::Utc::now()) {
+		if !Liveness::of(&current, Some(&bound), Some(&read)).live(chrono::Utc::now()) {
 			// Preserve the revoked-grant boundary except for a known closed
 			// question; answer_human still checks the person's answer authority.
 			let closed = scope

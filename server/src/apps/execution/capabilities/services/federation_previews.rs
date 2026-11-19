@@ -16,6 +16,33 @@ use reinhardt::query::{
 };
 use serde_json::json;
 
+/// The receiver's own bound on a Home's request about one of its admitted
+/// Runs (#1013). The admission must still be open and the Run not ended. Once
+/// the Run has started, its Home decides whether the grant still lives, and
+/// has just asked as that Home: a started grant outlives its pinned lifetime
+/// while its Task is open. A Run that never started is still bound by it.
+async fn require_live_admission(
+	access: &mut crate::authorization::access::Access,
+	description: &Description,
+	run: &aidash_domain::Run,
+) -> Result<()> {
+	crate::apps::execution::repositories::node_cancellations::require_admission_open(
+		&mut **access.tx,
+		run.id,
+	)
+	.await?;
+	if !aidash_domain::federation::execution::admission::serves_home(
+		run.phase(),
+		run.control,
+		run.step,
+		description.expires_at,
+		chrono::Utc::now(),
+	) {
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}
+
 fn reference_id(sender: &str, message: uuid::Uuid, file: uuid::Uuid) -> String {
 	format!("{sender}:{message}:{file}")
 }
@@ -195,9 +222,6 @@ pub(crate) async fn retain(
 		)
 		.await?;
 		let description: Description = serde_json::from_value(record.description)?;
-		// The Run below exists, so its Home decides whether the grant still lives
-		// and has just asked as that Home; the pinned lifetime bounds only the
-		// admission (#1013).
 		if record.node != admitted.receiver.node.as_str()
 			|| record.tenant != admitted.tenant.as_str()
 			|| record.credential_id != access.identity.credential_id
@@ -222,6 +246,7 @@ pub(crate) async fn retain(
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		let area = super::sessions::for_run(&mut access, &run).await?;
 		if area.id != request.area_id {
 			return Err(Error::Forbidden);
@@ -353,9 +378,6 @@ pub(crate) async fn inspect(
 		)
 		.await?;
 		let description: Description = serde_json::from_value(record.description)?;
-		// The Run below exists, so its Home decides whether the grant still lives
-		// and has just asked as that Home; the pinned lifetime bounds only the
-		// admission (#1013).
 		if record.node != admitted.receiver.node.as_str()
 			|| record.tenant != admitted.tenant.as_str()
 			|| record.credential_id != access.identity.credential_id
@@ -377,6 +399,7 @@ pub(crate) async fn inspect(
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		// A remote Run has an admission record rather than a local execution
 		// grant. With no preview listener there is no area or viewing address to
 		// disclose; V can show the explicit unavailable state.
@@ -465,9 +488,6 @@ pub(crate) async fn issue(
 		)
 		.await?;
 		let description: Description = serde_json::from_value(record.description)?;
-		// The Run below exists, so its Home decides whether the grant still lives
-		// and has just asked as that Home; the pinned lifetime bounds only the
-		// admission (#1013).
 		if record.node != admitted.receiver.node.as_str()
 			|| record.tenant != admitted.tenant.as_str()
 			|| record.credential_id != access.identity.credential_id
@@ -489,6 +509,7 @@ pub(crate) async fn issue(
 		{
 			return Err(Error::Forbidden);
 		}
+		require_live_admission(&mut access, &description, &run).await?;
 		let area = super::sessions::for_run(&mut access, &run).await?;
 		let peer = aidash_application::preview::Peer {
 			sender: admitted.sender.to_string(),

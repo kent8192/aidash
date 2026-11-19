@@ -200,6 +200,12 @@ pub async fn execute(
 				record
 			}
 		}
+		// Whether a Task is one this grant created, so the receiver may let its
+		// Run hand it on (#654). Reads nothing else about the Task.
+		"created_task" => {
+			let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+			json!({"created": scope.created_by_grant(input.grant_id, id).await?})
+		}
 		"discover" => {
 			let search: Search = match data.get("search") {
 				None | Some(Value::Null) => Search::default(),

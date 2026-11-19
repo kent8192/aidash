@@ -637,6 +637,33 @@ async fn the_homes_own_node_is_never_handed_on(mut scope: Scope) {
 	assert!(scope.calls.is_empty());
 }
 #[rstest]
+#[case::created(true)]
+#[case::not_created(false)]
+#[tokio::test]
+async fn a_receiver_asks_whether_its_grant_created_a_task(mut scope: Scope, #[case] created: bool) {
+	scope.created = created;
+	let result = run(
+		&mut scope,
+		"created_task",
+		&json!({"task_id":Uuid::from_u128(5)}),
+	)
+	.await
+	.unwrap();
+	assert_eq!(result, json!({"created": created}));
+	assert_eq!(
+		scope.calls,
+		[
+			"binding",
+			"task:00000000-0000-0000-0000-000000000002",
+			"builtin:task_delegate",
+			"task_resource",
+			"provenance",
+			"live"
+		]
+	);
+	assert!(scope.journal.is_empty());
+}
+#[rstest]
 #[tokio::test]
 async fn a_remote_run_discovers_from_its_homes_task_node_and_rechecks_the_grant(mut scope: Scope) {
 	let result = run(&mut scope, "discover", &json!({"search":{"kind":"agent"}}))
