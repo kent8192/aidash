@@ -374,13 +374,26 @@ async fn sender_block(
 /// Take from an Agent card the tools the receiver blocks for the sender. The card names an
 /// Agent's tools in `config.bindings`, each a binding of kind `tool` that targets a definition;
 /// the definition's key is what the Block matches. A definition that cannot be read or keyed
-/// stays: it is only a description, and a call to it is decided again when it is made.
+/// stays: it is only a description, and a call to it is decided again when it is made. The
+/// builtins a `config.core_capabilities` flag turns on are named by the flag alone, so a flag
+/// one of whose tools is blocked reads `false`.
 async fn hide_blocked_tools(
 	access: &mut Access,
 	entry: &mut Entry,
 	block: &aidash_domain::federation::tool_lists::ToolList,
 ) {
-	use aidash_domain::federation::tool_lists::definition_key;
+	use aidash_domain::federation::tool_lists::{blocked_core_capabilities, definition_key};
+	if let Some(flags) = entry
+		.config
+		.get_mut("core_capabilities")
+		.and_then(serde_json::Value::as_object_mut)
+	{
+		for flag in blocked_core_capabilities(block) {
+			if let Some(value) = flags.get_mut(flag) {
+				*value = serde_json::Value::Bool(false);
+			}
+		}
+	}
 	let Some(bindings) = entry
 		.config
 		.get("bindings")

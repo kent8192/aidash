@@ -404,6 +404,24 @@ fn the_receiver_answers_only_its_own_ask_and_only_while_nothing_else_holds_the_r
 }
 
 #[test]
+fn an_agent_card_drops_the_core_capabilities_of_blocked_builtins() {
+	assert!(blocked_core_capabilities(&ToolList::default()).is_empty());
+	assert_eq!(blocked_core_capabilities(&list(&["shell"])), ["shell"]);
+	// Any one tool of a flag clears it: `shell_poll` is turned on by `shell` too.
+	assert_eq!(blocked_core_capabilities(&list(&["shell_poll"])), ["shell"]);
+	assert_eq!(
+		blocked_core_capabilities(&list(&["file_read", "outbound_get", "apply_patch"])),
+		["files", "outbound", "patch"]
+	);
+	assert_eq!(
+		blocked_core_capabilities(&list(&["code_*", "file_share", "skill_read"])),
+		["python", "sharing", "skills"]
+	);
+	// Tools no flag turns on clear nothing; a Registry tool is not a builtin.
+	assert!(blocked_core_capabilities(&list(&["task_create", "registry:github/*"])).is_empty());
+}
+
+#[test]
 fn only_the_receiver_may_block() {
 	assert!(AskChoice::Block.allowed_on(AskSide::Receiver));
 	assert!(!AskChoice::Block.allowed_on(AskSide::Home));

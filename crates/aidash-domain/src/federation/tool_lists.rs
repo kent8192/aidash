@@ -558,5 +558,32 @@ impl RemoteToolLists<'_> {
 	}
 }
 
+/// The `core_capabilities` flags an Agent card shown to a peer must clear because `block`
+/// names a builtin tool the flag turns on. A card that kept `shell: true` with `shell`
+/// blocked would tell the peer a blocked tool from a missing one (decision 14). A flag goes
+/// as soon as any of its tools is blocked, so the card never offers more than
+/// `scoped/tools/discover` does. Sorted, without duplicates.
+pub fn blocked_core_capabilities(block: &ToolList) -> Vec<&'static str> {
+	use crate::tool::contract::{ALL_BUILTINS, CorePermission, builtin_contract};
+	let mut flags: Vec<&'static str> = ALL_BUILTINS
+		.iter()
+		.filter(|name| block.matches(name))
+		.filter_map(|name| builtin_contract(name)?.authorization.core)
+		// The `CoreCapabilities` field that grants the permission directly.
+		.map(|permission| match permission {
+			CorePermission::Files => "files",
+			CorePermission::Shell => "shell",
+			CorePermission::Python => "python",
+			CorePermission::Patch => "patch",
+			CorePermission::Skills => "skills",
+			CorePermission::Sharing => "sharing",
+			CorePermission::Outbound => "outbound",
+		})
+		.collect();
+	flags.sort_unstable();
+	flags.dedup();
+	flags
+}
+
 #[cfg(test)]
 mod tests;
