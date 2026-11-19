@@ -897,7 +897,10 @@ async fn a_start_dropped_at_its_time_limit_is_fenced_and_stopped_before_the_data
 
 	// Assert: the process the start may have launched is stopped by id and by Run before the
 	// plugin data is read for saving or removed.
-	assert_eq!(*pod.refused.lock().unwrap(), [operation_id.clone()]);
+	assert_eq!(
+		*pod.refused.lock().unwrap(),
+		std::slice::from_ref(&operation_id)
+	);
 	assert_eq!(*pod.stopped.lock().unwrap(), [operation_id]);
 	assert_eq!(*pod.run_stops.lock().unwrap(), [run().to_string()]);
 	let calls = pod.calls();
