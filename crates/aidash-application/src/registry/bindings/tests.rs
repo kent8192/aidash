@@ -257,6 +257,7 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 				| "aidash.subnode_task"
 				| "aidash.file_read"
 				| "aidash.file_search"
+				| "aidash.workspace_wait"
 		) {
 			binding.binding.target.version = "1.0.0".into();
 		}

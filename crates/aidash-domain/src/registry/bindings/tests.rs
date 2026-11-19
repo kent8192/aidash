@@ -191,6 +191,16 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	assert!(agent.normalize("aidash://node-a").is_err());
 }
 
+/// A saved `workspace_wait` 1.0.0 resolves as 1.1.0, which only adds inputs.
+fn with_current_wait(mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
+	for item in &mut bindings {
+		if item.binding.target.id == "aidash.workspace_wait" {
+			item.binding.target.version = "1.1.0".into();
+		}
+	}
+	bindings
+}
+
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
@@ -201,7 +211,10 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 		registry_deployment: "aidash://node-a".into(),
 		bindings: old.clone(),
 	});
-	assert_eq!(entry.normalized_bindings("aidash://node-a").unwrap(), old);
+	assert_eq!(
+		entry.normalized_bindings("aidash://node-a").unwrap(),
+		with_current_wait(old)
+	);
 	entry.version = "1.1.0".into();
 	entry.normalize_agent("aidash://node-a").unwrap();
 	let current = entry.normalized_bindings("aidash://node-a").unwrap();
@@ -234,7 +247,10 @@ fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	current.binding_normalization = None;
 	current.normalize_agent(node).unwrap();
 	assert!(current.supports_thread_attachment_selection(node).unwrap());
-	assert_eq!(entry.normalized_bindings(node).unwrap(), old);
+	assert_eq!(
+		entry.normalized_bindings(node).unwrap(),
+		with_current_wait(old.clone())
+	);
 	assert!(
 		!old.iter()
 			.any(|binding| binding.binding.target.id == "aidash.attachment_copy")

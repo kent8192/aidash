@@ -279,6 +279,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 							"tenant",
 							"root_subject",
 							"subject_chain",
+							"federated",
 						]
 						.map(Alias::new),
 					)
@@ -289,6 +290,10 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 							.expr(Expr::value(&self.access.identity.tenant))
 							.expr(Expr::value(&self.access.identity.subject))
 							.expr(crate::database::text_array(self.access.subjects.clone()))
+							.expr(super::execution::federated_source(
+								source,
+								&self.access.identity.tenant,
+							))
 							.to_owned(),
 					)
 					.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())

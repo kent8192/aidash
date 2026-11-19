@@ -760,6 +760,58 @@ async fn a_signed_webhook_starts_a_duty_task_with_the_event_as_data(
 	c.close().await;
 }
 
+/// Events that arrive together start one Task: the rest find it open and are
+/// skipped (GitHub sends several events per CI run) (#1011).
+#[rstest::rstest]
+#[tokio::test]
+async fn events_arriving_together_start_one_task(#[future] capability_fixture: CoreFixture) {
+	// Arrange
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let url = trigger["url"].as_str().unwrap().to_owned();
+	let secret = trigger["secret"].as_str().unwrap().to_owned();
+	let event = br#"{"check_suite":{"conclusion":"success"}}"#;
+	// Act
+	let (a, b, d, e) = tokio::join!(
+		send_event(&c, &url, Some(&secret), event),
+		send_event(&c, &url, Some(&secret), event),
+		send_event(&c, &url, Some(&secret), event),
+		send_event(&c, &url, Some(&secret), event),
+	);
+	// Assert
+	let outcomes: Vec<String> = [a, b, d, e]
+		.into_iter()
+		.map(|(status, receipt)| {
+			assert_eq!(status, 200, "{receipt}");
+			receipt["outcome"].as_str().unwrap().to_owned()
+		})
+		.collect();
+	assert_eq!(
+		outcomes.iter().filter(|o| *o == "started").count(),
+		1,
+		"{outcomes:?}"
+	);
+	assert_eq!(
+		outcomes.iter().filter(|o| *o == "skipped").count(),
+		3,
+		"{outcomes:?}"
+	);
+	let tasks: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM duty_ticks WHERE duty_id = $1 AND task_id IS NOT NULL",
+	)
+	.bind(id)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(tasks, 1);
+	c.close().await;
+}
+
 /// Another Duty's Task ending wakes a Duty that names it (#1011).
 #[rstest::rstest]
 #[tokio::test]

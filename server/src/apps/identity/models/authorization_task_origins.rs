@@ -17,6 +17,10 @@ pub struct AuthorizationTaskOrigin {
 	pub root_subject: String,
 	#[field]
 	pub subject_chain: Vec<String>,
+	/// Recorded when the origin is inserted: the creating chain passed
+	/// through another Node or could not be proven Local (#1012).
+	#[field(default = false)]
+	pub federated: bool,
 }
 
 impl AuthorizationTaskOrigin {

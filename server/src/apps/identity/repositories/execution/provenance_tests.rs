@@ -162,10 +162,27 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 		.unwrap();
 	tx.commit().await.unwrap();
 
-	sqlx::query("INSERT INTO authorization_task_origins (task_id,tenant,source_run_id,root_subject,subject_chain) VALUES ($1,'acme',$2,'reader',ARRAY['reader','fixture-agent'])").bind(child).bind(source).execute(driver).await.unwrap();
 	let grant = Uuid::new_v4();
 	sqlx::query("INSERT INTO authorization_remote_grants (id,tenant,task_id,task_revision,workspace_id,node,node_id,credential_id,root_subject,subject_chain,inspection,expires_at,revoked,semantic) VALUES ($1,'acme',$2,1,$3,$4,'aidash://peer',$5,'reader',ARRAY['reader'],'{}',clock_timestamp()+interval '1 day',false,'{\"mode\":\"disabled\"}')").bind(grant).bind(parent).bind(workspace).bind(node).bind(credential).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_remote_outputs (grant_id,tenant,workspace_id,resource_kind,resource_id) VALUES ($1,'acme',$2,'task',$3)").bind(grant).bind(workspace).bind(parent).execute(driver).await.unwrap();
+	// The child is created by the source Run after its parent arrived from
+	// another Node: the origin records the chain as Federated, as
+	// `insert_origin` does.
+	let mut federated_source = String::new();
+	for (index, part) in FEDERATED_SOURCE.split('?').enumerate() {
+		federated_source.push_str(part);
+		if index < 4 {
+			federated_source.push_str(if index % 2 == 0 { "$2" } else { "'acme'" });
+		}
+	}
+	sqlx::query(&format!("INSERT INTO authorization_task_origins (task_id,tenant,source_run_id,root_subject,subject_chain,federated) VALUES ($1,'acme',$2,'reader',ARRAY['reader','fixture-agent'],{federated_source})")).bind(child).bind(source).execute(driver).await.unwrap();
+	let recorded: bool =
+		sqlx::query_scalar("SELECT federated FROM authorization_task_origins WHERE task_id=$1")
+			.bind(child)
+			.fetch_one(driver)
+			.await
+			.unwrap();
+	assert!(recorded, "the origin records the Federated chain");
 	let identity = SubjectIdentity {
 		http_session: None,
 		credential_id: credential,

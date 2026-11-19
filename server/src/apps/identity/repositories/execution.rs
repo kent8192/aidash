@@ -22,11 +22,24 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-/// How many local task hops a Federation provenance walk may follow. Chains
-/// are no longer capped (#1012, ADR 0143), so this is only the SQL bound of a
-/// walk that ends at the first Task without an origin: an origin always names
-/// an earlier Task, so the walk cannot loop.
-const MAX_ORIGIN_DEPTH: u32 = i32::MAX as u32;
+/// Whether a Task created by the Run `source` has a Federated origin: the
+/// Run's own Task came from another Node or was created in a chain that did,
+/// or the Run's grant or Task is gone so the chain cannot be proven Local.
+/// Recorded once in the Task's origin when it is created, so admission reads
+/// one row however long the chain grows (#1012, ADR 0143).
+const FEDERATED_SOURCE: &str = "(NOT EXISTS (SELECT 1 FROM authorization_execution e WHERE e.run_id = ? AND e.tenant = ?) OR EXISTS (SELECT 1 FROM authorization_execution e WHERE e.run_id = ? AND e.tenant = ? AND (NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.task_id AND t.tenant = e.tenant) OR EXISTS (SELECT 1 FROM authorization_remote_outputs r WHERE r.resource_kind = 'task' AND r.resource_id = e.task_id) OR EXISTS (SELECT 1 FROM authorization_task_origins o WHERE o.task_id = e.task_id AND o.federated))))";
+
+pub(crate) fn federated_source(source: Uuid, tenant: &str) -> SimpleExpr {
+	SimpleExpr::CustomWithExpr(
+		FEDERATED_SOURCE.to_owned(),
+		vec![
+			Expr::value(source).into(),
+			Expr::value(tenant.to_owned()).into(),
+			Expr::value(source).into(),
+			Expr::value(tenant.to_owned()).into(),
+		],
+	)
+}
 
 #[derive(Clone)]
 pub(crate) struct Grant {
@@ -294,128 +307,14 @@ impl ExecutionGrantSession for GrantScope<'_> {
 			.map_err(Into::into)
 	}
 	async fn federated_origin(&mut self, task: Uuid) -> Result<bool> {
-		use reinhardt::query::{JoinType, TableRef};
-		// Walk the local creation chain: each task's origin names the Run that
-		// created it, and that Run's execution grant names its own task. The
-		// walk takes one hop past the bound, so a row there means the chain
-		// continues and its provenance is unknown.
-		let mut chain = Query::select();
-		chain
-			.column(Alias::new("task_id"))
-			.expr_as(Expr::value(0_i32), Alias::new("depth"))
-			.from(Alias::new("authorization_task_origins"))
-			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
-			.union_all(
-				Query::select()
-					.column((Alias::new("e"), Alias::new("task_id")))
-					.expr_as(
-						Expr::col((Alias::new("c"), Alias::new("depth"))).add(Expr::value(1_i32)),
-						Alias::new("depth"),
-					)
-					.from_as(Alias::new("chain"), Alias::new("c"))
-					.join(
-						JoinType::InnerJoin,
-						TableRef::table_alias(
-							Alias::new("authorization_task_origins"),
-							Alias::new("o"),
-						),
-						Expr::col((Alias::new("o"), Alias::new("task_id")))
-							.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
-					)
-					.join(
-						JoinType::InnerJoin,
-						TableRef::table_alias(
-							Alias::new("authorization_execution"),
-							Alias::new("e"),
-						),
-						Expr::col((Alias::new("e"), Alias::new("run_id")))
-							.eq(Expr::col((Alias::new("o"), Alias::new("source_run_id")))),
-					)
-					.and_where(
-						Expr::col((Alias::new("c"), Alias::new("depth")))
-							.lte(Expr::value(MAX_ORIGIN_DEPTH)),
-					)
-					.to_owned(),
-			);
-		let reached = Query::select()
-			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("chain"), Alias::new("c"))
-			.join(
-				JoinType::InnerJoin,
-				TableRef::table_alias(Alias::new("authorization_remote_outputs"), Alias::new("r")),
-				Expr::col((Alias::new("r"), Alias::new("resource_kind")))
-					.eq(Expr::value("task"))
-					.and(
-						Expr::col((Alias::new("r"), Alias::new("resource_id")))
-							.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
-					),
-			)
-			.to_owned();
-		let exhausted = Query::select()
-			.expr(Expr::value(1_i32))
-			.from(Alias::new("chain"))
-			.and_where(Expr::col("depth").gt(Expr::value(MAX_ORIGIN_DEPTH)))
-			.to_owned();
-		// Pruned source execution cannot prove a Local origin. Keep Remote
-		// restrictions just as for exhausted traversal, preserving Plan limits.
-		let missing = Query::select()
-			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("chain"), Alias::new("c"))
-			.join(
-				JoinType::InnerJoin,
-				TableRef::table_alias(Alias::new("authorization_task_origins"), Alias::new("o")),
-				Expr::col((Alias::new("o"), Alias::new("task_id")))
-					.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
-			)
-			.and_where(
-				Expr::exists(
-					Query::select()
-						.expr(Expr::value(1_i32))
-						.from_as(Alias::new("authorization_execution"), Alias::new("e"))
-						.and_where(
-							Expr::col((Alias::new("e"), Alias::new("run_id")))
-								.eq(Expr::col((Alias::new("o"), Alias::new("source_run_id")))),
-						)
-						.and_where(
-							Expr::col((Alias::new("e"), Alias::new("tenant")))
-								.eq(Expr::col((Alias::new("o"), Alias::new("tenant")))),
-						)
-						.to_owned(),
-				)
-				.not(),
-			)
-			.to_owned();
-		// A retained execution grant may name a Home Task already purged. Its
-		// absent origin rows cannot prove that descendants are Local either.
-		let missing_task = Query::select()
-			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("chain"), Alias::new("c"))
-			.and_where(
-				Expr::exists(
-					Query::select()
-						.expr(Expr::value(1_i32))
-						.from_as(Alias::new("tasks"), Alias::new("t"))
-						.and_where(
-							Expr::col((Alias::new("t"), Alias::new("id")))
-								.eq(Expr::col((Alias::new("c"), Alias::new("task_id")))),
-						)
-						.and_where(
-							Expr::col((Alias::new("t"), Alias::new("tenant")))
-								.eq(Expr::value(&self.access.identity.tenant)),
-						)
-						.to_owned(),
-				)
-				.not(),
-			)
-			.to_owned();
+		// A Task without an origin was created by a person: Local. Otherwise
+		// the origin recorded whether its creating chain was Federated, and a
+		// Task another Node's Run created is Federated itself.
 		let sql = Query::select()
-			.with_recursive_cte(Alias::new("chain"), chain)
-			.expr(
-				Expr::exists(reached)
-					.or(Expr::exists(exhausted))
-					.or(Expr::exists(missing))
-					.or(Expr::exists(missing_task)),
-			)
+			.expr(SimpleExpr::CustomWithExpr(
+				"COALESCE((SELECT o.federated OR EXISTS (SELECT 1 FROM authorization_remote_outputs r WHERE r.resource_kind = 'task' AND r.resource_id = o.task_id) FROM authorization_task_origins o WHERE o.task_id = ?), false)".to_owned(),
+				vec![Expr::value(task).into()],
+			))
 			.to_string(PostgresQueryBuilder);
 		let federated: NativeResult<bool> = crate::database::native::query_scalar(&sql)
 			.scalar_one(&mut **self.access.tx)

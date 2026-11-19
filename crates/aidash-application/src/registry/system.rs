@@ -194,7 +194,10 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 		.filter(|entry| {
 			matches!(
 				entry.id.as_str(),
-				"aidash.memory_mutate" | "aidash.subnode_task" | "aidash.task_assign"
+				"aidash.memory_mutate"
+					| "aidash.subnode_task"
+					| "aidash.task_assign"
+					| "aidash.workspace_wait"
 			)
 		})
 		.collect::<Vec<_>>();
@@ -214,6 +217,14 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 					"Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.".into(),
 				)]);
 				json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":{"type":"string"},"policy_id":{"type":"string"},"reason":{"type":"string"}},"additionalProperties":false})
+			}
+			// Before Duty Triggers could be booked and waits reached 30 days (#1011).
+			"aidash.workspace_wait" => {
+				entry.description = std::collections::BTreeMap::from([(
+					"en".into(),
+					"Wait without inference for a Task you created or delegated to finish, block or fail, or for a message or person. The default is 60 minutes while your Tasks remain unfinished and 5 minutes otherwise; the maximum is 60 minutes. The result summarizes changes. For remote Tasks, use workspace_observe to read details after a change.".into(),
+				)]);
+				json!({"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":3600}},"additionalProperties":false})
 			}
 			_ => unreachable!(),
 		};
@@ -421,6 +432,7 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
 				| "aidash.task_assign"
+				| "aidash.workspace_wait"
 		) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(

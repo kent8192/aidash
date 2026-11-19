@@ -281,6 +281,13 @@ async fn deliver(
 	};
 	let mut lease = Lease::from_access(access);
 	let result: Result<Option<Uuid>> = async {
+		// Events for one Duty are delivered one at a time: the row lock makes a
+		// second event wait until the first has started its Task (or not), so
+		// two events arriving together cannot both find the Duty idle.
+		let Some(duty) = duty_repository::load(lease.tx(), tenant, trigger.duty_id, true).await?
+		else {
+			return Err(Error::NotFound("duty not found".into()));
+		};
 		if let Some((task, run)) = repository::take_booking(lease.tx(), tenant, trigger.id).await? {
 			event.outcome = EventOutcome::Delivered;
 			event.task_id = Some(task);

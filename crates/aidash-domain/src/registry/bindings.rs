@@ -601,15 +601,20 @@ impl Entry {
 /// so earlier calls behave the same; without it a pinned 1.0.1 could not post
 /// an image, since every posted image needs a description. This is an owner
 /// decision (2026-11-13) that departs, for these two tools only, from #640's
-/// rule that a pinned tool does not change. `workspace_read` keeps its pins:
-/// its versions decide whether an Agent can select a Thread Attachment at all.
+/// rule that a pinned tool does not change. `workspace_wait` 1.0.0 binds as
+/// 1.1.0 on the same grounds: 1.1.0 only adds the optional `on_trigger` and a
+/// longer maximum wait (#1011, lead's call recorded in PR #1014).
+/// `workspace_read` keeps its pins: its versions decide whether an Agent can
+/// select a Thread Attachment at all.
 fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBinding> {
 	for item in &mut bindings {
 		let target = &mut item.binding.target;
 		if target.registry_deployment == node
 			&& matches!(
 				(target.id.as_str(), target.version.as_str()),
-				("aidash.workspace_message", "1.0.1") | ("aidash.workspace_search", "1.0.0")
+				("aidash.workspace_message", "1.0.1")
+					| ("aidash.workspace_search", "1.0.0")
+					| ("aidash.workspace_wait", "1.0.0")
 			) {
 			target.version = "1.1.0".into();
 		}
@@ -679,6 +684,8 @@ impl QualifiedRef {
 					| "subnode_task"
 					// Gained `draft` for free-form generation (#1012).
 					| "task_assign"
+					// Gained `on_trigger` and a 30-day wait (#1011).
+					| "workspace_wait"
 			) {
 				"1.1.0"
 			} else if matches!(

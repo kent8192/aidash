@@ -78,6 +78,7 @@ fn compare_develop_builtin_declarations() {
 		changed,
 		[
 			"aidash.workspace_search",
+			"aidash.workspace_wait",
 			"aidash.workspace_message",
 			"aidash.attachment_copy",
 			"aidash.memory_mutate",
