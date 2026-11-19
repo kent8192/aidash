@@ -438,6 +438,10 @@ async fn a_node_administrator_reads_every_thread_of_their_node(mut scope: Scope)
 	assert!(allowed(&mut scope, thread, "thread.events").await.unwrap());
 	// ... but administering the Node changes nothing else in the Thread.
 	assert!(!allowed(&mut scope, thread, "thread.update").await.unwrap());
+	// A Run's inherited authority stays confined to its own Thread.
+	scope.inherited = true;
+	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());
+	scope.inherited = false;
 	// Another Node's Thread stays hidden from them.
 	scope.node = "other-node".into();
 	assert!(!allowed(&mut scope, thread, "thread.read").await.unwrap());

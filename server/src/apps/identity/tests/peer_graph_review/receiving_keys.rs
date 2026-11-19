@@ -121,7 +121,7 @@ async fn receiving_rollover_survives_discovery_outage_restart_and_cursor_continu
 			&local_token,
 			"POST",
 			"/api/threads",
-			json!({"title":title,"request":"cursor"}),
+			json!({"title":title}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");

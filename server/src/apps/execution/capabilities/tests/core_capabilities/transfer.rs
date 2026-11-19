@@ -54,7 +54,7 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		&c.app,
 		&c.token,
 		"/api/threads",
-		json!({"title":"Sibling files","request":"Receive selected files","node":name}),
+		json!({"title":"Sibling files","node":name}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");
@@ -1158,7 +1158,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 		&c.a.app,
 		&c.a.token,
 		"/api/threads",
-		json!({"title":"Source","request":"Share from sibling","node":sibling_name}),
+		json!({"title":"Source","node":sibling_name}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");

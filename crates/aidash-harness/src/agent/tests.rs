@@ -4662,7 +4662,7 @@ async fn old_subnode_result_references_are_bounded_and_remain_discoverable(mut f
 		results["instruction"]
 			.as_str()
 			.unwrap()
-			.contains("workspace_observe")
+			.contains("thread_observe")
 	);
 }
 
@@ -6086,7 +6086,7 @@ async fn deferred_run_message_catch_up_advertises_only_thread_read(mut fixture: 
 		usage
 			.exposed
 			.iter()
-			.all(|(alias, _)| alias == "workspace_read" || alias.starts_with("skill_")),
+			.all(|(alias, _)| alias == "thread_read" || alias.starts_with("skill_")),
 		"{:?}",
 		usage.exposed
 	);

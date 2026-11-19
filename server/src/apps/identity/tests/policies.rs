@@ -228,7 +228,7 @@ async fn subject_credentials_enforce_thread_isolation_and_live_revocation(
 			token,
 			"POST",
 			"/api/threads",
-			json!({"title":"forged","request":"x","tenant":"other","owner":"alice"})
+			json!({"title":"forged","tenant":"other","owner":"alice"})
 		)
 		.await
 		.0,
@@ -435,7 +435,7 @@ async fn subject_fixture(endpoint: EndpointFixture) -> (Arc<EndpointFixture>, St
 		credential["token"].as_str().unwrap(),
 		"POST",
 		"/api/threads",
-		json!({"title":"stream","request":"private"}),
+		json!({"title":"stream"}),
 	)
 	.await;
 	assert_eq!(status, 200);

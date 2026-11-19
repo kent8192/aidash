@@ -480,7 +480,7 @@ async fn fresh_task(f: &Federation, token: &str) -> Uuid {
 		f,
 		token,
 		"/api/threads",
-		json!({"title":"Isolated activation","request":"Complete"}),
+		json!({"title":"Isolated activation"}),
 	)
 	.await;
 	let task = post_json(

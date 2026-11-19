@@ -69,6 +69,13 @@ impl CollaborationManagement {
 				.into())
 			}
 			(None, None) => {
+				// A request is the description of a Root Task for an Agent or
+				// cluster; a Thread opened without one has no request.
+				if input.request.is_some() {
+					return Err(Error::Invalid(
+						"a request names the Agent or cluster it is for".into(),
+					));
+				}
 				let Some(scope) = scoped(&f, actor) else {
 					return Err(Error::Forbidden);
 				};
@@ -80,11 +87,6 @@ impl CollaborationManagement {
 						&f.config.scratch_policy,
 					)
 					.await?;
-				if let Some(request) = &input.request {
-					scope
-						.message_keyed(thread.id, request, Some(Uuid::new_v4()))
-						.await?;
-				}
 				Ok(aidash_domain::threads::ThreadOpened {
 					thread,
 					conversation: None,

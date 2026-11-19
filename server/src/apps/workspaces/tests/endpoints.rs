@@ -127,7 +127,7 @@ async fn invalid_json_and_path_parameters_do_not_create_records(
 	let unknown = member
 		.post(
 			"/api/threads",
-			&json!({"title":"Rejected","request":"Contract","unexpected":true}),
+			&json!({"title":"Rejected","unexpected":true}),
 			"json",
 		)
 		.await

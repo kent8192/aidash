@@ -640,7 +640,7 @@ fn sse_fixture(
 				&token,
 				"POST",
 				"/api/threads",
-				json!({"title":format!("SSE fixture {n}"),"request":"delivery"}),
+				json!({"title":format!("SSE fixture {n}")}),
 			)
 			.await;
 			assert_eq!(status, 200, "{thread}");

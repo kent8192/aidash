@@ -190,11 +190,7 @@ pub fn assert_json_rejection(response: TestResponse, status: u16) {
 pub async fn thread(client: &APIClient, title: &str) -> Value {
 	assert_json(
 		client
-			.post(
-				"/api/threads",
-				&json!({"title": title, "request": "Endpoint integration test"}),
-				"json",
-			)
+			.post("/api/threads", &json!({"title": title}), "json")
 			.await
 			.unwrap(),
 		200,

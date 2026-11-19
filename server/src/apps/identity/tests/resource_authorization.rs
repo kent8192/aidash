@@ -1149,7 +1149,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 			&app,
 			&token,
 			"/api/threads",
-			json!({"node":node.node,"title":"Named Node discovery","request":"Retain discovered metadata"}),
+			json!({"node":node.node,"title":"Named Node discovery"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{thread}");

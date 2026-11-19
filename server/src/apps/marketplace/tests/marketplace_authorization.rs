@@ -1407,14 +1407,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		&old_ref.version,
 	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("a"),"roles":["manager"]});
 	policy(&f, "a", 1, authority.clone()).await;
-	let thread = request(
-		&app,
-		&a,
-		"POST",
-		"/api/threads",
-		json!({"title":"Pinned","request":"Test pinned definitions"}),
-	)
-	.await;
+	let thread = request(&app, &a, "POST", "/api/threads", json!({"title":"Pinned"})).await;
 	assert_eq!(thread.0, 200, "{thread:?}");
 	let task_path = format!("/api/threads/{}/tasks", thread.1["id"].as_str().unwrap());
 	let task = request(
@@ -3293,14 +3286,7 @@ async fn global_event_cursors_bound_thread_and_marketplace_candidates(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
-	let thread = request(
-		&app,
-		&a,
-		"POST",
-		"/api/threads",
-		json!({"title":"Cursor", "request":"Bound replay"}),
-	)
-	.await;
+	let thread = request(&app, &a, "POST", "/api/threads", json!({"title":"Cursor"})).await;
 	assert_eq!(thread.0, 200);
 	let ws = thread.1["id"].as_str().unwrap().parse().unwrap();
 	let mut after = 0;

@@ -133,8 +133,11 @@ impl RoleModel {
 pub struct Bank {
 	pub home: String,
 	pub tenant: String,
+	// Stored evidence and the pinned memory tool declarations name the
+	// Thread `workspace`, as the Workspace was called before #1008.
+	#[serde(rename = "workspace")]
 	pub thread: Uuid,
-	/// `None` is the explicitly published Thread bank.
+	/// `None` is the explicitly published Workspace bank.
 	pub participant: Option<Uuid>,
 }
 impl Bank {

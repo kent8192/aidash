@@ -306,7 +306,7 @@ async fn world_with(fixture: ApplicationFixture, down: bool, secret: Option<Valu
 		&token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Plugin work","request":"Use the docs server"}),
+		json!({"title":"Plugin work"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");
@@ -1724,7 +1724,7 @@ async fn thread_api_binds_a_selected_existing_scratch_space(
 		&world.token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Reuse","request":"Use existing space","scratch_space_id":selected}),
+		json!({"title":"Reuse","scratch_space_id":selected}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");

@@ -548,7 +548,7 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 		&c.app,
 		&c.token,
 		"/api/threads",
-		json!({"title":"Dedup","request":"Independent files","node":node}),
+		json!({"title":"Dedup","node":node}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");

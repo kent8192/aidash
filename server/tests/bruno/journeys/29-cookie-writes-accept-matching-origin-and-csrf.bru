@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{base_url}}/api/workspaces
+  url: {{base_url}}/api/threads
   body: json
   auth: none
 }
@@ -21,8 +21,7 @@ headers {
 
 body:json {
   {
-    "title": "Bruno browser workspace",
-    "goal": "Verify approved dashboard authority"
+    "title": "Bruno browser thread"
   }
 }
 
@@ -36,6 +35,6 @@ tests {
   });
 
   if (res.getStatus() === 200) {
-    bru.setVar("browser_workspace_id",res.getBody().id);
+    bru.setVar("browser_thread_id",res.getBody().id);
   }
 }

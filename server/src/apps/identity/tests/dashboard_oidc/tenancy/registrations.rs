@@ -869,7 +869,7 @@ async fn manual_registration_keys_require_record_authority_and_independent_confi
 			"POST",
 			"/api/threads",
 			Some(&context),
-			json!({"title":"Retained receiver", "request":"Real atomic obligation", "node":node}),
+			json!({"title":"Retained receiver", "node":node}),
 		)
 		.await;
 	assert_eq!(status, 200, "{thread}");

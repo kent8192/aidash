@@ -419,10 +419,13 @@ async fn a_successor_resumes_a_departed_requesters_duty_as_their_own() {
 	admin.duties.insert(duty.id, duty.clone());
 	// Act
 	let named = name_successor(&mut admin, duty.id, "carol").await.unwrap();
+	// Both may read the Duty's own Thread (#1008); only the successor resumes.
 	let mut carol = alice_in(thread).acting_as("carol");
 	carol.duties = admin.duties.clone();
+	carol.threads.insert(duty.thread_id);
 	let mut bob = alice_in(thread).acting_as("bob");
 	bob.duties = admin.duties.clone();
+	bob.threads.insert(duty.thread_id);
 	let refused = resume(&mut bob, duty.id).await;
 	let taken = resume(&mut carol, duty.id).await.unwrap();
 	// Assert

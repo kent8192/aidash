@@ -1826,7 +1826,7 @@ async fn google_session_provisions_private_access_without_registration(
 		true,
 		Some(&context),
 		false,
-		json!({"title":"Personal work","request":"Use the private tenant"}),
+		json!({"title":"Personal work"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{own_thread}");
@@ -1874,7 +1874,7 @@ async fn google_session_provisions_private_access_without_registration(
 		true,
 		Some(&shared_context),
 		false,
-		json!({"title":"Shared work","request":"Keep shared data separate"}),
+		json!({"title":"Shared work"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{shared_thread}");

@@ -117,11 +117,7 @@ pub fn execution(
 			.unwrap();
 		let thread = assert_json(
 			subject
-				.post(
-					"/api/threads",
-					&json!({"title":"Approved task","request":"Use approved tools"}),
-					"json",
-				)
+				.post("/api/threads", &json!({"title":"Approved task"}), "json")
 				.await
 				.unwrap(),
 			200,

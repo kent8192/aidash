@@ -176,7 +176,7 @@ async fn state_latency_with_665_threads_and_670_runs(
 			&token,
 			"POST",
 			"/api/threads",
-			json!({"title":"Measured", "request":"Bounded state"}),
+			json!({"title":"Measured"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{thread}");

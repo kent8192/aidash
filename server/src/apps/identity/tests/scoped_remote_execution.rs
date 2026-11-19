@@ -5912,7 +5912,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		&p.a.config.api_token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Independent Deployment Administrator work","request":"Unrelated legacy access"}),
+		json!({"title":"Independent Deployment Administrator work"}),
 	)
 	.await;
 	assert_eq!(status, 403, "{independent}");
@@ -9822,7 +9822,7 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 		&beta_token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Local Home","request":"exact local control"}),
+		json!({"title":"Local Home"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");

@@ -792,7 +792,7 @@ async fn deletion_stops_the_tenants_runs_and_a_restore_cancels_them(
 			"POST",
 			"/api/threads",
 			Some(&context),
-			json!({"title":"Work","request":"Run something"}),
+			json!({"title":"Work"}),
 		)
 		.await;
 	assert_eq!(status, 200, "{thread}");
@@ -1163,7 +1163,7 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 			None,
 			None,
 			Some(&token),
-			json!({"title":"Reports","request":"Weekly reports"}),
+			json!({"title":"Reports"}),
 		)
 		.await;
 	assert_eq!(status, 200, "{thread}");

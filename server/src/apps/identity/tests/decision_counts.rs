@@ -307,7 +307,7 @@ async fn state_decisions_stay_bounded_when_threads_and_runs_double(
 				&token,
 				"POST",
 				"/api/threads",
-				json!({"title":"Window", "request":"Bounded state"}),
+				json!({"title":"Window"}),
 			)
 			.await;
 			assert_eq!(status, 200, "{thread}");

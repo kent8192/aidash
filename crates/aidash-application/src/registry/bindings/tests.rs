@@ -234,6 +234,22 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
 	let saved = agent.binding_normalization.as_mut().unwrap();
+	// Saved before #1008, it binds the Workspace tools the Thread tools replace.
+	for binding in &mut saved.bindings {
+		let former = binding
+			.binding
+			.target
+			.id
+			.strip_prefix("aidash.")
+			.and_then(aidash_domain::tool::thread_tools::former);
+		if let Some(former) = former {
+			binding.binding.target =
+				aidash_domain::registry::bindings::QualifiedRef::builtin(NODE, former);
+			if binding.binding.alias.is_some() {
+				binding.binding.alias = Some(former.into());
+			}
+		}
+	}
 	// A normalization saved before #640 and #639 has neither default, nor
 	// the Schedule tools #557 added later.
 	saved.bindings.retain(|binding| {
@@ -388,7 +404,7 @@ async fn missing_required_and_tampered_definitions_fail_closed() {
 		.unwrap();
 	saved
 		.bindings
-		.retain(|binding| binding.alias.as_deref() != Some("workspace_read"));
+		.retain(|binding| binding.alias.as_deref() != Some("thread_read"));
 	assert!(saved.validate().is_err());
 	let mut saved = snapshot(&mut catalog, &agent_config(), false)
 		.await
@@ -518,7 +534,7 @@ async fn alias_collisions_are_checked_after_expansion() {
 	config.bindings = vec![a, b];
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	config.bindings.pop();
-	config.bindings[0].alias = Some("workspace_read".into());
+	config.bindings[0].alias = Some("thread_read".into());
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 #[test]
@@ -661,7 +677,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	};
 	let tools = resolver.tools(&run).await.unwrap();
 	assert!(!tools.contains_key("memory_mutate"));
-	assert!(tools.contains_key("workspace_read"));
+	assert!(tools.contains_key("thread_read"));
 	assert!(tools.contains_key("human_request"));
 
 	for mutation in 0..6 {
@@ -684,7 +700,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 				let read = altered
 					.bindings
 					.iter_mut()
-					.find(|binding| binding.alias.as_deref() == Some("workspace_read"))
+					.find(|binding| binding.alias.as_deref() == Some("thread_read"))
 					.unwrap();
 				read.provider_implementation = None;
 			}
@@ -2246,15 +2262,12 @@ async fn sequential_narrowing_lowers_shared_read(#[case] descriptor: bool) {
 #[case::descriptor(true)]
 #[tokio::test]
 async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descriptor: bool) {
-	// Arrange: workspace_read's provider is Sequential.
+	// Arrange: thread_read's provider is Sequential.
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	let target = QualifiedRef::builtin(NODE, "workspace_read");
+	let target = QualifiedRef::builtin(NODE, "thread_read");
 	if descriptor {
-		let current = QualifiedRef {
-			version: "1.1.0".into(),
-			..target.clone()
-		};
+		let current = target.clone();
 		catalog.entries.get_mut(&current).unwrap().config["narrow"]["concurrency"] =
 			json!("shared_read");
 	} else {

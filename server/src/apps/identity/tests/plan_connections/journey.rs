@@ -172,7 +172,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 		&fixture,
 		token,
 		"/api/threads",
-		json!({"title":"Plan journey","request":"Read two files"}),
+		json!({"title":"Plan journey"}),
 	)
 	.await;
 	let task = owner_request(

@@ -1059,7 +1059,7 @@ fn a_caller_label_cannot_exempt_a_memory_change(
 	let mutation = serde_json::json!({
 		"operation_id": Uuid::from_u128(8),
 		"provider": {"id": "p", "version": "1.0.0"},
-		"bank": {"home": "home", "tenant": "tenant", "thread": Uuid::from_u128(9), "participant": null},
+		"bank": {"home": "home", "tenant": "tenant", "workspace": Uuid::from_u128(9), "participant": null},
 		"changes": [change],
 	});
 	serde_json::from_value::<Mutation>(mutation.clone()).expect("the unlabelled request is valid");

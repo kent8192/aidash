@@ -26,13 +26,7 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 	// Act
 	let response = app
 		.client
-		.post(
-			"/api/threads",
-			&json!({
-				"title":"Native startup", "request":"Exercise the real management binary"
-			}),
-			"json",
-		)
+		.post("/api/threads", &json!({"title":"Native startup"}), "json")
 		.await
 		.unwrap();
 	assert_eq!(response.status_code(), 200, "{}", response.text());

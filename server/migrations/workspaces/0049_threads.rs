@@ -15,14 +15,12 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0049_threads", "workspaces")
 		.add_dependency("workspaces", "0047_duty_creating_task")
-		// Every app's history up to here may name the `workspaces` table.
+		// Every app whose history names the `workspaces` table runs first.
 		.add_dependency("execution", "0147_unscheduled_generations")
 		.add_dependency("identity", "0109_agent_created_nodes")
 		.add_dependency("knowledge", "0057_journal_proofs_without_research_state")
 		.add_dependency("federation", "0023_delegation_unused_columns_state")
 		.add_dependency("registry", "0080_node_tools")
-		.add_dependency("marketplace", "0011_tenant_owned_row_level_security")
-		.add_dependency("operations", "0007_model_state")
 		.atomic(true)
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "channel_message_context".into(),

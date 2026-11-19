@@ -342,7 +342,7 @@ impl Batching {
 			&self.app,
 			&self.token,
 			"/api/threads",
-			json!({"title":"Batch","request":"Read files in one response"}),
+			json!({"title":"Batch"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{thread}");
@@ -1276,13 +1276,8 @@ async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
 /// `description`, and return its id. Start recall searches the Task text with
 /// PGroonga query syntax, where every word must match the fact.
 async fn task_in_new_thread(b: &Batching, description: &str) -> Uuid {
-	let (status, thread) = common::post(
-		&b.app,
-		&b.token,
-		"/api/threads",
-		json!({"title":"Memory","request":description}),
-	)
-	.await;
+	let (status, thread) =
+		common::post(&b.app, &b.token, "/api/threads", json!({"title":"Memory"})).await;
 	assert_eq!(status, 200, "{thread}");
 	let (status, task) = common::post(
 		&b.app,

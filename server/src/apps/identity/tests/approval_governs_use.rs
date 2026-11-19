@@ -684,7 +684,7 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 		&app,
 		&token,
 		"/api/threads",
-		json!({"node":second.node,"title":"Second Node","request":"Run elsewhere"}),
+		json!({"node":second.node,"title":"Second Node"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");

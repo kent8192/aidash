@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{base_url}}/api/workspaces
+  url: {{base_url}}/api/threads
   body: json
   auth: none
 }
@@ -19,7 +19,6 @@ headers {
 body:json {
   {
     "title": "Unexpected field",
-    "goal": "Should not persist",
     "unknown": true
   }
 }

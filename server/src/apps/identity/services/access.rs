@@ -1192,12 +1192,32 @@ impl Access {
 				self.ensure_subnode_writable(thread).await?;
 			}
 		}
-		let allowed = aidash_application::authorization::lease::decide(
+		let mut allowed = aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			resource,
 			action,
 		)
 		.await?;
+		// A Node administrator reads every Thread of their Node and its events
+		// (#1008, ADR 0140), unless a policy denies them the Thread by name. It
+		// is a person's view: a Run's chain stays confined to its own Thread.
+		if !allowed
+			&& !self.inherited_lease
+			&& self.read_run.is_none()
+			&& resource.kind == "thread"
+			&& matches!(action, "thread.read" | "thread.events")
+			&& !self.last_policy_explicit_deny
+			&& let Ok(thread) = Uuid::parse_str(&resource.id)
+		{
+			let node = self.thread_node(thread).await?;
+			let node = self.resource("node", node.as_str(), json!({}));
+			allowed = aidash_application::authorization::lease::decide(
+				&mut crate::bootstrap::run_visibility_scope(self),
+				&node,
+				aidash_domain::identity::tenant_administration::NODE_ADMINISTER,
+			)
+			.await?;
+		}
 		if allowed && let Some(key) = repeat {
 			self.read_lookups.allowed.insert(key);
 		}

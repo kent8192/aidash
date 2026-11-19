@@ -228,22 +228,8 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 ) {
 	let app = endpoint.await;
 	let token = crate::endpoint::tenant_token(&app.runtime.store, "acme").await;
-	let (_, a) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/threads",
-		json!({"title":"A","request":"A"}),
-	)
-	.await;
-	let (_, b) = request(
-		&app,
-		&token,
-		"POST",
-		"/api/threads",
-		json!({"title":"B","request":"B"}),
-	)
-	.await;
+	let (_, a) = request(&app, &token, "POST", "/api/threads", json!({"title":"A"})).await;
+	let (_, b) = request(&app, &token, "POST", "/api/threads", json!({"title":"B"})).await;
 	let a = a["id"].as_str().unwrap();
 	let b = b["id"].as_str().unwrap();
 	let (status, file) = upload(&app, &token, a, Uuid::new_v4(), b"one").await;
@@ -290,7 +276,7 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 		&token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Media","request":"Inspect media"}),
+		json!({"title":"Media"}),
 	)
 	.await;
 	let thread = thread["id"].as_str().unwrap();

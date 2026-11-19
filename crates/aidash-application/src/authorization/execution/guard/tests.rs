@@ -282,7 +282,7 @@ async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 #[case("private.approval")]
 #[case("memory")]
 #[case("tool")]
-#[case("aidash.workspace_read")]
+#[case("aidash.thread_read")]
 #[case("aidash.human_request")]
 #[tokio::test]
 async fn revocation_of_any_admitted_dependency_prevents_accepting_output(

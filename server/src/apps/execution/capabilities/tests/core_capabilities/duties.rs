@@ -383,7 +383,7 @@ async fn an_agent_registers_for_its_person_and_so_may_a_run_a_duty_started(
 		&c.token,
 		"POST",
 		"/api/threads",
-		json!({"title": "Elsewhere", "request": "Another Thread"}),
+		json!({"title": "Elsewhere"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{other}");

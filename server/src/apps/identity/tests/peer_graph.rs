@@ -115,7 +115,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		&app,
 		&subject_token,
 		"/api/threads",
-		json!({"title":"Long Goal Thread","request":long_goal}),
+		json!({"title":"Long Goal Thread"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");

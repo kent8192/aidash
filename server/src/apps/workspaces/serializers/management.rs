@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 /// Opening a Thread (#1008, ADR 0140). With a `target`, the `request` is
 /// a person's request to that Agent or cluster: it becomes the first message
-/// and the description of the Root Task delegated to the target. Without one,
-/// the Thread opens empty and `request`, if given, is its first message.
+/// and the description of the Root Task delegated to the target. Without a
+/// target the Thread opens empty, and a `request` is refused.
 #[derive(Deserialize, Serialize, JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ThreadInput {

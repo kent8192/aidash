@@ -71,8 +71,10 @@ pub async fn decision(
 	let mut allowed = decision.allowed;
 	let mut decisions = vec![(input, decision)];
 	// A Node administrator reads every Thread of their Node (#1008, ADR 0140),
-	// unless a policy denies them this Thread by name.
+	// unless a policy denies them this Thread by name. It is a person's view:
+	// a Run's inherited authority stays confined to its own Thread.
 	if !allowed
+		&& !scope.inherited()
 		&& owner.is_some()
 		&& matches!(action, "thread.read" | "thread.events")
 		&& decisions[0].1.reason != "explicit_deny"

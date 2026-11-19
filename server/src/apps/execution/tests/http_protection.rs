@@ -217,7 +217,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	let refused = deployment_administrator
 		.post(
 			"/api/threads",
-			&json!({"title":"Administrator thread","request":"valid"}),
+			&json!({"title":"Administrator thread"}),
 			"json",
 		)
 		.await
@@ -245,11 +245,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		);
 	}
 	let invalid = member
-		.post(
-			"/api/threads",
-			&json!({"title":"   ","request":"valid"}),
-			"json",
-		)
+		.post("/api/threads", &json!({"title":"   "}), "json")
 		.await
 		.unwrap();
 	assert_eq!(invalid.status_code(), 400);

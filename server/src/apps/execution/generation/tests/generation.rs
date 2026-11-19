@@ -68,7 +68,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 		&token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Missing agent","request":"Specialist research"}),
+		json!({"title":"Missing agent"}),
 	)
 	.await;
 	let (_,task)=request(&app,&token,"POST",&format!("/api/threads/{}/tasks",thread["id"].as_str().unwrap()),json!({"title":"Specialist","description":"Find an approved specialist","requirements":{"capability":"special.research"}})).await;
@@ -156,7 +156,7 @@ async fn missing_task(app: &common::TestApplication, token: &str) -> String {
 		token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Generated work","request":"Special research"}),
+		json!({"title":"Generated work"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{ws}");

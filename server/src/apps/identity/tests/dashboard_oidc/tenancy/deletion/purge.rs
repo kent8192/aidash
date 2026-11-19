@@ -17,7 +17,7 @@ impl Deployment {
 				"POST",
 				"/api/threads",
 				Some(&context),
-				json!({"title":"Work","request":"Keep working"}),
+				json!({"title":"Work"}),
 			)
 			.await;
 		assert_eq!(status, 200, "{thread}");

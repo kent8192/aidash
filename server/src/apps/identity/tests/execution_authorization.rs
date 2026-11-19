@@ -5126,7 +5126,7 @@ async fn node_closure_fences_existing_authority_and_preserves_the_sibling(
 		&token,
 		"POST",
 		"/api/threads",
-		json!({"title":"Sibling", "request":"Independent", "node":sibling}),
+		json!({"title":"Sibling", "node":sibling}),
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");
@@ -5524,14 +5524,7 @@ async fn an_agent_version_restriction_admits_only_the_named_run_starter(
 	// authority (#484).
 	let credential = common::issued_credential(&f.store, "acme", "bob").await;
 	let bob = credential["token"].as_str().unwrap();
-	let (status, thread) = request(
-		&app,
-		bob,
-		"POST",
-		"/api/threads",
-		json!({"title":"Bob","request":"Denied"}),
-	)
-	.await;
+	let (status, thread) = request(&app, bob, "POST", "/api/threads", json!({"title":"Bob"})).await;
 	assert_eq!(status, 200, "{thread}");
 	let (status, task) = request(
 		&app,
@@ -5579,14 +5572,8 @@ async fn a_dependency_restriction_follows_the_using_agent_not_the_person(
 	let model = json!({"id":"model","version":"1.0.0"});
 	let claim = json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}});
 	let new_task = async |title: &str| -> Uuid {
-		let (status, thread) = request(
-			&app,
-			&alice,
-			"POST",
-			"/api/threads",
-			json!({"title":title,"request":"Dependency restriction"}),
-		)
-		.await;
+		let (status, thread) =
+			request(&app, &alice, "POST", "/api/threads", json!({"title":title})).await;
 		assert_eq!(status, 200, "{thread}");
 		let (status, task) = request(
 			&app,
