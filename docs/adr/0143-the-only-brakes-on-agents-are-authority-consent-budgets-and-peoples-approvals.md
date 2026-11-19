@@ -25,3 +25,16 @@ Decided on 2026-11-18 in the agent activation grilling (umbrella Issue #1007). A
 - With no Budget set, an Agent's chain can spend without limit within its root person's authority.
 - Agent-created Nodes belong to the Tenant and survive their creator; their Duties stop with their requester.
 - Aidash refuses to store its own Subject Credentials as Tenant Secrets, so a Tenant tool cannot become a path to Aidash's administration API.
+
+## Amendment (2026-11-19, implementation of Budgets, #1012)
+
+Lead's calls made while building Budgets:
+
+- **Spend is a ledger, not a sum over usage.** Usage records go with their Runs, and deleting a Duty, a Thread or a Node deletes Runs. The ledger keeps one Tenant-owned row per UTC day, Node, root person and Duty, written when a model call's usage completes, so removing work never gives money back.
+- **A Task records its Duty once**, when the Duty starts it or a Run of a Duty's Task creates it, so a Duty's spend is charged without walking Task trees.
+- **Only reported cost counts.** A call whose cost no provider reported is counted as an unpriced call and shown, but it cannot reach a limit. Model definitions carry no price list to estimate from.
+- **Every model call passes the gate**, since all of them (main steps, auxiliary calls, MCP sampling) record a usage dispatch first. A refused dispatch writes no usage record.
+- **Stop pauses the Run like any pause a person lifts** (event `run.budget_exhausted`). **Sleep is an Outage Wait** that rechecks every hour with no deadline, so a reset window or a raised limit lets the same step run. Neither spends a recovery attempt.
+- **A Duty starts no Task** while a Budget that covers its Node, its Requester or itself is at its Hard Limit; the tick or event is skipped with reason `budget: <id>`.
+- **A Soft Limit mails its recipients once per window** through the Deployment's SMTP settings; without them the notice is recorded and nothing is sent.
+- **In-flight calls can overshoot**: the gate reads spend recorded so far, and a call already dispatched completes.

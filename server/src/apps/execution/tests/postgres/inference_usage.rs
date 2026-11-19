@@ -1031,3 +1031,120 @@ async fn summary_dispatch_proof_is_atomic_and_independent_from_compaction_outcom
 	assert_eq!(count, 0);
 	cleanup(store, &url, &schema).await;
 }
+
+async fn ledger(store: &Store) -> (i64, i64) {
+	sqlx::query_as(
+		"SELECT COALESCE(SUM(spent_nanocredits), 0)::bigint, COALESCE(SUM(unpriced_calls), 0)::bigint FROM budget_spend WHERE tenant = 'acme'",
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap()
+}
+
+/// A model call's reported cost, or one unpriced call, reaches the Budget
+/// ledger; a Tenant Budget at its Hard Limit refuses the next dispatch with
+/// its action, and raising the limit lets it through (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn budget_ledger_records_spend_and_a_hard_limit_refuses_dispatch(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, _url, _schema) = _store_fixture.parts();
+	let token = Uuid::new_v4();
+	let run = leased_run(&store, token).await;
+	let priced = dispatch(token);
+	let reported = ReportedUsage {
+		cost: Some(ProviderCost {
+			nanocredits: 150_000,
+			upstream_nanocredits: None,
+		}),
+		..Default::default()
+	};
+	// Act: one priced call, then one whose cost no provider reported.
+	store
+		.record_usage_dispatch(&ACME, &run, token, &priced)
+		.await
+		.unwrap();
+	store
+		.complete_usage_record(
+			&ACME,
+			&run,
+			priced.attempt,
+			&UsageOutcome::Completed(reported),
+		)
+		.await
+		.unwrap();
+	let unpriced = dispatch(token);
+	store
+		.record_usage_dispatch(&ACME, &run, token, &unpriced)
+		.await
+		.unwrap();
+	store
+		.complete_usage_record(
+			&ACME,
+			&run,
+			unpriced.attempt,
+			&UsageOutcome::Completed(ReportedUsage::default()),
+		)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(ledger(&store).await, (150_000, 1));
+
+	// Arrange: a Tenant Budget whose Hard Limit the spend has reached.
+	let budget = Uuid::now_v7();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) VALUES ($1, 'acme', 'tenant', '', 'monthly', 100000, 'stop', '{}', 1, now(), 'alice', now())")
+		.bind(budget)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// Act / Assert: Stop, then Sleep, refuse without recording a dispatch.
+	let refused = dispatch(token);
+	let stopped = store
+		.record_usage_dispatch(&ACME, &run, token, &refused)
+		.await
+		.unwrap_err();
+	assert!(
+		matches!(
+			stopped,
+			aidash_server::Error::BudgetExhausted { stop: true, .. }
+		),
+		"{stopped:?}"
+	);
+	sqlx::query("UPDATE budgets SET on_hard_limit = 'sleep' WHERE id = $1")
+		.bind(budget)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let sleeping = store
+		.record_usage_dispatch(&ACME, &run, token, &refused)
+		.await
+		.unwrap_err();
+	assert!(
+		matches!(
+			sleeping,
+			aidash_server::Error::BudgetExhausted { stop: false, .. }
+		),
+		"{sleeping:?}"
+	);
+	let recorded: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM inference_usage WHERE attempt_id = $1")
+			.bind(refused.attempt)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(recorded, 0);
+	// Act / Assert: a raised limit lets the same call through.
+	sqlx::query("UPDATE budgets SET hard_limit_nanocredits = 1000000000 WHERE id = $1")
+		.bind(budget)
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	store
+		.record_usage_dispatch(&ACME, &run, token, &refused)
+		.await
+		.unwrap();
+}

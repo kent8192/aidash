@@ -704,6 +704,9 @@ pub mod skip {
 	pub const LATE: &str = "late";
 	/// The usage gate refused the Run; `limit: <code>` carries its code.
 	pub const LIMIT: &str = "limit";
+	/// A Budget covering the Duty is at its Hard Limit; `budget: <id>` names
+	/// it (#1012).
+	pub const BUDGET: &str = "budget";
 }
 
 /// Consecutive failures after one more settled tick, and whether the Duty

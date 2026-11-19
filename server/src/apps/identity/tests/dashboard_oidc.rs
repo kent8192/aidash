@@ -2341,7 +2341,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 ) {
 	// Arrange: a Deployment Administrator seeds an unbound Tenant with an administrator and a
 	// member. Google sign-in has no Tenant Bindings at all.
-	let actions = aidash_domain::identity::tenant_administration::ACTIONS;
+	let actions = aidash_domain::identity::tenant_administration::ACTIONS.to_vec();
 	let policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant": "acme",
 		"roles": {"admin": {}, "member": {}},

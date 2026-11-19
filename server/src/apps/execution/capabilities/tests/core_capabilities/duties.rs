@@ -812,6 +812,47 @@ async fn events_arriving_together_start_one_task(#[future] capability_fixture: C
 	c.close().await;
 }
 
+/// A Duty starts no Task while a Budget that covers it is at its Hard Limit:
+/// the event is recorded and skipped with the Budget's id (#1012).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_duty_starts_nothing_while_its_budget_is_at_the_hard_limit(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: a Duty Budget whose Hard Limit today's spend has reached.
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let mut body = definition("CI watcher", 3600);
+	body.as_object_mut().unwrap().remove("trigger");
+	let duty = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(duty["id"].clone()).unwrap();
+	let trigger = add_trigger(&c, id, json!({"kind": "webhook"})).await;
+	let url = trigger["url"].as_str().unwrap().to_owned();
+	let secret = trigger["secret"].as_str().unwrap().to_owned();
+	let driver = c.f.store.pool.fixture_driver();
+	let budget = Uuid::now_v7();
+	sqlx::query("INSERT INTO budgets (id, tenant, scope_kind, scope_key, period, hard_limit_nanocredits, on_hard_limit, recipients, revision, created_at, created_by, updated_at) SELECT $1, tenant, 'duty', $2, 'monthly', 10, 'stop', '{}', 1, now(), 'test', now() FROM duties WHERE id = $3")
+		.bind(budget)
+		.bind(id.to_string())
+		.bind(id)
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO budget_spend (tenant, day, node, root_subject, duty_id, spent_nanocredits, unpriced_calls) SELECT tenant, date_trunc('day', now(), 'UTC'), 'any', 'any', id, 10, 0 FROM duties WHERE id = $1")
+		.bind(id)
+		.execute(driver)
+		.await
+		.unwrap();
+	// Act
+	let (status, receipt) = send_event(&c, &url, Some(&secret), br#"{"check_suite":{}}"#).await;
+	// Assert
+	assert_eq!(status, 200, "{receipt}");
+	assert_eq!(receipt["outcome"], "skipped");
+	let events = events_of(&c, id).await;
+	assert_eq!(events[0]["reason"], format!("budget: {budget}"));
+	c.close().await;
+}
+
 /// Another Duty's Task ending wakes a Duty that names it (#1011).
 #[rstest::rstest]
 #[tokio::test]

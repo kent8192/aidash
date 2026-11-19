@@ -932,6 +932,69 @@ async fn a_reached_plan_usage_limit_waits_an_hour_instead_of_failing(
 
 #[rstest]
 #[tokio::test]
+async fn a_budget_at_its_hard_limit_stops_or_sleeps_without_spending_an_attempt(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Act: a Stop Budget pauses the Run for a person.
+	let stop = ExecutionFailure::Budget {
+		stop: true,
+		message: "Budget at its Hard Limit".into(),
+	};
+	recover(&repository, repository.token, stop, now)
+		.await
+		.unwrap();
+	// Assert
+	{
+		let writes = repository.writes.lock().unwrap();
+		assert!(
+			matches!(writes.last(), Some(Write::Pause(_, event)) if event == "run.budget_exhausted"),
+			"{writes:?}"
+		);
+		assert!(
+			repository
+				.run
+				.lock()
+				.unwrap()
+				.as_ref()
+				.unwrap()
+				.recovery
+				.retry
+				.is_none()
+		);
+	}
+	// Act: a Sleep Budget waits an hour at a time, past the Outage bound.
+	let sleep = || ExecutionFailure::Budget {
+		stop: false,
+		message: "Budget at its Hard Limit".into(),
+	};
+	let later = now + aidash_domain::run_state::OUTAGE_BOUND + chrono::Duration::days(3);
+	recover(&repository, repository.token, sleep(), later)
+		.await
+		.unwrap();
+	// Assert
+	let writes = repository.writes.lock().unwrap();
+	assert_eq!(
+		writes.last(),
+		Some(&Write::Save("run.outage_waiting".into()))
+	);
+	let run = repository.run.lock().unwrap();
+	let run = run.as_ref().unwrap();
+	assert!(matches!(
+		&run.state,
+		RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Outage { wake_at, .. }
+			if *wake_at == later + chrono::Duration::hours(1))
+	));
+	assert!(
+		run.recovery
+			.retry
+			.as_ref()
+			.is_none_or(|retry| retry.count == 0)
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn closed_native_memory_is_retried_then_waited_out(
 	repository: Repository,
 	now: DateTime<Utc>,

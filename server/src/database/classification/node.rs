@@ -284,6 +284,11 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "tenant_data_protection"
 		| "tenant_instructions"
 		| "tenant_execution_settings"
+		// A Node's Budget stays until a person removes it, and spend stays with
+		// the Tenant so purging a Node gives no money back (#1012).
+		| "budgets"
+		| "budget_notices"
+		| "budget_spend"
 		| "agent_knowledge"
 		| "agent_plugin_copies"
 		| "agent_test_limits"

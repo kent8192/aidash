@@ -912,6 +912,18 @@ def render():
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
                     path=uri, body="{", headers=SUBJECT, node_unchanged=True)
             continue
+        if endpoint == "POST /hooks/duties/{trigger}":
+            # A webhook authenticates by the HMAC signature of its body, not a
+            # session (#1011): a missing or wrong signature and an unknown
+            # trigger read alike as not found, so nothing is learned.
+            unknown = "/hooks/duties/00000000-0000-0000-0000-000000000000"
+            add(endpoint, "Unsigned request to an unknown trigger is not found", 404,
+                path=unknown, body="{}", immutable=True)
+            add(endpoint, "Wrong signature reads as not found", 404, path=unknown, body="{}",
+                headers={"X-Hub-Signature-256": "sha256=00"}, immutable=True)
+            add(endpoint, "Typed trigger IDs reject invalid UUIDs", 400,
+                path="/hooks/duties/not-a-uuid", body="{}", immutable=True)
+            continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.

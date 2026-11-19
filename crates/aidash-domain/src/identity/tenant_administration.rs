@@ -81,9 +81,13 @@ pub const TENANT_INSTRUCTIONS_UPDATE: &str = "tenant.instructions.update";
 /// Administering one Node (#1007, ADR 0140): writing its Node Instructions and
 /// seeing everything in it. Tenant Administrators hold it through `*`.
 pub const NODE_ADMINISTER: &str = "node.administer";
+/// Setting any Budget of the Tenant (#1012, ADR 0143). Tenant Administrators
+/// hold it through `*`; a Node administrator sets that Node's Budgets, a
+/// Duty's Requester its Duty's, and a person their own.
+pub const BUDGET_MANAGE: &str = "budget.manage";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 32] = [
+pub const ACTIONS: [&str; 33] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -116,6 +120,7 @@ pub const ACTIONS: [&str; 32] = [
 	SCHEDULE_ADMINISTER,
 	TENANT_INSTRUCTIONS_UPDATE,
 	NODE_ADMINISTER,
+	BUDGET_MANAGE,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
@@ -169,7 +174,10 @@ pub fn resource_kind(action: &str) -> &'static str {
 		| NODE_ADMINISTER => "node",
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
-		SUBNODE_LIMITS_UPDATE | SCHEDULE_ADMINISTER | TENANT_INSTRUCTIONS_UPDATE => "tenant",
+		SUBNODE_LIMITS_UPDATE
+		| SCHEDULE_ADMINISTER
+		| TENANT_INSTRUCTIONS_UPDATE
+		| BUDGET_MANAGE => "tenant",
 		TEST_PROFILE_UPDATE => "test_profile",
 		APPROVAL_READ => "subject",
 		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {

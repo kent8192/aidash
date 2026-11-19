@@ -564,6 +564,12 @@ impl RuntimeTasks {
 							Ok(_) => {}
 							Err(error) => tracing::warn!(%error, "schedules pass failed"),
 						}
+						// Soft Limit mail of Budgets rides the same loop (#1012).
+						if let Err(error) =
+							crate::apps::identity::services::budgets::notice_pass(&scheduler).await
+						{
+							tracing::warn!(%error, "budget notice pass failed");
+						}
 					}
 				},
 			)),

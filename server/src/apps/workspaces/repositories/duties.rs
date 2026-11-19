@@ -768,3 +768,41 @@ pub(crate) async fn mapping_credential(
 
 #[cfg(test)]
 mod tests;
+
+/// Records the Duty a Task works for (#1012); see workspaces 0038.
+pub(crate) async fn mark_task_duty(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	task: Uuid,
+	duty: Uuid,
+) -> Result<()> {
+	native::query(
+		&Query::update()
+			.table(Alias::new("tasks"))
+			.value_expr(Alias::new("duty_id"), Expr::value(duty))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(task)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await?;
+	Ok(())
+}
+
+/// The Node of the Workspace a Duty works in.
+pub(crate) async fn workspace_node(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	workspace: Uuid,
+) -> Result<String> {
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new("node"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut *tx)
+	.await
+}

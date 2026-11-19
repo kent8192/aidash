@@ -67,38 +67,39 @@ The tenant-scoped effect of `firebaseauth.users.get`, applicability of the confi
 
 A Tenant Administrator approves Registration Requests, manages Mappings, and reads and replaces the policy of its own Tenant, without a Deployment Administrator. It is not a separate account or grant record. It is an External Identity acting through one of its Mappings, whose subject the Tenant's policy permits to perform these actions:
 
-| Action                          | Resource kind       | Allows                                                                                                         |
-| ------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `registration.read`             | `registration`      | Read pending Registration Requests and recent direct Invitation joins, with Display Attributes                 |
-| `registration.approve`          | `registration`      | Approve a request into a new user subject                                                                      |
-| `registration.reject`           | `registration`      | Reject a request                                                                                               |
-| `mapping.read`                  | `mapping`           | List the Tenant's Mappings with Assignable Group memberships (and, under a Tenant Binding, Display Attributes) |
-| `mapping.disable`               | `mapping`           | Disable another External Identity's Mapping                                                                    |
-| `subject.group.update`          | `subject`           | Replace a user subject's Assignable Group memberships                                                          |
-| `invitation.create`             | `invitation`        | Issue an Invitation link; direct joining also requires `registration.approve`                                  |
-| `invitation.read`               | `invitation`        | List the Tenant's Invitations and their state                                                                  |
-| `invitation.revoke`             | `invitation`        | Revoke an Invitation that has not been used                                                                    |
-| `policy.read`                   | `policy`            | Read the policy and its revisions, and simulate a decision                                                     |
-| `policy.update`                 | `policy`            | Replace the whole policy                                                                                       |
-| `decision.read`                 | `decision`          | Read the decision log                                                                                          |
-| `credential.issue`              | `subject`           | Issue a Subject Credential for a service or agent subject no Mapping ever named                                |
-| `credential.read`               | `credential`        | List every Subject Credential of the Tenant                                                                    |
-| `credential.revoke`             | `credential`        | Revoke any Subject Credential of the Tenant                                                                    |
-| `peer_mapping.read`             | `peer_mapping`      | List the Tenant's Peer Mappings and their history                                                              |
-| `peer_mapping.update`           | `peer_mapping`      | Create, update and disable a Peer Mapping                                                                      |
-| `node.read`                     | `node`              | List the Tenant's Nodes (members hold it)                                                                      |
-| `node.use`                      | `node`              | Work in a Node, such as creating a Workspace there (members hold it)                                           |
-| `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"                                                                        |
-| `node.update`                   | `node`              | Change a Node's label or make it the default                                                                   |
-| `node.delete`                   | `node`              | Manage deleted Nodes, soft-delete and restore them under current authority                                     |
-| `node.administer`               | `node`              | Write the Node Instructions of that Node (#1010); Agents never hold it through a Subject Credential            |
-| `tenant.instructions.update`    | `tenant`            | Write the Tenant Instructions every Agent of the Tenant works under (#1010)                                    |
-| `node_registration.read`        | `node_registration` | List the Node Registrations of one of the Tenant's Nodes and their history                                     |
-| `node_registration.update`      | `node_registration` | Register a Node of another Tenant at one of the Tenant's Nodes, change that registration or disable it         |
-| `workbench.test_limits.update`  | `test_limits`       | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                               |
-| `workbench.test_profile.update` | `test_profile`      | Read, with their rules, and write the Tenant's Workbench Test Profiles                                         |
-| `approval.read`                 | `subject`           | Read a member's default Approval Mode and Approval Rules. Only the member writes them.                         |
-| `billing.attach`                | `tenant`            | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                  |
+| Action                          | Resource kind       | Allows                                                                                                                          |
+| ------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `registration.read`             | `registration`      | Read pending Registration Requests and recent direct Invitation joins, with Display Attributes                                  |
+| `registration.approve`          | `registration`      | Approve a request into a new user subject                                                                                       |
+| `registration.reject`           | `registration`      | Reject a request                                                                                                                |
+| `mapping.read`                  | `mapping`           | List the Tenant's Mappings with Assignable Group memberships (and, under a Tenant Binding, Display Attributes)                  |
+| `mapping.disable`               | `mapping`           | Disable another External Identity's Mapping                                                                                     |
+| `subject.group.update`          | `subject`           | Replace a user subject's Assignable Group memberships                                                                           |
+| `invitation.create`             | `invitation`        | Issue an Invitation link; direct joining also requires `registration.approve`                                                   |
+| `invitation.read`               | `invitation`        | List the Tenant's Invitations and their state                                                                                   |
+| `invitation.revoke`             | `invitation`        | Revoke an Invitation that has not been used                                                                                     |
+| `policy.read`                   | `policy`            | Read the policy and its revisions, and simulate a decision                                                                      |
+| `policy.update`                 | `policy`            | Replace the whole policy                                                                                                        |
+| `decision.read`                 | `decision`          | Read the decision log                                                                                                           |
+| `credential.issue`              | `subject`           | Issue a Subject Credential for a service or agent subject no Mapping ever named                                                 |
+| `credential.read`               | `credential`        | List every Subject Credential of the Tenant                                                                                     |
+| `credential.revoke`             | `credential`        | Revoke any Subject Credential of the Tenant                                                                                     |
+| `peer_mapping.read`             | `peer_mapping`      | List the Tenant's Peer Mappings and their history                                                                               |
+| `peer_mapping.update`           | `peer_mapping`      | Create, update and disable a Peer Mapping                                                                                       |
+| `node.read`                     | `node`              | List the Tenant's Nodes (members hold it)                                                                                       |
+| `node.use`                      | `node`              | Work in a Node, such as creating a Workspace there (members hold it)                                                            |
+| `node.create`                   | `tenant`            | Create a Node within "Nodes per Tenant"                                                                                         |
+| `node.update`                   | `node`              | Change a Node's label or make it the default                                                                                    |
+| `node.delete`                   | `node`              | Manage deleted Nodes, soft-delete and restore them under current authority                                                      |
+| `node.administer`               | `node`              | Write the Node Instructions of that Node (#1010); Agents never hold it through a Subject Credential                             |
+| `tenant.instructions.update`    | `tenant`            | Write the Tenant Instructions every Agent of the Tenant works under (#1010)                                                     |
+| `budget.manage`                 | `tenant`            | Set any Budget of the Tenant (#1012); a person sets their own, a Node administrator that Node's, a Duty's Requester that Duty's |
+| `node_registration.read`        | `node_registration` | List the Node Registrations of one of the Tenant's Nodes and their history                                                      |
+| `node_registration.update`      | `node_registration` | Register a Node of another Tenant at one of the Tenant's Nodes, change that registration or disable it                          |
+| `workbench.test_limits.update`  | `test_limits`       | Read and set the Tenant's Workbench Test Limits within the Deployment's ceilings                                                |
+| `workbench.test_profile.update` | `test_profile`      | Read, with their rules, and write the Tenant's Workbench Test Profiles                                                          |
+| `approval.read`                 | `subject`           | Read a member's default Approval Mode and Approval Rules. Only the member writes them.                                          |
+| `billing.attach`                | `tenant`            | Consent, for the Tenant, to attaching it to a Billing Account or moving it to another (Cloud)                                   |
 
 Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Item operations also pass resource attributes for conditions: `registration.approve` passes `identity_id`, `subject` and the requested `groups`; `registration.reject` passes `identity_id`; `mapping.disable` passes `identity_id` and `subject`; `subject.group.update` passes the requested `groups`. A deny for some administrators whose condition is that `/groups` contains an Assignable Group therefore keeps them from conferring that group, at approval as well as on membership updates. Decisions, including denials, are recorded in the Tenant's decision log.
 
@@ -132,6 +133,8 @@ Approvals, rejections, Mapping disables, group changes, policy replacements (`po
 ### Tenant Instructions and Node Instructions
 
 `GET|PUT /api/tenants/{tenant}/instructions` and `GET|PUT /api/tenants/{tenant}/nodes/{node}/instructions` read and write the standing directions for every Agent of a Tenant and of one Node (#1010). Every member reads them in a browser session; reading a Node's needs `node.read` on that Node, as listing it does. Writing needs `tenant.instructions.update` or `node.administer` on that Node, and a browser session: a Subject Credential is refused even when its subject is a Tenant Administrator, so an Agent's chain never changes them. The body is `{"text": "...", "expected_revision": n}`; a stale revision answers 409, and a text over 16,384 bytes or containing NUL answers 400. A Run pins both texts of the Node that executes it when it is claimed or admitted from another Node, so editing them never changes a Run already under way. They reach the model between the Harness Contract and the Agent's own instructions; only the `structured@4` Harness Contract states how they rank.
+
+`GET|POST /api/tenants/{tenant}/budgets` and `PUT|DELETE /api/tenants/{tenant}/budgets/{budget}` list and set Budgets (#1012, ADR 0143). A browser session is required: a Subject Credential is refused, so no Agent's chain sets or raises a Budget. Anyone with `budget.manage` sets any Budget; a person sets the Budget of their own person scope; `node.administer` on a Node sets that Node's; a Duty's Requester sets that Duty's. The list shows only the Budgets the caller may change, each with this window's spend. One Budget per scope (409 for a second), and changes check `expected_revision` (409 when stale).
 
 ### Tenancy Rules, Tenant creation and Invitations
 

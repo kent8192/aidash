@@ -182,6 +182,7 @@ pub(crate) mod node_purge;
 
 pub mod node_recovery;
 
+pub(crate) mod budgets;
 pub(crate) mod data_protection;
 pub(crate) mod execution_settings;
 pub(crate) mod manual_keys;

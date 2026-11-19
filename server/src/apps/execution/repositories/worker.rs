@@ -340,6 +340,10 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
 		NativeError::DeciderOutage => ExecutionFailure::DeciderOutage,
 		NativeError::MemoryClosed => ExecutionFailure::ServiceOutage(MEMORY.into()),
+		NativeError::BudgetExhausted { stop, message } => ExecutionFailure::Budget {
+			stop: *stop,
+			message: message.clone(),
+		},
 		NativeError::NodeUnreachable { node, after_effect } => ExecutionFailure::NodeUnreachable {
 			node: node.clone(),
 			retry: !after_effect,

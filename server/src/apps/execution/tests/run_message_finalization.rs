@@ -1399,7 +1399,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn empty_media_observation_consumes_the_last_available_step(
+async fn empty_media_observation_consumes_a_step(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -1421,19 +1421,9 @@ async fn empty_media_observation_consumes_the_last_available_step(
 	);
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	let agent = f
-		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			"research",
-			"1.0.0",
-		)
-		.await
-		.unwrap();
-	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
-		.unwrap()
-		.max_steps;
-	leased.step = max_steps - 1;
+	// Runs have no step limit any more (#1009); the observation still counts
+	// as one step.
+	leased.step = 3;
 
 	leased.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"included_input_seq":0,
@@ -1457,17 +1447,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 	);
 	let retried = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(retried.phase().as_str(), "THINKING");
-	assert_eq!(retried.step, max_steps);
-	assert!(
-		Harness {
-			federation: f.clone()
-		}
-		.worker_once()
-		.await
-		.unwrap()
-	);
-	let bounded = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
+	assert_eq!(retried.step, 4);
 	cleanup(f, &url, &schema).await;
 }
 

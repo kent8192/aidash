@@ -1951,3 +1951,119 @@ async fn execution_settings_set_the_lease_recovery_limit(
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["lease_recovery_limit"], 2);
 }
+
+/// Budgets (#1012): a person sets their own, `budget.manage` sets any, only
+/// from a browser session; each scope has one Budget and changes are
+/// revision-checked.
+#[rstest::rstest]
+#[tokio::test]
+async fn budgets_are_set_by_their_people_in_a_browser(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let path = format!("/api/tenants/{}/budgets", t.tenant);
+	let person = |subject: &str| json!({"scope":{"kind":"person","subject":subject},"hard_limit_nanocredits":5_000_000_000_i64,"on_hard_limit":"sleep"});
+	let tenant = json!({"scope":{"kind":"tenant"},"period":"monthly","soft_limit_nanocredits":1_000_000_000_i64,"hard_limit_nanocredits":2_000_000_000_i64,"recipients":["owner@example.com"]});
+	// A member sets their own Budget, not another person's or the Tenant's.
+	let (status, own) =
+		t.d.as_person(&t.bob, "POST", &path, Some(&t.bob_context), person("bob"))
+			.await;
+	assert_eq!(status, 200, "{own}");
+	assert_eq!(own["revision"], 1);
+	assert_eq!(own["spent_nanocredits"], 0);
+	assert_eq!(own["standing"], "under");
+	for body in [person("owner"), tenant.clone()] {
+		let (status, denied) =
+			t.d.as_person(&t.bob, "POST", &path, Some(&t.bob_context), body)
+				.await;
+		assert_eq!(status, 403, "{denied}");
+	}
+	// An administrator sets the Tenant's; a scope holds one Budget.
+	let (status, created) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			&path,
+			Some(&t.alice_context),
+			tenant.clone(),
+		)
+		.await;
+	assert_eq!(status, 200, "{created}");
+	let (status, duplicate) =
+		t.d.as_person(&t.alice, "POST", &path, Some(&t.alice_context), tenant)
+			.await;
+	assert_eq!(status, 409, "{duplicate}");
+	let (status, invalid) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			&path,
+			Some(&t.alice_context),
+			json!({"scope":{"kind":"node","node":t.node}}),
+		)
+		.await;
+	assert_eq!(status, 400, "{invalid}");
+	// Each person lists what they may change.
+	let (_, mine) =
+		t.d.as_person(&t.bob, "GET", &path, Some(&t.bob_context), Value::Null)
+			.await;
+	assert_eq!(mine.as_array().unwrap().len(), 1, "{mine}");
+	let (_, all) =
+		t.d.as_person(&t.alice, "GET", &path, Some(&t.alice_context), Value::Null)
+			.await;
+	assert_eq!(all.as_array().unwrap().len(), 2, "{all}");
+	// Changes check the revision.
+	let own_path = format!("{path}/{}", own["id"].as_str().unwrap());
+	let mut change = person("bob");
+	change["hard_limit_nanocredits"] = json!(9_000_000_000_i64);
+	change["expected_revision"] = json!(1);
+	let (status, changed) =
+		t.d.as_person(
+			&t.bob,
+			"PUT",
+			&own_path,
+			Some(&t.bob_context),
+			change.clone(),
+		)
+		.await;
+	assert_eq!(status, 200, "{changed}");
+	assert_eq!(changed["revision"], 2);
+	let (status, stale) =
+		t.d.as_person(&t.bob, "PUT", &own_path, Some(&t.bob_context), change)
+			.await;
+	assert_eq!(status, 409, "{stale}");
+	// An administrator's Subject Credential, which an Agent's chain could
+	// hold, never sets a Budget.
+	let (status, issued) = t
+		.alice(
+			"POST",
+			"/credentials",
+			json!({"subject":"owner","expires_in_seconds":3600}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let token = issued["token"].as_str().unwrap().to_owned();
+	assert_eq!(t.bearer(&token, "POST", &path, person("owner")).await, 403);
+	// Only someone who may change a Budget removes it.
+	let tenant_path = format!("{path}/{}", created["id"].as_str().unwrap());
+	let (status, _) =
+		t.d.as_person(
+			&t.bob,
+			"DELETE",
+			&tenant_path,
+			Some(&t.bob_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 403);
+	let (status, _) =
+		t.d.as_person(
+			&t.alice,
+			"DELETE",
+			&tenant_path,
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 204);
+}

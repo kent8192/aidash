@@ -115,6 +115,8 @@ pub enum Error {
 	SemanticUnavailable,
 	#[error("native memory is closed until its last write is reconciled; it reopens by itself")]
 	MemoryClosed,
+	#[error("{message}")]
+	BudgetExhausted { stop: bool, message: String },
 	#[error("{0}")]
 	RemoteSemantic(crate::semantic::remote::Failure),
 	#[error("{0}")]
@@ -208,6 +210,7 @@ impl Error {
 			| Self::SemanticUnavailable
 			| Self::MemoryClosed
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::BudgetExhausted { .. } => (StatusCode::PAYMENT_REQUIRED, self.to_string()),
 			Self::RemoteSemantic(reason) => (
 				if reason.transient() || matches!(reason, crate::semantic::remote::Failure::Pending)
 				{
@@ -574,6 +577,9 @@ impl From<aidash_application::Error> for Error {
 			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::MemoryClosed => Self::MemoryClosed,
+			ApplicationError::BudgetExhausted { stop, message } => {
+				Self::BudgetExhausted { stop, message }
+			}
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			ApplicationError::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			ApplicationError::OAuthClientSecretsUnavailable => Self::OAuthClientSecretsUnavailable,
@@ -649,6 +655,7 @@ impl From<Error> for aidash_application::Error {
 			}
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::MemoryClosed => Self::MemoryClosed,
+			Error::BudgetExhausted { stop, message } => Self::BudgetExhausted { stop, message },
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,

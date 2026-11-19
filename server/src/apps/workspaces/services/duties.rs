@@ -409,6 +409,9 @@ pub(crate) async fn start_with(
 	)
 	.await?;
 	let task = task.ok_or_else(|| Error::Conflict("this tick already started".into()))?;
+	// Budgets charge this Task's spend, and its descendants', to the Duty.
+	let tenant = tenant(lease.access_mut());
+	repository::mark_task_duty(lease.tx(), &tenant, task, duty.id).await?;
 	Ok((task, thread))
 }
 
@@ -776,6 +779,11 @@ async fn fire(
 			.await?
 		{
 			let reason = format!("{}: {}", duties::skip::LIMIT, refusal.code);
+			advance(lease.tx(), tenant, &duty, &claim, now).await?;
+			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
+			return Ok(Fired::Skipped(reason));
+		}
+		if let Some(reason) = budget_skip(&mut lease, tenant, &duty, now).await? {
 			advance(lease.tx(), tenant, &duty, &claim, now).await?;
 			skipped_tick(lease.tx(), tenant, &duty, &claim, &reason, now).await?;
 			return Ok(Fired::Skipped(reason));
@@ -1177,4 +1185,31 @@ mod tests {
 			assert_eq!(reason, error.to_string());
 		}
 	}
+}
+
+/// A Duty starts no new Task while a Budget that covers it is at its Hard
+/// Limit (#1012 decision 33); the Task it would start is charged to its
+/// Node, its Requester and itself.
+pub(crate) async fn budget_skip(
+	lease: &mut Lease,
+	tenant: &str,
+	duty: &Duty,
+	now: DateTime<Utc>,
+) -> Result<Option<String>> {
+	let node = repository::workspace_node(lease.tx(), tenant, duty.workspace_id).await?;
+	let charge = crate::apps::identity::repositories::budgets::Charge {
+		tenant: tenant.to_owned(),
+		node,
+		root_subject: duty.requester.clone(),
+		duty: duty.id,
+	};
+	let (gate, _) =
+		crate::apps::identity::repositories::budgets::gate_for(lease.tx(), &charge, now).await?;
+	Ok(match gate {
+		aidash_domain::budgets::Gate::Open => None,
+		aidash_domain::budgets::Gate::Stop { budget }
+		| aidash_domain::budgets::Gate::Sleep { budget, .. } => {
+			Some(format!("{}: {budget}", duties::skip::BUDGET))
+		}
+	})
 }

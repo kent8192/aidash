@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct AgentTestLimit {
 	#[field(primary_key = true, field_type = "text")]
 	pub tenant: String,
-	#[field(default = 20000)]
+	#[field(default = 40000)]
 	pub max_input_bytes: i32,
 	#[field(default = 2048)]
 	pub max_output_tokens: i32,

@@ -292,6 +292,24 @@ impl InferenceUsage {
 		if written && matches!(outcome, UsageOutcome::Completed(_)) {
 			Self::record_calibration_sample(tx, attempt).await?;
 		}
+		// The Budget ledger (#1012): a reported cost, or one call whose cost
+		// is unknown. A rejected call cost nothing.
+		if written {
+			let cost = match outcome {
+				UsageOutcome::Completed(usage) => Some(usage.cost.map(|cost| cost.nanocredits)),
+				UsageOutcome::Unknown => Some(None),
+				UsageOutcome::Rejected { .. } => None,
+			};
+			if let Some(cost) = cost {
+				crate::apps::identity::repositories::budgets::record_spend(
+					tx,
+					run,
+					cost,
+					Utc::now(),
+				)
+				.await?;
+			}
+		}
 		Ok(written)
 	}
 

@@ -300,6 +300,10 @@ async fn deliver(
 			event.reason = Some(format!("the Duty is {}", duty.status()));
 		} else if duty_repository::running(lease.tx(), tenant, duty.id).await? {
 			event.reason = Some(aidash_domain::duties::skip::OVERLAP.into());
+		} else if let Some(reason) =
+			super::duties::budget_skip(&mut lease, tenant, &duty, now).await?
+		{
+			event.reason = Some(reason);
 		} else {
 			let description =
 				events::task_description(&duty.definition.mission, &trigger.kind, &event.payload);

@@ -162,6 +162,21 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, view::node_update, &["String", "String"])?;
 	}
 	{
+		use super::budgets::{BudgetUpdate, BudgetView};
+		use aidash_domain::budgets::Definition;
+		use views::budgets as view;
+		contracts.response::<_, Vec<BudgetView>>(document, view::list, 200, "application/json")?;
+		contracts.path(document, view::list, &["String"])?;
+		contracts.request::<_, Definition>(document, view::create)?;
+		contracts.response::<_, BudgetView>(document, view::create, 200, "application/json")?;
+		contracts.path(document, view::create, &["String"])?;
+		contracts.request::<_, BudgetUpdate>(document, view::update)?;
+		contracts.response::<_, BudgetView>(document, view::update, 200, "application/json")?;
+		contracts.path(document, view::update, &["String", "Uuid"])?;
+		contracts.empty(document, view::remove, 204)?;
+		contracts.path(document, view::remove, &["String", "Uuid"])?;
+	}
+	{
 		use super::data_protection::{Impact, Settings};
 		use aidash_domain::data_protection::DataProtection;
 		use views::data_protection as view;

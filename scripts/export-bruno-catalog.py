@@ -40,6 +40,10 @@ ADDITIONS = {
     ("PUT", "/api/tenants/{tenant}/instructions"): ("tenant-instructions-update", "standing_instructions"),
     ("GET", NODE_PATH + "/instructions"): ("node-instructions", "standing_instructions"),
     ("PUT", NODE_PATH + "/instructions"): ("node-instructions-update", "standing_instructions"),
+    ("GET", "/api/tenants/{tenant}/budgets"): ("budgets", "budgets"),
+    ("POST", "/api/tenants/{tenant}/budgets"): ("budgets-create", "budgets"),
+    ("PUT", "/api/tenants/{tenant}/budgets/{budget}"): ("budgets-update", "budgets"),
+    ("DELETE", "/api/tenants/{tenant}/budgets/{budget}"): ("budgets-delete", "budgets"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.

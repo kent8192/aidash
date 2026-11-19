@@ -12,6 +12,8 @@ use uuid::Uuid;
 const DECIDER: &str = "Decider";
 const SEMANTIC_CONTEXT: &str = "Semantic context";
 const PLAN_ALLOWANCE: &str = "ChatGPT plan usage limit";
+/// What a Run sleeps on while a Budget is at its Hard Limit (#1012).
+const BUDGET: &str = "Budget";
 
 fn track_outage(run: &mut Run, service: &str, now: DateTime<Utc>) -> DateTime<Utc> {
 	if run
@@ -338,6 +340,27 @@ pub async fn recover(
 					"run.service_unavailable",
 					None,
 				)
+				.await?;
+		}
+	} else if let ExecutionFailure::Budget { stop, ref message } = failure {
+		// A Budget at its Hard Limit is a person's money decision, never a
+		// failure: stop for them, or sleep until it has room again (#1012).
+		current.recovery.retry = None;
+		current.error = Some(message.clone());
+		if stop
+			|| !wait_outage(
+				store,
+				&mut current,
+				token,
+				BUDGET,
+				OutageCadence::Budget,
+				None,
+				now,
+			)
+			.await?
+		{
+			store
+				.pause(&current, token, message, "run.budget_exhausted", None)
 				.await?;
 		}
 	} else if let ExecutionFailure::PlanAllowance(ref message) = failure {

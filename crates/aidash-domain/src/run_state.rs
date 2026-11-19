@@ -380,11 +380,17 @@ pub const OUTAGE_BOUND: chrono::Duration = chrono::Duration::hours(24);
 pub enum OutageCadence {
 	Service,
 	PlanAllowance,
+	/// A Budget at its Hard Limit set to sleep (#1012): rechecked every hour
+	/// until the window resets or a person raises the limit, with no deadline.
+	Budget,
 }
 
 impl OutageCadence {
 	/// The deadline is fixed from the first failed attempt, including lease retries.
 	pub fn next_wake(self, started_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+		if let Self::Budget = self {
+			return Some(now + chrono::Duration::hours(1));
+		}
 		let deadline = started_at + OUTAGE_BOUND;
 		if now >= deadline {
 			return None;
@@ -392,6 +398,7 @@ impl OutageCadence {
 		let interval = match self {
 			Self::Service => chrono::Duration::minutes(5),
 			Self::PlanAllowance => chrono::Duration::hours(1),
+			Self::Budget => unreachable!("a Budget wait has no deadline"),
 		};
 		Some((now + interval).min(deadline))
 	}

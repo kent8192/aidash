@@ -4852,6 +4852,37 @@ impl Store {
 				"worker lease lost before dispatching inference".into(),
 			));
 		}
+		// Every model call passes the Budgets that cover its Run (#1012).
+		let (gate, _) = crate::apps::identity::repositories::budgets::gate(
+			tx.as_mut(),
+			run.id,
+			chrono::Utc::now(),
+		)
+		.await?;
+		match gate {
+			aidash_domain::budgets::Gate::Open => {}
+			aidash_domain::budgets::Gate::Stop { budget } => {
+				return Err(Error::BudgetExhausted {
+					stop: true,
+					message: format!(
+						"Budget {budget} is at its Hard Limit; raise it, then resume the Run"
+					),
+				});
+			}
+			aidash_domain::budgets::Gate::Sleep { budget, until } => {
+				return Err(Error::BudgetExhausted {
+					stop: false,
+					message: match until {
+						Some(until) => format!(
+							"Budget {budget} is at its Hard Limit; the Run sleeps until {until} or until the limit is raised"
+						),
+						None => format!(
+							"Budget {budget} is at its Hard Limit; the Run sleeps until the limit is raised"
+						),
+					},
+				});
+			}
+		}
 		InferenceUsage::dispatch(tx.as_mut(), run.id, dispatch).await?;
 		tx.commit().await?;
 		Ok(())

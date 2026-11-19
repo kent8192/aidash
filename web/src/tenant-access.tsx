@@ -1,5 +1,6 @@
 import { DataProtectionSettings } from "./data-protection";
 import { StandingInstructionsSettings } from "./standing-instructions";
+import { BudgetSettings } from "./budgets";
 import { ExecutionSettings } from "./execution-settings";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
@@ -64,6 +65,11 @@ export function TenantAccess({
         key={`instructions-${tenant}`}
         tenant={tenant}
         canUpdate={can("tenant.instructions.update")}
+      />
+      <BudgetSettings
+        key={`budgets-${tenant}`}
+        tenant={tenant}
+        subject={subject}
       />
       <ExecutionSettings
         key={`execution-${tenant}`}

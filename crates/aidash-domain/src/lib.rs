@@ -2,6 +2,7 @@
 pub mod accounts;
 pub mod agent_plugin;
 pub mod approval_rules;
+pub mod budgets;
 pub mod catalog;
 pub mod completion;
 pub mod context;

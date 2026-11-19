@@ -301,6 +301,27 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 			)
 			.execute(&mut **self.access.tx)
 			.await?;
+			// A Task a Duty's Run creates works for that Duty too (#1012).
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("tasks"))
+					.value_expr(
+						Alias::new("duty_id"),
+						SimpleExpr::CustomWithExpr(
+							"(SELECT s.duty_id FROM authorization_execution e JOIN tasks s ON s.id = e.task_id AND s.tenant = e.tenant WHERE e.run_id = ? AND e.tenant = ?)".to_owned(),
+							vec![
+								Expr::value(source).into(),
+								Expr::value(self.access.identity.tenant.clone()).into(),
+							],
+						),
+					)
+					.and_where(Expr::col("id").eq(Expr::value(task)))
+					.and_where(Expr::col("tenant").eq(Expr::value(&self.access.identity.tenant)))
+					.and_where(Expr::col("duty_id").is_null())
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **self.access.tx)
+			.await?;
 			Ok(())
 		}
 		.await;

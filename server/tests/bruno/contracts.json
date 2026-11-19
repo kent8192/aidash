@@ -31824,8 +31824,17 @@
           },
           "OutageCadence": {
             "description": "Retry interval for an external service or a plan allowance.",
-            "enum": ["service", "plan_allowance"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["service", "plan_allowance"],
+                "type": "string"
+              },
+              {
+                "description": "A Budget at its Hard Limit set to sleep (#1012): rechecked every hour\nuntil the window resets or a person raises the limit, with no deadline.",
+                "enum": ["budget"],
+                "type": "string"
+              }
+            ]
           },
           "OutageTracking": {
             "additionalProperties": false,
@@ -35912,8 +35921,17 @@
           },
           "OutageCadence": {
             "description": "Retry interval for an external service or a plan allowance.",
-            "enum": ["service", "plan_allowance"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["service", "plan_allowance"],
+                "type": "string"
+              },
+              {
+                "description": "A Budget at its Hard Limit set to sleep (#1012): rechecked every hour\nuntil the window resets or a person raises the limit, with no deadline.",
+                "enum": ["budget"],
+                "type": "string"
+              }
+            ]
           },
           "OutageTracking": {
             "additionalProperties": false,
@@ -50278,8 +50296,17 @@
           },
           "OutageCadence": {
             "description": "Retry interval for an external service or a plan allowance.",
-            "enum": ["service", "plan_allowance"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["service", "plan_allowance"],
+                "type": "string"
+              },
+              {
+                "description": "A Budget at its Hard Limit set to sleep (#1012): rechecked every hour\nuntil the window resets or a person raises the limit, with no deadline.",
+                "enum": ["budget"],
+                "type": "string"
+              }
+            ]
           },
           "OutageTracking": {
             "additionalProperties": false,
@@ -57307,8 +57334,17 @@
           },
           "OutageCadence": {
             "description": "Retry interval for an external service or a plan allowance.",
-            "enum": ["service", "plan_allowance"],
-            "type": "string"
+            "oneOf": [
+              {
+                "enum": ["service", "plan_allowance"],
+                "type": "string"
+              },
+              {
+                "description": "A Budget at its Hard Limit set to sleep (#1012): rechecked every hour\nuntil the window resets or a person raises the limit, with no deadline.",
+                "enum": ["budget"],
+                "type": "string"
+              }
+            ]
           },
           "OutageTracking": {
             "additionalProperties": false,
@@ -59740,5 +59776,665 @@
     },
     "source": "server/src/apps/workspaces/views/duty_events.rs",
     "uuid_parameters": ["trigger"]
+  },
+  {
+    "json": false,
+    "method": "DELETE",
+    "name": "budgets-delete",
+    "path": "/api/tenants/{tenant}/budgets/{budget}",
+    "query_parameters": [],
+    "source": "server/src/apps/identity/views/budgets.rs",
+    "uuid_parameters": ["budget"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "budgets",
+    "path": "/api/tenants/{tenant}/budgets",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "BudgetOnHardLimit": {
+            "description": "What reaching the Hard Limit does to a Run that wants another model call.",
+            "oneOf": [
+              {
+                "description": "Pause the Run until a person resumes it (the default: money is a\nperson's decision).",
+                "enum": ["stop"],
+                "type": "string"
+              },
+              {
+                "description": "Let the Run sleep until the Budget has room again: the next window, or\na raised limit.",
+                "enum": ["sleep"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetPeriod": {
+            "description": "When spend starts counting again.",
+            "oneOf": [
+              {
+                "description": "Each calendar month in UTC.",
+                "enum": ["monthly"],
+                "type": "string"
+              },
+              {
+                "description": "Since the Budget was set, never reset.",
+                "enum": ["total"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetScope": {
+            "description": "What a Budget covers.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["tenant"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["node"],
+                    "type": "string"
+                  },
+                  "node": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "node"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "duty_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["duty"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "duty_id"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The root person of a chain: their own Runs and everything their Agents\nset up for them.",
+                "properties": {
+                  "kind": {
+                    "enum": ["person"],
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "subject"],
+                "type": "object"
+              }
+            ]
+          },
+          "BudgetStanding": {
+            "description": "A Budget's standing in its current window.",
+            "oneOf": [
+              {
+                "enum": ["under"],
+                "type": "string"
+              },
+              {
+                "description": "At or above the Soft Limit, below the Hard Limit.",
+                "enum": ["soft"],
+                "type": "string"
+              },
+              {
+                "description": "At or above the Hard Limit.",
+                "enum": ["hard"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetView": {
+            "additionalProperties": false,
+            "description": "One Budget with its spend in the current window. Spend is the cost\nproviders reported for model calls, in billionths of a credit (one credit\nis one US dollar on OpenRouter); `unpriced_calls` counts calls whose cost\nno provider reported, which no limit can count.",
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "hard_limit_nanocredits": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_reset": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "on_hard_limit": {
+                "$ref": "#/components/schemas/BudgetOnHardLimit"
+              },
+              "period": {
+                "$ref": "#/components/schemas/BudgetPeriod"
+              },
+              "recipients": {
+                "default": [],
+                "description": "Who gets the Soft Limit mail, besides nobody: people chosen or typed\nby whoever sets the Budget.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/BudgetScope"
+              },
+              "soft_limit_nanocredits": {
+                "description": "Mail is sent once per window when spend reaches it.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "spent_nanocredits": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "standing": {
+                "$ref": "#/components/schemas/BudgetStanding"
+              },
+              "unpriced_calls": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "window_start": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "scope",
+              "period",
+              "soft_limit_nanocredits",
+              "hard_limit_nanocredits",
+              "on_hard_limit",
+              "recipients",
+              "revision",
+              "created_at",
+              "created_by",
+              "updated_at",
+              "window_start",
+              "next_reset",
+              "spent_nanocredits",
+              "unpriced_calls",
+              "standing"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/BudgetView"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/budgets.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "budgets-create",
+    "path": "/api/tenants/{tenant}/budgets",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "BudgetOnHardLimit": {
+            "description": "What reaching the Hard Limit does to a Run that wants another model call.",
+            "oneOf": [
+              {
+                "description": "Pause the Run until a person resumes it (the default: money is a\nperson's decision).",
+                "enum": ["stop"],
+                "type": "string"
+              },
+              {
+                "description": "Let the Run sleep until the Budget has room again: the next window, or\na raised limit.",
+                "enum": ["sleep"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetPeriod": {
+            "description": "When spend starts counting again.",
+            "oneOf": [
+              {
+                "description": "Each calendar month in UTC.",
+                "enum": ["monthly"],
+                "type": "string"
+              },
+              {
+                "description": "Since the Budget was set, never reset.",
+                "enum": ["total"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetScope": {
+            "description": "What a Budget covers.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["tenant"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["node"],
+                    "type": "string"
+                  },
+                  "node": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "node"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "duty_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["duty"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "duty_id"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The root person of a chain: their own Runs and everything their Agents\nset up for them.",
+                "properties": {
+                  "kind": {
+                    "enum": ["person"],
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "subject"],
+                "type": "object"
+              }
+            ]
+          },
+          "BudgetStanding": {
+            "description": "A Budget's standing in its current window.",
+            "oneOf": [
+              {
+                "enum": ["under"],
+                "type": "string"
+              },
+              {
+                "description": "At or above the Soft Limit, below the Hard Limit.",
+                "enum": ["soft"],
+                "type": "string"
+              },
+              {
+                "description": "At or above the Hard Limit.",
+                "enum": ["hard"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetView": {
+            "additionalProperties": false,
+            "description": "One Budget with its spend in the current window. Spend is the cost\nproviders reported for model calls, in billionths of a credit (one credit\nis one US dollar on OpenRouter); `unpriced_calls` counts calls whose cost\nno provider reported, which no limit can count.",
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "hard_limit_nanocredits": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_reset": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "on_hard_limit": {
+                "$ref": "#/components/schemas/BudgetOnHardLimit"
+              },
+              "period": {
+                "$ref": "#/components/schemas/BudgetPeriod"
+              },
+              "recipients": {
+                "default": [],
+                "description": "Who gets the Soft Limit mail, besides nobody: people chosen or typed\nby whoever sets the Budget.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/BudgetScope"
+              },
+              "soft_limit_nanocredits": {
+                "description": "Mail is sent once per window when spend reaches it.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "spent_nanocredits": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "standing": {
+                "$ref": "#/components/schemas/BudgetStanding"
+              },
+              "unpriced_calls": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "window_start": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "scope",
+              "period",
+              "soft_limit_nanocredits",
+              "hard_limit_nanocredits",
+              "on_hard_limit",
+              "recipients",
+              "revision",
+              "created_at",
+              "created_by",
+              "updated_at",
+              "window_start",
+              "next_reset",
+              "spent_nanocredits",
+              "unpriced_calls",
+              "standing"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/BudgetView"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/budgets.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "budgets-update",
+    "path": "/api/tenants/{tenant}/budgets/{budget}",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "BudgetOnHardLimit": {
+            "description": "What reaching the Hard Limit does to a Run that wants another model call.",
+            "oneOf": [
+              {
+                "description": "Pause the Run until a person resumes it (the default: money is a\nperson's decision).",
+                "enum": ["stop"],
+                "type": "string"
+              },
+              {
+                "description": "Let the Run sleep until the Budget has room again: the next window, or\na raised limit.",
+                "enum": ["sleep"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetPeriod": {
+            "description": "When spend starts counting again.",
+            "oneOf": [
+              {
+                "description": "Each calendar month in UTC.",
+                "enum": ["monthly"],
+                "type": "string"
+              },
+              {
+                "description": "Since the Budget was set, never reset.",
+                "enum": ["total"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetScope": {
+            "description": "What a Budget covers.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["tenant"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": ["node"],
+                    "type": "string"
+                  },
+                  "node": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "node"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "duty_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["duty"],
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "duty_id"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The root person of a chain: their own Runs and everything their Agents\nset up for them.",
+                "properties": {
+                  "kind": {
+                    "enum": ["person"],
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "subject"],
+                "type": "object"
+              }
+            ]
+          },
+          "BudgetStanding": {
+            "description": "A Budget's standing in its current window.",
+            "oneOf": [
+              {
+                "enum": ["under"],
+                "type": "string"
+              },
+              {
+                "description": "At or above the Soft Limit, below the Hard Limit.",
+                "enum": ["soft"],
+                "type": "string"
+              },
+              {
+                "description": "At or above the Hard Limit.",
+                "enum": ["hard"],
+                "type": "string"
+              }
+            ]
+          },
+          "BudgetView": {
+            "additionalProperties": false,
+            "description": "One Budget with its spend in the current window. Spend is the cost\nproviders reported for model calls, in billionths of a credit (one credit\nis one US dollar on OpenRouter); `unpriced_calls` counts calls whose cost\nno provider reported, which no limit can count.",
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "hard_limit_nanocredits": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "next_reset": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "on_hard_limit": {
+                "$ref": "#/components/schemas/BudgetOnHardLimit"
+              },
+              "period": {
+                "$ref": "#/components/schemas/BudgetPeriod"
+              },
+              "recipients": {
+                "default": [],
+                "description": "Who gets the Soft Limit mail, besides nobody: people chosen or typed\nby whoever sets the Budget.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/BudgetScope"
+              },
+              "soft_limit_nanocredits": {
+                "description": "Mail is sent once per window when spend reaches it.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "spent_nanocredits": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "standing": {
+                "$ref": "#/components/schemas/BudgetStanding"
+              },
+              "unpriced_calls": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "window_start": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "scope",
+              "period",
+              "soft_limit_nanocredits",
+              "hard_limit_nanocredits",
+              "on_hard_limit",
+              "recipients",
+              "revision",
+              "created_at",
+              "created_by",
+              "updated_at",
+              "window_start",
+              "next_reset",
+              "spent_nanocredits",
+              "unpriced_calls",
+              "standing"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/BudgetView"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/budgets.rs",
+    "uuid_parameters": ["budget"]
   }
 ]

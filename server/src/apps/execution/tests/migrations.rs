@@ -94,6 +94,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0076_delete_subnode_tool"),
 	("registry", "0077_tool_parallelism_64"),
 	("registry", "0078_duty_tools"),
+	("registry", "0079_workbench_input_bytes"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -247,7 +248,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0023_delegation_unused_columns_state");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0078_duty_tools");
+	assert_eq!(registry[0].name, "0079_workbench_input_bytes");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
 	assert_eq!(execution[0].name, "0147_unscheduled_generations");
@@ -788,15 +789,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0038_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0039_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"workspaces".to_owned(),
-			"0037_duty_triggers_state".to_owned()
-		)]
+		vec![("workspaces".to_owned(), "0038_task_duty".to_owned())]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {

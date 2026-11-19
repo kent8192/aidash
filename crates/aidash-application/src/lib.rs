@@ -148,6 +148,11 @@ pub enum Error {
 	/// (ADR 0129).
 	#[error("native memory is closed until its last write is reconciled; it reopens by itself")]
 	MemoryClosed,
+	/// A Budget that covers the Run is at its Hard Limit (#1012). `stop`
+	/// pauses the Run for a person; otherwise it sleeps until the Budget has
+	/// room again.
+	#[error("{message}")]
+	BudgetExhausted { stop: bool, message: String },
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	/// An authenticated authority identified the suspension epoch stopping a Run.
