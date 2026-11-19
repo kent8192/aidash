@@ -46,6 +46,12 @@ pub trait GenerationActivationSession: GenerationActivationScope {
 pub trait GenerationTerminalSession: Send {
 	async fn load(&mut self, tenant: &str, id: Uuid) -> Result<Request>;
 	async fn run_phase(&mut self, job: &Request) -> Result<Option<String>>;
+	/// Whether another chain of the root person who generated the agent still
+	/// uses it: an unfinished Run of any of their Tasks, or a Duty of theirs
+	/// that names it and has not stopped for good (#1012 decision 49).
+	async fn in_use(&mut self, _job: &Request) -> Result<bool> {
+		Ok(false)
+	}
 	/// Invoke the lifecycle use case while retaining the exclusive authority lock.
 	async fn transition(
 		&mut self,

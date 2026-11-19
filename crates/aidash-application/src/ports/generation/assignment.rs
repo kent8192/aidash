@@ -89,6 +89,13 @@ pub trait GenerationAssignmentScope: GenerationCreationScope {
 	) -> Result<Option<(String, String, Vec<String>)>>;
 	async fn catalog(&mut self, search: &Search) -> Result<Vec<Entry>>;
 	async fn generated(&mut self, entry: &Entry) -> Result<bool>;
+	/// Whether a generated `entry` is reused here: a live, local agent that a
+	/// chain of this scope's root person generated (#1012 decision 49). The
+	/// adapter share-locks its generation request until the transaction ends,
+	/// so the agent is not retired while this assignment commits.
+	async fn reusable(&mut self, _entry: &Entry) -> Result<bool> {
+		Ok(false)
+	}
 	async fn delegate(&mut self, task_id: Uuid, agent: &EntityRef) -> Result<Delegation>;
 }
 #[async_trait]

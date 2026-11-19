@@ -25,6 +25,12 @@ pub trait GenerationPublication: Send {
 pub trait GenerationLive: Send {
 	fn tenant(&self) -> &str;
 	fn now(&self) -> DateTime<Utc>;
+	/// The person at the root of the chain the check is for. A generated
+	/// agent runs in any chain of the person whose chain generated it (#1012
+	/// decision 49); without one, only on the Task it was generated for.
+	fn root_subject(&self) -> Option<&str> {
+		None
+	}
 	async fn jobs(&mut self, node: &str, agent: &EntityRef) -> Result<Vec<Request>>;
 	async fn policy_enabled(&mut self, job: &Request) -> Result<bool>;
 }

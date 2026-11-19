@@ -199,7 +199,9 @@ pub async fn assign_in_drafted(
 		}) {
 			continue;
 		}
-		if scope.generated(&entry).await? {
+		// A generated agent is reused only in chains of the person whose chain
+		// generated it; anyone else needs a person's Catalog Approval (#1012).
+		if scope.generated(&entry).await? && !scope.reusable(&entry).await? {
 			continue;
 		}
 		let subject = qualified_agent(&node, &entry.id, &entry.version);
